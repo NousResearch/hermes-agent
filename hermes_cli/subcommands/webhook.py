@@ -59,8 +59,9 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "--script",
         default="",
         help="Filter/transform script under ~/.hermes/scripts/. The route "
-        "payload is passed as JSON on stdin; empty stdout, [SILENT], or a "
-        "nonzero exit code ignores the webhook.",
+        "payload is passed as JSON on stdin. Empty stdout, [SILENT], or an "
+        "explicit ignore result ignores the webhook; execution failures "
+        "return HTTP 500 so the provider can retry.",
     )
 
     webhook_subparsers.add_parser(

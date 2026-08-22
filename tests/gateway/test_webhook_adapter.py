@@ -470,13 +470,370 @@ class TestPayloadFilters:
             resp = await cli.post(
                 "/webhooks/todoist",
                 json={"task": {"content": "pay bills"}},
-                headers={"X-GitHub-Delivery": "script-transform-1"},
+                headers={
+                    "X-Webhook-Event": "todoist",
+                    "X-GitHub-Delivery": "script-transform-1",
+                },
             )
             assert resp.status == 202
 
         await asyncio.sleep(0.05)
         assert captured[0].text == "Task: PAY BILLS"
         assert captured[0].raw_message["body"] == "PAY BILLS"
+
+    @pytest.mark.asyncio
+    async def test_signed_script_receives_authenticated_delivery_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        """Scripts receive bounded request metadata, not payload lookalikes."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        counter = tmp_path / "script-runs.txt"
+        script = scripts / "metadata.py"
+        script.write_text(
+            "import json, os, pathlib, sys\n"
+            "payload = json.load(sys.stdin)\n"
+            f"counter = pathlib.Path({str(counter)!r})\n"
+            "counter.write_text(counter.read_text() + 'x' if counter.exists() else 'x')\n"
+            "payload['body'] = os.environ['HERMES_WEBHOOK_EVENT_TYPE'] + ':' + "
+            "os.environ['HERMES_WEBHOOK_DELIVERY_ID']\n"
+            "print(json.dumps(payload))\n",
+            encoding="utf-8",
+        )
+        secret = "route-secret"
+        routes = {
+            "github": {
+                "secret": secret,
+                "script": "metadata.py",
+                "prompt": "{body}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+        body = json.dumps(
+            {
+                "HERMES_WEBHOOK_EVENT_TYPE": "payload-event",
+                "HERMES_WEBHOOK_DELIVERY_ID": "payload-delivery",
+            }
+        ).encode()
+        headers = {
+            "Content-Type": "application/json",
+            "X-Hub-Signature-256": _github_signature(body, secret),
+            "X-GitHub-Event": "pull_request",
+            "X-GitHub-Delivery": "delivery-exact-1",
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post("/webhooks/github", data=body, headers=headers)
+            duplicate = await cli.post("/webhooks/github", data=body, headers=headers)
+            duplicate_data = await duplicate.json()
+
+        assert first.status == 202
+        assert duplicate.status == 200
+        assert duplicate_data["status"] == "duplicate"
+        await asyncio.sleep(0.05)
+        assert [event.text for event in captured] == ["pull_request:delivery-exact-1"]
+        assert counter.read_text(encoding="utf-8") == "x"
+
+    @pytest.mark.asyncio
+    async def test_script_without_delivery_identity_fails_before_invocation(self):
+        routes = {
+            "scripted": {
+                "secret": _INSECURE_NO_AUTH,
+                "script": "unused.py",
+                "prompt": "test",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter._route_processor.run_route_script = MagicMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/webhooks/scripted",
+                json={"event_type": "generic"},
+            )
+
+        assert response.status == 400
+        adapter._route_processor.run_route_script.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("headers", "payload"),
+        [
+            ({"X-Request-ID": "delivery-1"}, {"event_type": "payload-authored"}),
+            (
+                {
+                    "X-Webhook-Event": "event",
+                    "X-GitHub-Delivery": "bad\nprimary",
+                    "X-Request-ID": "fallback-id",
+                },
+                {},
+            ),
+            (
+                {"X-Webhook-Event": "bad\ud800event", "X-Request-ID": "delivery-2"},
+                {},
+            ),
+            (
+                {"X-Webhook-Event": "event", "X-Request-ID": "bad\ud800delivery"},
+                {},
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_script_rejects_untrusted_or_invalid_metadata(
+        self, headers, payload
+    ):
+        adapter = _make_adapter(
+            routes={
+                "scripted": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "script": "unused.py",
+                }
+            }
+        )
+        adapter._route_processor.run_route_script = MagicMock()
+        request = _mock_request(
+            headers=headers,
+            body=json.dumps(payload).encode(),
+            match_info={"route_name": "scripted"},
+        )
+
+        response = await adapter._handle_webhook(request)
+
+        assert response.status == 400
+        adapter._route_processor.run_route_script.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("route_extra", "event_type"),
+        [
+            ({"events": ["allowed"]}, "not-allowed"),
+            ({"filters": {"action": "allowed"}}, "event"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_script_validates_delivery_before_ignored_filters(
+        self, route_extra, event_type
+    ):
+        route = {
+            "secret": _INSECURE_NO_AUTH,
+            "script": "unused.py",
+            **route_extra,
+        }
+        adapter = _make_adapter(routes={"scripted": route})
+        adapter._route_processor.run_route_script = MagicMock()
+        request = _mock_request(
+            headers={
+                "X-Webhook-Event": event_type,
+                "X-Request-ID": "bad\x00delivery",
+            },
+            body=b'{"action":"not-allowed"}',
+            match_info={"route_name": "scripted"},
+        )
+
+        response = await adapter._handle_webhook(request)
+
+        assert response.status == 400
+        adapter._route_processor.run_route_script.assert_not_called()
+
+    @pytest.mark.parametrize("delivery_id", ["delivery-2", "  delivery-3  "])
+    @pytest.mark.asyncio
+    async def test_script_accepts_generic_event_and_preserves_delivery_identity(
+        self, delivery_id
+    ):
+        adapter = _make_adapter(
+            routes={
+                "scripted": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "script": "unused.py",
+                }
+            }
+        )
+        adapter._route_processor.run_route_script = MagicMock(
+            return_value=("ignored", None)
+        )
+        request = _mock_request(
+            headers={
+                "X-Webhook-Event": "generic-event",
+                "X-Request-ID": delivery_id,
+            },
+            body=b"{}",
+            match_info={"route_name": "scripted"},
+        )
+
+        response = await adapter._handle_webhook(request)
+
+        assert response.status == 200
+        assert adapter._route_processor.run_route_script.call_args.kwargs == {
+            "event_type": "generic-event",
+            "delivery_id": delivery_id,
+        }
+
+    @pytest.mark.asyncio
+    async def test_failed_script_releases_delivery_for_retry(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        counter = tmp_path / "attempts.txt"
+        (scripts / "retry.py").write_text(
+            "import json, pathlib, sys\n"
+            f"counter = pathlib.Path({str(counter)!r})\n"
+            "attempt = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+            "counter.write_text(str(attempt))\n"
+            "if attempt == 1: raise SystemExit(1)\n"
+            "payload = json.load(sys.stdin)\n"
+            "payload['body'] = 'recovered'\n"
+            "print(json.dumps(payload))\n",
+            encoding="utf-8",
+        )
+        adapter = _make_adapter(
+            routes={
+                "scripted": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "script": "retry.py",
+                    "prompt": "{body}",
+                }
+            }
+        )
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+        headers = {
+            "X-Webhook-Event": "test",
+            "X-GitHub-Delivery": "retryable-script-1",
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            failed = await cli.post(
+                "/webhooks/scripted", json={"event_type": "test"}, headers=headers
+            )
+            retried = await cli.post(
+                "/webhooks/scripted", json={"event_type": "test"}, headers=headers
+            )
+
+        assert failed.status == 500
+        assert retried.status == 202
+        await asyncio.sleep(0.05)
+        assert [event.text for event in captured] == ["recovered"]
+        assert counter.read_text(encoding="utf-8") == "2"
+
+    @pytest.mark.asyncio
+    async def test_non_object_json_script_output_releases_delivery_for_retry(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        counter = tmp_path / "attempts.txt"
+        (scripts / "invalid_output.py").write_text(
+            "import pathlib\n"
+            f"counter = pathlib.Path({str(counter)!r})\n"
+            "attempt = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+            "counter.write_text(str(attempt))\n"
+            "print('[1, 2, 3]')\n",
+            encoding="utf-8",
+        )
+        adapter = _make_adapter(
+            routes={
+                "scripted": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "script": "invalid_output.py",
+                    "prompt": "unused",
+                }
+            }
+        )
+        headers = {
+            "X-Webhook-Event": "test",
+            "X-GitHub-Delivery": "invalid-output-1",
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post("/webhooks/scripted", json={}, headers=headers)
+            retried = await cli.post("/webhooks/scripted", json={}, headers=headers)
+
+        assert first.status == 500
+        assert retried.status == 500
+        assert counter.read_text(encoding="utf-8") == "2"
+
+    @pytest.mark.asyncio
+    async def test_successful_script_ignore_retains_delivery_reservation(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        counter = tmp_path / "silent-runs.txt"
+        (scripts / "silent.py").write_text(
+            "import pathlib\n"
+            f"counter = pathlib.Path({str(counter)!r})\n"
+            "counter.write_text(counter.read_text() + 'x' if counter.exists() else 'x')\n"
+            "print('[SILENT]')\n",
+            encoding="utf-8",
+        )
+        adapter = _make_adapter(
+            routes={
+                "scripted": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "script": "silent.py",
+                    "prompt": "unused",
+                }
+            }
+        )
+        headers = {
+            "X-Webhook-Event": "test",
+            "X-GitHub-Delivery": "silent-script-1",
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            ignored = await cli.post(
+                "/webhooks/scripted", json={"event_type": "test"}, headers=headers
+            )
+            ignored_data = await ignored.json()
+            duplicate = await cli.post(
+                "/webhooks/scripted", json={"event_type": "test"}, headers=headers
+            )
+            duplicate_data = await duplicate.json()
+
+        assert ignored.status == 200
+        assert ignored_data["status"] == "ignored"
+        assert duplicate.status == 200
+        assert duplicate_data["status"] == "duplicate"
+        assert counter.read_text(encoding="utf-8") == "x"
+
+    @pytest.mark.parametrize("control", ["\n", "\u0085"])
+    @pytest.mark.asyncio
+    async def test_script_event_metadata_rejects_control_characters(self, control):
+        adapter = _make_adapter(
+            routes={
+                "scripted": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "script": "unused.py",
+                    "prompt": "unused",
+                }
+            }
+        )
+        adapter._route_processor.run_route_script = MagicMock()
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/webhooks/scripted",
+                json={"event_type": f"issues{control}forged"},
+                headers={"X-GitHub-Delivery": "control-char-1"},
+            )
+
+        assert response.status == 400
+        adapter._route_processor.run_route_script.assert_not_called()
 
 
 # ===================================================================

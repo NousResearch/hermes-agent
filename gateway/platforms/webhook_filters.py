@@ -225,12 +225,19 @@ class WebhookRouteProcessor:
             for spec in filters
         )
 
-    def run_route_script(self, script_value: Any, payload: dict) -> tuple[bool, Optional[dict]]:
-        """Run a route script and return (should_continue, transformed_payload)."""
+    def run_route_script(
+        self,
+        script_value: Any,
+        payload: dict,
+        *,
+        event_type: str,
+        delivery_id: str,
+    ) -> tuple[str, Optional[dict]]:
+        """Run a route script and return its outcome and transformed payload."""
         path, error = _resolve_script_path(script_value)
         if error or path is None:
-            logger.warning("[webhook] script ignored webhook: %s", error)
-            return False, None
+            logger.warning("[webhook] script execution failed: %s", error)
+            return "failed", None
 
         suffix = path.suffix.lower()
         if suffix in {".sh", ".bash"}:
@@ -238,8 +245,8 @@ class WebhookRouteProcessor:
                 "/bin/bash" if os.path.isfile("/bin/bash") else None
             )
             if bash is None:
-                logger.warning("[webhook] script ignored webhook: bash not found")
-                return False, None
+                logger.warning("[webhook] script execution failed: bash not found")
+                return "failed", None
             argv = [bash, str(path)]
         else:
             argv = [sys.executable, str(path)]
@@ -248,6 +255,9 @@ class WebhookRouteProcessor:
             from tools.environments.local import build_subprocess_env
 
             popen_kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+            env = build_subprocess_env()
+            env["HERMES_WEBHOOK_EVENT_TYPE"] = event_type
+            env["HERMES_WEBHOOK_DELIVERY_ID"] = delivery_id
             result = subprocess.run(
                 argv,
                 input=json.dumps(payload),
@@ -255,15 +265,15 @@ class WebhookRouteProcessor:
                 text=True, encoding="utf-8", errors="replace",
                 timeout=self.script_timeout_seconds,
                 cwd=str(path.parent),
-                env=build_subprocess_env(),
+                env=env,
                 **popen_kwargs,
             )
         except subprocess.TimeoutExpired:
             logger.warning("[webhook] script timed out: %s", path)
-            return False, None
+            return "failed", None
         except Exception as exc:
             logger.warning("[webhook] script execution failed: %s", exc)
-            return False, None
+            return "failed", None
 
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
@@ -278,14 +288,14 @@ class WebhookRouteProcessor:
             stderr = "[REDACTED - redaction failed]"
         if result.returncode != 0:
             logger.info(
-                "[webhook] script ignored webhook path=%s code=%s stderr=%s",
+                "[webhook] script execution failed path=%s code=%s stderr=%s",
                 path.name,
                 result.returncode,
                 stderr[:200],
             )
-            return False, None
+            return "failed", None
         if not stdout or stdout == "[SILENT]":
-            return False, None
+            return "ignored", None
 
         try:
             transformed = json.loads(stdout)
@@ -293,10 +303,10 @@ class WebhookRouteProcessor:
             transformed = {**payload, "script_output": stdout}
         if not isinstance(transformed, dict):
             logger.warning("[webhook] script stdout must be a JSON object or text")
-            return False, None
+            return "failed", None
         if (
             transformed.get("[SILENT]") is True
             or transformed.get("__hermes_ignore__") is True
         ):
-            return False, None
-        return True, transformed
+            return "ignored", None
+        return "continue", transformed

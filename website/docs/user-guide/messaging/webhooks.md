@@ -83,7 +83,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `profile` | No | Profile authorized to execute this route when `gateway.multiplex_profiles` is enabled. Omit it for a default-profile-only route; set a profile name (for example `coder`) to bind the route and its secret to `/p/coder/webhooks/<route>`. |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
-| `script` | No | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`; empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. |
+| `script` | No | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`. Empty stdout, `[SILENT]`, or `{"__hermes_ignore__": true}` intentionally ignores the webhook. A missing script, timeout, or nonzero exit returns HTTP 500 so the provider can retry. |
 | `skills` | No | List of skill names to load for the agent run. |
 | `toolsets` | No | List of toolset keys (e.g. `["terminal", "file", "web"]`) that **replaces** the platform-level webhook toolset for runs triggered by this route only. Manual config edit only — not settable via `hermes webhook subscribe`, so agent-created subscriptions cannot self-grant elevated tools. Names are validated the same way as `platform_toolsets` entries (unknown or platform-restricted names are dropped). See [Per-route toolsets](#per-route-toolsets). |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
@@ -168,6 +168,23 @@ Use `script` when declarative filters are not enough. Scripts must live under `~
 
 The route payload is sent to stdin as JSON:
 
+After Hermes authenticates the request body, script routes receive bounded
+provider/proxy transport-header metadata in two environment variables:
+`HERMES_WEBHOOK_EVENT_TYPE` and `HERMES_WEBHOOK_DELIVERY_ID`. The delivery ID is resolved from
+`X-GitHub-Delivery`, `svix-id`, or `X-Request-ID` and is the same value Hermes
+uses for idempotency. Script routes reject requests without one of these
+externally supplied identities; Hermes does not synthesize an identity for a
+stateful script. Payload fields cannot override either variable. GitHub HMAC
+and generic V2 signatures authenticate the body (and V2's timestamp), not these
+transport headers; deployments must enforce trusted proxy and header handling.
+
+:::caution Existing script routes
+This is stricter than the previous timestamp fallback. Existing script routes
+whose senders do not provide `X-GitHub-Delivery`, `svix-id`, or `X-Request-ID`
+now receive HTTP 400. Configure the provider or trusted proxy to supply a stable
+delivery identity before enabling a script on that route.
+:::
+
 ```python
 # ~/.hermes/scripts/todoist-hermes-label.py
 import json
@@ -187,7 +204,9 @@ Script outcomes:
 
 - JSON object stdout replaces the payload used by `prompt` and `deliver_extra`.
 - Non-JSON text stdout is added to the payload as `script_output`.
-- Empty stdout, exact `[SILENT]`, `{"__hermes_ignore__": true}`, timeout, missing script, or nonzero exit code returns HTTP 200 with `{"status":"ignored","reason":"script"}`.
+- JSON stdout that is not an object is a failed script execution and is retryable.
+- Empty stdout, exact `[SILENT]`, or `{"__hermes_ignore__": true}` is an intentional completed ignore: it returns HTTP 200 with `{"status":"ignored","reason":"script"}` and retains the delivery reservation.
+- A timeout, missing script, or nonzero exit is a failed script execution: it returns HTTP 500 after releasing the delivery reservation so the sender can retry the same delivery.
 
 ### Prompt Templates
 

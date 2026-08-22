@@ -82,7 +82,7 @@ curl http://localhost:8644/health
 | `secret` | **是** | 用于签名验证的 HMAC secret。若路由未设置，则回退到全局 `secret`。仅用于测试时可设为 `"INSECURE_NO_AUTH"`（跳过验证）。 |
 | `prompt` | 否 | 使用点号表示法访问 payload 字段的模板字符串（例如 `{pull_request.title}`）。若省略，则将完整 JSON payload 转储到 prompt 中。 |
 | `filters` | 否 | 声明式 payload 过滤器，在认证/请求体/事件过滤之后、agent 或直接投递之前求值。不匹配时返回 `{"status":"ignored","reason":"filter"}`（HTTP 200）。 |
-| `script` | 否 | 位于 `~/.hermes/scripts/` 下的过滤/转换脚本。webhook payload 以 JSON 形式通过 stdin 传入。stdout 为 JSON 对象时会在模板渲染前替换 payload；文本 stdout 以 `script_output` 形式暴露；空 stdout、`[SILENT]` 或非零退出码会忽略该 webhook。 |
+| `script` | 否 | 位于 `~/.hermes/scripts/` 下的过滤/转换脚本。webhook payload 以 JSON 形式通过 stdin 传入。stdout 为 JSON 对象时会在模板渲染前替换 payload；文本 stdout 以 `script_output` 形式暴露。空 stdout、`[SILENT]` 或 `{"__hermes_ignore__": true}` 会有意忽略该 webhook；脚本缺失、超时或非零退出码会返回 HTTP 500，以便提供方重试。 |
 | `skills` | 否 | agent 运行时加载的 skill 名称列表。 |
 | `deliver` | 否 | 响应发送目标：`github_comment`、`telegram`、`discord`、`slack`、`signal`、`sms`、`whatsapp`、`matrix`、`mattermost`、`homeassistant`、`email`、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot`，或 `log`（默认）。 |
 | `deliver_extra` | 否 | 额外的投递配置——键取决于 `deliver` 类型（例如 `repo`、`pr_number`、`chat_id`）。值支持与 `prompt` 相同的 `{dot.notation}` 模板语法。 |
@@ -166,6 +166,15 @@ platforms:
 
 路由 payload 以 JSON 形式发送到 stdin：
 
+Hermes 验证请求体后，脚本路由会通过 `HERMES_WEBHOOK_EVENT_TYPE` 和
+`HERMES_WEBHOOK_DELIVERY_ID` 两个环境变量接收有长度限制的提供方/代理
+传输请求头元数据。投递 ID 从 `X-GitHub-Delivery`、`svix-id` 或
+`X-Request-ID` 解析，并与 Hermes 用于幂等处理的值相同。脚本路由若缺少
+这些外部提供的身份之一，会返回 HTTP 400；Hermes 不会再为有状态脚本合成
+基于时间戳的身份。现有脚本路由必须先配置提供方或可信代理，使其提供稳定的
+投递身份。请求体签名不会以加密方式绑定这些传输请求头，因此部署还必须确保
+代理和请求头处理可信。
+
 ```python
 # ~/.hermes/scripts/todoist-hermes-label.py
 import json
@@ -185,7 +194,9 @@ print(json.dumps(payload))
 
 - stdout 为 JSON 对象时，替换 `prompt` 和 `deliver_extra` 使用的 payload。
 - 非 JSON 文本 stdout 会以 `script_output` 字段加入 payload。
-- 空 stdout、精确的 `[SILENT]`、`{"__hermes_ignore__": true}`、超时、脚本缺失或非零退出码，均返回 HTTP 200 及 `{"status":"ignored","reason":"script"}`。
+- 可解析但不是对象的 JSON stdout 表示执行失败，并允许发送方重试。
+- 空 stdout、精确的 `[SILENT]` 或 `{"__hermes_ignore__": true}` 表示脚本已成功执行但有意忽略事件：返回 HTTP 200，并保留投递 ID 的去重记录。
+- 超时、脚本缺失或非零退出码表示执行失败：释放投递 ID 的预留并返回 HTTP 500，以便提供方重试同一事件。
 
 ### Prompt 模板
 

@@ -41,6 +41,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional
 
@@ -66,6 +67,24 @@ from gateway.platforms.webhook_filters import (
 from gateway.response_filters import is_autonomous_silence_response
 
 logger = logging.getLogger(__name__)
+
+
+def _is_valid_script_metadata(value: Any, max_length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value) <= max_length
+        and not any(
+            unicodedata.category(char) in {"Cc", "Cs"} for char in value
+        )
+    )
+
+
+def _first_present_header(headers: Any, names: tuple[str, ...]) -> Any:
+    for name in names:
+        if name in headers:
+            return headers.get(name)
+    return None
 
 
 def _is_webhook_silence_response(content: Any) -> bool:
@@ -460,6 +479,11 @@ class WebhookAdapter(BasePlatformAdapter):
             self._prune_seen_deliveries(now)
         return True
 
+    def _release_delivery_id(self, delivery_id: str, reserved_at: float) -> None:
+        """Release this request's reservation after incomplete processing."""
+        if self._seen_deliveries.get(delivery_id) == reserved_at:
+            self._seen_deliveries.pop(delivery_id, None)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 
@@ -734,14 +758,49 @@ class WebhookAdapter(BasePlatformAdapter):
                     {"error": "Cannot parse body"}, status=400
                 )
 
-        # Check event type filter
-        event_type = (
-            request.headers.get("X-GitHub-Event", "")
-            or request.headers.get("X-GitLab-Event", "")
-            or payload.get("event_type", "")
-            or payload.get("type", "")
-            or "unknown"
-        )
+        script_path = route_config.get("script")
+        if script_path:
+            # Script identity comes from provider/proxy transport headers received
+            # after request authentication, never from payload-authored fields.
+            event_type = _first_present_header(
+                request.headers,
+                ("X-GitHub-Event", "X-GitLab-Event", "X-Webhook-Event"),
+            )
+            delivery_id = _first_present_header(
+                request.headers,
+                ("X-GitHub-Delivery", "svix-id", "X-Request-ID"),
+            )
+            if not _is_valid_script_metadata(
+                event_type, 128
+            ) or not _is_valid_script_metadata(delivery_id, 256):
+                logger.warning(
+                    "[webhook] Script route %s has invalid event or delivery metadata",
+                    route_name,
+                )
+                return web.json_response(
+                    {"error": "Script route requires valid event and delivery metadata"},
+                    status=400,
+                )
+        else:
+            event_type = (
+                request.headers.get("X-GitHub-Event", "")
+                or request.headers.get("X-GitLab-Event", "")
+                or payload.get("event_type", "")
+                or payload.get("type", "")
+                or "unknown"
+            )
+            delivery_id = request.headers.get(
+                "X-GitHub-Delivery",
+                request.headers.get(
+                    "svix-id",
+                    request.headers.get(
+                        "X-Request-ID", str(int(time.time() * 1000))
+                    ),
+                ),
+            )
+
+        # Validate script metadata before either ignored filter outcome, while
+        # reserving the delivery identity only after filters accept the event.
         allowed_events = route_config.get("events", [])
         if allowed_events and event_type not in allowed_events:
             logger.debug(
@@ -770,15 +829,39 @@ class WebhookAdapter(BasePlatformAdapter):
                 }
             )
 
-        if route_config.get("script"):
+        # ── Idempotency ─────────────────────────────────────────
+        # Check before route scripts so a retried delivery cannot invoke a
+        # stateful script more than once.
+        now = time.time()
+        if not self._record_delivery_id(delivery_id, now):
+            logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
+            return web.json_response(
+                {"status": "duplicate", "delivery_id": delivery_id},
+                status=200,
+            )
+
+        if script_path:
             # run_route_script shells out (subprocess.run, up to its timeout);
             # run it in a worker thread so it can't block the gateway event loop.
-            keep, transformed_payload = await asyncio.to_thread(
+            script_outcome, transformed_payload = await asyncio.to_thread(
                 self._route_processor.run_route_script,
-                route_config.get("script"),
+                script_path,
                 payload,
+                event_type=event_type,
+                delivery_id=delivery_id,
             )
-            if not keep:
+            if script_outcome == "failed":
+                self._release_delivery_id(delivery_id, now)
+                logger.warning(
+                    "[webhook] script failed event=%s route=%s",
+                    event_type,
+                    route_name,
+                )
+                return web.json_response(
+                    {"error": "Route script execution failed", "route": route_name},
+                    status=500,
+                )
+            if script_outcome == "ignored":
                 logger.info(
                     "[webhook] script ignored event=%s route=%s",
                     event_type,
@@ -827,27 +910,6 @@ class WebhookAdapter(BasePlatformAdapter):
                         )
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
-
-        # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get(
-                "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-            ),
-        )
-
-        # ── Idempotency ─────────────────────────────────────────
-        # Skip duplicate deliveries (webhook retries).
-        now = time.time()
-        if not self._record_delivery_id(delivery_id, now):
-            logger.info(
-                "[webhook] Skipping duplicate delivery %s", delivery_id
-            )
-            return web.json_response(
-                {"status": "duplicate", "delivery_id": delivery_id},
-                status=200,
-            )
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we

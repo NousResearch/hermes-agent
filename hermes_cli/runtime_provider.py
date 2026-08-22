@@ -987,6 +987,42 @@ def _resolve_vertex_runtime(requested_provider: str, target_model: str = "") -> 
     )
     _model_default = str(target_model or _get_model_config().get("default") or "").strip()
 
+    # Vertex Model Garden is multi-publisher, so the publisher is not
+    # inferable from the model name — ``claude-opus-4-8`` and
+    # ``gemini-3-pro`` are served by different publishers over different
+    # wire protocols. ``is_anthropic_vertex_model`` therefore requires the
+    # fully-qualified ``anthropic/<model>`` form, and a bare name silently
+    # takes the Gemini aggregator path instead.
+    #
+    # Refuse it here rather than letting it become a 404. Previously the
+    # design leaned on Vertex's own error ("publisher google — model
+    # claude-opus-4-8 not found") to teach the user, but that only arrives
+    # on the first real turn, names the wrong publisher, and reads like an
+    # outage or a quota problem. Worse, the same missing prefix silently
+    # changes deployment-time behaviour anywhere the prefix drives packaging
+    # decisions, so the failure can surface as an unrelated ImportError
+    # before any request is made.
+    if _model_default and "/" not in _model_default:
+        try:
+            from hermes_cli.model_normalize import suggest_prefixed_model_id
+
+            _suggestion = suggest_prefixed_model_id(requested_provider, _model_default)
+        except Exception:
+            _suggestion = None
+        _hint = (
+            f" Did you mean '{_suggestion}'?"
+            if _suggestion
+            else " Prefix it with the publisher, e.g. 'anthropic/claude-opus-4-8'"
+            " for Claude or 'google/gemini-3-pro' for Gemini."
+        )
+        raise AuthError(
+            f"model.default '{_model_default}' is missing its publisher prefix "
+            f"and provider is 'vertex'. Vertex Model Garden serves multiple "
+            f"publishers, so the publisher cannot be inferred from the model "
+            f"name.{_hint}",
+            provider="vertex",
+        )
+
     if is_anthropic_vertex_model(_model_default):
         # Claude on Vertex → AnthropicVertex SDK → anthropic_messages path
         if not has_anthropic_vertex_credentials():

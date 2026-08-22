@@ -5743,6 +5743,49 @@ def _mark_server_call_started(server: Any) -> None:
         mark_tool_call()
 
 
+def _finalize_trader_mcp_call(
+    *,
+    server_name: str,
+    tool_name: str,
+    args: dict,
+    response: str,
+    latency_ms: float,
+    reservation_id: Optional[str],
+) -> None:
+    """Best-effort audit and reservation reconciliation for trader MCP calls."""
+    try:
+        from hermes_trader.audit.logger import audit_mcp_call
+        from hermes_trader.audit.rate_limit import WriteToolRateLimiter
+        from hermes_trader.config import load_trader_config
+
+        cfg = load_trader_config()
+        if server_name != cfg.mcp_server_name:
+            return
+        succeeded = True
+        error_message = ""
+        try:
+            parsed = json.loads(response)
+            if isinstance(parsed, dict) and parsed.get("error"):
+                succeeded = False
+                error_message = str(parsed["error"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+        if reservation_id is not None:
+            WriteToolRateLimiter(max_per_hour=cfg.max_write_tools_per_hour).reconcile(
+                reservation_id, succeeded=succeeded
+            )
+        audit_mcp_call(
+            server_name=server_name,
+            tool_name=tool_name,
+            args=args,
+            result_status="ok" if succeeded else "error",
+            latency_ms=latency_ms,
+            error_message=error_message,
+        )
+    except Exception:
+        logger.debug("Trader MCP audit/reconciliation failed", exc_info=True)
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -5817,6 +5860,28 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                         f"immediately — give it a few seconds to come back."
                     )
                 return tool_error(f"MCP server '{server_name}' is not connected")
+
+        started = time.monotonic()
+        reservation_id = None
+        try:
+            from hermes_trader.hooks.pre_trade import prepare_mcp_tool_call
+
+            prepared = prepare_mcp_tool_call(server_name, tool_name, args)
+            if prepared.error:
+                response = tool_error(prepared.error)
+                _finalize_trader_mcp_call(
+                    server_name=server_name, tool_name=tool_name, args=args,
+                    response=response, latency_ms=(time.monotonic() - started) * 1000,
+                    reservation_id=None,
+                )
+                return response
+            reservation_id = prepared.reservation_id
+        except Exception:
+            logger.exception("Trader MCP pre-trade hook failed")
+            if tool_name in {"execute_swap", "submit_gasless_swap"}:
+                return tool_error(
+                    "Trader pre-trade risk gate unavailable; live write blocked"
+                )
 
         async def _call():
             _mark_server_call_started(server)
@@ -5974,9 +6039,20 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     _reset_server_error(server_name)  # success — reset
             except (json.JSONDecodeError, TypeError):
                 _reset_server_error(server_name)  # non-JSON = success
+            _finalize_trader_mcp_call(
+                server_name=server_name, tool_name=tool_name, args=args,
+                response=result, latency_ms=(time.monotonic() - started) * 1000,
+                reservation_id=reservation_id,
+            )
             return result
         except InterruptedError:
-            return _interrupted_call_result()
+            response = _interrupted_call_result()
+            _finalize_trader_mcp_call(
+                server_name=server_name, tool_name=tool_name, args=args,
+                response=response, latency_ms=(time.monotonic() - started) * 1000,
+                reservation_id=reservation_id,
+            )
+            return response
         except Exception as exc:
             # Auth-specific recovery path: consult the manager, signal
             # reconnect if viable, retry once. Returns None to fall
@@ -5986,6 +6062,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 f"tools/call {tool_name}",
             )
             if recovered is not None:
+                _finalize_trader_mcp_call(
+                    server_name=server_name, tool_name=tool_name, args=args,
+                    response=recovered, latency_ms=(time.monotonic() - started) * 1000,
+                    reservation_id=reservation_id,
+                )
                 return recovered
 
             # Transport session expiry (#13383): same reconnect flow
@@ -5996,6 +6077,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 f"tools/call {tool_name}",
             )
             if recovered is not None:
+                _finalize_trader_mcp_call(
+                    server_name=server_name, tool_name=tool_name, args=args,
+                    response=recovered, latency_ms=(time.monotonic() - started) * 1000,
+                    reservation_id=reservation_id,
+                )
                 return recovered
 
             _bump_server_error(server_name)
@@ -6003,9 +6089,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,
             )
-            return tool_error(_sanitize_error(
+            response = tool_error(_sanitize_error(
                 f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
             ))
+            _finalize_trader_mcp_call(
+                server_name=server_name, tool_name=tool_name, args=args,
+                response=response, latency_ms=(time.monotonic() - started) * 1000,
+                reservation_id=reservation_id,
+            )
+            return response
 
     return _handler
 

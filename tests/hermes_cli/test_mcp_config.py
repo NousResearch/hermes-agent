@@ -840,3 +840,27 @@ class TestMcpReauth:
         cmd_mcp_reauth(_make_args(name="ghost", all=False))
         out = capsys.readouterr().out
         assert "not found" in out
+
+
+
+def test_defi_trading_preset_is_exact_pinned_and_paper_safe():
+    from hermes_cli.mcp_config import _MCP_PRESETS
+    from hermes_trader.tools import paper_mode_mcp_tools_include
+    from hermes_cli.mcp_config import _apply_mcp_preset
+
+    preset = _MCP_PRESETS["defi-trading"]
+    assert preset["args"] == ["-y", "defi-trading-mcp@2.1.3"]
+    server_config = {}
+    url, command, args, ok = _apply_mcp_preset(
+        "defi-trading",
+        preset_name="defi-trading",
+        url=None,
+        command=None,
+        cmd_args=[],
+        server_config=server_config,
+    )
+    assert ok
+    assert url is None
+    assert command == "npx"
+    assert args == ["-y", "defi-trading-mcp@2.1.3"]
+    assert server_config["tools"]["include"] == paper_mode_mcp_tools_include()

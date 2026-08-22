@@ -250,6 +250,57 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     return "gemini" in m or "gemma" in m
 
 
+def _rejects_trailing_assistant_prefill(
+    *,
+    model: Any,
+    base_url: Any = None,
+    provider_name: Any = None,
+    provider_profile: Any = None,
+) -> bool:
+    """Return True for Chat Completions endpoints that reject assistant prefill.
+
+    Newer native Anthropic/Claude endpoints reject requests whose final message
+    is ``role=assistant`` with: "This model does not support assistant message
+    prefill. The conversation must end with a user message." Hermes can create
+    such tails when streamed status/preamble text is persisted before the next
+    tool-backed request. OpenAI-style providers tolerate that as prefill; Claude
+    4.6+ does not, so only patch the Anthropic/Claude wire shape.
+    """
+    profile_name = str(getattr(provider_profile, "name", "") or "").strip().lower()
+    provider = str(provider_name or "").strip().lower()
+    url = str(base_url or "").strip().lower()
+    model_name = str(model or "").strip().lower()
+
+    if profile_name in {"anthropic", "claude", "claude-oauth", "claude-code"}:
+        return True
+    if provider in {"anthropic", "claude", "claude-oauth", "claude-code"}:
+        return True
+    if "api.anthropic.com" in url and "claude" in model_name:
+        return True
+    return False
+
+
+def _ensure_user_tail_for_no_prefill(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Append a tiny synthetic user turn when an endpoint forbids prefill.
+
+    The original list is left untouched. Assistant turns with tool calls are not
+    repaired here; those need the normal tool-result sanitizer, not a fake user
+    continuation.
+    """
+    if not messages or not isinstance(messages[-1], dict):
+        return messages
+    last = messages[-1]
+    if last.get("role") != "assistant" or last.get("tool_calls"):
+        return messages
+    return [
+        *messages,
+        {
+            "role": "user",
+            "content": "Continue from the previous assistant message.",
+        },
+    ]
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -509,6 +560,12 @@ class ChatCompletionsTransport(ProviderTransport):
         # ── Provider profile: single-path when present ──────────────────
         _profile = params.get("provider_profile")
         if _profile:
+            if _rejects_trailing_assistant_prefill(
+                model=model,
+                base_url=params.get("base_url"),
+                provider_profile=_profile,
+            ):
+                sanitized = _ensure_user_tail_for_no_prefill(sanitized)
             return self._build_kwargs_from_profile(
                 _profile, model, sanitized, tools, params
             )
@@ -527,6 +584,13 @@ class ChatCompletionsTransport(ProviderTransport):
         ):
             sanitized = list(sanitized)
             sanitized[0] = {**sanitized[0], "role": "developer"}
+
+        if _rejects_trailing_assistant_prefill(
+            model=model,
+            base_url=params.get("base_url"),
+            provider_name=params.get("provider_name"),
+        ):
+            sanitized = _ensure_user_tail_for_no_prefill(sanitized)
 
         api_kwargs: dict[str, Any] = {
             "model": model,

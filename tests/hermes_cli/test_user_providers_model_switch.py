@@ -614,3 +614,45 @@ def test_current_custom_model_not_leaked_into_other_provider_rows(monkeypatch):
     for row in providers:
         if row["slug"] != "openrouter" and not row.get("is_current"):
             assert custom not in row.get("models", []), f"leaked into {row['slug']}"
+
+
+def test_list_authenticated_providers_discover_models_false_keeps_declared_only(monkeypatch):
+    """``providers.<built-in>.discover_models: false`` must skip the live
+    /v1/models merge and surface ONLY the declared ``models:`` list.
+
+    Regression for #80536: section 1 of list_authenticated_providers merged
+    the live catalog via ``cached_provider_model_ids()`` even when config
+    pinned ``discover_models: false``, so the /model picker showed models the
+    user never declared.
+    """
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {"deepseek": {"name": "DeepSeek"}},
+    )
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+
+    def _boom(slug, *args, **kwargs):
+        if slug == "deepseek":
+            raise AssertionError("live /v1/models catalog must not be fetched")
+        return []
+
+    monkeypatch.setattr("hermes_cli.models.cached_provider_model_ids", _boom)
+
+    user_providers = {
+        "deepseek": {
+            "discover_models": False,
+            "models": ["deepseek-chat", "deepseek-reasoner"],
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="deepseek",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    row = next(p for p in providers if p["slug"] == "deepseek")
+    assert row["models"] == ["deepseek-chat", "deepseek-reasoner"]
+    assert row["total_models"] == 2

@@ -46,6 +46,7 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
             "HERMES_AGENT_TIMEOUT_WARNING",
             "HERMES_TURN_LEASE_TIMEOUT",
             "HERMES_SESSION_STALL_TIMEOUT",
+            "HERMES_RECONNECT_STABLE_AFTER_SECONDS",
             "HERMES_GATEWAY_BUSY_INPUT_MODE",
             "HERMES_GATEWAY_BUSY_TEXT_MODE",
             "HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT",
@@ -188,6 +189,43 @@ def test_default_turn_lease_timeout_matches_the_runtime_fallback() -> None:
         float(DEFAULT_CONFIG["agent"]["gateway_turn_lease_timeout"])
         == DEFAULT_LEASE_WAIT
     )
+
+
+def test_config_reconnect_stable_after_wins_over_stale_env(hermes_home: Path) -> None:
+    """The flap horizon is a documented config.yaml setting, not an env knob.
+
+    It pairs with ``agent.reconnect_attention_after``: one says how long a
+    platform must be unstable before it escalates, the other how long a
+    reconnect must hold before that clock is allowed to reset. An operator who
+    tunes one will reach for the other in the same file, so a stale ``.env``
+    entry must not win over config.yaml for either.
+    """
+    _write_config(hermes_home, agent_cfg={"reconnect_stable_after": 1800})
+    _write_env(hermes_home, {"HERMES_RECONNECT_STABLE_AFTER_SECONDS": "60"})
+
+    env = _run_gateway_import(hermes_home, initial_env={})
+
+    assert env.get("HERMES_RECONNECT_STABLE_AFTER_SECONDS") == "1800"
+
+
+def test_default_reconnect_stable_after_overrides_stale_env_when_key_is_omitted(
+    hermes_home: Path,
+) -> None:
+    """The documented default must reach the runtime even with the key absent.
+
+    This is the test that makes the default honest: the value in
+    ``config_defaults.py`` and the number in the docs are the same number the
+    gateway actually runs with, rather than a comment that drifts away from the
+    ``_float_env`` fallback in ``gateway/run.py``.
+    """
+    _write_env(hermes_home, {"HERMES_RECONNECT_STABLE_AFTER_SECONDS": "60"})
+
+    env = _run_gateway_import(hermes_home, initial_env={})
+
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    expected = str(DEFAULT_CONFIG["agent"]["reconnect_stable_after"])
+    assert env.get("HERMES_RECONNECT_STABLE_AFTER_SECONDS") == expected
 
 
 def test_config_platform_connect_timeout_supplies_env_when_unset(hermes_home: Path) -> None:

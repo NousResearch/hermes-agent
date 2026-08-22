@@ -2318,6 +2318,16 @@ os.environ["HERMES_TURN_LEASE_TIMEOUT"] = str(
     _DEFAULT_CONFIG["agent"]["gateway_turn_lease_timeout"]
 )
 
+# Same reasoning for the flap horizon: it is bridge plumbing for the
+# documented agent.reconnect_stable_after setting, so seed it from the
+# canonical default first. Without this, a stale .env entry written by an
+# old setup run would outrank the value config.yaml advertises whenever the
+# key is left at its default, which is the shape of the 60-vs-500 max_turns
+# incident (PR #18413).
+os.environ["HERMES_RECONNECT_STABLE_AFTER_SECONDS"] = str(
+    _DEFAULT_CONFIG["agent"]["reconnect_stable_after"]
+)
+
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
 _config_path = _hermes_home / 'config.yaml'
@@ -2485,6 +2495,12 @@ if _config_path.exists():
                 # is the documented, user-facing setting.
                 os.environ["HERMES_RECONNECT_ATTENTION_AFTER_SECONDS"] = str(
                     _agent_cfg["reconnect_attention_after"]
+                )
+            if "reconnect_stable_after" in _agent_cfg:
+                # Internal bridge only — config.yaml (agent.reconnect_stable_after)
+                # is the documented, user-facing setting.
+                os.environ["HERMES_RECONNECT_STABLE_AFTER_SECONDS"] = str(
+                    _agent_cfg["reconnect_stable_after"]
                 )
             if "restart_drain_timeout" in _agent_cfg:
                 os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
@@ -4267,6 +4283,20 @@ _RECONNECT_ATTENTION_AFTER_SECONDS = _float_env(
     "HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", 7200
 )
 
+# Seconds a platform must stay connected before a reconnect counts as a real
+# recovery rather than a flap. Under this, the platform carries its original
+# instability clock forward when it fails again instead of starting a fresh
+# one, so a platform that keeps winning a race for a few seconds still
+# escalates (#92178: two systemd units racing the same bot token, each brief
+# successful bind resetting the attention clock, four days with no signal).
+# Only the clock is carried; retry scheduling is untouched.
+# User-facing setting: agent.reconnect_stable_after in config.yaml
+# (bridged to this env var above). 0 makes every successful bind count
+# as a recovery, which is the pre-#92178 behaviour.
+_RECONNECT_STABLE_AFTER_SECONDS = _float_env(
+    "HERMES_RECONNECT_STABLE_AFTER_SECONDS", 900
+)
+
 
 def _reconnect_backoff(attempt: int) -> int:
     """Exponential reconnect backoff: 30s, 60s, 120s, ... capped at 5 min."""
@@ -4274,13 +4304,17 @@ def _reconnect_backoff(attempt: int) -> int:
 
 
 def _reconnect_needs_attention(info: dict, now: float) -> bool:
-    """Return True when a reconnect-queue entry has been continuously queued
-    long enough to warrant a NEEDS_ATTENTION signal.
+    """Return True when a reconnect-queue entry has been queued long enough to
+    warrant a NEEDS_ATTENTION signal.
 
-    ``queued_at`` is (re)stamped whenever the platform (re)enters the queue,
-    so a platform that reconnects successfully and later fails again starts a
-    fresh clock — only *continuous* failure escalates. Entries queued before
-    this field existed (in-flight upgrade) are treated as newly queued.
+    ``queued_at`` is the platform's instability clock, stamped by
+    ``GatewayRunner._reconnect_clock_start`` when it enters the queue. A
+    platform that reconnects and *stays* connected past
+    ``_RECONNECT_STABLE_AFTER_SECONDS`` starts a fresh clock on its next
+    failure; one that comes back only briefly carries the old clock forward,
+    because a flap is instability, not recovery, and resetting on every blip is
+    how a four-day outage stays invisible (#92178). Entries queued before this
+    field existed (in-flight upgrade) are treated as newly queued.
     """
     if _RECONNECT_ATTENTION_AFTER_SECONDS <= 0:
         return False  # escalation disabled
@@ -7079,6 +7113,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
 
+        # Recent reconnect recoveries, so a flap does not read as a recovery.
+        # Key: Platform enum, Value: (unstable_since, recovered_at,
+        # attention_flagged). The first two are monotonic timestamps; the third
+        # carries the escalation across the flap so one episode warns once.
+        # Read by _reconnect_clock_start / _carried_attention_flag, written by
+        # _note_reconnect_recovery, retired by _expire_stable_recoveries once
+        # the stability window proves the recovery.
+        self._recent_platform_recoveries: Dict[Platform, Any] = {}
+
         # Strong refs to detached fatal-error handler tasks (see
         # _handle_adapter_fatal_error) so the event loop can't GC them mid-run.
         self._fatal_handler_tasks: set = set()
@@ -8332,6 +8375,148 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # it: the caller sees CancelledError, the handler runs to completion.
         await asyncio.shield(task)
 
+    def _reconnect_clock_start(self, platform: Platform, now: float = None) -> float:
+        """The ``queued_at`` to stamp on a new reconnect-queue entry.
+
+        Normally ``now``: a platform that goes down starts its own clock. The
+        exception is a platform that "recovered" moments ago. It did not
+        recover, it flapped, and a fresh clock means the NEEDS_ATTENTION
+        escalation never accumulates: every brief success resets it to zero and
+        the platform presents as ordinary ``retrying`` indefinitely.
+
+        That is not hypothetical. #92178 had two systemd units racing the same
+        Telegram token; whenever the loser won a bind the queue entry was
+        deleted, and the next failure re-entered with a clean clock. Four days,
+        no warning, no ``needs_attention``. The reporter\'s own retry cadence
+        gives it away: 60-120s retries are only reachable if ``attempts`` keeps
+        resetting too, and the same successful reconnect resets both.
+
+        Retry scheduling is deliberately untouched here. This moves one
+        timestamp; backoff, attempt counts and the "retries never stop" policy
+        are all unchanged.
+        """
+        if now is None:
+            now = time.monotonic()
+        window = _RECONNECT_STABLE_AFTER_SECONDS
+        if window <= 0:
+            return now  # flap carry-over disabled
+        recoveries = getattr(self, "_recent_platform_recoveries", None)
+        if not recoveries:
+            return now
+        mark = recoveries.get(platform)
+        if not mark:
+            return now
+        unstable_since, recovered_at = mark[0], mark[1]
+        if (now - recovered_at) < window:
+            # Still inside the stability window: this is the same episode.
+            return unstable_since
+        # Past the window without _expire_stable_recoveries having retired it
+        # (it only runs on watcher passes). Retire it here rather than reading
+        # a stale start time, and let the expiry sweep own the status side.
+        self._expire_stable_recoveries(now)
+        recoveries.pop(platform, None)
+        return now
+
+    def _note_reconnect_recovery(self, platform: Platform, info, now: float = None) -> None:
+        """Record that ``platform`` reconnected, and when its trouble began.
+
+        Called just before the queue entry is dropped, because the entry is the
+        only place the instability clock lives. If the platform fails again
+        inside the stability window, ``_reconnect_clock_start`` hands that clock
+        back rather than starting over.
+        """
+        window = _RECONNECT_STABLE_AFTER_SECONDS
+        if window <= 0:
+            return
+        if now is None:
+            now = time.monotonic()
+        recoveries = getattr(self, "_recent_platform_recoveries", None)
+        if recoveries is None:
+            recoveries = self._recent_platform_recoveries = {}
+        entry = info or {}
+        recoveries[platform] = (
+            entry.get("queued_at", now),
+            now,
+            bool(entry.get("attention_flagged")),
+        )
+        # Keep the map to platforms that could still be flapping. It is keyed
+        # by Platform so it is tiny either way, but a stale mark would make a
+        # much later, unrelated outage inherit an ancient start time. Retiring
+        # a mark can also clear a carried NEEDS_ATTENTION, so it lives in one
+        # place rather than being open-coded here.
+        self._expire_stable_recoveries(now)
+
+    def _carried_attention_flag(self, platform: Platform, now: float = None) -> bool:
+        """Whether a platform re-entering the queue is already escalated.
+
+        The peer of :meth:`_reconnect_clock_start`. That one carries WHEN the
+        trouble started; this carries whether we have already said so out loud.
+
+        Without it, #92247's carried clock has a side effect nobody asked for:
+        the entry (and its ``attention_flagged``) is still deleted on every
+        brief bind, so the next watcher pass after each requeue finds an
+        un-flagged entry whose carried ``queued_at`` is already past the
+        threshold, and warns again. Once per flap instead of once per episode:
+        at the reporter's 30-120s bind cadence that is order 10^3 log lines and
+        status writes a day, which is a cost this mechanism introduced rather
+        than one it inherited.
+
+        Deliberately non-mutating and window-checked, so it composes with
+        ``_reconnect_clock_start`` in either order at the same enqueue site.
+        """
+        window = _RECONNECT_STABLE_AFTER_SECONDS
+        if window <= 0:
+            return False
+        if now is None:
+            now = time.monotonic()
+        mark = (getattr(self, "_recent_platform_recoveries", None) or {}).get(platform)
+        if not mark:
+            return False
+        if (now - mark[1]) >= window:
+            return False  # a real recovery; a later outage starts unflagged
+        return bool(mark[2]) if len(mark) > 2 else False
+
+    def _expire_stable_recoveries(self, now: float = None) -> None:
+        """Retire recovery marks that have outlived the stability window.
+
+        Two jobs, and the second is the reason this is not just a dict prune.
+
+        A platform that reconnects has left ``_failed_platforms``, so nothing
+        visits it again. If the successful-reconnect branch declines to clear
+        ``needs_attention`` (because at bind time it cannot know whether this
+        bind will hold), something has to clear it once the recovery proves
+        itself. This is that something, and it is why the watcher calls it on
+        every pass rather than only when the queue is non-empty.
+
+        A platform that failed again is skipped: it is back in the queue, its
+        escalation is live, and its mark is overwritten on the next recovery.
+        """
+        window = _RECONNECT_STABLE_AFTER_SECONDS
+        recoveries = getattr(self, "_recent_platform_recoveries", None)
+        if window <= 0 or not recoveries:
+            return
+        if now is None:
+            now = time.monotonic()
+        for platform, mark in list(recoveries.items()):
+            if (now - mark[1]) < window:
+                continue  # still inside the window; could still be a flap
+            if platform in self._failed_platforms:
+                continue  # flapped again — the episode is not over
+            del recoveries[platform]
+            if len(mark) > 2 and mark[2]:
+                # The recovery outlived the window, so the episode really did
+                # end. Say so now, rather than at the bind that started it.
+                logger.info(
+                    "%s has stayed connected for %.0fs — clearing NEEDS_ATTENTION",
+                    platform.value,
+                    now - mark[1],
+                )
+                self._update_platform_runtime_status(
+                    platform.value,
+                    needs_attention=False,
+                    retrying_since=None,
+                )
+
     def _queue_retryable_fatal_platform(self, adapter: BasePlatformAdapter) -> bool:
         """Queue a retryable fatal adapter for background reconnection.
 
@@ -8368,7 +8553,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "config": platform_config,
             "attempts": 0,
             "next_retry": time.monotonic(),
-            "queued_at": time.monotonic(),
+            "queued_at": self._reconnect_clock_start(adapter.platform),
+            # Carried with the clock: one episode escalates once (#92247).
+            "attention_flagged": self._carried_attention_flag(adapter.platform),
             "credential_claim": self._adapter_credential_claim(
                 adapter.platform, adapter
             ),
@@ -13031,7 +13218,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "config": platform_config,
                     "attempts": 1,
                     "next_retry": time.monotonic() + 30,
-                    "queued_at": time.monotonic(),
+                    "queued_at": self._reconnect_clock_start(platform),
+                    "attention_flagged": self._carried_attention_flag(platform),
                     "credential_claim": self._adapter_credential_claim(platform, adapter),
                     "listener_claim": self._adapter_listener_claim(platform, adapter),
                 }
@@ -13074,6 +13262,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "config": platform_config,
                             "attempts": 1,
                             "next_retry": time.monotonic() + 30,
+                            # The only one of this loop's three enqueues that
+                            # used to omit queued_at, and the branch a
+                            # credential-lock conflict takes: _set_fatal_error
+                            # (base.py) marks a scoped-lock clash retryable, so
+                            # "Telegram bot token already in use" landed here
+                            # with no instability clock at all (#92178).
+                            "queued_at": self._reconnect_clock_start(platform),
+                            "attention_flagged": self._carried_attention_flag(platform),
                             "credential_claim": self._adapter_credential_claim(platform, adapter),
                             "listener_claim": self._adapter_listener_claim(platform, adapter),
                         }
@@ -13087,7 +13283,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "config": platform_config,
                         "attempts": 1,
                         "next_retry": time.monotonic() + 30,
-                        "queued_at": time.monotonic(),
+                        "queued_at": self._reconnect_clock_start(platform),
+                        "attention_flagged": self._carried_attention_flag(platform),
                         "credential_claim": self._adapter_credential_claim(platform, adapter),
                         "listener_claim": self._adapter_listener_claim(platform, adapter),
                     }
@@ -14445,6 +14642,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         await asyncio.sleep(10)  # initial delay — let startup finish
         while self._running:
+            # Before the empty-queue early-out, deliberately: the platforms
+            # this retires are exactly the ones that are NOT queued any more,
+            # so gating it on a non-empty queue would mean a platform that
+            # recovered alone never gets its NEEDS_ATTENTION cleared.
+            self._expire_stable_recoveries(time.monotonic())
             if not self._failed_platforms:
                 # Nothing to reconnect — sleep and check again
                 for _ in range(30):
@@ -14471,7 +14673,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if info.get("paused"):
                     continue
                 # Long-lived retry-loop escalation (OOF-156): once a platform
-                # has been continuously queued past the attention threshold,
+                # has been queued past the attention threshold (continuously,
+                # or across a run of flaps — see _reconnect_clock_start),
                 # flag it NEEDS_ATTENTION in runtime status so owners and
                 # fleet monitoring see "this is not a blip" — a dead token,
                 # revoked intent, or crash-looping sidecar otherwise presents
@@ -14485,7 +14688,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         datetime.now(timezone.utc) - timedelta(seconds=queued_for)
                     ).isoformat()
                     logger.warning(
-                        "%s has been failing/reconnecting continuously for "
+                        "%s has been failing/reconnecting for "
                         "%.1f hours (%d attempts) — flagging NEEDS_ATTENTION. "
                         "Retries continue, but this usually means a permanent "
                         "problem (revoked credentials, missing intents, broken "
@@ -14557,14 +14760,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if hasattr(adapter, "_voice_input_callback"):
                             adapter._voice_input_callback = self._handle_voice_channel_input
                         self.delivery_router.adapters = self.adapters
+                        # Before the entry (and with it the instability clock)
+                        # is dropped: a reconnect is only a recovery if it
+                        # lasts. See _note_reconnect_recovery (#92178).
+                        self._note_reconnect_recovery(platform, info)
                         del self._failed_platforms[platform]
+                        # An escalated platform keeps its flag through the
+                        # bind. At this instant we cannot tell a recovery from
+                        # a flap, and clearing optimistically made `hermes
+                        # status` and fleet monitoring watch the platform blink
+                        # healthy on every bind, mid-episode. Omitting the
+                        # fields leaves the previous values in place;
+                        # _expire_stable_recoveries clears them once the
+                        # recovery outlives the stability window. An
+                        # un-escalated platform never had them set, so it takes
+                        # the original path and clears immediately.
+                        escalated = bool(info.get("attention_flagged"))
                         self._update_platform_runtime_status(
                             platform.value,
                             platform_state="connected",
                             error_code=None,
                             error_message=None,
-                            needs_attention=False,
-                            retrying_since=None,
+                            needs_attention=None if escalated else False,
+                            retrying_since=_UNSET if escalated else None,
                         )
                         logger.info("✓ %s reconnected successfully", platform.value)
 

@@ -564,6 +564,10 @@ class CLIAgentSetupMixin:
                 from agent.credits_tracker import seed_credits_at_session_start
 
                 seed_credits_at_session_start(self.agent)
+                # Emit a startup quota warning (always shown, ignores
+                # suppress_warnings per issue #6567). Fail-open inside the
+                # method + this try-block: never breaks session open.
+                self._emit_startup_quota_warning()
             except Exception:
                 pass
             self._active_agent_route_signature = (
@@ -597,6 +601,48 @@ class CLIAgentSetupMixin:
             for line in partial_update_hint(e):
                 console.print(line)
             return False
+
+    def _emit_startup_quota_warning(self):
+        """Startup quota probe — always fires at session open (issue #6567).
+
+        Honors the design-review requirement that the first probe of a session
+        always surfaces a critical warning, even when
+        ``quota.suppress_warnings`` is set (uses ``startup_warning_lines``,
+        never ``quota_warning_lines``).  Called from ``_init_agent``'s
+        agent-setup try-block (fail-open: never raises into the caller).
+
+        ``self.config`` is the resolved cli_config on the real CLI; the engine
+        falls back to design defaults when it's absent.
+        """
+        try:
+            from agent.quota_warnings import (
+                clear_quota_cache,
+                fetch_quota_snapshot_bounded,
+                startup_warning_lines,
+            )
+            # Fresh snapshot per session — never reuse a warm cache from a
+            # previous session (design-review requirement).
+            clear_quota_cache()
+            agent = self.agent
+            provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
+            base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
+            api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
+            if not (provider and base_url and api_key):
+                # Probe only the ALREADY-RESOLVED active account: calling
+                # fetch_account_usage with missing creds triggers runtime-provider
+                # credential resolution as a side effect (auth/refresh paths), which
+                # an advisory pre-turn probe must never do (regression: broke
+                # test_cli_provider_resolution.py::test_runtime_resolution_failure_is_not_sticky).
+                return
+            config = getattr(self, "config", None)
+            snapshot = fetch_quota_snapshot_bounded(
+                provider, base_url=base_url, api_key=api_key, timeout=10.0
+            )
+            for line in startup_warning_lines(snapshot, config):
+                print(line)
+        except Exception:
+            # Fail-open: a quota probe must never break session start.
+            pass
 
     def _resume_history_limit_error(self, tip_only: bool = False):
         """Return a safe-resume error without materializing transcript rows.

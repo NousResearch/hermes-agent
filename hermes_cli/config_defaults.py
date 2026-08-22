@@ -1523,6 +1523,20 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Quota warnings — usage-band thresholds that gate pre-turn and startup
+    # notices about Nous credits / context utilisation (issue #6567).
+    "quota": {
+        # Percentage of usage (0-100) at which a warning is shown.
+        "warning_threshold": 80,
+        # Percentage of usage at which the warning escalates to "strong".
+        "strong_threshold": 90,
+        # Percentage of usage at which the warning escalates to "critical".
+        "critical_threshold": 95,
+        # When true, skip the pre-turn quota warning.  The startup warning
+        # and ``/quota`` command still show regardless.
+        "suppress_warnings": False,
+    },
+
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"

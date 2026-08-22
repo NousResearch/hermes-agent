@@ -1513,6 +1513,23 @@ delegation:
 # honcho: {}
 
 # =============================================================================
+# Quota Warnings
+# =============================================================================
+# Usage-band thresholds (percentages 0-100) that gate the pre-turn and
+# startup quota warning notices. suppress_warnings skips the pre-turn
+# warning but NOT the startup warning or the /quota command.
+# quota:
+#   warning_threshold: 80   # % used at which a warning shows
+#   strong_threshold: 90
+#   critical_threshold: 95
+#   suppress_warnings: false  # true = skip pre-turn warnings (startup + /quota still show)
+#
+# The warning probes only read the ALREADY-RESOLVED active account credentials
+# (provider + base_url + api_key resolved at session start). Setups that rely
+# on runtime or credential-pool resolution (e.g. openrouter without an
+# explicit key, pool-based Codex accounts) will not see quota warnings.
+
+# =============================================================================
 # Display
 # =============================================================================
 display:

@@ -127,3 +127,29 @@ def test_modality_auto_derived_when_omitted(tmp_path):
     assert skipped == []
     assert [part["type"] for part in parts] == ["text", "image_url", "input_audio"]
 
+
+def test_magic_bytes_audio_format_and_mime_detection(tmp_path):
+    from agent.media_routing import _mime_type, normalize_audio_format
+
+    # An audio file with no extension or misleading extension
+    audio_unknown = tmp_path / "voice_cache_123"
+    audio_unknown.write_bytes(b"OggS" + b"\x00" * 28)
+
+    assert normalize_audio_format(audio_unknown) == "ogg"
+    assert _mime_type(audio_unknown, "") == "audio/ogg"
+
+
+def test_rich_hint_contains_size_and_mime(tmp_path):
+    photo = tmp_path / "photo.png"
+    photo.write_bytes(b"x" * 2048)  # 2.0 KB
+
+    parts, _ = build_native_media_content_parts(
+        "describe",
+        [{"path": str(photo), "mime_type": "image/png", "modality": "image"}],
+    )
+    assert len(parts) == 2
+    hint_text = parts[0]["text"]
+    assert "2.0 KB" in hint_text
+    assert "image/png" in hint_text
+
+

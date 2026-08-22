@@ -59,6 +59,19 @@ def test_audio_routing_uses_native_only_for_audio_capable_model(monkeypatch):
         user_config={},
     ) == "stt"
 
+    # User explicit config overrides
+    assert runner._decide_audio_input_mode(
+        provider="openrouter",
+        model="text-only-test",
+        user_config={"gateway": {"audio_mode": "native"}},
+    ) == "native"
+
+    assert runner._decide_audio_input_mode(
+        provider="openrouter",
+        model="google/gemini-test",
+        user_config={"gateway": {"audio_mode": "stt"}},
+    ) == "stt"
+
 
 @pytest.mark.asyncio
 async def test_voice_message_stages_native_audio_without_stt(tmp_path):

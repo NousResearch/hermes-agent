@@ -24404,6 +24404,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from hermes_cli.config import load_config
 
             cfg = user_config if isinstance(user_config, dict) else load_config()
+            # Explicit user preference override (gateway.audio_mode / audio_mode)
+            user_pref = (
+                (cfg.get("gateway") or {}).get("audio_mode")
+                if isinstance(cfg.get("gateway"), dict)
+                else None
+            ) or cfg.get("audio_mode") or getattr(getattr(self, "config", None), "audio_mode", None)
+            if isinstance(user_pref, str):
+                _pref_norm = user_pref.strip().lower()
+                if _pref_norm == "stt":
+                    logger.info("Audio routing decision: mode=stt (user config override)")
+                    return "stt"
+                if _pref_norm == "native":
+                    logger.info("Audio routing decision: mode=native (user config override)")
+                    return "native"
+
             resolved_provider = (provider or "").strip()
             resolved_model = (model or "").strip()
 

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -19,15 +19,81 @@ import { useI18n } from '@/i18n'
 import { type ProjectIdeaTemplate, randomIdeaTemplates } from '@/lib/project-idea-templates'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
+import { $profiles, normalizeProfileKey, profileLabel } from '@/store/profile'
 import {
   $projectDialog,
+  $workspaceProfileBindings,
   addProjectFolder,
+  bindWorkspaceProfile,
   closeProjectDialog,
   createProject,
   generateProjectIdea,
   pickProjectFolder,
-  renameProject
+  renameProject,
+  unbindWorkspaceProfile
 } from '@/store/projects'
+
+// Compact multi-select for workspace ↔ profile bindings (#64221). Named
+// (non-default) profiles only — the default profile is the rail's home pill,
+// not a workspace member. Every toggle writes through immediately; there is
+// deliberately no save step to forget.
+function BindProfilesPicker({ projectId, projectName }: { projectId: string; projectName: string }) {
+  const { t } = useI18n()
+  const p = t.sidebar.projects
+  const profiles = useStore($profiles)
+  const bindings = useStore($workspaceProfileBindings)
+
+  // Rail candidates: named profiles in stored order. The default profile is
+  // reachable from every workspace via the home pill, so binding it would be
+  // noise — exclude it here like the rail's strip does.
+  const candidates = useMemo(() => profiles.filter(profile => !profile.is_default), [profiles])
+
+  const bound = new Set(bindings[projectId] ?? [])
+
+  const toggle = (name: string) =>
+    bound.has(normalizeProfileKey(name))
+      ? unbindWorkspaceProfile(projectId, name)
+      : bindWorkspaceProfile(projectId, name)
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5" data-slot="bind-profiles-picker">
+      <DialogDescription>{p.bindProfilesDesc(projectName)}</DialogDescription>
+      {candidates.length === 0 ? (
+        <span className="text-[0.75rem] text-(--ui-text-quaternary)">{p.bindProfilesNone}</span>
+      ) : (
+        <ul className="flex max-h-64 flex-col gap-0.5 overflow-y-auto">
+          {candidates.map(profile => {
+            const key = normalizeProfileKey(profile.name)
+            const isBound = bound.has(key)
+
+            return (
+              <li key={profile.name}>
+                <button
+                  aria-pressed={isBound}
+                  className={cn(
+                    'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[0.75rem] transition-colors hover:bg-(--ui-control-hover-background)',
+                    isBound && 'bg-(--ui-control-active-background)'
+                  )}
+                  onClick={() => toggle(profile.name)}
+                  type="button"
+                >
+                  <Codicon
+                    className={cn('shrink-0', isBound ? 'text-foreground' : 'text-(--ui-text-quaternary)')}
+                    name={isBound ? 'check' : 'circle-outline'}
+                    size="0.875rem"
+                  />
+                  <span className={cn('min-w-0 flex-1 truncate', !isBound && 'text-(--ui-text-secondary)')}>
+                    {profileLabel(profile)}
+                  </span>
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
+}
 
 // Single dialog mounted once in the sidebar; it renders create / rename /
 // add-folder flows driven by the $projectDialog atom. Folders are chosen via
@@ -56,7 +122,7 @@ export function ProjectDialog() {
       setGeneratingIdea(false)
       setSubmitting(false)
 
-      if (mode !== 'add-folder') {
+      if (mode !== 'add-folder' && mode !== 'bind-profiles') {
         window.setTimeout(() => nameRef.current?.select(), 0)
       }
     }
@@ -146,7 +212,14 @@ export function ProjectDialog() {
     }
   }
 
-  const title = mode === 'rename' ? p.renameTitle : mode === 'add-folder' ? p.addFolderTitle : p.createTitle
+  const title =
+    mode === 'rename'
+      ? p.renameTitle
+      : mode === 'add-folder'
+        ? p.addFolderTitle
+        : mode === 'bind-profiles'
+          ? p.bindProfilesTitle
+          : p.createTitle
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -156,7 +229,7 @@ export function ProjectDialog() {
           {mode === 'create' && <DialogDescription>{p.createDesc}</DialogDescription>}
         </DialogHeader>
 
-        {mode !== 'add-folder' && (
+        {mode !== 'add-folder' && mode !== 'bind-profiles' && (
           <Input
             autoFocus
             disabled={submitting}
@@ -173,6 +246,10 @@ export function ProjectDialog() {
             ref={nameRef}
             value={name}
           />
+        )}
+
+        {mode === 'bind-profiles' && state?.projectId && (
+          <BindProfilesPicker projectId={state.projectId} projectName={state.name ?? ''} />
         )}
 
         {mode === 'create' && (
@@ -285,7 +362,15 @@ export function ProjectDialog() {
           </Button>
         )}
 
-        {mode !== 'add-folder' && (
+        {mode === 'bind-profiles' && (
+          <DialogFooter>
+            <Button onClick={() => onOpenChange(false)} type="button">
+              {t.common.done}
+            </Button>
+          </DialogFooter>
+        )}
+
+        {mode !== 'add-folder' && mode !== 'bind-profiles' && (
           <DialogFooter>
             <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
               {t.common.cancel}

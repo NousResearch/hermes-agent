@@ -32,8 +32,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  dropdownMenuSectionLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
@@ -71,6 +73,8 @@ import {
   sortByProfileOrder
 } from '@/store/profile'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
+import { $projectScope, $workspaceProfileBindings } from '@/store/projects'
+import { workspaceBoundProfiles } from '@/store/workspace-profiles'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
@@ -125,6 +129,8 @@ export function ProfileRail() {
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
   const multipleConnections = useStore($hasMultipleConnections)
+  const projectScope = useStore($projectScope)
+  const workspaceBindings = useStore($workspaceProfileBindings)
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -172,6 +178,20 @@ export function ProfileRail() {
     profiles.filter(profile => !profile.is_default),
     order
   )
+
+  // Workspace-scoped rail (#64221): inside a project with bindings, the bound
+  // profiles lead and everything else drops into an always-present Shared
+  // section below. With no active workspace or no bindings the resolver
+  // answers null and both groups collapse back onto today's flat strip — the
+  // DOM stays byte-for-byte what an unbound user has always rendered.
+  const boundKeys = workspaceBoundProfiles(workspaceBindings, projectScope)
+  const boundSet = boundKeys ? new Set(boundKeys) : null
+
+  const primaryProfiles = boundSet
+    ? named.filter(profile => boundSet.has(normalizeProfileKey(profile.name)))
+    : named
+
+  const sharedProfiles = boundSet ? named.filter(profile => !boundSet.has(normalizeProfileKey(profile.name))) : []
 
   const multiProfile = profiles.length > 1
 
@@ -278,7 +298,9 @@ export function ProfileRail() {
             onCreate={() => setCreateOpen(true)}
             onImport={() => void runImportProfileFlow()}
             onSelect={selectProfile}
-            profiles={named}
+            primary={primaryProfiles}
+            shared={sharedProfiles}
+            sharedLabel={boundSet ? p.sharedProfiles : undefined}
           />
         </div>
       ) : (
@@ -299,7 +321,21 @@ export function ProfileRail() {
                 {/* relative → the strip is the dragged square's offsetParent, so the
                     clamp modifier bounds drags to the occupied cells (not the +). */}
                 <div className="relative flex items-center gap-1">
-                  {named.map(profile => (
+                  {primaryProfiles.map(profile => (
+                    <ProfileSquare
+                      active={!isAll && normalizeProfileKey(profile.name) === activeKey}
+                      color={resolveProfileColor(profile.name, colors)}
+                      key={profile.name}
+                      label={profileLabel(profile)}
+                      onDelete={() => setPendingDelete(profile)}
+                      onEditSoul={() => setPendingSoul(profile.name)}
+                      onRecolor={color => setProfileColor(profile.name, color)}
+                      onRename={() => setPendingRename(profile)}
+                      onSelect={() => selectProfile(profile.name)}
+                    />
+                  ))}
+                  {boundSet && <SharedRailDivider label={p.sharedProfiles} />}
+                  {sharedProfiles.map(profile => (
                     <ProfileSquare
                       active={!isAll && normalizeProfileKey(profile.name) === activeKey}
                       color={resolveProfileColor(profile.name, colors)}
@@ -449,6 +485,23 @@ function EditSoulDialog({ onClose, profileName }: { onClose: () => void; profile
   )
 }
 
+// Between the bound and shared groups when a workspace's bindings filter the
+// rail (#64221): a hairline plus a tiny uppercase "Shared" label, so the
+// fallback section is visible even when it currently holds no squares. Only
+// mounted while filtering is active — unbound workspaces never render it.
+function SharedRailDivider({ label }: { label: string }) {
+  return (
+    <Tip label={label}>
+      <div aria-label={label} className="flex shrink-0 items-center gap-1 pl-0.5" data-slot="profile-rail-shared-divider">
+        <span aria-hidden="true" className="h-4 w-px bg-(--ui-stroke-tertiary)" />
+        <span className="text-[0.5625rem] font-medium uppercase leading-none tracking-wide text-(--ui-text-quaternary)">
+          {label}
+        </span>
+      </div>
+    </Tip>
+  )
+}
+
 // The "+" create button, shared by both rail render paths.
 function AddProfileButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
@@ -486,26 +539,34 @@ function ImportProfileButton({ label }: { label: string }) {
 // The condensed rail: every named profile in one compact menu. The trigger
 // shows the active profile (tinted initial + name); on default/all scope it
 // falls back to the placeholder since the left toggle pill carries that state.
+// With workspace bindings (#64221) bound profiles lead and the rest follow a
+// Shared label; with no bindings `shared` is empty and `sharedLabel` undefined,
+// which renders exactly the flat list this menu has always been.
 function ProfileDropdown({
   activeKey,
   colors,
   onCreate,
   onImport,
   onSelect,
-  profiles
+  primary,
+  shared,
+  sharedLabel
 }: {
   activeKey: null | string
   colors: Record<string, string>
   onCreate: () => void
   onImport: () => void
   onSelect: (name: string) => void
-  profiles: ProfileInfo[]
+  primary: ProfileInfo[]
+  shared: ProfileInfo[]
+  sharedLabel?: string
 }) {
   const { t } = useI18n()
   const p = t.profiles
 
-  const value = activeKey ? (profiles.find(profile => normalizeProfileKey(profile.name) === activeKey)?.name ?? '') : ''
-  const activeProfile = profiles.find(profile => profile.name === value)
+  const all = sharedLabel ? [...primary, ...shared] : primary
+  const value = activeKey ? (all.find(profile => normalizeProfileKey(profile.name) === activeKey)?.name ?? '') : ''
+  const activeProfile = all.find(profile => profile.name === value)
 
   return (
     <DropdownMenu>
@@ -547,7 +608,7 @@ function ProfileDropdown({
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuRadioGroup onValueChange={name => name && onSelect(name)} value={value}>
-          {profiles.map(profile => (
+          {primary.map(profile => (
             <ProfileDropdownItem
               color={resolveProfileColor(profile.name, colors)}
               key={profile.name}
@@ -555,6 +616,20 @@ function ProfileDropdown({
               name={profile.name}
             />
           ))}
+          {sharedLabel && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className={dropdownMenuSectionLabel}>{sharedLabel}</DropdownMenuLabel>
+              {shared.map(profile => (
+                <ProfileDropdownItem
+                  color={resolveProfileColor(profile.name, colors)}
+                  key={profile.name}
+                  label={profileLabel(profile)}
+                  name={profile.name}
+                />
+              ))}
+            </>
+          )}
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>

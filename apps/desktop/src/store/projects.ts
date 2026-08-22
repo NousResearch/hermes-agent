@@ -30,6 +30,13 @@ import {
   setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
+import {
+  sanitizeWorkspaceProfileBindings,
+  WORKSPACE_PROFILE_BINDINGS_KEY,
+  workspaceBoundProfiles,
+  type WorkspaceProfileBindings,
+  workspaceProfileBindingsCodec
+} from '@/store/workspace-profiles'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -172,6 +179,72 @@ export function enterProject(id: string): void {
 
 export function exitProjectScope(): void {
   $projectScope.set(ALL_PROJECTS)
+}
+
+// ── Workspace ↔ profile bindings (#64221) ────────────────────────────────────
+// Optional per-workspace profile sets backing the sidebar rail's filtered view:
+// inside a project whose id has bindings, the rail shows them as the primary
+// group and parks everything else under an always-present Shared section. A
+// pure presentation preference (localStorage), scoped to its own key — it
+// never touches activation/routing/resolver invariants, and a workspace with
+// no bindings renders exactly as before. Shapes + normalization policy live in
+// store/workspace-profiles.ts; this file owns the atom and the writes.
+export const $workspaceProfileBindings = persistentAtom<WorkspaceProfileBindings>(
+  WORKSPACE_PROFILE_BINDINGS_KEY,
+  {},
+  workspaceProfileBindingsCodec
+)
+
+function writeWorkspaceBindings(next: WorkspaceProfileBindings): void {
+  // Both sides sanitized → identical content compares equal and keeps the old
+  // object identity, so subscribed trees don't re-render on a no-op toggle.
+  const clean = sanitizeWorkspaceProfileBindings(next)
+
+  if (JSON.stringify(clean) !== JSON.stringify(sanitizeWorkspaceProfileBindings($workspaceProfileBindings.get()))) {
+    $workspaceProfileBindings.set(clean)
+  }
+}
+
+const isBindableWorkspace = (id: string): boolean =>
+  Boolean(id) && id !== ALL_PROJECTS && id !== NO_PROJECT_ID
+
+// Bind one profile to `workspaceId` (the picker's per-row toggle). Canonicalizes
+// the name; no-op when already bound or the scope isn't a real workspace.
+export function bindWorkspaceProfile(workspaceId: string, name: string): void {
+  const id = workspaceId.trim()
+
+  if (!isBindableWorkspace(id)) {
+    return
+  }
+
+  const key = normalizeProfileKey(name)
+  const current = workspaceBoundProfiles($workspaceProfileBindings.get(), id) ?? []
+
+  if (current.includes(key)) {
+    return
+  }
+
+  writeWorkspaceBindings({ ...$workspaceProfileBindings.get(), [id]: [...current, key] })
+}
+
+// Unbind one profile from `workspaceId`. Removing the last binding drops the
+// entry entirely so the emptied workspace deactivates filtering instead of
+// shadowing an empty list.
+export function unbindWorkspaceProfile(workspaceId: string, name: string): void {
+  const id = workspaceId.trim()
+
+  if (!isBindableWorkspace(id)) {
+    return
+  }
+
+  const key = normalizeProfileKey(name)
+  const current = workspaceBoundProfiles($workspaceProfileBindings.get(), id)
+
+  if (!current || !current.includes(key)) {
+    return
+  }
+
+  writeWorkspaceBindings({ ...$workspaceProfileBindings.get(), [id]: current.filter(bound => bound !== key) })
 }
 
 // A project's working root: its primary folder, else the first repo that has
@@ -1129,7 +1202,7 @@ export async function setActiveProject(id: null | string): Promise<void> {
 // menu can open create / rename / add-folder flows without prop threading
 // (mirrors $profileCreateRequest).
 export interface ProjectDialogState {
-  mode: 'add-folder' | 'create' | 'rename'
+  mode: 'add-folder' | 'bind-profiles' | 'create' | 'rename'
   projectId?: string
   name?: string
 }
@@ -1155,6 +1228,12 @@ export function openProjectRename(project: { id: string; name: string }): void {
 
 export function openProjectAddFolder(project: { id: string; name: string }): void {
   $projectDialog.set({ mode: 'add-folder', name: project.name, projectId: project.id })
+}
+
+// Open the workspace↔profile binding picker (#64221) for this project. The
+// dialog persists each toggle immediately — there is no save step to lose.
+export function openProjectBindProfiles(project: { id: string; name: string }): void {
+  $projectDialog.set({ mode: 'bind-profiles', name: project.name, projectId: project.id })
 }
 
 export function closeProjectDialog(): void {

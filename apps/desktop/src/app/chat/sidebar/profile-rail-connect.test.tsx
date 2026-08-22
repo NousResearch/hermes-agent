@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
+import type * as Nanostores from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ProfileRail } from './profile-switcher'
@@ -55,6 +56,20 @@ vi.mock('@/store/profile', () => ({
   setProfileOrder: vi.fn(),
   setShowAllProfiles: vi.fn(),
   sortByProfileOrder: (profiles: unknown[]) => profiles
+}))
+
+// vi.mock('@/store/projects', ...) keeps the rail's NEW imports (#64221) from
+// dragging the whole projects store graph into this file; only the atoms are
+// stubbed while the binding resolver stays the real one.
+const { $projectScope } = vi.hoisted(() => {
+  const { atom } = require('nanostores') as typeof Nanostores
+
+  return { $projectScope: atom<string>('__all_projects__') }
+})
+
+vi.mock('@/store/projects', () => ({
+  $projectScope,
+  $workspaceProfileBindings: atom<Record<string, string[]>>({})
 }))
 
 vi.mock('@/store/connections', () => ({ $hasMultipleConnections: atom(false) }))

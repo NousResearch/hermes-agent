@@ -26,6 +26,7 @@ import {
   copyPath,
   deleteProject,
   openProjectAddFolder,
+  openProjectBindProfiles,
   openProjectRename,
   revealPath,
   setActiveProject,
@@ -92,6 +93,15 @@ function useProjectActions({
           key: 'set-active',
           label: p.menuSetActive,
           onSelect: () => void setActiveProject(project.id)
+        },
+        {
+          // Workspace ↔ profile bindings (#64221): pick which named profiles
+          // the rail promotes while this workspace is active. Each toggle
+          // persists immediately; the picker dialog owns that flow.
+          icon: 'link',
+          key: 'bind-profiles',
+          label: p.menuBindProfiles,
+          onSelect: () => openProjectBindProfiles(target)
         }
       ]
 

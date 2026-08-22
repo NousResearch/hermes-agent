@@ -32,6 +32,7 @@ vi.mock('@/i18n', () => ({
           menu: 'Actions',
           menuAddFolder: 'Add folder',
           menuAppearance: 'Appearance',
+          menuBindProfiles: 'Bind profiles…',
           menuDelete: 'Delete',
           menuRename: 'Rename',
           menuSetActive: 'Set active',
@@ -61,6 +62,7 @@ vi.mock('@/store/projects', () => ({
   copyPath: vi.fn(),
   deleteProject: vi.fn(),
   openProjectAddFolder: vi.fn(),
+  openProjectBindProfiles: vi.fn(),
   openProjectRename: vi.fn(),
   revealPath: vi.fn(),
   setActiveProject: vi.fn(),
@@ -115,4 +117,16 @@ describe('ProjectMenu', () => {
     // chain rather than getting silently dropped on an intermediate wrapper.
     expect(await screen.findByRole('button', { name: 'No color' })).toBeTruthy()
   }, 15000)
+
+  it('offers "Bind profiles…" and opens the binding picker for this project', async () => {
+    const { openProjectBindProfiles } = await import('@/store/projects')
+
+    render(<ProjectMenu isActive={false} project={project} />)
+
+    openTriggerMenu(screen.getByRole('button', { name: 'Actions' }))
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Bind profiles…' }))
+
+    expect(vi.mocked(openProjectBindProfiles)).toHaveBeenCalledWith({ id: 'p1', name: 'Test D' })
+  })
 })

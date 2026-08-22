@@ -169,13 +169,23 @@ class TestSendWithRetryFallback:
 
 
 # ---------------------------------------------------------------------------
-# _send_with_retry — retry_after honor
+# _send_with_retry — server-requested backoff is NOT resent
 # ---------------------------------------------------------------------------
 
 class TestSendWithRetryAfter:
+    """A server-requested backoff (HTTP 429 / Telegram FloodWait) must not be
+    resent.
+
+    Contract change: these previously asserted that ``retry_after`` merely
+    *paced* a retry. In production that resent the whole message and delivered
+    two copies — Telegram accepts the message and rate-limits the ACK, so the
+    429 is not proof of non-delivery. ``retry_after`` is now treated as
+    delivery-ambiguous, exactly like a timeout.
+    """
+
     @pytest.mark.asyncio
-    async def test_retry_after_honored_on_first_retry(self):
-        """When the initial result has retry_after, the first retry waits that long."""
+    async def test_retry_after_is_not_resent(self):
+        """A 429 with retry_after sends exactly once — no duplicate copy."""
         adapter = _StubAdapter()
         adapter._send_results = [
             SendResult(success=False, error="Flood control exceeded. Retry in 37 seconds",
@@ -184,14 +194,13 @@ class TestSendWithRetryAfter:
         ]
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=2.0)
-        assert result.success
-        # First sleep should use retry_after (~37s + jitter), not base_delay (~2s)
-        first_sleep = mock_sleep.call_args_list[0][0][0]
-        assert first_sleep >= 36.0  # 37 - 1 (max jitter)
+        assert not result.success
+        assert len(adapter._send_calls) == 1, "flood control must not resend"
+        assert mock_sleep.call_count == 0
 
     @pytest.mark.asyncio
-    async def test_retry_after_from_subsequent_result(self):
-        """If a retry itself returns retry_after, the next retry honors it."""
+    async def test_retry_after_on_a_later_attempt_stops_resending(self):
+        """A retryable network error still retries, but a 429 on that retry stops it."""
         adapter = _StubAdapter()
         adapter._send_results = [
             SendResult(success=False, error="ConnectError", retryable=True),
@@ -199,10 +208,19 @@ class TestSendWithRetryAfter:
                        retryable=True, retry_after=30.0),
             SendResult(success=True, message_id="ok"),
         ]
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            result = await adapter._send_with_retry("chat1", "hello", max_retries=3, base_delay=2.0)
+        result = await adapter._send_with_retry("chat1", "hello", max_retries=3, base_delay=0.0)
+        assert not result.success
+        assert len(adapter._send_calls) == 2, "must stop at the 429, not send a third copy"
+
+    @pytest.mark.asyncio
+    async def test_plain_network_error_still_retries(self):
+        """The guard is scoped to retry_after — ordinary transient errors still retry."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="ConnectError", retryable=True),
+            SendResult(success=True, message_id="ok"),
+        ]
+        result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0.0)
         assert result.success
-        # Second sleep should use the retry_after from the second result
-        second_sleep = mock_sleep.call_args_list[1][0][0]
-        assert second_sleep >= 29.0  # 30 - 1 (max jitter)
+        assert len(adapter._send_calls) == 2
 

@@ -615,6 +615,7 @@ class SessionManager:
         from run_agent import AIAgent
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_constants import resolve_reasoning_config
 
         config = load_config()
         model_cfg = config.get("model")
@@ -632,6 +633,8 @@ class SessionManager:
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
 
+        effective_model = model or default_model
+
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
@@ -641,7 +644,17 @@ class SessionManager:
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),
-            "model": model or default_model,
+            "model": effective_model,
+            # Resolve reasoning effort through the shared chokepoint, as every
+            # other AIAgent construction site does (CLI, TUI gateway,
+            # api_server, cron). Omitting it leaves ``agent.reasoning_config``
+            # as None, and nothing re-resolves it at build time: the Anthropic
+            # adapter then skips the ``thinking`` parameter entirely, so
+            # adaptive Claude falls back to the API default
+            # ``display: "omitted"`` and returns thinking blocks with empty
+            # text and only an opaque signature. ACP hosts lost reasoning text
+            # that the CLI and gateway both show.
+            "reasoning_config": resolve_reasoning_config(config, effective_model),
         }
 
         try:

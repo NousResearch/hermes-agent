@@ -7,7 +7,7 @@ on:
       - restack/pr89479-current-main
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: dependency-security-restack-${{ github.event.pull_request.number || github.ref }}
@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   generate-and-verify:
+    if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -41,9 +42,6 @@ jobs:
       - name: Regenerate current-main npm lock graph
         run: |
           npm install --package-lock-only --ignore-scripts --include=optional
-          # npm 11 preserves the old lock placement when only the override shape
-          # changes. Force the affected package edge through the new nested
-          # PostCSS override without rewriting unrelated dependency families.
           npm update nanoid --package-lock-only --ignore-scripts --include=optional
 
       - name: Regenerate the exact h2 security lock edge
@@ -84,3 +82,74 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+
+  finalize-on-fork:
+    if: github.repository == 'andrexibiza/hermes-agent' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out exact staging head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+
+      - name: Use repository-authorized npm
+        run: npm install --global npm@11.17.0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Generate and verify final dependency graph
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/restack_dependency_security.py apply
+          npm install --package-lock-only --ignore-scripts --include=optional
+          npm update nanoid --package-lock-only --ignore-scripts --include=optional
+          uv lock --upgrade-package 'h2==4.4.1'
+          python3 .github/scripts/restack_dependency_security.py verify
+          node --test apps/desktop/scripts/packaged-app-layout.test.mjs
+          uv lock --check
+          git diff --check
+          npm audit --workspaces=false --audit-level=high
+          npm audit --workspace web --audit-level=high
+          npm audit --workspace ui-tui --audit-level=high
+          npm audit --workspace apps/desktop --audit-level=high
+
+      - name: Collapse staging lane to one exact current-main commit
+        env:
+          BASE_SHA: b6bcb3e791c673e63974029bbab40cc9326803ff
+          STAGING_SHA: ${{ github.sha }}
+          BRANCH: restack/pr89479-current-main
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/apps/desktop/scripts"
+          cp .npmrc package.json package-lock.json uv.lock "$tmp/"
+          cp apps/desktop/package.json "$tmp/apps/desktop/package.json"
+          cp apps/desktop/scripts/packaged-app-layout.mjs "$tmp/apps/desktop/scripts/"
+          cp apps/desktop/scripts/packaged-app-layout.test.mjs "$tmp/apps/desktop/scripts/"
+          cp apps/desktop/scripts/test-desktop.mjs "$tmp/apps/desktop/scripts/"
+
+          git reset --hard "$BASE_SHA"
+          cp "$tmp/.npmrc" .npmrc
+          cp "$tmp/package.json" package.json
+          cp "$tmp/package-lock.json" package-lock.json
+          cp "$tmp/uv.lock" uv.lock
+          mkdir -p apps/desktop/scripts
+          cp "$tmp/apps/desktop/package.json" apps/desktop/package.json
+          cp "$tmp/apps/desktop/scripts/packaged-app-layout.mjs" apps/desktop/scripts/packaged-app-layout.mjs
+          cp "$tmp/apps/desktop/scripts/packaged-app-layout.test.mjs" apps/desktop/scripts/packaged-app-layout.test.mjs
+          cp "$tmp/apps/desktop/scripts/test-desktop.mjs" apps/desktop/scripts/test-desktop.mjs
+
+          git add -- .npmrc package.json package-lock.json uv.lock apps/desktop/package.json apps/desktop/scripts/packaged-app-layout.mjs apps/desktop/scripts/packaged-app-layout.test.mjs apps/desktop/scripts/test-desktop.mjs
+          git diff --cached --check
+          git config user.name 'Andrex Ibiza, MBA'
+          git config user.email 'andrexibiza@gmail.com'
+          git commit -m 'fix(deps): close current advisory graph on current main' -m 'Restack the active Electron, Nano ID, and h2 advisory remediation on the exact current main object while preserving the React Compiler graph and source attribution.\n\nCo-authored-by: schmitzi8 <schmitzi8@users.noreply.github.com>\nCo-authored-by: orcaspainting-dev <264355715+orcaspainting-dev@users.noreply.github.com>'
+          git push --force-with-lease="refs/heads/$BRANCH:$STAGING_SHA" origin "HEAD:refs/heads/$BRANCH"

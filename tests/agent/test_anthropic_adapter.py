@@ -1076,6 +1076,56 @@ class TestBuildAnthropicKwargs:
         beta_header = (kwargs.get("extra_headers") or {}).get("anthropic-beta", "")
         assert "fast-mode-2026-02-01" not in beta_header
 
+    def test_apply_fast_mode_helper_idempotent_revocable_and_byte_identical(self):
+        """``_apply_fast_mode_to_kwargs`` must be byte-identical to the
+        pre-refactor inline block when enabled, idempotent (apply twice is
+        stable), revocable (``enabled=False`` strips the ``speed`` key and the
+        fast-mode beta token, keeping co-bundled common betas), a no-op on fresh
+        kwargs when disabled, and non-mutating of its input.
+        """
+        from agent.anthropic_adapter import (
+            _apply_fast_mode_to_kwargs,
+            _common_betas_for_base_url,
+            _OAUTH_ONLY_BETAS,
+            _FAST_MODE_BETA,
+        )
+
+        model, base_url, is_oauth = "claude-opus-4-6", None, True
+        base = {"model": model, "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 1024}
+        apply = lambda kw, on: _apply_fast_mode_to_kwargs(  # noqa: E731
+            kw, enabled=on, model=model, base_url=base_url, is_oauth=is_oauth)
+
+        # Reference: exactly what the historical inline block produced.
+        ref_betas = [*_common_betas_for_base_url(base_url), *_OAUTH_ONLY_BETAS,
+                     _FAST_MODE_BETA]
+        expected = {**base, "extra_body": {"speed": "fast"},
+                    "extra_headers": {"anthropic-beta": ",".join(ref_betas)}}
+
+        # (a) enabled path byte-identical; (b) applying twice is stable.
+        once = apply(base, True)
+        assert once == expected
+        assert apply(once, True) == once == expected
+
+        # (c) revoke strips speed + fast-mode beta, keeps common betas.
+        revoked = apply(once, False)
+        assert "extra_body" not in revoked  # emptied dict dropped, not left {}
+        revoked_beta = revoked["extra_headers"]["anthropic-beta"]
+        assert _FAST_MODE_BETA not in revoked_beta
+        assert all(b in revoked_beta for b in _common_betas_for_base_url(base_url))
+        assert apply(revoked, False) == revoked  # revoke is stable too
+
+        # (d) disabled on fresh kwargs is a no-op; (e) input never mutated.
+        assert apply(base, False) == base
+        assert "extra_body" not in base and "extra_headers" not in base
+
+        # (f) end-to-end: build_anthropic_kwargs delegates to the helper.
+        e2e = build_anthropic_kwargs(
+            model=model, messages=base["messages"], tools=None, max_tokens=1024,
+            reasoning_config=None, fast_mode=True, is_oauth=is_oauth)
+        assert e2e["extra_body"]["speed"] == "fast"
+        assert e2e["extra_headers"]["anthropic-beta"] == ",".join(ref_betas)
+
 
 
 

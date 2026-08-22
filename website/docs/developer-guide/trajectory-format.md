@@ -8,7 +8,16 @@ Source files: `agent/trajectory.py`, `run_agent.py` (search for `_save_trajector
 
 ## File Naming Convention
 
-Trajectories are written to files in the current working directory:
+When no explicit filename is supplied, trajectories are stored under the active
+profile's Hermes home, in a stable bucket for the canonical current working
+directory:
+
+`<HERMES_HOME>/trajectories/<cwd-basename>-<path-digest>/`
+
+The digest keeps same-named directories separate while repeated saves from one
+directory append to the same dataset. Existing files in the working directory
+are not moved. An explicit `filename=` remains authoritative, including
+relative paths and symlinks.
 
 | File | When |
 |------|------|
@@ -194,7 +203,7 @@ def load_trajectories(path: str):
     return entries
 
 # Filter to successful completions only
-successful = [e for e in load_trajectories("trajectory_samples.jsonl")
+successful = [e for e in load_trajectories("/path/to/trajectory_samples.jsonl")
               if e.get("completed")]
 
 # Extract just the conversations for training

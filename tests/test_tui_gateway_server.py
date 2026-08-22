@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 import subprocess
 import sys
 import threading
@@ -7172,7 +7173,7 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
     import yaml
 
     cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
+    cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}), encoding="utf-8")
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
 
     resp_on = server.handle_request(
@@ -7184,7 +7185,7 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
     )
     assert resp_on["result"]["value"] == "1"
     assert resp_on["result"]["scope"] == "global"
-    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["approvals"]["mode"] == "off"
 
     resp_off = server.handle_request(
         {
@@ -7194,7 +7195,7 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
         }
     )
     assert resp_off["result"]["value"] == "0"
-    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "manual"
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["approvals"]["mode"] == "manual"
 
 
 def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
@@ -7229,7 +7230,7 @@ def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_valu
     # server._hermes_home.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
-        yaml.safe_dump({"approvals": {"mode": "sometimes"}})
+        yaml.safe_dump({"approvals": {"mode": "sometimes"}}), encoding="utf-8"
     )
 
     response = server.handle_request(
@@ -7246,7 +7247,7 @@ def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
     # load_config, which resolves HERMES_HOME from the environment.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
-        yaml.safe_dump({"approvals": {"mode": False}})
+        yaml.safe_dump({"approvals": {"mode": False}}), encoding="utf-8"
     )
 
     response = server.handle_request(
@@ -7281,7 +7282,7 @@ def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status
         server._sessions.clear()
 
     assert resp["result"] == {"key": "approvals.mode", "value": "manual"}
-    assert yaml.safe_load((tmp_path / "config.yaml").read_text())["approvals"]["mode"] == "manual"
+    assert yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["approvals"]["mode"] == "manual"
     assert emitted and emitted[0][0:2] == ("session.info", "sid")
     assert emitted[0][2]["approval_mode"] == "manual"
 
@@ -7377,7 +7378,7 @@ def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatc
     import yaml
 
     cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
+    cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}), encoding="utf-8")
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
 
     resp = server.handle_request(
@@ -7388,7 +7389,7 @@ def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatc
         }
     )
     assert resp["result"]["value"] == "1"
-    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["approvals"]["mode"] == "off"
 
     # Setting it on again is idempotent — stays off.
     resp_again = server.handle_request(
@@ -7399,7 +7400,7 @@ def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatc
         }
     )
     assert resp_again["result"]["value"] == "1"
-    assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["approvals"]["mode"] == "off"
 
 
 def test_config_set_fast_updates_live_agent_session_scoped(monkeypatch):
@@ -7621,7 +7622,7 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
     import yaml
 
     cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(yaml.safe_dump({"display": "broken"}))
+    cfg_path.write_text(yaml.safe_dump({"display": "broken"}), encoding="utf-8")
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
 
     resp = server.handle_request(
@@ -7633,7 +7634,7 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
     )
 
     assert resp["result"]["value"] == "bottom"
-    saved = yaml.safe_load(cfg_path.read_text())
+    saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert saved["display"]["tui_statusbar"] == "bottom"
 
 
@@ -7657,7 +7658,7 @@ def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
     )
 
     assert resp["result"] == {"key": "details_mode", "value": "collapsed"}
-    saved = yaml.safe_load(cfg_path.read_text())
+    saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert saved["display"]["details_mode"] == "collapsed"
     assert saved["display"]["sections"] == {
         "thinking": "collapsed",
@@ -7682,7 +7683,7 @@ def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
     )
 
     assert resp["result"] == {"key": "details_mode.activity", "value": "hidden"}
-    saved = yaml.safe_load(cfg_path.read_text())
+    saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert saved["display"]["sections"] == {"activity": "hidden"}
 
 
@@ -7706,7 +7707,7 @@ def test_config_set_section_clears_override_on_empty_value(tmp_path, monkeypatch
     )
 
     assert resp["result"] == {"key": "details_mode.activity", "value": ""}
-    saved = yaml.safe_load(cfg_path.read_text())
+    saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert saved["display"]["sections"] == {"tools": "expanded"}
 
 
@@ -16217,7 +16218,7 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
     assert saved_file.parent == saved_dir
     assert saved_file.exists()
 
-    payload = json.loads(saved_file.read_text())
+    payload = json.loads(saved_file.read_text(encoding="utf-8"))
     assert payload["model"] == "hermes-test"
     assert payload["session_id"] == "20260101_120000_abc123"
     assert payload["session_start"] == "2026-01-01T12:00:00"
@@ -16244,6 +16245,166 @@ def test_session_save_proxies_to_compute_host_history(monkeypatch):
 
     assert resp["result"] == {"file": "/tmp/host-save.json"}
     assert calls == [(sid, {"route_name": "session.save", "wait": True})]
+
+
+class _FrozenNow(datetime):
+    """datetime stand-in whose now() is pinned, so the snapshot path is stable.
+
+    Subclassing keeps the handler's ``isinstance(agent_start, datetime)`` check
+    meaningful: sessions built for a frozen test carry a _FrozenNow session_start.
+    """
+
+    @classmethod
+    def now(cls, tz=None):  # type: ignore[override]
+        return cls(2026, 1, 1, 12, 0, 0)
+
+
+def _save_session(sid, history, session_start=None):
+    """Register a minimal session.save-ready session and return its agent."""
+    agent = types.SimpleNamespace(
+        model="hermes-test",
+        session_id="20260101_120000_abc123",
+        session_start=session_start or datetime(2026, 1, 1, 12, 0, 0),
+        _cached_system_prompt="You are Hermes.",
+    )
+    server._sessions[sid] = {
+        "agent": agent,
+        "session_key": "save-key",
+        "history": history,
+        "history_lock": threading.Lock(),
+        "created_at": 1735732800.0,
+    }
+    return agent
+
+
+def _saved_mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="POSIX permission bits are advisory on Windows"
+)
+def test_session_save_fresh_dir_and_file_owner_only(monkeypatch, tmp_path):
+    """TUI /save: saved/ and a fresh snapshot must not leak group/other bits.
+
+    Regression: the handler used a bare mkdir plus open(path, "w"), so the
+    exported transcript (system prompt included) landed at umask-derived
+    0o755/0o644 - readable by every other account on a shared box.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    sid = "save-mode-sid"
+    _save_session(sid, [{"role": "user", "content": "hi"}])
+    old_umask = os.umask(0o022)
+    try:
+        resp = server._methods["session.save"]("1", {"session_id": sid})
+    finally:
+        os.umask(old_umask)
+        server._sessions.pop(sid, None)
+
+    assert "result" in resp, resp
+    saved_file = Path(resp["result"]["file"])
+    saved_dir = home / "sessions" / "saved"
+    assert saved_file.parent == saved_dir
+    assert not _saved_mode(saved_dir) & 0o077, (
+        f"saved dir mode {oct(_saved_mode(saved_dir))} leaks to group/other"
+    )
+    assert not _saved_mode(saved_file) & 0o077, (
+        f"snapshot mode {oct(_saved_mode(saved_file))} leaks to group/other"
+    )
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="POSIX permission bits are advisory on Windows"
+)
+def test_session_save_retightens_preexisting_broad_snapshot(monkeypatch, tmp_path):
+    """A pre-existing 0o644 snapshot at the same path is rewritten to 0o600.
+
+    Freezing the timestamp collides the target with a file already on disk at a
+    broad mode, proving the write passes an explicit mode instead of merely
+    inheriting the temp file default (the atomic writer otherwise preserves the
+    destination mode). The payload must still be complete JSON.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(server, "datetime", _FrozenNow)
+
+    saved_dir = home / "sessions" / "saved"
+    saved_dir.mkdir(parents=True)
+    path = saved_dir / "hermes_conversation_20260101_120000.json"
+    path.write_text("{}", encoding="utf-8")
+    os.chmod(path, 0o644)
+
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    sid = "save-overwrite-sid"
+    _save_session(sid, history, session_start=_FrozenNow(2026, 1, 1, 12, 0, 0))
+    old_umask = os.umask(0o022)
+    try:
+        resp = server._methods["session.save"]("1", {"session_id": sid})
+    finally:
+        os.umask(old_umask)
+        server._sessions.pop(sid, None)
+
+    assert "result" in resp, resp
+    assert Path(resp["result"]["file"]) == path
+    assert _saved_mode(path) == 0o600, oct(_saved_mode(path))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["messages"] == history
+    assert payload["model"] == "hermes-test"
+    assert payload["session_id"] == "20260101_120000_abc123"
+    assert payload["session_start"] == "2026-01-01T12:00:00"
+    assert payload["system_prompt"] == "You are Hermes."
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="POSIX permission bits are advisory on Windows"
+)
+def test_session_save_managed_setgid_parent_group_mode(monkeypatch, tmp_path):
+    """Managed + setgid parent: saved/ stays group-writable, snapshot is 0o660."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    os.chmod(home, 0o2770)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED", "nixos")
+    monkeypatch.chdir(tmp_path)
+
+    probe = home / "kernel-probe"
+    probe.mkdir()
+    # Only the setgid-preservation assertion needs the kernel to inherit the
+    # bit (Linux does, macOS/APFS does not). The managed mode contract does
+    # not, so it is asserted on every POSIX platform.
+    setgid_inherited = bool(_saved_mode(probe) & stat.S_ISGID)
+
+    sid = "save-managed-sid"
+    _save_session(sid, [{"role": "user", "content": "hi"}])
+    old_umask = os.umask(0o007)
+    try:
+        resp = server._methods["session.save"]("1", {"session_id": sid})
+    finally:
+        os.umask(old_umask)
+        server._sessions.pop(sid, None)
+
+    assert "result" in resp, resp
+    saved_file = Path(resp["result"]["file"])
+    saved_dir = home / "sessions" / "saved"
+    assert _saved_mode(saved_dir) & 0o777 == 0o770, oct(_saved_mode(saved_dir))
+    assert _saved_mode(saved_file) == 0o660, oct(_saved_mode(saved_file))
+    if setgid_inherited:
+        assert _saved_mode(saved_dir) & stat.S_ISGID, (
+            "inherited setgid must survive; without it 0o660 group-write is "
+            "useless to the second UID of a managed install"
+        )
 
 
 def test_notification_event_dedup_key_preserves_distinct_watch_matches():
@@ -17560,7 +17721,7 @@ def test_persist_model_switch_preserves_sibling_model_keys(tmp_path, monkeypatch
         new_model="new-model", target_provider="anthropic", base_url=None
     )
     server._persist_model_switch(result)
-    saved = yaml.safe_load(cfg_path.read_text())
+    saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
 
     # The switched fields updated...
     assert saved["model"]["default"] == "new-model"
@@ -17594,7 +17755,7 @@ def test_persist_model_switch_clears_stale_base_url(tmp_path, monkeypatch):
         new_model="claude-haiku", target_provider="anthropic", base_url=None
     )
     server._persist_model_switch(result)
-    saved = yaml.safe_load(cfg_path.read_text())
+    saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
 
     assert saved["model"]["default"] == "claude-haiku"
     assert saved["model"]["provider"] == "anthropic"

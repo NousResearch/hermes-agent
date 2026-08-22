@@ -357,6 +357,9 @@ def _audit_path() -> Path:
 def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
     """Append an audit record. Best-effort — never raises into the caller."""
     try:
+        from hermes_cli.config import artifact_file_mode, secure_artifact_dir
+        from utils import open_private_append
+
         rec = {
             "ts": time.time(),
             "direction": direction,  # "inbound" | "outbound" | "push"
@@ -365,8 +368,8 @@ def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
             "summary": (summary or "")[:500],
         }
         path = _audit_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
+        secure_artifact_dir(path.parent)
+        with open_private_append(path, mode=artifact_file_mode()) as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         logger.debug("A2A: audit write failed", exc_info=True)

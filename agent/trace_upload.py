@@ -119,10 +119,14 @@ def _tool_calls_to_blocks(tool_calls: Any, redact: bool) -> List[Dict[str, Any]]
             parsed = {}
         if redact:
             try:
-                parsed = json.loads(_redact(json.dumps(parsed), redact))
-            except (json.JSONDecodeError, ValueError):
-                logger.warning("Trace upload redacted tool arguments are not valid JSON; refusing upload")
-                raise TraceRedactionError(_REDACTION_BLOCKED_MESSAGE)
+                from agent.redact_structured import redact_structured
+
+                parsed = redact_structured(parsed)
+            except TraceRedactionError:
+                raise
+            except Exception as exc:
+                logger.warning("Trace upload structured redaction failed; refusing upload", exc_info=True)
+                raise TraceRedactionError(_REDACTION_BLOCKED_MESSAGE) from exc
         blocks.append({
             "type": "tool_use",
             "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",

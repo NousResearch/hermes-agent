@@ -5,12 +5,29 @@ calls agent._convert_to_trajectory_format). Only the static helpers and
 the file-write logic live here.
 """
 
+import hashlib
 import json
 import logging
+import os
+import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List
 
+from hermes_constants import get_hermes_home
+from hermes_cli.config import artifact_file_mode, secure_artifact_dir
+from utils import open_private_append
+
 logger = logging.getLogger(__name__)
+
+
+def default_trajectory_path(completed: bool) -> Path:
+    """Return the profile-aware implicit export path for the current CWD."""
+    cwd = Path.cwd().resolve()
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", cwd.name).strip("-.") or "cwd"
+    digest = hashlib.sha256(os.fsencode(cwd)).hexdigest()[:8]
+    filename = "trajectory_samples.jsonl" if completed else "failed_trajectories.jsonl"
+    return get_hermes_home() / "trajectories" / f"{name[:32]}-{digest}" / filename
 
 
 def convert_scratchpad_to_think(content: str) -> str:
@@ -35,12 +52,9 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
         trajectory: The ShareGPT-format conversation list.
         model: Model name for metadata.
         completed: Whether the conversation completed successfully.
-        filename: Override output filename. Defaults to trajectory_samples.jsonl
-                  or failed_trajectories.jsonl based on ``completed``.
+        filename: Override output filename. The implicit default is stored in a
+                  current-working-directory bucket under the active Hermes home.
     """
-    if filename is None:
-        filename = "trajectory_samples.jsonl" if completed else "failed_trajectories.jsonl"
-
     entry = {
         "conversations": trajectory,
         "timestamp": datetime.now().isoformat(),
@@ -49,7 +63,10 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
     }
 
     try:
-        with open(filename, "a", encoding="utf-8") as f:
+        if filename is None:
+            filename = default_trajectory_path(completed)
+            secure_artifact_dir(filename.parent)
+        with open_private_append(filename, mode=artifact_file_mode()) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         logger.info("Trajectory saved to %s", filename)
     except Exception as e:

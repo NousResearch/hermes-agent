@@ -25,9 +25,11 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -43,6 +45,50 @@ from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+_REQUEST_DUMP_DEFAULT_KEEP = 20
+_REQUEST_DUMP_LOCK = threading.RLock()
+
+
+@contextmanager
+def _request_dump_write_lock(directory: Path):
+    """Serialize dump publication/pruning when the platform supports it.
+
+    POSIX uses an advisory file lock across processes; the thread lock also
+    covers platforms without ``fcntl``. Lock acquisition is best-effort so a
+    read-only or unusual logs directory cannot suppress the useful dump.
+    """
+    with _REQUEST_DUMP_LOCK:
+        lock_handle = None
+        try:
+            try:
+                from hermes_cli.config import artifact_file_mode
+                from utils import open_private_append
+
+                lock_handle = open_private_append(
+                    directory / ".request_dump_retention.lock",
+                    mode=artifact_file_mode(),
+                )
+            except Exception as exc:
+                logger.debug("Request dump lock unavailable: %s", exc)
+                yield
+                return
+            try:
+                import fcntl
+
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            except (ImportError, OSError):
+                pass
+            yield
+        finally:
+            if lock_handle is not None:
+                try:
+                    import fcntl
+
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                except (ImportError, OSError):
+                    pass
+                lock_handle.close()
 
 
 # Max consecutive successful credential-pool token refreshes of the SAME entry
@@ -96,6 +142,62 @@ def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
     import run_agent
     return run_agent
+
+
+def _request_dump_keep() -> int:
+    """Resolve the configured request-dump cap without mutating config."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        sessions = config.get("sessions", {}) if isinstance(config, dict) else {}
+        if not isinstance(sessions, dict):
+            return _REQUEST_DUMP_DEFAULT_KEEP
+        value = sessions.get("request_dump_retention", _REQUEST_DUMP_DEFAULT_KEEP)
+        if isinstance(value, bool):
+            return _REQUEST_DUMP_DEFAULT_KEEP
+        return int(value)
+    except Exception:
+        return _REQUEST_DUMP_DEFAULT_KEEP
+
+
+def _prune_request_dumps(directory: Path, keep: int, *, protect: Path) -> int:
+    """Delete oldest request dumps beyond *keep*, preserving *protect*."""
+    if keep <= 0:
+        return 0
+
+    candidates = []
+    try:
+        for path in directory.glob("request_dump_*.json"):
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                candidates.append((path.stat().st_mtime_ns, path.name, path))
+            except OSError as error:
+                logger.debug("Could not inspect request dump %s: %s", path, error)
+    except OSError as error:
+        logger.debug("Could not scan request dumps in %s: %s", directory, error)
+        return 0
+
+    candidates.sort(
+        key=lambda candidate: (
+            candidate[2] == protect,
+            candidate[0],
+            candidate[1],
+        ),
+        reverse=True,
+    )
+    deleted = 0
+    for _, _, path in candidates[keep:]:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            deleted += 1
+        except OSError as error:
+            logger.debug("Could not prune request dump %s: %s", path, error)
+        else:
+            deleted += 1
+    return deleted
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
@@ -1928,13 +2030,6 @@ def dump_api_request_debug(
 
             dump_payload["error"] = error_info
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        # Sanitize the session ID into a traversal-free path segment — it can
-        # originate from untrusted input (X-Hermes-Session-Id header), and an
-        # unsanitized "../"-shaped ID would write the dump outside logs_dir.
-        safe_sid = _ra()._safe_session_filename_component(agent.session_id)
-        dump_file = agent.logs_dir / f"request_dump_{safe_sid}_{timestamp}.json"
-
         # Redact secrets before persisting/printing. This dump captures the
         # full request body (system prompt, tool defs, context-embedded
         # values), and this path fires unconditionally on API errors — so it
@@ -1942,10 +2037,28 @@ def dump_api_request_debug(
         # Run the serialized dump through the same scrubber used for logs/tool
         # output, then hand the resulting payload back to the shared atomic
         # JSON writer so request dumps keep the same write semantics as before.
-        from agent.redact import redact_sensitive_text
-        _serialized = json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str)
-        _redacted_payload = json.loads(redact_sensitive_text(_serialized, force=True))
-        atomic_json_write(dump_file, _redacted_payload, default=str)
+        from agent.redact_structured import redact_structured
+
+        _redacted_payload = redact_structured(dump_payload)
+
+        # Keep publication and pruning in one critical section. Without this,
+        # two writers can each protect their own dump, then delete the other
+        # writer's protected file when keep=1.
+        with _request_dump_write_lock(agent.logs_dir):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            # Sanitize the session ID into a traversal-free path segment — it
+            # can originate from untrusted input (X-Hermes-Session-Id header).
+            safe_sid = _ra()._safe_session_filename_component(agent.session_id)
+            dump_file = agent.logs_dir / f"request_dump_{safe_sid}_{timestamp}.json"
+            atomic_json_write(dump_file, _redacted_payload, default=str)
+            try:
+                _prune_request_dumps(
+                    agent.logs_dir,
+                    _request_dump_keep(),
+                    protect=dump_file,
+                )
+            except Exception as prune_error:
+                logger.debug("Request dump retention skipped: %s", prune_error)
 
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
 

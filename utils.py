@@ -284,6 +284,7 @@ def atomic_write_text(
     tmp_prefix: str = ".tmp_",
     preserve_mode: bool = False,
     create_mode: "int | None" = None,
+    mode: "int | None" = None,
 ) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
@@ -307,13 +308,16 @@ def atomic_write_text(
         create_mode: Permission bits to apply when the target does not yet
             exist (otherwise the new file keeps mkstemp's 0600).  Never
             applied to an existing file.
+        mode: Exact permission bits for every write. When set, overrides
+            preserve_mode/create_mode and applies to the temp inode before
+            publication.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    original_mode = _preserve_file_mode(path) if preserve_mode else None
+    original_mode = _preserve_file_mode(path) if preserve_mode and mode is None else None
     original_owner = _preserve_file_owner(path) if preserve_mode else None
-    effective_mode = original_mode
+    effective_mode = mode if mode is not None else original_mode
     if effective_mode is None and create_mode is not None and not path.exists():
         effective_mode = create_mode
 
@@ -341,6 +345,52 @@ def atomic_write_text(
         except OSError:
             pass
         raise
+
+
+def open_private_append(
+    path: Union[str, Path],
+    *,
+    encoding: str = "utf-8",
+    mode: int = 0o600,
+):
+    """Append text, applying exact ``mode`` only to a newly created inode.
+
+    Exclusive creation distinguishes a new inode from an existing one, so
+    ``mode`` lands on files this call creates and an existing file keeps its
+    own permissions. ``fchmod`` on the new fd applies the mode exactly rather
+    than umask-narrowed, matching ``atomic_write_text(create_mode=...)``:
+    managed installs need the group-write bit of ``0o660`` to survive an
+    interactive user's ``0o022`` umask, or the service UID cannot append to a
+    transcript the user's UID started.
+
+    Symlinks are followed, as ``atomic_replace`` does (#16743) -- a managed
+    deployment may symlink an artifact path into a profile package, including
+    before its target exists. POSIX modes are advisory on Windows.
+    """
+    def _create(target: str, flags: int) -> int:
+        fd = os.open(target, flags, mode)
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, mode)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def _opener(target: str, flags: int) -> int:
+        try:
+            return _create(target, flags | os.O_CREAT | os.O_EXCL)
+        except FileExistsError:
+            pass
+        try:
+            return os.open(target, flags & ~(os.O_CREAT | os.O_EXCL))
+        except FileNotFoundError:
+            # A dangling symlink: O_EXCL reports EEXIST for the link itself,
+            # but reopening without O_CREAT hits the missing target. Create
+            # through it, as a plain open would, at the requested mode.
+            return _create(target, flags | os.O_CREAT)
+
+    return open(Path(path), "a", encoding=encoding, opener=_opener)
 
 
 def atomic_json_write(

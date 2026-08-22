@@ -76,6 +76,44 @@ def test_converter_refuses_unredacted_passthrough_when_redactor_fails(monkeypatc
         build_trace_jsonl(msgs, session_id="s1", redact=True)
 
 
+def test_tool_arguments_stay_structured_when_text_redaction_would_break_json():
+    secret = "x-api-key: abc123"
+    msgs = [{
+        "role": "assistant",
+        "content": "done",
+        "tool_calls": [{
+            "id": "call_1",
+            "function": {
+                "name": "terminal",
+                "arguments": json.dumps({"headers": secret, "safe": "keep"}),
+            },
+        }],
+    }]
+
+    line = json.loads(build_trace_jsonl(msgs, session_id="s1").strip())
+    tool_use = line["message"]["content"][1]
+    assert tool_use["input"]["safe"] == "keep"
+    assert secret not in json.dumps(tool_use["input"])
+
+
+def test_tool_argument_redactor_failure_is_fail_closed(monkeypatch):
+    def boom(_text, *, force=False):
+        raise RuntimeError("redactor unavailable")
+
+    monkeypatch.setattr("agent.redact.redact_sensitive_text", boom)
+    msgs = [{
+        "role": "assistant",
+        "content": "done",
+        "tool_calls": [{
+            "id": "call_1",
+            "function": {"name": "terminal", "arguments": '{"safe": "value"}'},
+        }],
+    }]
+
+    with pytest.raises(trace_upload.TraceRedactionError):
+        build_trace_jsonl(msgs, session_id="s1")
+
+
 def test_upload_blocks_when_redactor_fails(monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "hf_test")
 
@@ -171,7 +209,6 @@ def test_upload_happy_path_mocked(monkeypatch):
     first = json.loads(body.strip().split("\n")[0])
     assert first["type"] in ("user", "assistant")
     assert first["sessionId"] == "20260531_abc"
-
 
 
 

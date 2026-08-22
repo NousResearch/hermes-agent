@@ -673,12 +673,9 @@ def _handle_complete(args: dict, **kw) -> str:
     if result:
         result = redact_sensitive_text(str(result), force=True)
     if metadata is not None and isinstance(metadata, dict):
-        meta_json = json.dumps(metadata)
-        meta_json = redact_sensitive_text(meta_json, force=True)
-        try:
-            metadata = json.loads(meta_json)
-        except json.JSONDecodeError:
-            pass
+        from agent.redact_structured import redact_structured
+
+        metadata = redact_structured(metadata)
     created_cards = args.get("created_cards")
     artifacts = args.get("artifacts")
     if created_cards is not None:
@@ -921,11 +918,9 @@ def _handle_request_review(args: dict, **kw) -> str:
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
     if metadata is not None:
-        metadata_json = redact_sensitive_text(json.dumps(metadata), force=True)
-        try:
-            metadata = json.loads(metadata_json)
-        except json.JSONDecodeError:
-            return tool_error("metadata could not be safely serialized")
+        from agent.redact_structured import redact_structured
+
+        metadata = redact_structured(metadata)
     metadata = _stamp_worker_session_metadata(tid, metadata)
     reviewer = args.get("reviewer") or None
     if reviewer:

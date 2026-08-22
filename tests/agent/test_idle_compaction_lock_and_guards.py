@@ -224,3 +224,18 @@ def test_successful_idle_compaction_does_not_repeat_in_preflight(
     assert len(calls) == 1
     assert len(ctx.messages) == len(_history()) + 1
     compressor.should_compress.assert_not_called()
+
+    # The suppression is scoped to this prologue invocation, not latched on
+    # the agent. On the next non-idle turn, threshold preflight runs normally.
+    calls.clear()
+    compressor.should_compress.reset_mock()
+    agent._last_activity_ts = time.time()
+
+    _run_prologue(
+        agent,
+        _history(),
+        preflight_estimate=True,
+    )
+
+    assert len(calls) == 1
+    compressor.should_compress.assert_called_once()

@@ -788,7 +788,10 @@ def build_turn_context(
     # work; nothing has touched it yet this turn, so it measures the gap since
     # the previous turn finished. The cheap gap pre-check gates the (more
     # expensive) token estimate, mirroring ``_should_run_preflight_estimate``.
-    _idle_compacted = False
+    # Turn-local only: a successful idle boundary already adjudicated this
+    # transcript, so the rough preflight estimator must not immediately judge
+    # the same boundary again before real provider usage is available.
+    _turn_start_boundary_adjudicated = False
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
     if agent.compression_enabled and _idle_after > 0 and messages:
         _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
@@ -859,7 +862,7 @@ def build_turn_context(
                     # the protected tail.  Let the next real provider request
                     # adjudicate the idle boundary before another automatic
                     # turn-start compaction is allowed.
-                    _idle_compacted = True
+                    _turn_start_boundary_adjudicated = True
                     conversation_history = conversation_history_after_compression(
                         agent, messages, conversation_history
                     )
@@ -881,7 +884,7 @@ def build_turn_context(
     agent._turn_preflight_display_snapshot = None
     if (
         agent.compression_enabled
-        and not _idle_compacted
+        and not _turn_start_boundary_adjudicated
         and _should_run_preflight_estimate(
             messages,
             agent.context_compressor.protect_first_n,

@@ -1618,6 +1618,119 @@ class TestIncomingDocumentHandling:
         assert "can you parse this" in msg_event.text
 
     @pytest.mark.asyncio
+    async def test_forwarded_message_file_is_downloaded(self, adapter):
+        """A file attached to a forwarded/shared message (Slack puts it in
+        event.attachments[].files, flagged is_share — NOT in event.files)
+        must be downloaded and processed exactly like a direct attachment
+        (Pepper 2026-07-31: forwarded Slack attachment not extracted)."""
+        pdf_bytes = b"%PDF-1.4 forwarded content"
+
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            dl.return_value = pdf_bytes
+            event = self._make_event(
+                text="fyi",
+                files=[],
+                attachments=[
+                    {
+                        "is_share": True,
+                        "author_name": "Alice",
+                        "text": "check this out",
+                        "files": [
+                            {
+                                "mimetype": "application/pdf",
+                                "name": "forwarded-report.pdf",
+                                "url_private_download": "https://files.slack.com/forwarded-report.pdf",
+                                "size": len(pdf_bytes),
+                            }
+                        ],
+                    }
+                ],
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert len(msg_event.media_urls) == 1
+        assert os.path.exists(msg_event.media_urls[0])
+        assert msg_event.media_types == ["application/pdf"]
+
+    @pytest.mark.asyncio
+    async def test_forwarded_message_stub_file_hydrated_via_files_info(self, adapter):
+        """A forwarded message's file reference can arrive as a Slack Connect
+        stub (file_access=check_file_info, no URL fields). The adapter must
+        call files.info to hydrate the full object before downloading it,
+        mirroring the existing top-level-attachment stub handling."""
+        pdf_bytes = b"%PDF-1.4 hydrated forwarded content"
+        adapter._app.client.files_info = AsyncMock(
+            return_value={
+                "ok": True,
+                "file": {
+                    "id": "F_STUB",
+                    "mimetype": "application/pdf",
+                    "name": "hydrated.pdf",
+                    "url_private_download": "https://files.slack.com/hydrated.pdf",
+                    "size": len(pdf_bytes),
+                },
+            }
+        )
+
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            dl.return_value = pdf_bytes
+            event = self._make_event(
+                text="from another workspace",
+                files=[],
+                attachments=[
+                    {
+                        "is_share": True,
+                        "files": [
+                            {
+                                "id": "F_STUB",
+                                "file_access": "check_file_info",
+                            }
+                        ],
+                    }
+                ],
+            )
+            await adapter._handle_slack_message(event)
+
+        adapter._app.client.files_info.assert_awaited_once_with(file="F_STUB")
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert len(msg_event.media_urls) == 1
+        assert msg_event.media_types == ["application/pdf"]
+
+    @pytest.mark.asyncio
+    async def test_non_share_attachment_files_are_ignored(self, adapter):
+        """Link-unfurl attachments (e.g. is_msg_unfurl=False, no share flags)
+        must not have their nested files pulled in — only genuine
+        forward/share/reply-unfurl attachments should contribute files."""
+        event = self._make_event(
+            text="check this link",
+            files=[],
+            attachments=[
+                {
+                    "title": "Some Notion page",
+                    "title_link": "https://notion.so/page",
+                    "files": [
+                        {
+                            "mimetype": "application/pdf",
+                            "name": "unrelated.pdf",
+                            "url_private_download": "https://files.slack.com/unrelated.pdf",
+                        }
+                    ],
+                }
+            ],
+        )
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.media_urls == []
+
+    @pytest.mark.asyncio
     async def test_large_txt_not_injected(self, adapter):
         """A .txt file over 100KB should be cached but NOT injected."""
         content = b"x" * (200 * 1024)

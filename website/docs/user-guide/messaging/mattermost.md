@@ -225,6 +225,21 @@ To find a channel ID in Mattermost: open the channel, click the channel name hea
 
 When the bot is `@mentioned`, the mention is automatically stripped from the message before processing.
 
+## Thread context
+
+When the bot is drawn into an existing thread for the first time (a reply in a thread it has no session for yet), it fetches the prior posts in that thread via `GET /api/v4/posts/{root_id}/thread` and seeds them into the model's context so it understands the conversation it just joined. This runs on the **first turn only** — once a session exists for the thread, the history is already carried in the session and is not refetched.
+
+Seeded posts keep their own per-author attribution (`[username]: message`); only the triggering message is framed as `[New message]`. Posts from senders who are not on the allowlist (`MATTERMOST_ALLOWED_USERS`) are tagged `[unverified]` so the model treats their content as background reference rather than as instructions to act on.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MATTERMOST_THREAD_CONTEXT` | `on` | Set to `off` to disable first-turn thread-history seeding. |
+
+```yaml
+mattermost:
+  thread_context: on   # on (default) | off
+```
+
 ## Channel allowlist (`allowed_channels`)
 
 Restrict the bot to a fixed set of Mattermost channels. When set, the bot **only** responds in channels whose ID appears in the list — messages from any other channel are silently ignored, even if the bot is `@mentioned`.

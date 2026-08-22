@@ -97,11 +97,19 @@ describe('transcript tail cache', () => {
     // parts sharing an id. This path paints DIRECTLY into the view and the same
     // bytes are re-read every launch — without repair-on-read, an affected
     // install crash-loops forever even after upgrading.
-    const tool = (toolCallId: string) => ({ type: 'tool-call', toolCallId, toolName: 'terminal', args: {}, argsText: '' })
+    const tool = (toolCallId: string) => ({
+      type: 'tool-call',
+      toolCallId,
+      toolName: 'terminal',
+      args: {},
+      argsText: ''
+    })
+
     const poisoned = {
       messages: [{ id: 'assistant-p', role: 'assistant', parts: [tool('call-b'), tool('call-b')] }],
       savedAt: Date.now()
     }
+
     window.localStorage.setItem('hermes.transcript-tail.v1:sess-poisoned', JSON.stringify(poisoned))
 
     const loaded = loadTranscriptTail('sess-poisoned')

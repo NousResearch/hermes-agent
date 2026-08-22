@@ -91,7 +91,13 @@ describe('useRuntimeMessageRepository', () => {
       parts: [
         { type: 'text', text: 'running…' },
         { type: 'tool-call', toolCallId: 'call_00_DUP', toolName: 'terminal', args: {}, argsText: '' },
-        { type: 'tool-call', toolCallId: 'call_00_DUP', toolName: 'terminal', args: { done: true }, argsText: '{"done":true}' }
+        {
+          type: 'tool-call',
+          toolCallId: 'call_00_DUP',
+          toolName: 'terminal',
+          args: { done: true },
+          argsText: '{"done":true}'
+        }
       ] as ChatMessage['parts']
     }
 
@@ -103,6 +109,7 @@ describe('useRuntimeMessageRepository', () => {
     const toolParts = (assistant!.message.content as readonly { type: string; toolCallId?: string }[]).filter(
       part => part.type === 'tool-call'
     )
+
     expect(toolParts).toHaveLength(2)
     expect(new Set(toolParts.map(part => part.toolCallId)).size).toBe(2)
 
@@ -126,13 +133,16 @@ describe('useRuntimeMessageRepository', () => {
       role: 'assistant',
       parts: [{ type: 'text', text: 'working' }, tool('call-a'), tool('call-b')] as ChatMessage['parts']
     }
+
     const streamed: ChatMessage = {
       id: 'assistant-stream-49',
       role: 'assistant',
       parts: [tool('call-b'), tool('call-c')] as ChatMessage['parts']
     }
 
-    const { result } = renderHook(() => useRuntimeMessageRepository([text('user-1', 'user', 'go'), committed, streamed]))
+    const { result } = renderHook(() =>
+      useRuntimeMessageRepository([text('user-1', 'user', 'go'), committed, streamed])
+    )
 
     const assistant = result.current.messages.find(item => item.message.id === 'committed-49-assistant')
     expect(assistant).toBeDefined()
@@ -169,6 +179,7 @@ describe('useRuntimeMessageRepository', () => {
 
     for (const id of ['assistant-1', 'assistant-2']) {
       const item = result.current.messages.find(entry => entry.message.id === id)
+
       const ids = (item!.message.content as readonly { type: string; toolCallId?: string }[])
         .filter(part => part.type === 'tool-call')
         .map(part => part.toolCallId)

@@ -20,7 +20,13 @@ import {
 } from './chat-messages'
 
 const toolCallPart = (toolCallId: string): ChatMessagePart =>
-  ({ type: 'tool-call' as const, toolCallId, toolName: 'read_file', args: {} as never, argsText: '{}' }) as ChatMessagePart
+  ({
+    type: 'tool-call' as const,
+    toolCallId,
+    toolName: 'read_file',
+    args: {} as never,
+    argsText: '{}'
+  }) as ChatMessagePart
 
 const assistantWith = (parts: ChatMessagePart[]): ChatMessage =>
   ({ id: 'm1', role: 'assistant', parts, timestamp: 0 }) as unknown as ChatMessage

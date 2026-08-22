@@ -270,7 +270,11 @@ describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
   it('drops the copy the predecessor already carries, keeps the new call', () => {
     const merged = coalesceToolOnlyAssistants(
       [
-        assistant('committed-49-assistant', [{ type: 'text', text: 'working' } as ChatMessagePart, tool('call-a'), tool('call-b')]),
+        assistant('committed-49-assistant', [
+          { type: 'text', text: 'working' } as ChatMessagePart,
+          tool('call-a'),
+          tool('call-b')
+        ]),
         assistant('assistant-stream-49', [tool('call-b'), tool('call-c')])
       ],
       createToolMergeCache()
@@ -278,7 +282,9 @@ describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
 
     expect(merged).toHaveLength(1)
 
-    const ids = merged[0].parts.filter(part => part.type === 'tool-call').map(part => (part as { toolCallId: string }).toolCallId)
+    const ids = merged[0].parts
+      .filter(part => part.type === 'tool-call')
+      .map(part => (part as { toolCallId: string }).toolCallId)
 
     expect(ids).toEqual(['call-a', 'call-b', 'call-c'])
   })
@@ -294,7 +300,9 @@ describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
 
     expect(merged).toHaveLength(1)
 
-    const ids = merged[0].parts.filter(part => part.type === 'tool-call').map(part => (part as { toolCallId: string }).toolCallId)
+    const ids = merged[0].parts
+      .filter(part => part.type === 'tool-call')
+      .map(part => (part as { toolCallId: string }).toolCallId)
 
     expect(ids).toEqual(['call-a', 'call-b'])
   })

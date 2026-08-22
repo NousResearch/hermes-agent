@@ -688,11 +688,44 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
         return []
 
     threshold = int(cfg.get("crash_threshold", 2))
+    # An operator recovery after the last crash starts a new diagnostic
+    # window.  Keep the failed runs as incident history, but do not scan back
+    # through a deliberate unblock, schedule, reassign, decomposition, or
+    # other recovery transition and present those old crashes as current.
+    # This matters after kanban-doctor routes a card to triage: the run rows
+    # are intentionally preserved, while the intervention is recorded as an
+    # event rather than a synthetic successful run.
+    recovery_kinds = {
+        "unblocked",
+        "auto_triage_routed",
+        "decomposed",
+        "blocked",
+        "scheduled",
+        "reassigned",
+        "review_requested",
+        "changes_requested",
+        "review_reopened",
+        "promoted_manual",
+    }
+    recovery_at = max(
+        (
+            _event_ts(event)
+            for event in events
+            if _event_kind(event) in recovery_kinds
+        ),
+        default=0,
+    )
     ordered = sorted(runs, key=lambda r: _task_field(r, "id", 0))
     # Count trailing consecutive 'crashed' outcomes.
     consecutive = 0
     last_err = None
     for r in reversed(ordered):
+        ended_at = _task_field(r, "ended_at", None)
+        # Timestamps have one-second resolution. Equality is ambiguous: a
+        # retry can crash later in the same second as the recovery event. Bias
+        # toward showing that crash rather than hiding a new failure.
+        if recovery_at and ended_at is not None and int(ended_at) < recovery_at:
+            break
         outcome = _task_field(r, "outcome")
         if outcome == "crashed":
             consecutive += 1

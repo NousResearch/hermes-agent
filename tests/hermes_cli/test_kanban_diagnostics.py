@@ -54,11 +54,12 @@ def _event(kind, ts=None, **payload):
     }
 
 
-def _run(outcome="completed", run_id=1, error=None):
+def _run(outcome="completed", run_id=1, error=None, ended_at=None):
     return {
         "id": run_id,
         "outcome": outcome,
         "error": error,
+        "ended_at": ended_at,
     }
 
 
@@ -118,6 +119,53 @@ def test_repeated_crashes_truncates_huge_tracebacks():
     assert len(d.title) < 250
     # Detail contains the snippet with ellipsis.
     assert d.detail.endswith("…") or len(d.detail) < 700
+
+
+def test_repeated_crashes_clear_after_operator_recovery_event():
+    task = _task(status="todo")
+    runs = [
+        _run(outcome="crashed", run_id=1, ended_at=100),
+        _run(outcome="crashed", run_id=2, ended_at=200),
+    ]
+    events = [_event("auto_triage_routed", ts=201)]
+
+    diags = kd.compute_task_diagnostics(task, events, runs, now=300)
+
+    assert not [d for d in diags if d.kind == "repeated_crashes"]
+
+
+def test_repeated_crashes_restart_after_operator_recovery_event():
+    task = _task(status="todo")
+    runs = [
+        _run(outcome="crashed", run_id=1, ended_at=100),
+        _run(outcome="crashed", run_id=2, ended_at=200),
+        _run(outcome="crashed", run_id=3, ended_at=300),
+        _run(outcome="crashed", run_id=4, ended_at=400),
+    ]
+    events = [_event("unblocked", ts=250)]
+
+    diags = kd.compute_task_diagnostics(task, events, runs, now=500)
+    crashes = [d for d in diags if d.kind == "repeated_crashes"]
+
+    assert len(crashes) == 1
+    assert crashes[0].count == 2
+
+
+def test_repeated_crashes_do_not_hide_same_second_retry_failures():
+    task = _task(status="todo")
+    runs = [
+        _run(outcome="crashed", run_id=1, ended_at=100),
+        _run(outcome="crashed", run_id=2, ended_at=200),
+        _run(outcome="crashed", run_id=3, ended_at=250),
+        _run(outcome="crashed", run_id=4, ended_at=250),
+    ]
+    events = [_event("unblocked", ts=250)]
+
+    diags = kd.compute_task_diagnostics(task, events, runs, now=500)
+    crashes = [d for d in diags if d.kind == "repeated_crashes"]
+
+    assert len(crashes) == 1
+    assert crashes[0].count == 2
 
 
 # ---------------------------------------------------------------------------

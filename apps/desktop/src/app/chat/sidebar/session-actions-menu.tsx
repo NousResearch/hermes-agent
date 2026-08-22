@@ -31,7 +31,7 @@ import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
+import { $projectTree, detachSessionFromProject, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $connection,
@@ -148,7 +148,9 @@ function SessionColorSwatches({ sessionId }: { sessionId: string }) {
 // SessionColorSwatches). Re-homes the session's workspace at the target
 // project's root — the fix for a chat created in the wrong folder. The current
 // owner and folderless projects (the Home bucket) are excluded: there is
-// nothing to move into.
+// nothing to move into. A session that DOES have an owner also gets the way
+// back out: "Home" clears its workspace so the longest-prefix matcher drops it
+// into the "(no project)" bucket (#75539's other half).
 function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; sessionId: string; profile?: string }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
@@ -157,13 +159,29 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   const cwd = session?.cwd?.trim() || ''
   const currentProjectId = cwd ? projectIdForCwd(cwd) : null
   const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
+  const canDetach = Boolean(currentProjectId)
 
-  if (targets.length === 0) {
+  if (targets.length === 0 && !canDetach) {
     return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
   }
 
   return (
     <>
+      {canDetach && (
+        <>
+          <kit.Item
+            onSelect={() => {
+              triggerHaptic('selection')
+              detachSessionFromProject(sessionId, profile)
+                .then(() => notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(p.home) }))
+                .catch(err => notifyError(err, p.moveFailed))
+            }}
+          >
+            {p.home}
+          </kit.Item>
+          {targets.length > 0 && <kit.Separator />}
+        </>
+      )}
       {targets.map(node => (
         <kit.Item
           key={node.id}

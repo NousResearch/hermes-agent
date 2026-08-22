@@ -981,18 +981,18 @@ def _(rid, params: dict) -> dict:
     claim success in the UI while ``state.db`` kept the old cwd — two sources
     of truth disagreeing (#86626). In-flight tool calls keep the cwd they were
     launched with; the NEXT tool call uses the new workspace.
+
+    With ``detach: true`` ("Move to Home", the counterpart the desktop's
+    submenu was missing from #75539) the stored row's workspace is CLEARED
+    instead — cwd and git identity go NULL so the sidebar's longest-prefix
+    matcher drops the session into the "(no project)" / Home bucket. A live
+    session is refused: it needs a real directory anchor for its next tool
+    call, and there is no anchor for "Home" — clearing only the row would
+    recreate the exact db-vs-runtime disagreement #86626 fixed.
     """
     target = str(params.get("session_key") or "").strip()
     if not target:
         return _err(rid, 4007, "session_key required")
-    raw = str(params.get("cwd", "") or "").strip()
-    if not raw:
-        return _err(rid, 4016, "cwd required")
-    from hermes_constants import translate_cwd_for_wsl_backend
-
-    resolved = os.path.abspath(os.path.expanduser(translate_cwd_for_wsl_backend(raw)))
-    if not os.path.isdir(resolved):
-        return _err(rid, 4017, f"working directory does not exist: {raw}")
 
     # Snapshot under the lock — concurrent RPCs mutate _sessions (same pattern
     # as _cwd_for_session_key).
@@ -1003,6 +1003,29 @@ def _(rid, params: dict) -> dict:
             if sess.get("session_key") == target:
                 live, live_sid = sess, sid
                 break
+
+    if params.get("detach"):
+        if live is not None:
+            return _err(rid, 4009, "cannot detach a running session")
+        with _profile_db(params) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5007)
+            if not db.get_session(target):
+                return _err(rid, 4007, "session not found")
+            try:
+                db.clear_session_workspace(target)
+            except Exception as e:
+                return _err(rid, 5007, f"detach failed: {e}")
+        return _ok(rid, {"cwd": None, "branch": None, "git_repo_root": None})
+
+    raw = str(params.get("cwd", "") or "").strip()
+    if not raw:
+        return _err(rid, 4016, "cwd required")
+    from hermes_constants import translate_cwd_for_wsl_backend
+
+    resolved = os.path.abspath(os.path.expanduser(translate_cwd_for_wsl_backend(raw)))
+    if not os.path.isdir(resolved):
+        return _err(rid, 4017, f"working directory does not exist: {raw}")
 
     branch = _git_branch_for_cwd(resolved)
     root = _git_common_repo_root_for_cwd(resolved)

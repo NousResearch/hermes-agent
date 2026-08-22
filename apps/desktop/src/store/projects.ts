@@ -579,7 +579,7 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
 
 interface WorkspaceMovePayload {
   branch?: null | string
-  cwd?: string
+  cwd?: null | string
   git_repo_root?: null | string
 }
 
@@ -611,6 +611,27 @@ export async function moveSessionToProject(
       sessionMatchesStoredId(s, sessionId)
         ? { ...s, cwd: moved, git_branch: res.branch ?? null, git_repo_root: res.git_repo_root ?? null }
         : s
+    )
+  )
+  void refreshProjectTree()
+}
+
+// The inverse of moveSessionToProject: send a stored session back to the
+// "(no project)" / Home bucket ("Move to Home", the other half of #75539's
+// ask). The backend clears the row's cwd + git identity — the longest-prefix
+// matcher then claims nothing — and refuses a LIVE session, since a running
+// agent needs a directory anchor and "Home" is none. The error surfaces
+// verbatim; the cache mirror happens only after a successful clear.
+export async function detachSessionFromProject(sessionId: string, profile?: null | string): Promise<void> {
+  await gatewayRequest<WorkspaceMovePayload>('session.workspace.move', {
+    detach: true,
+    session_key: sessionId,
+    ...(profile ? { profile } : {})
+  })
+
+  setSessions(prev =>
+    prev.map(s =>
+      sessionMatchesStoredId(s, sessionId) ? { ...s, cwd: null, git_branch: null, git_repo_root: null } : s
     )
   )
   void refreshProjectTree()

@@ -346,6 +346,40 @@ class TestSessionLifecycle:
         assert session["cwd"] == "/work/repo"
         assert session["git_branch"] == "pets-feature"
 
+    def test_clear_session_workspace_detaches_to_home(self, db):
+        """Move-to-Home clears cwd AND git identity so the sidebar's matcher
+        claims nothing — and bumps the git generation so an async probe from
+        the OLD cwd cannot republish its branch/root after the detach."""
+        db.create_session(session_id="s1", source="desktop")
+        db.update_session_cwd(
+            "s1", "/work/repo", git_branch="main", git_repo_root="/work/repo"
+        )
+        generation_before = db._conn.execute(
+            "SELECT git_metadata_generation FROM sessions WHERE id = ?", ("s1",)
+        ).fetchone()[0]
+
+        assert db.clear_session_workspace("s1") is True
+
+        session = db.get_session("s1")
+        assert session["cwd"] is None
+        assert session["git_branch"] is None
+        assert session["git_repo_root"] is None
+        generation_after = db._conn.execute(
+            "SELECT git_metadata_generation FROM sessions WHERE id = ?", ("s1",)
+        ).fetchone()[0]
+        assert generation_after == generation_before + 1
+
+        # A stale probe from the old cwd loses its race against the detach.
+        assert (
+            db.publish_session_git_metadata(
+                "s1", "/work/repo", generation_before, git_branch="main", git_repo_root="/work/repo"
+            )
+            is False
+        )
+
+        # Unknown session: nothing cleared, honest False.
+        assert db.clear_session_workspace("nope") is False
+
 
 
 

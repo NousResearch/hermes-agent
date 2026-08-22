@@ -6501,6 +6501,33 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
+    def clear_session_workspace(self, session_id: str) -> bool:
+        """Detach a stored session from any workspace (Move to Home).
+
+        Nulls ``cwd`` together with the recorded Git identity so the sidebar's
+        longest-prefix matcher drops the row into the "(no project)" / Home
+        bucket instead of keeping it grouped under the project it left (the
+        stale ``git_repo_root`` would survive a cwd-only clear). Also bumps
+        ``git_metadata_generation`` so an async probe launched for the OLD cwd
+        can never republish its branch/root after the detach — the same
+        ordering guard :meth:`update_session_cwd` claims for moves.
+
+        Returns True when a row was actually cleared.
+        """
+        if not session_id:
+            return False
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET cwd = NULL, git_branch = NULL, git_repo_root = NULL, "
+                "git_metadata_generation = COALESCE(git_metadata_generation, 0) + 1 "
+                "WHERE id = ?",
+                (session_id,),
+            )
+            return cursor.rowcount == 1
+
+        return bool(self._execute_write(_do))
+
     def publish_session_git_metadata(
         self,
         session_id: str,

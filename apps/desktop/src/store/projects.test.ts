@@ -18,6 +18,7 @@ import {
   ALL_PROJECTS,
   beginSessionMutation,
   createProject,
+  detachSessionFromProject,
   endSessionMutation,
   enterProject,
   exitProjectScope,
@@ -171,6 +172,79 @@ describe('projects RPC profile forwarding', () => {
 
     expect(request).not.toHaveBeenCalled()
     setShowAllProfiles(false)
+  })
+})
+
+describe('detachSessionFromProject (Move to Home)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $sessions.set([])
+  })
+
+  afterEach(() => {
+    $sessions.set([])
+  })
+
+  it('clears the workspace on the backend and mirrors it into the session cache', async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === 'session.workspace.move') {
+        return { branch: null, cwd: null, git_repo_root: null }
+      }
+
+      // The post-move tree refresh re-reads the grouping; echo an empty tree.
+      return { active_id: null, projects: [], scoped_session_ids: [] }
+    })
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    $sessions.set([
+      {
+        cwd: '/work/demo',
+        ended_at: null,
+        git_branch: 'main',
+        git_repo_root: '/work/demo',
+        id: 's1',
+        input_tokens: 0
+      } as never
+    ])
+
+    await detachSessionFromProject('s1')
+
+    expect(request).toHaveBeenCalledWith(
+      'session.workspace.move',
+      expect.objectContaining({ detach: true, session_key: 's1' })
+    )
+    const row = $sessions.get().find(s => s.id === 's1')
+    expect(row?.cwd).toBeNull()
+    expect(row?.git_branch).toBeNull()
+    expect(row?.git_repo_root).toBeNull()
+  })
+
+  it('leaves the cache untouched when the backend refuses (e.g. a running session)', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('cannot detach a running session')
+    })
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    $sessions.set([
+      { cwd: '/work/demo', ended_at: null, git_branch: 'main', git_repo_root: '/work/demo', id: 's1', input_tokens: 0 } as never
+    ])
+
+    await expect(detachSessionFromProject('s1')).rejects.toThrow('cannot detach a running session')
+    expect($sessions.get()[0]?.cwd).toBe('/work/demo')
+  })
+
+  it('routes the clear to the owning profile when one is given', async () => {
+    const request = vi.fn(async () => ({ branch: null, cwd: null, git_repo_root: null }))
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await detachSessionFromProject('s1', 'tabby')
+
+    expect(request).toHaveBeenCalledWith(
+      'session.workspace.move',
+      expect.objectContaining({ detach: true, profile: 'tabby', session_key: 's1' })
+    )
   })
 })
 

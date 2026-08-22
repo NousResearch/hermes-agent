@@ -19907,3 +19907,60 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+def test_workspace_move_detach_clears_stored_row(monkeypatch):
+    """``detach: true`` sends a stored session back to Home: the row's cwd and
+    git identity are CLEARED (NULL), so the sidebar's longest-prefix matcher
+    drops it into the "(no project)" bucket — the other half of #75539. A
+    detach is a stored-row operation only: no live re-home happens."""
+    target = "stored-detach-session"
+    cleared = {}
+
+    class FakeDB:
+        def get_session(self, session_id):
+            return {"id": session_id}
+
+        def clear_session_workspace(self, session_id):
+            cleared["session_id"] = session_id
+            return True
+
+        def close(self):
+            pass
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def _fake_db(_params):
+        yield FakeDB()
+
+    monkeypatch.setattr(server, "_profile_db", _fake_db)
+
+    res = server._methods["session.workspace.move"]("rid", {"session_key": target, "detach": True})
+
+    assert "error" not in res, res
+    assert cleared["session_id"] == target
+    assert res["result"]["cwd"] is None
+    assert res["result"]["branch"] is None
+    assert res["result"]["git_repo_root"] is None
+
+
+def test_workspace_move_detach_refuses_live_session(monkeypatch):
+    """A RUNNING session has no "Home" to land in — it needs a real directory
+    anchor for its next tool call. Clearing only the stored row would recreate
+    the db-vs-runtime disagreement #86626 fixed, so the detach is refused."""
+    target = "stored-running-session"
+
+    def _fail_db(_params):
+        raise AssertionError("detach of a live session must not touch the database")
+
+    monkeypatch.setattr(server, "_profile_db", _fail_db)
+
+    server._sessions["live-sid"] = {"session_key": target, "running": True, "cwd": "/tmp/project"}
+    try:
+        res = server._methods["session.workspace.move"]("rid", {"session_key": target, "detach": True})
+    finally:
+        server._sessions.clear()
+
+    assert res["error"]["code"] == 4009
+    assert "running" in res["error"]["message"]

@@ -179,6 +179,15 @@ class ReadResult:
 
 
 @dataclass
+class FilePrefixResult:
+    """Internal binary-safe prefix read across a file backend boundary."""
+
+    content: bytes = b""
+    missing: bool = False
+    error: Optional[str] = None
+
+
+@dataclass
 class WriteResult:
     """Result from writing a file."""
     bytes_written: int = 0
@@ -535,6 +544,10 @@ class FileOperations(ABC):
     def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
         """Read complete binary content as base64 across the backend boundary."""
         return ReadResult(error="Binary reads are not implemented for this backend")
+
+    def read_file_prefix(self, path: str, length: int) -> FilePrefixResult:
+        """Read at most ``length`` bytes without decoding or reading to EOF."""
+        return FilePrefixResult(error="Prefix reads are not implemented for this backend")
 
     @abstractmethod
     def write_file(self, path: str, content: str,
@@ -1831,6 +1844,47 @@ class ShellFileOperations(FileOperations):
             file_size=file_size,
             is_binary=True,
         )
+
+    def read_file_prefix(self, path: str, length: int) -> FilePrefixResult:
+        """Read a bounded binary prefix from any shell-backed environment."""
+        if length < 0:
+            return FilePrefixResult(error="Prefix length must be non-negative")
+
+        path = self._expand_path(path)
+        arg = self._escape_shell_arg(path)
+        missing_marker = "__HERMES_PREFIX_MISSING__"
+        not_regular_marker = "__HERMES_PREFIX_NOT_REGULAR__"
+        # Capture ``head`` into a temporary file before base64 encoding so its
+        # exit status cannot be hidden by a successful downstream pipeline.
+        command = (
+            f"if [ ! -e {arg} ]; then printf '{missing_marker}'; "
+            f"elif [ ! -f {arg} ]; then printf '{not_regular_marker}'; "
+            "else "
+            "t=$(mktemp \"${TMPDIR:-/tmp}/.hermes-prefix.XXXXXX\") || exit 1; "
+            "trap 'rm -f \"$t\"' EXIT; "
+            f"head -c {int(length)} {arg} > \"$t\" 2>/dev/null || exit 1; "
+            "base64 < \"$t\"; "
+            "fi"
+        )
+        result = self._exec(command)
+        output = _strip_terminal_fence_leaks(result.stdout).strip()
+        if result.exit_code != 0:
+            return FilePrefixResult(
+                error=f"Failed to inspect file prefix: {path}: {output or 'backend read failed'}"
+            )
+        if output == missing_marker:
+            return FilePrefixResult(missing=True)
+        if output == not_regular_marker:
+            return FilePrefixResult(error=f"Cannot inspect '{path}': not a regular file")
+
+        compact = "".join(output.split())
+        try:
+            content = base64.b64decode(compact, validate=True) if compact else b""
+        except (ValueError, binascii.Error):
+            return FilePrefixResult(error=f"Backend returned invalid file prefix for: {path}")
+        if len(content) > length:
+            return FilePrefixResult(error=f"Backend returned an oversized file prefix for: {path}")
+        return FilePrefixResult(content=content)
 
     def delete_file(self, path: str) -> WriteResult:
         """Delete a single file.

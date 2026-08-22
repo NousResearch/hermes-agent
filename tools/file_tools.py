@@ -13,9 +13,11 @@ from pathlib import Path, PurePosixPath
 
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import (
+    OLE_COMPOUND_MAGIC,
     has_binary_extension,
     has_opaque_document_extension,
     is_pdf_path,
+    is_pot_path,
 )
 from tools.file_operations import (
     ShellFileOperations,
@@ -2187,6 +2189,9 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     - Opaque container formats (.doc/.docx/.xls/.xlsx/.ppt/.pptx/.odt/.ods/
       .odp): always rejected — text bytes are never a valid document, whether
       creating or overwriting.
+    - .pot: rejected only when an existing file has the OLE compound signature
+      used by legacy PowerPoint templates. The extension also belongs to
+      plain-text gettext templates, which text tools must be able to author.
     - .pdf: rejected only when OVERWRITING an existing regular file. Raw PDF
       syntax is text-authorable, so new-file creation stays allowed.
     """
@@ -2200,6 +2205,60 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
             "python-docx/openpyxl/python-pptx via the terminal to create or edit "
             "this document."
         )
+    if is_pot_path(filepath):
+        try:
+            resolved = _resolve_path_for_task(filepath, task_id)
+        except Exception:
+            resolved = Path(_expand_tilde(filepath))
+        try:
+            file_ops = _get_file_ops(task_id)
+        except Exception as exc:
+            return (
+                f"Refusing to write '{filepath}' because its .pot file could not "
+                f"be inspected through the active file backend: {exc}"
+            )
+        if _file_ops_uses_host_paths(file_ops):
+            try:
+                prefix = b""
+                host_path = Path(resolved)
+                if host_path.exists() and not host_path.is_file():
+                    return (
+                        f"Refusing to write '{filepath}' because its existing .pot file "
+                        "could not be inspected safely: not a regular file"
+                    )
+                if host_path.is_file():
+                    with host_path.open("rb") as existing:
+                        prefix = existing.read(len(OLE_COMPOUND_MAGIC))
+            except OSError as exc:
+                return (
+                    f"Refusing to write '{filepath}' because its existing .pot file "
+                    f"could not be inspected safely: {exc}"
+                )
+        else:
+            try:
+                inspected = file_ops.read_file_prefix(
+                    str(resolved), len(OLE_COMPOUND_MAGIC)
+                )
+            except Exception as exc:
+                return (
+                    f"Refusing to write '{filepath}' because its existing .pot file "
+                    f"could not be inspected safely: {exc}"
+                )
+            if inspected.error:
+                return (
+                    f"Refusing to write '{filepath}' because its existing .pot file "
+                    f"could not be inspected safely: {inspected.error}"
+                )
+            prefix = b"" if inspected.missing else inspected.content
+
+        if prefix == OLE_COMPOUND_MAGIC:
+            return (
+                f"Refusing to overwrite legacy PowerPoint template '{filepath}' "
+                "with plain text. The existing .pot file is an OLE compound "
+                "document; use the powerpoint skill or a compatible library via "
+                "the terminal to modify it. Plain-text gettext .pot files remain "
+                "writable."
+            )
     if is_pdf_path(filepath):
         try:
             resolved = Path(_resolve_path_for_task(filepath, task_id))
@@ -2263,6 +2322,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
+            if is_pot_path(path):
+                binary_doc_err = _check_binary_document_write(path, task_id)
+                if binary_doc_err:
+                    return tool_error(binary_doc_err)
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
@@ -2277,6 +2340,13 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         # subagents can't interleave on the same file.  Different paths
         # remain fully parallel.
         with file_state.lock_path(_resolved):
+            # Reinspect ambiguous .pot files under the mutation lock. Another
+            # in-process writer may have replaced the file after the initial
+            # preflight check while this operation waited for the lock.
+            if is_pot_path(path):
+                binary_doc_err = _check_binary_document_write(path, task_id)
+                if binary_doc_err:
+                    return tool_error(binary_doc_err)
             # Cross-agent staleness wins over per-task warning when both
             # fire — its message names the sibling subagent.
             cross_warning = file_state.check_stale(task_id, _resolved)
@@ -2416,6 +2486,14 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         with ExitStack() as _locks:
             for _r in _resolved_paths:
                 _locks.enter_context(file_state.lock_path(_r))
+
+            # Reinspect ambiguous .pot files only after every target lock is
+            # held, closing the gap between preflight validation and mutation.
+            for _p in _content_write_paths:
+                if is_pot_path(_p):
+                    binary_doc_err = _check_binary_document_write(_p, task_id)
+                    if binary_doc_err:
+                        return tool_error(binary_doc_err)
 
             # Collect warnings — cross-agent registry first (names sibling),
             # then per-task tracker as a fallback.

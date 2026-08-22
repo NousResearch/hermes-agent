@@ -34,6 +34,12 @@ BINARY_EXTENSIONS = frozenset({
 })
 
 
+# Legacy PowerPoint .pot templates use the OLE compound document container.
+# The extension is shared with plain-text gettext templates, so callers must
+# inspect this signature before deciding whether a .pot file is safe to edit.
+OLE_COMPOUND_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
+
+
 def has_binary_extension(path: str) -> bool:
     """Check if a file path has a binary extension. Pure string check, no I/O."""
     dot = path.rfind(".")
@@ -53,7 +59,7 @@ def has_binary_extension(path: str) -> bool:
 OPAQUE_DOCUMENT_EXTENSIONS = frozenset({
     ".doc", ".docx", ".docm",
     ".xls", ".xlsx", ".xlsm", ".xlsb",
-    ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
+    ".ppt", ".pps", ".pptx", ".pptm", ".ppsx", ".ppsm",
     ".odt", ".ods", ".odp",
     ".rtf", ".epub",
 })
@@ -73,3 +79,8 @@ def has_opaque_document_extension(path: str) -> bool:
 def is_pdf_path(path: str) -> bool:
     """True when the path has a .pdf extension. Pure string check, no I/O."""
     return path.lower().endswith(".pdf")
+
+
+def is_pot_path(path: str) -> bool:
+    """True for the ambiguous gettext/PowerPoint .pot extension."""
+    return path.lower().endswith(".pot")

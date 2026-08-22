@@ -339,16 +339,35 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     #    gateway loads it on next start.  Without this the channel stays
     #    disabled even after a successful provisioning run, silently
     #    keeping iMessage offline.
-    try:
-        from hermes_cli.config import write_platform_config_field
-        write_platform_config_field("photon", "enabled", True, raw=True)
-        print("  ✓ photon platform enabled in config.yaml")
-    except Exception as e:
-        print(f"      (could not enable Photon in config: {e})", file=sys.stderr)
+    rc = _enable_photon_platform()
+    if rc != 0:
+        return rc
 
     print()
     print("✓ Photon setup complete.")
     print("  Start the gateway:  hermes gateway start")
+    return 0
+
+
+def _enable_photon_platform() -> int:
+    """Flip ``photon.enabled`` on in config.yaml. Nonzero when it did not take.
+
+    Reporting success with the platform still disabled would mislead the
+    operator: setup would look finished while the gateway cannot load the
+    channel on next start.
+    """
+    try:
+        from hermes_cli.config import write_platform_config_field
+        write_platform_config_field("photon", "enabled", True, raw=True)
+    except Exception as e:
+        print(f"could not enable Photon in config: {e}", file=sys.stderr)
+        print(
+            "      Photon stays disabled until config.yaml is writable; "
+            "the gateway will not load the channel.",
+            file=sys.stderr,
+        )
+        return 1
+    print("  ✓ photon platform enabled in config.yaml")
     return 0
 
 
@@ -522,7 +541,10 @@ def gateway_setup() -> None:
         no_browser=False,
         skip_sidecar_install=False,
     )
-    _cmd_setup(args)
+    # A failed setup must fail the wizard step, not read as completed.
+    rc = _cmd_setup(args)
+    if rc:
+        raise SystemExit(rc)
 
 
 # ---------------------------------------------------------------------------

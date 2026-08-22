@@ -115,7 +115,8 @@ class MemoryPrefetchResult:
     Existing providers may continue returning ``str``. ``MemoryManager``
     converts that legacy return to this shape internally, preserving the
     context bytes. The manager also replaces provider payloads with bounded,
-    recursively immutable values before exposing this result to observers.
+    recursively immutable values before returning this trusted result and
+    before exposing its observation tuple to the privacy-limited hook.
     """
 
     context: str = ""

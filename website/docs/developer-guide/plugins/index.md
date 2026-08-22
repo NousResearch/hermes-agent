@@ -929,7 +929,7 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
 | [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
 | [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
-| `memory_prefetch` | After a prefetch operation produces a valid structured observation | Python callback: `query: str, session_id: str, result: MemoryPrefetchResult` | ignored; observer-only (shell hooks cannot carry its immutable result) |
+| `memory_prefetch` | After a prefetch operation produces a valid structured observation | Python callback: `query: str, session_id: str, observations: tuple[MemoryObservation, ...], context_sha256: str, context_byte_length: int` | ignored; observer-only (shell hooks cannot carry its immutable observation tuple) |
 | `pre_api_request` | Before each raw provider API request (several per turn when the model calls tools) | `session_id: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, message_count: int, tool_count: int, approx_input_tokens: int, max_tokens: int, request: dict` | ignored |
 | `post_api_request` | After each raw provider API request returns | `pre_api_request` fields plus `api_duration: float, finish_reason: str, response_model: str \| None, usage: dict, response: dict, assistant_content_chars: int, assistant_tool_call_count: int` | ignored |
 | `api_request_error` | A provider API call raised | correlation fields plus `status_code: int \| None, retry_count: int \| None, max_retries: int \| None, retryable: bool \| None, reason: str \| None, error: dict, request: dict` | ignored |
@@ -944,10 +944,14 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 
 Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
 
-`memory_prefetch` receives the exact immutable result for the operation that
-just produced it. Its context may contain raw recalled content, so it is a
-privacy-sensitive in-process hook; Hermes provides no outbound telemetry or
-storage for it, and callback failures remain isolated.
+`memory_prefetch` receives only the exact immutable observation tuple for the
+operation that just produced it, plus its clean query, session identifier, and
+SHA-256/UTF-8-byte-length binding for the final merged context. The query is
+sensitive and may contain raw user input. Raw recalled/source content is not
+included by Hermes: it can appear only when a provider explicitly authors it
+inside that provider's observation payload. Legacy/string-only provider context
+never reaches this hook. Hermes provides no outbound telemetry or storage for
+this privacy-sensitive in-process event, and callback failures remain isolated.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 

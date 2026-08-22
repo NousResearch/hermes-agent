@@ -25,6 +25,7 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -643,11 +644,13 @@ class MemoryManager:
         query: str,
         session_id: str,
     ) -> None:
-        """Notify opt-in plugins about this exact prefetch operation.
+        """Notify opt-in plugins without exposing merged recalled context.
 
-        The result is immutable and created for this invocation; no mutable
-        provider ``last_*`` state is consulted. Hook return values are ignored
-        so observers cannot transform context or affect the agent turn.
+        The hook receives only the validated, provider-bound observation tuple,
+        operation identifiers, and a digest/byte length for the final merged
+        context. The public result remains available to trusted direct callers,
+        but must never cross this observer boundary. Hook return values are
+        ignored so observers cannot transform context or affect the agent turn.
         """
         if not result.observations:
             return
@@ -656,11 +659,14 @@ class MemoryManager:
 
             if not has_hook("memory_prefetch"):
                 return
+            context_bytes = result.context.encode("utf-8")
             invoke_hook(
                 "memory_prefetch",
                 query=query,
                 session_id=session_id,
-                result=result,
+                observations=result.observations,
+                context_sha256=hashlib.sha256(context_bytes).hexdigest(),
+                context_byte_length=len(context_bytes),
             )
         except Exception as exc:
             # Plugin hook dispatch is best-effort; memory injection must remain

@@ -166,14 +166,27 @@ exception keeps the existing fail-isolated behavior and may omit that
 provider's context, as it did for string prefetch failures.
 
 The `memory_prefetch` plugin hook is an opt-in, observer-only boundary. It
-fires synchronously only when a prefetch produced observations and receives
-the exact immutable `MemoryPrefetchResult` for that operation. Hook return
-values cannot transform context, and callback errors are isolated by the
-normal plugin hook registry. The result's context may contain raw recalled
-content: plugins must treat it as sensitive and should not persist or send it
-elsewhere without their own explicit user-facing policy. Hermes provides no
-telemetry, network delivery, or storage for this event. The operation-bound
-result avoids a mutable provider `last_*` getter and therefore does not share
+fires synchronously only when a prefetch produced at least one valid structured
+observation and receives exactly these keyword fields:
+
+- `observations`: the immutable tuple of validated `MemoryObservation` envelopes;
+  each envelope is provider-bound and its JSON payload is recursively frozen.
+- `query`: the exact clean prefetch query for this operation. This is sensitive
+  and may contain raw user input; it is retained because an exact-operation
+  consumer needs it.
+- `session_id`: the operation's session identifier.
+- `context_sha256`: the lowercase hexadecimal SHA-256 digest of the final
+  merged context's exact UTF-8 bytes.
+- `context_byte_length`: the byte length of those exact UTF-8 bytes.
+
+The hook never receives `MemoryPrefetchResult` or any other object from which
+merged context can be read. Raw recalled/source content may therefore reach the
+hook only when the provider explicitly authors it into that provider's
+observation payload. Legacy/string-only provider context never reaches this
+hook. Hook return values cannot transform context, and callback errors are
+isolated by the normal plugin hook registry. Hermes provides no telemetry,
+network delivery, or storage for this event. The operation-bound observation
+tuple avoids a mutable provider `last_*` getter and therefore does not share
 observations between concurrent sessions.
 
 The current Honcho provider remains on its existing formatted-string path in

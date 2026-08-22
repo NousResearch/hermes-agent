@@ -3936,6 +3936,8 @@ class SessionStore:
         session_id: str,
         messages: List[Dict[str, Any]],
         active_only: bool = False,
+        archive_dropped: bool = False,
+        expected_active_ids: Optional[List[int]] = None,
     ) -> bool:
         """Replace the entire transcript for a session with new messages.
 
@@ -3950,6 +3952,10 @@ class SessionStore:
         may carry archived rows must pass ``active_only=True`` so only the
         live rows are replaced.
 
+        Pass ``archive_dropped=True`` for a user-initiated rewind that must
+        keep the replaced live rows recoverable. The default stays destructive
+        for callers such as compression and intentional content redaction.
+
         Returns ``True`` when the write lands (or there is no DB to write to)
         and ``False`` when the canonical write fails. Most callers can ignore
         the result, but callers that would otherwise commit a destructive state
@@ -3959,15 +3965,47 @@ class SessionStore:
         """
         if not self._db:
             return True
-        self._clear_dirty_transcript(session_id)
-        try:
-            self._db.replace_messages(session_id, messages, active_only=active_only)
+        drain_lock = getattr(self, "_transcript_drain_lock", None)
+        if drain_lock is None:
+            # Compatibility for old in-memory/test instances created via
+            # object.__new__ before this field existed.
+            drain_lock = threading.RLock()
+            self._transcript_drain_lock = drain_lock
+        # Keep append queue mutation outside the canonical write window. A
+        # failed rewrite must retain the exact pending retry state; a successful
+        # rewrite may then discard that now-stale backlog. Using the same outer
+        # lock as append_to_transcript also prevents a concurrent append from
+        # being queued during the write and accidentally cleared afterward.
+        with drain_lock:
+            try:
+                self._db.replace_messages(
+                    session_id,
+                    messages,
+                    active_only=active_only,
+                    archive_dropped=archive_dropped,
+                    expected_active_ids=expected_active_ids,
+                )
+            except Exception as e:
+                # Durable rewinds deliberately fail closed when the loaded snapshot
+                # no longer maps byte-for-byte to the active rows. Keep the client
+                # response neutral, but retain the concrete invariant here so a
+                # rejected /retry is diagnosable without exposing transcript data.
+                logger.warning(
+                    "Refused to rewrite transcript for session %s: %s",
+                    session_id,
+                    e,
+                )
+                return False
+            self._clear_dirty_transcript(session_id)
             return True
-        except Exception as e:
-            logger.debug("Failed to rewrite transcript in DB: %s", e)
-            return False
 
-    def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
+    def load_transcript(
+        self,
+        session_id: str,
+        *,
+        include_row_ids: bool = False,
+        repair_alternation: bool = True,
+    ) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript.
 
         state.db is the canonical store. The legacy JSONL fallback was removed
@@ -3999,12 +4037,13 @@ class SessionStore:
         except Exception:
             pass
         try:
-            # repair_alternation: this load feeds LIVE REPLAY. A durable
-            # user;user wedge (e.g. a turn that persisted no assistant row)
-            # would otherwise re-trigger the pre-request repair on every
-            # request forever — heal it once at the restore boundary.
+            # Live replay repairs durable role wedges at the restore boundary.
+            # Snapshot-sensitive rewrites such as /retry opt out: synthetic or
+            # coalesced turns cannot be mapped losslessly back to durable rows.
             return self._db.get_messages_as_conversation(
-                session_id, repair_alternation=True
+                session_id,
+                repair_alternation=repair_alternation,
+                include_row_ids=include_row_ids,
             )
         except Exception as e:
             # A failed read must be distinguishable from an empty transcript:

@@ -6056,13 +6056,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     )
                     total_messages += len(tail_ids)
                     for r in tail_rows:
-                        raw = r["tool_calls"]
-                        if raw:
-                            try:
-                                parsed = json.loads(raw) if isinstance(raw, str) else raw
-                                total_tool_calls += len(parsed) if isinstance(parsed, list) else 0
-                            except (TypeError, ValueError):
-                                pass
+                        total_tool_calls += self._tool_calls_json_and_count(
+                            r["tool_calls"]
+                        )[1]
             conn.execute(
                 "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
                 (total_messages, total_tool_calls, child_session_id),
@@ -9551,6 +9547,26 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return value
         return json.dumps(value)
 
+    @staticmethod
+    def _tool_calls_json_and_count(value: Any) -> tuple[Optional[str], int]:
+        """Return the canonical persisted form and aggregate count.
+
+        ``tool_calls`` accepts decoded values and JSON text because live writes,
+        imports, forks, and rewrites all share the same insertion paths. Empty or
+        invalid values are normalized to SQL NULL and therefore count as zero;
+        non-empty lists count their entries, while a legacy non-list JSON value
+        is one call. Keeping both outputs together prevents counters from
+        describing data that was not actually persisted.
+        """
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                return None, 0
+        if not value:
+            return None, 0
+        return json.dumps(value), len(value) if isinstance(value, list) else 1
+
     def append_message(
         self,
         session_id: str,
@@ -9604,15 +9620,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         reasoning_details_json = self._reasoning_json_text(reasoning_details)
         codex_items_json = self._reasoning_json_text(codex_reasoning_items)
         codex_message_items_json = self._reasoning_json_text(codex_message_items)
-        # tool_calls may arrive as a Python list (from the live agent) or
-        # as a JSON string (from import/export). Parse first to avoid
-        # double-encoding.
-        if isinstance(tool_calls, str):
-            try:
-                tool_calls = json.loads(tool_calls)
-            except (json.JSONDecodeError, TypeError):
-                tool_calls = []
-        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        tool_calls_json, num_tool_calls = self._tool_calls_json_and_count(tool_calls)
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
@@ -9626,11 +9634,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     message_timestamp = float(timestamp)
             except (TypeError, ValueError):
                 logger.debug("Ignoring invalid explicit message timestamp: %r", timestamp)
-
-        # Pre-compute tool call count
-        num_tool_calls = 0
-        if tool_calls is not None:
-            num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
         def _do(conn):
             self._check_transcript_write_guards(
@@ -10032,7 +10035,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         tool_calls_total = 0
         for msg in messages:
             role = msg.get("role", "unknown")
-            tool_calls = msg.get("tool_calls")
+            tool_calls_json, tool_call_count = self._tool_calls_json_and_count(
+                msg.get("tool_calls")
+            )
             message_timestamp = now_ts
             if msg.get("timestamp") is not None:
                 try:
@@ -10053,16 +10058,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             reasoning_details_json = self._reasoning_json_text(reasoning_details)
             codex_items_json = self._reasoning_json_text(codex_reasoning_items)
             codex_message_items_json = self._reasoning_json_text(codex_message_items)
-            # tool_calls may arrive as a Python list (from the live agent)
-            # or as a JSON string (from import_sessions / export_session,
-            # which store it as TEXT). json.dumps on an already-serialized
-            # string double-encodes it, so parse first.
-            if isinstance(tool_calls, str):
-                try:
-                    tool_calls = json.loads(tool_calls)
-                except (json.JSONDecodeError, TypeError):
-                    tool_calls = []
-            tool_calls_json = json.dumps(tool_calls) if tool_calls else None
             # Accept either `platform_message_id` (new explicit name) or
             # `message_id` (yuanbao's existing convention on message dicts).
             platform_msg_id = (
@@ -10104,10 +10099,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if isinstance(msg, dict) and cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
             inserted += 1
-            if tool_calls is not None:
-                tool_calls_total += (
-                    len(tool_calls) if isinstance(tool_calls, list) else 1
-                )
+            tool_calls_total += tool_call_count
             now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)
         return inserted, tool_calls_total
 
@@ -10117,6 +10109,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         messages: List[Dict[str, Any]],
         active_only: bool = False,
         archive_dropped: bool = False,
+        expected_active_ids: Optional[List[int]] = None,
     ) -> None:
         """Atomically replace the stored messages for a session.
 
@@ -10138,19 +10131,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         archived. ``message_count``/``tool_call_count`` then track the live set,
         matching :meth:`archive_and_compact`.
 
-        Pass ``archive_dropped=True`` to SOFT-archive the live rows instead of
-        DELETEing them: the replaced turns stay on disk with ``active = 0``,
-        ``compacted = 0`` — the same "the user took it back" marking
-        :meth:`rewind_to_message` applies — and stay readable via
-        :meth:`get_messages` with ``include_inactive=True``. This is the mode a
-        rewind/edit/regenerate must use: those flows overwrite a transcript the
-        user may not have meant to drop, and a plain DELETE also evicts the rows
-        from the FTS index, leaving nothing to recover from (#82756). It implies
-        active-only handling — already-archived rows are never touched — so
-        ``active_only`` is redundant with it. The rewritten set is inserted as
-        fresh active rows exactly as in the destructive path, so the live view
-        is identical either way; only the durability of the dropped turns
-        differs.
+        Pass ``archive_dropped=True`` to keep replaced live rows recoverable as
+        ``active = 0, compacted = 0``. By default this preserves the established
+        replacement contract: archive the complete live set and insert
+        ``messages`` as fresh rows. TUI row-id recovery depends on that mode when
+        its verified live-memory ordering differs from the durable projection.
+
+        ``expected_active_ids`` selects the stricter prefix-preserving mode used
+        by gateway ``/retry``. It pins the complete active snapshot, requires
+        ``messages`` to be its exact prefix, keeps retained row ids, and archives
+        only the omitted suffix. Validation and the suffix update happen in the
+        same write transaction so a stale retry fails closed.
         """
 
         active_clause = " AND active = 1" if active_only else ""
@@ -10166,14 +10157,83 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 and session["end_reason"] == "compression"
             ):
                 raise CompressionSessionClosedError(session_id)
-            if archive_dropped:
-                # Content-preserving UPDATE: the rows keep their FTS entries
-                # (the messages_fts triggers fire on INSERT / DELETE / UPDATE
-                # of content columns, not on `active`), so the replaced turns
-                # stay readable via get_messages(include_inactive=True) and
-                # searchable with include_inactive=True after the rewrite.
+            if archive_dropped and expected_active_ids is not None:
+                rows = conn.execute(
+                    f"SELECT {self._CONVERSATION_ROW_COLUMNS} "
+                    "FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                    (session_id,),
+                ).fetchall()
+                active_ids = [int(row["id"]) for row in rows]
+                if active_ids != expected_active_ids:
+                    raise RuntimeError(
+                        "active transcript changed during durable rewrite"
+                    )
+
+                projected = self._rows_to_conversation(
+                    rows,
+                    session_id=session_id,
+                    include_ancestors=False,
+                    repair_alternation=False,
+                    include_row_ids=True,
+                )
+                projected_ids = [msg.get("_row_id") for msg in projected]
+                if projected_ids != active_ids:
+                    raise RuntimeError(
+                        "active transcript cannot be mapped losslessly for durable rewrite"
+                    )
+                if len(messages) > len(projected):
+                    raise ValueError("durable rewrite is not an active transcript prefix")
+
+                ignored_keys = {
+                    "id",
+                    "session_id",
+                    "active",
+                    "compacted",
+                    "token_count",
+                }
+                for index, expected in enumerate(messages):
+                    actual = projected[index]
+                    row_id = expected.get("_row_id")
+                    if row_id is not None and row_id != actual.get("_row_id"):
+                        raise RuntimeError(
+                            "durable rewrite retained prefix identity changed"
+                        )
+                    for key, value in expected.items():
+                        if key == "_row_id" or key in ignored_keys:
+                            continue
+                        if actual.get(key) != value:
+                            raise ValueError(
+                                "durable rewrite is not an active transcript prefix"
+                            )
+
+                dropped_ids = active_ids[len(messages) :]
+                if dropped_ids:
+                    placeholders = ",".join("?" for _ in dropped_ids)
+                    # Preserve content/FTS entries while marking only the suffix
+                    # as user-abandoned retry history, not compacted history.
+                    conn.execute(
+                        f"UPDATE messages SET active = 0, compacted = 0 "
+                        f"WHERE id IN ({placeholders})",
+                        dropped_ids,
+                    )
+
+                tool_call_count = sum(
+                    self._tool_calls_json_and_count(msg.get("tool_calls"))[1]
+                    for msg in projected[: len(messages)]
+                )
                 conn.execute(
-                    "UPDATE messages SET active = 0 "
+                    "UPDATE sessions SET message_count = ?, tool_call_count = ? "
+                    "WHERE id = ?",
+                    (len(messages), tool_call_count, session_id),
+                )
+                return
+            elif archive_dropped:
+                # Compatibility replacement mode: callers such as TUI
+                # edit/regenerate may carry a content-verified live ordering
+                # that is not a byte-for-byte durable prefix. Archive all old
+                # live rows, then insert that authoritative replacement below.
+                conn.execute(
+                    "UPDATE messages SET active = 0, compacted = 0 "
                     "WHERE session_id = ? AND active = 1",
                     (session_id,),
                 )
@@ -10321,13 +10381,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     (session_id, int(watermark)),
                 ).fetchall():
                     tail_ids.append(int(row["id"]))
-                    raw = row["tool_calls"]
-                    if raw:
-                        try:
-                            parsed = json.loads(raw) if isinstance(raw, str) else raw
-                            tail_tool_calls += len(parsed) if isinstance(parsed, list) else 0
-                        except (TypeError, ValueError):
-                            pass
+                    tail_tool_calls += self._tool_calls_json_and_count(
+                        row["tool_calls"]
+                    )[1]
 
             # Soft-archive the live turns: active=0 hides them from the live
             # context load, compacted=1 marks them as "summarized away" (vs

@@ -141,8 +141,7 @@ class TestWatermarkCommit:
         watermark = db.get_active_message_watermark("sess1")
         db.append_message(
             "sess1", role="assistant", content="tail with tools",
-            tool_calls=[{"id": "t1", "type": "function",
-                         "function": {"name": "x", "arguments": "{}"}}],
+            tool_calls={"id": "t1", "name": "legacy_tool"},
         )
         db.archive_and_compact("sess1", SUMMARY, watermark=watermark)
         info = db.get_session("sess1")
@@ -237,7 +236,12 @@ class TestRotationPathWatermark:
         _seed(db)
         watermark = db.get_active_message_watermark("sess1")
         assert db.try_acquire_compression_lock("sess1", "rotator") is True
-        db.append_message("sess1", role="user", content="mid-rotation steer")
+        db.append_message(
+            "sess1",
+            role="assistant",
+            content="mid-rotation tool call",
+            tool_calls={"id": "t1", "name": "legacy_tool"},
+        )
         # Ceiling captured AFTER the foreign append, BEFORE the rotation
         # path's own pre-publish flush (which this test has none of).
         ceiling = db.get_active_message_watermark("sess1")
@@ -257,10 +261,11 @@ class TestRotationPathWatermark:
         assert [m["content"] for m in child] == [
             SUMMARY[0]["content"],
             SUMMARY[1]["content"],
-            "mid-rotation steer",
+            "mid-rotation tool call",
         ]
         info = db.get_session("child1")
         assert info["message_count"] == 3
+        assert info["tool_call_count"] == 1
         # Parent keeps its copy for lineage recovery; parent is closed.
         parent_info = db.get_session("sess1")
         assert parent_info["end_reason"] == "compression"

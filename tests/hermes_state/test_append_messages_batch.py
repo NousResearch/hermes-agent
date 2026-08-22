@@ -81,6 +81,54 @@ class TestAppendMessagesBatch:
         finally:
             db2.close()
 
+    @pytest.mark.parametrize(
+        "tool_calls, expected_value, expected_count",
+        [
+            pytest.param({}, None, 0, id="empty-object"),
+            pytest.param("{}", None, 0, id="json-empty-object"),
+            pytest.param(0, None, 0, id="zero"),
+            pytest.param(False, None, 0, id="false"),
+            pytest.param(None, None, 0, id="null"),
+            pytest.param("null", None, 0, id="json-null"),
+            pytest.param("{not-json", None, 0, id="malformed"),
+            pytest.param(
+                [{"id": "call-1"}, {"id": "call-2"}],
+                [{"id": "call-1"}, {"id": "call-2"}],
+                2,
+                id="list",
+            ),
+            pytest.param(
+                {"id": "call-object"},
+                {"id": "call-object"},
+                1,
+                id="object",
+            ),
+        ],
+    )
+    def test_tool_call_shapes_have_canonical_storage_and_count(
+        self, db, tool_calls, expected_value, expected_count
+    ):
+        db.create_session("sess-single", source="cli")
+        message = {"role": "assistant", "content": "shape", "tool_calls": tool_calls}
+
+        db.append_messages_batch("sess-batch", [message.copy()])
+        db.append_message(
+            "sess-single", role="assistant", content="shape", tool_calls=tool_calls
+        )
+
+        rows = db._conn.execute(
+            "SELECT session_id, tool_calls FROM messages ORDER BY session_id"
+        ).fetchall()
+        assert rows[0]["tool_calls"] == rows[1]["tool_calls"]
+        if expected_value is None:
+            assert rows[0]["tool_calls"] is None
+        else:
+            assert json.loads(rows[0]["tool_calls"]) == expected_value
+        assert db.get_messages("sess-batch")[0]["tool_calls"] == expected_value
+        assert db.get_messages("sess-single")[0]["tool_calls"] == expected_value
+        assert db.get_session("sess-batch")["tool_call_count"] == expected_count
+        assert db.get_session("sess-single")["tool_call_count"] == expected_count
+
     def test_reasoning_gated_to_assistant_rows(self, db):
         """_insert_message_rows role-gates reasoning fields; a tool row
         carrying reasoning keys must not persist them."""

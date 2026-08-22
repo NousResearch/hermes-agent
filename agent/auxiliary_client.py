@@ -3715,6 +3715,88 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     return _fallback_client, model
 
 
+def _build_minimax_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+    """Build an AnthropicAuxiliaryClient for a MiniMax OAuth-authenticated session.
+
+    MiniMax exposes an Anthropic-Messages-compatible endpoint
+    (https://api.minimax.io/anthropic) via OAuth, so we use the native Anthropic
+    SDK wrapped in AnthropicAuxiliaryClient — same pattern as ``_try_anthropic``
+    but with the MiniMax OAuth token provider as the bearer source.
+
+    MiniMax issues short-lived access tokens (~15 min), so we pass a *callable*
+    token provider from ``build_minimax_oauth_token_provider()`` instead of a
+    static string. ``build_anthropic_client`` detects the callable and installs
+    the bearer-injecting httpx hook that mints a fresh token per request (or
+    re-uses the cached one if it still has enough lifetime left).
+
+    Returns ``(None, None)`` when the user has not authenticated with
+    MiniMax OAuth, or when the anthropic SDK is missing. The model falls
+    back to the provider profile's ``default_aux_model`` (MiniMax-M2.7)
+    when the caller does not pass one explicitly.
+    """
+    if not model:
+        model = _get_aux_model_for_provider("minimax-oauth")
+        if not model:
+            logger.warning(
+                "Auxiliary client: minimax-oauth requested but no model "
+                "resolved (auxiliary.<task>.model in config.yaml or the "
+                "minimax-oauth provider profile default_aux_model)."
+            )
+            return None, None
+    try:
+        from agent.anthropic_adapter import build_anthropic_client
+        from hermes_cli.auth import (
+            build_minimax_oauth_token_provider,
+            resolve_minimax_oauth_runtime_credentials,
+        )
+    except ImportError as exc:
+        logger.debug(
+            "Auxiliary client: minimax-oauth requested but anthropic adapter "
+            "or auth helpers not importable: %s", exc
+        )
+        return None, None
+
+    try:
+        creds = resolve_minimax_oauth_runtime_credentials(as_token_provider=True)
+    except Exception as exc:
+        logger.warning(
+            "Auxiliary client: minimax-oauth requested but no valid token "
+            "found (run: hermes model and select MiniMax OAuth): %s", exc
+        )
+        return None, None
+
+    token_provider = creds["api_key"]          # zero-arg callable
+    base_url = creds["base_url"].rstrip("/")
+    # The token provider IS already a callable from resolve_minimax_oauth_runtime_credentials
+    # when as_token_provider=True. Re-wrap defensively in case the helper's
+    # contract changes — build_minimax_oauth_token_provider always returns a
+    # fresh callable so the cost is one extra closure allocation.
+    if not callable(token_provider):
+        token_provider = build_minimax_oauth_token_provider()
+    try:
+        real_client = build_anthropic_client(token_provider, base_url)
+    except ImportError:
+        logger.warning(
+            "Auxiliary client: minimax-oauth requested but the anthropic "
+            "SDK is not installed — install with `pip install 'anthropic>=0.39.0'`"
+        )
+        return None, None
+
+    logger.debug(
+        "Auxiliary client: MiniMax OAuth (%s) at %s (per-request token provider)",
+        model, base_url,
+    )
+    # is_oauth must stay False: MiniMax is a third-party Anthropic-
+    # Messages-compatible endpoint, and the OAuth code paths (Claude Code
+    # identity system prefix, mcp__ tool renaming, OAuth-only betas) are
+    # for native Anthropic subscriptions only — agent_init.py's guard
+    # (#1739) is explicit that third-party providers must never trip them.
+    # The callable token provider handles auth; nothing else is needed.
+    return AnthropicAuxiliaryClient(
+        real_client, model, token_provider, base_url, is_oauth=False,
+    ), model
+
+
 def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     """Build a CodexAuxiliaryClient for an xAI Grok OAuth-authenticated session.
 
@@ -6519,6 +6601,31 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── MiniMax (OAuth · minimax.io) ─────────────────────────────────
+    # Same rationale as xAI Grok OAuth above: without an explicit branch,
+    # the generic ``oauth_external`` arm below would return ``(None, None)``,
+    # silently re-routing every auxiliary task (compression, web extract,
+    # session search, curator, title generation, vision, ...) to whichever
+    # Step-2 fallback the user has configured. For users on MiniMax OAuth —
+    # a third-party Anthropic-Messages-compatible endpoint with OAuth
+    # credentials — that would mean surprise DeepSeek / OpenRouter bills for
+    # side tasks they thought were running on their MiniMax subscription.
+    # MiniMax uses the Anthropic Messages wire, so we route through the
+    # same AnthropicAuxiliaryClient as native Anthropic — the only thing
+    # that differs is the auth source (MiniMax OAuth token provider).
+    if provider == "minimax-oauth":
+        client, default = _build_minimax_oauth_aux_client(model)
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth requested but no "
+                "valid MiniMax OAuth token found (run: hermes model and "
+                "select MiniMax (OAuth · minimax.io))"
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         custom_base = ""
@@ -7082,14 +7189,23 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
-        # OAuth providers — route through their specific try functions
+    elif pconfig.auth_type in {"oauth_device_code", "oauth_external", "oauth_minimax"}:
+        # OAuth providers — route through their specific try functions.
+        # ``oauth_minimax`` is a third-party OAuth (PKCE, portal-based) that
+        # uses the Anthropic Messages wire, so it lives in the same
+        # dispatch block as ``oauth_external``. The specific provider name
+        # check below (xai-oauth, minimax-oauth) handles routing to its
+        # own _build_*_aux_client — without that, the helper returns
+        # (None, None) and every auxiliary task silently leaks to the
+        # api-key fallback chain (DeepSeek, OpenRouter, ...).
         if provider == "nous":
             return resolve_provider_client("nous", model, async_mode)
         if provider == "openai-codex":
             return resolve_provider_client("openai-codex", model, async_mode)
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
+        if provider == "minimax-oauth":
+            return resolve_provider_client("minimax-oauth", model, async_mode)
         # Other OAuth providers not directly supported
         if provider not in _LOGGED_UNSUPPORTED_OAUTH_KEYS:
             _LOGGED_UNSUPPORTED_OAUTH_KEYS.add(provider)

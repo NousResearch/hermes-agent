@@ -170,7 +170,7 @@ hermes --provider minimax-oauth
 
 Both models support up to 200,000 tokens of context.
 
-`MiniMax-M2.7` is also used automatically as the auxiliary model for vision and delegation tasks when `minimax-oauth` is the primary provider.
+`MiniMax-M2.7` is also used automatically as the auxiliary model for vision and delegation tasks when `minimax-oauth` is the primary provider. All auxiliary tasks (compression, vision, title generation, session search, web extraction, approval, memory flush, kanban decomposition, MCP, profile description, skills hub, triage specification, curator) route through the same Anthropic-Messages-compatible endpoint with a callable OAuth token provider — tokens are minted per request and reused while still valid, so no static key is stored.
 
 ## Troubleshooting
 

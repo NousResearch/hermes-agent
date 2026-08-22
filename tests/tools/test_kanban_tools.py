@@ -1134,3 +1134,117 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+def test_create_in_worker_inherits_parent_session_id(worker_env, monkeypatch):
+    """A dispatcher-spawned worker must not stamp child cards with its own
+    ephemeral HERMES_SESSION_ID; they should inherit the durable parent session
+    from the worker's task row (#85575)."""
+    durable_parent_session = "parent-durable-session-456"
+    ephemeral_worker_session = "worker-ephemeral-session-123"
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET session_id = ? WHERE id = ?",
+            (durable_parent_session, worker_env),
+        )
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_SESSION_ID", ephemeral_worker_session)
+    from tools import async_delegation
+    monkeypatch.setattr(
+        async_delegation,
+        "_current_origin_session_id",
+        lambda: "api-origin-session-999",
+    )
+
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "child task",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True, out
+
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.session_id == durable_parent_session, (
+            f"expected {durable_parent_session!r}, got {child.session_id!r}"
+        )
+    finally:
+        conn.close()
+
+
+def test_create_in_worker_prefers_explicit_session_id(worker_env, monkeypatch):
+    """An explicit session_id argument wins over the worker task row fallback
+    so callers can still override the wake target (#85575)."""
+    durable_parent_session = "parent-durable-session-456"
+    explicit_session = "explicit-override-789"
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET session_id = ? WHERE id = ?",
+            (durable_parent_session, worker_env),
+        )
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_SESSION_ID", "worker-ephemeral-session-123")
+
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "child task",
+        "assignee": "peer",
+        "session_id": explicit_session,
+    })
+    d = json.loads(out)
+    assert d["ok"] is True, out
+
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.session_id == explicit_session, (
+            f"expected {explicit_session!r}, got {child.session_id!r}"
+        )
+    finally:
+        conn.close()
+
+
+def test_create_in_worker_falls_back_to_hermes_session_id(worker_env, monkeypatch):
+    """When the worker task row has no session_id, the legacy HERMES_SESSION_ID
+    fallback is preserved for non-dispatcher callers (#85575)."""
+    ephemeral_worker_session = "worker-ephemeral-session-123"
+    monkeypatch.setenv("HERMES_SESSION_ID", ephemeral_worker_session)
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET session_id = NULL WHERE id = ?",
+            (worker_env,),
+        )
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "child task",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True, out
+
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.session_id == ephemeral_worker_session, (
+            f"expected {ephemeral_worker_session!r}, got {child.session_id!r}"
+        )
+    finally:
+        conn.close()

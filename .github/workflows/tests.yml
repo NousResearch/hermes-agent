@@ -104,8 +104,22 @@ jobs:
           # from a single ThreadPoolExecutor, so this value IS the limit. The
           # default is cpu_count*2, which is 192 here.
           #
-          # A later commit sets this from a sweep on the real runner.
-          HERMES_TEST_WORKERS: 144
+          # Measured on this runner (96-core EPYC 7763, 377GB). Whole suite,
+          # two repetitions for each value. See run 32549672063:
+          #
+          #     workers   x cores   mean
+          #        48       0.5x    138s
+          #        96       1.0x    126s   <- fastest
+          #       144       1.5x    132s
+          #       192       2.0x    132s
+          #       240       2.5x    140s
+          #       288       3.0x    142s
+          #
+          # One worker for each core wins. The curve is shallow: 126s to 142s
+          # across a 6x range. The suite has sufficient concurrency at this
+          # size. The remaining time is the slowest files plus the setup.
+          # Workers above the core count only add contention.
+          HERMES_TEST_WORKERS: 96
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

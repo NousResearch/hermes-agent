@@ -2151,7 +2151,7 @@ def fetch_ai_gateway_models(
             f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models",
             headers={"Accept": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
         return list(_ai_gateway_catalog_cache or fallback)
@@ -2485,7 +2485,7 @@ def fetch_ai_gateway_pricing(
             f"{cache_key}/models",
             headers={"Accept": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
         return _cache_catalog(cache_key, {})
@@ -5946,7 +5946,7 @@ def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
     }
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
             return [
                 m["id"]

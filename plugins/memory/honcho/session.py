@@ -149,6 +149,7 @@ class HonchoSessionManager:
         self._runtime_user_peer_name_alt = runtime_user_peer_name_alt
         self._cache: dict[str, HonchoSession] = {}
         self._cache_lock = threading.RLock()
+        self._flush_locks: dict[str, threading.Lock] = {}
         self._peers_cache: dict[str, Any] = {}
         self._sessions_cache: dict[str, Any] = {}
         # Bumped (under _cache_lock) whenever _force_reauth rebuilds the client.
@@ -659,6 +660,13 @@ class HonchoSessionManager:
 
     def _flush_session(self, session: HonchoSession) -> bool:
         """Internal: write unsynced messages to Honcho synchronously."""
+        with self._cache_lock:
+            flush_lock = self._flush_locks.setdefault(session.key, threading.Lock())
+        with flush_lock:
+            return self._flush_session_locked(session)
+
+    def _flush_session_locked(self, session: HonchoSession) -> bool:
+        """Write unsynced messages while holding the session's flush lock."""
         if not session.messages:
             return True
 

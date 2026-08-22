@@ -229,6 +229,44 @@ class TestSaveRouting:
 # ---------------------------------------------------------------------------
 
 class TestFlushAll:
+    def test_same_session_flushes_are_serialized(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
+        session = _make_session()
+        session.add_message("user", "once")
+
+        user_peer = MagicMock()
+        user_peer.message.return_value = "honcho-message"
+        assistant_peer = MagicMock()
+        honcho_session = MagicMock()
+        mgr._get_or_create_peer = MagicMock(
+            side_effect=lambda peer_id: (
+                user_peer if peer_id == session.user_peer_id else assistant_peer
+            )
+        )
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+        auth_barrier = threading.Barrier(2)
+
+        def synchronize_flushes(_operation, call):
+            try:
+                auth_barrier.wait(timeout=0.2)
+            except threading.BrokenBarrierError:
+                pass
+            return call()
+
+        mgr._authed_call = MagicMock(side_effect=synchronize_flushes)
+
+        first = threading.Thread(target=mgr._flush_session, args=(session,))
+        second = threading.Thread(target=mgr._flush_session, args=(session,))
+        first.start()
+        second.start()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        honcho_session.add_messages.assert_called_once_with(["honcho-message"])
+        assert session.messages[0]["_synced"] is True
+
     def test_flushes_all_cached_sessions(self, make_manager):
         mgr = make_manager(write_frequency="session")
         s1 = _make_session(key="s1", honcho_session_id="s1")
@@ -600,4 +638,3 @@ class TestPrefetchCacheAccessors:
 
         assert mgr.pop_context_result("cli:test") == payload
         assert mgr.pop_context_result("cli:test") == {}
-

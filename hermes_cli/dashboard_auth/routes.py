@@ -20,6 +20,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from typing import Any, Deque, Dict
+from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -443,12 +444,19 @@ async def auth_callback(
             detail="Missing PKCE state cookie",
         )
 
+    # The setter (cookies.set_pkce_cookie) URL-encodes the payload before
+    # it hits the wire so the browser's RFC 6265 cookie-value parser can't
+    # chop it at the first ``;``. Decode back to the original
+    # ``provider=...;state=...;verifier=...;next=...`` shape before the
+    # ``;`` split. The decode is a no-op for any pre-existing cookie value
+    # that pre-dates this change (no ``%`` means nothing to decode).
+    pkce_decoded = unquote(pkce_raw)
     # Parse ``provider=...;state=...;verifier=...;next=...`` — the
     # ``next`` segment is optional (only present when /auth/login was
     # given a next= query). All keys live in the same flat namespace;
     # ``next`` carries a URL-encoded path so it never contains ``;``.
     parts = dict(
-        seg.split("=", 1) for seg in pkce_raw.split(";") if "=" in seg
+        seg.split("=", 1) for seg in pkce_decoded.split(";") if "=" in seg
     )
     provider_name = parts.get("provider", "")
     expected_state = parts.get("state", "")

@@ -57,6 +57,7 @@ Refresh-token handling:
 from __future__ import annotations
 
 from typing import Optional, Tuple
+from urllib.parse import quote, unquote
 
 from fastapi import Request
 from fastapi.responses import Response
@@ -240,9 +241,23 @@ def clear_session_cookies(response: Response, *, prefix: str = "") -> None:
 def set_pkce_cookie(
     response: Response, *, payload: str, use_https: bool, prefix: str = "",
 ) -> None:
+    # The PKCE payload is a flat ``key=value;key=value`` string
+    # (``provider=…;state=…;verifier=…;next=…``). RFC 6265 treats the
+    # unquoted ``;`` as a cookie-value terminator, so without quoting the
+    # browser truncates at the first ``;`` and only ``provider=…`` survives
+    # the round trip — the OIDC callback then sees a partial payload and
+    # fails with "Missing PKCE state cookie" / wrong provider. Storing the
+    # payload quoted works for parsers that follow Python's http.cookies
+    # convention but trips cross-browser discrepancies on the backslash-
+    # octal escape (\073) we use to encode the embedded ``;``. The
+    # portable fix is to URL-encode the whole payload before it reaches
+    # the wire — ``;`` becomes ``%3B`` and there is nothing left for the
+    # browser's cookie-value parser to misinterpret. The callback
+    # reader (routes.py) decodes the URL-encoded value before the
+    # ``;`` split so the parsed segments match the original payload.
     response.set_cookie(
         _resolved_name(PKCE_COOKIE, use_https=use_https, prefix=prefix),
-        payload,
+        quote(payload, safe=""),
         max_age=_PKCE_MAX_AGE,
         **_common_attrs(use_https=use_https, prefix=prefix),
     )

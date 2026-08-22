@@ -19,6 +19,7 @@ import contextlib
 import json
 import os
 import shlex
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -798,6 +799,20 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                               "(e.g. 'completed,blocked,gave_up,crashed,timed_out')")
     p_watch.add_argument("--interval", type=float, default=0.5,
                          help="Poll interval in seconds (default: 0.5)")
+    p_watch.add_argument("--task", dest="task_id", default=None,
+                         help="Only show events for this task id")
+    p_watch.add_argument(
+        "--until-status",
+        default=None,
+        help="With --task, exit successfully when the task reaches any "
+             "comma-separated status",
+    )
+    p_watch.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Stop waiting after this many seconds",
+    )
 
     # --- stats ---
     p_stats = sub.add_parser(
@@ -1050,11 +1065,37 @@ def kanban_command(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Board-management commands operate on board metadata and the persisted
-    # current-board pointer itself. They must ignore the shared `--board`
-    # task-routing override; otherwise `/kanban --board beta boards show`
-    # reports beta as the current board even when the on-disk pointer is
-    # alpha.
+    # Delegated-child contexts are a strict trust boundary, split by verb
+    # (policy §3): K0 read-only verbs (show/list/runs/log/watch/tail) are
+    # allowed and dispatched below over a genuine mode=ro connection; every
+    # other verb is denied here, BEFORE init_db, so delegated children get a
+    # clean CLI-level denial rather than a misleading "could not initialize
+    # database" error from the in-flight backfill's write_txn. The durable
+    # DB-layer mutation guard in kanban_db stays untouched as the backstop.
+    try:
+        from agent.delegation_context import is_delegated_child_process_context
+        delegated = is_delegated_child_process_context()
+    except Exception:
+        delegated = bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
+    if delegated:
+        if action == "boards":
+            # Mutating boards subcommands were already rejected above; the
+            # remaining ones are read-only filesystem operations.
+            return _dispatch_boards(args)
+        if action not in _DELEGATED_CHILD_K0_ACTIONS:
+            print(
+                "kanban: delegate_task child contexts cannot use the Kanban CLI",
+                file=sys.stderr,
+            )
+            return 1
+
+    # `repair` must dispatch BEFORE the auto-init below: on a corrupt DB
+    # init_db() itself raises KanbanDbCorruptError, which would turn
+    # every `hermes kanban repair` into "could not initialize database"
+    # without ever reaching the repair path. The check above also has to run
+    # before the auto-init so delegated-child contexts see a clean CLI-level
+    # denial for mutation verbs instead of a misleading "could not
+    # initialize database" error.
     if action == "boards":
         return _dispatch_boards(args)
 
@@ -1099,6 +1140,42 @@ def kanban_command(args: argparse.Namespace) -> int:
         # without ever reaching the repair path.
         if action == "repair":
             return _cmd_repair(args)
+        if delegated and action in _DELEGATED_CHILD_K0_ACTIONS:
+            # K0 read-only dispatch (policy §3.2): bypass init_db entirely and
+            # serve the verb over a genuine mode=ro connection. init_db would
+            # run the in-flight backfill inside a write_txn, which the DB-layer
+            # delegated-child guard correctly refuses — read-only verbs simply
+            # never need it.
+            k0_handlers = {
+                "show": _cmd_show,
+                "list": _cmd_list,
+                "ls": _cmd_list,
+                "runs": _cmd_runs,
+                "log": _cmd_log,
+                "watch": _cmd_watch,
+                "tail": _cmd_tail,
+            }
+            orig_connect, orig_closing = kb.connect, kb.connect_closing
+            orig_recompute = kb.recompute_ready
+            kb.connect = _k0_readonly_connect
+            kb.connect_closing = _k0_readonly_connect_closing
+            # _cmd_list runs a "mini-dispatch" recompute_ready (a write) to
+            # freshen its output. A K0 observer must not mutate board state,
+            # so neutralise it on this path only — the child sees the board
+            # as-is, the dispatcher remains the sole promoter.
+            kb.recompute_ready = lambda conn, failure_limit=None: 0
+            try:
+                return int(k0_handlers[action](args) or 0)
+            except (ValueError, RuntimeError, sqlite3.Error) as exc:
+                # sqlite3.Error covers a missing DB file (mode=ro cannot
+                # create one) and read-only-write attempts — both should be
+                # clean CLI errors, not bare tracebacks.
+                print(f"kanban: {exc}", file=sys.stderr)
+                return 1
+            finally:
+                kb.connect = orig_connect
+                kb.connect_closing = orig_closing
+                kb.recompute_ready = orig_recompute
         try:
             kb.init_db()
         except Exception as exc:
@@ -1222,6 +1299,53 @@ _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
     "rename",
     "set-default-workdir",
 })
+
+
+_DELEGATED_CHILD_K0_ACTIONS: frozenset[str] = frozenset({
+    # Policy §3.1: delegated children may use these read-only verbs. They are
+    # dispatched through a genuine read-only SQLite connection (mode=ro +
+    # PRAGMA query_only) and never touch init_db / write_txn, so the durable
+    # DB-layer mutation guard is preserved while the child can still pull the
+    # board, read its own runs and write its report.
+    "show",
+    "list",
+    "ls",
+    "runs",
+    "log",
+    "watch",
+    "tail",
+})
+
+
+def _k0_readonly_connect(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> sqlite3.Connection:
+    """Genuine read-only connection for delegated-child K0 verbs (policy §3.2).
+
+    Bypasses :func:`kb.connect` entirely: no init_db, no schema writes, no
+    in-flight backfill write_txn. Any attempted write fails at the SQLite
+    layer with "attempt to write a readonly database".
+    """
+    path = Path(db_path) if db_path is not None else kb.kanban_db_path(board=board)
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only = 1")
+    return conn
+
+
+@contextlib.contextmanager
+def _k0_readonly_connect_closing(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+):
+    conn = _k0_readonly_connect(db_path, board=board)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
@@ -2874,6 +2998,36 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         {k.strip() for k in args.kinds.split(",") if k.strip()}
         if args.kinds else None
     )
+    task_id = getattr(args, "task_id", None)
+    until_statuses = (
+        {s.strip() for s in args.until_status.split(",") if s.strip()}
+        if getattr(args, "until_status", None) else None
+    )
+    if until_statuses and not task_id:
+        print("kanban watch: --until-status requires --task", file=sys.stderr)
+        return 2
+    invalid_statuses = (until_statuses or set()) - kb.VALID_STATUSES
+    if invalid_statuses:
+        print(
+            "kanban watch: unknown status(es): "
+            + ", ".join(sorted(invalid_statuses)),
+            file=sys.stderr,
+        )
+        return 2
+    if task_id:
+        with kb.connect_closing() as conn:
+            task = kb.get_task(conn, task_id)
+        if task is None:
+            print(f"kanban watch: no such task: {task_id}", file=sys.stderr)
+            return 1
+        if until_statuses and task.status in until_statuses:
+            print(f"{task_id} reached status {task.status}")
+            return 0
+    timeout = getattr(args, "timeout", None)
+    if timeout is not None and timeout < 0:
+        print("kanban watch: --timeout must be >= 0", file=sys.stderr)
+        return 2
+    deadline = time.monotonic() + timeout if timeout is not None else None
     cursor = 0
     print("Watching kanban events. Ctrl-C to stop.", flush=True)
     # Seed cursor at the latest id so we don't replay history.
@@ -2895,6 +3049,8 @@ def _cmd_watch(args: argparse.Namespace) -> int:
                 ).fetchall()
             for r in rows:
                 cursor = max(cursor, int(r["id"]))
+                if task_id and r["task_id"] != task_id:
+                    continue
                 if kinds and r["kind"] not in kinds:
                     continue
                 if args.assignee and r["assignee"] != args.assignee:
@@ -2911,7 +3067,24 @@ def _cmd_watch(args: argparse.Namespace) -> int:
                     f"{r['kind']:18s} (@{r['assignee'] or '-'}){pl}",
                     flush=True,
                 )
-            time.sleep(max(0.1, args.interval))
+            if task_id and until_statuses:
+                with kb.connect_closing() as conn:
+                    task = kb.get_task(conn, task_id)
+                if task is None:
+                    print(f"kanban watch: task disappeared: {task_id}", file=sys.stderr)
+                    return 1
+                if task.status in until_statuses:
+                    print(f"{task_id} reached status {task.status}")
+                    return 0
+            sleep_for = max(0.1, args.interval)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    target = task_id or "kanban events"
+                    print(f"kanban watch: timed out waiting for {target}", file=sys.stderr)
+                    return 124
+                sleep_for = min(sleep_for, remaining)
+            time.sleep(sleep_for)
     except KeyboardInterrupt:
         print("\n(stopped)")
         return 0

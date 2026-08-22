@@ -380,6 +380,315 @@ class TestDmClassification:
         assert CHANNEL not in a._channel_state
         assert a._may_reclassify_as_dm(CHANNEL) is False
 
+    @pytest.mark.asyncio
+    async def test_channel_type_metadata_confirms_dm_without_message_ptags(self):
+        """Current Buzz relay messages carry only h-tags in DMs, so the
+        adapter must use the metadata t=dm marker exposed by channels search
+        when dms list is empty."""
+        a = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [])
+        cli.script("channels", "list", [
+            {"channel_id": DM_CHANNEL, "name": "DM", "description": "", "created_at": 1},
+        ])
+        cli.script("channels", "search", [
+            {"channel_id": DM_CHANNEL, "name": "DM", "channel_type": "dm"},
+        ])
+        a._run_cli = cli
+
+        await a._discover_dms(seed=False)
+
+        assert a._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+
+    @pytest.mark.asyncio
+    async def test_channel_type_metadata_upgrades_preseeded_group_to_dm(self):
+        """Startup seeds listed channels as groups before DM discovery; exact
+        t=dm metadata must upgrade that state without losing its high-water mark."""
+        a = _make_adapter()
+        seen = {"seed-event": None}
+        a._channel_state[DM_CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 42,
+            "seen": seen,
+        }
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [])
+        cli.script("channels", "list", [
+            {"channel_id": DM_CHANNEL, "name": "DM", "description": "", "created_at": 1},
+        ])
+        cli.script("channels", "search", [
+            {"channel_id": DM_CHANNEL, "name": "DM", "channel_type": "dm"},
+        ])
+        a._run_cli = cli
+
+        await a._discover_dms(seed=True)
+
+        assert a._channel_state[DM_CHANNEL] == {
+            "chat_type": "dm",
+            "last_ts": 42,
+            "seen": seen,
+        }
+
+    @pytest.mark.asyncio
+    async def test_non_dm_channel_type_keeps_dm_shaped_channel_mention_gated(
+        self, adapter,
+    ):
+        """Authoritative search metadata must override a misleading DM-like
+        name/description and prevent the p-tag fallback from unlocking an
+        ordinary channel's mention gate."""
+        a = adapter
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [])
+        cli.script("channels", "list", [
+            {"channel_id": CHANNEL, "name": "DM", "description": "", "created_at": 1},
+        ])
+        cli.script("channels", "search", [
+            {"channel_id": CHANNEL, "name": "DM", "channel_type": "channel"},
+        ])
+        a._run_cli = cli
+
+        await a._discover_dms(seed=False)
+        assert a._channel_state[CHANNEL]["chat_type"] == "group"
+
+        cli.responses.clear()
+        cli.script("messages", "get", [
+            _tagged_event(
+                "e1", CHANNEL, content="ordinary channel broadcast", p=SELF_PUBKEY,
+            ),
+        ])
+        await a._poll_channel(CHANNEL)
+
+        assert a._channel_state[CHANNEL]["chat_type"] == "group"
+        assert a._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_non_dm_channel_type_reconciles_configured_channel_seed_latch(
+        self, adapter,
+    ):
+        """Search metadata arrives after startup seeding, so an explicit
+        non-DM type must undo a history-based latch without losing de-dupe
+        state for a configured channel."""
+        a = adapter
+        a.channels = [CHANNEL]
+        a._channel_meta[CHANNEL] = {
+            "channel_id": CHANNEL,
+            "name": "DM",
+            "description": "",
+        }
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [
+            _tagged_event(
+                "seed-e1", CHANNEL, content="seeded broadcast", p=SELF_PUBKEY,
+            ),
+        ])
+        a._run_cli = cli
+
+        await a._seed_channel(CHANNEL, chat_type="group")
+        state = a._channel_state[CHANNEL]
+        assert state["chat_type"] == "dm"
+        seen = state["seen"]
+
+        cli.script("dms", "list", [])
+        cli.script("channels", "search", [
+            {"channel_id": CHANNEL, "name": "DM", "channel_type": "channel"},
+        ])
+        cli.script("channels", "list", [
+            {"channel_id": CHANNEL, "name": "DM", "description": "", "created_at": 1},
+        ])
+        await a._discover_dms(seed=True)
+
+        assert a._channel_state[CHANNEL] == {
+            "chat_type": "group",
+            "last_ts": 1000,
+            "seen": seen,
+        }
+        assert list(seen) == ["seed-e1"]
+        assert a._may_reclassify_as_dm(CHANNEL) is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("later_search", ["unsupported", "missing_type"])
+    async def test_non_dm_channel_type_survives_partial_rediscovery(
+        self, adapter, later_search,
+    ):
+        """A transient/partial search result must not erase a previously
+        authoritative non-DM type and reopen the p-tag fallback."""
+        a = adapter
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [])
+        cli.script("dms", "list", [])
+        cli.script("channels", "search", [
+            {"channel_id": CHANNEL, "name": "DM", "channel_type": "channel"},
+        ])
+        if later_search == "unsupported":
+            cli.script("channels", "search", "", code=2, stderr="unsupported command")
+        else:
+            cli.script("channels", "search", [
+                {"channel_id": CHANNEL, "name": "DM"},
+            ])
+        channel_listing = [
+            {"channel_id": CHANNEL, "name": "DM", "description": "", "created_at": 1},
+        ]
+        cli.script("channels", "list", channel_listing)
+        cli.script("channels", "list", channel_listing)
+        a._run_cli = cli
+
+        await a._discover_dms(seed=False)
+        await a._discover_dms(seed=False)
+
+        assert a._channel_meta[CHANNEL]["channel_type"] == "channel"
+        assert a._may_reclassify_as_dm(CHANNEL) is False
+
+        cli.script("messages", "get", [
+            _tagged_event(
+                "e1", CHANNEL, content="ordinary channel broadcast", p=SELF_PUBKEY,
+            ),
+        ])
+        await a._poll_channel(CHANNEL)
+
+        assert a._channel_state[CHANNEL]["chat_type"] == "group"
+        assert a._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_reconnect_preserves_non_dm_type_before_history_seed(self, monkeypatch):
+        """The poorer connect-time list projection must not erase a type
+        learned by an earlier connection before history is seeded."""
+        import gateway.status as gateway_status
+
+        monkeypatch.setattr(gateway_status, "acquire_scoped_lock", lambda *_args: True)
+        monkeypatch.setattr(gateway_status, "release_scoped_lock", lambda *_args: None)
+        monkeypatch.setattr(_buzz_mod, "_resolve_private_key", lambda *_args: "nsec1test")
+        a = _make_adapter({
+            "channels": [CHANNEL],
+            "transport": "poll",
+            "poll_interval": 999,
+            "private_key": "nsec1test",
+        })
+        a.cli_path = "buzz"
+        a._channel_meta[CHANNEL] = {
+            "channel_id": CHANNEL,
+            "name": "DM",
+            "description": "",
+            "channel_type": "channel",
+        }
+        cli = _ScriptedCli()
+        cli.script("users", "get", [
+            {"pubkey": SELF_PUBKEY, "display_name": "Chip"},
+        ])
+        listing = [
+            {"channel_id": CHANNEL, "name": "DM", "description": "", "created_at": 1},
+        ]
+        cli.script("channels", "list", listing)
+        cli.script("channels", "list", listing)
+        cli.script("messages", "get", [
+            _tagged_event(
+                "seed-e1", CHANNEL, content="seeded broadcast", p=SELF_PUBKEY,
+            ),
+        ])
+        cli.script("dms", "list", [])
+        cli.script("channels", "search", "", code=2, stderr="unsupported command")
+        a._run_cli = cli
+
+        try:
+            assert await a.connect(is_reconnect=True) is True
+            assert a._channel_meta[CHANNEL]["channel_type"] == "channel"
+            assert a._channel_state[CHANNEL]["chat_type"] == "group"
+            assert a._may_reclassify_as_dm(CHANNEL) is False
+        finally:
+            await a.disconnect()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("list_result", ["failure", "omitted"])
+    async def test_fresh_non_dm_search_reconciles_without_list_projection(
+        self, adapter, list_result,
+    ):
+        """Fresh search evidence must close the mention bypass even when the
+        following channels-list projection fails or omits the conversation."""
+        a = adapter
+        seen = a._channel_state[CHANNEL]["seen"]
+        a._channel_state[CHANNEL].update({
+            "chat_type": "dm",
+            "last_ts": 42,
+        })
+        a._channel_meta[CHANNEL] = {
+            "channel_id": CHANNEL,
+            "name": "DM",
+            "description": "",
+        }
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [])
+        cli.script("channels", "search", [
+            {"channel_id": CHANNEL, "name": "DM", "channel_type": "channel"},
+        ])
+        if list_result == "failure":
+            cli.script("channels", "list", "", code=2, stderr="temporary failure")
+        else:
+            cli.script("channels", "list", [])
+        a._run_cli = cli
+
+        await a._discover_dms(seed=False)
+
+        assert a._channel_meta[CHANNEL]["channel_type"] == "channel"
+        assert a._channel_state[CHANNEL] == {
+            "chat_type": "group",
+            "last_ts": 42,
+            "seen": seen,
+        }
+        assert a._may_reclassify_as_dm(CHANNEL) is False
+
+    @pytest.mark.asyncio
+    async def test_dms_list_upgrades_preseeded_group_when_search_is_unsupported(self):
+        """An older CLI may support dms list but not channels search; the
+        authoritative DM list must still upgrade startup's preseeded state."""
+        a = _make_adapter()
+        a._channel_state[DM_CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 42,
+            "seen": {},
+        }
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [{"dm_id": DM_CHANNEL, "participants": [SELF_PUBKEY]}])
+        cli.script("channels", "search", "", code=2, stderr="unsupported command")
+        cli.script("channels", "list", [
+            {"channel_id": DM_CHANNEL, "name": "DM", "description": "", "created_at": 1},
+        ])
+        a._run_cli = cli
+
+        await a._discover_dms(seed=True)
+
+        assert a._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+
+    @pytest.mark.asyncio
+    async def test_current_dms_list_confirmation_wins_over_non_dm_search_type(self):
+        """A current authoritative DM-list result must not be downgraded by
+        contradictory channel-search metadata in the same discovery pass."""
+        a = _make_adapter()
+        a._channel_state[DM_CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 42,
+            "seen": {},
+        }
+        a._channel_meta[DM_CHANNEL] = {
+            "channel_id": DM_CHANNEL,
+            "name": "DM",
+            "description": "",
+            "channel_type": "channel",
+        }
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [
+            {"dm_id": DM_CHANNEL, "participants": [SELF_PUBKEY]},
+        ])
+        cli.script("channels", "search", [
+            {"channel_id": DM_CHANNEL, "name": "DM", "channel_type": "channel"},
+        ])
+        cli.script("channels", "list", [
+            {"channel_id": DM_CHANNEL, "name": "DM", "description": "", "created_at": 1},
+        ])
+        a._run_cli = cli
+
+        await a._discover_dms(seed=True)
+
+        assert a._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+
 
 # ── Sending ───────────────────────────────────────────────────────────────
 

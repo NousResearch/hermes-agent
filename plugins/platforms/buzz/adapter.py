@@ -456,6 +456,52 @@ class BuzzAdapter(BasePlatformAdapter):
 
     # ── Connection lifecycle ──────────────────────────────────────────────
 
+    def _merge_channel_metadata(
+        self,
+        channel_id: str,
+        projection: Optional[dict] = None,
+        *,
+        explicit_type: str = "",
+    ) -> str:
+        """Merge a lossy channel projection without forgetting known type.
+
+        Search metadata is authoritative when present. Otherwise a non-empty
+        type in the new projection wins, then the last known explicit non-DM
+        type. Positive DM classification must be refreshed by current evidence;
+        only negative evidence is retained fail-closed across lossy projections.
+        Returns the normalized effective type (or an empty string).
+        """
+        previous = self._channel_meta.get(channel_id) or {}
+        merged = dict(previous)
+        if projection:
+            merged.update(projection)
+        previous_type = str(previous.get("channel_type") or "").strip().lower()
+        projected_type = str((projection or {}).get("channel_type") or "").strip().lower()
+        retained_type = previous_type if previous_type and previous_type != "dm" else ""
+        effective_type = explicit_type.strip().lower() or projected_type or retained_type
+        if effective_type:
+            merged["channel_type"] = effective_type
+        else:
+            merged.pop("channel_type", None)
+        self._channel_meta[channel_id] = merged
+        return effective_type
+
+    def _reconcile_channel_state_type(
+        self,
+        channel_id: str,
+        channel_type: str,
+        *,
+        confirmed_dm: bool,
+    ) -> None:
+        """Apply authoritative type evidence without resetting de-dupe state."""
+        state = self._channel_state.get(channel_id)
+        if state is None:
+            return
+        if confirmed_dm or channel_type == "dm":
+            state["chat_type"] = "dm"
+        elif channel_type:
+            state["chat_type"] = "group"
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Verify relay credentials, seed high-water marks, start polling."""
         if not self.relay_url:
@@ -525,7 +571,7 @@ class BuzzAdapter(BasePlatformAdapter):
         }
         for ch in listed:
             if ch.get("channel_id"):
-                self._channel_meta[str(ch["channel_id"])] = ch
+                self._merge_channel_metadata(str(ch["channel_id"]), ch)
         watch = self.channels or list(self._channel_names)
         if not watch:
             logger.error("Buzz: no channels to watch (configure BUZZ_CHANNELS or join a channel)")
@@ -958,17 +1004,56 @@ class BuzzAdapter(BasePlatformAdapter):
         detection (_is_direct_message_event) rather than trusting the name
         alone to unlock the mention-free DM path.
         """
+        confirmed_dm_ids: set[str] = set()
         code, out, _err = await self._run_cli(["dms", "list"])
         if code == 0:
             for dm in _parse_json_list(out):
                 dm_id = str(dm.get("dm_id") or "")
-                if not dm_id or dm_id in self._channel_state:
+                if not dm_id:
                     continue
-                if seed:
+                confirmed_dm_ids.add(dm_id)
+                existing_state = self._channel_state.get(dm_id)
+                if existing_state is not None:
+                    existing_state["chat_type"] = "dm"
+                elif seed:
                     await self._seed_channel(dm_id, chat_type="dm")
                 else:
                     self._channel_state[dm_id] = {"chat_type": "dm", "last_ts": 0, "seen": OrderedDict()}
                 self._channel_names.setdefault(dm_id, "DM")
+
+        # `channels list` omits the metadata `t` tag, while current Buzz
+        # relays may also omit recipient p-tags from kind-9 DM messages.  Ask
+        # the richer search projection for exact `t=dm` confirmation so those
+        # conversations can bypass the channel mention gate safely.  Older
+        # CLI builds without `channels search` simply fall back to the existing
+        # p-tag latch below.
+        search_channel_types: dict[str, str] = {}
+        search_code, search_out, _search_err = await self._run_cli(
+            ["channels", "search", "--query", "DM", "--exact", "--include-archived"]
+        )
+        if search_code == 0:
+            for item in _parse_json_list(search_out):
+                ch_id = str(item.get("channel_id") or "")
+                channel_type = str(item.get("channel_type") or "").strip().lower()
+                if ch_id and channel_type:
+                    search_channel_types[ch_id] = channel_type
+        confirmed_dm_ids.update(
+            ch_id for ch_id, channel_type in search_channel_types.items()
+            if channel_type == "dm"
+        )
+
+        # Apply fresh search evidence immediately.  Reconciliation must not
+        # depend on the poorer channels-list projection succeeding or even
+        # containing the same conversation.
+        for ch_id, channel_type in search_channel_types.items():
+            effective_type = self._merge_channel_metadata(
+                ch_id, explicit_type=channel_type,
+            )
+            self._reconcile_channel_state_type(
+                ch_id,
+                effective_type,
+                confirmed_dm=ch_id in confirmed_dm_ids,
+            )
 
         code, out, _err = await self._run_cli(["channels", "list"])
         if code != 0:
@@ -977,14 +1062,31 @@ class BuzzAdapter(BasePlatformAdapter):
             ch_id = str(ch.get("channel_id") or "")
             if not ch_id:
                 continue
-            self._channel_meta[ch_id] = ch
+            effective_type = self._merge_channel_metadata(
+                ch_id,
+                ch,
+                explicit_type=search_channel_types.get(ch_id, ""),
+            )
             self._channel_names.setdefault(ch_id, str(ch.get("name") or ch_id))
-            if ch_id in self._channel_state or not self._may_reclassify_as_dm(ch_id):
+            existing_state = self._channel_state.get(ch_id)
+            self._reconcile_channel_state_type(
+                ch_id,
+                effective_type,
+                confirmed_dm=ch_id in confirmed_dm_ids,
+            )
+            if not self._may_reclassify_as_dm(ch_id):
                 continue
+            if existing_state is not None:
+                continue
+            chat_type = "dm" if ch_id in confirmed_dm_ids else "group"
             if seed:
-                await self._seed_channel(ch_id, chat_type="group")
+                await self._seed_channel(ch_id, chat_type=chat_type)
             else:
-                self._channel_state[ch_id] = {"chat_type": "group", "last_ts": 0, "seen": OrderedDict()}
+                self._channel_state[ch_id] = {
+                    "chat_type": chat_type,
+                    "last_ts": 0,
+                    "seen": OrderedDict(),
+                }
 
     async def _poll_channel(self, channel_id: str) -> None:
         state = self._channel_state.get(channel_id)
@@ -1095,6 +1197,9 @@ class BuzzAdapter(BasePlatformAdapter):
         meta = self._channel_meta.get(channel_id)
         if meta is None:
             return channel_id not in self.channels
+        channel_type = str(meta.get("channel_type") or "").strip().lower()
+        if channel_type:
+            return channel_type == "dm"
         name = str(meta.get("name") or "").strip()
         description = str(meta.get("description") or "").strip()
         return name == "DM" and not description

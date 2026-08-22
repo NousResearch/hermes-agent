@@ -260,11 +260,16 @@ async def preprocess_context_references_async(
 
     # Expand all references concurrently. Each _expand_reference is independent
     # (no shared state during expansion) — a message with several @url: refs
-    # would otherwise pay one full web_extract round-trip per ref in series.
+    # would otherwise pay one full web_extract round-trip per ref in serial.
     # gather preserves positional order, so we reassemble warnings/blocks in the
     # original ref order exactly as the prior serial loop did; the token-budget
     # check below is unchanged (it runs once, after all refs are expanded).
-    expanded = await asyncio.gather(
+    # return_exceptions=True keeps one failing ref from aborting the gather —
+    # a bare gather would both crash the whole message on a single bad ref and
+    # leak the still-running sibling coroutines (never awaited). A failed ref
+    # surfaces as a warning for that ref only; siblings complete normally
+    # (#91221).
+    gathered = await asyncio.gather(
         *(
             _expand_reference(
                 ref,
@@ -273,9 +278,23 @@ async def preprocess_context_references_async(
                 allowed_root=allowed_root_path,
             )
             for ref in refs
-        )
+        ),
+        return_exceptions=True,
     )
-    for warning, block in expanded:
+    for ref, outcome in zip(refs, gathered):
+        # Exception only — CancelledError/KeyboardInterrupt (BaseException,
+        # not Exception, on Python 3.8+) must keep propagating: cancellation
+        # is not a ref failure, and letting one fall through to the tuple
+        # unpack below would raise an unrelated TypeError instead.
+        if isinstance(outcome, BaseException):
+            if not isinstance(outcome, Exception):
+                raise outcome
+            warnings.append(
+                f"@{ref.kind}: expansion failed ({outcome.__class__.__name__}: "
+                f"{str(outcome)[:200]}); reference was not injected."
+            )
+            continue
+        warning, block = outcome
         if warning:
             warnings.append(warning)
         if block:

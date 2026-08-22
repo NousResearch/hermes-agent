@@ -10,10 +10,32 @@ the argparse subparsers on demand.
 from __future__ import annotations
 
 import argparse
+import contextvars
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+
+# Output sink for curator subcommands. The CLI path writes to the real
+# stdout/stderr; the gateway ``run_slash`` path swaps in a per-call StringIO
+# buffer via this ContextVar so no process-global stream is ever mutated
+# (``contextlib.redirect_stdout`` races with other gateway sessions writing
+# to the same streams — #68884 review).
+_emit_buffer: "contextvars.ContextVar[object]" = contextvars.ContextVar(
+    "curator_emit_buffer", default=None
+)
+
+
+def _emit(*args, file=None, **kwargs) -> None:
+    """Write a curator output line to the active sink (buffer or stdout)."""
+    buf = _emit_buffer.get()
+    if buf is not None:
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        buf.write(sep.join(str(a) for a in args) + end)
+        return
+    print(*args, file=file, **kwargs)
 
 
 def _fmt_ts(ts: Optional[str]) -> str:
@@ -56,10 +78,10 @@ def _print_unmanaged_summary() -> None:
         return
     legacy = sum(1 for r in unmanaged if not r.get("has_provenance_key"))
     foreground = len(unmanaged) - legacy
-    print(f"\nunmanaged (no provenance marker): {len(unmanaged)} total")
-    print(f"  pre-dates marker    {legacy}")
-    print(f"  foreground-created  {foreground}")
-    print(
+    _emit(f"\nunmanaged (no provenance marker): {len(unmanaged)} total")
+    _emit(f"  pre-dates marker    {legacy}")
+    _emit(f"  foreground-created  {foreground}")
+    _emit(
         "  never auto-staled or archived — "
         "`hermes curator adopt <name>` hands one over"
     )
@@ -81,39 +103,39 @@ def _cmd_status(args) -> int:
         "PAUSED" if paused else
         "DISABLED"
     )
-    print(f"curator: {status_line}")
-    print(f"  runs:           {runs}")
-    print(f"  last run:       {_fmt_ts(last_run)}")
+    _emit(f"curator: {status_line}")
+    _emit(f"  runs:           {runs}")
+    _emit(f"  last run:       {_fmt_ts(last_run)}")
     # Summary may be multi-line when the curator archived skills (the rename
     # map gets appended as `name → umbrella` lines). Indent continuation
     # lines so the block reads as one logical field.
     if "\n" in summary:
         first, *rest = summary.splitlines()
-        print(f"  last summary:   {first}")
+        _emit(f"  last summary:   {first}")
         for line in rest:
-            print(f"                  {line}")
+            _emit(f"                  {line}")
     else:
-        print(f"  last summary:   {summary}")
+        _emit(f"  last summary:   {summary}")
     _report = state.get("last_report_path")
     if _report:
         suffix = "" if Path(_report).exists() else " (missing)"
-        print(f"  last report:    {_report}{suffix}")
+        _emit(f"  last report:    {_report}{suffix}")
     _ih = curator.get_interval_hours()
     _interval_label = (
         f"{_ih // 24}d" if _ih % 24 == 0 and _ih >= 24
         else f"{_ih}h"
     )
-    print(f"  interval:       every {_interval_label}")
-    print(f"  stale after:    {curator.get_stale_after_days()}d unused")
-    print(f"  archive after:  {curator.get_archive_after_days()}d unused")
-    print(
+    _emit(f"  interval:       every {_interval_label}")
+    _emit(f"  stale after:    {curator.get_stale_after_days()}d unused")
+    _emit(f"  archive after:  {curator.get_archive_after_days()}d unused")
+    _emit(
         f"  consolidate:    {'on' if curator.get_consolidate() else 'off'}"
         f"{'' if curator.get_consolidate() else ' (prune-only; LLM merge pass opt-in)'}"
     )
 
     rows = skill_usage.curated_report()
     if not rows:
-        print("\nno curator-managed skills")
+        _emit("\nno curator-managed skills")
         _print_unmanaged_summary()
         return 0
 
@@ -132,14 +154,14 @@ def _cmd_status(args) -> int:
         elif prov == "bundled":
             bundled_count += 1
 
-    print(f"\ncurator-managed skills: {len(rows)} total  "
+    _emit(f"\ncurator-managed skills: {len(rows)} total  "
           f"(agent-created={agent_count}  bundled={bundled_count})")
     for state_name in ("active", "stale", "archived"):
         bucket = by_state.get(state_name, [])
-        print(f"  {state_name:10s} {len(bucket)}")
+        _emit(f"  {state_name:10s} {len(bucket)}")
 
     if pinned:
-        print(f"\npinned ({len(pinned)}): {', '.join(pinned)}")
+        _emit(f"\npinned ({len(pinned)}): {', '.join(pinned)}")
 
     # Surface the curation blind spot on the managed path too.
     _print_unmanaged_summary()
@@ -152,10 +174,10 @@ def _cmd_status(args) -> int:
         key=lambda r: r.get("last_activity_at") or r.get("created_at") or "",
     )[:5]
     if active:
-        print("\nleast recently active (top 5):")
+        _emit("\nleast recently active (top 5):")
         for r in active:
             last = _fmt_ts(r.get("last_activity_at"))
-            print(
+            _emit(
                 f"  {r['name']:40s}  "
                 f"activity={r.get('activity_count', 0):3d}  "
                 f"use={r.get('use_count', 0):3d}  "
@@ -178,10 +200,10 @@ def _cmd_status(args) -> int:
             reverse=True,
         )[:5]
         if most_active and (most_active[0].get("activity_count") or 0) > 0:
-            print("\nmost active (top 5):")
+            _emit("\nmost active (top 5):")
             for r in most_active:
                 last = _fmt_ts(r.get("last_activity_at"))
-                print(
+                _emit(
                     f"  {r['name']:40s}  "
                     f"activity={r.get('activity_count', 0):3d}  "
                     f"use={r.get('use_count', 0):3d}  "
@@ -195,10 +217,10 @@ def _cmd_status(args) -> int:
             key=lambda r: (r.get("activity_count") or 0, r.get("last_activity_at") or ""),
         )[:5]
         if least_active:
-            print("\nleast active (top 5):")
+            _emit("\nleast active (top 5):")
             for r in least_active:
                 last = _fmt_ts(r.get("last_activity_at"))
-                print(
+                _emit(
                     f"  {r['name']:40s}  "
                     f"activity={r.get('activity_count', 0):3d}  "
                     f"use={r.get('use_count', 0):3d}  "
@@ -213,7 +235,7 @@ def _cmd_status(args) -> int:
 def _cmd_run(args) -> int:
     from agent import curator
     if not curator.is_enabled():
-        print("curator: disabled via config; enable with `curator.enabled: true`")
+        _emit("curator: disabled via config; enable with `curator.enabled: true`")
         return 1
 
     dry = bool(getattr(args, "dry_run", False))
@@ -224,18 +246,18 @@ def _cmd_run(args) -> int:
     # so run_curator_review reads curator.consolidate from config.
     consolidate = True if bool(getattr(args, "consolidate", False)) else None
     if dry:
-        print("curator: running DRY-RUN (report only, no mutations)...")
+        _emit("curator: running DRY-RUN (report only, no mutations)...")
     else:
-        print("curator: running review pass...")
+        _emit("curator: running review pass...")
     if consolidate is None and not curator.get_consolidate():
-        print(
+        _emit(
             "curator: consolidation is off — running prune-only "
             "(deterministic stale/archive). Pass --consolidate or set "
             "`curator.consolidate: true` to enable the LLM merge pass."
         )
 
     def _on_summary(msg: str) -> None:
-        print(msg)
+        _emit(msg)
 
     result = curator.run_curator_review(
         on_summary=_on_summary,
@@ -246,27 +268,27 @@ def _cmd_run(args) -> int:
     auto = result.get("auto_transitions", {})
     if auto:
         if dry:
-            print(
+            _emit(
                 f"auto (preview): {auto.get('checked', 0)} candidate skill(s) "
                 "— no transitions applied in dry-run"
             )
         else:
-            print(
+            _emit(
                 f"auto: checked={auto.get('checked', 0)} "
                 f"stale={auto.get('marked_stale', 0)} "
                 f"archived={auto.get('archived', 0)} "
                 f"reactivated={auto.get('reactivated', 0)}"
             )
     if not synchronous:
-        print("llm pass running in background — check `hermes curator status` later")
+        _emit("llm pass running in background — check `hermes curator status` later")
     if dry:
         if synchronous:
-            print(
+            _emit(
                 "dry-run: no changes applied. Read the report with "
                 "`hermes curator status` and run `hermes curator run` (no flag) to apply."
             )
         else:
-            print(
+            _emit(
                 "dry-run: no changes applied. When the report lands, read it with "
                 "`hermes curator status` and run `hermes curator run` (no flag) to apply."
             )
@@ -276,40 +298,40 @@ def _cmd_run(args) -> int:
 def _cmd_pause(args) -> int:
     from agent import curator
     curator.set_paused(True)
-    print("curator: paused")
+    _emit("curator: paused")
     return 0
 
 
 def _cmd_resume(args) -> int:
     from agent import curator
     curator.set_paused(False)
-    print("curator: resumed")
+    _emit("curator: resumed")
     return 0
 
 
 def _cmd_pin(args) -> int:
     from tools import skill_usage
     if not skill_usage.is_agent_created(args.skill):
-        print(
+        _emit(
             f"curator: '{args.skill}' is bundled or hub-installed — cannot pin "
             "(only agent-created skills participate in curation)"
         )
         return 1
     skill_usage.set_pinned(args.skill, True)
-    print(f"curator: pinned '{args.skill}' (will bypass auto-transitions)")
+    _emit(f"curator: pinned '{args.skill}' (will bypass auto-transitions)")
     return 0
 
 
 def _cmd_unpin(args) -> int:
     from tools import skill_usage
     if not skill_usage.is_agent_created(args.skill):
-        print(
+        _emit(
             f"curator: '{args.skill}' is bundled or hub-installed — "
             "there's nothing to unpin (curator only tracks agent-created skills)"
         )
         return 1
     skill_usage.set_pinned(args.skill, False)
-    print(f"curator: unpinned '{args.skill}'")
+    _emit(f"curator: unpinned '{args.skill}'")
     return 0
 
 
@@ -323,20 +345,20 @@ def _cmd_list_unmanaged(args) -> int:
 
     rows = skill_usage.unmanaged_report()
     if not rows:
-        print("curator: no unmanaged skills — every eligible skill is managed")
+        _emit("curator: no unmanaged skills — every eligible skill is managed")
         return 0
 
-    print(f"unmanaged skills ({len(rows)}):")
+    _emit(f"unmanaged skills ({len(rows)}):")
     for r in sorted(rows, key=lambda x: x["name"]):
         why = "created_by:null" if r.get("has_provenance_key") else "no marker"
         last = _fmt_ts(r.get("last_activity_at"))
-        print(
+        _emit(
             f"  {r['name']:44s} "
             f"activity={r.get('activity_count', 0):4d}  "
             f"last_activity={last:14s}  "
             f"({why})"
         )
-    print("\nadopt one with `hermes curator adopt <name>`, "
+    _emit("\nadopt one with `hermes curator adopt <name>`, "
           "or all with `hermes curator adopt --all-unmanaged`")
     return 0
 
@@ -356,44 +378,44 @@ def _cmd_adopt(args) -> int:
     adopt_all = bool(getattr(args, "all_unmanaged", False))
     if adopt_all:
         if names:
-            print("curator: pass either skill names or --all-unmanaged, not both")
+            _emit("curator: pass either skill names or --all-unmanaged, not both")
             return 1
         names = skill_usage.list_unmanaged_skill_names()
         if not names:
-            print("curator: no unmanaged skills to adopt")
+            _emit("curator: no unmanaged skills to adopt")
             return 0
     if not names:
-        print("curator: name a skill to adopt, or pass --all-unmanaged")
+        _emit("curator: name a skill to adopt, or pass --all-unmanaged")
         return 1
 
     dry_run = bool(getattr(args, "dry_run", False))
     if dry_run:
-        print(f"curator: would adopt {len(names)} skill(s) (dry run):")
+        _emit(f"curator: would adopt {len(names)} skill(s) (dry run):")
         for n in names:
-            print(f"  + {n}")
+            _emit(f"  + {n}")
         return 0
 
     # Bulk adoption is a real lifecycle change (adopted skills become
     # archivable), so confirm unless the caller opted out.
     if adopt_all and not bool(getattr(args, "yes", False)):
-        print(f"curator: adopt {len(names)} unmanaged skill(s) into curator management?")
-        print("  they become eligible for automatic staleness + archival")
+        _emit(f"curator: adopt {len(names)} unmanaged skill(s) into curator management?")
+        _emit("  they become eligible for automatic staleness + archival")
         try:
             reply = input("  proceed? [y/N] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             reply = ""
         if reply not in {"y", "yes"}:
-            print("curator: aborted")
+            _emit("curator: aborted")
             return 1
 
     failed = 0
     for n in names:
         ok, msg = skill_usage.adopt_skill(n)
-        print(f"curator: {msg}")
+        _emit(f"curator: {msg}")
         if not ok:
             failed += 1
     if len(names) > 1:
-        print(f"curator: adopted {len(names) - failed}/{len(names)}")
+        _emit(f"curator: adopted {len(names) - failed}/{len(names)}")
     return 1 if failed else 0
 
 
@@ -404,7 +426,7 @@ def _cmd_restore(args) -> int:
         ok, msg = skill_usage.restore_skill(args.skill)
     finally:
         skill_ledger.reset_ledger_actor(tok)
-    print(f"curator: {msg}")
+    _emit(f"curator: {msg}")
     return 0 if ok else 1
 
 
@@ -416,7 +438,7 @@ def _cmd_archive(args) -> int:
     """
     from tools import skill_ledger, skill_usage
     if skill_usage.get_record(args.skill).get("pinned"):
-        print(
+        _emit(
             f"curator: '{args.skill}' is pinned — unpin first with "
             f"`hermes curator unpin {args.skill}`"
         )
@@ -426,7 +448,7 @@ def _cmd_archive(args) -> int:
         ok, msg = skill_usage.archive_skill(args.skill)
     finally:
         skill_ledger.reset_ledger_actor(tok)
-    print(f"curator: {msg}")
+    _emit(f"curator: {msg}")
     return 0 if ok else 1
 
 
@@ -459,7 +481,7 @@ def _cmd_prune(args) -> int:
     from tools import skill_usage
     days = getattr(args, "days", 90)
     if days < 1:
-        print(f"curator: --days must be >= 1 (got {days})", file=sys.stderr)
+        _emit(f"curator: --days must be >= 1 (got {days})", file=sys.stderr)
         return 2
 
     dry_run = bool(getattr(args, "dry_run", False))
@@ -477,26 +499,26 @@ def _cmd_prune(args) -> int:
         candidates.append((r["name"], idle))
 
     if not candidates:
-        print(f"curator: nothing to prune (no unpinned skills idle >= {days}d)")
+        _emit(f"curator: nothing to prune (no unpinned skills idle >= {days}d)")
         return 0
 
     candidates.sort(key=lambda c: -c[1])
-    print(f"curator: {len(candidates)} skill(s) idle >= {days}d:")
+    _emit(f"curator: {len(candidates)} skill(s) idle >= {days}d:")
     for name, idle in candidates:
-        print(f"  {name:40s} idle {idle}d")
+        _emit(f"  {name:40s} idle {idle}d")
 
     if dry_run:
-        print("\n(dry run — no changes made)")
+        _emit("\n(dry run — no changes made)")
         return 0
 
     if not skip_confirm:
         try:
             reply = input(f"\nArchive {len(candidates)} skill(s)? [y/N] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print("\ncurator: aborted")
+            _emit("\ncurator: aborted")
             return 1
         if reply not in {"y", "yes"}:
-            print("curator: aborted")
+            _emit("curator: aborted")
             return 1
 
     archived = 0
@@ -508,11 +530,11 @@ def _cmd_prune(args) -> int:
         else:
             failures.append((name, msg))
 
-    print(f"\ncurator: archived {archived}/{len(candidates)}")
+    _emit(f"\ncurator: archived {archived}/{len(candidates)}")
     if failures:
-        print("failures:")
+        _emit("failures:")
         for name, msg in failures:
-            print(f"  {name}: {msg}")
+            _emit(f"  {name}: {msg}")
         return 1
     return 0
 
@@ -522,7 +544,7 @@ def _cmd_backup(args) -> int:
     automatic pre-run snapshot, just user-initiated."""
     from agent import curator_backup
     if not curator_backup.is_enabled():
-        print(
+        _emit(
             "curator: backups are disabled via config "
             "(`curator.backup.enabled: false`); re-enable to snapshot"
         )
@@ -530,9 +552,9 @@ def _cmd_backup(args) -> int:
     reason = getattr(args, "reason", None) or "manual"
     snap = curator_backup.snapshot_skills(reason=reason)
     if snap is None:
-        print("curator: snapshot failed — check logs (backup disabled or IO error)")
+        _emit("curator: snapshot failed — check logs (backup disabled or IO error)")
         return 1
-    print(f"curator: snapshot created at ~/.hermes/skills/.curator_backups/{snap.name}")
+    _emit(f"curator: snapshot created at ~/.hermes/skills/.curator_backups/{snap.name}")
     return 0
 
 
@@ -545,9 +567,9 @@ def _cmd_ledger(args) -> int:
         limit=getattr(args, "limit", None) or 20,
     )
     if not rows:
-        print("curator: ledger is empty (or skills.ledger is disabled).")
+        _emit("curator: ledger is empty (or skills.ledger is disabled).")
         return 0
-    print(f"{'id':<14} {'when':<12} {'actor':<8} {'action':<12} skill")
+    _emit(f"{'id':<14} {'when':<12} {'actor':<8} {'action':<12} skill")
     for r in rows:
         evidence = r.get("evidence") or {}
         extra = ""
@@ -555,12 +577,12 @@ def _cmd_ledger(args) -> int:
             extra = f"  → absorbed into '{evidence['absorbed_into']}'"
         elif evidence.get("rollback_target"):
             extra = f"  → rollback of {evidence['rollback_target']}"
-        print(
+        _emit(
             f"{r.get('id', '?'):<14} {_fmt_ts(r.get('ts')):<12} "
             f"{r.get('actor', '?'):<8} {r.get('action', '?'):<12} "
             f"{r.get('skill', '?')}{extra}"
         )
-    print(
+    _emit(
         "\nRoll back a single mutation with `hermes curator rollback <id>`; "
         "whole-tree snapshots remain available via `hermes curator rollback --list`."
     )
@@ -582,7 +604,7 @@ def _cmd_purge(args) -> int:
     if ttl_days is None:
         ttl_days = int(cfg_get(load_config(), "curator", "archive_ttl_days", default=0) or 0)
     if ttl_days <= 0:
-        print(
+        _emit(
             "curator: purge disabled (curator.archive_ttl_days is 0). Set the "
             "config key or pass --days N to purge archives older than N days."
         )
@@ -590,7 +612,7 @@ def _cmd_purge(args) -> int:
 
     archive_root = _archive_dir()
     if not archive_root.exists():
-        print("curator: no archive directory — nothing to purge.")
+        _emit("curator: no archive directory — nothing to purge.")
         return 0
 
     import shutil
@@ -602,23 +624,23 @@ def _cmd_purge(args) -> int:
         if p.is_dir() and p.stat().st_mtime < cutoff
     ]
     if not candidates:
-        print(f"curator: no archived skills older than {ttl_days}d.")
+        _emit(f"curator: no archived skills older than {ttl_days}d.")
         return 0
 
-    print(f"Archived skills older than {ttl_days}d:")
+    _emit(f"Archived skills older than {ttl_days}d:")
     for p in sorted(candidates):
-        print(f"  {p.name}")
+        _emit(f"  {p.name}")
     if getattr(args, "dry_run", False):
-        print("(dry run — nothing deleted)")
+        _emit("(dry run — nothing deleted)")
         return 0
     if not getattr(args, "yes", False):
         try:
             ans = input(f"Permanently delete {len(candidates)} archived skill(s)? [y/N] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print("\ncancelled")
+            _emit("\ncancelled")
             return 1
         if ans not in {"y", "yes"}:
-            print("cancelled")
+            _emit("cancelled")
             return 1
 
     purged = 0
@@ -627,7 +649,7 @@ def _cmd_purge(args) -> int:
         try:
             shutil.rmtree(p)
         except OSError as e:
-            print(f"curator: failed to purge {p.name}: {e}")
+            _emit(f"curator: failed to purge {p.name}: {e}")
             continue
         skill_ledger.append_entry(
             "purge",
@@ -638,7 +660,7 @@ def _cmd_purge(args) -> int:
             evidence={"ttl_days": ttl_days},
         )
         purged += 1
-    print(f"curator: purged {purged} archived skill(s). Ledger entries recorded.")
+    _emit(f"curator: purged {purged} archived skill(s). Ledger entries recorded.")
     return 0
 
 
@@ -663,37 +685,37 @@ def _cmd_rollback(args) -> int:
 
         entry = skill_ledger.get_entry(entry_id)
         if entry is None:
-            print(
+            _emit(
                 f"curator: no ledger entry '{entry_id}'. "
                 "See `hermes curator ledger` for entry ids, or use "
                 "`--id <snapshot>` for whole-tree snapshot rollback."
             )
             return 1
-        print(f"Rollback target: ledger entry {entry_id}")
-        print(f"  action: {entry.get('action', '?')}")
-        print(f"  skill:  {entry.get('skill', '?')}")
-        print(f"  actor:  {entry.get('actor', '?')}")
-        print(f"  when:   {entry.get('ts', '?')}")
+        _emit(f"Rollback target: ledger entry {entry_id}")
+        _emit(f"  action: {entry.get('action', '?')}")
+        _emit(f"  skill:  {entry.get('skill', '?')}")
+        _emit(f"  actor:  {entry.get('actor', '?')}")
+        _emit(f"  when:   {entry.get('ts', '?')}")
         touched = {i.get("path") for i in (entry.get("before") or []) + (entry.get("after") or [])}
-        print(f"  files:  {len(touched)}")
+        _emit(f"  files:  {len(touched)}")
         if not getattr(args, "yes", False):
             try:
                 ans = input("Restore this mutation's before-state? [y/N] ").strip().lower()
             except (EOFError, KeyboardInterrupt):
-                print("\ncancelled")
+                _emit("\ncancelled")
                 return 1
             if ans not in {"y", "yes"}:
-                print("cancelled")
+                _emit("cancelled")
                 return 1
         ok, msg = skill_ledger.rollback_entry(entry_id)
         if ok:
-            print(f"curator: {msg}")
+            _emit(f"curator: {msg}")
             return 0
-        print(f"curator: rollback failed — {msg}")
+        _emit(f"curator: rollback failed — {msg}")
         return 1
 
     if getattr(args, "list", False):
-        print(curator_backup.summarize_backups())
+        _emit(curator_backup.summarize_backups())
         return 0
 
     backup_id = getattr(args, "backup_id", None)
@@ -701,36 +723,36 @@ def _cmd_rollback(args) -> int:
     if target_path is None:
         rows = curator_backup.list_backups()
         if not rows:
-            print(
+            _emit(
                 "curator: no snapshots exist yet. Take one with "
                 "`hermes curator backup` or wait for the next curator run."
             )
         else:
-            print(
+            _emit(
                 f"curator: no snapshot matching "
                 f"{'id ' + repr(backup_id) if backup_id else 'your query'}."
             )
-            print("Available:")
-            print(curator_backup.summarize_backups())
+            _emit("Available:")
+            _emit(curator_backup.summarize_backups())
         return 1
 
     manifest = curator_backup._read_manifest(target_path)
-    print(f"Rollback target: {target_path.name}")
+    _emit(f"Rollback target: {target_path.name}")
     if manifest:
-        print(f"  reason:      {manifest.get('reason', '?')}")
-        print(f"  created_at:  {manifest.get('created_at', '?')}")
-        print(f"  skill files: {manifest.get('skill_files', '?')}")
+        _emit(f"  reason:      {manifest.get('reason', '?')}")
+        _emit(f"  created_at:  {manifest.get('created_at', '?')}")
+        _emit(f"  skill files: {manifest.get('skill_files', '?')}")
         cron = manifest.get("cron_jobs") or {}
         if isinstance(cron, dict):
             if cron.get("backed_up"):
-                print(
+                _emit(
                     f"  cron jobs:   {cron.get('jobs_count', 0)} "
                     f"(will be restored for skill-link fields only)"
                 )
             else:
                 reason = cron.get("reason", "not captured")
-                print(f"  cron jobs:   not in snapshot ({reason})")
-    print(
+                _emit(f"  cron jobs:   not in snapshot ({reason})")
+    _emit(
         "\nThis will replace the current ~/.hermes/skills/ tree (a safety "
         "snapshot of the current state is taken first so this is undoable). "
         "Cron jobs that still exist will have their skills/skill fields "
@@ -741,17 +763,17 @@ def _cmd_rollback(args) -> int:
         try:
             ans = input("Proceed? [y/N] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print("\ncancelled")
+            _emit("\ncancelled")
             return 1
         if ans not in {"y", "yes"}:
-            print("cancelled")
+            _emit("cancelled")
             return 1
 
     ok, msg, _ = curator_backup.rollback(backup_id=target_path.name)
     if ok:
-        print(f"curator: {msg}")
+        _emit(f"curator: {msg}")
         return 0
-    print(f"curator: rollback failed — {msg}")
+    _emit(f"curator: rollback failed — {msg}")
     return 1
 
 
@@ -760,10 +782,10 @@ def _cmd_list_archived(args) -> int:
     from tools import skill_usage
     names = skill_usage.list_archived_skill_names()
     if not names:
-        print("curator: no archived skills")
+        _emit("curator: no archived skills")
         return 0
     for name in names:
-        print(name)
+        _emit(name)
     return 0
 
 
@@ -793,29 +815,29 @@ def _cmd_usage(args) -> int:
         rows.sort(key=lambda r: r.get("activity_count", 0), reverse=True)
 
     if getattr(args, "json", False):
-        print(_json.dumps(rows, indent=2, ensure_ascii=False))
+        _emit(_json.dumps(rows, indent=2, ensure_ascii=False))
         return 0
 
     if not rows:
-        print("curator: no skills found")
+        _emit("curator: no skills found")
         return 0
 
     # Provenance tallies for a quick header.
     counts = {"agent": 0, "bundled": 0, "hub": 0}
     for r in rows:
         counts[r.get("provenance", "agent")] = counts.get(r.get("provenance", "agent"), 0) + 1
-    print(
+    _emit(
         f"skills: {len(rows)} total  "
         f"(agent={counts['agent']}  bundled={counts['bundled']}  hub={counts['hub']})"
     )
-    print()
-    print(
+    _emit()
+    _emit(
         f"  {'skill':40s}  {'origin':8s}  "
         f"{'use':>4s}  {'view':>4s}  {'patch':>5s}  {'act':>4s}  last_activity"
     )
     for r in rows:
         last = _fmt_ts(r.get("last_activity_at"))
-        print(
+        _emit(
             f"  {r['name'][:40]:40s}  "
             f"{r.get('provenance', 'agent'):8s}  "
             f"{r.get('use_count', 0):>4d}  "
@@ -1037,6 +1059,84 @@ def cli_main(argv=None) -> int:
         parser.print_help()
         return 0
     return int(fn(args) or 0)
+
+
+# ── Gateway /curator entry point (#68880, #68884 review) ───────────────
+#
+# ``run_slash`` is the concurrency-safe string-returning entry point used by
+# the gateway's /curator slash command.  It collects output into a per-call
+# buffer via the ``_emit_buffer`` ContextVar — no process-global
+# ``sys.stdout``/``sys.stderr`` swap, so concurrent gateway sessions can't
+# race on the streams.  Interactive subcommands that call ``input()`` are
+# rejected with a targeted message when ``-y``/``--yes`` is absent, instead
+# of relying on ``EOFError`` from a headless gateway.
+
+import threading as _threading
+
+_curator_slash_lock = _threading.Lock()
+
+# Subcommands that prompt via input() and need ``-y``/``--yes`` on the
+# gateway. ``adopt`` prompts only for ``--all-unmanaged``; ``prune`` and
+# ``rollback`` prompt unconditionally without the flag (#68884 review).
+_INTERACTIVE_SUBCOMMANDS = {"rollback", "prune", "adopt"}
+
+
+def run_slash(text: str) -> str:
+    """Execute a ``/curator …`` string and return captured output.
+
+    Thread-safe and concurrency-safe: a module-level lock serializes
+    curator invocations, and output is captured into a per-call buffer via
+    the ``_emit_buffer`` ContextVar — no process-global stream mutation.
+
+    Interactive subcommands (``rollback``, ``prune``, ``adopt --all-unmanaged``)
+    that would call ``input()`` are rejected with a targeted message when
+    ``-y``/``--yes`` is not present, instead of relying on ``EOFError`` from
+    a headless gateway.
+    """
+    import io
+    import shlex
+
+    text = (text or "").strip()
+    if text.startswith("/"):
+        text = text.lstrip("/")
+    if text.lower().startswith("curator"):
+        text = text[len("curator"):].lstrip()
+
+    try:
+        tokens = shlex.split(text) if text else []
+    except ValueError as exc:
+        return f"curator: could not parse arguments: {exc}"
+    if not tokens:
+        tokens = ["status"]
+
+    # Block interactive subcommands without -y/--yes on the gateway.
+    # ``adopt`` only prompts for ``--all-unmanaged``, so it is gated only
+    # when that flag is present without ``--yes``.
+    sub = tokens[0]
+    has_yes = "-y" in tokens or "--yes" in tokens
+    if sub in _INTERACTIVE_SUBCOMMANDS and not has_yes:
+        if sub == "adopt" and "--all-unmanaged" not in tokens:
+            pass  # named-skill adopt is non-interactive
+        else:
+            return (
+                f"curator: `{sub}` is interactive and requires `-y` "
+                f"when run from the gateway."
+            )
+
+    with _curator_slash_lock:
+        buf = io.StringIO()
+        token = _emit_buffer.set(buf)
+        try:
+            try:
+                cli_main(tokens)
+            except SystemExit:
+                pass  # argparse --help / errors
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"curator: {exc}"
+        finally:
+            _emit_buffer.reset(token)
+        out = buf.getvalue().strip()
+    return out or "curator: (no output)"
 
 
 if __name__ == "__main__":  # pragma: no cover

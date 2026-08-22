@@ -13100,6 +13100,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         active. Safe to call at startup before the gateway/CLI starts
         serving traffic.
 
+        Do **not** run this while a live gateway or dashboard/serve process
+        still holds open descriptors on ``state.db``: the rewrite replaces
+        the inode, and those processes keep stale WAL/SHM handles that then
+        report disk I/O / malformed-DB errors until restarted (see
+        ``hermes sessions optimize`` guard, #84525).
+
         FTS5 segments are merged first via :meth:`optimize_fts` so the
         subsequent VACUUM reclaims the pages freed by the merge. This is a
         layout-only optimization — search results are unchanged.

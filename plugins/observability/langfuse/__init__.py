@@ -151,20 +151,87 @@ def _capture_mode() -> str:
     return _DEFAULT_CAPTURE_MODE
 
 
-# Secret redaction in ``sanitized`` mode reuses the project-wide
-# ``agent.redact.redact_sensitive_text(force=True)`` — which covers 50+ credential
-# patterns, private keys, JWTs, auth headers, DB connection strings, and env
-# assignments with pre-check-gated regex. The ``force=True`` flag ensures
-# redaction runs even if the user has ``security.redact_secrets: false`` set —
-# appropriate for an observability plugin exporting to an external service.
+# Secret redaction in ``sanitized`` mode delegates entirely to the
+# project-wide ``agent.redact.redact_sensitive_text`` — 50+ credential
+# patterns, private keys, JWTs, auth headers (any scheme), DB connection
+# strings, and env/JSON/YAML assignments, all with pre-check-gated regex and
+# false-positive guards (word-boundary key matching, env-lookup exceptions)
+# already fought out and tested there. Three flags tune it for this
+# call site specifically:
+#   force=True                 -- run even if the user set
+#                                  security.redact_secrets: false; this is a
+#                                  third-party cloud upload, not a local log.
+#   full_mask=True              -- the shared redactor's default preserves a
+#                                  head/tail preview for local-log
+#                                  debuggability; that is too much exposure
+#                                  once the text is leaving the machine.
+#   redact_url_credentials=True -- also strip credential-named query params
+#                                  and user:pass@ URL userinfo, which the
+#                                  shared redactor otherwise leaves alone for
+#                                  ordinary tool-flow URLs (OAuth callbacks,
+#                                  magic links).
+# Email addresses are PII, not credentials, so the shared redactor
+# deliberately doesn't touch them -- that pass runs here as a second, plugin-
+# local step.
+_REDACTED = "[REDACTED]"
+_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+_REDACTION_FAILED = "[content omitted: redaction failed]"
 
 
 def _redact_secrets(value: str) -> str:
+    """Fully redact secrets and emails from ``value`` before it leaves the
+    machine. Fails CLOSED: any error here omits the content rather than
+    risk shipping it raw to a third-party service.
+    """
     try:
         from agent.redact import redact_sensitive_text
-        return redact_sensitive_text(value, force=True)
+        value = redact_sensitive_text(
+            value, force=True, full_mask=True, redact_url_credentials=True,
+        )
+        return _EMAIL_RE.sub(_REDACTED, value)
     except Exception:
+        logger.warning("langfuse: redaction failed, omitting content from upload", exc_info=True)
+        return _REDACTION_FAILED
+
+
+def _is_sensitive_key(name: str) -> bool:
+    """True if a dict key names a field whose value is a credential.
+
+    Lets sanitization catch opaque secrets (a bare password, an unrecognized
+    token format) that don't match any of ``_redact_secrets``' shape-based
+    patterns once the value has been separated from its key by JSON
+    parsing -- the key itself is still the signal.
+    """
+    try:
+        from agent.redact import is_sensitive_key
+        return is_sensitive_key(name)
+    except Exception:
+        return False
+
+
+def _redact_metadata_url(value: str) -> str:
+    """Sanitize a URL going into trace *metadata* (not message content).
+
+    ``_capture_content``/``_safe_value`` intentionally never see metadata
+    fields (provider, model, IDs) -- those pass through unredacted by
+    design, they're not conversation content. ``base_url`` is the one
+    metadata field that can carry a credential: a self-hosted or proxied
+    LLM endpoint may embed an API key in the query string or basic-auth
+    userinfo. Only URL-shaped credentials are stripped (query params,
+    userinfo) -- this is not the general secret/email pass, and it only
+    runs in ``sanitized`` mode, matching every other redaction boundary
+    in this plugin.
+    """
+    if not value or _capture_mode() != "sanitized":
         return value
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(
+            value, force=True, full_mask=True, redact_url_credentials=True,
+        )
+    except Exception:
+        logger.warning("langfuse: base_url redaction failed, omitting from metadata", exc_info=True)
+        return _REDACTION_FAILED
 
 
 def _describe_content(value: Any, *, depth: int = 0) -> Any:
@@ -581,7 +648,7 @@ def _normalize_payload(value: Any, *, tool_name: str = "", args: Any = None) -> 
 
 
 def _safe_value(value: Any, *, max_chars: Optional[int] = None, depth: int = 0,
-                parse_json_strings: bool = False) -> Any:
+                parse_json_strings: bool = False, key_hint: Optional[str] = None) -> Any:
     max_chars = max_chars if max_chars is not None else int(_env("HERMES_LANGFUSE_MAX_CHARS", "12000") or "12000")
     if depth > 4:
         return "<max-depth>"
@@ -590,6 +657,14 @@ def _safe_value(value: Any, *, max_chars: Optional[int] = None, depth: int = 0,
     if isinstance(value, bytes):
         return {"type": "bytes", "len": len(value)}
     if isinstance(value, str):
+        # Key-aware override: once JSON has been parsed, the key is the only
+        # signal left that a bare scalar ("hunter2", an opaque token with no
+        # recognized vendor prefix) is a credential -- _redact_secrets' shape
+        # patterns can't catch it from the value alone. Checked before
+        # JSON-string parsing so a stringified secret payload doesn't get
+        # structurally exposed by descending into it.
+        if value and key_hint and _capture_mode() == "sanitized" and _is_sensitive_key(key_hint):
+            return _REDACTED
         if parse_json_strings:
             parsed = _maybe_parse_json_string(value)
             if parsed is not value:
@@ -600,7 +675,7 @@ def _safe_value(value: Any, *, max_chars: Optional[int] = None, depth: int = 0,
         if normalized is not value:
             return _safe_value(normalized, max_chars=max_chars, depth=depth, parse_json_strings=parse_json_strings)
         return {
-            str(k): _safe_value(v, max_chars=max_chars, depth=depth + 1, parse_json_strings=parse_json_strings)
+            str(k): _safe_value(v, max_chars=max_chars, depth=depth + 1, parse_json_strings=parse_json_strings, key_hint=str(k))
             for k, v in list(value.items())[:50]
         }
     if isinstance(value, (list, tuple, set)):
@@ -1356,7 +1431,7 @@ def on_pre_llm_request(
             "provider": provider,
             "platform": platform,
             "api_mode": api_mode,
-            "base_url": base_url,
+            "base_url": _redact_metadata_url(base_url),
             "message_count": message_count,
             "approx_input_tokens": approx_input_tokens,
         }

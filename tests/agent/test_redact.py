@@ -4,7 +4,13 @@ import logging
 
 import pytest
 
-from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import (
+    is_sensitive_key,
+    mask_secret,
+    redact_cdp_url,
+    redact_sensitive_text,
+    RedactingFormatter,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -942,6 +948,76 @@ class TestFileReadNonReusableRedaction:
 
 
 
+
+
+class TestFullMaskExternalEgress:
+    """full_mask=True: every masked span uses the non-reusable sentinel
+    (no head/tail preview) for external-egress boundaries like a
+    third-party cloud upload -- see the Langfuse plugin's _redact_secrets."""
+
+    def test_prefix_token_no_partial_reveal(self):
+        key = "sk-abcdefghijklmnopqrstuvwxyz012345"
+        out = redact_sensitive_text(f"key: {key}", force=True, full_mask=True)
+        assert key not in out
+        assert key[:8] not in out
+        assert key[-4:] not in out
+
+    @pytest.mark.parametrize("header,credential", [
+        ("Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA=="),
+        ("Authorization: Digest abcdef0123456789abcdef0123456789", "abcdef0123456789abcdef0123456789"),
+        ("Authorization: Token abcdef0123456789abcdef0123456789", "abcdef0123456789abcdef0123456789"),
+        ("authorization: bearer abcdef0123456789abcdef0123456789", "abcdef0123456789abcdef0123456789"),
+        ("Proxy-Authorization: Basic cHJveHl1c2VyOnByb3h5cGFzcw==", "cHJveHl1c2VyOnByb3h5cGFzcw=="),
+    ])
+    def test_authorization_any_scheme_no_partial_reveal(self, header, credential):
+        out = redact_sensitive_text(header, force=True, full_mask=True)
+        assert credential not in out
+        assert credential[:8] not in out
+
+    def test_jwt_no_partial_reveal(self):
+        jwt = "eyJhbGciOiJIUzI1NiJ9." + "A" * 40 + "." + "B" * 20
+        out = redact_sensitive_text(f"token={jwt}", force=True, full_mask=True)
+        assert jwt not in out
+        assert jwt[:10] not in out
+
+    def test_ordinary_prose_unaffected(self):
+        prose = "monkey hockey donkey key.getenv('X')"
+        assert redact_sensitive_text(prose, force=True, full_mask=True) == prose
+
+    def test_independent_of_file_read(self):
+        # full_mask and file_read both select the non-reusable sentinel but
+        # are independent flags -- file_read's existing contract (implies
+        # code_file=True) must not change when full_mask alone is set.
+        text = 'MAX_TOKENS=100\n"apiKey": "test"'
+        assert redact_sensitive_text(text, force=True, full_mask=True, code_file=True) == text
+
+
+class TestIsSensitiveKey:
+    """is_sensitive_key: dict-key-aware check for structured-payload
+    sanitizers (e.g. the Langfuse plugin) walking already-parsed JSON,
+    where the value alone may not match any credential shape."""
+
+    @pytest.mark.parametrize("key", [
+        "password", "client_secret", "clientSecret", "authorization",
+        "access_token", "api_key", "apiKey", "secret", "token",
+    ])
+    def test_known_sensitive_keys(self, key):
+        assert is_sensitive_key(key) is True
+
+    @pytest.mark.parametrize("key", [
+        "monkey", "hockey", "donkey", "username", "session_id",
+        "token_count", "secretary", "tokenizer",
+        # Plural/compound false positives _key_has_secret_keyword would flag
+        # (trailing "s" counts as the same keyword there) but that are
+        # common, legitimate usage-metadata field names -- not secrets.
+        "approx_input_tokens", "total_tokens", "prompt_tokens",
+    ])
+    def test_false_positive_keys_rejected(self, key):
+        assert is_sensitive_key(key) is False
+
+    @pytest.mark.parametrize("key", ["clientSecret", "Client-Secret", "APIKEY", "Authorization"])
+    def test_case_and_separator_variants_still_match(self, key):
+        assert is_sensitive_key(key) is True
 
 
 class TestFireworksToken:

@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths:
       - "scripts/build_skills_index.py"
+      - "tools/skills_hub.py"
       - ".github/workflows/skills-index.yml"
 
 permissions:
@@ -20,7 +21,9 @@ jobs:
     # Only run on the upstream repository, not on forks
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Full catalog + skills.sh path resolve regularly exceeds 15m and GitHub
+    # cancels the job (~15m19s). Freshness then nags #66616 forever.
+    timeout-minutes: 45
     environment: trusted-automation
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

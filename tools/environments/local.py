@@ -531,14 +531,25 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
 
 def _scrub_delegated_child_kanban_env(env: dict[str, str]) -> dict[str, str]:
-    """Strip dispatcher-owned Kanban env from delegate_task child subprocesses."""
+    """Strip dispatcher-owned Kanban env from non-dispatcher-owned subprocesses.
+
+    Covers both delegate_task children (``is_delegated_child_process_context``,
+    including the cross-process env-marker case) and cron jobs fired in-process
+    from a kanban worker (``is_dispatcher_owned_worker_context`` is False) — see
+    ``agent.delegation_context.is_dispatcher_owned_worker_context``, "the single
+    predicate every HERMES_KANBAN_* identity gate should use." This function
+    predates that unifying predicate (added in #79657) and was never migrated
+    to it, so non-dispatcher cron subprocesses kept inheriting the worker's
+    Kanban identity (#87725).
+    """
     try:
         from agent.delegation_context import (
             is_delegated_child_process_context,
+            is_dispatcher_owned_worker_context,
             scrub_kanban_env,
         )
 
-        if is_delegated_child_process_context():
+        if is_delegated_child_process_context() or not is_dispatcher_owned_worker_context():
             return scrub_kanban_env(env)
     except Exception:
         pass

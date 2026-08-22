@@ -375,6 +375,115 @@ class TestRunJobKanbanIsolation:
 
 
 # ---------------------------------------------------------------------------
+# Subprocess env scrub (the ContextVar marks in-process code, but any
+# subprocess a non-dispatcher-owned cron job spawns must not inherit the
+# dispatcher's HERMES_KANBAN_* vars either).
+# ---------------------------------------------------------------------------
+
+class TestSubprocessEnvScrub:
+    def test_build_subprocess_env_leaks_kanban_by_default(self, worker_env):
+        """Baseline: a normal (dispatcher-owned) subprocess legitimately sees
+        the worker's own kanban env — this is not the bug."""
+        from tools.environments.local import build_subprocess_env
+
+        env = build_subprocess_env()
+        assert env.get("HERMES_KANBAN_TASK") == "t_worker_real_task"
+
+    def test_build_subprocess_env_scrubs_inside_non_dispatcher_context(self, worker_env):
+        from agent.delegation_context import non_dispatcher_owned_context
+        from tools.environments.local import build_subprocess_env
+
+        with non_dispatcher_owned_context():
+            env = build_subprocess_env()
+
+        assert "HERMES_KANBAN_TASK" not in env
+        assert "HERMES_KANBAN_RUN_ID" not in env
+        assert "HERMES_KANBAN_CLAIM_LOCK" not in env
+        assert "HERMES_KANBAN_BOARD" not in env
+        assert "HERMES_KANBAN_WORKSPACE" not in env
+
+    def test_hermes_subprocess_env_scrubs_inside_non_dispatcher_context(self, worker_env):
+        from agent.delegation_context import non_dispatcher_owned_context
+        from tools.environments.local import hermes_subprocess_env
+
+        with non_dispatcher_owned_context():
+            env = hermes_subprocess_env()
+
+        assert "HERMES_KANBAN_TASK" not in env
+
+    def test_delegated_child_scrub_still_works(self, worker_env):
+        """The pre-existing delegate_task scrub path must be unaffected."""
+        from agent.delegation_context import delegated_child_context
+        from tools.environments.local import build_subprocess_env
+
+        with delegated_child_context():
+            env = build_subprocess_env()
+
+        assert "HERMES_KANBAN_TASK" not in env
+
+    def test_no_agent_script_subprocess_env_is_scrubbed(self, monkeypatch, worker_env):
+        """Integration: run_job's no_agent script-launch path builds its
+        subprocess env BEFORE the non-dispatcher marker is entered later in
+        run_job — the scrub must not depend on that ordering."""
+        import cron.scheduler as sched
+
+        captured_env: dict = {}
+        observed: dict = {}
+
+        def fake_run_job_script(script_path, workdir=None, cancel_event=None):
+            from agent.delegation_context import is_dispatcher_owned_worker_context
+            from tools.environments.local import build_subprocess_env
+            captured_env.update(build_subprocess_env())
+            observed["dispatcher_owned_during_script"] = is_dispatcher_owned_worker_context()
+            return True, "ok"
+
+        monkeypatch.setattr(sched, "_run_job_script", fake_run_job_script)
+
+        job = {
+            "id": "no-agent-kanban", "name": "no-agent-kanban-job",
+            "no_agent": True, "script": "dummy.py", "workdir": None,
+        }
+        success, *_ = sched.run_job(job)
+
+        assert success is True
+        assert captured_env, "fake script runner was never invoked"
+        assert "HERMES_KANBAN_TASK" not in captured_env
+        assert "HERMES_KANBAN_CLAIM_LOCK" not in captured_env
+        # The wrap in run_job() must cover the whole _run_job_script_with_claim_heartbeat
+        # call, not just leave the marker to be inferred from the scrubbed env.
+        assert observed["dispatcher_owned_during_script"] is False
+
+    def test_prerun_script_subprocess_env_is_scrubbed(self, monkeypatch, worker_env):
+        """Integration: the wake-gate pre-check script also builds its
+        subprocess env before the marker is entered further down in run_job."""
+        import cron.scheduler as sched
+
+        captured_env: dict = {}
+        observed: dict = {}
+
+        def fake_run_job_script(script_path, workdir=None, cancel_event=None):
+            from agent.delegation_context import is_dispatcher_owned_worker_context
+            from tools.environments.local import build_subprocess_env
+            captured_env.update(build_subprocess_env())
+            observed["dispatcher_owned_during_script"] = is_dispatcher_owned_worker_context()
+            return True, '{"wakeAgent": false}'
+
+        monkeypatch.setattr(sched, "_run_job_script", fake_run_job_script)
+
+        job = {
+            "id": "prerun-kanban", "name": "prerun-kanban-job",
+            "script": "dummy.py", "workdir": None, "schedule_display": "manual",
+        }
+        success, *_ = sched.run_job(job)
+
+        assert success is True
+        assert captured_env, "fake script runner was never invoked"
+        assert "HERMES_KANBAN_TASK" not in captured_env
+        assert "HERMES_KANBAN_CLAIM_LOCK" not in captured_env
+        assert observed["dispatcher_owned_during_script"] is False
+
+
+# ---------------------------------------------------------------------------
 # Drift guard
 # ---------------------------------------------------------------------------
 

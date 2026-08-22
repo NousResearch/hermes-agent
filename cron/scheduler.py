@@ -59,6 +59,7 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context,
     exit_non_dispatcher_owned_context,
+    non_dispatcher_owned_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -5117,9 +5118,18 @@ def run_job(
             _job_workdir = None
 
         try:
-            ok, output = _run_job_script_with_claim_heartbeat(
-                job, script_path, workdir=_job_workdir, cancel_event=cancel_event,
-            )
+            # This subprocess is spawned before the non-dispatcher marker set
+            # later in run_job() (for the agent path's tool loop, which was
+            # already correctly covered) is entered — wrap it explicitly here
+            # too so the kanban env scrub (tools/environments/local.py) fires
+            # for this early script-launch path as well (#87725). This
+            # ``with`` fully exits (ContextVar reset) before that later marker
+            # is entered, so the two are sequential, not nested — no token
+            # ordering hazard.
+            with non_dispatcher_owned_context():
+                ok, output = _run_job_script_with_claim_heartbeat(
+                    job, script_path, workdir=_job_workdir, cancel_event=cancel_event,
+                )
         except Exception as exc:
             logger.exception(
                 "Job '%s': script execution raised unexpectedly", job_id,
@@ -5329,9 +5339,14 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script_with_claim_heartbeat(
-            job, script_path, cancel_event=cancel_event,
-        )
+        # Same as the no_agent path above: this runs before the non-dispatcher
+        # marker is entered later in run_job(), so wrap it explicitly (#87725).
+        # Sequential, not nested, with that later token-based entry — see the
+        # comment on the no_agent path's wrap above.
+        with non_dispatcher_owned_context():
+            prerun_script = _run_job_script_with_claim_heartbeat(
+                job, script_path, cancel_event=cancel_event,
+            )
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(

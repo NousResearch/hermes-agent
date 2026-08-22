@@ -9092,13 +9092,39 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             row = cursor.fetchone()
         return self._session_row_dict(row) if row else None
 
+    def _numbered_title_variant_value(
+        self, candidate_title: str, base: str
+    ) -> Optional[int]:
+        """Return parsed N only when candidate is a strict literal
+        ``base + " #" + ASCII[0-9]+`` continuation; otherwise None.
+
+        This is the single admission grammar for numbered title variants.
+        Anything else -- Unicode digit lookalikes (``foo #２``), mixed suffixes
+        (``foo #2x``), or deeper chains (``foo #2 #5``) -- is NOT a direct
+        numbered child and must keep literal semantics.
+        """
+        if not base or not candidate_title:
+            return None
+        prefix = f"{base} #"
+        if not candidate_title.startswith(prefix):
+            return None
+        suffix = candidate_title[len(prefix):]
+        if not suffix or not suffix.isascii() or not suffix.isdigit():
+            return None
+        return int(suffix)
+
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.
 
         If the exact title exists, returns that session's ID.
-        If not, searches for "title #N" variants and returns the latest one.
+        If not, searches for strict "title #N" variants and returns the latest one.
         If the exact title exists AND numbered variants exist, returns the
-        latest numbered variant (the most recent continuation).
+        latest strict-valid numbered variant (the most recent continuation).
+
+        A numbered variant is admitted only when the full title matches the
+        literal ``base + " #" + ASCII[0-9]+`` grammar (see
+        :meth:`_numbered_title_variant_value`); near-misses such as ``foo #bar``
+        or ``foo #２`` are ignored rather than hijacking exact title binding.
         """
         # First try exact match
         exact = self.get_session_by_title(title)
@@ -9114,25 +9140,36 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             numbered = cursor.fetchall()
 
-        if numbered:
-            # Return the most recent numbered variant
-            return numbered[0]["id"]
-        elif exact:
+        # Only strict literal `base + " #" + ASCII[0-9]+` candidates may bind
+        # as numbered continuations; near-misses (foo #bar, foo #２, foo #2x)
+        # must not hijack exact title binding.
+        for row in numbered:
+            if self._numbered_title_variant_value(row["title"], title) is not None:
+                return row["id"]
+
+        if exact:
             return exact["id"]
         return None
 
     def get_next_title_in_lineage(self, base_title: str) -> str:
         """Generate the next title in a lineage (e.g., "my session" → "my session #2").
 
-        Strips any existing " #N" suffix to find the base name, then finds
-        the highest existing number and increments.
+        Only the unnumbered base and strict direct ASCII ``base #N`` children
+        occupy the base lineage's numbering namespace. Nonnumeric lookalikes
+        (``foo #bar``), Unicode digits (``foo #２``), and deeper suffixes
+        (``foo #2 #5``) are literal, not direct children.
         """
-        # Strip existing #N suffix to find the true base
-        match = re.match(r'^(.*?) #(\d+)$', base_title)
-        if match:
-            base = match.group(1)
-        else:
-            base = base_title
+        # Strip an existing strict " #N" suffix to find the true base; any
+        # other trailing " #..." stays part of the literal base.
+        base = base_title
+        sep = base_title.rfind(" #")
+        if sep != -1:
+            candidate_base = base_title[:sep]
+            if (
+                self._numbered_title_variant_value(base_title, candidate_base)
+                is not None
+            ):
+                base = candidate_base
 
         # Find all existing numbered variants
         # Escape SQL LIKE wildcards (%, _) in the base to prevent false matches
@@ -9144,15 +9181,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             existing = [row["title"] for row in cursor.fetchall()]
 
-        if not existing:
-            return base  # No conflict, use the base name as-is
-
-        # Find the highest number
+        # Only the exact base and strict direct ASCII "base #N" children occupy
+        # the base lineage's numbering namespace.
         max_num = 1  # The unnumbered original counts as #1
+        occupied = False
         for t in existing:
-            m = re.match(r'^.* #(\d+)$', t)
-            if m:
-                max_num = max(max_num, int(m.group(1)))
+            if t == base:
+                occupied = True
+                continue
+            n = self._numbered_title_variant_value(t, base)
+            if n is not None:
+                occupied = True
+                max_num = max(max_num, n)
+
+        if not occupied:
+            return base  # No conflict, use the base name as-is
 
         return f"{base} #{max_num + 1}"
 

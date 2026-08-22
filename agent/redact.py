@@ -163,6 +163,12 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Structured diagnostic identifiers whose ``*_key`` suffix names a lookup
+# key, not a credential. Known token prefixes are masked before assignment
+# handling, so a credential-shaped value remains protected even for these
+# fields.
+_NON_SECRET_ASSIGNMENT_KEYS = frozenset({"session_key"})
+
 # Lowercase / dotted / hyphenated config keys from config files
 # (application.properties, .env, YAML-ish dumps): ``spring.datasource.password=secret``,
 # ``app.api.key=xyz``, ``password=secret``. The uppercase _ENV_ASSIGN_RE above
@@ -851,6 +857,8 @@ def redact_sensitive_text(
                 # secret values — masking them corrupts code snippets in
                 # prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.
                 if _ENV_LOOKUP_VALUE_RE.match(value):
+                    return m.group(0)
+                if name.lower() in _NON_SECRET_ASSIGNMENT_KEYS:
                     return m.group(0)
                 # Keyword must sit at a word boundary within the key —
                 # ``author=Smith`` / ``press.secretary=…`` are prose, not

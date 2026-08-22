@@ -33,6 +33,28 @@ def test_anthropic_curated_alias_survives_when_live_omits_it():
     assert result[:len(curated)] == list(curated)
 
 
+def test_anthropic_curated_opus_5_listed_for_oauth_subscriptions():
+    """Opus 5 stays in the picker when the live models endpoint 401s.
+
+    Subscription OAuth tokens are rejected by Anthropic's platform-API
+    /v1/models endpoint, so Claude Pro/Max users always fall back to the
+    curated list — it must carry the current flagship (claude-opus-5),
+    mirroring OPENROUTER_MODELS / opencode-zen which already list it.
+    """
+    curated = M._PROVIDER_MODELS["anthropic"]
+    assert "claude-opus-5" in curated
+
+    with patch.object(M, "_fetch_anthropic_models", return_value=None):
+        result = M.provider_model_ids("anthropic")
+
+    assert "claude-opus-5" in result
+    # And when live succeeds, curated-first merge keeps it too.
+    live = ["claude-opus-4-8", "claude-sonnet-4-6"]
+    with patch.object(M, "_fetch_anthropic_models", return_value=live):
+        merged = M.provider_model_ids("anthropic")
+    assert "claude-opus-5" in merged
+
+
 def test_anthropic_merge_dedupes_overlap_and_appends_live_only():
     """Models in both lists appear once; live-only models are appended."""
     live = [

@@ -13,6 +13,7 @@ import {
   clampZoomLevel,
   DEFAULT_ZOOM_LEVEL,
   installZoomReassertOnWindowEvents,
+  isDebouncedReassertEvent,
   percentToZoomLevel,
   ZOOM_RESIZE_REASSERT_DELAY_MS,
   ZOOM_STEP,
@@ -101,7 +102,7 @@ test('installZoomReassertOnWindowEvents wires show, restore, focus, resize, and 
   assert.equal(calls, 5)
 })
 
-test('focus event reasserts zoom immediately without debounce (Windows high-DPI alt-tab, #50837)', () => {
+test('focus event reasserts zoom immediately without debounce on Windows (high-DPI alt-tab, #50837)', () => {
   const handlers = new Map()
 
   const win = {
@@ -120,12 +121,22 @@ test('focus event reasserts zoom immediately without debounce (Windows high-DPI 
     'win32'
   )
 
-  // focus should trigger immediate reassert — no timer involved
+  // focus on Windows triggers immediate reassert — no timer involved
   handlers.get('focus')()
   assert.equal(calls, 1)
 })
 
-test('installZoomReassertOnWindowEvents debounces Linux resize and move events at the trailing edge', () => {
+test('isDebouncedReassertEvent debounces focus only on Linux, not Windows/macOS', () => {
+  assert.equal(isDebouncedReassertEvent('focus', 'linux'), true)
+  assert.equal(isDebouncedReassertEvent('focus', 'win32'), false)
+  assert.equal(isDebouncedReassertEvent('focus', 'darwin'), false)
+  assert.equal(isDebouncedReassertEvent('resize', 'linux'), true)
+  assert.equal(isDebouncedReassertEvent('resize', 'win32'), true)
+  assert.equal(isDebouncedReassertEvent('show', 'linux'), false)
+  assert.equal(isDebouncedReassertEvent('restore', 'linux'), false)
+})
+
+test('installZoomReassertOnWindowEvents debounces Linux resize, move, and focus events at the trailing edge', () => {
   vi.useFakeTimers()
 
   try {
@@ -158,10 +169,18 @@ test('installZoomReassertOnWindowEvents debounces Linux resize and move events a
     vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS / 2)
     assert.equal(calls, 1)
 
+    // focus on Linux is also debounced — a session switch fires focus but
+    // the reassert must not jump the zoom mid-interaction.
+    handlers.get('focus')()
+    vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS / 2)
+    assert.equal(calls, 1)
+    vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS / 2)
+    assert.equal(calls, 2)
+
     handlers.get('resize')()
     destroyed = true
     vi.advanceTimersByTime(ZOOM_RESIZE_REASSERT_DELAY_MS)
-    assert.equal(calls, 1)
+    assert.equal(calls, 2)
   } finally {
     vi.useRealTimers()
   }

@@ -71,6 +71,21 @@ export function zoomReassertWindowEvents(platform = process.platform) {
     : ['show', 'restore', 'focus', 'resized', 'moved']
 }
 
+// Linux/Wayland fires `focus` on intra-app focus shifts (sidebar clicks,
+// Ctrl+Tab session switching, tile activation) — not just the cross-app
+// alt-tab the Windows high-DPI immediate-reassert guard (#50837) targets.
+// An undebounced reassert on every such focus event re-applies the persisted
+// zoom level mid-interaction, producing a visible zoom/DPI jump when the
+// session switch fires focus before Chromium has settled. Debounce `focus`
+// alongside `resize`/`move` on Linux so the reassert only fires after the
+// window has stabilized; the Windows alt-tab DPI case keeps its immediate
+// path because `platform` is `win32` there.
+const DEBOUNCED_REASSERT_EVENTS = new Set(['resize', 'move'])
+
+export function isDebouncedReassertEvent(event, platform = process.platform) {
+  return DEBOUNCED_REASSERT_EVENTS.has(event) || (platform === 'linux' && event === 'focus')
+}
+
 export function installZoomReassertOnWindowEvents(win, reassert, platform = process.platform) {
   if (!win?.on) {
     return
@@ -84,7 +99,7 @@ export function installZoomReassertOnWindowEvents(win, reassert, platform = proc
         return
       }
 
-      if (event !== 'resize' && event !== 'move') {
+      if (!isDebouncedReassertEvent(event, platform)) {
         reassert()
 
         return

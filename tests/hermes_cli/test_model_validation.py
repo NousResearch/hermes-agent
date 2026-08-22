@@ -55,6 +55,17 @@ class TestParseModelInput:
         assert provider == "openrouter"
         assert model == "anthropic/claude-sonnet-4.5"
 
+    def test_openai_codex_slash_provider_model_switches_provider(self):
+        """Human-friendly openai-codex/model should not stay on the current provider."""
+        provider, model = parse_model_input("openai-codex/gpt-5.5", "claude-api-proxy")
+        assert provider == "openai-codex"
+        assert model == "gpt-5.5"
+
+    def test_openai_codex_empty_slash_keeps_current_provider(self):
+        provider, model = parse_model_input("openai-codex/", "claude-api-proxy")
+        assert provider == "claude-api-proxy"
+        assert model == "openai-codex/"
+
 
 # -- curated_models_for_provider ---------------------------------------------
 

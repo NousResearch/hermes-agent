@@ -4031,8 +4031,13 @@ class APIServerAdapter(BasePlatformAdapter):
         ``/skills list``, but as a deterministic JSON payload.
 
         Returns the same skill metadata (name, description, category) the
-        skills hub uses internally. Disabled skills are excluded so the
-        listing matches what the agent actually loads.
+        skills hub uses internally. Disabled skills are excluded.
+
+        This is a *user*-facing listing, so it deliberately still includes
+        skills marked ``disable-model-invocation`` even though the model
+        cannot load them -- they remain invocable as ``/name``. It therefore
+        lists a superset of what the agent auto-loads; use the skills index
+        in the system prompt if you need the model's own view.
         """
         auth_err = self._check_auth(request)
         if auth_err:

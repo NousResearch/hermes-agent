@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import types
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
@@ -154,6 +155,127 @@ def test_unacknowledged_interrupt_message_is_requeued_not_dropped():
     assert agent.clear_calls >= 1
 
 
+
+
+class _AcknowledgingStubAgent(_StubAgent):
+    """Agent whose turn result DOES acknowledge the interrupt.
+
+    Mirrors the private ``_AckAgent`` above; shared by the image-payload
+    tests so both can drive the live ``chat()`` requeue branch.
+    """
+
+    def run_conversation(self, **kwargs):
+        # Wait until the monitor loop delivers the interrupt.
+        for _ in range(100):
+            if self._interrupt_requested:
+                break
+            time.sleep(0.05)
+        return {
+            "final_response": "partial work",
+            "messages": [{"role": "assistant", "content": "partial work"}],
+            "api_calls": 1,
+            "completed": False,
+            "interrupted": True,
+            "interrupt_message": self._interrupt_message,
+            "partial": True,
+            "response_previewed": True,
+        }
+
+
+def _run_interrupted_turn(cli):
+    """Run one ``chat()`` turn with the runtime/credential plumbing stubbed."""
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        cli.chat("original")
+
+    queued = []
+    while not cli._pending_input.empty():
+        queued.append(cli._pending_input.get_nowait())
+    return queued
+
+
+def test_interrupt_with_attached_images_is_requeued_intact():
+    """A single image interrupt must survive the requeue (supersedes #5202).
+
+    The Enter handler bundles attached images as ``(text, [Path, ...])`` and
+    puts that tuple on ``_interrupt_queue``, so ``pending_message`` itself can
+    be a tuple — one interrupted image message is enough to trip the old
+    ``"\\n".join(all_parts)``. The resulting ``TypeError`` was swallowed by
+    ``chat()``'s bare ``except``, and because the parts had already been taken
+    off the queue the message and its images were gone for good.
+    """
+    cli = _make_cli()
+    cli.agent = _AcknowledgingStubAgent(cli.session_id)
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+
+    shot = Path("/tmp/hermes-test-shot.png")
+    cli._interrupt_queue.put(("what is in this screenshot?", [shot]))
+
+    queued = _run_interrupted_turn(cli)
+
+    assert queued, "image interrupt payload was dropped instead of re-queued"
+    payload = queued[0]
+    assert isinstance(payload, tuple), (
+        f"image payload lost its attachments; pending_input={queued!r}"
+    )
+    text, images = payload
+    assert text == "what is in this screenshot?"
+    assert images == [shot]
+
+
+def test_interrupt_merges_text_and_image_parts_without_losing_attachments():
+    """Extras drained from ``_interrupt_queue`` merge type-aware.
+
+    The monitor loop claims the first queued item as the interrupt; anything
+    typed after it stays on ``_interrupt_queue`` and is drained by the requeue
+    branch. Text joins with newlines (unchanged behaviour) and every image list
+    is concatenated in arrival order.
+    """
+    cli = _make_cli()
+    cli.agent = _AcknowledgingStubAgent(cli.session_id)
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+
+    first = Path("/tmp/hermes-test-first.png")
+    second = Path("/tmp/hermes-test-second.png")
+    cli._interrupt_queue.put(("look at this", [first]))
+    cli._interrupt_queue.put("wait, also stop the build")
+    cli._interrupt_queue.put(("and this one", [second]))
+
+    queued = _run_interrupted_turn(cli)
+
+    assert queued, "merged interrupt payload was dropped instead of re-queued"
+    payload = queued[0]
+    assert isinstance(payload, tuple), (
+        f"merged payload lost its attachments; pending_input={queued!r}"
+    )
+    text, images = payload
+    assert text == "look at this\nwait, also stop the build\nand this one"
+    assert images == [first, second]
+
+
+def test_text_only_interrupt_still_requeues_a_plain_string():
+    """No part carries images → the payload stays a plain ``str``.
+
+    Guards the common path: process_loop only unpacks tuples, so a text-only
+    interrupt must not start arriving as ``(text, [])``.
+    """
+    cli = _make_cli()
+    cli.agent = _AcknowledgingStubAgent(cli.session_id)
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+
+    cli._interrupt_queue.put("stop")
+    cli._interrupt_queue.put("show me the plan instead")
+
+    queued = _run_interrupted_turn(cli)
+
+    assert queued == ["stop\nshow me the plan instead"]
 
 
 def test_chat_persists_clean_input_when_a_queued_note_changes_api_message():

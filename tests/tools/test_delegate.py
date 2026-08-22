@@ -523,10 +523,11 @@ class TestDelegateObservability(unittest.TestCase):
 
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
+            mock_child.session_id = "child-session-observability"
             mock_child.model = "claude-sonnet-4-6"
             mock_child.session_prompt_tokens = 5000
             mock_child.session_completion_tokens = 1200
-            mock_child.run_conversation.return_value = {
+            child_result = {
                 "final_response": "done",
                 "completed": True,
                 "interrupted": False,
@@ -540,12 +541,21 @@ class TestDelegateObservability(unittest.TestCase):
                     {"role": "assistant", "content": "done"},
                 ],
             }
+
+            def run_with_session_rotation(*_args, **_kwargs):
+                mock_child.session_id = "child-session-rotated"
+                return child_result
+
+            mock_child.run_conversation.side_effect = run_with_session_rotation
             MockAgent.return_value = mock_child
 
             result = json.loads(delegate_task(goal="Test observability", parent_agent=parent))
             entry = result["results"][0]
 
             # Core observability fields
+            self.assertTrue(result["delegation_id"].startswith("deleg_"))
+            self.assertEqual(entry["child_session_id"], "child-session-rotated")
+            self.assertTrue(entry["subagent_id"].startswith("sa-"))
             self.assertEqual(entry["model"], "claude-sonnet-4-6")
             self.assertEqual(entry["exit_reason"], "completed")
             self.assertEqual(entry["tokens"]["input"], 5000)
@@ -561,6 +571,57 @@ class TestDelegateObservability(unittest.TestCase):
                 {"argument_keys": ["query"], "targets": {}},
             )
             self.assertEqual(entry["tool_trace"][0]["status"], "ok")
+
+    def test_delegation_id_survives_live_transcript_initialization_failure(self):
+        parent = _make_mock_parent(depth=0)
+        with patch("run_agent.AIAgent") as MockAgent, patch(
+            "tools.delegation_live_log.create_live_transcripts",
+            return_value=(None, [None], []),
+        ):
+            mock_child = MagicMock()
+            mock_child.session_id = "child-no-live-log"
+            mock_child.model = "test/model"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(goal="Test attribution without live logs", parent_agent=parent)
+            )
+
+        self.assertTrue(result["delegation_id"].startswith("deleg_"))
+        self.assertEqual(mock_child._delegation_id, result["delegation_id"])
+        self.assertEqual(
+            result["results"][0]["child_session_id"], "child-no-live-log"
+        )
+
+    def test_outer_lifecycle_exception_preserves_child_identity(self):
+        from tools.delegate_tool import _run_single_child
+
+        child = MagicMock()
+        child._subagent_id = "sa-0-outer"
+        child.session_id = "child-session-outer"
+        child._delegate_role = "leaf"
+        child.run_conversation.return_value = []
+        parent = _make_mock_parent(depth=0)
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Return a malformed child result",
+            child=child,
+            parent_agent=parent,
+        )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["subagent_id"], "sa-0-outer")
+        self.assertEqual(result["child_session_id"], "child-session-outer")
 
     def test_tool_trace_handles_list_content_blocks(self):
         """Tool-result content blocks should not crash observability metadata."""

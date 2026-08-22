@@ -43,6 +43,7 @@ class _StubChild:
         tool_schema=None,
     ):
         self._subagent_id = subagent_id
+        self.session_id = "child-session-timeout"
         self._delegate_depth = 1
         self._delegate_role = "leaf"
         self.model = "test/model"
@@ -200,6 +201,8 @@ class TestRunSingleChildTimeoutDump:
         result = self._invoke_with_short_timeout(child, monkeypatch)
 
         assert result["status"] == "timeout"
+        assert result["subagent_id"] == "sa-0-stubabc"
+        assert result["child_session_id"] == "child-session-timeout"
         assert result["api_calls"] == 0
         assert result["diagnostic_path"] is not None
         dump_path = Path(result["diagnostic_path"])
@@ -235,6 +238,7 @@ class TestRunSingleChildTimeoutDump:
         )
 
         assert result["status"] == "error"
+        assert result["child_session_id"] == "child-session-timeout"
         assert result["timeout_seconds"] is None
         assert result["timed_out_after_seconds"] is None
         assert result["timeout_phase"] is None

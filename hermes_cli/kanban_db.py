@@ -9805,6 +9805,56 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+def normalize_profile_cap_overrides(raw: Any) -> dict[str, int]:
+    """Return valid ``{profile: positive_limit}`` concurrency overrides.
+
+    Gateway, CLI, and direct dispatcher callers share this parser so every
+    dispatch surface applies identical precedence and validation. Invalid
+    entries are ignored individually; one typo must not disable valid limits
+    for other profiles.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        _log.warning(
+            "kanban dispatcher: invalid "
+            "kanban.max_in_progress_per_profile_overrides=%r; expected a mapping",
+            raw,
+        )
+        return {}
+
+    normalized: dict[str, int] = {}
+    for raw_profile, raw_limit in raw.items():
+        if not isinstance(raw_profile, str) or not raw_profile.strip():
+            _log.warning(
+                "kanban dispatcher: invalid profile name %r in "
+                "kanban.max_in_progress_per_profile_overrides; ignoring",
+                raw_profile,
+            )
+            continue
+        profile = raw_profile.strip()
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            _log.warning(
+                "kanban dispatcher: invalid concurrency override for profile "
+                "%r: %r; ignoring",
+                profile,
+                raw_limit,
+            )
+            continue
+        if limit < 1:
+            _log.warning(
+                "kanban dispatcher: concurrency override for profile %r is "
+                "below 1: %r; ignoring",
+                profile,
+                raw_limit,
+            )
+            continue
+        normalized[profile] = limit
+    return normalized
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -9818,6 +9868,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_profile_overrides: Optional[Mapping[str, Any]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
@@ -9853,6 +9904,9 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_per_profile_overrides=(
+                max_in_progress_per_profile_overrides
+            ),
             reconcile_orphans=reconcile_orphans,
         )
         _fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
@@ -9873,6 +9927,9 @@ def dispatch_once(
                 board=board,
                 default_assignee=default_assignee,
                 max_in_progress_per_profile=max_in_progress_per_profile,
+                max_in_progress_per_profile_overrides=(
+                    max_in_progress_per_profile_overrides
+                ),
                 reconcile_orphans=reconcile_orphans,
             )
             # Still under the dispatch lock: run the periodic PASSIVE WAL
@@ -9900,6 +9957,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_profile_overrides: Optional[Mapping[str, Any]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick.
@@ -10087,8 +10145,18 @@ def _dispatch_once_locked(
         isinstance(max_in_progress_per_profile, int)
         and max_in_progress_per_profile > 0
     ) else None
+    _per_profile_overrides = normalize_profile_cap_overrides(
+        max_in_progress_per_profile_overrides
+    )
+    _profile_limits_enabled = (
+        _per_profile_cap is not None or bool(_per_profile_overrides)
+    )
+
+    def _profile_cap(assignee: str) -> Optional[int]:
+        return _per_profile_overrides.get(assignee, _per_profile_cap)
+
     _per_profile_running: dict[str, int] = {}
-    if _per_profile_cap is not None:
+    if _profile_limits_enabled:
         for prow in conn.execute(
             "SELECT assignee, COUNT(*) AS n FROM tasks "
             "WHERE status = 'running' AND assignee IS NOT NULL "
@@ -10187,9 +10255,10 @@ def _dispatch_once_locked(
         # quota / browser pool from being overwhelmed by a fan-out
         # while the global max_in_progress / max_spawn caps still allow
         # work on OTHER profiles.
-        if _per_profile_cap is not None:
+        profile_cap = _profile_cap(row_assignee)
+        if profile_cap is not None:
             current = _per_profile_running.get(row_assignee, 0)
-            if current >= _per_profile_cap:
+            if current >= profile_cap:
                 result.skipped_per_profile_capped.append(
                     (row["id"], row_assignee, current)
                 )
@@ -10222,7 +10291,7 @@ def _dispatch_once_locked(
             # check sees the would-be spawn on subsequent iterations.
             # Without this, dry_run reports every task as spawnable and
             # under-reports the capped subset (#21582).
-            if _per_profile_cap is not None and row_assignee:
+            if _profile_limits_enabled and row_assignee:
                 _per_profile_running[row_assignee] = (
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
@@ -10284,7 +10353,7 @@ def _dispatch_once_locked(
             # Track the new in-flight count for this profile so later
             # iterations in this same tick respect the per-profile cap
             # (#21582). Subsequent ticks re-query from the DB.
-            if _per_profile_cap is not None and claimed.assignee:
+            if _profile_limits_enabled and claimed.assignee:
                 _per_profile_running[claimed.assignee] = (
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
@@ -10329,9 +10398,10 @@ def _dispatch_once_locked(
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
             continue
-        if _per_profile_cap is not None:
+        profile_cap = _profile_cap(row["assignee"])
+        if profile_cap is not None:
             current = _per_profile_running.get(row["assignee"], 0)
-            if current >= _per_profile_cap:
+            if current >= profile_cap:
                 result.skipped_per_profile_capped.append(
                     (row["id"], row["assignee"], current)
                 )
@@ -10349,7 +10419,7 @@ def _dispatch_once_locked(
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             spawned += 1
-            if _per_profile_cap is not None:
+            if _profile_limits_enabled:
                 _per_profile_running[row["assignee"]] = (
                     _per_profile_running.get(row["assignee"], 0) + 1
                 )
@@ -10404,7 +10474,7 @@ def _dispatch_once_locked(
             )
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
-            if _per_profile_cap is not None and claimed.assignee:
+            if _profile_limits_enabled and claimed.assignee:
                 _per_profile_running[claimed.assignee] = (
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )

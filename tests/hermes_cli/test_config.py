@@ -1486,6 +1486,7 @@ def test_default_config_kanban_block_not_dropped_by_duplicate_key():
     # From the second block:
     assert "dispatch_in_gateway" in kanban
     assert "auto_decompose" in kanban
+    assert kanban.get("max_in_progress_per_profile_overrides") == {}
 
 
 def test_default_config_has_no_duplicate_top_level_keys():

@@ -180,20 +180,33 @@ interface PluginContext {
 }
 ```
 
-A **contribution** is the one primitive every surface shares:
+A **contribution** is the one primitive every surface shares. Visibility is a
+live readonly authority rather than a pull-only callback: the registry owns the
+subscription and invalidates exactly the contribution's area when the authority
+changes.
 
 ```ts
+interface ContributionCondition {
+  get(): boolean
+  listen(listener: (value: boolean) => void): () => void
+}
+
 interface Contribution {
   id: string          // you write the local id; the host namespaces it
   area: string        // WHERE it goes (a contribution-area constant)
   title?: string
   order?: number      // sort within the area (lower = earlier)
-  when?: () => boolean // dynamic visibility; re-evaluated by the area
+  when?: ContributionCondition // live visibility; e.g. atom()/computed()/host.state.*
   enabled?: boolean
   render?: () => ReactNode  // the component to mount
   data?: unknown      // area-specific payload (see the cookbook)
 }
 ```
+
+`when` may be any readonly source with `get()` + `listen()` semantics. Nano Stores
+`atom()` / `computed()` values and readonly `host.state.*` values satisfy this
+shape. Replacement and disposal detach the old subscription, so a stale source
+cannot continue invalidating an area it no longer owns.
 
 You provide `render`, `data`, or both, depending on the area.
 
@@ -218,7 +231,6 @@ Import the area constants from the SDK; each area has its own `data` payload.
 A pane is a tile in the layout tree. `placement` is the semantic role — the pane
 stacks (as tabs) with existing panes of that role; the user can drag it anywhere
 afterward.
-
 ```javascript
 ctx.register({
   id: 'pane',
@@ -658,7 +670,6 @@ ctx.socket('/events', () => {
   queryClient.invalidateQueries({ queryKey: ['my-plugin', 'items'] })
 })
 ```
-
 ## The UI kit and theming
 
 Import the app's real components directly so your UI is native by default:

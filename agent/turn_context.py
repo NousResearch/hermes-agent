@@ -55,12 +55,14 @@ def compose_user_api_content(
     content: Any,
     ext_prefetch_cache: str,
     plugin_user_context: str,
+    budget_hint: str = "",
 ) -> Optional[str]:
     """Compose the API-bound content of the current turn's user message.
 
     Sources: memory-manager prefetch + ``pre_llm_call`` plugin context with
-    target="user_message" (the default). Both are appended to the *API copy*
-    of the user message only — the stored content stays clean.
+    target="user_message" (the default), plus an optional context-window
+    budget hint (see :mod:`agent.budget_hint`). All are appended to the *API
+    copy* of the user message only — the stored content stays clean.
 
     This is the single source of that composition. The prologue stamps the
     result onto the live message as ``api_content`` (persisted alongside the
@@ -81,6 +83,8 @@ def compose_user_api_content(
             injections.append(fenced)
     if plugin_user_context:
         injections.append(plugin_user_context)
+    if budget_hint:
+        injections.append(budget_hint)
     if not injections:
         return None
     return content + "\n\n" + "\n\n".join(injections)
@@ -424,6 +428,8 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
+    # Context-window budget hint (``agent.budget_hint``) for this turn, or "".
+    budget_hint: str = ""
     # Turn-start preflight already proved an immediate retry ineffective.
     preflight_compression_blocked: bool = False
 
@@ -1369,6 +1375,37 @@ def build_turn_context(
             except Exception:
                 pass
 
+    # ── Context-window budget hint (adapted from openai/codex) ──
+    # When the estimated request approaches the model's context window, tell
+    # the model how much room remains so it can keep responses focused and
+    # avoid forced truncation or lossy compression. Injected only above the
+    # configured threshold (compression.budget_hint_threshold, default 0.70);
+    # below it the prompt prefix stays byte-stable. The hint rides the same
+    # api_content sidecar as prefetch, so the prompt-cache invariant ("what
+    # turn N sends must be what turn N+1 replays") is preserved by the exact
+    # mechanism that already carries memory context.
+    budget_hint = ""
+    _budget_threshold = float(
+        getattr(agent, "_budget_hint_threshold", 0.0) or 0.0
+    )
+    if _budget_threshold > 0:
+        try:
+            from agent.budget_hint import build_budget_hint
+
+            _ctx_len = getattr(
+                getattr(agent, "context_compressor", None), "context_length", None
+            )
+            if isinstance(_ctx_len, int) and _ctx_len > 0 and messages:
+                _used_tokens = estimate_messages_tokens_rough(messages)
+                if _used_tokens >= 0:
+                    budget_hint = (
+                        build_budget_hint(_used_tokens, _ctx_len, _budget_threshold)
+                        or ""
+                    )
+        except Exception:
+            logger.debug("budget hint computation failed; skipping", exc_info=True)
+            budget_hint = ""
+
     # ── api_content sidecar: persist what you send ──
     # The prefetch/plugin context above is injected into the API copy of this
     # turn's user message, never into the stored content — so on the next
@@ -1394,7 +1431,10 @@ def build_turn_context(
     ):
         _turn_user_msg = messages[current_turn_user_idx]
         _api_content = compose_user_api_content(
-            _turn_user_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
+            _turn_user_msg.get("content", ""),
+            ext_prefetch_cache,
+            plugin_user_context,
+            budget_hint,
         )
         if _api_content is not None and _api_content != _turn_user_msg.get("content"):
             _turn_user_msg["api_content"] = _api_content
@@ -1477,5 +1517,6 @@ def build_turn_context(
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
+        budget_hint=budget_hint,
         preflight_compression_blocked=_preflight_compression_blocked,
     )

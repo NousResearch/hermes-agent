@@ -2231,6 +2231,7 @@ def run_conversation(
                         api_msg.get("content", ""),
                         _ext_prefetch_cache,
                         _plugin_user_context,
+                        getattr(_ctx, "budget_hint", ""),
                     )
                     if _composed is not None:
                         api_msg["content"] = _composed

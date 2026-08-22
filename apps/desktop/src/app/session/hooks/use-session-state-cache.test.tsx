@@ -184,7 +184,9 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($turnStartedAt.get()).toBeNull()
   })
 
-  it('mirrors the focused session model metadata when switching from a cached session', () => {
+  it('keeps the sticky composer model while mirroring other focused-session metadata', () => {
+    setCurrentModel('manual-model')
+    setCurrentProvider('manual-provider')
     let cache!: Cache
 
     const { rerender } = render(
@@ -207,7 +209,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     })
 
     // Background metadata is cached but must not bleed into the visible statusbar.
-    expect($currentModel.get()).toBe('')
+    expect($currentModel.get()).toBe('manual-model')
     expect($currentReasoningEffort.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)
 
@@ -220,14 +222,14 @@ describe('useSessionStateCache — per-session turn timer', () => {
       cache.syncSessionStateToView('bg-runtime', bgState!)
     })
 
-    expect($currentModel.get()).toBe('anthropic/claude-opus-4.8')
-    expect($currentProvider.get()).toBe('anthropic')
+    expect($currentModel.get()).toBe('manual-model')
+    expect($currentProvider.get()).toBe('manual-provider')
     expect($currentReasoningEffort.get()).toBe('high')
     expect($currentServiceTier.get()).toBe('priority')
     expect($currentFastMode.get()).toBe(true)
   })
 
-  it('clears stale model metadata when the newly focused session has no cached value', () => {
+  it('clears session-scoped metadata without clearing the sticky composer model', () => {
     setCurrentModel('previous-model')
     setCurrentProvider('previous-provider')
     setCurrentReasoningEffort('high')
@@ -253,8 +255,8 @@ describe('useSessionStateCache — per-session turn timer', () => {
       cache.syncSessionStateToView('bg-runtime', bgState!)
     })
 
-    expect($currentModel.get()).toBe('')
-    expect($currentProvider.get()).toBe('')
+    expect($currentModel.get()).toBe('previous-model')
+    expect($currentProvider.get()).toBe('previous-provider')
     expect($currentReasoningEffort.get()).toBe('')
     expect($currentServiceTier.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)

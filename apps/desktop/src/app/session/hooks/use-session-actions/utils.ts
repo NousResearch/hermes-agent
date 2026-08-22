@@ -1401,8 +1401,9 @@ type SessionRuntimeStatePatch = Partial<
 interface ApplyRuntimeInfoOptions {
   /**
    * Whether this runtime belongs to the session the MAIN pane is showing.
-   * Foreground (the default) mirrors into the composer atoms every main-pane
-   * surface reads.
+   * Foreground (the default) mirrors session-scoped fields into the composer
+   * atoms every main-pane surface reads. Model/provider are deliberately kept
+   * out because those atoms represent the user's sticky selection.
    *
    * A tile or a background branch must pass `false`: it owns a different
    * worktree, and writing its cwd into `$currentCwd` re-pointed the main
@@ -1414,17 +1415,12 @@ interface ApplyRuntimeInfoOptions {
   foreground?: boolean
 }
 
-/** Mirror a session's runtime state into the composer atoms the MAIN pane
- *  renders from. Foreground sessions only — see ApplyRuntimeInfoOptions. */
+/** Mirror session-scoped runtime state into the composer atoms the MAIN pane
+ *  renders from. Foreground sessions only — see ApplyRuntimeInfoOptions.
+ *  Model/provider stay in the returned session patch: publishing a temporary
+ *  fallback pair into the persisted sticky atoms would make it the primary for
+ *  future sessions (#75320). */
 function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
-  if (state.model !== undefined) {
-    setCurrentModel(state.model)
-  }
-
-  if (state.provider !== undefined) {
-    setCurrentProvider(state.provider)
-  }
-
   if (state.cwd !== undefined) {
     if (state.cwd) {
       // The runtime named a real folder for the session in the main pane, so

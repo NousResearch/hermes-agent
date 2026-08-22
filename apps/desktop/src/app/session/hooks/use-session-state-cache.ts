@@ -12,9 +12,7 @@ import {
   $messages,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
-  setCurrentModel,
   setCurrentPersonality,
-  setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setTurnStartedAt,
@@ -37,8 +35,12 @@ interface SessionStateCacheOptions {
 }
 
 function syncRuntimeMetadataToView(state: ClientSessionState) {
-  setCurrentModel(state.model ?? '')
-  setCurrentProvider(state.provider ?? '')
+  // Model/provider belong to the sticky composer selection, not the live
+  // session runtime. A fallback can change state.model/state.provider for one
+  // turn; copying that pair into the persisted composer atoms makes every new
+  // session inherit the fallback as its primary (#75320). The focused
+  // session's runtime pair remains available through ClientSessionState for
+  // display surfaces such as the model pill.
   setCurrentReasoningEffort(state.reasoningEffort ?? '')
   setCurrentServiceTier(state.serviceTier ?? '')
   setCurrentFastMode(state.fast ?? false)

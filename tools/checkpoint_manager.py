@@ -148,6 +148,13 @@ DEFAULT_EXCLUDES = [
 # Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 
+# A git lock file (``<target>.lock``) is only held for the duration of a
+# single git command, bounded by ``_GIT_TIMEOUT``.  Anything older than this
+# is abandoned — left behind by a git process killed mid-write (gateway
+# restart, crash, OOM) — and safe to remove.
+_STALE_LOCK_MAX_AGE_S = 600
+
+
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
 
@@ -352,6 +359,43 @@ def _repair_bare_repo_dirs(store: Path) -> None:
                 )
 
 
+def _repair_stale_locks(store: Path) -> int:
+    """Remove abandoned git lock files from the checkpoint store.
+
+    Git creates ``<target>.lock`` files for the duration of a single command
+    and deletes them when the command finishes.  If a git process is killed
+    mid-write — a gateway restart with ``KillMode=mixed``, a crash, an OOM
+    kill — the lock survives.  Every later git command that needs that
+    target then fails with ``fatal: Unable to create '<target>.lock': File
+    exists`` (rc=128) until a human removes the file by hand, silently
+    breaking checkpoints for that project.
+
+    Only locks older than ``_STALE_LOCK_MAX_AGE_S`` are removed — a live
+    concurrent git process holds its lock for seconds at most, so it is
+    never disturbed.  Returns the number of locks removed.
+    """
+    if not store.is_dir():
+        return 0
+    cutoff = time.time() - _STALE_LOCK_MAX_AGE_S
+    removed = 0
+    for root, dirs, files in os.walk(store):
+        # Skip loose-object fan-out dirs; only pack locks can appear there.
+        if Path(root).name == "objects":
+            dirs[:] = [d for d in dirs if d == "pack"]
+        for name in files:
+            if not name.endswith(".lock"):
+                continue
+            path = Path(root) / name
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+                    logger.warning("Removed stale checkpoint lock: %s", path)
+            except OSError:
+                continue
+    return removed
+
+
 def _run_git(
     args: List[str],
     store: Path,
@@ -397,6 +441,29 @@ def _run_git(
         ok = result.returncode == 0
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
+        if (
+            not ok
+            and result.returncode == 128
+            and "Unable to create" in stderr
+            and "File exists" in stderr
+            and _repair_stale_locks(store) > 0
+        ):
+            # A stale lock from a killed git process blocked this command.
+            # Repair and retry once — the lock is gone, so the retry is
+            # expected to succeed.
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=timeout,
+                env=env,
+                cwd=str(normalized_working_dir),
+                stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
+            )
+            ok = result.returncode == 0
+            stdout = result.stdout.strip()
+            stderr = result.stderr.strip()
         if not ok and result.returncode not in allowed_returncodes:
             logger.error(
                 "Git command failed: %s (rc=%d) stderr=%s",
@@ -490,6 +557,9 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
         _migrate_legacy_store(base)
 
     if (store / "HEAD").exists():
+        # Sweep abandoned locks from killed git processes before any
+        # operation, so snapshots never hit the rc=128 lock-exists failure.
+        _repair_stale_locks(store)
         return None
 
     store.mkdir(parents=True, exist_ok=True)

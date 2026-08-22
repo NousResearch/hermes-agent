@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+from hermes_cli.windows_policy_block import detect_policy_block, policy_block_guidance
 from hermes_constants import venv_python_path
 
 logger = logging.getLogger(__name__)
@@ -1581,6 +1582,12 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
 
     except Exception as e:
         print(f"✗ ZIP update failed: {e}")
+        if detect_policy_block(e):
+            # Windows Smart App Control / WDAC blocked the staging copy or a
+            # spawned child — surface the actual cause next to the wire error
+            # instead of letting it read as a generic, unexplained failure
+            # (#87789). Guidance only: no policy is touched here.
+            print(policy_block_guidance("the update"))
         # The two-phase replace either commits every entry or rolls them all
         # back, so a failure here does not leave a mixed-version tree — don't
         # scare the user toward a reinstall they don't need.

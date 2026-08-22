@@ -168,8 +168,26 @@ The same pattern works on Arch (the installer uses pacman with the same sudo-det
 | `hermes: command not found` | Reload your shell (`source ~/.bashrc`) or check PATH |
 | `API key not set` | Run `hermes model` to configure your provider, or `hermes config set OPENROUTER_API_KEY your_key` |
 | Missing config after update | Run `hermes config check` then `hermes config migrate` |
+| Windows: install/update fails with `os error 4551` / `os error 1260`, or the desktop app won't launch after an update | Windows Smart App Control or an application-control (WDAC) policy is blocking Hermes' Python. See [Windows Smart App Control blocks](#windows-smart-app-control-blocks) below. |
 
 For more diagnostics, run `hermes doctor` — it will tell you exactly what's missing and how to fix it.
+
+### Windows Smart App Control blocks
+
+Windows Smart App Control (and, on managed machines, Application Control/WDAC policies) can block the embedded Python runtime Hermes uses to install, update, and launch. When this happens you'll typically see one of:
+
+- `hermes update` failing with `os error 4551` or `os error 1260` (`ERROR_ACCESS_DISABLED_BY_POLICY`) in the error text
+- the Desktop app failing to launch after an update, with no other explanation
+- a fresh install failing during venv setup
+
+This is not a corrupted install — it's Windows refusing to run (or copy) an unsigned/untrusted binary. A Windows feature update can silently turn Smart App Control back on even if you (or your IT admin) previously allowed Hermes.
+
+To resolve it:
+
+1. Check whether Smart App Control is on: Settings → Privacy & security → Windows Security → App & browser control → Smart App Control, or run `Get-MpComputerStatus | Select SmartAppControlState` in PowerShell.
+2. See [Microsoft's Smart App Control documentation](https://aka.ms/smartappcontrol) for how to allow a specific app or turn it off.
+3. On a managed machine, ask your IT administrator for an exemption for Hermes if Smart App Control/WDAC is enforced by policy.
+4. Re-run `hermes update` (or reinstall) once the block is cleared — a blocked update leaves your existing install in place, so nothing needs to be recovered first.
 
 ## Install method auto-detection
 

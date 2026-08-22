@@ -135,7 +135,45 @@ def test_background_review_installs_thread_local_whitelist():
     assert "execute_code" not in whitelist
 
 
+def test_memory_only_review_honors_skill_creation_kill_switch():
+    """``skills.creation_nudge_interval: 0`` must deny skill_manage in the
+    memory-review fork too (#82708).
 
+    That setting only gated the skill-review *trigger* in turn_finalizer.py;
+    the memory-review trigger fires independently and previously still
+    carried skill_manage in its runtime whitelist, letting the memory-only
+    fork create skills the user explicitly disabled.
+    """
+    import run_agent
+    from hermes_cli import plugins as _plugins
 
+    captured = {}
+
+    def _capture_whitelist(whitelist, deny_msg_fmt=None):
+        captured["whitelist"] = set(whitelist)
+        raise RuntimeError("stop after capturing whitelist")
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._skill_nudge_interval = 0  # user's skill-creation kill switch
+
+    def _no_init(self, *args, **kwargs):
+        return None
+
+    with patch.object(run_agent.AIAgent, "__init__", _no_init), \
+         patch.object(_plugins, "set_thread_tool_whitelist", _capture_whitelist), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert "whitelist" in captured, "set_thread_tool_whitelist was not called"
+    whitelist = captured["whitelist"]
+    assert "skill_manage" not in whitelist, (
+        "skill_manage must be denied when the skill-creation kill switch is "
+        "on, even for a memory-only review fork"
+    )
+    assert "memory" in whitelist, "memory review itself must be unaffected"
 
 

@@ -1323,6 +1323,14 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            # Honor the user's skill-creation kill switch
+            # (skills.creation_nudge_interval: 0) at the fork level too. The
+            # memory-review trigger fires independently of the skill-review
+            # trigger, so it previously still carried skill_manage in its
+            # whitelist and could create skills the user explicitly disabled
+            # (#82708).
+            if getattr(agent, "_skill_nudge_interval", 1) <= 0:
+                review_whitelist.discard("skill_manage")
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(

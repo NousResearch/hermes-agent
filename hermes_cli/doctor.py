@@ -9,6 +9,8 @@ import sys
 import subprocess
 import shutil
 import importlib.util
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from hermes_cli.config import (
@@ -1004,6 +1006,31 @@ def _build_apikey_providers_list() -> list:
     except Exception:
         pass
     return _static
+
+
+def _validate_github_token(token: str) -> str:
+    """Return ``valid``, ``invalid``, or ``unavailable`` for a GitHub token.
+
+    A non-empty environment variable is not evidence that the credential is
+    accepted. Network and rate-limit failures are kept distinct from a 401 so
+    doctor never labels an unverified token as authenticated.
+    """
+    request = urllib.request.Request(
+        "https://api.github.com/user",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": _HERMES_USER_AGENT,
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
+            return "valid" if response.status == 200 else "unavailable"
+    except urllib.error.HTTPError as exc:
+        return "invalid" if exc.code == 401 else "unavailable"
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return "unavailable"
 
 
 def managed_scope_check() -> None:
@@ -2086,7 +2113,7 @@ def run_doctor(args):
         # not found" warning. If the user has explicitly chosen
         # TERMINAL_ENV=docker inside the container they likely mounted
         # /var/run/docker.sock, so fall through to the normal check.
-        if terminal_env != "docker":
+        if terminal_env not in {"docker", "vercel_sandbox"}:
             check_info(
                 "Running inside a container — using local terminal backend "
                 "(docker-in-docker is not configured by default)"
@@ -2834,6 +2861,10 @@ def run_doctor(args):
                                        b=_base_env, s=_supports:
                                 _probe_apikey_provider(p, e, u, b, s)))
 
+    from hermes_cli.config import get_env_value
+
+    _github_token = get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN")
+    _github_validation_future = None
     _probes.append(("AWS Bedrock", _probe_bedrock))
     _probes.append(("Azure Foundry (Entra ID)", _probe_azure_entra))
 
@@ -2859,6 +2890,10 @@ def run_doctor(args):
         # noisy output if anything ever printed from inside a worker.
         with _futures.ThreadPoolExecutor(max_workers=8,
                                          thread_name_prefix="doctor-probe") as _ex:
+            if _github_token:
+                _github_validation_future = _ex.submit(
+                    _validate_github_token, _github_token
+                )
             _futures_in_order = [_ex.submit(_fn) for _, _fn in _probes]
             _results = [_f.result() for _f in _futures_in_order]
     finally:
@@ -2947,8 +2982,6 @@ def run_doctor(args):
     else:
         check_warn("Skills Hub directory not initialized", "(run: hermes skills list)")
 
-    from hermes_cli.config import get_env_value
-
     def _gh_authenticated() -> bool:
         """Check if gh CLI is authenticated via token file or device flow."""
         try:
@@ -2960,9 +2993,23 @@ def run_doctor(args):
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
 
-    github_token = get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN")
-    if github_token:
-        check_ok("GitHub token configured (authenticated API access)")
+    if _github_token:
+        github_token_status = _github_validation_future.result()
+        if github_token_status == "valid":
+            check_ok("GitHub token configured (authenticated API access)", "(validated)")
+        elif github_token_status == "invalid":
+            _fail_and_issue(
+                "GitHub token rejected",
+                "(GitHub API returned 401 Unauthorized)",
+                "Replace the invalid GITHUB_TOKEN/GH_TOKEN in "
+                f"{_DHH}/.env, then run `hermes doctor` again",
+                issues,
+            )
+        else:
+            check_warn(
+                "GitHub token could not be validated",
+                "(GitHub API unavailable or token access was denied)",
+            )
     elif _gh_authenticated():
         check_ok("GitHub authenticated via gh CLI", "(full API access — no GITHUB_TOKEN needed)")
     else:

@@ -5,6 +5,8 @@ import sys
 import types
 import io
 import contextlib
+import concurrent.futures
+import urllib.error
 from argparse import Namespace
 from types import SimpleNamespace
 
@@ -276,6 +278,31 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
     assert "Vercel auth missing env: VERCEL_PROJECT_ID" in out
     assert "super-secret-value" not in out
     assert "snapshot filesystem only" in out
+
+
+def test_doctor_preserves_explicit_vercel_backend_in_container(monkeypatch, tmp_path):
+    """An explicit Vercel backend must not be rewritten to local in containers."""
+    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+    monkeypatch.setenv("TERMINAL_VERCEL_RUNTIME", "python3.13")
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", tmp_path / ".hermes")
+    monkeypatch.setattr(doctor_mod, "_DHH", "~/.hermes")
+    monkeypatch.setattr(doctor_mod, "_is_termux", lambda: False)
+    monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "Vercel runtime" in out
+    assert "python3.13" in out
 
 
 # ── Memory provider section (doctor should only check the *active* provider) ──
@@ -1074,6 +1101,140 @@ class TestGitHubTokenCheck:
 
         assert "gh auth" in str(call_log) or any(c[0] == "gh" for c in call_log), f"gh not called: {call_log}"
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
+
+    @staticmethod
+    def _response(status=200):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+        response = Response()
+        response.status = status
+        return response
+
+    def test_github_token_validation_accepts_success(self, monkeypatch):
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            requests.append((request, timeout))
+            return self._response(200)
+
+        monkeypatch.setattr(doctor.urllib.request, "urlopen", fake_urlopen)
+
+        assert doctor._validate_github_token("valid-token") == "valid"
+        request, timeout = requests[0]
+        assert request.full_url == "https://api.github.com/user"
+        assert request.get_header("Authorization") == "Bearer valid-token"
+        assert request.get_header("X-github-api-version") == "2022-11-28"
+        assert timeout == 10
+
+    def test_github_token_validation_rejects_401(self, monkeypatch):
+        def fake_urlopen(request, timeout):
+            raise urllib.error.HTTPError(
+                request.full_url, 401, "Unauthorized", {}, None
+            )
+
+        monkeypatch.setattr(doctor.urllib.request, "urlopen", fake_urlopen)
+
+        assert doctor._validate_github_token("expired-token") == "invalid"
+
+    @pytest.mark.parametrize(
+        "error",
+        [TimeoutError("timed out"), urllib.error.URLError("offline")],
+    )
+    def test_github_token_validation_distinguishes_unavailable(self, monkeypatch, error):
+        def fake_urlopen(request, timeout):
+            raise error
+
+        monkeypatch.setattr(doctor.urllib.request, "urlopen", fake_urlopen)
+
+        assert doctor._validate_github_token("token") == "unavailable"
+
+    def test_run_doctor_reports_rejected_token(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.setenv("GITHUB_TOKEN", "expired-token")
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setattr(doctor, "_validate_github_token", lambda token: "invalid")
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor.run_doctor(Namespace(fix=False))
+
+        out = buf.getvalue()
+        assert "GitHub token rejected" in out
+        assert "Replace the invalid GITHUB_TOKEN/GH_TOKEN" in out
+        assert "authenticated API access" not in out
+
+    def test_run_doctor_preserves_github_token_precedence(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.setenv("GITHUB_TOKEN", "github-token")
+        monkeypatch.setenv("GH_TOKEN", "gh-token")
+        validated = []
+        monkeypatch.setattr(
+            doctor,
+            "_validate_github_token",
+            lambda token: validated.append(token) or "valid",
+        )
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor.run_doctor(Namespace(fix=False))
+
+        assert validated == ["github-token"]
+        assert "GitHub token configured (authenticated API access)" in buf.getvalue()
+        assert "(validated)" in buf.getvalue()
+
+    def test_run_doctor_submits_github_validation_to_connectivity_executor(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.setenv("GITHUB_TOKEN", "github-token")
+        submitted = []
+        monkeypatch.setattr(doctor, "_validate_github_token", lambda token: "valid")
+
+        class RecordingExecutor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def submit(self, fn, *args):
+                submitted.append((fn, args))
+                return SimpleNamespace(result=lambda: fn(*args))
+
+        monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", RecordingExecutor)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            doctor.run_doctor(Namespace(fix=False))
+
+        assert any(fn is doctor._validate_github_token for fn, args in submitted)
+        assert any(args == ("github-token",) for fn, args in submitted)
+
+    def test_run_doctor_reports_unavailable_token_validation(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.setenv("GITHUB_TOKEN", "token")
+        monkeypatch.setattr(doctor, "_validate_github_token", lambda token: "unavailable")
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor.run_doctor(Namespace(fix=False))
+
+        out = buf.getvalue()
+        assert "GitHub token could not be validated" in out
+        assert "authenticated API access" not in out
 
 
 def _run_doctor_with_healthy_oauth_fallback(

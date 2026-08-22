@@ -465,6 +465,8 @@ def _(rid, params: dict) -> dict:
         )
 
         def _reuse_live_payload(sid: str, session: dict) -> dict:
+            # Resuming a session that is already live attaches this client
+            # alongside the existing one(s) instead of taking the slot from them.
             payload = _live_session_payload(
                 sid,
                 session,
@@ -1090,6 +1092,9 @@ def _(rid, params: dict) -> dict:
         return err
     assert session is not None
 
+    # _live_session_payload ATTACHES this caller to the session rather than
+    # rebinding it, so activating a session someone else is already streaming
+    # mirrors it instead of stealing it.
     return _ok(
         rid,
         _live_session_payload(

@@ -183,6 +183,103 @@ class StdioTransport:
         return None
 
 
+class FanoutTransport:
+    """Delivers one JSON frame to every client attached to a session.
+
+    A session's ``transport`` slot used to hold exactly one client, so every
+    ``prompt.submit`` / ``session.resume`` / ``session.activate`` / queued-prompt
+    drain REBOUND it and whichever client was there before went silent.  This
+    object goes in the same slot and satisfies the same :class:`Transport`
+    protocol, so ``server.write_json`` — and every other reader of that slot —
+    is unchanged; the only difference is that N clients receive the frame
+    instead of the most recent one.
+
+    Scope: this carries a session's ASYNC EVENT stream only.  Request/response
+    RPCs still answer on the request's context-bound transport
+    (``dispatch`` → ``current_transport()``), so a client only ever sees replies
+    to its own calls.
+
+    Peers are pruned on failure: a transport that returns ``False`` (peer gone)
+    or raises is dropped from the fan-out rather than allowed to stall or
+    silence the clients that are still healthy.
+    """
+
+    __slots__ = ("_lock", "_transports")
+
+    def __init__(self, *transports: "Transport") -> None:
+        self._lock = threading.Lock()
+        self._transports: list["Transport"] = []
+        for transport in transports:
+            self.attach(transport)
+
+    def attach(self, transport: "Transport") -> bool:
+        """Add *transport*. Returns ``True`` when it was not already attached."""
+        if transport is None or transport is self:
+            return False
+        with self._lock:
+            for existing in self._transports:
+                if existing is transport:
+                    return False
+            self._transports.append(transport)
+            return True
+
+    def detach(self, transport: "Transport") -> bool:
+        """Remove *transport*. Returns ``True`` when it was attached."""
+        with self._lock:
+            for idx, existing in enumerate(self._transports):
+                if existing is transport:
+                    del self._transports[idx]
+                    return True
+        return False
+
+    def contains(self, transport: "Transport") -> bool:
+        with self._lock:
+            return any(existing is transport for existing in self._transports)
+
+    def transports(self) -> list["Transport"]:
+        """A snapshot of the attached transports (safe to iterate)."""
+        with self._lock:
+            return list(self._transports)
+
+    def has_transports(self, *, excluding: "Transport | None" = None) -> bool:
+        """True when any transport other than *excluding* is still attached."""
+        with self._lock:
+            return any(existing is not excluding for existing in self._transports)
+
+    def write(self, obj: dict) -> bool:
+        """Deliver *obj* to every attached transport.
+
+        Iterates a SNAPSHOT and never holds the lock across a peer write, so one
+        wedged client cannot block another's frame or an attach/detach.  Returns
+        ``True`` when at least one client accepted the frame — an all-dead
+        fan-out reports peer-gone exactly like a single dead transport would.
+        """
+        targets = self.transports()
+        if not targets:
+            return False
+        delivered = False
+        dead: list["Transport"] = []
+        for transport in targets:
+            try:
+                ok = transport.write(obj)
+            except Exception:
+                logger.debug("fanout write failed; pruning peer", exc_info=True)
+                dead.append(transport)
+                continue
+            if ok:
+                delivered = True
+            else:
+                dead.append(transport)
+        for transport in dead:
+            self.detach(transport)
+        return delivered
+
+    def close(self) -> None:
+        """Detach every peer. Does NOT close them — each owns its own socket."""
+        with self._lock:
+            self._transports = []
+
+
 class TeeTransport:
     """Mirrors writes to one primary plus N best-effort secondaries.
 

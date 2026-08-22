@@ -338,11 +338,13 @@ def _(rid, params: dict) -> dict:
         )
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
-    # Re-bind to the current client transport for this request. This keeps
-    # streaming events on the active websocket even if an earlier disconnect
-    # or fallback moved the session transport to stdio.
+    # Attach the current client transport for this request. This keeps streaming
+    # events on the active websocket even if an earlier disconnect or fallback
+    # moved the session transport to stdio — and, since it attaches rather than
+    # rebinds, a second client submitting a prompt no longer cuts the first
+    # client out of the session it is watching.
     if (t := current_transport()) is not None:
-        session["transport"] = t
+        _attach_session_transport(session, t)
     while True:
         busy_transport = None
         with session["history_lock"]:

@@ -6,12 +6,15 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+import os
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from tools.file_tools import (
     PATCH_SCHEMA,
+    _handle_write_file,
 )
 
 
@@ -47,14 +50,20 @@ class TestWriteFileHandler:
     def test_writes_content(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()
-        result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/out.txt", "bytes": 13}
+        # Use a path with a drive letter so it's stable on both platforms;
+        # ``os.path.normpath`` converts forward slashes to backslashes on
+        # Windows so the expected call matches the actual call (the resolve
+        # helper normalizes the path before passing to file_ops).
+        test_path = "C:/tmp/out.txt" if sys.platform == "win32" else "/tmp/out.txt"
+        expected_path = os.path.normpath(test_path)
+        result_obj.to_dict.return_value = {"status": "ok", "path": expected_path, "bytes": 13}
         mock_ops.write_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
         from tools.file_tools import write_file_tool
-        result = json.loads(write_file_tool("/tmp/out.txt", "hello world!\n"))
+        result = json.loads(write_file_tool(test_path, "hello world!\n"))
         assert result["status"] == "ok"
-        mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello world!\n")
+        mock_ops.write_file.assert_called_once_with(expected_path, "hello world!\n")
 
     @patch("tools.file_tools._get_file_ops")
     def test_permission_error_returns_error_json_without_error_log(self, mock_get, caplog):
@@ -130,6 +139,38 @@ class TestWriteFileHandler:
         assert "string" in result["error"].lower() or "content" in result["error"].lower()
 
 
+    def test_missing_content_with_tmp_path_suggests_retry(self):
+        """Empty content + .tmp path should suggest the placeholder hint."""
+        result = _handle_write_file({"path": "/some/PLACEHOLDER.md.tmp"})
+        err = result["error"] if isinstance(result, dict) else result
+        assert isinstance(err, str)
+        assert "missing required field 'content'" in err
+        assert "Received args: path" in err
+        # The .tmp placeholder hint should be appended
+        assert ".tmp" in err
+        assert "placeholder" in err.lower()
+
+    def test_missing_content_without_tmp_path_has_no_placeholder_hint(self):
+        """Empty content + non-.tmp path should NOT trigger the placeholder hint."""
+        result = _handle_write_file({"path": "/some/real.md"})
+        err = json.loads(result)["error"]
+        assert isinstance(err, str)
+        assert "missing required field 'content'" in err
+        assert "Received args: path" in err
+        # No .tmp hint should appear
+        assert "placeholder" not in err.lower()
+
+    def test_received_args_lists_path(self):
+        """When only `path` is provided, Received args echoes back exactly that."""
+        result = _handle_write_file({"path": "/some/real.md"})
+        err = json.loads(result)["error"]
+        assert "Received args: path" in err
+        # The `(none)` fallback is unreachable in the current handler flow
+        # (the path guard above guarantees args is non-empty by this point);
+        # verify the live output does not contain it.
+        assert "(none)" not in err
+
+
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_calls_patch_replace(self, mock_get):
@@ -139,13 +180,17 @@ class TestPatchHandler:
         mock_ops.patch_replace.return_value = result_obj
         mock_get.return_value = mock_ops
 
+        # Use a path with a drive letter on Windows so it survives ntpath.normpath.
+        test_path = "C:/tmp/f.py" if sys.platform == "win32" else "/tmp/f.py"
+        expected_path = os.path.normpath(test_path)
+
         from tools.file_tools import patch_tool
         result = json.loads(patch_tool(
-            mode="replace", path="/tmp/f.py",
+            mode="replace", path=test_path,
             old_string="foo", new_string="bar"
         ))
         assert result["status"] == "ok"
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
+        mock_ops.patch_replace.assert_called_once_with(expected_path, "foo", "bar", False)
 
 
     @patch("tools.file_tools._get_file_ops")
@@ -227,9 +272,11 @@ class TestPatchSensitivePathExtraction:
     @patch("tools.file_tools._get_file_ops")
     def test_patch_move_to_sensitive_dst_blocked(self, mock_get):
         from tools.file_tools import patch_tool
+        # Use a path the Windows resolver leaves intact (has a drive letter).
+        work_path = "C:/tmp/work.txt" if sys.platform == "win32" else "/tmp/work.txt"
         patch_text = (
             "*** Begin Patch\n"
-            "*** Move File: /tmp/work.txt -> /etc/crontab\n"
+            f"*** Move File: {work_path} -> /etc/crontab\n"
             "*** End Patch\n"
         )
         result = json.loads(patch_tool(mode="patch", patch=patch_text))

@@ -219,6 +219,34 @@ class TestJudgeParseFailureAutoPause:
             assert "config.yaml" in d3["message"]
 
 
+    def test_transport_pause_message_has_no_hardcoded_model(self, hermes_home):
+        """The transport-failure auto-pause must not suggest a specific
+        provider/model (#92195): the canned ``deepseek-v4-flash`` block read
+        as "the runtime secretly routes judge calls to DeepSeek" and sent
+        users debugging a config that wasn't the failure."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES
+
+        assert DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES == 5
+        mgr = GoalManager(session_id="transport-fail-sid-1", default_max_turns=20)
+        mgr.set("do a thing")
+
+        with patch.object(
+            goals, "judge_goal",
+            return_value=("continue", "judge transport unreachable", False, None, True),
+        ):
+            for i in range(DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES):
+                d = mgr.evaluate_after_turn(f"step {i + 1}")
+
+            assert d["should_continue"] is False
+            assert d["status"] == "paused"
+            # Points at the real config surface; no canned provider/model.
+            assert "goal_judge" in d["message"]
+            assert "config.yaml" in d["message"]
+            assert "deepseek" not in d["message"].lower()
+            assert "provider:" not in d["message"]
+
+
 
 
 

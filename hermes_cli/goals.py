@@ -2032,11 +2032,9 @@ class GoalManager:
                 "message": (
                     f"⏸ Goal paused — judge API returned errors "
                     f"({state.consecutive_transport_failures} turns). "
-                    "Check the goal_judge provider/key in ~/.hermes/config.yaml:\n"
-                    "  auxiliary:\n"
-                    "    goal_judge:\n"
-                    "      provider: deepseek\n"
-                    "      model: deepseek-v4-flash\n"
+                    "Check the goal_judge provider/key via the dashboard "
+                    "Models page (http://127.0.0.1:9119/models) or in "
+                    "~/.hermes/config.yaml under auxiliary.goal_judge. "
                     "Then /goal resume to continue."
                 ),
             }

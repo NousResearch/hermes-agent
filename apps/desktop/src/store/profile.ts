@@ -13,7 +13,13 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
-import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
+import {
+  $gateway,
+  activeGatewayConnectionId,
+  ensureGatewayForAgent,
+  ensureGatewayForProfile,
+  openGatewayForProfile
+} from '@/store/gateway'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -505,7 +511,21 @@ export function selectProfile(name: string): void {
     requestFreshSession()
   }
 
-  void ensureGatewayProfile(target)
+  void activateOnCurrentSource(target)
+}
+
+// Route a profile pick at the source the user is LOOKING at. $profiles is the
+// active gateway's list, so a pick made while a registry source is live names
+// one of THAT source's profiles. Sending it through the profile-only path
+// resolves the descriptor with a bare name (getConnection(profile)), which the
+// main process answers against the primary — so picking "researcher" on a
+// remote source opened a local backend of the same name and dropped the user
+// back home, making the pick look like it never took. A null connection id
+// means the primary is live, which is exactly the legacy path.
+function activateOnCurrentSource(target: string): Promise<void> {
+  const connectionId = activeGatewayConnectionId()
+
+  return connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
@@ -518,7 +538,7 @@ export function newSessionInProfile(name: string): void {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
   requestFreshSession()
-  void ensureGatewayProfile(target)
+  void activateOnCurrentSource(target)
 }
 
 export function setShowAllProfiles(value: boolean): void {

@@ -2609,7 +2609,9 @@ export interface HubAgentPluginRow {
   version: string;
   description: string;
   source: string;
-  runtime_status: "disabled" | "enabled" | "inactive";
+  // "active": live memory provider selected via `memory.provider` — running
+  // without being in `plugins.enabled`, so enable/disable does not apply.
+  runtime_status: "disabled" | "enabled" | "inactive" | "active";
   has_dashboard_manifest: boolean;
   dashboard_manifest: PluginManifestResponse | null;
   path: string;

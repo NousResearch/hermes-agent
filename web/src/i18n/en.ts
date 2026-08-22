@@ -380,6 +380,9 @@ export const en: Translations = {
   },
 
   pluginsPage: {
+    activeProvider: "active (memory provider)",
+    activeProviderHint: "Live memory provider (memory.provider in config.yaml)",
+    activeProviderManaged: "Managed via the memory provider selector above.",
     contextEngineLabel: "Context engine",
     dashboardSlots: "Dashboard slots",
     disableRuntime: "Disable",

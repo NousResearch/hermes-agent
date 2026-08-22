@@ -12158,6 +12158,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # using it alone made freshly-installed, not-yet-enabled plugins
                 # look like "nothing installed".
                 from hermes_cli.plugins_cmd import (
+                    PLUGIN_STATUS_ACTIVE,
+                    _active_memory_provider_dir,
                     _discover_all_plugins,
                     _get_disabled_set,
                     _get_enabled_set,
@@ -12167,6 +12169,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 entries = _discover_all_plugins()
                 enabled = _get_enabled_set()
                 disabled = _get_disabled_set()
+                active_provider_dir = _active_memory_provider_dir()
 
                 # `/plugins` is a quick glance — default to user-installed
                 # plugins (what the user actually added). Bundled provider/
@@ -12194,8 +12197,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
                     print(f"User plugins ({len(user_entries)}):")
                     for name, version, _desc, source, _dir, key in sorted(user_entries):
-                        state = _plugin_status(name, enabled, disabled, key=key)
-                        glyph = {"enabled": "✓", "disabled": "✗"}.get(state, "○")
+                        state = _plugin_status(
+                            name,
+                            enabled,
+                            disabled,
+                            key=key,
+                            dir_path=_dir,
+                            active_provider_dir=active_provider_dir,
+                        )
+                        glyph = {
+                            "enabled": "✓",
+                            PLUGIN_STATUS_ACTIVE: "✓",
+                            "disabled": "✗",
+                        }.get(state, "○")
                         ver = f" v{version}" if version else ""
                         info = loaded.get(name) or {}
                         bits = []

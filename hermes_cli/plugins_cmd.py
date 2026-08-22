@@ -1928,24 +1928,99 @@ def _discover_entrypoint_plugins() -> list[tuple[str, str, str, str]]:
     return entries
 
 
-def _plugin_status(name: str, enabled: set, disabled: set, key: str = "") -> str:
-    """Return the user-facing activation state for a plugin name or key."""
+# Status token for a plugin that is live as the configured memory provider.
+# Kept a single word so ``--plain``/``--json`` consumers can still split on
+# whitespace; the rich table renders the longer human label.
+PLUGIN_STATUS_ACTIVE = "active"
+
+
+def _active_memory_provider_dir() -> Path | None:
+    """Resolve ``memory.provider`` to the directory the loader would use.
+
+    Returns None when no external provider is configured, or when the
+    configured name does not resolve. ``plugins.memory.load_memory_provider``
+    goes through this same ``find_provider_dir`` lookup, so a name that does
+    not resolve is not actually serving memory and must not be labelled
+    active.
+    """
+    name = _get_current_memory_provider()
+    if not name:
+        return None
+    try:
+        from plugins.memory import find_provider_dir
+
+        return find_provider_dir(name)
+    except Exception:
+        return None
+
+
+def _same_dir(left, right) -> bool:
+    """True when two path-ish values resolve to the same directory."""
+    if left is None or right is None:
+        return False
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except Exception:
+        return False
+
+
+def _plugin_status(
+    name: str,
+    enabled: set,
+    disabled: set,
+    key: str = "",
+    dir_path=None,
+    active_provider_dir=None,
+) -> str:
+    """Return the user-facing activation state for a plugin name or key.
+
+    A plugin selected through ``memory.provider`` is live without ever being
+    listed in ``plugins.enabled``, so reporting it as "not enabled" is wrong
+    (#82898).
+
+    The active provider is matched by *resolved directory*, not by name.
+    ``_read_manifest_info`` derives ``key`` from the manifest name at depth 0
+    (``key = name`` when there is no prefix), while ``memory.provider`` names
+    the plugin's directory — ``_iter_provider_dirs`` yields ``child.name``. A
+    plugin installed at ``plugins/mnemosyne/`` whose manifest declares
+    ``name: mnemosyne-hermes`` therefore has no name-shaped tie to
+    ``memory.provider: mnemosyne``. Comparing directories also avoids
+    mislabelling an unrelated plugin that merely shares a name with the
+    configured provider.
+    """
     if name in disabled or key in disabled:
         return "disabled"
+    if _same_dir(dir_path, active_provider_dir):
+        return PLUGIN_STATUS_ACTIVE
     if name in enabled or key in enabled:
         return "enabled"
     return "not enabled"
 
 
-def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set) -> list:
+def _filter_plugin_entries(
+    entries: list,
+    args: Any,
+    enabled: set,
+    disabled: set,
+    active_provider_dir=None,
+) -> list:
     """Apply ``hermes plugins list`` CLI filters."""
     filtered = entries
     if getattr(args, "no_bundled", False) or getattr(args, "user", False):
         filtered = [entry for entry in filtered if entry[3] != "bundled"]
     if getattr(args, "enabled", False):
+        # An active memory provider is loaded and running, so it belongs in
+        # --enabled even though it is absent from `plugins.enabled`.
         filtered = [
             entry for entry in filtered
-            if _plugin_status(entry[0], enabled, disabled, key=entry[5]) == "enabled"
+            if _plugin_status(
+                entry[0],
+                enabled,
+                disabled,
+                key=entry[5],
+                dir_path=entry[4],
+                active_provider_dir=active_provider_dir,
+            ) in ("enabled", PLUGIN_STATUS_ACTIVE)
         ]
     return filtered
 
@@ -1964,25 +2039,42 @@ def cmd_list(args: Any | None = None) -> None:
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
-    entries = _filter_plugin_entries(entries, args, enabled, disabled)
+    active_provider_dir = _active_memory_provider_dir()
+    entries = _filter_plugin_entries(
+        entries, args, enabled, disabled, active_provider_dir=active_provider_dir
+    )
 
     if getattr(args, "json", False):
         payload = [
             {
                 "name": name,
-                "status": _plugin_status(name, enabled, disabled, key=key),
+                "status": _plugin_status(
+                    name,
+                    enabled,
+                    disabled,
+                    key=key,
+                    dir_path=dir_path,
+                    active_provider_dir=active_provider_dir,
+                ),
                 "version": str(version),
                 "description": description,
                 "source": source,
             }
-            for name, version, description, source, _dir, key in entries
+            for name, version, description, source, dir_path, key in entries
         ]
         print(json.dumps(payload, indent=2))
         return
 
     if getattr(args, "plain", False):
-        for name, version, _description, source, _dir, key in entries:
-            status = _plugin_status(name, enabled, disabled, key=key)
+        for name, version, _description, source, dir_path, key in entries:
+            status = _plugin_status(
+                name,
+                enabled,
+                disabled,
+                key=key,
+                dir_path=dir_path,
+                active_provider_dir=active_provider_dir,
+            )
             print(f"{status:12} {source:8} {str(version):8} {name}")
         return
 
@@ -1997,10 +2089,19 @@ def cmd_list(args: Any | None = None) -> None:
     table.add_column("Description")
     table.add_column("Source", style="dim")
 
-    for name, version, description, source, _dir, key in entries:
-        status_name = _plugin_status(name, enabled, disabled, key=key)
+    for name, version, description, source, dir_path, key in entries:
+        status_name = _plugin_status(
+            name,
+            enabled,
+            disabled,
+            key=key,
+            dir_path=dir_path,
+            active_provider_dir=active_provider_dir,
+        )
         if status_name == "disabled":
             status = "[red]disabled[/red]"
+        elif status_name == PLUGIN_STATUS_ACTIVE:
+            status = "[green]active (memory provider)[/green]"
         elif status_name == "enabled":
             status = "[green]enabled[/green]"
         else:
@@ -2214,7 +2315,14 @@ def cmd_show(name: str) -> None:
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
-    status = _plugin_status(pname, enabled, disabled, key=key)
+    status = _plugin_status(
+        pname,
+        enabled,
+        disabled,
+        key=key,
+        dir_path=dir_path,
+        active_provider_dir=_active_memory_provider_dir(),
+    )
 
     console.print()
     console.print(f"[bold]{pname}[/bold]" + (f" [dim]v{version}[/dim]" if version else ""))

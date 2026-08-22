@@ -18225,9 +18225,11 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
         _get_current_context_engine,
         _get_current_memory_provider,
         _discover_context_engines,
+        _active_memory_provider_dir,
         _get_disabled_set,
         _get_enabled_set,
         _read_manifest as _read_plugin_manifest_at,
+        _same_dir,
     )
 
     dashboard_list = _get_dashboard_plugins()
@@ -18235,6 +18237,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
 
     disabled_set = _get_disabled_set()
     enabled_set = _get_enabled_set()
+    active_provider_dir = _active_memory_provider_dir()
 
     # Read user-hidden plugins from config for the user_hidden field.
     config = load_config()
@@ -18250,14 +18253,28 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
         aliases = {name}
         if key:
             aliases.add(key)
+        dir_path = Path(dir_str)
         if aliases & disabled_set:
             runtime_status = "disabled"
+        elif _same_dir(dir_path, active_provider_dir):
+            # Selected through `memory.provider`, which never populates
+            # `plugins.enabled` — it is loaded and running, so "inactive" is
+            # wrong (#82898). Reported as a distinct "active" state (typed in
+            # web/src/lib/api.ts) rather than "enabled": enable/disable toggle
+            # membership in `plugins.enabled`, which does not govern the
+            # provider, so the Plugins page must not offer Disable here — it
+            # points at the memory-provider selector instead.
+            #
+            # Checked before `plugins.enabled` to match the CLI's
+            # `_plugin_status`. A plugin can be in both sets, and the provider
+            # is the stronger fact: it is what is actually serving memory, and
+            # it is the state whose lifecycle the toggle cannot govern.
+            runtime_status = "active"
         elif aliases & enabled_set:
             runtime_status = "enabled"
         else:
             runtime_status = "inactive"
 
-        dir_path = Path(dir_str)
         dm = dash_by_name.get(name)
         has_dash_manifest = dm is not None or (dir_path / "dashboard" / "manifest.json").exists()
 

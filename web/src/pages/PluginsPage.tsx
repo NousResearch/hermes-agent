@@ -941,7 +941,7 @@ function PluginRowCard(props: PluginRowCardProps) {
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   const badgeTone =
-    row.runtime_status === "enabled"
+    row.runtime_status === "enabled" || row.runtime_status === "active"
       ? "success"
       : row.runtime_status === "disabled"
         ? "destructive"
@@ -967,7 +967,16 @@ function PluginRowCard(props: PluginRowCardProps) {
 
             <Badge tone="outline">v{row.version || "—"}</Badge>
 
-            <Badge tone={badgeTone}>{row.runtime_status}</Badge>
+            <Badge
+              title={
+                row.runtime_status === "active" ? t.pluginsPage.activeProviderHint : undefined
+              }
+              tone={badgeTone}
+            >
+              {row.runtime_status === "active"
+                ? t.pluginsPage.activeProvider
+                : row.runtime_status}
+            </Badge>
 
             {row.auth_required ? (
               <Badge tone="destructive">{t.pluginsPage.authRequired}</Badge>
@@ -975,7 +984,16 @@ function PluginRowCard(props: PluginRowCardProps) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
-            {row.runtime_status === "enabled" ? (
+            {row.runtime_status === "active" ? (
+              // The enable/disable toggle edits `plugins.enabled` /
+              // `plugins.disabled`, which does not govern the memory
+              // provider — offering Disable here would flip the label
+              // without stopping the provider. Provider lifecycle lives in
+              // the Providers card at the top of this page.
+              <span className="text-xs text-muted-foreground">
+                {t.pluginsPage.activeProviderManaged}
+              </span>
+            ) : row.runtime_status === "enabled" ? (
               <Button
                 disabled={busy}
                 ghost

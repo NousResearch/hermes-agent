@@ -2422,6 +2422,8 @@ def _(rid, params: dict) -> dict:
         return err
     try:
         from hermes_cli.plugins_cmd import (
+            PLUGIN_STATUS_ACTIVE,
+            _active_memory_provider_dir,
             _bundled_default_on,
             _discover_all_plugins,
             _get_disabled_set,
@@ -2433,11 +2435,25 @@ def _(rid, params: dict) -> dict:
         def _rows():
             enabled = _get_enabled_set()
             disabled = _get_disabled_set()
+            active_provider_dir = _active_memory_provider_dir()
             out = []
             for name, version, desc, source, _dir, key in sorted(
                 _discover_all_plugins()
             ):
-                status = _plugin_status(name, enabled, disabled, key=key)
+                status = _plugin_status(
+                    name,
+                    enabled,
+                    disabled,
+                    key=key,
+                    dir_path=_dir,
+                    active_provider_dir=active_provider_dir,
+                )
+                # A plugin selected via `memory.provider` is loaded and running
+                # without appearing in `plugins.enabled`. Report it with the
+                # existing vocabulary rather than a new status value, so
+                # clients switching on status keep working (#82898).
+                if status == PLUGIN_STATUS_ACTIVE:
+                    status = "enabled"
                 # Bundled backends/platforms/providers are active without an
                 # explicit enable (they "just work" — plugins.py). Reporting
                 # them "not enabled" reads as OFF in clients when they are in

@@ -12865,8 +12865,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if not prefix:
             return []
         escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read_ctx() as conn:
+            rows = conn.execute(
                 "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\'",
                 (escaped + "%",),
             ).fetchall()

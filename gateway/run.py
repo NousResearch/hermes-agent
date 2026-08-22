@@ -21909,8 +21909,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # init on the loop thread before the first read.
                 await self._warm_goals_session_db("loop wakeup")
 
+                # Run list_active_loops() in an executor to avoid blocking the event loop.
+                # list_active_loops() calls list_meta_prefix() which acquires self._lock,
+                # and that lock is also held by writers doing BEGIN IMMEDIATE and periodic
+                # FTS5-merge/WAL-checkpoint work. A slow write holding the lock while the
+                # watcher blocks the entire event loop on the same lock froze it for 90+
+                # seconds until the liveness watchdog force-exited. Moving this off the
+                # loop thread prevents the freeze.
+                loop = asyncio.get_running_loop()
+                active_loops = await loop.run_in_executor(None, list_active_loops)
+
                 now = time.time()
-                for sid, state in list_active_loops():
+                for sid, state in active_loops:
                     if state.awaiting_response or now < state.next_due_at:
                         continue
                     route = state.route or {}
@@ -21958,7 +21968,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     mgr = LoopManager(session_id=sid)
                     if not mgr.is_due(now):
                         continue
-                    wakeup = mgr.fire_tick()
+                    # fire_tick() is a write (BEGIN IMMEDIATE) that acquires self._lock,
+                    # same contention source as list_meta_prefix(). Run it in an executor
+                    # to avoid blocking the event loop.
+                    wakeup = await loop.run_in_executor(None, mgr.fire_tick)
                     if not wakeup:
                         continue
                     try:
@@ -21978,7 +21991,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # path and never hit the post-turn completion hook —
                         # complete the tick immediately (caps + scheduling).
                         if wakeup.lstrip().startswith("/"):
-                            mgr.complete_tick("")
+                            # complete_tick() is a write (BEGIN IMMEDIATE) that acquires
+                            # self._lock, same contention source as list_meta_prefix().
+                            # Run it in an executor to avoid blocking the event loop.
+                            await loop.run_in_executor(None, mgr.complete_tick, "")
                     except Exception as exc:
                         logger.warning("loop wakeup injection failed for %s: %s", sid, exc)
                         try:

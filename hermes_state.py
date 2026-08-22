@@ -2234,6 +2234,28 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
                     old.unlink(missing_ok=True)
                 except OSError:  # pragma: no cover - best effort
                     pass
+        # Sweep orphaned sidecars (kill mid-PUBLISH). The publish loop below
+        # writes sidecars to their FINAL name before the main DB — the main
+        # file is the bundle's commit marker (see the publish-order comment
+        # further down) — so a hard kill between two os.replace() calls can
+        # leave a published ``-wal``/``-shm``/``-journal`` sidecar with no
+        # matching main backup on disk. Neither sweep pattern above catches
+        # this: it isn't a staging name (already renamed to its final name)
+        # and isn't the ``.incomplete`` spelling. _existing_malformed_backups()
+        # explicitly excludes sidecar-suffixed names from its count, so such
+        # an orphan is never pruned by _prune_malformed_backups() either — it
+        # would otherwise sit on disk forever, growing unbounded across
+        # repeated interrupted passes.
+        for suffix in _DB_SIDECAR_SUFFIXES:
+            for sidecar in db_path.parent.glob(
+                f"{db_path.name}.malformed-backup-*{suffix}"
+            ):
+                main = sidecar.with_name(sidecar.name[: -len(suffix)])
+                if not main.exists():
+                    try:
+                        sidecar.unlink(missing_ok=True)
+                    except OSError:  # pragma: no cover - best effort
+                        pass
         # Dedupe (#86747): a repair loop used to copy the SAME damaged bytes
         # on every restart — ~900MB a pass, 89GB over 11 days in the
         # reporting install. If the newest existing backup is byte-identical to

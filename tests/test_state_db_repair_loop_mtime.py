@@ -782,3 +782,94 @@ def test_publication_failure_leaves_no_countable_partial_bundle(tmp_path):
     assert reason is None and path is not None
     strays = list(tmp_path.glob("*.backup-staging-*"))
     assert not strays, f"staging debris survived: {strays}"
+
+
+# ---------------------------------------------------------------------------
+# Orphaned sidecars left by a hard kill mid-PUBLISH (not mid-copy).
+#
+# ``test_publication_failure_leaves_no_countable_partial_bundle`` above only
+# exercises a *raising* os.replace() failure, where the except-block rolls
+# back every already-published destination. A hard kill (SIGKILL, OOM,
+# power loss) between two os.replace() calls raises nothing — the process
+# just stops — so the rollback never runs and a published sidecar can be
+# left with no matching main backup. These tests exercise that shape
+# directly: plant the orphan a hard kill would leave, then assert the next
+# pass's sweep removes it.
+# ---------------------------------------------------------------------------
+
+
+def test_orphaned_published_sidecar_is_swept_on_next_pass(tmp_path):
+    """A sidecar promoted to its final name with no matching main backup
+    (a hard kill between the sidecar and main os.replace() calls) must be
+    swept on the next pass — it is never counted by
+    ``_existing_malformed_backups`` (which excludes sidecar suffixes), so
+    without an explicit sweep it survives forever.
+    """
+    db = _damaged_db(tmp_path, size=20_000)
+    roomy = type(
+        "Usage", (), {"total": 500_000_000_000, "used": 0, "free": 400_000_000_000}
+    )()
+
+    # Plant an orphan exactly as a hard kill would leave one: a published
+    # sidecar (final name, no staging/incomplete marker) with no main file.
+    orphan = db.with_name(f"{db.name}.malformed-backup-20260101_000000-wal")
+    orphan.write_bytes(os.urandom(1_000))
+    assert orphan.exists()
+    assert not orphan.with_name(orphan.name[: -len("-wal")]).exists()
+
+    # The orphan must never be countable as a backup (root cause of why it
+    # would otherwise survive every prune pass).
+    assert not _existing_malformed_backups(db)
+
+    with patch("shutil.disk_usage", return_value=roomy):
+        path, reason = _backup_db_file(db)
+
+    assert reason is None and path is not None
+    assert not orphan.exists(), "orphaned published sidecar was not swept"
+
+
+def test_orphaned_sidecar_sweep_does_not_touch_a_healthy_backup(tmp_path):
+    """The sweep must only remove a sidecar whose main file is ABSENT — a
+    sidecar belonging to a genuine, complete forensic backup must survive.
+    """
+    db = _damaged_db(tmp_path, size=20_000)
+    db.with_name(db.name + "-wal").write_bytes(os.urandom(5_000))
+    roomy = type(
+        "Usage", (), {"total": 500_000_000_000, "used": 0, "free": 400_000_000_000}
+    )()
+
+    with patch("shutil.disk_usage", return_value=roomy):
+        first, reason = _backup_db_file(db)
+    assert reason is None and first is not None
+    first_sidecar = first.with_name(first.name + "-wal")
+    assert first_sidecar.exists()
+
+    # A second pass must not disturb the first backup's sidecar — its main
+    # file is present, so the sweep must leave it alone.
+    with patch("shutil.disk_usage", return_value=roomy):
+        second, reason = _backup_db_file(db)
+    assert reason is None and second is not None
+    assert first.exists(), "sweep removed a healthy backup's main file"
+    assert first_sidecar.exists(), "sweep removed a healthy backup's sidecar"
+
+
+def test_orphaned_sidecar_sweep_covers_all_sidecar_suffixes(tmp_path):
+    """The sweep must cover every sidecar suffix, not just ``-wal``."""
+    db = _damaged_db(tmp_path, size=20_000)
+    roomy = type(
+        "Usage", (), {"total": 500_000_000_000, "used": 0, "free": 400_000_000_000}
+    )()
+
+    orphans = [
+        db.with_name(f"{db.name}.malformed-backup-20260101_000000{suffix}")
+        for suffix in ("-wal", "-shm", "-journal")
+    ]
+    for orphan in orphans:
+        orphan.write_bytes(os.urandom(100))
+
+    with patch("shutil.disk_usage", return_value=roomy):
+        path, reason = _backup_db_file(db)
+
+    assert reason is None and path is not None
+    for orphan in orphans:
+        assert not orphan.exists(), f"orphan survived: {orphan.name}"

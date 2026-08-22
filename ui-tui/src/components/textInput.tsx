@@ -4,7 +4,7 @@ import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'rea
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
-import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+import { readClipboardText, readPrimarySelectionText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
@@ -1697,6 +1697,22 @@ export function TextInput({
       }}
       onMouseDown={(e: MouseEventLite) => {
         if (!focus) {
+          return
+        }
+
+        // Middle-click mirrors native Linux terminal behavior: paste PRIMARY
+        // when available, including a successful empty selection. Only an
+        // unavailable PRIMARY backend falls back to the regular clipboard.
+        if (e.button === 1) {
+          e.stopImmediatePropagation?.()
+          void readPrimarySelectionText().then(text => {
+            if (text !== null) {
+              pastePlainText(text)
+            } else {
+              emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
+            }
+          })
+
           return
         }
 

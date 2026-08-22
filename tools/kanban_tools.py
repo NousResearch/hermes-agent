@@ -139,10 +139,12 @@ def _check_kanban_orchestrator_mode() -> bool:
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _default_task_id(arg: Optional[str]) -> Optional[str]:
+def _default_task_id(arg: Any) -> Optional[str]:
     """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
-    if arg:
-        return arg
+    if arg is not None:
+        val = str(arg).strip()
+        if val:
+            return val
     if _is_delegated_child_context():
         return None
     if not _is_dispatcher_owned_worker():
@@ -150,7 +152,11 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
         # worker's task id as an implicit default.
         return None
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
-    return env_tid or None
+    if env_tid:
+        val = env_tid.strip()
+        if val:
+            return val
+    return None
 
 
 def _worker_run_id(task_id: str) -> Optional[int]:

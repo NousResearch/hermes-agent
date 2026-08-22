@@ -1134,3 +1134,23 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+class TestDefaultTaskId:
+    def test_numeric_task_id_is_coerced(self, monkeypatch):
+        from tools import kanban_tools as kt
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        assert kt._default_task_id(12345) == "12345"
+        assert kt._default_task_id(0) == "0"
+
+    def test_whitespace_task_id_is_stripped(self, monkeypatch):
+        from tools import kanban_tools as kt
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        assert kt._default_task_id("  task-99  ") == "task-99"
+
+    def test_blank_task_id_falls_back(self, monkeypatch, worker_env):
+        from tools import kanban_tools as kt
+        monkeypatch.setattr(kt, "_is_dispatcher_owned_worker", lambda: True)
+        assert kt._default_task_id("") == worker_env
+        assert kt._default_task_id("   ") == worker_env
+        assert kt._default_task_id(None) == worker_env

@@ -401,6 +401,183 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     assert session.get("_compute_host_active") is not True
 
 
+class _DeadComputeHost:
+    """Supervisor whose interrupt() raises and which owes no completion.
+
+    Models a compute host that is gone (broken pipe, respawn exhausted): no
+    ``turn.end`` can ever arrive to clear ``running``.
+    """
+
+    def __init__(self, pending_sids=()):
+        self._lock = threading.Lock()
+        self._pending_sids = set(pending_sids)
+
+    def interrupt(self, sid, *, request_id=None):
+        raise RuntimeError("compute host is not running")
+
+    def has_pending_turn(self, sid):
+        with self._lock:
+            return sid in self._pending_sids
+
+
+def test_compute_host_interrupt_failure_clears_stuck_running(monkeypatch):
+    """A dead compute host must not leave `running` stuck after Stop.
+
+    Nothing will deliver `turn.end`, so bailing out with 5019 left the session
+    busy forever: every later prompt.submit fell into the busy path and queued.
+    """
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        running=True,
+        _compute_host_active=True,
+        queued_prompt={"text": "stale next", "transport": None},
+        inflight_turn={"user": "hi", "assistant": "", "streaming": True},
+    )
+    server._sessions["iso-int-dead"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _DeadComputeHost())
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "int-dead",
+                "method": "session.interrupt",
+                "params": {"session_id": "iso-int-dead"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted", "turn_isolation": True}
+        assert session["running"] is False
+        assert session.get("_turn_cancel_requested") is True
+        assert session.get("queued_prompt") is None
+        assert session.get("inflight_turn") is None
+    finally:
+        server._sessions.pop("iso-int-dead", None)
+
+
+def test_compute_host_interrupt_failure_leaves_running_when_turn_pending(monkeypatch):
+    """A still-registered host completion owns teardown — don't pre-empt it."""
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        running=True,
+        _compute_host_active=True,
+        inflight_turn={"user": "hi", "assistant": "", "streaming": True},
+    )
+    server._sessions["iso-int-pending"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(
+        server,
+        "_get_compute_host_supervisor",
+        lambda _cfg=None: _DeadComputeHost(pending_sids=("iso-int-pending",)),
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "int-pending",
+                "method": "session.interrupt",
+                "params": {"session_id": "iso-int-pending"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted", "turn_isolation": True}
+        assert session["running"] is True
+        assert session.get("_turn_cancel_requested") is True
+        assert session.get("inflight_turn") is not None
+    finally:
+        server._sessions.pop("iso-int-pending", None)
+
+
+def test_compute_host_interrupt_failure_leaves_running_after_teardown(monkeypatch):
+    """Once the turn is torn down, `running` belongs to the drain, not to Stop."""
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        running=True,
+        _compute_host_active=True,
+        # The crash waiter already cleared inflight; a successor drain may have
+        # claimed `running` for the queued prompt it is about to send.
+        inflight_turn=None,
+    )
+    server._sessions["iso-int-post"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _DeadComputeHost())
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "int-post",
+                "method": "session.interrupt",
+                "params": {"session_id": "iso-int-post"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted", "turn_isolation": True}
+        assert session["running"] is True
+        assert session.get("_turn_cancel_requested") is True
+    finally:
+        server._sessions.pop("iso-int-post", None)
+
+
+def test_compute_host_interrupt_failure_does_not_clobber_replaced_inflight(monkeypatch):
+    """A successor turn can replace inflight before its pending entry lands."""
+    old_inflight = {"user": "old", "assistant": "", "streaming": True}
+    new_inflight = {"user": "new", "assistant": "", "streaming": True}
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        running=True,
+        _compute_host_active=True,
+        inflight_turn=old_inflight,
+    )
+    server._sessions["iso-int-race"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+
+    host = _DeadComputeHost()
+
+    def _interrupt_and_swap(sid, *, request_id=None):
+        # prompt.submit replaces inflight after history_lock is released and
+        # before submit_turn registers the pending entry.
+        with session["history_lock"]:
+            session["inflight_turn"] = new_inflight
+            session["_turn_cancel_requested"] = False
+        raise RuntimeError("compute host is not running")
+
+    host.interrupt = _interrupt_and_swap
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: host)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "int-race",
+                "method": "session.interrupt",
+                "params": {"session_id": "iso-int-race"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted", "turn_isolation": True}
+        assert session["running"] is True
+        assert session.get("inflight_turn") is new_inflight
+        assert session.get("_turn_cancel_requested") is True
+    finally:
+        server._sessions.pop("iso-int-race", None)
+
+
+def test_compute_host_supervisor_reports_pending_turn_per_session():
+    """The liveness probe the recovery reads: registered ⇒ True, popped ⇒ False."""
+    from tui_gateway.host_supervisor import HostSupervisor
+
+    # Bypass __init__: constructing a real supervisor would spawn a child.
+    supervisor = HostSupervisor.__new__(HostSupervisor)
+    supervisor._lock = threading.RLock()
+    supervisor._pending_turns = {"req-a": ("sid-a", None), "req-b": ("sid-b", None)}
+
+    assert supervisor.has_pending_turn("sid-a") is True
+    assert supervisor.has_pending_turn("sid-b") is True
+    assert supervisor.has_pending_turn("sid-c") is False
+
+    supervisor._pending_turns.pop("req-a")
+    assert supervisor.has_pending_turn("sid-a") is False
+
+
 def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
     # _session_info embeds get_update_result(), whose value flips whenever the
     # background update-check thread happens to finish. This test compares two
@@ -11794,7 +11971,15 @@ def test_interrupt_drops_queued_prompt_for_session():
 
 
 def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
-    """Stop during lazy agent startup must not start the turn after init finishes."""
+    """Stop during lazy agent startup must not start the turn after init finishes.
+
+    `agent_ready` is a real, never-set Event here, exactly as `session.create`
+    seeds it while the deferred build is in flight, and `_wait_agent` is NOT
+    stubbed. Both matter: stubbing `_wait_agent` — or leaving `agent_ready`
+    absent, which makes it return immediately anyway — hides the wait this test
+    exists to rule out, and `session.interrupt` would then be free to block on
+    the very build it is cancelling without failing anything here.
+    """
     threads = []
     calls = {"run_prompt": 0}
 
@@ -11811,6 +11996,7 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
 
     session = _session()
     session["agent"] = None
+    session["agent_ready"] = threading.Event()
     server._sessions["sid"] = session
 
     try:
@@ -11819,7 +12005,6 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
-        monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
         monkeypatch.setattr(
             server,
             "_run_prompt_submit",
@@ -11844,6 +12029,9 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
         )
         assert stop.get("result"), f"got error: {stop.get('error')}"
 
+        # The build now completes — this is the "after init finishes" the
+        # docstring names, and it releases the deferred waiter immediately.
+        session["agent_ready"].set()
         threads[0].target()
 
         assert calls["run_prompt"] == 0
@@ -11863,6 +12051,11 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
     so the Desktop composer can show feedback instead of hanging on a
     `{"status":"streaming"}` reply that never produces a turn (issue #63078
     server-side half).
+
+    Like that sibling, this runs against a real never-set `agent_ready` with
+    `_wait_agent` unstubbed, so the `_turn_cancel_requested` assertion below
+    genuinely pins that Stop records the cancellation while the build is still
+    in flight rather than erroring out ahead of it.
     """
     threads = []
     emitted = []
@@ -11881,6 +12074,7 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
 
     session = _session()
     session["agent"] = None
+    session["agent_ready"] = threading.Event()
     server._sessions["sid"] = session
 
     try:
@@ -11889,7 +12083,6 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
-        monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
         monkeypatch.setattr(
             server,
             "_run_prompt_submit",
@@ -11915,8 +12108,10 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
         assert stop.get("result"), f"got error: {stop.get('error')}"
         assert session.get("_turn_cancel_requested") is True
 
-        # The deferred run thread now wakes up; without the emit it would bail
-        # silently and the Desktop would never learn the turn was dropped.
+        # The build completes and the deferred run thread wakes up; without the
+        # emit it would bail silently and the Desktop would never learn the turn
+        # was dropped.
+        session["agent_ready"].set()
         threads[0].target()
 
         assert calls["run_prompt"] == 0
@@ -11995,6 +12190,79 @@ def test_session_not_running_before_agent_ready_emits_error_event(monkeypatch):
         assert "no longer running" in msg.lower(), f"unexpected message: {msg}"
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_interrupt_never_waits_on_the_deferred_agent_build(monkeypatch):
+    """Stop must resolve its session without blocking on the in-flight build.
+
+    `_wait_agent` sits on `agent_ready` for up to 30s — the same Event the build
+    being cancelled has not set yet — and `session.interrupt` is not in
+    `_LONG_HANDLERS`, so it runs inline on the socket reader thread and takes
+    every RPC queued behind it down with it. Counting the call pins that
+    directly and fails in milliseconds, where the end-to-end tests above can
+    only catch a regression by actually spending the 30 seconds.
+    """
+    seen = {"wait": 0}
+    session = _session(running=True)
+    session["agent"] = None
+    session["agent_ready"] = threading.Event()
+    server._sessions["sid-nowait"] = session
+    monkeypatch.setattr(
+        server, "_wait_agent", lambda *_args, **_kwargs: seen.__setitem__("wait", seen["wait"] + 1)
+    )
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.interrupt",
+                "params": {"session_id": "sid-nowait"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted"}, f"got error: {resp.get('error')}"
+        assert seen["wait"] == 0
+        # The flag the deferred waiter polls before it starts the turn.
+        assert session.get("_turn_cancel_requested") is True
+        # Stop must not have needed the build to finish to get there.
+        assert session["agent_ready"].is_set() is False
+    finally:
+        server._sessions.pop("sid-nowait", None)
+
+
+def test_interrupt_recovers_a_session_whose_agent_build_failed(monkeypatch):
+    """A failed build must not leave Stop as the one thing that cannot run.
+
+    `_wait_agent` returns 5032 for a set `agent_ready` too, whenever
+    `agent_error` is populated — so once a build failed, `session.interrupt`
+    errored out before reaching the cancel/`running` cleanup below it. Nothing
+    else clears `running` on that path, so the session stayed busy: every later
+    prompt.submit hit the busy branch and queued, with no way back short of a
+    backend restart. This is the same permanent-busy trap the compute-host
+    branch guards against, reached through the in-process branch instead.
+    """
+    session = _session(running=True)
+    session["agent"] = None
+    ready = threading.Event()
+    ready.set()  # the build finished — it just finished by failing
+    session["agent_ready"] = ready
+    session["agent_error"] = "provider metadata fetch failed"
+    server._sessions["sid-failed"] = session
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.interrupt",
+                "params": {"session_id": "sid-failed"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted"}, f"got error: {resp.get('error')}"
+        assert session.get("_turn_cancel_requested") is True
+        assert session["running"] is False
+    finally:
+        server._sessions.pop("sid-failed", None)
 
 
 def test_slow_agent_build_delivers_prompt_instead_of_timing_out(monkeypatch):

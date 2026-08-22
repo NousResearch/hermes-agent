@@ -1385,8 +1385,8 @@ function hideOwnedBotSessions() {
 
 // Titles Bot Mode itself mints for its plumbing sessions. Bot-to-bot CLI
 // handoffs (`hermes -p <bot> chat --in ~ -c "Bot Chat" --create-if-missing`)
-// and mention handoffs create sessions with EXACTLY these titles; the
-// "Group: " prefix is the member-session title ensureGroupChatSession has
+// create sessions with EXACTLY these titles; the "Group: " prefix is the
+// member-session title ensureGroupChatSession has
 // used since group chats shipped. Exact/prefix matching is deliberate — a
 // user's real conversation inside a bot profile keeps whatever title the
 // user gave it and is never touched.

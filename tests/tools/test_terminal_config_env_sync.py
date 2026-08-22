@@ -322,3 +322,25 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_terminal_shell_is_bridged_everywhere():
+    """``terminal.shell`` must reach every config entry point.
+
+    Same drift class as docker_run_as_host_user: the shell selection is
+    consumed from the ``TERMINAL_SHELL`` projection, so CLI (cli.py
+    env_mappings), gateway (gateway/run.py _terminal_env_map), and the
+    shared config-set bridge (TERMINAL_CONFIG_ENV_MAP, used by
+    ``hermes config set`` and by ``apply_terminal_config_to_env``) must all
+    carry the key.  A missing site would make ``terminal.shell: pwsh``
+    silently do nothing for that launch mode.
+    """
+    from hermes_cli import config as hc_config
+
+    assert "shell" in _cli_env_map_keys()
+    assert "shell" in _gateway_env_map_keys()
+    assert "shell" in _save_config_env_sync_keys()
+    # The canonical map is the single shared-bridge source: the env var the
+    # shell resolver consumes must be the one this map projects.
+    assert hc_config.terminal_config_env_var_for_key("terminal.shell") == "TERMINAL_SHELL"
+    assert "TERMINAL_SHELL" in hc_config.TERMINAL_CONFIG_ENV_MAP.values()

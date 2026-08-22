@@ -635,6 +635,121 @@ conversation stays readable via `/resume` and session search either way —
 routing is the only thing the repair changes. Back up first
 (`cp ~/.hermes/state.db ~/.hermes/state.db.bak`).
 
+### Repair Orphaned Compression Chains
+
+Older Hermes builds wrote a long conversation's compression continuations as
+**independent root sessions** (no `parent_session_id` link, parent not marked
+compression-ended). The sidebar then shows several separate same-titled
+entries that are really one conversation.
+
+`hermes sessions repair-chains` detects groups of roots that look like
+orphaned segments and, with `--apply`, relinks them under the oldest root of
+each group:
+
+```bash
+# Report only — shows each group and its evidence
+hermes sessions repair-chains
+
+# Relink (interactive checklist + automatic state.db snapshot first)
+hermes sessions repair-chains --apply
+```
+
+Evidence rules:
+
+- **strong signal** — at least one root's first message is a compaction
+  handoff; these groups are pre-checked in the checklist
+- **weak signal** — roots share a title but have no handoff; listed
+  **unchecked** with a warning (repeated kanban subtasks legitimately share
+  titles), you may check one to force the relink
+
+Delegate/branch/tool children are always excluded — they are never
+compression continuations. Every relink marks the parent compression-ended so
+the chain renders like a normal compression lineage, and the whole batch runs
+in one transaction with a snapshot taken first.
+
+### Retitle Missing Session Titles
+
+Rows created before title provenance was tracked (or by bugs that truncated
+titles) can carry a bare first-message truncation or an empty title.
+`hermes sessions retitle-missing` regenerates them:
+
+```bash
+# Report only — lists what would change
+hermes sessions retitle-missing
+
+# Regenerate (interactive checklist + automatic snapshot first)
+hermes sessions retitle-missing --apply
+
+# Exclude empty chain segments (keep inheritance off) or legacy truncations
+hermes sessions retitle-missing --apply --no-chain-inherit --no-legacy-truncated
+
+# Cap the number of titles regenerated per run (default 500)
+hermes sessions retitle-missing --apply --limit 100
+```
+
+Root sessions get a title from the configured title-generation model; empty
+chain segments inherit the nearest titled ancestor (deduped with `#N`).
+Rows titled by the user (`title_source = 'user'`) are **never** touched, and
+legacy/empty-string rows are written at user level so the repair is explicit
+rather than an auto-titler overwrite. The report mode (no `--apply`) never
+calls the title model — candidates that would need LLM generation are listed
+under `would_generate` in the summary, so a preview costs no tokens. Only
+`--apply` invokes the model, and only after showing the configured model
+(with a cloud-cost warning when it hits a remote API) for confirmation.
+
+### Merge Fork Compression Chains
+
+When a conversation is split into a head plus compression-linked segments
+(a fork chain), `hermes sessions merge-chains` flattens them back into one
+in-place session — matching how modern in-place compression stores the same
+conversation:
+
+```bash
+# Report only
+hermes sessions merge-chains
+
+# Merge (interactive checklist + automatic snapshot first)
+hermes sessions merge-chains --apply
+```
+
+The merge moves segment messages onto the head (ids unchanged), merges
+token/cost counters and `session_model_usage` rows (no cascade loss), redirects
+any orphaned children, inherits the tip's terminal end state, and deletes the
+segment rows. The whole batch is one transaction, and message totals are
+verified after.
+
+### Restore the Session Database
+
+Every maintenance command above takes a timestamped `state.db` snapshot
+(`state.db.pre-<label>-<timestamp>` in the same directory) before writing.
+`hermes sessions restore-db` restores from one of them:
+
+```bash
+# Restore the newest snapshot (interactive picker when several exist)
+hermes sessions restore-db
+
+# Restore a specific snapshot explicitly (script-friendly)
+hermes sessions restore-db --snapshot state.db.pre-merge-chains-20260815_010000
+
+# Dry run — only report what would be stopped and restored
+hermes sessions restore-db --dry-run
+```
+
+Safety guarantees:
+
+- the chosen snapshot is **integrity-checked before anything is written** —
+  a corrupted snapshot can never replace a live database, and this check is
+  never skippable; the restored file is verified again after the swap
+- processes holding `state.db` (gateway, dashboard backend, TUI) are stopped
+  first — restoring over a live database corrupts it. Without `--force` a live
+  holder aborts the restore
+- stopped processes are **not auto-restarted** — their exact restart commands
+  are printed instead, so you can inspect the restored database before a new
+  gateway starts writing to it
+
+The three `--apply` commands print a `restore-db` hint when they finish, so
+undoing a change is one command away.
+
 
 ## Importing Sessions from Claude Code and Codex CLI
 

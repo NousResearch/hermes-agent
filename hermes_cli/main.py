@@ -13761,6 +13761,137 @@ def main():
         help="Maximum sessions to examine (default: 200)",
     )
 
+    sessions_repair_chains = sessions_subparsers.add_parser(
+        "repair-chains",
+        help="Detect and relink orphaned compression chains",
+        description=(
+            "Finds root sessions that look like orphaned compression "
+            "continuations (old builds wrote them as independent roots, no "
+            "parent_session_id link) and, with --apply, relinks them under "
+            "the oldest root of each group. Relinking happens by default for "
+            "strong-signal groups where a root's first message is a "
+            "compaction handoff; same-title-only groups are weak signals "
+            "(repeated kanban tasks legitimately share titles) and are "
+            "listed unchecked with a warning — you may check one to force "
+            "the relink. --apply shows an interactive checklist to pick "
+            "which groups to fix and takes a state.db snapshot before "
+            "writing. Detection only by default; delegate/branch/tool "
+            "children are always excluded."
+        ),
+    )
+    sessions_repair_chains.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the relinks (default: dry run; interactive confirm + backup)",
+    )
+
+    sessions_retitle_missing = sessions_subparsers.add_parser(
+        "retitle-missing",
+        help="Regenerate missing/truncated session titles",
+        description=(
+            "Scans for rows whose title is missing, an empty string, or a "
+            "bare first-message truncation, regenerates root titles with the "
+            "LLM generator, and inherits titles down compression chains "
+            "(deduped with #N). Never overwrites a title the user typed "
+            "(title_source='user'); pre-provenance rows (title_source IS "
+            "NULL) and empty-string titles are treated as user-titled and "
+            "repaired at user level by default — pass --no-legacy-truncated "
+            "to skip them. Lists what it would change unless --apply is "
+            "passed (dry-run never calls the title model — no token spend); "
+            "--apply first shows the configured title-generation "
+            "model (with a cloud-cost warning when it hits a remote API) for "
+            "confirmation, then an interactive checklist of candidates, and "
+            "takes a state.db snapshot before writing."
+        ),
+    )
+    sessions_retitle_missing.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the changes (default: dry run; interactive confirm + backup)",
+    )
+    sessions_retitle_missing.add_argument(
+        "--no-chain-inherit",
+        action="store_true",
+        help="Skip chain-segment title inheritance (only LLM-regenerate broken roots)",
+    )
+    sessions_retitle_missing.add_argument(
+        "--no-legacy-truncated",
+        action="store_true",
+        help=(
+            "Skip pre-provenance rows (title_source IS NULL) whose title is "
+            "a bare first-message truncation. Default: repair them too (at "
+            "user level — the user explicitly ran the repair)."
+        ),
+    )
+    sessions_retitle_missing.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Maximum sessions to examine (default: 500)",
+    )
+
+    sessions_merge_chains = sessions_subparsers.add_parser(
+        "merge-chains",
+        help="Flatten fork compression chains into single in-place sessions",
+        description=(
+            "For each fork compression chain (parent end_reason='compression' "
+            "with a linked child), moves every segment message into the chain "
+            "head and deletes the segment rows, leaving one in-place session "
+            "per conversation (like in-place compression). A timestamped "
+            "state.db snapshot is taken (pre-merge-chains-<timestamp>) before "
+            "any write, and message totals are verified after. --apply shows "
+            "an interactive checklist to pick which chains to merge. Dry run "
+            "lists candidate chains without writing."
+        ),
+    )
+    sessions_merge_chains.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the changes (default: dry run; interactive confirm + automatic backup)",
+    )
+
+    sessions_restore_db = sessions_subparsers.add_parser(
+        "restore-db",
+        help="Restore state.db from a pre-* snapshot (stops holding processes first)",
+        description=(
+            "Restores ~/.hermes/state.db from a timestamped .pre-* snapshot "
+            "taken by the other maintenance commands (or any snapshot next to "
+            "the DB). Every live Hermes process (gateway, dashboard backend, "
+            "TUI, CLI sessions) holds state.db open with WAL/SHM state and "
+            "in-memory caches, so restoring over a live DB corrupts it; this "
+            "command first finds and stops those processes (SIGTERM then "
+            "SIGKILL survivors), clears stale -wal/-shm files, swaps the "
+            "snapshot in, and verifies the result. Refuses to touch live "
+            "processes unless --force is passed; --dry-run only reports "
+            "holders and the snapshot it would restore. Stopped processes "
+            "are not auto-restarted — the command prints each one's restart "
+            "command so you can bring services back once you are happy with "
+            "the restored data. The chosen snapshot is integrity-checked "
+            "before anything is written (never skippable)."
+        ),
+    )
+    sessions_restore_db.add_argument(
+        "--snapshot",
+        help=(
+            "Snapshot to restore (absolute path, or basename resolved next "
+            "to the DB; default: newest .pre-* snapshot, or an interactive "
+            "picker when several exist)"
+        ),
+    )
+    sessions_restore_db.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Stop processes holding state.db automatically (SIGTERM then "
+            "SIGKILL survivors). Without it, live holders cause an abort."
+        ),
+    )
+    sessions_restore_db.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report holders and the snapshot only; kill/write nothing",
+    )
+
     sessions_browse = sessions_subparsers.add_parser(
         "browse",
         help="Interactive session picker — browse, search, and resume sessions",

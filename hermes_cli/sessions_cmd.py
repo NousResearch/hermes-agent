@@ -124,6 +124,22 @@ def _prune_never_active_keyed(db, args):
 def cmd_sessions(args, sessions_parser=None):
     import json as _json
 
+    def _log(msg):
+        print(msg)
+
+    def _print_restore_hint(backup_path: str):
+        """Official-style pointer to the restore command after a --apply write.
+
+        Mirrors the ``Next step — offline recovery`` hint the repair
+        command prints: short lead line, then the exact command the user can
+        run to undo the change.
+        """
+        print()
+        print("  If the result looks wrong, restore the pre-change snapshot:")
+        print(f"    hermes sessions restore-db --snapshot {backup_path} --force")
+        print("  (This stops processes holding state.db, restores the backup,")
+        print("   and verifies it. --force is required while Hermes is running.)")
+
     action = args.sessions_action
 
     # 'repair' and 'recover' must run BEFORE opening SessionDB(): a
@@ -313,6 +329,45 @@ def cmd_sessions(args, sessions_parser=None):
         if result is None and getattr(args, "path", None):
             return 1
         return
+    if action == "restore-db":
+        # Runs BEFORE opening SessionDB(): restoring swaps the file under
+        # every live connection, so this command must not hold one itself.
+        from hermes_state import DEFAULT_DB_PATH as _DEFAULT_DB_PATH
+
+        from hermes_cli.session_migration import (
+            _confirm_snapshot,
+            restore_state_db,
+        )
+
+        db_path = _DEFAULT_DB_PATH
+        snapshot = getattr(args, "snapshot", None)
+        force = bool(getattr(args, "force", False))
+        dry_run = bool(getattr(args, "dry_run", False))
+
+        try:
+            stats = restore_state_db(
+                db_path,
+                snapshot=snapshot,
+                force=force,
+                dry_run=dry_run,
+                progress=_log,
+                confirm=_confirm_snapshot if not snapshot else None,
+            )
+        except Exception as exc:  # noqa: BLE001 — user-facing failure
+            print(f"✗ restore failed: {exc}")
+            return 1
+        print()
+        print(
+            f"✓ snapshot={stats['snapshot']} "
+            f"holders={len(stats['holders'])} "
+            f"killed={len(stats['killed'])} "
+            f"failed={len(stats['failed'])} "
+            f"restored={'yes' if stats['restored'] else 'no'} "
+            f"verified={'yes' if stats['verified'] else 'no'}"
+        )
+        if dry_run:
+            print("Dry run — nothing killed, nothing written.")
+        return 0
 
     try:
         from hermes_state import SessionDB
@@ -1204,6 +1259,133 @@ def cmd_sessions(args, sessions_parser=None):
             print("  every title already reflects the user's request.")
         elif apply_changes:
             print(f"✓ Re-titled {changed} session(s).")
+
+    elif action == "repair-chains":
+        from hermes_cli.session_migration import (
+            _confirm_candidates,
+            repair_chains,
+        )
+
+        apply_changes = bool(getattr(args, "apply", False))
+
+        if not apply_changes:
+            print("Dry run — pass --apply to write. Rows the user titled are never touched.")
+        stats = repair_chains(
+            db,
+            apply_changes=apply_changes,
+            progress=_log,
+            confirm=_confirm_candidates if apply_changes else None,
+        )
+        print()
+        print(
+            f"✓ orphaned_chain_groups={stats['orphaned_chain_groups']} "
+            f"relinked={stats['relinked']} "
+            f"skipped={stats['skipped']}"
+        )
+        if stats.get("backup_path"):
+            print(f"  backup: {stats['backup_path']}")
+        if not apply_changes:
+            print("Dry run — nothing written.")
+        elif stats["backup_path"]:
+            _print_restore_hint(stats["backup_path"])
+
+    elif action == "retitle-missing":
+        from hermes_cli.session_migration import (
+            _confirm_candidates,
+            _describe_title_model,
+            retitle_missing,
+        )
+
+        apply_changes = bool(getattr(args, "apply", False))
+        include_chain = not bool(getattr(args, "no_chain_inherit", False))
+        include_legacy = not bool(getattr(args, "no_legacy_truncated", False))
+        limit = max(1, int(getattr(args, "limit", 500) or 500))
+
+        def _generate(fm):
+            from agent.title_generator import generate_title
+
+            return generate_title(fm, timeout=120)
+
+        if not apply_changes:
+            print("Dry run — pass --apply to write. Rows the user titled are never touched.")
+        else:
+            # Before any LLM spend, show which model will generate titles and
+            # let the user confirm (or abort) — cloud endpoints may incur cost.
+            print(_describe_title_model())
+            print()
+            ok = _confirm_prompt("Use this model to generate titles?")
+            if not ok:
+                print("Cancelled — nothing written.")
+                return
+            print()
+        stats = retitle_missing(
+            db,
+            generate=_generate,
+            apply_changes=apply_changes,
+            include_chain_segments=include_chain,
+            include_legacy_truncated=include_legacy,
+            limit=limit,
+            progress=_log,
+            confirm=_confirm_candidates if apply_changes else None,
+        )
+        print()
+        print(
+            f"✓ scanned={stats['scanned']} "
+            f"generated={stats['generated']} "
+            f"would_generate={stats['would_generate']} "
+            f"inherited={stats['inherited']} "
+            f"skipped={stats['skipped_untouchable']} "
+            f"failed={stats['failed']} "
+            f"up_to_date={stats['up_to_date']}"
+        )
+        if stats.get("backup_path"):
+            print(f"  backup: {stats['backup_path']}")
+        if not apply_changes:
+            print("Dry run — nothing written.")
+        elif stats["backup_path"]:
+            _print_restore_hint(stats["backup_path"])
+
+    elif action == "merge-chains":
+        from hermes_cli.session_migration import (
+            _confirm_candidates,
+            merge_compression_chains,
+        )
+
+        apply_changes = bool(getattr(args, "apply", False))
+
+        print(
+            "fork compression-chain flattening "
+            f"({'dry run — pass --apply to write' if not apply_changes else 'writing'})"
+        )
+        merge_stats = merge_compression_chains(
+            db,
+            apply_changes=apply_changes,
+            backup=apply_changes,
+            progress=_log,
+            confirm=_confirm_candidates if apply_changes else None,
+        )
+        print()
+        print(
+            f"✓ chains={merge_stats['chains']} "
+            f"segments={merge_stats['segments']} "
+            f"messages_moved={merge_stats['messages_moved']} "
+            f"orphans_redirected={merge_stats['orphans_redirected']} "
+            f"usage_merged={merge_stats['usage_merged']}"
+        )
+        if merge_stats.get("verify_report"):
+            v = merge_stats["verify_report"]
+            print(
+                f"  verify: messages {v['messages_before']} → "
+                f"{v['messages_after']} (Δ{v['delta']:+d}), "
+                f"usage orphans={v['usage_orphans']} "
+                f"{'✅ OK' if merge_stats['verified'] else '❌ MISMATCH'}"
+            )
+        if merge_stats["backup_path"]:
+            print(f"  backup: {merge_stats['backup_path']}")
+        if not apply_changes:
+            print("Dry run — nothing written.")
+        elif merge_stats["backup_path"]:
+            _print_restore_hint(merge_stats["backup_path"])
 
     elif action == "browse":
         limit = getattr(args, "limit", 500) or 500

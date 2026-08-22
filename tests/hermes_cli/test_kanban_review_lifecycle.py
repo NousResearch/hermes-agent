@@ -708,3 +708,355 @@ def test_reviewer_reassigns_for_autonomous_dispatch(kanban_home: Path) -> None:
         ev = _events(conn, tid, kind="review_requested")[0][1]
         assert ev["reviewer"] == "lead-reviewer"
         assert ev["implementer"] == "worker"
+
+
+# ---------------------------------------------------------------------------
+# active_pr respawn guard vs. deliberate re-queues
+#
+# The guard's rule 4 defers a spawn when a GitHub PR URL appears in a task
+# comment younger than 24h. That is the right default for a fresh ready task
+# (don't open a second PR), but every re-queue path in the review lifecycle
+# ends with the same card back in ``ready`` while still carrying the comment
+# that announced its PR. Without a bypass the dispatcher defers it on every
+# tick for up to 24h, so a single card cannot carry work from first commit
+# through review remediation to merge.
+# ---------------------------------------------------------------------------
+
+_PR_URL = "https://github.com/example/repo/pull/123"
+
+
+def _bump_comment(conn, tid: str, body: str, seconds: int) -> None:
+    """Move a comment's ``created_at`` forward.
+
+    Comment and event timestamps are second-granularity, so a test that needs
+    a comment to land strictly after an event has to say so explicitly rather
+    than race the wall clock.
+    """
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_comments SET created_at = created_at + ? "
+            "WHERE task_id = ? AND body = ?",
+            (seconds, tid, body),
+        )
+
+
+def test_active_pr_guard_yields_to_explicit_unblock(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The canonical remediation handoff must respawn on the same card.
+
+    Worker opens a PR, comments the URL, blocks for review; a human resolves
+    the feedback and unblocks. The card is back in ``ready`` with an intact
+    PR-URL comment, and the dispatcher must spawn it — the unblock IS the
+    "work that PR again" instruction.
+    """
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship it", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        kb.add_comment(conn, tid, author="worker", body=f"Opened {_PR_URL}")
+        assert kb.block_task(
+            conn, tid, reason="review-required: awaiting review",
+            expected_run_id=claimed.current_run_id,
+        )
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kb.check_respawn_guard(conn, tid) is None
+
+        res = kb.dispatch_once(conn, dry_run=True)
+        assert tid in [s[0] for s in res.spawned]
+        assert not res.respawn_guarded
+
+
+def test_active_pr_guard_rearms_when_a_pr_lands_after_the_unblock(
+    kanban_home: Path
+) -> None:
+    """Duplicate-PR protection still covers the resumed round.
+
+    The bypass is scoped to PR evidence that PREDATES the re-queue. A PR URL
+    posted after it is fresh evidence of an in-flight PR and guards again.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship it", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        kb.add_comment(conn, tid, author="worker", body=f"Opened {_PR_URL}")
+        assert kb.block_task(
+            conn, tid, reason="review-required: awaiting review",
+            expected_run_id=claimed.current_run_id,
+        )
+        assert kb.unblock_task(conn, tid)
+        assert kb.check_respawn_guard(conn, tid) is None
+
+        followup = f"Pushed remediation to {_PR_URL}"
+        kb.add_comment(conn, tid, author="worker", body=followup)
+        _bump_comment(conn, tid, followup, 5)
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_guard_yields_to_an_unblock_reason_quoting_the_pr(
+    kanban_home: Path
+) -> None:
+    """``unblock --reason`` must not re-arm the guard it just cleared.
+
+    The CLI writes its ``UNBLOCK: <reason>`` comment immediately before the
+    ``unblocked`` event, in the same second, and review feedback mirrored into
+    that reason routinely quotes the PR URL. Treating a same-second re-queue
+    as "after" the comment is what keeps that from wedging the card.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship it", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert kb.block_task(
+            conn, tid, reason="review-required: awaiting review",
+            expected_run_id=claimed.current_run_id,
+        )
+        kb.add_comment(
+            conn, tid, author="operator",
+            body=f"UNBLOCK: changes requested on {_PR_URL}",
+        )
+        # Simulate a pre-upgrade comment whose adjacent event did not yet
+        # carry comment_id; the timestamp fallback must preserve this CLI
+        # ordering case.
+        with kb.write_txn(conn):
+            event = conn.execute(
+                "SELECT id, payload FROM task_events "
+                "WHERE task_id = ? AND kind = 'commented' "
+                "ORDER BY id DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+            payload = json.loads(event["payload"])
+            payload.pop("comment_id", None)
+            conn.execute(
+                "UPDATE task_events SET payload = ? WHERE id = ?",
+                (json.dumps(payload), event["id"]),
+            )
+        assert kb.unblock_task(conn, tid)
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_active_pr_guard_yields_to_current_unblock_comment_binding(
+    kanban_home: Path,
+) -> None:
+    """Current comments use event ids for the native unblock ordering."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="current unblock", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: awaiting review",
+            expected_run_id=claimed.current_run_id,
+        )
+        kb.add_comment(
+            conn,
+            tid,
+            author="operator",
+            body=f"UNBLOCK: changes requested on {_PR_URL}",
+        )
+
+        assert kb.unblock_task(conn, tid)
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_legacy_same_second_comment_fails_closed_without_native_unblock_prefix(
+    kanban_home: Path,
+) -> None:
+    """Legacy timestamp fallback must not guess cross-table ordering."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="legacy same second", assignee="worker")
+        kb.add_comment(conn, tid, author="worker", body=f"Opened {_PR_URL}")
+        with kb.write_txn(conn):
+            event = conn.execute(
+                "SELECT id, payload, created_at FROM task_events "
+                "WHERE task_id = ? AND kind = 'commented' "
+                "ORDER BY id DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+            payload = json.loads(event["payload"])
+            payload.pop("comment_id", None)
+            conn.execute(
+                "UPDATE task_events SET payload = ? WHERE id = ?",
+                (json.dumps(payload), event["id"]),
+            )
+            kb._append_event(
+                conn,
+                tid,
+                "changes_requested",
+                {"reason": "legacy ordering is ambiguous"},
+            )
+            conn.execute(
+                "UPDATE task_events SET created_at = ? "
+                "WHERE task_id = ? AND kind = 'changes_requested'",
+                (event["created_at"], tid),
+            )
+
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_guard_rearms_for_later_pr_comment_in_same_second(
+    kanban_home: Path,
+) -> None:
+    """Equal timestamps do not let an older continuation beat a new PR."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="same-second PR", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: awaiting review",
+            expected_run_id=claimed.current_run_id,
+        )
+        assert kb.unblock_task(conn, tid)
+        kb.add_comment(conn, tid, author="worker", body=f"Opened {_PR_URL}")
+        unblocked_at = conn.execute(
+            "SELECT created_at FROM task_events "
+            "WHERE task_id = ? AND kind = 'unblocked' ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()["created_at"]
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_comments SET created_at = ? "
+                "WHERE task_id = ? AND body = ?",
+                (unblocked_at, tid, f"Opened {_PR_URL}"),
+            )
+
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_guard_yields_to_review_reopen_and_changes_requested(
+    kanban_home: Path
+) -> None:
+    """The review lane's own re-queues get the same treatment as unblock.
+
+    ``reopen_review_task`` and ``request_changes`` both land the implementer's
+    card back in ``ready`` next to the comment that announced its PR, so both
+    strand identically without the bypass.
+    """
+    with kb.connect() as conn:
+        # reopen_review_task -> review_reopened
+        reopened = kb.create_task(conn, title="reopen me", assignee="worker")
+        claimed = kb.claim_task(conn, reopened)
+        assert claimed is not None
+        kb.add_comment(conn, reopened, author="worker", body=f"Opened {_PR_URL}")
+        assert kb.request_review(
+            conn, reopened, summary="v1",
+            expected_run_id=claimed.current_run_id,
+        )
+        assert kb.reopen_review_task(conn, reopened)
+        assert kb.get_task(conn, reopened).status == "ready"
+        assert kb.check_respawn_guard(conn, reopened) is None
+
+        # request_changes -> changes_requested
+        rejected = kb.create_task(conn, title="reject me", assignee="worker")
+        impl = kb.claim_task(conn, rejected)
+        assert impl is not None
+        kb.add_comment(conn, rejected, author="worker", body=f"Opened {_PR_URL}")
+        assert kb.request_review(
+            conn, rejected, summary="v1", reviewer="reviewer",
+            expected_run_id=impl.current_run_id,
+        )
+        review_run = kb.claim_review_task(conn, rejected)
+        assert review_run is not None
+        ok, _ = kb.request_changes(
+            conn, rejected, reason="fix the null check",
+            expected_run_id=review_run.current_run_id,
+        )
+        assert ok is True
+        assert kb.get_task(conn, rejected).status == "ready"
+        assert kb.check_respawn_guard(conn, rejected) is None
+
+
+def test_active_pr_guard_survives_reclaim_after_pr_comment(
+    kanban_home: Path,
+) -> None:
+    """A crashed/reclaimed worker is not authority to resume PR work.
+
+    The worker may have opened the PR immediately before dying.  Reclaiming
+    its claim must therefore leave duplicate-PR protection in force until an
+    operator or reviewer explicitly requests continuation.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="crash after PR", assignee="worker")
+        assert kb.claim_task(conn, tid) is not None
+        kb.add_comment(conn, tid, author="worker", body=f"Opened {_PR_URL}")
+
+        assert kb.reclaim_task(conn, tid, reason="worker exited")
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_guard_survives_automatic_dependency_promotion(
+    kanban_home: Path,
+) -> None:
+    """Dependency completion alone does not authorize resuming a PR."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        parent_run = kb.claim_task(conn, parent)
+        assert parent_run is not None
+        child = kb.create_task(
+            conn,
+            title="dependent PR",
+            assignee="worker",
+            parents=[parent],
+        )
+        assert kb.get_task(conn, child).status == "todo"
+        kb.add_comment(conn, child, author="worker", body=f"Opened {_PR_URL}")
+
+        assert kb.complete_task(
+            conn,
+            parent,
+            summary="dependency complete",
+            expected_run_id=parent_run.current_run_id,
+        )
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.check_respawn_guard(conn, child) == "active_pr"
+
+
+def test_active_pr_guard_survives_generic_status_event(
+    kanban_home: Path,
+) -> None:
+    """A generic status write is not explicit PR-continuation authority."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="generic status", assignee="worker")
+        kb.add_comment(conn, tid, author="worker", body=f"Opened {_PR_URL}")
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, "status", {"status": "ready"})
+
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_guard_yields_to_manual_promotion(
+    kanban_home: Path,
+) -> None:
+    """A deliberate manual promotion explicitly resumes the PR-bearing card."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="unfinished parent", assignee="worker")
+        child = kb.create_task(
+            conn,
+            title="manually resumed PR",
+            assignee="worker",
+            parents=[parent],
+        )
+        assert kb.get_task(conn, child).status == "todo"
+        kb.add_comment(conn, child, author="worker", body=f"Opened {_PR_URL}")
+
+        promoted, reason = kb.promote_task(
+            conn,
+            child,
+            actor="operator",
+            reason="continue the existing PR",
+            force=True,
+        )
+        assert promoted is True, reason
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.check_respawn_guard(conn, child) is None

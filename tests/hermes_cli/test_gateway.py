@@ -746,6 +746,58 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         assert result is False  # no orphans reaped
         assert killed_pids == []  # nothing was killed
 
+    def test_windows_probe_never_cleans_stale_registration(self, monkeypatch):
+        """The reaper's registration probe must pass cleanup_stale=False.
+
+        With the destructive default, a registration that fails liveness
+        validation is unlinked mid-sweep, the recorded PID never joins the
+        exclusion set, and a healthy standalone gateway (`hermes gateway
+        run`, no service supervisor) is hard-killed. On Windows SIGTERM is
+        TerminateProcess — no graceful drain (#87158).
+        """
+        recorded_pid = 52615
+
+        monkeypatch.setattr(gateway, "is_windows", lambda: True)
+        monkeypatch.setattr(gateway, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+
+        recorded = SimpleNamespace(pid=recorded_pid, parent=lambda: None)
+        self._install_fake_psutil(monkeypatch, [recorded])
+
+        # Simulate the failing-liveness-validation registration: the probe
+        # only returns the recorded PID when asked NOT to clean up; the
+        # destructive default path would unlink the record and return None.
+        seen_kwargs = []
+
+        def probing_get_running_pid(cleanup_stale=True):
+            seen_kwargs.append(cleanup_stale)
+            return None if cleanup_stale else recorded_pid
+
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid", probing_get_running_pid
+        )
+        monkeypatch.setattr(
+            gateway,
+            "find_gateway_pids",
+            lambda exclude_pids=None: [
+                p for p in [recorded_pid] if p not in (exclude_pids or set())
+            ],
+        )
+
+        killed_pids = []
+        monkeypatch.setattr(
+            gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig))
+        )
+
+        result = gateway._reap_unsupervised_gateway_orphans()
+
+        assert seen_kwargs == [False], (
+            "reaper probe must use cleanup_stale=False so the sweep never "
+            f"deletes its own exclusion evidence, got {seen_kwargs}"
+        )
+        assert result is False
+        assert killed_pids == []  # the standalone gateway survived
+
 
 class TestReaperCandidateIsSupervisorOwned:
     """Regression for the Windows pidfile-less supervisor-owned case (#83683).

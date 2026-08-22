@@ -1,0 +1,109 @@
+name: One-shot process-sticky memory-provider quarantine carrier
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: fix/memory-prefetch-cancel
+          fetch-depth: 0
+
+      - name: Execute reviewed base carrier with current-main structural anchors
+        run: |
+          set -euo pipefail
+          original_carrier_commit=96e61712cbe19bfe6d258bb83647e574a7d03346
+          carrier_path=.github/workflows/one-shot-fix-88796.yml
+
+          git fetch --no-tags origin "$original_carrier_commit"
+          git show "$original_carrier_commit:$carrier_path" > /tmp/original-88796-carrier.yml
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('/tmp/original-88796-carrier.yml').read_text(encoding='utf-8')
+          lines = source.splitlines()
+          starts = [i for i, line in enumerate(lines) if line.strip() == 'run: |']
+          if len(starts) != 1:
+              raise SystemExit(f'expected one run block, found {len(starts)}')
+          start = starts[0]
+          key_indent = len(lines[start]) - len(lines[start].lstrip())
+          prefix = ' ' * (key_indent + 2)
+          end = len(lines)
+          for index in range(start + 1, len(lines)):
+              line = lines[index]
+              stripped = line.lstrip()
+              indent = len(line) - len(stripped)
+              if indent == 6 and stripped.startswith('- '):
+                  end = index
+                  break
+
+          # The historical carrier embeds generated Python inside triple-quoted
+          # literals. Some literal payload lines intentionally begin with 10+
+          # spaces, so blindly stripping the YAML run-block prefix from every
+          # such line corrupts the generated program. Dedent only executable
+          # carrier lines; preserve literal payload indentation byte-for-byte.
+          body = []
+          in_triple_single = False
+          for line in lines[start + 1:end]:
+              normalized = line
+              if not in_triple_single and line.startswith(prefix):
+                  normalized = line[len(prefix):]
+              body.append(normalized)
+              if normalized.count("'''") % 2:
+                  in_triple_single = not in_triple_single
+          if in_triple_single:
+              raise SystemExit('unterminated triple-quoted carrier literal')
+
+          while body and not body[-1].strip():
+              body.pop()
+
+          opens = [i for i, line in enumerate(body) if line.strip() == "python3 - <<'PY'"]
+          if len(opens) != 1:
+              raise SystemExit(f'expected one Python materializer heredoc, found {len(opens)}')
+          open_index = opens[0]
+          closes = [
+              i
+              for i in range(open_index + 1, len(body))
+              if body[i].strip() == 'PY'
+          ]
+          if len(closes) != 1:
+              raise SystemExit(f'expected one Python materializer close, found {len(closes)}')
+          close_index = closes[0]
+
+          materializer = '\n'.join(body[open_index + 1:close_index]) + '\n'
+          Path('/tmp/materialize-88796-base.sh').write_text(materializer, encoding='utf-8')
+
+          executable = (
+              body[:open_index]
+              + ['python3 /tmp/materialize-88796-base.sh']
+              + body[close_index + 1:]
+          )
+          Path('/tmp/execute-88796-base.sh').write_text(
+              '\n'.join(executable) + '\n', encoding='utf-8'
+          )
+          PY
+
+          python3 .github/workflows/patch-88796-carrier-idempotence.py
+          python3 -m py_compile /tmp/materialize-88796-base.sh
+          bash -n /tmp/execute-88796-base.sh
+          # The verified-tree workflow installs the locked test environment into
+          # .venv but does not activate it. The historical carrier deliberately
+          # invokes `python -m pytest`; when a locked venv exists, resolve that
+          # interpreter first instead of silently falling back to /usr/bin/python.
+          if [ -x .venv/bin/python ]; then
+            export PATH="$PWD/.venv/bin:$PATH"
+          fi
+          if ! bash /tmp/execute-88796-base.sh; then
+            echo '--- generated memory_manager.py syntax context ---'
+            nl -ba agent/memory_manager.py | sed -n '400,470p'
+            exit 1
+          fi

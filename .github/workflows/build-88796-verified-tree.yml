@@ -1,0 +1,190 @@
+name: Build #88796 verified provider-quarantine tree
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-88796-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build-verified-tree:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'andrexibiza/hermes-agent' &&
+      github.event.pull_request.head.ref == 'fix/memory-prefetch-cancel'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install locked test environment
+        run: >-
+          uv sync --locked --python 3.11 --extra all --extra dev
+          --extra anthropic --extra mistral --extra fal --extra modal
+          --extra daytona --extra hindsight --extra parallel-web
+
+      - name: Materialize and verify exact product tree
+        env:
+          CURRENT_MAIN: fc7523ca31eeb6eff9114afe384c2cf6380359df
+          BRANCH: fix/memory-prefetch-cancel
+          CARRIER: .github/workflows/one-shot-fix-88796.yml
+          FORK_REPOSITORY: andrexibiza/hermes-agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$CARRIER"
+          TRIGGER_HEAD=$(git rev-parse HEAD)
+          export CURRENT_MAIN BRANCH TRIGGER_HEAD
+
+          # All carrier and supplemental verification must resolve Python from
+          # the exact `uv sync --locked` environment above. Child scripts use
+          # both `python` and `python3`; make that interpreter authority global
+          # for the complete materialization step rather than patching callers.
+          export PATH="$PWD/.venv/bin:$PATH"
+
+          mkdir -p /tmp/hermes-tools /tmp/hermes-supplements
+          cp .github/workflows/materialize-*.py /tmp/hermes-supplements/ 2>/dev/null || true
+
+          REAL_GIT=$(command -v git)
+          cat > /tmp/hermes-tools/git <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          args=("\$@")
+          if [[ \${args[0]:-} == push ]]; then
+            echo '[verified-tree] blocked carrier push' >&2
+            exit 0
+          fi
+          for i in "\${!args[@]}"; do
+            if [[ \${args[\$i]} == origin ]]; then
+              args[\$i]=https://github.com/${FORK_REPOSITORY}.git
+            fi
+          done
+          exec "$REAL_GIT" "\${args[@]}"
+          EOF
+          chmod +x /tmp/hermes-tools/git
+          export PATH="/tmp/hermes-tools:$PATH"
+
+          cp "$CARRIER" /tmp/carrier.yml
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lines = Path('/tmp/carrier.yml').read_text().splitlines()
+          starts = [i for i, line in enumerate(lines) if line.strip() == 'run: |']
+          if not starts:
+              raise SystemExit('carrier has no literal run block')
+          for number, start in enumerate(starts):
+              key_indent = len(lines[start]) - len(lines[start].lstrip())
+              prefix = ' ' * (key_indent + 2)
+              end = len(lines)
+              for index in range(start + 1, len(lines)):
+                  line = lines[index]
+                  stripped = line.lstrip()
+                  indent = len(line) - len(stripped)
+                  if indent == 6 and stripped.startswith('- '):
+                      end = index
+                      break
+              body = [
+                  line[len(prefix):] if line.startswith(prefix) else line
+                  for line in lines[start + 1:end]
+              ]
+              while body and not body[-1].strip():
+                  body.pop()
+              if not body:
+                  raise SystemExit(f'empty carrier run block {number}')
+              Path(f'/tmp/carrier-{number}.sh').write_text('\n'.join(body) + '\n')
+          PY
+
+          for script in /tmp/carrier-*.sh; do
+            bash -n "$script"
+            bash "$script"
+          done
+          for supplement in /tmp/hermes-supplements/*.py; do
+            [ -e "$supplement" ] || continue
+            python3 "$supplement"
+          done
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import io
+          import json
+          import os
+          import subprocess
+          import tarfile
+
+          base = os.environ['CURRENT_MAIN']
+          raw = subprocess.check_output(
+              ['git', 'diff', '--name-status', base, 'HEAD'], text=True
+          )
+          entries = []
+          for line in raw.splitlines():
+              if not line.strip():
+                  continue
+              status, path = line.split('\t', 1)
+              if path.startswith('.github/workflows/'):
+                  continue
+              if path.startswith('contributors/emails/'):
+                  continue
+              if path.startswith('tests/e2e/test__authority_repair_materializer.py'):
+                  continue
+              entries.append((status, path))
+          if not entries:
+              raise SystemExit('materialized product diff is empty')
+
+          manifest = {
+              'base': base,
+              'carrier_source_head': '${{ github.event.pull_request.head.sha }}',
+              'entries': entries,
+              'materialized_head': subprocess.check_output(
+                  ['git', 'rev-parse', 'HEAD'], text=True
+              ).strip(),
+          }
+          output = Path('/tmp/verified-tree.tar.gz')
+          with tarfile.open(output, 'w:gz') as archive:
+              data = json.dumps(manifest, sort_keys=True).encode()
+              info = tarfile.TarInfo('MANIFEST.json')
+              info.size = len(data)
+              info.mode = 0o644
+              archive.addfile(info, io.BytesIO(data))
+              for status, path in entries:
+                  if not status.startswith('D'):
+                      archive.add(path, arcname=path, recursive=False)
+          digest = hashlib.sha256(output.read_bytes()).hexdigest()
+          Path('/tmp/verified-tree.sha256').write_text(
+              f'{digest}  verified-tree.tar.gz\n'
+          )
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          print(f'verified_tree_sha256={digest}')
+          PY
+
+      - name: Upload exact tested tree
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr-88796-verified-tree
+          path: |
+            /tmp/verified-tree.tar.gz
+            /tmp/verified-tree.sha256
+          retention-days: 1
+          if-no-files-found: error

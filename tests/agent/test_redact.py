@@ -130,6 +130,17 @@ class TestBareSecretEnvSuffixes:
         result = redact_sensitive_text("openai_key=xyzzyplugh1234567890abcd", force=True)
         assert "xyzzyplugh1234567890abcd" not in result
 
+    def test_session_key_identifier_is_not_treated_as_a_credential(self):
+        text = "session_key=agent:main:telegram:dm:42"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_session_key_still_masks_a_credential_shaped_value(self):
+        secret = "ghp_" + "X" * 36
+        result = redact_sensitive_text(f"session_key={secret}", force=True)
+
+        assert secret not in result
+        assert result.startswith("session_key=ghp_")
+
     def test_prose_words_with_keyword_unchanged(self):
         # KEYBOARD / PASSAGE embed the bare keyword but are prose, not creds
         for text in ("KEYBOARD=notsecret", "PASSAGE=notsecret"):

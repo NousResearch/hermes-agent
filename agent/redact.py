@@ -163,6 +163,12 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Structured diagnostic identifiers whose ``*_key`` suffix names a lookup
+# key, not a credential. Known token prefixes are masked before assignment
+# handling, so a credential-shaped value remains protected even for these
+# fields.
+_NON_SECRET_ASSIGNMENT_KEYS = frozenset({"session_key"})
+
 # Lowercase / dotted / hyphenated config keys from config files
 # (application.properties, .env, YAML-ish dumps): ``spring.datasource.password=secret``,
 # ``app.api.key=xyz``, ``password=secret``. The uppercase _ENV_ASSIGN_RE above
@@ -852,6 +858,8 @@ def redact_sensitive_text(
                 # prose/log contexts (issue #2852): ``KEY=os.getenv('X')``.
                 if _ENV_LOOKUP_VALUE_RE.match(value):
                     return m.group(0)
+                if name.lower() in _NON_SECRET_ASSIGNMENT_KEYS:
+                    return m.group(0)
                 # Keyword must sit at a word boundary within the key —
                 # ``author=Smith`` / ``press.secretary=…`` are prose, not
                 # credentials (ported from nearai/ironclaw#6129). All-caps
@@ -1423,5 +1431,11 @@ class RedactingFormatter(logging.Formatter):
         super().__init__(fmt, datefmt, style, **kwargs)
 
     def format(self, record: logging.LogRecord) -> str:
-        original = super().format(record)
-        return redact_sensitive_text(original)
+        try:
+            original = super().format(record)
+            return redact_sensitive_text(original)
+        except Exception:
+            # Formatting is a security boundary: never let logging's default
+            # ``handleError`` path print the original record and arguments to
+            # stderr when the redactor itself is unavailable or raises.
+            return "[log content suppressed: redaction failed]"

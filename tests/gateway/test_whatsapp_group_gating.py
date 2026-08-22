@@ -137,6 +137,32 @@ def test_mention_stripping_removes_bot_phone_from_body():
     assert "weather" in cleaned
 
 
+def test_reply_to_bot_matches_device_suffixed_quoted_participant():
+    # Baileys can report the quoting participant with a device suffix
+    # (e.g. "15551230000:46@s.whatsapp.net") while botIds are bare. Both
+    # must normalize to the same id or swipe-replies to the bot are
+    # silently dropped before the agent ever sees them.
+    adapter = _make_adapter(require_mention=True, group_policy="open")
+
+    assert adapter._should_process_message(
+        _group_message(
+            "In 10 mins",
+            quotedParticipant="15551230000:46@s.whatsapp.net",
+        )
+    ) is True
+
+
+def test_mentions_bot_matches_device_suffixed_mentioned_id():
+    adapter = _make_adapter(require_mention=True, group_policy="open")
+
+    assert adapter._should_process_message(
+        _group_message(
+            "hi there",
+            mentionedIds=["15551230000:46@s.whatsapp.net"],
+        )
+    ) is True
+
+
 # --- New dm_policy tests ---
 
 

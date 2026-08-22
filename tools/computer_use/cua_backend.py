@@ -289,6 +289,31 @@ def _cua_capability_manifest() -> Optional[str]:
     return raw.strip()
 
 
+def _cua_daemon_socket() -> Optional[str]:
+    """Configured long-lived cua-driver daemon endpoint, or ``None``.
+
+    ``computer_use.daemon_socket`` is a standard-mode transport selector. When
+    present, Hermes proxies MCP over this existing daemon instead of owning a
+    second runtime in the stdio child. This is particularly important for
+    desktop portals whose RemoteDesktop/EIS session is process-owned.
+    """
+    raw = _computer_use_cfg().get("daemon_socket")
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("computer_use.daemon_socket must be a string")
+    if not raw.strip():
+        return None
+    expanded = os.path.expanduser(raw.strip())
+    if sys.platform == "win32" and expanded.startswith("\\\\.\\pipe\\"):
+        return expanded
+    if not os.path.isabs(expanded):
+        raise ValueError(
+            "computer_use.daemon_socket must be an absolute path or Windows named pipe"
+        )
+    return os.path.normpath(expanded)
+
+
 def _cua_grant_existing_profile() -> bool:
     """True when the user pre-authorized existing-profile browser attachment.
 
@@ -346,18 +371,29 @@ def _standard_runtime_launch_args(
     grant_existing_profile: bool,
     platform: str,
     socket_path: Optional[str] = None,
+    daemon_socket: Optional[str] = None,
 ) -> Tuple[List[str], Optional[str]]:
     """Return MCP args and any private runtime socket owned by this transport.
 
-    Windows and Linux run the standard runtime in the MCP process, so the
-    launch grant can be passed directly. macOS proxies through CuaDriver.app;
-    a grant must therefore launch a fresh app daemon on a private socket
-    instead of trying to reconfigure the default daemon.
+    A configured daemon socket is already running with its own immutable
+    permission mode and launch grants. Hermes therefore selects that endpoint
+    without forwarding runtime-only grants. Otherwise Windows and Linux run
+    the standard runtime in the MCP process, so the launch grant can be passed
+    directly. macOS proxies through CuaDriver.app; a grant must therefore
+    launch a fresh app daemon on a private socket instead of trying to
+    reconfigure the default daemon.
 
     ``platform`` is explicit so this policy can be tested as a pure function
     on every CI host.
     """
     result = list(args)
+    if daemon_socket:
+        if any(arg == "--socket" or arg.startswith("--socket=") for arg in result):
+            raise ValueError(
+                "cua-driver manifest and computer_use.daemon_socket both select a socket"
+            )
+        result.extend(["--socket", daemon_socket])
+        return result, None
     if not grant_existing_profile:
         return result, None
     result.extend(["--grant", "existing-profile"])
@@ -1610,6 +1646,7 @@ class _CuaDriverSession:
                     grant_existing_profile=_cua_grant_existing_profile(),
                     platform=sys.platform,
                     socket_path=self._owned_standard_runtime_socket,
+                    daemon_socket=_cua_daemon_socket(),
                 )
                 self._owned_standard_runtime_socket = owned_socket
                 child_env = cua_driver_child_env()
@@ -2085,6 +2122,10 @@ class _CuaDriverSession:
             driver_command = embedded_daemon.proxy_invocation()[0]
             child_env = embedded_daemon.child_env()
             socket_args = ["--socket", embedded_daemon.socket_path]
+        else:
+            daemon_socket = _cua_daemon_socket()
+            if daemon_socket:
+                socket_args = ["--socket", daemon_socket]
         cmd = [
             driver_command,
             "call",

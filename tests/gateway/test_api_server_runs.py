@@ -192,6 +192,58 @@ class TestStartRun:
             "runs route must bind chat_id so delegation dispatch sees a wake target"
         )
 
+    @pytest.mark.asyncio
+    async def test_start_waits_for_session_turn_lock_shared_with_run_agent(self, adapter):
+        """/v1/runs must share the per-session lock with _run_agent (#84235).
+
+        HTTP 202 still returns immediately; the background task stays queued
+        until a concurrent chat/wake turn on the same session_id finishes.
+        """
+        app = _create_runs_app(adapter)
+        session_id = "shared-sess-lock"
+        create_calls = {"n": 0}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+
+                def _create(*args, **kwargs):
+                    create_calls["n"] += 1
+                    return mock_agent
+
+                mock_create.side_effect = _create
+
+                async with adapter._hold_session_turn_lock(session_id):
+                    resp = await cli.post(
+                        "/v1/runs",
+                        json={"input": "hello", "session_id": session_id},
+                    )
+                    assert resp.status == 202
+                    data = await resp.json()
+                    run_id = data["run_id"]
+
+                    for _ in range(20):
+                        status_resp = await cli.get(f"/v1/runs/{run_id}")
+                        status = await status_resp.json()
+                        assert status["status"] == "queued"
+                        assert create_calls["n"] == 0
+                        await asyncio.sleep(0.02)
+
+                for _ in range(40):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert status["status"] == "completed"
+                assert create_calls["n"] == 1
+                assert session_id not in adapter._session_turn_locks
+                assert session_id not in adapter._session_turn_lock_refs
 
     @pytest.mark.asyncio
     async def test_start_rejects_conflicting_route_and_request_provider(self):

@@ -4,7 +4,9 @@ Pure logic — the validity predicate is injected, so these tests need neither t
 tool registry nor a running Hermes.
 """
 
-import pytest
+from pathlib import Path
+
+import yaml
 
 from hermes_cli.toolset_validation import validate_platform_toolsets
 
@@ -34,6 +36,18 @@ def test_38798_corruption_warns_and_suggests_correct_name():
     assert "did you mean 'hermes-cli'?" in unknown[0]
     # And the zero-valid-toolsets safety net fires.
     assert any("zero valid toolsets" in w for w in warnings)
+
+
+def test_shipped_template_platform_toolsets_all_resolve():
+    """A fresh config seeded from the shipped template has no invalid presets."""
+    from toolsets import validate_toolset
+
+    template = Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
+    config = yaml.safe_load(template.read_text(encoding="utf-8"))
+
+    assert validate_platform_toolsets(
+        config["platform_toolsets"], validate_toolset
+    ) == []
 
 
 def test_mixed_valid_and_invalid_flags_only_the_invalid():

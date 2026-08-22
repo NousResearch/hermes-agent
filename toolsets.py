@@ -539,7 +539,19 @@ TOOLSETS = {
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
-    
+
+    "hermes-teams": {
+        "description": "Microsoft Teams bot toolset - full access for workspace use (terminal has safety checks)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-google_chat": {
+        "description": "Google Chat bot toolset - full access for workspace use (terminal has safety checks)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-signal": {
         "description": "Signal bot toolset - encrypted messaging platform (full access)",
         "tools": _HERMES_CORE_TOOLS,

@@ -20,7 +20,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
-import { jobState, jobTitle, STATE_DOT } from '../../cron/job-state'
+import { jobState, jobTitle, noAgentRunTime, STATE_DOT } from '../../cron/job-state'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
 import { SidebarRowBody, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
@@ -377,12 +377,12 @@ function CronJobSidebarRow({
           </Tip>
         </SidebarRowShell>
       </ActionsContextMenu>
-      {expanded && <CronJobSidebarRuns jobId={job.id} onOpenRun={onOpenRun} />}
+      {expanded && <CronJobSidebarRuns job={job} onOpenRun={onOpenRun} />}
     </div>
   )
 }
 
-function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (sessionId: string) => void }) {
+function CronJobSidebarRuns({ job, onOpenRun }: { job: CronJob; onOpenRun: (sessionId: string) => void }) {
   const { t } = useI18n()
   const c = t.cron
   const selectedSessionId = useStore($selectedStoredSessionId)
@@ -390,12 +390,13 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
   const cronChangeTick = useStore($cronChangeTick)
   const [runs, setRuns] = useState<null | SessionInfo[]>(null)
   const visible = usePaneVisible()
+  const noAgentRunAt = noAgentRunTime(job)
 
   useEffect(() => {
     let cancelled = false
 
     const load = () =>
-      getCronJobRuns(jobId, PEEK_RUN_LIMIT)
+      getCronJobRuns(job.id, PEEK_RUN_LIMIT)
         .then(result => {
           if (!cancelled) {
             setRuns(result)
@@ -432,13 +433,17 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
       window.clearInterval(intervalId)
     }
     // cronChangeTick: a fired run reloads the peek immediately.
-  }, [changeEventsAvailable, cronChangeTick, jobId, visible])
+  }, [changeEventsAvailable, cronChangeTick, job.id, visible])
 
   return (
     <div className="mb-1 ml-[1.375rem] flex flex-col gap-px">
       {runs === null ? (
         <div className="flex items-center gap-1.5 py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">
           <GlyphSpinner ariaLabel={c.loading} className="text-[0.75rem]" />
+        </div>
+      ) : runs.length === 0 && noAgentRunAt !== null ? (
+        <div className="py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">
+          {c.last} {formatRunTime(noAgentRunAt / 1000)}
         </div>
       ) : runs.length === 0 ? (
         <div className="py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">{c.noRuns}</div>

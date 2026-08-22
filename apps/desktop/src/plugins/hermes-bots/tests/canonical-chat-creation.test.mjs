@@ -8,11 +8,8 @@ const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 function loadCanonicalCreation({ openSession, request }) {
   const start = source.indexOf('const canonicalCreations = new Map()')
   const end = source.indexOf('function displayName(', start)
-  const saved = []
   const context = {
     host: { openSession, request },
-    saveBotMeta: (name, patch) => saved.push({ name, patch }),
-    $hideBotChats: { get: () => false },
     window: { setTimeout: callback => callback() }
   }
   const section = source
@@ -22,7 +19,7 @@ function loadCanonicalCreation({ openSession, request }) {
   assert.notEqual(start, -1, 'canonical creation section is missing')
   assert.notEqual(end, -1, 'canonical creation section delimiter is missing')
   vm.runInNewContext(section, context, { filename: 'canonical-creation.js' })
-  return { ...context.__canonical, saved }
+  return { ...context.__canonical }
 }
 
 test('regression: navigation retries after the kickoff persists a new canonical chat', async () => {
@@ -45,7 +42,7 @@ test('regression: navigation retries after the kickoff persists a new canonical 
   assert.deepEqual(events, ['open:stored-1', 'kickoff:persisted', 'open:stored-1'])
 })
 
-test('regression: a failed intro keeps the pin', async () => {
+test('regression: a failed intro still returns the created registry row', async () => {
   const runtime = loadCanonicalCreation({
     openSession: async () => undefined,
     request: async method => {
@@ -55,8 +52,7 @@ test('regression: a failed intro keeps the pin', async () => {
     }
   })
 
+  // The chat exists under the canonical title — the next click finds it by
+  // NAME (the registry), so a failed kickoff can never orphan or fork it.
   assert.equal(await runtime.createCanonicalChat('newbie'), 'new-bot-chat')
-  assert.deepEqual(JSON.parse(JSON.stringify(runtime.saved)), [
-    { name: 'newbie', patch: { chat: 'new-bot-chat' } }
-  ])
 })

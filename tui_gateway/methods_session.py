@@ -186,7 +186,7 @@ def _(rid, params: dict) -> dict:
             # resolve (canonical chats are born hidden); archived rows and
             # deny-listed sources do not; compression lineages resolve to the
             # live tip (``resolved_id``), mirroring profiles.list's
-            # preferred_session resolver. Older clients never send this param;
+            # canonical_session resolver. Older clients never send this param;
             # newer clients falling back to older gateways just get the normal
             # windowed listing back (the param is ignored) and scan it.
             title_lookup = str(params.get("title") or "").strip()

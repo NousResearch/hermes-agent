@@ -94,6 +94,84 @@ def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     assert entry["access_token"] == "sk-or-manual"
 
 
+def test_auth_add_zai_resolves_coding_base_url_from_env_override(tmp_path, monkeypatch):
+    """`hermes auth add zai` must resolve base_url from the token like the
+
+    env-seed path, not stamp the metered registry default. Regression for
+    #91846: GLM Coding Plan keys authenticate only on /api/coding/paas/v4,
+    so a manual-add entry left on /api/paas/v4 429/1113s and is marked
+    exhausted. Here GLM_BASE_URL pins the coding endpoint (deterministic,
+    no network probe), and the manual entry must adopt it.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    for key in ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("GLM_BASE_URL", "https://api.z.ai/api/coding/paas/v4")
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "zai"
+        auth_type = "api-key"
+        api_key = "id123.codingplansecret"
+        label = "cli-test"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entry = next(
+        item for item in payload["credential_pool"]["zai"] if item["source"] == "manual"
+    )
+    assert entry["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+
+
+def test_auth_add_zai_reuses_cached_detected_endpoint(tmp_path, monkeypatch):
+    """The manual-add path must reuse the same cached `detected_endpoint` the
+
+    env-seed path writes (keyed on the API-key hash), giving manual-pool
+    parity with env-seeded entries without re-probing. Regression for #91846.
+    """
+    import hashlib
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    for key in ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "GLM_BASE_URL"):
+        monkeypatch.delenv(key, raising=False)
+
+    token = "id123.codingplansecret"
+    key_hash = hashlib.sha256(token.encode()).hexdigest()[:16]
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "zai": {
+                    "detected_endpoint": {
+                        "base_url": "https://api.z.ai/api/coding/paas/v4",
+                        "key_hash": key_hash,
+                    }
+                }
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "zai"
+        auth_type = "api-key"
+        api_key = token
+        label = "cli-test"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entry = next(
+        item for item in payload["credential_pool"]["zai"] if item["source"] == "manual"
+    )
+    assert entry["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+
+
 def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})

@@ -102,6 +102,43 @@ def _provider_base_url(provider: str) -> str:
     return pconfig.inference_base_url if pconfig else ""
 
 
+def _resolve_base_url_for_token(provider: str, token: str) -> str:
+    """Resolve a manually added key's base URL from the token itself.
+
+    Mirrors the env-seed path in ``agent/credential_pool`` so that
+    ``hermes auth add`` lands the same endpoint an env-seeded entry would,
+    instead of blindly stamping the registry default. For providers whose
+    correct endpoint depends on the key — Z.AI GLM Coding Plan keys
+    authenticate only on ``/api/coding/paas/v4`` and 429/1113 on the metered
+    ``/api/paas/v4``; Kimi Code ``sk-kimi-`` keys route to the coding
+    endpoint — dispatch through the provider's resolver (which honours a
+    ``*_BASE_URL`` env override, reuses the cached ``detected_endpoint``, and
+    otherwise probes). Every other provider keeps the registry default.
+    """
+    default = _provider_base_url(provider)
+    if provider not in ("zai", "kimi-coding"):
+        return default
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if not pconfig:
+        return default
+    env_url = ""
+    if pconfig.base_url_env_var:
+        try:
+            from agent.credential_pool import get_env_prefer_dotenv
+
+            env_url = get_env_prefer_dotenv(pconfig.base_url_env_var).rstrip("/")
+        except Exception:
+            env_url = ""
+    try:
+        if provider == "kimi-coding":
+            resolved = auth_mod._resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
+        else:
+            resolved = auth_mod._resolve_zai_base_url(token, pconfig.inference_base_url, env_url)
+    except Exception:
+        return default
+    return resolved or default
+
+
 def _oauth_default_label(provider: str, count: int) -> str:
     return f"{provider}-oauth-{count}"
 
@@ -216,7 +253,7 @@ def auth_add_command(args) -> None:
             priority=0,
             source=SOURCE_MANUAL,
             access_token=token,
-            base_url=_provider_base_url(provider),
+            base_url=_resolve_base_url_for_token(provider, token),
         )
         pool.add_entry(entry)
         print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')

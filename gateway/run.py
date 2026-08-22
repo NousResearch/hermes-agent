@@ -12109,6 +12109,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not claimed:
             return 0
 
+        # Clear resume_pending for EVERY claimed row up front, before any
+        # send. Claiming already spent one of the row's redelivery attempts —
+        # the answer is in the ledger, so the resume path must never re-run
+        # these turns. Doing this per-row as the loop reaches each send left
+        # a window: when a slow/flood-limited send held the loop past the
+        # inbound-gate timeout, _schedule_resume_pending_sessions could
+        # replay turns for rows the loop had not reached yet (#91969).
+        for row in claimed:
+            session_key = row.get("session_key") or ""
+            if not session_key:
+                continue
+            try:
+                await self.async_session_store.clear_resume_pending(session_key)
+            except Exception:
+                logger.debug(
+                    "clear_resume_pending failed for %s", session_key,
+                    exc_info=True,
+                )
+
         redelivered = 0
         for row in claimed:
             try:
@@ -12130,21 +12149,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             metadata = (
                 {"thread_id": row["thread_id"]} if row.get("thread_id") else None
             )
-
-            # Clear resume_pending BEFORE the send. The answer is already in
-            # the ledger — a hung/flood-limited send must not also replay the
-            # turn when the inbound gate times out and schedules resume
-            # (#91969). Failed sends already skipped resume; this just does
-            # that bookkeeping first.
-            session_key = row.get("session_key") or ""
-            if session_key:
-                try:
-                    await self.async_session_store.clear_resume_pending(session_key)
-                except Exception:
-                    logger.debug(
-                        "clear_resume_pending failed for %s", session_key,
-                        exc_info=True,
-                    )
 
             try:
                 result = await adapter.send(

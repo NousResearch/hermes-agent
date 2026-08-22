@@ -709,11 +709,13 @@ DEFAULT_CONFIG = {
             "exact_failure": 2,
             "same_tool_failure": 3,
             "idempotent_no_progress": 2,
+            "same_call_repeat": 3,
         },
         "hard_stop_after": {
             "exact_failure": 5,
             "same_tool_failure": 8,
             "idempotent_no_progress": 5,
+            "same_call_repeat": 6,
         },
         # Per-turn runaway-loop caps (inspired by Claude Code v2.1.212,
         # Week 29, July 2026). Hard ceilings on how many times a runaway-prone

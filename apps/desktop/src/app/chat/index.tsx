@@ -300,18 +300,29 @@ function ChatRuntimeBoundary({
 
   const transcriptWindow = useMemo(() => ({ olderAvailable, expandWindow }), [expandWindow, olderAvailable])
 
-  const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
-    messageRepository: runtimeMessageRepository,
-    isRunning: busy,
-    setMessages: onThreadMessagesChange,
-    onNew: async () => {
-      // Submission is handled explicitly by ChatBar.
-      // Keeping this no-op avoids duplicate prompt.submit calls.
-    },
-    onEdit,
-    onCancel: async () => onCancel(),
-    onReload
-  })
+  // The runtime hook keys its adapter effect by object identity. Recreating
+  // this object (and its callback wrappers) on every render makes the effect
+  // re-install the adapter and notify assistant-ui subscribers again, which
+  // can close a render -> effect -> notification loop during session swaps or
+  // incoming message flushes. Keep the adapter stable until one of its actual
+  // inputs changes.
+  const runtimeAdapter = useMemo(
+    () => ({
+      messageRepository: runtimeMessageRepository,
+      isRunning: busy,
+      setMessages: onThreadMessagesChange,
+      onNew: async () => {
+        // Submission is handled explicitly by ChatBar.
+        // Keeping this no-op avoids duplicate prompt.submit calls.
+      },
+      onEdit,
+      onCancel: async () => onCancel(),
+      onReload
+    }),
+    [busy, onCancel, onEdit, onReload, onThreadMessagesChange, runtimeMessageRepository]
+  )
+
+  const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>(runtimeAdapter)
 
   return (
     <TranscriptWindowProvider value={transcriptWindow}>

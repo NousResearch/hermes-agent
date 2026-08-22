@@ -5248,6 +5248,13 @@ class AIAgent:
                 self._client_log_context(),
                 exc,
             )
+        # Drop the reference to allow GC to reap the client and release FDs.
+        # This is safe because the client has already been shut down and is no
+        # longer in use. gc.collect() helps reclaim unreachable reference cycles
+        # (e.g. httpx pool to connection back-references).
+        del client
+        import gc
+        gc.collect()
 
     def _build_primary_client_for_active_provider(self, *, reason: str) -> Any:
         """Build the shared client shape required by the active provider.

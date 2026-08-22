@@ -3419,6 +3419,9 @@ def create_task(
     # task would point cleanup at the user's source tree (#28818). The
     # containment guard in ``_cleanup_workspace`` is the safety rail, but
     # we also stop the bad state from being created in the first place.
+    workspace_inherited_from_board = False
+    board_slug: Optional[str] = None
+    board_default: Optional[str] = None
     if (
         workspace_path is None
         and project_repo is None
@@ -3429,6 +3432,36 @@ def create_task(
         board_default = board_meta.get("default_workdir")
         if board_default:
             workspace_path = str(board_default)
+            workspace_inherited_from_board = True
+
+    # A worktree task without an explicit path or a resolved Project depends
+    # entirely on the board default. Validate that anchor now instead of
+    # persisting a task that is guaranteed to fail (and be archived) when the
+    # dispatcher eventually tries to materialize its worktree.
+    if workspace_kind == "worktree" and project_repo is None:
+        board_slug = board_slug or (board if board else get_current_board())
+        if workspace_path is None:
+            raise ValueError(
+                "workspace_kind=worktree has no workspace_path, no resolved "
+                f"project, and board {board_slug!r} has no default_workdir set. "
+                "Set a board default workdir (a git repo), pass --project "
+                "<slug>, or create the task with "
+                "--workspace worktree:<absolute-repo-path>."
+            )
+        if workspace_inherited_from_board and board_default:
+            board_default = str(board_default).strip()
+            anchor = Path(board_default).expanduser()
+            if not anchor.is_absolute():
+                raise ValueError(
+                    f"board {board_slug!r} default_workdir {board_default!r} is not "
+                    "absolute; use an absolute path to a git repo"
+                )
+            if _git_toplevel(anchor) is None:
+                raise ValueError(
+                    f"workspace_kind=worktree has no workspace_path outside the "
+                    f"board default, and board {board_slug!r} default_workdir "
+                    f"{board_default!r} is not inside a git repo"
+                )
 
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
@@ -7370,7 +7403,7 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, workspace_kind, workspace_path, project_id "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -7385,6 +7418,46 @@ def decompose_triage_task(
         # override with its own 'workspace_kind' / 'workspace_path'.
         root_ws_kind = root_row["workspace_kind"] or "scratch"
         root_ws_path = root_row["workspace_path"]
+        root_project_id = root_row["project_id"]
+
+        # Refuse an unanchored worktree fan-out atomically. Without a root
+        # path, Project, or valid board default, every child would be inserted
+        # successfully only to fail at dispatch.
+        if (
+            root_ws_kind == "worktree"
+            and not root_ws_path
+            and not root_project_id
+        ):
+            board_slug = get_current_board()
+            board_default = (
+                read_board_metadata(board_slug).get("default_workdir") or ""
+            ).strip()
+            if not board_default:
+                raise ValueError(
+                    f"task {task_id} has workspace_kind=worktree but no "
+                    "workspace_path, no project_id, and board "
+                    f"{board_slug!r} has no default_workdir set"
+                )
+            anchor = Path(board_default).expanduser()
+            if not anchor.is_absolute():
+                raise ValueError(
+                    f"board {board_slug!r} default_workdir {board_default!r} is not "
+                    "absolute; use an absolute path to a git repo"
+                )
+            if _git_toplevel(anchor) is None:
+                raise ValueError(
+                    f"task {task_id} has workspace_kind=worktree but board "
+                    f"{board_slug!r} default_workdir {board_default!r} is not "
+                    "inside a git repo"
+                )
+
+        root_project_repo: Optional[Path] = None
+        if root_project_id and root_ws_path:
+            root_path = Path(root_ws_path).expanduser()
+            if root_path.parent.name == ".worktrees":
+                root_project_repo = root_path.parent.parent
+            else:
+                root_project_repo = _git_toplevel(root_path)
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -7411,16 +7484,21 @@ def decompose_triage_task(
                 # concurrently. Leave the path unset so dispatch
                 # materializes a fresh <repo>/.worktrees/<child-id> per
                 # child from the board anchor.
-                child_ws_path = None
+                child_ws_path = (
+                    str(root_project_repo / ".worktrees" / new_id)
+                    if root_project_repo is not None
+                    else None
+                )
             elif child_ws_kind == root_ws_kind:
                 child_ws_path = root_ws_path
             else:
                 child_ws_path = None
+            child_project_id = child.get("project_id") or root_project_id
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, project_id, tenant, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -7428,6 +7506,7 @@ def decompose_triage_task(
                     assignee,
                     child_ws_kind,
                     child_ws_path,
+                    child_project_id,
                     tenant,
                     now,
                     (author or "decomposer"),

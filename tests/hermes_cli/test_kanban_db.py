@@ -16,6 +16,7 @@ import pytest
 
 import hermes_state
 from hermes_cli import kanban_db as kb
+from hermes_cli import projects_db as pdb
 
 
 @pytest.fixture
@@ -1238,6 +1239,137 @@ def _make_task(**overrides) -> "kb.Task":
 # Board-level default_workdir
 # ---------------------------------------------------------------------------
 
+
+def test_worktree_create_without_anchor_is_rejected_before_insert(kanban_home):
+    with kb.connect() as conn:
+        with pytest.raises(
+            ValueError, match="no workspace_path.*no default_workdir set"
+        ):
+            kb.create_task(
+                conn,
+                title="unanchored",
+                workspace_kind="worktree",
+            )
+
+        count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        assert count == 0
+
+
+def test_worktree_create_inherits_valid_board_default(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    kb.write_board_metadata("default", default_workdir=str(repo))
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="anchored by board",
+            workspace_kind="worktree",
+        )
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.workspace_path == str(repo)
+
+
+@pytest.mark.parametrize(
+    ("default_workdir", "message"),
+    [
+        ("relative/repo", "is not absolute"),
+        ("{non_repo}", "is not inside a git repo"),
+    ],
+)
+def test_worktree_create_rejects_invalid_board_default(
+    kanban_home, tmp_path, default_workdir, message
+):
+    non_repo = tmp_path / "not-a-repo"
+    non_repo.mkdir()
+    value = default_workdir.format(non_repo=non_repo)
+    kb.write_board_metadata("default", default_workdir=value)
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match=message):
+            kb.create_task(
+                conn,
+                title="bad board anchor",
+                workspace_kind="worktree",
+            )
+        count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        assert count == 0
+
+
+
+
+def test_worktree_create_with_project_anchor_materializes_derived_path(
+    kanban_home, tmp_path
+):
+    # A resolved Project is a create-time anchor just like an explicit
+    # workspace_path or a board default_workdir: the unanchored-worktree
+    # guard must NOT reject it, and the workspace_path is derived from the
+    # project's primary repo instead of being required from the caller.
+    repo = tmp_path / "app"
+    _init_git_repo(repo)
+    with pdb.connect_closing() as pc:
+        pid = pdb.create_project(pc, name="App", folders=[str(repo)])
+        proj = pdb.get_project(pc, pid)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="anchored by project", project_id=proj.slug)
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.project_id == proj.id
+    assert task.workspace_kind == "worktree"
+    assert task.workspace_path == str(repo / ".worktrees" / tid)
+
+
+def test_worktree_unanchored_state_never_representable(kanban_home):
+    # C1 invariant: on an anchorless board (no board default_workdir, no
+    # resolved project), neither the create nor the decompose path may leave
+    # a task in the (worktree, workspace_path NULL, project_id NULL) state —
+    # the query an operator runs to hunt orphaned unanchored worktree rows
+    # must stay 0 after both flows are refused (and refused atomically).
+    invariant = (
+        "SELECT COUNT(*) FROM tasks WHERE workspace_kind='worktree' "
+        "AND workspace_path IS NULL AND project_id IS NULL"
+    )
+    with kb.connect() as conn:
+        # A-class: an unanchored create is refused before any INSERT.
+        with pytest.raises(ValueError):
+            kb.create_task(
+                conn,
+                title="unanchored",
+                workspace_kind="worktree",
+            )
+        assert conn.execute(invariant).fetchone()[0] == 0
+
+        # B-class: an unanchored root decomposition is refused and the
+        # children are rolled back. The root here is deliberately corrupted
+        # by direct SQL to simulate a LEGACY orphan row (the fix does not
+        # repair historical rows — out of scope), so the invariant must be
+        # checked on the operational rows create/decompose can produce.
+        root = kb.create_task(conn, title="root", triage=True)
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='worktree', workspace_path=NULL, "
+            "project_id=NULL WHERE id = ?",
+            (root,),
+        )
+        conn.commit()
+        with pytest.raises(ValueError):
+            kb.decompose_triage_task(
+                conn,
+                root,
+                root_assignee="orchestrator",
+                children=[{"title": "doomed", "assignee": "alice"}],
+                author="decomposer",
+            )
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE id != ?", (root,)
+        ).fetchall()
+        assert rows == []
+        conn.execute("DELETE FROM tasks WHERE id = ?", (root,))
+        conn.commit()
+        assert conn.execute(invariant).fetchone()[0] == 0
 
 
 

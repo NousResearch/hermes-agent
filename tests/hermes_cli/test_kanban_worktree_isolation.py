@@ -99,6 +99,76 @@ def test_decompose_worktree_children_get_own_workspace(kanban_home):
             assert row["workspace_path"] is None
 
 
+def test_decompose_project_worktree_propagates_project_and_unique_paths(
+    kanban_home, tmp_path
+):
+    repo = _make_repo(tmp_path)
+    root_path = repo / ".worktrees" / "root"
+
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="project root", triage=True)
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='worktree', workspace_path=?, "
+            "project_id='p_project' WHERE id = ?",
+            (str(root_path), root),
+        )
+        conn.commit()
+
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "first", "assignee": "alice", "parents": []},
+                {"title": "second", "assignee": "bob", "parents": []},
+            ],
+            author="decomposer",
+        )
+
+        assert child_ids is not None and len(child_ids) == 2
+        tasks = [kb.get_task(conn, child_id) for child_id in child_ids]
+
+    assert all(task is not None for task in tasks)
+    assert {task.project_id for task in tasks} == {"p_project"}
+    expected = {
+        str(repo / ".worktrees" / child_id) for child_id in child_ids
+    }
+    assert {task.workspace_path for task in tasks} == expected
+    assert len(expected) == 2
+
+    for task in tasks:
+        workspace, _branch = kb._resolve_worktree_workspace(task)
+        assert workspace == Path(task.workspace_path).resolve()
+        assert workspace.exists()
+
+
+def test_decompose_unanchored_worktree_refuses_atomically(kanban_home):
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="unanchored root", triage=True)
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='worktree', workspace_path=NULL, "
+            "project_id=NULL WHERE id = ?",
+            (root,),
+        )
+        conn.commit()
+
+        with pytest.raises(
+            ValueError, match="no workspace_path.*no project_id.*no default_workdir set"
+        ):
+            kb.decompose_triage_task(
+                conn,
+                root,
+                root_assignee="orchestrator",
+                children=[{"title": "doomed", "assignee": "alice"}],
+                author="decomposer",
+            )
+
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE id != ?", (root,)
+        ).fetchall()
+        assert rows == []
+
+
 
 
 def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
@@ -124,7 +194,6 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     assert head == "wt/sibling"
-
 
 
 

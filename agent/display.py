@@ -1376,7 +1376,11 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     if not isinstance(result, str):
         return False, ""
     lower = result[:500].lower()
-    if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
+    if '"failed"' in lower or result.startswith("Error"):
+        return True, " [error]"
+    # Avoid false-positive on tools that serialize {"error": null} on success.
+    # Only flag when "error" appears with a truthy (non-null) value.
+    if '"error"' in lower and '"error":null' not in lower.replace(" ", ""):
         return True, " [error]"
 
     return False, ""

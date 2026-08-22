@@ -4815,12 +4815,27 @@ def _retry_same_provider_sync(
         retry_kwargs["extra_headers"] = dict(extra_headers)
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+    # Honor auxiliary.stream_only_base_urls on the retry path too. The initial
+    # attempt routes through the _create_with_progress wrapper with
+    # force_stream computed from that config; a same-provider recovery retry
+    # that dropped the wrapper silently downgraded stream-only endpoints
+    # (gateways behind short proxy read timeouts) back to non-streaming,
+    # reintroducing the exact hangs the setting exists to prevent.
     return _validate_llm_response(
         _relay_sync_completion(
             retry_client,
             retry_kwargs,
             provider=resolved_provider,
             api_mode=resolved_api_mode,
+            create=lambda request: _create_with_progress(
+                retry_client,
+                request,
+                task,
+                force_stream=_provider_requires_stream(
+                    effective_provider or resolved_provider,
+                    retry_base or resolved_base_url,
+                ),
+            ),
         ),
         task,
     )
@@ -4889,12 +4904,26 @@ async def _retry_same_provider_async(
         retry_kwargs["extra_headers"] = dict(extra_headers)
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+    # Mirror of the sync-path fix: honor auxiliary.stream_only_base_urls on
+    # async same-provider retries. Dropping the stream-only wrapper here
+    # silently downgraded stream-only endpoints back to non-streaming.
+    force_stream = _provider_requires_stream(
+        effective_provider or resolved_provider,
+        retry_base or resolved_base_url,
+    ) and not isinstance(retry_client, AsyncCodexAuxiliaryClient)
+
+    async def _acreate(_kwargs: Dict[str, Any]) -> Any:
+        if force_stream:
+            return await _acreate_with_stream(retry_client, _kwargs, task)
+        return await retry_client.chat.completions.create(**_kwargs)
+
     return _validate_llm_response(
         await _relay_async_completion(
             retry_client,
             retry_kwargs,
             provider=resolved_provider,
             api_mode=resolved_api_mode,
+            create=_acreate,
         ),
         task,
     )

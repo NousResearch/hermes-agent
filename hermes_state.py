@@ -2421,7 +2421,12 @@ def preflight_db_writability(
         except (OSError, ValueError):
             return False
 
-    def _ensure_writable(p: Path, *, is_dir: bool = False) -> None:
+    def _ensure_writable(
+        p: Path,
+        *,
+        is_dir: bool = False,
+        allow_missing: bool = False,
+    ) -> None:
         import stat as _stat
 
         if os.access(p, os.R_OK | os.W_OK):
@@ -2430,6 +2435,13 @@ def preflight_db_writability(
             try:
                 add = _stat.S_IRUSR | _stat.S_IWUSR | (_stat.S_IXUSR if is_dir else 0)
                 os.chmod(p, p.stat().st_mode | add)
+            except FileNotFoundError:
+                # WAL/SHM sidecars are ephemeral. SQLite can unlink either
+                # after the is_file() preflight probe but before chmod/access
+                # below when the last connection closes. Their disappearance
+                # is healthy and must not be reported as permission drift.
+                if allow_missing:
+                    return
             except OSError:
                 pass
             if os.access(p, os.R_OK | os.W_OK):
@@ -2440,6 +2452,8 @@ def preflight_db_writability(
                     "x" if is_dir else "",
                 )
                 return
+        if allow_missing and not p.exists():
+            return
         kind = "directory" if is_dir else "file"
         wal_note = (
             " Do NOT delete the -wal file — it contains committed data that "
@@ -2463,7 +2477,7 @@ def preflight_db_writability(
     for suffix in ("", "-wal", "-shm"):
         p = db_path.with_name(db_path.name + suffix) if suffix else db_path
         if p.is_file():
-            _ensure_writable(p)
+            _ensure_writable(p, allow_missing=bool(suffix))
 
 
 def _connect_repair_durable(db_path: Path) -> sqlite3.Connection:

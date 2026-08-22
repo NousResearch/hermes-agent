@@ -15,6 +15,7 @@ export interface HudIpcDeps {
   getHudWindow: () => BrowserWindow | null
   openHudWindow: (sessionId: null | string, profile: null | string) => void
   closeHudWindow: () => void
+  resetHudLayout: () => boolean
   setHudSessionId: (sessionId: null | string) => void
 }
 
@@ -26,6 +27,7 @@ export function registerHudIpc({
   getHudWindow,
   openHudWindow,
   closeHudWindow,
+  resetHudLayout,
   setHudSessionId
 }: HudIpcDeps) {
   // Whether the band currently covers the window below the bar. The renderer
@@ -168,6 +170,16 @@ export function registerHudIpc({
     if (resizing) {
       win.setResizable(false)
     }
+  })
+
+  ipcMain.handle('hermes:hud:reset-layout', event => {
+    const hudWindow = getHudWindow()
+
+    if (!hudWindow || hudWindow.isDestroyed() || event.sender !== hudWindow.webContents) {
+      return { ok: false }
+    }
+
+    return { ok: resetHudLayout() }
   })
 
   // The HUD renderer reporting which session it is on, so the close broadcast

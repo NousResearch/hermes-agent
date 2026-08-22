@@ -85,6 +85,11 @@ export function closeHud(): void {
   void api.close()
 }
 
+/** Restore the HUD's persisted geometry to its display-aware default. */
+export function resetHudLayout(): void {
+  void window.hermesDesktop?.hud?.resetLayout?.()
+}
+
 export const toggleHud = (sessionId?: null | string) => ($hudActive.get() ? closeHud() : openHud(sessionId))
 
 /** Tell main which session this HUD is on. Main holds it (the HUD's renderer

@@ -181,6 +181,7 @@ import {
   writeSecretFileAtomic
 } from './hardening'
 import { cursorPointInWindow } from './hud-cursor'
+import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
 import { registerHudIpc } from './hud-ipc'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
@@ -11481,6 +11482,26 @@ function persistHudState() {
   }
 }
 
+function resetHudWindowLayout(): boolean {
+  if (!hudWindow || hudWindow.isDestroyed()) {
+    return false
+  }
+
+  const win = hudWindow
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const bounds = defaultHudBounds(display?.workArea)
+
+  if (!applyHudResetBounds(win, bounds)) {
+    rememberLog('[hud-state] reset layout failed while applying native bounds')
+
+    return false
+  }
+
+  persistHudState()
+
+  return true
+}
+
 const schedulePersistHudState = debounce(persistHudState, 250)
 
 // How often Linux gets told where the cursor is. Fast enough that the bar is
@@ -12459,6 +12480,7 @@ const hudIpc = registerHudIpc({
   getHudWindow: () => hudWindow,
   openHudWindow,
   closeHudWindow,
+  resetHudLayout: resetHudWindowLayout,
   setHudSessionId: value => {
     hudSessionId = value
   }

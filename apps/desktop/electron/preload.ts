@@ -75,6 +75,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     setIgnoreMouse: ignore => ipcRenderer.send('hermes:hud:ignore-mouse', ignore),
     moveBy: delta => ipcRenderer.send('hermes:hud:move-by', delta),
     setBounds: bounds => ipcRenderer.send('hermes:hud:set-bounds', bounds),
+    resetLayout: () => ipcRenderer.invoke('hermes:hud:reset-layout'),
     // Whether the band covers the window below the bar. Main pairs it with the
     // user's translucency setting to decide the native frost (macOS vibrancy /
     // Windows 11 DWM backdrop) — see hudFrostFor.

@@ -9,6 +9,7 @@ import {
   excludeProjectSessions,
   kanbanWorktreeDir,
   liveSessionProjectId,
+  liveSessionsForProject,
   mergeRepoWorktreeGroups,
   NO_PROJECT_ID,
   overlayLiveLanes,
@@ -972,6 +973,100 @@ describe('overlayLiveLanes', () => {
     // Session must appear only in the worktree lane
     expect(featureLane?.sessions.map(s => s.id)).toEqual(['moved'])
     expect(overlaid.sessionCount).toBe(1)
+  })
+})
+
+describe('liveSessionsForProject', () => {
+  const ws = '/work/ws'
+  const child = `${ws}/child`
+
+  it('excludes sessions of a nested explicit child project from the parent auto project', () => {
+    // Regression for the nested-path duplicate: the parent workspace's drill-in
+    // must NOT list sessions whose authoritative owner is the child project,
+    // even though their cwd is under the parent's path.
+    const parent = projectNode({ id: ws, isAuto: true })
+    const session = makeCwdSession(child, { id: 'child-session' })
+    const explicit = [makeProject('p_child', [child])]
+
+    expect(liveSessionProjectId(session, explicit)).toBe('p_child')
+    expect(liveSessionsForProject(parent, [session], explicit)).toEqual([])
+  })
+
+  it('excludes nested child sessions from an explicit parent project too', () => {
+    const parent = projectNode({ id: 'p_parent' })
+    const session = makeCwdSession(child, { id: 'child-session' })
+    const explicit = [makeProject('p_parent', [ws]), makeProject('p_child', [child])]
+
+    expect(liveSessionsForProject(parent, [session], explicit)).toEqual([])
+  })
+
+  it('keeps the child sessions when the entered project IS the nested child', () => {
+    const entered = projectNode({ id: 'p_child' })
+    const session = makeCwdSession(child, { id: 'child-session' })
+    const explicit = [makeProject('p_child', [child])]
+
+    expect(liveSessionsForProject(entered, [session], explicit)).toEqual([session])
+  })
+
+  it('keeps sessions the entered project owns', () => {
+    const parent = projectNode({ id: ws, isAuto: true })
+    const owned = makeCwdSession(ws, { id: 'owned' })
+    const explicit = [makeProject('p_child', [child])]
+
+    expect(liveSessionsForProject(parent, [owned], explicit)).toEqual([owned])
+  })
+
+  it('keeps sessions of a nested AUTO subfolder project only under that subfolder project', () => {
+    // Same nesting shape without any explicit project: the subfolder's own auto
+    // project owns the session; the parent workspace must not receive it.
+    const parent = projectNode({ id: ws, isAuto: true })
+    const subfolderProject = projectNode({ id: child, isAuto: true })
+    const session = makeCwdSession(child, { id: 'sub-session' })
+
+    expect(liveSessionsForProject(parent, [session], [])).toEqual([])
+    expect(liveSessionsForProject(subfolderProject, [session], [])).toEqual([session])
+  })
+
+  it('keeps detached and kanban-task sessions for the path-only overlay to place', () => {
+    const parent = projectNode({ id: ws, isAuto: true })
+    const detached = makeCwdSession(null, { id: 'detached' })
+    const kanban = makeCwdSession('/repo/.worktrees/t_abc12345', { id: 'task' })
+
+    expect(liveSessionsForProject(parent, [detached, kanban], [])).toEqual([detached, kanban])
+  })
+
+  it('end-to-end: overlayLiveLanes no longer injects nested child sessions into the parent drill-in', () => {
+    const root = '/work/ws'
+    const childRoot = `${root}/child`
+    const childSession = makeCwdSession(childRoot, { id: 'child-session' })
+    const explicit = [makeProject('p_child', [childRoot])]
+
+    const parent = projectNode({
+      id: root,
+      isAuto: true,
+      path: root,
+      repos: [
+        {
+          id: root,
+          label: 'ws',
+          path: root,
+          sessionCount: 0,
+          groups: [lane({ id: root, label: 'ws', isMain: true, path: root })]
+        }
+      ]
+    })
+
+    // Without the filter the path-only overlay injects the child session into
+    // the parent lane (the pre-fix duplicate).
+    const unfiltered = overlayLiveLanes(parent, [childSession])
+    expect(unfiltered.repos[0].groups[0].sessions.map(s => s.id)).toEqual(['child-session'])
+
+    // With the filter the parent drill-in stays clean; the child project owns it.
+    const filtered = liveSessionsForProject(parent, [childSession], explicit)
+    const overlaid = overlayLiveLanes(parent, filtered)
+
+    expect(overlaid.repos[0].groups[0].sessions).toEqual([])
+    expect(overlaid.sessionCount).toBe(0)
   })
 })
 

@@ -728,6 +728,34 @@ export function overlayLiveLanes(
   return { ...project, repos, sessionCount: repos.reduce((n, repo) => n + repo.sessionCount, 0) }
 }
 
+/**
+ * The subset of live sessions the optimistic overlay may place into a
+ * project's lanes.
+ *
+ * Membership is owned by the backend: a session belongs to the explicit
+ * project whose folder is the longest prefix of its cwd/repo-root, else to
+ * its repo-root auto project. The path-only lane overlay
+ * ({@link overlayRepoLanes}) cannot see that rule — for a session whose cwd
+ * sits under ANOTHER project's path (a nested explicit project, e.g. a child
+ * folder project inside a non-git workspace root) it would inject the row
+ * into the wrong project's lanes and the session would render under both
+ * projects until the next tree refresh. Filter the live list by the
+ * authoritative owner before overlaying: keep only sessions with no
+ * resolvable owner (detached rows, kanban-task worktrees — the overlay
+ * handles those by path) or whose owner IS this project.
+ */
+export function liveSessionsForProject(
+  project: SidebarProjectTree,
+  live: SessionInfo[],
+  explicitProjects: ProjectInfo[]
+): SessionInfo[] {
+  return live.filter(session => {
+    const owner = liveSessionProjectId(session, explicitProjects)
+
+    return owner === null || owner === project.id
+  })
+}
+
 interface PreviewOverlayOptions {
   removed?: ReadonlySet<string>
   /** The active sort key as an id order; recency when empty. */

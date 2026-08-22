@@ -154,6 +154,7 @@ import { ProjectDialog } from './project-dialog'
 import {
   excludeProjectSessions,
   liveSessionProjectId,
+  liveSessionsForProject,
   orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
@@ -1011,9 +1012,23 @@ export function ChatSidebar({
   // renders immediately — same optimistic layer as the overview previews. The
   // backend now seeds each project folder as an (empty) repo, so the overlay
   // always has a lane to place a new in-project session into.
+  //
+  // The overlay is path-only: without an ownership filter it would also inject
+  // sessions of a NESTED explicit project (a child folder project under this
+  // project's path) into this project's lanes, rendering them under both.
+  // Filter the live list by the authoritative owner first (the same rule
+  // `overlayLivePreviews` applies to the overview), then overlay.
+  const enteredProjectLiveSessions = useMemo(
+    () => (enteredProject ? liveSessionsForProject(enteredProject, agentSessions, projects) : agentSessions),
+    [enteredProject, agentSessions, projects]
+  )
+
   const enteredProjectContent = useMemo(
-    () => (enteredProject ? overlayLiveLanes(enteredProject, agentSessions, removedSessionIds) : undefined),
-    [enteredProject, agentSessions, removedSessionIds]
+    () =>
+      enteredProject
+        ? overlayLiveLanes(enteredProject, enteredProjectLiveSessions, removedSessionIds)
+        : undefined,
+    [enteredProject, enteredProjectLiveSessions, removedSessionIds]
   )
 
   const scopedRepoPaths = useMemo(
@@ -1788,7 +1803,7 @@ export function ChatSidebar({
                     ) : undefined
                   ) : undefined
                 }
-                liveSessions={inProject ? agentSessions : undefined}
+                liveSessions={inProject ? enteredProjectLiveSessions : undefined}
                 manualOrderIds={agentOrderManual ? agentOrderIds : sortOrderIds}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}

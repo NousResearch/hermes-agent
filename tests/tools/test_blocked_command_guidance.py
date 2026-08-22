@@ -79,3 +79,54 @@ class TestBackgroundGuidanceRecipes:
 
     def test_quoted_ampersand_not_flagged(self):
         assert _foreground_background_guidance('git commit -m "a & b"') is None
+
+    def test_redirect_both_streams_not_flagged(self):
+        assert _foreground_background_guidance("cmd &>/dev/null") is None
+
+    def test_fd_redirect_not_flagged(self):
+        assert _foreground_background_guidance("cmd 2>&1") is None
+
+    def test_single_quoted_ampersand_not_flagged(self):
+        assert _foreground_background_guidance("echo 'a & b'") is None
+
+    def test_backslash_escaped_ampersand_not_flagged(self):
+        assert _foreground_background_guidance(r"echo a \& b") is None
+
+    def test_pipe_stderr_operator_not_flagged(self):
+        # |& pipes stdout+stderr to the next command — not backgrounding.
+        assert _foreground_background_guidance("make |& tee build.log") is None
+
+    def test_trailing_pipe_stderr_not_flagged(self):
+        # A trailing |& must not be confused with job-control &.
+        assert _foreground_background_guidance("cmd |&") is None
+
+    def test_arithmetic_bitwise_and_tight_spacing_not_flagged(self):
+        assert _foreground_background_guidance("x=$((5&3))") is None
+
+    def test_arithmetic_bitwise_and_spaced_not_flagged(self):
+        # Regression: $((a & b)) was wrongly flagged before this fix.
+        assert _foreground_background_guidance("echo $((a & b))") is None
+
+    def test_case_fallthrough_not_flagged(self):
+        # ;& is the case-statement fallthrough operator, not backgrounding.
+        cmd = "case $x in\n  a) echo a;&\n  b) echo b;;\nesac"
+        assert _foreground_background_guidance(cmd) is None
+
+    def test_case_test_next_not_flagged(self):
+        # ;;& tests the next pattern too — also not backgrounding.
+        cmd = "case $x in\n  a) echo a;;&\n  b) echo b;;\nesac"
+        assert _foreground_background_guidance(cmd) is None
+
+    def test_comment_ampersand_not_flagged(self):
+        # Regression: a bare & inside a # comment was wrongly flagged
+        # before this fix.
+        assert _foreground_background_guidance("echo hi # start &") is None
+
+    def test_trailing_ampersand_with_comment_still_flagged(self):
+        # Sanity check: comment-stripping must not eat a REAL trailing &.
+        assert _foreground_background_guidance("cmd & # comment") is not None
+
+    def test_parallel_jobs_with_wait_flagged(self):
+        # job1 & job2 & wait — legitimate parallel pattern, still real
+        # backgrounding and should still get the guidance.
+        assert _foreground_background_guidance("job1 & job2 & wait") is not None

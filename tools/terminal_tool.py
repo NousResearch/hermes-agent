@@ -2469,13 +2469,24 @@ _SHELL_LEVEL_BACKGROUND_RE = re.compile(
 _INLINE_BACKGROUND_AMP_RE = re.compile(r"\s&\s")
 _TRAILING_BACKGROUND_AMP_RE = re.compile(r"\s&\s*(?:#.*)?$")
 
+# $((...)) arithmetic expansion — & inside it is bitwise-AND, not job
+# control. Handles one level of nested parens (covers realistic
+# expressions like $((a + (b & c))); deeper nesting is out of scope for a
+# lexical check, same tradeoff strip_inert_heredoc_bodies documents).
+_ARITHMETIC_EXPANSION_RE = re.compile(r"\$\(\((?:[^()]|\([^()]*\))*\)\)")
+# A genuine shell comment: '#' at the start of a word (start of string,
+# after whitespace, or after ;&|() — mirrors the same word-boundary check
+# strip_inert_heredoc_bodies uses for its own comment detection).
+_SHELL_COMMENT_RE = re.compile(r"(?:^|(?<=\s)|(?<=[;&|()]))#[^\n]*", re.MULTILINE)
+
 
 def _strip_quotes(command: str) -> str:
     """Remove single- and double-quoted content so regex checks don't match inside strings.
 
     This prevents false positives when keywords like 'nohup' or 'setsid' appear
     in commit messages, Python -c code, echo arguments, or PR body text.
-    Also strips backtick-quoted content and provably-inert heredoc body text.
+    Also strips backtick-quoted content, provably-inert heredoc body text,
+    arithmetic expansions, and shell comments.
     """
     # Mask inert heredoc bodies FIRST (before quote-stripping — a heredoc
     # delimiter may be quoted, e.g. <<'EOF', and the body commonly contains
@@ -2492,6 +2503,17 @@ def _strip_quotes(command: str) -> str:
     result = re.sub(r'"(?:[^"\\]|\\.)*"', '""', result)
     # Remove backtick-quoted strings
     result = re.sub(r"`[^`]*`", "``", result)
+    # Blank arithmetic expansions: $((a & b)) uses & as bitwise-AND, not a
+    # job-control operator, and the amp regexes below can't tell the
+    # difference from surrounding whitespace alone.
+    result = _ARITHMETIC_EXPANSION_RE.sub(
+        lambda m: "$((" + " " * (len(m.group(0)) - 4) + "))", result
+    )
+    # Blank shell comments: '&' after a genuine word-boundary '#' is literal
+    # comment text, not a job-control operator.
+    result = _SHELL_COMMENT_RE.sub(
+        lambda m: "#" + " " * (len(m.group(0)) - 1), result
+    )
     return result
 
 

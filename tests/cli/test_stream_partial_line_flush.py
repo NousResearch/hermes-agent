@@ -84,6 +84,21 @@ class TestLogicalLineStreaming:
         assert "cell19" not in plain
         assert cli._spinner_text == ""
 
+    def test_borderless_table_row_not_previewed_in_spinner(self, cli_stub):
+        cli, emitted = cli_stub
+        # Same invariant as above for a row WITHOUT a leading pipe. Models
+        # frequently omit it, and the rest of _emit_stream_text already treats
+        # a borderless `>= 2`-pipe row as a table via looks_like_table_row.
+        # The spinner-preview guard tested only for a leading pipe, so an
+        # in-flight borderless row leaked a half-row of pipe-separated cells
+        # into the status line instead of staying silent until its newline.
+        row = " | ".join(f"cell{i}" for i in range(20))  # no leading pipe
+        assert len(row) >= 80, "row must cross the preview threshold"
+        cli._stream_delta(row)  # no newline
+        plain = _strip_ansi("\n".join(emitted))
+        assert "cell19" not in plain
+        assert cli._spinner_text == "", "borderless row leaked into the spinner"
+
     def test_newline_lines_still_emit_normally(self, cli_stub):
         cli, emitted = cli_stub
         cli._stream_delta("line one\nline two\n")

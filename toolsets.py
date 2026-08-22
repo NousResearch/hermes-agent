@@ -263,6 +263,20 @@ TOOLSETS = {
         "includes": []
     },
 
+    "roadmaps": {
+        "description": (
+            "Roadmaps orchestration — read the explicit profile/Project snapshot "
+            "and apply versioned execution mutations (claim, progress, complete, "
+            "block) for agents assigned to an orchestrated project"
+        ),
+        "tools": [
+            "roadmap_list", "roadmap_context",
+            "roadmap_claim_node", "roadmap_update_progress",
+            "roadmap_complete_node", "roadmap_block_node", "roadmap_unblock_node",
+        ],
+        "includes": []
+    },
+
     # Affordances that only exist because a GUI renderer is on the other end of
     # the connection: read/close the embedded terminal pane, open/read/close the
     # in-app browser, focus a pane, tapback a message.

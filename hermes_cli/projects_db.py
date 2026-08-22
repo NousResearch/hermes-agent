@@ -31,6 +31,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Iterable, List, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing, write_txn
@@ -93,6 +94,128 @@ CREATE TABLE IF NOT EXISTS discovered_repos (
     label         TEXT,
     last_seen     INTEGER NOT NULL
 );
+
+-- Roadmaps Phase 1: additive durable plan/execution schema.  The profile_id
+-- columns are application scope inside this per-profile database; the database
+-- path resolved by get_hermes_home() remains the actual profile boundary.
+CREATE TABLE IF NOT EXISTS roadmaps (
+    profile_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(profile_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    project_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(project_id, char(9), ''), char(10), ''), char(13), ''))) > 0) REFERENCES projects(id) ON DELETE CASCADE,
+    roadmap_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(roadmap_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    title TEXT NOT NULL,
+    purpose TEXT,
+    lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN ('draft','proposed','validated','in_progress','blocked','completed','archived')),
+    active_version INTEGER CHECK (active_version IS NULL OR active_version >= 1),
+    created_by TEXT NOT NULL CHECK (length(trim(replace(replace(replace(created_by, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    updated_by TEXT NOT NULL CHECK (length(trim(replace(replace(replace(updated_by, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (profile_id, project_id, roadmap_id),
+    FOREIGN KEY (profile_id, project_id, roadmap_id, active_version)
+      REFERENCES roadmap_versions(profile_id, project_id, roadmap_id, version)
+      DEFERRABLE INITIALLY DEFERRED
+);
+
+CREATE TABLE IF NOT EXISTS roadmap_versions (
+    profile_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(profile_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    project_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(project_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    roadmap_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(roadmap_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    version INTEGER NOT NULL CHECK (version >= 1),
+    state TEXT NOT NULL CHECK (state IN ('draft','proposed','validated','superseded','archived')),
+    source TEXT,
+    reason TEXT,
+    created_by TEXT NOT NULL CHECK (length(trim(replace(replace(replace(created_by, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    created_at INTEGER NOT NULL,
+    content_hash TEXT,
+    PRIMARY KEY (profile_id, project_id, roadmap_id, version),
+    FOREIGN KEY (profile_id, project_id, roadmap_id)
+      REFERENCES roadmaps(profile_id, project_id, roadmap_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS roadmap_nodes (
+    profile_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(profile_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    project_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(project_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    roadmap_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(roadmap_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    version INTEGER NOT NULL,
+    node_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(node_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    parent_node_id TEXT,
+    kind TEXT NOT NULL CHECK (kind IN ('objective','phase','milestone','step','decision')),
+    title TEXT NOT NULL,
+    description TEXT,
+    state TEXT NOT NULL CHECK (state IN ('planned','ready','in_progress','blocked','completed','archived')),
+    progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+    owner_agent TEXT CHECK (owner_agent IS NULL OR length(trim(replace(replace(replace(owner_agent, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    block_reason TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (profile_id, project_id, roadmap_id, version, node_id),
+    FOREIGN KEY (profile_id, project_id, roadmap_id, version)
+      REFERENCES roadmap_versions(profile_id, project_id, roadmap_id, version) ON DELETE CASCADE,
+    FOREIGN KEY (profile_id, project_id, roadmap_id, version, parent_node_id)
+      REFERENCES roadmap_nodes(profile_id, project_id, roadmap_id, version, node_id),
+    CHECK (parent_node_id IS NULL OR (length(trim(replace(replace(replace(parent_node_id, char(9), ''), char(10), ''), char(13), ''))) > 0 AND parent_node_id <> node_id))
+);
+
+CREATE TABLE IF NOT EXISTS roadmap_relations (
+    profile_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(profile_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    project_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(project_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    roadmap_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(roadmap_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    version INTEGER NOT NULL,
+    relation_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(relation_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    from_node_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(from_node_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    to_node_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(to_node_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    kind TEXT NOT NULL CHECK (kind IN ('depends_on','blocks','enables','follows','validates','supersedes')),
+    state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','superseded','invalid')),
+    reason TEXT,
+    PRIMARY KEY (profile_id, project_id, roadmap_id, version, relation_id),
+    FOREIGN KEY (profile_id, project_id, roadmap_id, version, from_node_id)
+      REFERENCES roadmap_nodes(profile_id, project_id, roadmap_id, version, node_id) ON DELETE CASCADE,
+    FOREIGN KEY (profile_id, project_id, roadmap_id, version, to_node_id)
+      REFERENCES roadmap_nodes(profile_id, project_id, roadmap_id, version, node_id) ON DELETE CASCADE,
+    CHECK (from_node_id <> to_node_id)
+);
+
+CREATE TABLE IF NOT EXISTS roadmap_todos (
+    profile_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(profile_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    project_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(project_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    roadmap_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(roadmap_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    version INTEGER NOT NULL,
+    todo_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(todo_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    node_id TEXT CHECK (node_id IS NULL OR length(trim(replace(replace(replace(node_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    title TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('open','in_progress','done','cancelled')),
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (profile_id, project_id, roadmap_id, version, todo_id),
+    FOREIGN KEY (profile_id, project_id, roadmap_id, version)
+      REFERENCES roadmap_versions(profile_id, project_id, roadmap_id, version) ON DELETE CASCADE,
+    FOREIGN KEY (profile_id, project_id, roadmap_id, version, node_id)
+      REFERENCES roadmap_nodes(profile_id, project_id, roadmap_id, version, node_id)
+);
+
+-- Durable Roadmaps session links.  Only the stored/lineage session id belongs
+-- here: runtime ids identify one transient execution and must never persist.
+CREATE TABLE IF NOT EXISTS roadmap_sessions (
+    profile_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(profile_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    project_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(project_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    roadmap_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(roadmap_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    stored_session_id TEXT NOT NULL CHECK (length(trim(replace(replace(replace(stored_session_id, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    kind TEXT NOT NULL CHECK (kind IN ('vision')),
+    node_id TEXT CHECK (node_id IS NULL),
+    plan_version INTEGER CHECK (plan_version IS NULL OR plan_version >= 1),
+    state TEXT NOT NULL CHECK (state IN ('active','closed')),
+    actor TEXT NOT NULL CHECK (length(trim(replace(replace(replace(actor, char(9), ''), char(10), ''), char(13), ''))) > 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (profile_id, project_id, roadmap_id, stored_session_id, kind),
+    FOREIGN KEY (profile_id, project_id, roadmap_id)
+      REFERENCES roadmaps(profile_id, project_id, roadmap_id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_roadmap_sessions_active_vision
+    ON roadmap_sessions(profile_id, project_id, roadmap_id)
+    WHERE kind = 'vision' AND state = 'active';
 """
 
 
@@ -149,19 +272,324 @@ def _normalize_path(path: str) -> str:
 # Connection management
 # ---------------------------------------------------------------------------
 
-_INITIALIZED_PATHS: set[str] = set()
+_ROADMAP_TABLES = (
+    "roadmaps",
+    "roadmap_versions",
+    "roadmap_nodes",
+    "roadmap_relations",
+    "roadmap_todos",
+    "roadmap_sessions",
+)
+_ROADMAP_INDEXES = ("idx_roadmap_sessions_active_vision",)
+
+# Core schema is checked independently of Roadmaps so a partial legacy DB is repaired.
+_CORE_TABLES = ("projects", "project_folders", "project_meta", "discovered_repos")
+_CORE_INDEXES = ("idx_project_folders_path",)
+
+# Required independently from the column contract: ``slug`` is a stable
+# project handle and must remain unique even when a legacy table has the right
+# columns but weakened constraints.
+_CORE_UNIQUE_COLUMNS = MappingProxyType({"projects": (("slug",),)})
+
+# Required core columns are deliberately independent from SCHEMA_SQL.  Optional
+# project columns are migrated separately below, so they are not part of this
+# contract and may be added by later versions without invalidating old stores.
+_CORE_SCHEMA_CONTRACT = MappingProxyType(
+    {
+        "projects": (
+            (("id", "TEXT", 0, 1), ("slug", "TEXT", 1, 0),
+             ("name", "TEXT", 1, 0), ("created_at", "INTEGER", 1, 0),
+             ("archived", "INTEGER", 1, 0)),
+            (),
+        ),
+        "project_folders": (
+            (("project_id", "TEXT", 1, 1), ("path", "TEXT", 1, 2),
+             ("label", "TEXT", 0, 0), ("is_primary", "INTEGER", 1, 0),
+             ("added_at", "INTEGER", 1, 0)),
+            (("projects", ("project_id",), ("id",), "NO ACTION", "CASCADE"),),
+        ),
+        "project_meta": (
+            (("key", "TEXT", 0, 1), ("value", "TEXT", 0, 0)),
+            (),
+        ),
+        "discovered_repos": (
+            (("root", "TEXT", 0, 1), ("label", "TEXT", 0, 0),
+             ("last_seen", "INTEGER", 1, 0)),
+            (),
+        ),
+    }
+)
+
+# Exact CHECK expressions, maintained independently from SCHEMA_SQL.
+_ROADMAP_CHECK_CONTRACT = MappingProxyType({
+    "roadmaps": ("length(trim(replace(replace(replace(profile_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(project_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(roadmap_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "lifecycle_state in ('draft','proposed','validated','in_progress','blocked','completed','archived')", "active_version is null or active_version >= 1", "length(trim(replace(replace(replace(created_by, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(updated_by, char(9), ''), char(10), ''), char(13), ''))) > 0"),
+    "roadmap_versions": ("length(trim(replace(replace(replace(profile_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(project_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(roadmap_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "version >= 1", "state in ('draft','proposed','validated','superseded','archived')", "length(trim(replace(replace(replace(created_by, char(9), ''), char(10), ''), char(13), ''))) > 0"),
+    "roadmap_nodes": ("length(trim(replace(replace(replace(profile_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(project_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(roadmap_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(node_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "kind in ('objective','phase','milestone','step','decision')", "state in ('planned','ready','in_progress','blocked','completed','archived')", "progress between 0 and 100", "owner_agent is null or length(trim(replace(replace(replace(owner_agent, char(9), ''), char(10), ''), char(13), ''))) > 0", "parent_node_id is null or (length(trim(replace(replace(replace(parent_node_id, char(9), ''), char(10), ''), char(13), ''))) > 0 and parent_node_id <> node_id)"),
+    "roadmap_relations": ("length(trim(replace(replace(replace(profile_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(project_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(roadmap_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(relation_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(from_node_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(to_node_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "kind in ('depends_on','blocks','enables','follows','validates','supersedes')", "state in ('active','superseded','invalid')", "from_node_id <> to_node_id"),
+    "roadmap_todos": ("length(trim(replace(replace(replace(profile_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(project_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(roadmap_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(todo_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "node_id is null or length(trim(replace(replace(replace(node_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "state in ('open','in_progress','done','cancelled')"),
+    "roadmap_sessions": ("length(trim(replace(replace(replace(profile_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(project_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(roadmap_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "length(trim(replace(replace(replace(stored_session_id, char(9), ''), char(10), ''), char(13), ''))) > 0", "kind in ('vision')", "node_id is null", "plan_version is null or plan_version >= 1", "state in ('active','closed')", "length(trim(replace(replace(replace(actor, char(9), ''), char(10), ''), char(13), ''))) > 0"),
+})
+
+
+# Independent runtime contract: this must not be derived from SCHEMA_SQL, or a
+# weakened DDL would redefine what the validator considers compatible.
+_ROADMAP_SCHEMA_CONTRACT = MappingProxyType(
+    {
+        "roadmaps": (
+            (("profile_id", "TEXT", 1, 1), ("project_id", "TEXT", 1, 2),
+             ("roadmap_id", "TEXT", 1, 3), ("title", "TEXT", 1, 0),
+             ("purpose", "TEXT", 0, 0), ("lifecycle_state", "TEXT", 1, 0),
+             ("active_version", "INTEGER", 0, 0), ("created_by", "TEXT", 1, 0),
+             ("updated_by", "TEXT", 1, 0), ("created_at", "INTEGER", 1, 0),
+             ("updated_at", "INTEGER", 1, 0)),
+            (("roadmap_versions", ("profile_id", "project_id", "roadmap_id", "active_version"),
+              ("profile_id", "project_id", "roadmap_id", "version"), "NO ACTION", "NO ACTION"),
+             ("projects", ("project_id",), ("id",), "NO ACTION", "CASCADE")),
+            ("primary key", "foreign key", "check", "deferrable initially deferred",
+             "lifecycle_state text not null check", "active_version integer check"),
+        ),
+        "roadmap_versions": (
+            (("profile_id", "TEXT", 1, 1), ("project_id", "TEXT", 1, 2),
+             ("roadmap_id", "TEXT", 1, 3), ("version", "INTEGER", 1, 4),
+             ("state", "TEXT", 1, 0), ("source", "TEXT", 0, 0), ("reason", "TEXT", 0, 0),
+             ("created_by", "TEXT", 1, 0), ("created_at", "INTEGER", 1, 0),
+             ("content_hash", "TEXT", 0, 0)),
+            (("roadmaps", ("profile_id", "project_id", "roadmap_id"),
+              ("profile_id", "project_id", "roadmap_id"), "NO ACTION", "CASCADE"),),
+            ("primary key", "foreign key", "check", "state text not null check", "version integer not null check"),
+        ),
+        "roadmap_nodes": (
+            (("profile_id", "TEXT", 1, 1), ("project_id", "TEXT", 1, 2),
+             ("roadmap_id", "TEXT", 1, 3), ("version", "INTEGER", 1, 4),
+             ("node_id", "TEXT", 1, 5), ("parent_node_id", "TEXT", 0, 0),
+             ("kind", "TEXT", 1, 0), ("title", "TEXT", 1, 0), ("description", "TEXT", 0, 0),
+             ("state", "TEXT", 1, 0), ("progress", "INTEGER", 1, 0), ("owner_agent", "TEXT", 0, 0),
+             ("block_reason", "TEXT", 0, 0),
+             ("created_at", "INTEGER", 1, 0), ("updated_at", "INTEGER", 1, 0)),
+            (("roadmap_nodes", ("profile_id", "project_id", "roadmap_id", "version", "parent_node_id"),
+              ("profile_id", "project_id", "roadmap_id", "version", "node_id"), "NO ACTION", "NO ACTION"),
+             ("roadmap_versions", ("profile_id", "project_id", "roadmap_id", "version"),
+              ("profile_id", "project_id", "roadmap_id", "version"), "NO ACTION", "CASCADE")),
+            ("primary key", "foreign key", "check", "progress integer not null default 0 check", "parent_node_id is null"),
+        ),
+        "roadmap_relations": (
+            (("profile_id", "TEXT", 1, 1), ("project_id", "TEXT", 1, 2),
+             ("roadmap_id", "TEXT", 1, 3), ("version", "INTEGER", 1, 4),
+             ("relation_id", "TEXT", 1, 5), ("from_node_id", "TEXT", 1, 0),
+             ("to_node_id", "TEXT", 1, 0), ("kind", "TEXT", 1, 0),
+             ("state", "TEXT", 1, 0), ("reason", "TEXT", 0, 0)),
+            (("roadmap_nodes", ("profile_id", "project_id", "roadmap_id", "version", "from_node_id"),
+              ("profile_id", "project_id", "roadmap_id", "version", "node_id"), "NO ACTION", "CASCADE"),
+             ("roadmap_nodes", ("profile_id", "project_id", "roadmap_id", "version", "to_node_id"),
+              ("profile_id", "project_id", "roadmap_id", "version", "node_id"), "NO ACTION", "CASCADE")),
+            ("primary key", "foreign key", "check", "from_node_id <> to_node_id", "state text not null default 'active' check"),
+        ),
+        "roadmap_todos": (
+            (("profile_id", "TEXT", 1, 1), ("project_id", "TEXT", 1, 2),
+             ("roadmap_id", "TEXT", 1, 3), ("version", "INTEGER", 1, 4),
+             ("todo_id", "TEXT", 1, 5), ("node_id", "TEXT", 0, 0), ("title", "TEXT", 1, 0),
+             ("state", "TEXT", 1, 0), ("position", "INTEGER", 1, 0),
+             ("created_at", "INTEGER", 1, 0), ("updated_at", "INTEGER", 1, 0)),
+            (("roadmap_nodes", ("profile_id", "project_id", "roadmap_id", "version", "node_id"),
+              ("profile_id", "project_id", "roadmap_id", "version", "node_id"), "NO ACTION", "NO ACTION"),
+             ("roadmap_versions", ("profile_id", "project_id", "roadmap_id", "version"),
+              ("profile_id", "project_id", "roadmap_id", "version"), "NO ACTION", "CASCADE")),
+            ("primary key", "foreign key", "check", "state text not null check", "node_id text check"),
+        ),
+        "roadmap_sessions": (
+            (("profile_id", "TEXT", 1, 1), ("project_id", "TEXT", 1, 2),
+             ("roadmap_id", "TEXT", 1, 3), ("stored_session_id", "TEXT", 1, 4),
+             ("kind", "TEXT", 1, 5), ("node_id", "TEXT", 0, 0),
+             ("plan_version", "INTEGER", 0, 0), ("state", "TEXT", 1, 0),
+             ("actor", "TEXT", 1, 0), ("created_at", "INTEGER", 1, 0),
+             ("updated_at", "INTEGER", 1, 0)),
+            (("roadmaps", ("profile_id", "project_id", "roadmap_id"),
+              ("profile_id", "project_id", "roadmap_id"), "NO ACTION", "CASCADE"),),
+            ("primary key", "foreign key", "check", "state text not null check"),
+        ),
+    }
+)
+
+
+def _roadmap_schema_contract() -> MappingProxyType:
+    """Return the immutable, source-independent Roadmaps contract."""
+    return _ROADMAP_SCHEMA_CONTRACT
+
+
+def _normalize_schema_sql(sql: str) -> str:
+    return re.sub(r"\s+", " ", sql.strip()).lower()
+
+
+def _check_definitions(sql: str) -> tuple[str, ...]:
+    sql = _normalize_schema_sql(sql)
+    checks = []
+    start = 0
+    while (start := sql.find("check (", start)) >= 0:
+        pos, depth = start + len("check ("), 1
+        while depth:
+            depth += sql[pos] == "("
+            depth -= sql[pos] == ")"
+            pos += 1
+        checks.append(sql[start + len("check ("):pos - 1])
+        start = pos
+    return tuple(checks)
+
+
+def _validate_core_schema(
+    conn: sqlite3.Connection, *, only_existing: bool = False
+) -> None:
+    """Validate the independent Projects/core schema contract.
+
+    ``CREATE TABLE IF NOT EXISTS`` cannot repair a weakened pre-existing table;
+    reject such a table before any Roadmaps DDL is executed.  Required columns
+    are matched by name, allowing additive columns (including legacy optional
+    project columns) without over-constraining future schema extensions.
+    """
+    present = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?, ?, ?)",
+            _CORE_TABLES,
+        )
+    }
+    if only_existing and not present:
+        return
+    for table, (expected_columns, expected_foreign_keys) in _CORE_SCHEMA_CONTRACT.items():
+        if table not in present:
+            if only_existing:
+                continue
+            raise sqlite3.DatabaseError(f"incompatible core schema: missing {table}")
+        actual_by_name = {
+            row[1]: (row[2].upper(), row[3], row[5])
+            for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        if any(actual_by_name.get(name) != (column_type, notnull, pk)
+               for name, column_type, notnull, pk in expected_columns):
+            raise sqlite3.DatabaseError(f"incompatible core schema: {table}")
+
+        grouped: dict[int, list[tuple]] = {}
+        for row in conn.execute(f"PRAGMA foreign_key_list({table})"):
+            grouped.setdefault(row[0], []).append(row)
+        actual_foreign_keys = {
+            (rows[0][2], tuple(row[3] for row in rows), tuple(row[4] for row in rows),
+             rows[0][5], rows[0][6])
+            for rows in grouped.values()
+        }
+        if not set(expected_foreign_keys).issubset(actual_foreign_keys):
+            raise sqlite3.DatabaseError(f"incompatible core schema: {table}")
+
+    for table, required_columns in _CORE_UNIQUE_COLUMNS.items():
+        if table not in present:
+            continue
+        unique_indexes = []
+        for row in conn.execute(f"PRAGMA index_list({table})"):
+            if row[2]:
+                unique_indexes.append(tuple(index_row[2] for index_row in conn.execute(
+                    f"PRAGMA index_info({row[1]})"
+                )))
+        if not any(columns in unique_indexes for columns in required_columns):
+            raise sqlite3.DatabaseError(
+                f"incompatible core schema: {table} requires unique slug"
+            )
+
+    index = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+        ("idx_project_folders_path",),
+    ).fetchone()
+    if index and tuple(row[2] for row in conn.execute(
+        "PRAGMA index_info(idx_project_folders_path)"
+    )) != ("path",):
+        raise sqlite3.DatabaseError("incompatible core schema: idx_project_folders_path")
+    if not index and "project_folders" in present:
+        raise sqlite3.DatabaseError("incompatible core schema: idx_project_folders_path")
+
+
+def _validate_roadmaps_schema(
+    conn: sqlite3.Connection, *, only_existing: bool = False
+) -> None:
+    """Reject pre-existing Roadmaps tables that are weaker than the DDL."""
+    contract = _roadmap_schema_contract()
+    present = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?, ?, ?, ?, ?)",
+            _ROADMAP_TABLES,
+        )
+    }
+    if only_existing and not present:
+        return
+    for table in _ROADMAP_TABLES:
+        if table not in present:
+            if only_existing:
+                continue
+            raise sqlite3.DatabaseError(f"incompatible Roadmaps schema: missing {table}")
+        expected_columns, expected_foreign_keys, _ = contract[table]
+        actual_columns = tuple(
+            (row[1], row[2].upper(), row[3], row[5])
+            for row in conn.execute(f"PRAGMA table_info({table})")
+        )
+        grouped: dict[int, list[tuple]] = {}
+        for row in conn.execute(f"PRAGMA foreign_key_list({table})"):
+            grouped.setdefault(row[0], []).append(row)
+        actual_foreign_keys = {
+            (rows[0][2], tuple(row[3] for row in rows), tuple(row[4] for row in rows),
+             rows[0][5], rows[0][6])
+            for rows in grouped.values()
+        }
+        if actual_columns != expected_columns or actual_foreign_keys != set(expected_foreign_keys):
+            raise sqlite3.DatabaseError(f"incompatible Roadmaps schema: {table}")
+        actual_sql = _normalize_schema_sql(
+            conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()[0]
+        )
+        if _check_definitions(actual_sql) != _ROADMAP_CHECK_CONTRACT[table]:
+            raise sqlite3.DatabaseError(f"incompatible Roadmaps schema: {table}")
+
+    index = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+        ("idx_roadmap_sessions_active_vision",),
+    ).fetchone()
+    if index is not None:
+        actual_index_sql = _normalize_schema_sql(index[0])
+        expected_index_sql = _normalize_schema_sql(
+            "CREATE UNIQUE INDEX idx_roadmap_sessions_active_vision "
+            "ON roadmap_sessions(profile_id, project_id, roadmap_id) "
+            "WHERE kind = 'vision' AND state = 'active'"
+        )
+        if actual_index_sql != expected_index_sql:
+            raise sqlite3.DatabaseError(
+                "incompatible Roadmaps schema: idx_roadmap_sessions_active_vision"
+            )
+    elif not only_existing and "roadmap_sessions" in present:
+        raise sqlite3.DatabaseError(
+            "incompatible Roadmaps schema: idx_roadmap_sessions_active_vision"
+        )
+
+
+def _validate_foreign_key_integrity(conn: sqlite3.Connection) -> None:
+    """Reject persisted orphan rows instead of silently accepting repaired DDL."""
+    violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        details = "; ".join(
+            f"{row[0]} rowid={row[1]} parent={row[2]} fk={row[3]}"
+            for row in violations[:5]
+        )
+        if len(violations) > 5:
+            details += f"; ... ({len(violations)} total)"
+        raise sqlite3.DatabaseError(f"foreign key violations detected: {details}")
 
 
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the per-profile projects DB.
 
     WAL with DELETE fallback for network filesystems (shared helper from
-    ``hermes_state``). Schema init is idempotent (``CREATE TABLE IF NOT
-    EXISTS`` + additive migrations) and cached per-path per-process.
+    ``hermes_state``). Schema init is idempotent (``CREATE TABLE IF NOT EXISTS``
+    + additive migrations). Roadmaps compatibility is checked on every connection; the
+ per-process path cache is never treated as schema authority.
     """
     path = db_path if db_path is not None else projects_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    resolved = str(path.resolve())
     conn = sqlite3.connect(str(path))
     try:
         conn.row_factory = sqlite3.Row
@@ -169,12 +597,51 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
 
         apply_wal_with_fallback(conn, db_label="projects.db")
         conn.execute("PRAGMA foreign_keys=ON")
-        if resolved not in _INITIALIZED_PATHS:
+        # Additive column migrations run before schema validation so a legacy
+        # DB (created before optional columns like roadmap_nodes.block_reason
+        # existed) upgrades in place instead of being rejected as incompatible.
+        _migrate_add_optional_columns(conn)
+        # Validate any pre-existing target before CREATE IF NOT EXISTS can hide
+        # a weakened same-column schema. This also avoids creating a partial
+        # Roadmaps schema before rejecting an incompatible table.
+        _validate_roadmaps_schema(conn, only_existing=True)
+        _validate_core_schema(conn, only_existing=True)
+        roadmap_schema_complete = all(
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            for table in _ROADMAP_TABLES
+        ) and all(
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (index,)
+            ).fetchone()
+            for index in _ROADMAP_INDEXES
+        )
+        core_schema_complete = all(
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            for table in _CORE_TABLES
+        ) and all(
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type IN ('index', 'table') AND name=?",
+                (index,),
+            ).fetchone()
+            for index in _CORE_INDEXES
+        )
+        if not roadmap_schema_complete or not core_schema_complete:
             conn.executescript(SCHEMA_SQL)
-            _migrate_add_optional_columns(conn)
-            _INITIALIZED_PATHS.add(resolved)
+        # Retry additive legacy-column migration on every successful open. This
+        # also covers databases whose Roadmaps tables already existed.
+        _migrate_add_optional_columns(conn)
+        _validate_core_schema(conn)
+        _validate_roadmaps_schema(conn)
+        _validate_foreign_key_integrity(conn)
     except Exception:
-        conn.close()
+        try:
+            conn.rollback()
+        finally:
+            conn.close()
         raise
     return conn
 
@@ -202,13 +669,31 @@ def connect_closing(db_path: Optional[Path] = None):
 # open so a legacy DB upgrades in place.
 _OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color")
 
+# TEXT columns added to `roadmap_nodes` after the Phase 1 port; additive like
+# the projects columns above, and only applied when the table already exists
+# (a fresh store creates the full schema from SCHEMA_SQL instead).
+_OPTIONAL_ROADMAP_NODE_COLUMNS = ("block_reason",)
+
 
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns introduced after v1 to legacy DBs (safe on every open)."""
-    cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
-    for col in _OPTIONAL_PROJECT_COLUMNS:
-        if col not in cols:
-            _add_column_if_missing(conn, "projects", col, f"{col} TEXT")
+    project_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'"
+    ).fetchone()
+    if project_table is not None:
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
+        for col in _OPTIONAL_PROJECT_COLUMNS:
+            if col not in cols:
+                _add_column_if_missing(conn, "projects", col, f"{col} TEXT")
+
+    node_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='roadmap_nodes'"
+    ).fetchone()
+    if node_table is not None:
+        node_cols = {row["name"] for row in conn.execute("PRAGMA table_info(roadmap_nodes)")}
+        for col in _OPTIONAL_ROADMAP_NODE_COLUMNS:
+            if col not in node_cols:
+                _add_column_if_missing(conn, "roadmap_nodes", col, f"{col} TEXT")
 
 
 # ---------------------------------------------------------------------------

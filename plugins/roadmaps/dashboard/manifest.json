@@ -1,0 +1,13 @@
+{
+  "name": "roadmaps",
+  "label": "Roadmaps",
+  "description": "Roadmap orchestration — profile/Project plan, versioned Vision, node execution and dependencies",
+  "icon": "Milestone",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/roadmaps",
+    "position": "after:kanban",
+    "hidden": true
+  },
+  "api": "plugin_api.py"
+}

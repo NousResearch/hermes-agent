@@ -67,6 +67,7 @@ def resolve_exec_command() -> str:
     from hermes_cli.relaunch import resolve_hermes_bin
 
     bin_path = resolve_hermes_bin()
+    interpreter = _running_interpreter()
     if bin_path:
         resolved = Path(bin_path).resolve()
         if _needs_interpreter(resolved):
@@ -76,14 +77,27 @@ def resolve_exec_command() -> str:
             # installer's bash wrapper). Launched from the .desktop entry that
             # shebang resolves to the SYSTEM python and dies on the first
             # third-party import (#90292) — silently, since Terminal=false.
-            # sys.executable is the interpreter actually running Hermes (the
-            # venv one), so prefix it explicitly.
-            argv = [str(Path(sys.executable).resolve()), str(resolved), "desktop"]
+            # Prefix the interpreter that is actually running Hermes (the
+            # venv one). Do not follow a venv/bin/python → /usr/bin/python
+            # symlink or the prefix is the system interpreter again.
+            argv = [str(interpreter), str(resolved), "desktop"]
         else:
             argv = [str(resolved), "desktop"]
     else:
-        argv = [str(Path(sys.executable).resolve()), "-m", "hermes_cli.main", "desktop"]
+        argv = [str(interpreter), "-m", "hermes_cli.main", "desktop"]
     return " ".join(_quote_exec_arg(a) for a in argv)
+
+
+def _running_interpreter() -> Path:
+    """Interpreter that can see Hermes' site-packages.
+
+    Do not ``Path.resolve()`` this. A venv's ``bin/python`` is often a
+    symlink to the system interpreter (``/usr/bin/python3.11``). Following
+    that symlink writes an ``Exec=`` that imports from the system
+    site-packages and dies with ``ModuleNotFoundError: hermes_cli`` —
+    silent under ``Terminal=false``.
+    """
+    return Path(sys.executable)
 
 
 def _needs_interpreter(bin_path: Path) -> bool:
@@ -103,10 +117,28 @@ def _needs_interpreter(bin_path: Path) -> bool:
         # A shell wrapper (e.g. the installer's bash launcher) execs the venv
         # python itself — leave it alone.
         return False
+    shebang_interp = shebang[2:].strip().split()[0] if shebang.startswith("#!") else ""
+    # ``#!/usr/bin/env python3`` always escapes to the DE's PATH python.
+    # Do not treat this as "inside the venv" just because exe_dir is
+    # ``/usr/bin`` (a substring of ``/usr/bin/env``).
+    if shebang_interp in {"/usr/bin/env", "env"}:
+        return True
+    # Console script next to its own interpreter (venv/bin/hermes shebang
+    # venv/bin/python3) is already self-sufficient, even when
+    # sys.executable.resolve() would point at /usr/bin/python3.11.
+    if shebang_interp:
+        interp_path = Path(shebang_interp)
+        try:
+            if interp_path.is_file() and interp_path.parent == bin_path.parent:
+                return False
+        except OSError:
+            pass
     # A python shebang pointing INSIDE the running interpreter's environment
-    # already resolves correctly; anything else (``/usr/bin/env python3``,
-    # a system path) would escape the venv when spawned by the DE.
-    exe_dir = str(Path(sys.executable).resolve().parent)
+    # already resolves correctly; anything else (a system path) would
+    # escape the venv when spawned by the DE. Compare against the
+    # unresolved interpreter so a venv symlink does not look like a
+    # foreign /usr/bin python.
+    exe_dir = str(_running_interpreter().parent)
     return exe_dir not in shebang
 
 

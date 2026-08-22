@@ -183,7 +183,7 @@ export const zh: Translations = {
       inputTitle: '需要输入',
       inputBody: 'Hermes 正在等待你的回应。',
       turnDoneTitle: 'Hermes 已完成',
-      turnDoneBody: '',
+      turnDoneBody: '消息已完成。',
       turnErrorTitle: '本轮失败',
       backgroundDoneTitle: '后台任务已完成',
       backgroundFailedTitle: '后台任务失败',

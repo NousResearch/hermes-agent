@@ -183,7 +183,7 @@ export const zhHant = defineLocale({
       inputTitle: '需要輸入',
       inputBody: 'Hermes 正在等待你的回應。',
       turnDoneTitle: 'Hermes 已完成',
-      turnDoneBody: '',
+      turnDoneBody: '訊息已完成。',
       turnErrorTitle: '本輪失敗',
       backgroundDoneTitle: '背景工作已完成',
       backgroundFailedTitle: '背景工作失敗',

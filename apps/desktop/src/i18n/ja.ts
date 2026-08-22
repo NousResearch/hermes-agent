@@ -189,7 +189,7 @@ export const ja = defineLocale({
       inputTitle: '入力が必要です',
       inputBody: 'Hermes が応答を待っています。',
       turnDoneTitle: 'Hermes が完了しました',
-      turnDoneBody: '',
+      turnDoneBody: 'メッセージが完了しました。',
       turnErrorTitle: 'ターンが失敗しました',
       backgroundDoneTitle: 'バックグラウンドタスクが完了しました',
       backgroundFailedTitle: 'バックグラウンドタスクが失敗しました',

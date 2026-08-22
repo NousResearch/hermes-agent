@@ -17224,6 +17224,170 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Check for commands
         command = event.get_command()
 
+        # Matrix-only, explicit project selection. Matrix adapters normalize
+        # only registered bang commands, so this unregistered command arrives
+        # here as ``!project`` rather than ``/project``.
+        _matrix_project_args = None
+        if source.platform == Platform.MATRIX:
+            _matrix_text = (event.text or "").lstrip()
+            if command == "project":
+                _matrix_project_args = event.get_command_args()
+            elif _matrix_text.startswith("!"):
+                _matrix_parts = _matrix_text[1:].split(maxsplit=1)
+                if _matrix_parts and _matrix_parts[0].lower() == "project":
+                    _matrix_project_args = _matrix_parts[1] if len(_matrix_parts) > 1 else ""
+        if _matrix_project_args is not None:
+            arg = _matrix_project_args.strip()
+            action, _, remainder = arg.partition(" ")
+            action = action.lower()
+            from gateway.project_router import (
+                active_project,
+                add_project_alias,
+                analyze_project_setup,
+                apply_project_setup,
+                clear_project,
+                project_details,
+                register_project,
+                registered_project_details,
+                remove_project_alias,
+                render_project_setup_apply_result,
+                render_project_setup_plan,
+                select_project,
+            )
+
+            session_key = self._session_key_for_source(source)
+            if action == "clear" and not remainder.strip():
+                clear_project(self._session_db._db, session_key)
+                from agent.runtime_cwd import clear_session_cwd
+
+                clear_session_cwd()
+                self._evict_cached_agent(session_key)
+                return "Project context cleared."
+            if action == "status" and not remainder.strip():
+                project = active_project(self._session_db._db, session_key)
+                if project is None:
+                    return "Active project: none"
+                key, path = project
+                return f"Active project: {key}\nPath: {path}"
+            if action == "list" and not remainder.strip():
+                lines = ["Registered projects:"]
+                for key, display_name, aliases, path in registered_project_details(self._session_db._db):
+                    alias_text = ", ".join(aliases) if aliases else "none"
+                    lines.extend(
+                        [
+                            "",
+                            f"- {key}",
+                            f"  Name: {display_name}",
+                            f"  Aliases: {alias_text}",
+                            f"  Path: {path}",
+                        ]
+                    )
+                return "\n".join(lines)
+            if action == "aliases":
+                alias_key = remainder.strip()
+                if not alias_key:
+                    lines = ["Project aliases:"]
+                    for key, display_name, aliases, _path in registered_project_details(self._session_db._db):
+                        lines.extend(["", f"- {key} ({display_name})"])
+                        lines.extend(f"  - {alias}" for alias in aliases)
+                        if not aliases:
+                            lines.append("  - none")
+                    return "\n".join(lines)
+                if len(alias_key.split()) != 1:
+                    return "Project aliases failed: usage: !project aliases [<key>]"
+                try:
+                    key, display_name, aliases, _path = project_details(self._session_db._db, alias_key)
+                except ValueError as exc:
+                    return f"Project aliases failed: {exc}"
+                lines = [f"Project: {key}", f"Name: {display_name}", "Aliases:"]
+                lines.extend(f"- {alias}" for alias in aliases)
+                if not aliases:
+                    lines.append("- none")
+                return "\n".join(lines)
+            if action == "alias":
+                alias_args = remainder.strip().split(maxsplit=2)
+                if len(alias_args) != 3 or alias_args[0] not in {"add", "remove"}:
+                    return "Project alias failed: usage: !project alias add|remove <key> <alias>"
+                operation, key, alias = alias_args
+                try:
+                    normalized_alias = (
+                        add_project_alias(self._session_db._db, key, alias)
+                        if operation == "add"
+                        else remove_project_alias(self._session_db._db, key, alias)
+                    )
+                    normalized_key, _display_name, aliases, _path = project_details(
+                        self._session_db._db, key
+                    )
+                except ValueError as exc:
+                    return f"Project alias failed: {exc}"
+                verb = "added" if operation == "add" else "removed"
+                lines = [f"Alias {verb}: {normalized_alias}", f"Project: {normalized_key}", "Aliases:"]
+                lines.extend(f"- {current_alias}" for current_alias in aliases)
+                if not aliases:
+                    lines.append("- none")
+                return "\n".join(lines)
+            if action == "setup":
+                setup_args = remainder.split()
+                if len(setup_args) == 1:
+                    try:
+                        plan = analyze_project_setup(self._session_db._db, setup_args[0])
+                    except ValueError as exc:
+                        return f"Project setup failed: {exc}"
+                    return render_project_setup_plan(plan)
+                if len(setup_args) == 2 and setup_args[1] == "--apply":
+                    try:
+                        result = apply_project_setup(self._session_db._db, setup_args[0])
+                    except ValueError as exc:
+                        return f"Project setup failed: {exc}"
+                    return render_project_setup_apply_result(result)
+                return "Project setup failed: usage: !project setup <key> [--apply]"
+            if action == "add":
+                try:
+                    project = register_project(self._session_db._db, remainder.strip())
+                except ValueError as exc:
+                    return f"Project registration failed: {exc}"
+                context = "\n".join(
+                    f"- {label}: {'found' if found else 'missing'}"
+                    for label, found in project.context
+                )
+                response = (
+                    f"Project registered: {project.key}\nPath: {project.path}\n\nContext:\n{context}"
+                )
+                if not dict(project.context).get("AGENTS.md"):
+                    response += (
+                        "\n\nProject routing is available, but repository agent context is incomplete."
+                    )
+                return response
+            try:
+                path = select_project(self._session_db._db, session_key, arg)
+            except ValueError as exc:
+                return f"Project selection failed: {exc}"
+            self._evict_cached_agent(session_key)
+            return f"Active project: {action} ({path})"
+
+        # Explicit !project commands above always win. Ordinary Matrix messages
+        # get only deterministic registry evidence: key, display name, or alias.
+        # A generic follow-up leaves an existing binding unchanged; no classifier
+        # or speculative switch is attempted.
+        if source.platform == Platform.MATRIX:
+            from gateway.project_router import active_project, resolve_project_reference, select_project
+
+            session_key = self._session_key_for_source(source)
+            matches = resolve_project_reference(self._session_db._db, event.text or "")
+            if len(matches) > 1:
+                lines = ["I found multiple possible projects:", *(f"- {key}" for key in matches)]
+                lines.append("Which one do you want to use?")
+                return "\n".join(lines)
+            if len(matches) == 1:
+                matched_key = matches[0]
+                current = active_project(self._session_db._db, session_key)
+                if current is None or current[0] != matched_key:
+                    select_project(self._session_db._db, session_key, matched_key)
+                    self._evict_cached_agent(session_key)
+                    await self._adapter_for_source(source).send(
+                        chat_id=source.chat_id, content=f"Using project: {matched_key}"
+                    )
+
         from hermes_cli.commands import (
             GATEWAY_KNOWN_COMMANDS,
             is_gateway_known_command,
@@ -24432,6 +24596,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        _project_cwd = ""
+        _session_db = getattr(self, "_session_db", None)
+        if context.source.platform == Platform.MATRIX and _session_db is not None:
+            from gateway.project_router import active_project_path
+
+            _project_path = active_project_path(_session_db._db, context.session_key)
+            if _project_path is not None:
+                _project_cwd = str(_project_path)
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -24449,6 +24621,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
             cron_session="",
+            cwd=_project_cwd,
         )
 
     def _clear_session_env(self, tokens: list) -> None:

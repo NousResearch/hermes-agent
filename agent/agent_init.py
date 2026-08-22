@@ -3063,6 +3063,51 @@ def init_agent(
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
 
+    # Opt-in prompt warmer: a profile exposing prompt_warmer_enabled /
+    # warm_prompt_cache may prime the server's prompt cache with the
+    # session preamble. Must be the LAST init step so the preamble matches
+    # the first turn's build. Daemon thread: a cold llama-swap model can
+    # take minutes to load, and session start must not block.
+    try:
+        from providers import resolve_provider_profile as _resolve_warm_profile
+
+        _warm_profile = _resolve_warm_profile(
+            agent.provider, getattr(agent, "requested_provider", None)
+        )
+        _warm_enabled_fn = getattr(_warm_profile, "prompt_warmer_enabled", None)
+        _warm_fn = getattr(_warm_profile, "warm_prompt_cache", None)
+        if (
+            callable(_warm_enabled_fn)
+            and callable(_warm_fn)
+            and _warm_enabled_fn(base_url=agent.base_url, model=agent.model)
+        ):
+            # Apply the (normally lazy) terminal.* config -> env bridge now
+            # so the prebuild is byte-identical to the first turn's build;
+            # otherwise the identity gate rejects it as cwd drift.
+            try:
+                from hermes_cli.config import apply_terminal_config_to_env
+
+                apply_terminal_config_to_env()
+            except Exception:
+                pass
+            _warm_system_prompt = agent._build_system_prompt(None)
+            # conversation_loop reuses this exact string on the first turn
+            # (identity-gated, consumed one-shot).
+            agent._warm_prebuilt_system_prompt = _warm_system_prompt
+            threading.Thread(
+                target=_warm_fn,
+                kwargs={
+                    "base_url": agent.base_url,
+                    "model": agent.model,
+                    "system_prompt": _warm_system_prompt,
+                    "tools": getattr(agent, "tools", None),
+                    "reasoning_config": getattr(agent, "reasoning_config", None),
+                },
+                daemon=True,
+                name="llamacpp-prompt-warmer",
+            ).start()
+    except Exception as _warm_exc:
+        _ra().logger.debug("prompt warmer skipped: %s", _warm_exc)
 
 
 __all__ = ["init_agent"]

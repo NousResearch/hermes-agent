@@ -14,7 +14,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import yaml
 
@@ -988,7 +988,8 @@ def _localhost_to_ipv4(url: str) -> str:
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 
-    Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
+    Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", "llama-swap",
+    or None.
 
     The result is cached for the lifetime of the process so that repeated
     calls (e.g. every 5-minute metadata refresh) never re-run the waterfall
@@ -1071,6 +1072,21 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                         r = client.get(f"{server_url}/props")  # fallback for older builds
                     if r.status_code == 200 and "default_generation_settings" in r.text:
                         result = "llamacpp"
+                except Exception as exc:
+                    _probe_failed(exc)
+            if result is None:
+                # llama-swap serves /props only per model. Detect it via
+                # its management route /running (200 with {"running": ...};
+                # bare llama-server 404s). Never detect through a
+                # model-scoped route - those start the named model.
+                try:
+                    r = client.get(f"{server_url}/running")
+                    if r.status_code == 200:
+                        try:
+                            if "running" in r.json():
+                                result = "llama-swap"
+                        except Exception:
+                            pass
                 except Exception as exc:
                     _probe_failed(exc)
             if result is None:
@@ -2175,6 +2191,21 @@ def _model_name_suggests_stale_32k_underreport(model: str) -> bool:
     return _model_name_suggests_kimi(model) or _model_name_suggests_minimax(model)
 
 
+def _props_reported_n_ctx(payload: Any) -> Optional[int]:
+    """Return the runtime ``n_ctx`` from a llama.cpp ``/props`` payload.
+
+    ``default_generation_settings.n_ctx`` is the context the server actually
+    allocated for the loaded model — authoritative over ``n_ctx_train`` (the
+    training maximum) and over whatever ``/v1/models`` metadata carries.
+    """
+    if not isinstance(payload, dict):
+        return None
+    gen_settings = payload.get("default_generation_settings")
+    if not isinstance(gen_settings, dict):
+        return None
+    return _coerce_reasonable_int(gen_settings.get("n_ctx"))
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length (short-TTL cached).
 
@@ -2280,6 +2311,53 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                                 if ctx and isinstance(ctx, (int, float)):
                                     return int(ctx)
                             break
+
+            # llama.cpp: /props reports the runtime context the server
+            # actually allocated (default_generation_settings.n_ctx), which
+            # is authoritative over the /v1/models metadata legs below.
+            if server_type == "llamacpp":
+                for path in ("/v1/props", "/props"):
+                    resp = client.get(f"{server_url}{path}")
+                    if resp.status_code != 200:
+                        continue
+                    try:
+                        payload = resp.json()
+                    except Exception:
+                        continue
+                    ctx = _props_reported_n_ctx(payload)
+                    if ctx is not None:
+                        return ctx
+
+            # Any model-scoped route STARTS a non-resident model on
+            # llama-swap, and a metadata probe must never load a model.
+            # Consult /running first; query /props only for resident ids;
+            # non-resident yields None. Return early either way - the
+            # /v1/models/{model} leg below is also model-scoped.
+            if server_type == "llama-swap":
+                resp = client.get(f"{server_url}/running")
+                if resp.status_code != 200:
+                    return None
+                try:
+                    entries = resp.json().get("running") or []
+                except Exception:
+                    entries = []
+                resident = {
+                    str(entry.get("model"))
+                    for entry in entries
+                    if isinstance(entry, dict) and entry.get("model")
+                }
+                if model not in resident:
+                    return None
+                resp = client.get(
+                    f"{server_url}/props?model={quote(model, safe='')}"
+                )
+                if resp.status_code != 200:
+                    return None
+                try:
+                    payload = resp.json()
+                except Exception:
+                    return None
+                return _props_reported_n_ctx(payload)
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")

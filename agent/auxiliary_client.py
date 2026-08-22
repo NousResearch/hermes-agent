@@ -8692,10 +8692,13 @@ def _build_call_kwargs(
     profile_top_level: Dict[str, Any] = {}
     profile_handles_reasoning = False
     try:
-        from providers import get_provider_profile
+        from providers import resolve_provider_profile
         from providers.base import ProviderProfile
 
-        profile = get_provider_profile(str(provider or "").strip().lower())
+        # Aux routes carry the raw route/entry name (never a canonicalized
+        # "custom" plus a separate requested name), so the provider string
+        # doubles as the requested identity.
+        profile = resolve_provider_profile(provider, requested=provider)
         if profile is not None:
             profile_body = profile.build_extra_body(
                 model=model,

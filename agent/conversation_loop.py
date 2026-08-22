@@ -982,8 +982,21 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         )
 
     # First turn of a new session (or recovering from a broken stored
-    # prompt) — build from scratch.
-    agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    # prompt). A prompt-warmer prebuild (agent_init) is reused verbatim so
+    # the first turn sends exactly the warmed string. Gated on the same
+    # runtime-identity check as the DB-restore path; consumed one-shot.
+    _prebuilt = getattr(agent, "_warm_prebuilt_system_prompt", None)
+    if _prebuilt is not None:
+        agent._warm_prebuilt_system_prompt = None
+    if (
+        isinstance(_prebuilt, str)
+        and _prebuilt
+        and system_message is None
+        and _stored_prompt_matches_runtime(agent, _prebuilt)
+    ):
+        agent._cached_system_prompt = _prebuilt
+    else:
+        agent._cached_system_prompt = agent._build_system_prompt(system_message)
 
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this
@@ -3181,7 +3194,16 @@ def run_conversation(
                     break
                 
                 api_duration = time.time() - api_start_time
-                
+
+                # Server-side observability, re-assigned on every completed
+                # call and only ever set when the resolved provider profile
+                # opts in: generation speed from the response timings block
+                # (surfaces_server_timings) and swap-proxy residency
+                # from /running (resident_models). The status bar
+                # reads agent.last_server_tps / agent.last_server_residency.
+                agent._capture_server_timings(response)
+                agent._capture_server_residency()
+
                 # Stop thinking spinner silently -- the response box or tool
                 # execution messages that follow are more informative.
                 if thinking_spinner:

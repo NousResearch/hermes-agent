@@ -667,3 +667,244 @@ class TestLocalContextProbeTTLCache:
         assert first is None
         assert second is None
         assert detect.call_count == 2, "None result was wrongly cached; retry did not re-probe"
+
+
+# ---------------------------------------------------------------------------
+# llama.cpp family — /props runtime n_ctx (bare llama-server and llama-swap)
+# ---------------------------------------------------------------------------
+
+
+def _family_client_mock(get_side_effect):
+    client_mock = MagicMock()
+    client_mock.__enter__ = lambda s: client_mock
+    client_mock.__exit__ = MagicMock(return_value=False)
+    client_mock.get.side_effect = get_side_effect
+    return client_mock
+
+
+def _family_resp(status_code, body):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = body
+    resp.text = str(body)
+    return resp
+
+
+class TestQueryLocalContextLengthLlamaCppProps:
+    """server_type == 'llamacpp': runtime n_ctx from /props wins over /v1/models."""
+
+    def test_props_runtime_n_ctx_preferred(self):
+        """default_generation_settings.n_ctx is used, not n_ctx_train."""
+        from agent.model_metadata import _query_local_context_length
+
+        def _get(url, *args, **kwargs):
+            if url.endswith("/v1/props"):
+                return _family_resp(200, {
+                    "default_generation_settings": {"n_ctx": 65536},
+                    "n_ctx_train": 262144,
+                })
+            return _family_resp(404, {})
+
+        client_mock = _family_client_mock(_get)
+        with patch("agent.model_metadata.detect_local_server_type", return_value="llamacpp"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("any-model", "http://192.168.77.10:9101/v1")
+
+        assert result == 65536
+
+    def test_props_legacy_path_fallback(self):
+        """Older llama.cpp builds serve /props without the /v1 prefix."""
+        from agent.model_metadata import _query_local_context_length
+
+        def _get(url, *args, **kwargs):
+            if url.endswith("/props"):
+                return _family_resp(200, {
+                    "default_generation_settings": {"n_ctx": 131072},
+                })
+            return _family_resp(404, {})
+
+        client_mock = _family_client_mock(_get)
+        with patch("agent.model_metadata.detect_local_server_type", return_value="llamacpp"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("any-model", "http://192.168.77.10:9102/v1")
+
+        assert result == 131072
+
+    def test_props_unavailable_falls_through_to_models_leg(self):
+        """A build without /props still resolves via the /v1/models legs."""
+        from agent.model_metadata import _query_local_context_length
+
+        def _get(url, *args, **kwargs):
+            if url.endswith("/v1/models/some-model"):
+                return _family_resp(200, {"max_model_len": 32768})
+            return _family_resp(404, {})
+
+        client_mock = _family_client_mock(_get)
+        with patch("agent.model_metadata.detect_local_server_type", return_value="llamacpp"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("some-model", "http://192.168.77.10:9103/v1")
+
+        assert result == 32768
+
+
+class TestQueryLocalContextLengthLlamaSwap:
+    """server_type == 'llama-swap': /props?model= is gated on /running residency.
+
+    On llama-swap every model-scoped route (including /props?model=) STARTS
+    the named model when it is not resident — a metadata probe must never
+    load a model as a side effect, so only resident ids may be prop-probed.
+    """
+
+    def test_resident_model_reports_props_n_ctx(self):
+        from agent.model_metadata import _query_local_context_length
+
+        def _get(url, *args, **kwargs):
+            if url.endswith("/running"):
+                return _family_resp(200, {"running": [{"model": "qwen-small", "state": "ready"}]})
+            if "/props?model=qwen-small" in url:
+                return _family_resp(200, {
+                    "default_generation_settings": {"n_ctx": 131072},
+                })
+            return _family_resp(404, {})
+
+        client_mock = _family_client_mock(_get)
+        with patch("agent.model_metadata.detect_local_server_type", return_value="llama-swap"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("qwen-small", "http://192.168.77.10:9104/v1")
+
+        assert result == 131072
+        props_urls = [
+            call.args[0] for call in client_mock.get.call_args_list
+            if "/props" in call.args[0]
+        ]
+        assert props_urls == ["http://192.168.77.10:9104/props?model=qwen-small"]
+
+    def test_non_resident_model_is_never_model_probed(self):
+        """A non-resident id yields None with no model-scoped request at all."""
+        from agent.model_metadata import _query_local_context_length
+
+        def _get(url, *args, **kwargs):
+            if url.endswith("/running"):
+                return _family_resp(200, {"running": [{"model": "other-model"}]})
+            return _family_resp(404, {})
+
+        client_mock = _family_client_mock(_get)
+        with patch("agent.model_metadata.detect_local_server_type", return_value="llama-swap"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("qwen-small", "http://192.168.77.10:9105/v1")
+
+        assert result is None
+        for call in client_mock.get.call_args_list:
+            url = call.args[0]
+            assert "?model=" not in url, f"model-scoped probe issued: {url}"
+            assert "/upstream/" not in url, f"model-scoped probe issued: {url}"
+            assert "/v1/models/" not in url, f"model-scoped probe issued: {url}"
+
+    def test_running_error_returns_none_without_model_requests(self):
+        from agent.model_metadata import _query_local_context_length
+
+        def _get(url, *args, **kwargs):
+            return _family_resp(500, {})
+
+        client_mock = _family_client_mock(_get)
+        with patch("agent.model_metadata.detect_local_server_type", return_value="llama-swap"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("qwen-small", "http://192.168.77.10:9106/v1")
+
+        assert result is None
+        for call in client_mock.get.call_args_list:
+            assert "?model=" not in call.args[0]
+
+    def test_model_id_is_url_encoded(self):
+        from agent.model_metadata import _query_local_context_length
+
+        def _get(url, *args, **kwargs):
+            if url.endswith("/running"):
+                return _family_resp(200, {"running": [{"model": "org/model+q8"}]})
+            if "/props?model=org%2Fmodel%2Bq8" in url:
+                return _family_resp(200, {
+                    "default_generation_settings": {"n_ctx": 65536},
+                })
+            return _family_resp(404, {})
+
+        client_mock = _family_client_mock(_get)
+        with patch("agent.model_metadata.detect_local_server_type", return_value="llama-swap"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("org/model+q8", "http://192.168.77.10:9107/v1")
+
+        assert result == 65536
+
+
+class TestDetectLocalServerTypeLlamaSwap:
+    """llama-swap is detected via its management route /running, never via a
+    model-scoped route."""
+
+    def test_llama_swap_detected_via_running(self):
+        from agent.model_metadata import detect_local_server_type
+
+        def _get(url, *args, **kwargs):
+            if url.endswith("/running"):
+                return _family_resp(200, {"running": []})
+            if url.endswith("/props"):
+                # llama-swap answers bare /props with an error object — no
+                # default_generation_settings, so the llamacpp leg must not
+                # match it.
+                return _family_resp(200, {"error": "model parameter required"})
+            return _family_resp(404, {})
+
+        client_mock = _family_client_mock(_get)
+        with patch("agent.model_metadata._local_probe_disk_get", return_value=None), \
+             patch("agent.model_metadata._local_probe_disk_put"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://192.168.77.10:9108/v1")
+
+        assert result == "llama-swap"
+        for call in client_mock.get.call_args_list:
+            assert "?model=" not in call.args[0]
+
+    def test_bare_llama_server_still_detected_as_llamacpp(self):
+        from agent.model_metadata import detect_local_server_type
+
+        def _get(url, *args, **kwargs):
+            if url.endswith("/v1/props"):
+                return _family_resp(200, {"default_generation_settings": {"n_ctx": 65536}})
+            return _family_resp(404, {})
+
+        client_mock = _family_client_mock(_get)
+        with patch("agent.model_metadata._local_probe_disk_get", return_value=None), \
+             patch("agent.model_metadata._local_probe_disk_put"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://192.168.77.10:9109/v1")
+
+        assert result == "llamacpp"
+
+
+class TestLlamaSwapReconcile:
+    """Stale disk cache reconciles against a live llama-swap /props probe."""
+
+    def test_stale_cache_yields_to_live_swap_value(self):
+        from agent.model_metadata import get_model_context_length
+
+        model = "qwen-small"
+        base = "http://192.168.77.10:9110/v1"
+
+        def _get(url, *args, **kwargs):
+            if url.endswith("/running"):
+                return _family_resp(200, {"running": [{"model": model}]})
+            if "/props?model=" in url:
+                return _family_resp(200, {
+                    "default_generation_settings": {"n_ctx": 131072},
+                })
+            return _family_resp(404, {})
+
+        client_mock = _family_client_mock(_get)
+        with patch("agent.model_metadata.get_cached_context_length", return_value=65536), \
+             patch("agent.model_metadata.detect_local_server_type", return_value="llama-swap"), \
+             patch("agent.model_metadata._invalidate_cached_context_length") as mock_invalidate, \
+             patch("agent.model_metadata.save_context_length") as mock_save, \
+             patch("httpx.Client", return_value=client_mock):
+            result = get_model_context_length(model, base)
+
+        assert result == 131072
+        mock_invalidate.assert_called_once_with(model, base)
+        mock_save.assert_called_once_with(model, base, 131072)

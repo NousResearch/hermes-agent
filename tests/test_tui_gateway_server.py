@@ -57,6 +57,19 @@ def _neuter_agent_prewarm_timer(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _clear_parked_notifications():
+    """Empty the process-global notification park between tests.
+
+    ``server._parked_notifications`` holds addressed events whose owner was
+    not live. It is module state, so an event parked by one test would be
+    claimed by a later test that happens to use the same ``session_key``.
+    """
+    server._parked_notifications.clear()
+    yield
+    server._parked_notifications.clear()
+
+
+@pytest.fixture(autouse=True)
 def _reap_leaked_notification_pollers():
     """Stop and join notification pollers leaked by each test.
 
@@ -6092,6 +6105,93 @@ def test_notification_poller_live_loop_drops_addressed_orphan(
         process_registry._completion_consumed.discard(event["session_id"])
         while not isolated_queue.empty():
             isolated_queue.get_nowait()
+
+
+def test_notification_poller_parks_orphan_until_its_owner_returns(monkeypatch):
+    """An addressed completion outliving its chat is parked, not destroyed.
+
+    Bot Mode delivers a handoff reply exclusively as this notification (see
+    ``messagingProtocolSection`` in the hermes-bots plugin), so destroying it
+    when the owning session is briefly not live loses the reply for good. The
+    owner must still get it when its poller comes back.
+    """
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    delivered = []
+    emitted = []
+    foreign = _session(session_key="unrelated-live-key")
+    event = {
+        "type": "completion",
+        "session_id": "proc-park-owner",
+        "command": "echo reply",
+        "exit_code": 0,
+        "output": "reply",
+        "session_key": "owner-session-key",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **_kwargs: emitted.append(args))
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text: delivered.append(text),
+    )
+    server._sessions["sid-park-foreign"] = foreign
+    process_registry._completion_consumed.discard(event["session_id"])
+
+    try:
+        # The owner has no live session: a foreign poller may neither inject
+        # the event nor throw it away.
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(), "sid-park-foreign", foreign
+        )
+        assert delivered == []
+        assert emitted == []
+        assert isolated_queue.empty()
+        assert len(server._parked_notifications) == 1
+
+        # The owner comes back and claims it on its next poll.
+        owner = _session(session_key="owner-session-key")
+        server._sessions["sid-park-owner"] = owner
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(), "sid-park-owner", owner
+        )
+        assert server._parked_notifications == []
+        assert len(delivered) == 1
+        assert "proc-park-owner" in delivered[0]
+    finally:
+        server._sessions.pop("sid-park-foreign", None)
+        server._sessions.pop("sid-park-owner", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
+def test_park_unowned_notification_needs_a_durable_key():
+    """Without a ``session_key`` there is no identity to hand it back to."""
+    assert server._park_unowned_notification({"type": "completion"}) is False
+    assert server._parked_notifications == []
+
+
+def test_parked_notifications_expire_after_the_ttl(monkeypatch):
+    """A parked event whose owner never returns is pruned, not kept forever."""
+    event = {
+        "type": "completion",
+        "session_id": "proc-park-stale",
+        "session_key": "gone-forever",
+    }
+    assert server._park_unowned_notification(event) is True
+    assert len(server._parked_notifications) == 1
+
+    stale = time.time() - server._PARKED_NOTIFICATION_TTL_SECONDS - 1
+    server._parked_notifications[:] = [(stale, event)]
+    session = _session(session_key="someone-else")
+    assert server._claim_parked_notifications("sid-ttl", session) == 0
+    assert server._parked_notifications == []
 
 
 @pytest.mark.parametrize(

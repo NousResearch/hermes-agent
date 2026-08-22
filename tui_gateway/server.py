@@ -9853,6 +9853,79 @@ def _notification_event_requires_owner(evt: dict) -> bool:
     )
 
 
+# An addressed notification whose owner has no live session used to be
+# destroyed on the spot, which silently lost the completion for a background
+# process that outlived its chat (Bot Mode handoff replies are delivered
+# exclusively this way). Park it here instead: the owner's poller claims it
+# when the session comes back, and nothing is re-queued in the meantime, so
+# the "re-queued events spin the poller" hazard does not apply.
+_PARKED_NOTIFICATION_TTL_SECONDS = 24 * 60 * 60
+_parked_notifications: "list[tuple[float, dict]]" = []
+_parked_notifications_lock = threading.Lock()
+
+
+def _prune_parked_notifications_locked(now: float) -> None:
+    """Drop parked events past the TTL. Caller holds the lock."""
+    _parked_notifications[:] = [
+        (ts, evt)
+        for (ts, evt) in _parked_notifications
+        if now - ts < _PARKED_NOTIFICATION_TTL_SECONDS
+    ]
+
+
+def _park_unowned_notification(evt: dict) -> bool:
+    """Hold ``evt`` for a session that is not live yet. True when parked.
+
+    Only events carrying a durable ``session_key`` can be parked: without one
+    there is no identity to hand the event back to later, so the caller keeps
+    the old drop behavior.
+    """
+    if not str(evt.get("session_key") or ""):
+        return False
+    now = time.time()
+    identity = _notification_event_dedup_key(evt)
+    with _parked_notifications_lock:
+        _prune_parked_notifications_locked(now)
+        for _ts, parked in _parked_notifications:
+            if _notification_event_dedup_key(parked) == identity:
+                return True
+        _parked_notifications.append((now, evt))
+    return True
+
+
+def _claim_parked_notifications(sid: str, session: dict) -> int:
+    """Re-queue parked events this session provably owns. Returns the count.
+
+    Called from the poller loop rather than session init because a session's
+    ``session_key`` is populated from a later frame, so init is too early to
+    match reliably.
+    """
+    if not _parked_notifications:
+        return 0
+    now = time.time()
+    claimed: list = []
+    with _parked_notifications_lock:
+        _prune_parked_notifications_locked(now)
+        kept: "list[tuple[float, dict]]" = []
+        for ts, evt in _parked_notifications:
+            if _session_owns_notification_event(sid, session, evt):
+                claimed.append(evt)
+            else:
+                kept.append((ts, evt))
+        _parked_notifications[:] = kept
+    if claimed:
+        from tools.process_registry import process_registry
+
+        # Re-queued at the TAIL, so a returning owner sees its parked
+        # completion after any newly-produced events rather than in original
+        # emission order. Harmless for completions, which are independent
+        # terminal events; revisit if a consumer ever needs FIFO across the
+        # park boundary.
+        for evt in claimed:
+            process_registry.completion_queue.put(evt)
+    return len(claimed)
+
+
 def _notification_event_dedup_key(evt: dict) -> tuple:
     """Return the UI-emission identity for a process notification event.
 
@@ -10176,6 +10249,15 @@ def _notification_poller_loop(
     _last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         _now = time.monotonic()
+        # Re-queue anything parked for this session while it was not live.
+        try:
+            _claim_parked_notifications(sid, session)
+        except Exception as _park_exc:
+            print(
+                f"[tui_gateway] parked notification claim failed: "
+                f"{type(_park_exc).__name__}: {_park_exc}",
+                file=sys.stderr,
+            )
         # ── /loop wakeup driver ──────────────────────────────────────
         # Fire a due /loop tick for THIS session while it's idle. Same
         # claim-under-lock pattern as the kanban dispatch below. Active
@@ -10250,6 +10332,15 @@ def _notification_poller_loop(
         # ownerless ordinary notifications retain legacy global delivery.
         requires_owner = _notification_event_requires_owner(evt)
         if requires_owner and not _session_owns_notification_event(sid, session, evt):
+            if _park_unowned_notification(evt):
+                logger.debug(
+                    "Parking unowned %s notification for its owner "
+                    "(key=%r); session %s does not own it",
+                    evt.get("type", "completion"),
+                    str(evt.get("session_key") or ""),
+                    sid,
+                )
+                continue
             log = (
                 logger.warning
                 if evt.get("type") == "async_delegation"
@@ -10347,6 +10438,13 @@ def _notification_poller_loop(
         if requires_owner and not _session_owns_notification_event(sid, session, evt):
             if evt.get("type") == "async_delegation":
                 deferred.append(evt)
+            elif _park_unowned_notification(evt):
+                logger.debug(
+                    "Parking unowned %s notification during shutdown drain "
+                    "(key=%r)",
+                    evt.get("type", "completion"),
+                    str(evt.get("session_key") or ""),
+                )
             else:
                 logger.debug(
                     "Dropping unowned %s notification during shutdown drain "

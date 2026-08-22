@@ -321,6 +321,15 @@ def _kill_stale_dashboard_processes(
     restarted after the kill, because systemd treats our SIGTERM as a clean
     stop and ``Restart=on-failure`` would never fire (#68934).
 
+    macOS mirrors that for launchd: a killed PID owned by a launchd job (a
+    user LaunchAgent plist running ``hermes dashboard``) is brought back with
+    ``launchctl kickstart`` and is never respawned by argv.  Respawning it
+    used to race the job's own ``KeepAlive`` restart for the listen port; the
+    loser then crash-looped every ``ThrottleInterval`` seconds, and because
+    the dashboard runs MCP discovery before binding, each attempt opened a
+    fresh session on every configured MCP server (rate-limiting them for
+    every client on the host).
+
     *already_restarted_units* names units (no ``.service`` suffix) the
     caller already restarted directly — e.g. ``hermes update``'s systemd
     fleet-restart loop, which restarts ``hermes-serve*`` units before this
@@ -363,14 +372,21 @@ def _kill_stale_dashboard_processes(
     # stay a stop, not a restart.
     pid_cgroup: dict[int, str | None] = {}
     pid_service: dict[int, str | None] = {}
+    pid_launchd: dict[int, tuple[str, str] | None] = {}
     pid_cmdline: dict[int, list[str]] = {}
     pid_home: dict[int, str | None] = {}
+    if sys.platform != "win32":
+        # launchd ownership is cheap to detect (no-op off macOS) and matters
+        # on BOTH paths: update needs it to kickstart instead of respawn, and
+        # --stop needs it to warn that KeepAlive will undo a raw kill.
+        for pid in pids:
+            pid_launchd[pid] = _m()._get_launchd_service_for_pid(pid)
     if restart_managed and sys.platform != "win32":
         for pid in pids:
             cg_path = _m()._get_pid_cgroup_path(pid)
             pid_cgroup[pid] = cg_path
             pid_service[pid] = _m()._get_systemd_service_for_pid(pid)
-            if not pid_service[pid]:
+            if not pid_service[pid] and not pid_launchd.get(pid):
                 # Manually-started process: preserve its exact argv so we
                 # can respawn it after the update (#40449, #68934).
                 # Snapshot HERMES_HOME before the kill so per-profile caps
@@ -471,6 +487,7 @@ def _kill_stale_dashboard_processes(
     #    Filtered so Desktop ``serve|dashboard --port 0`` backends are not
     #    resurrected and duplicates collapse to one per profile (#78821).
     restarted_services: list[str] = []
+    restarted_launchd: list[str] = []
     unrecovered: list[int] = []
     if killed and restart_managed:
         failed_restarts: list[tuple[str, str]] = []
@@ -478,6 +495,7 @@ def _kill_stale_dashboard_processes(
         respawn_candidates: list[tuple[int, list[str], str | None]] = []
         for pid in killed:
             svc_name = pid_service.get(pid)
+            launchd_job = pid_launchd.get(pid)
             if svc_name:
                 if svc_name in seen_services:
                     continue
@@ -486,6 +504,19 @@ def _kill_stale_dashboard_processes(
                     restarted_services.append(svc_name)
                 else:
                     failed_restarts.append((svc_name, "systemctl restart returned non-zero"))
+                    unrecovered.append(pid)
+            elif launchd_job:
+                domain, label = launchd_job
+                target = f"{domain}/{label}"
+                if target in seen_services:
+                    continue
+                seen_services.add(target)
+                if _m()._try_restart_launchd_service(domain, label):
+                    restarted_launchd.append(target)
+                else:
+                    failed_restarts.append(
+                        (target, "launchctl kickstart returned non-zero")
+                    )
                     unrecovered.append(pid)
             elif pid in pid_cmdline:
                 respawn_candidates.append(
@@ -496,6 +527,8 @@ def _kill_stale_dashboard_processes(
 
         for svc in restarted_services:
             print(f"    ✓ restarted systemd service {svc}")
+        for target in restarted_launchd:
+            print(f"    ✓ restarted launchd job {target}")
         for svc, err in failed_restarts:
             print(f"    ⚠ {svc}: {err}")
 
@@ -510,6 +543,14 @@ def _kill_stale_dashboard_processes(
             print("    hermes dashboard --port <port>")
     elif killed:
         unrecovered = list(killed)
+        launchd_targets: set[str] = set()
+        for pid in killed:
+            job = pid_launchd.get(pid)
+            if job:
+                launchd_targets.add(f"{job[0]}/{job[1]}")
+        for target in sorted(launchd_targets):
+            print(f"  ⚠ PID(s) supervised by launchd job {target} — a KeepAlive job")
+            print(f"    will restart itself. To keep it down: launchctl bootout {target}")
         print("  Restart the dashboard when you're ready:")
         print("    hermes dashboard --port <port>")
 

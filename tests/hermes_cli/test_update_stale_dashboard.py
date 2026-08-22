@@ -21,6 +21,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+_real_get_launchd_service_for_pid = None  # set by the autouse fixture below
+
 from hermes_cli.main import (
     _finish_dashboard_update_cleanup,
     _find_stale_dashboard_pids,
@@ -63,7 +65,14 @@ def _refresh_bindings_against_live_module():
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
     _restart_managed_dashboard_service = live._restart_managed_dashboard_service
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
-    yield
+    # Launchd ownership is probed for every candidate PID on POSIX; stub it
+    # to "not supervised" so tests with fake PIDs never shell out to
+    # launchctl on macOS runners.  Launchd-path tests re-patch it locally;
+    # the parser tests reach the real function via _real_get_launchd_service_for_pid.
+    global _real_get_launchd_service_for_pid
+    _real_get_launchd_service_for_pid = live._get_launchd_service_for_pid
+    with patch.object(live, "_get_launchd_service_for_pid", return_value=None):
+        yield
 
 
 def _ps_line(pid: int, cmd: str) -> str:
@@ -361,6 +370,178 @@ class TestSupervisedBackendRestart:
         kill.assert_not_called()
         restart.assert_not_called()
         assert result == {"matched": [], "killed": [], "failed": []}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill + launchd kickstart")
+class TestLaunchdSupervisedBackendRestart:
+    """macOS analog of the systemd path: a dashboard owned by a LaunchAgent
+    plist is kickstarted after the kill and never respawned by argv.
+    Respawning it raced the job's KeepAlive restart for the port; the loser
+    crash-looped every ThrottleInterval and, because the dashboard runs MCP
+    discovery before binding, hammered every configured MCP server."""
+
+    def _live(self):
+        return sys.modules["hermes_cli.main"]
+
+    def test_launchd_pid_is_kickstarted_not_respawned(self, capsys):
+        live = self._live()
+        argv = ["hermes", "dashboard", "--host", "0.0.0.0", "--port", "9119"]
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[9001]), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(live, "_get_launchd_service_for_pid",
+                          return_value=("gui/501", "com.example.hermes-dashboard")), \
+             patch.object(live, "_try_restart_launchd_service", return_value=True) as kick, \
+             patch.object(live, "_dashboard_cmdline_for_pid", return_value=argv) as argv_probe, \
+             patch.object(live, "_respawn_dashboard_processes") as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        kick.assert_called_once_with("gui/501", "com.example.hermes-dashboard")
+        respawn.assert_not_called()
+        # argv is only snapshotted for manual (unsupervised) processes.
+        argv_probe.assert_not_called()
+        assert result["killed"] == [9001]
+        assert result["unrecovered"] == []
+        out = capsys.readouterr().out
+        assert "✓ restarted launchd job gui/501/com.example.hermes-dashboard" in out
+        assert "when you're ready" not in out
+
+    def test_two_pids_of_one_job_kickstart_once(self):
+        """A shell-wrapped plist (sh -c … hermes dashboard) matches two PIDs
+        (the shell and the python child); the job is restarted once."""
+        live = self._live()
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[9001, 9002]), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(live, "_get_launchd_service_for_pid",
+                          return_value=("gui/501", "com.example.hermes-dashboard")), \
+             patch.object(live, "_try_restart_launchd_service", return_value=True) as kick, \
+             patch.object(live, "_respawn_dashboard_processes") as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert kick.call_count == 1
+        respawn.assert_not_called()
+
+    def test_kickstart_failure_reports_and_leaves_hint(self, capsys):
+        live = self._live()
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[9001]), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(live, "_get_launchd_service_for_pid",
+                          return_value=("gui/501", "com.example.hermes-dashboard")), \
+             patch.object(live, "_try_restart_launchd_service", return_value=False), \
+             patch.object(live, "_respawn_dashboard_processes") as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        # Even on failure we must not spawn a duplicate that races KeepAlive.
+        respawn.assert_not_called()
+        assert result["unrecovered"] == [9001]
+        out = capsys.readouterr().out
+        assert "launchctl kickstart returned non-zero" in out
+        assert "Restart anything not auto-restarted" in out
+
+    def test_stop_path_warns_that_keepalive_will_undo_the_kill(self, capsys):
+        """`hermes dashboard --stop` still stops (no restart), but tells the
+        user the job will come back and how to keep it down."""
+        live = self._live()
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(live, "_find_stale_dashboard_pids", return_value=[9001]), \
+             patch.object(live, "_get_launchd_service_for_pid",
+                          return_value=("gui/501", "com.example.hermes-dashboard")), \
+             patch.object(live, "_try_restart_launchd_service") as kick, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(reason="--stop", restart_managed=False)
+
+        kick.assert_not_called()
+        out = capsys.readouterr().out
+        assert "launchctl bootout gui/501/com.example.hermes-dashboard" in out
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="launchctl parsing is macOS-only")
+class TestGetLaunchdServiceForPid:
+    """Unit tests for the launchctl-backed owner lookup (all subprocess calls stubbed)."""
+
+    LIST_OUT = (
+        "PID\tStatus\tLabel\n"
+        "-\t0\tcom.apple.SafariHistoryServiceAgent\n"
+        "4242\t0\tcom.example.hermes-dashboard\n"
+        "777\t0\tapplication.com.microsoft.VSCode.1.2\n"
+    )
+
+    def _runner(self, *, ppid_of: dict[int, int], print_types: dict[str, str]):
+        def _side_effect(args, *a, **kw):
+            if args[:2] == ["launchctl", "list"]:
+                return MagicMock(returncode=0, stdout=self.LIST_OUT, stderr="")
+            if args[:2] == ["launchctl", "print"]:
+                target = args[2]
+                if target in print_types:
+                    return MagicMock(returncode=0, stdout=f"\tpath = x\n\ttype = {print_types[target]}\n")
+                return MagicMock(returncode=113, stdout="", stderr="Could not find service")
+            if args[:1] == ["ps"]:
+                pid = int(args[-1])
+                if pid in ppid_of:
+                    return MagicMock(returncode=0, stdout=f"{ppid_of[pid]}\n")
+                return MagicMock(returncode=1, stdout="", stderr="")
+            raise AssertionError(f"unexpected subprocess: {args}")
+        return _side_effect
+
+    def test_direct_launchagent_pid(self):
+        with patch("subprocess.run", side_effect=self._runner(
+                ppid_of={}, print_types={"gui/%d/com.example.hermes-dashboard" % os.getuid(): "LaunchAgent"})):
+            assert _real_get_launchd_service_for_pid(4242) == (
+                f"gui/{os.getuid()}", "com.example.hermes-dashboard"
+            )
+
+    def test_child_of_launchagent_shell_wrapper(self):
+        """/bin/sh -c '… hermes dashboard' without exec: python child, shell = job PID."""
+        with patch("subprocess.run", side_effect=self._runner(
+                ppid_of={5000: 4242}, print_types={"user/%d/com.example.hermes-dashboard" % os.getuid(): "LaunchAgent"})):
+            assert _real_get_launchd_service_for_pid(5000) == (
+                f"user/{os.getuid()}", "com.example.hermes-dashboard"
+            )
+
+    def test_process_started_from_an_app_terminal_is_not_supervised(self):
+        """Ancestor chain reaches VS Code's `Submitted` app job → not a plist job → None."""
+        with patch("subprocess.run", side_effect=self._runner(
+                ppid_of={6000: 6001, 6001: 777}, print_types={"gui/%d/application.com.microsoft.VSCode.1.2" % os.getuid(): "Submitted"})):
+            assert _real_get_launchd_service_for_pid(6000) is None
+
+    def test_unknown_pid_returns_none(self):
+        with patch("subprocess.run", side_effect=self._runner(ppid_of={8000: 1}, print_types={})):
+            assert _real_get_launchd_service_for_pid(8000) is None
+
+    def test_launchctl_missing_returns_none(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            assert _real_get_launchd_service_for_pid(4242) is None
 
 
 class TestManualBackendRespawn:

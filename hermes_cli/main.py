@@ -8358,6 +8358,157 @@ def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) 
         return False
 
 
+def _launchd_pid_label_map() -> dict[int, str]:
+    """Map ``pid -> label`` for every running job ``launchctl list`` reports.
+
+    ``launchctl list`` (no label) prints ``PID<TAB>Status<TAB>Label`` for the
+    caller's launchd domain (``gui/<uid>`` in an Aqua session, ``user/<uid>``
+    over SSH).  Jobs that are loaded but not currently running show ``-`` in
+    the PID column and are skipped.  Returns an empty dict on any failure or
+    off-macOS.
+    """
+    if sys.platform != "darwin":
+        return {}
+    try:
+        result = subprocess.run(
+            ["launchctl", "list"],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    mapping: dict[int, str] = {}
+    for line in (result.stdout or "").splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) != 3:
+            continue
+        pid_str, _status, label = parts
+        try:
+            pid = int(pid_str)
+        except ValueError:
+            # Header row ("PID") or a loaded-but-idle job ("-").
+            continue
+        if pid > 0 and label:
+            mapping[pid] = label
+    return mapping
+
+
+def _launchd_parent_pid(pid: int) -> int | None:
+    """Return *pid*'s parent PID via ``ps`` (macOS has no ``/proc``)."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return int((result.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+_LAUNCHD_SUPERVISED_JOB_TYPES = frozenset({"LaunchAgent", "LaunchDaemon"})
+
+
+def _launchd_job_type(domain: str, label: str) -> str | None:
+    """Return the ``type = …`` reported by ``launchctl print domain/label``.
+
+    ``LaunchAgent`` / ``LaunchDaemon`` are plist-backed jobs that launchd
+    supervises (``KeepAlive`` restarts).  GUI apps show up as ``Submitted``
+    (``path = (submitted by runningboardd)``) — every process started from a
+    Terminal/VS Code/Hermes.app window has one of those as an ancestor, so
+    the type is what separates "supervised dashboard" from "dashboard started
+    by hand from an app's terminal".  Returns ``None`` when the job is not
+    loaded in *domain* or the output has no type line.
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"{domain}/{label}"],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in (result.stdout or "").splitlines():
+        key, sep, value = line.strip().partition("=")
+        if sep and key.strip() == "type":
+            return value.strip() or None
+    return None
+
+
+def _get_launchd_service_for_pid(pid: int) -> tuple[str, str] | None:
+    """If *pid* is supervised by a launchd job, return ``(domain, label)``.
+
+    macOS analog of :func:`_get_systemd_service_for_pid`.  Checks *pid* and
+    then its ancestors (a plist may wrap the dashboard in ``/bin/sh -c``
+    without ``exec``) against the jobs ``launchctl list`` reports as running,
+    stopping at PID 1.  The first matching label is then looked up with
+    ``launchctl print`` in ``gui/<uid>`` and ``user/<uid>``; only a
+    ``LaunchAgent``/``LaunchDaemon`` job counts as supervised — a
+    ``Submitted`` application job (Terminal.app, VS Code, Hermes.app…) means
+    the dashboard was merely started from inside that app, and ``None`` is
+    returned so the caller keeps the manual kill+respawn path.
+    """
+    if sys.platform != "darwin":
+        return None
+    label_by_pid = _launchd_pid_label_map()
+    if not label_by_pid:
+        return None
+
+    label: str | None = None
+    current: int | None = pid
+    for _ in range(8):
+        if current is None or current <= 1:
+            break
+        label = label_by_pid.get(current)
+        if label:
+            break
+        current = _launchd_parent_pid(current)
+    if not label:
+        return None
+
+    uid = os.getuid()  # windows-footgun: ok — darwin-only helper (guarded above)
+    for domain in (f"gui/{uid}", f"user/{uid}"):
+        job_type = _launchd_job_type(domain, label)
+        if job_type is None:
+            continue
+        if job_type in _LAUNCHD_SUPERVISED_JOB_TYPES:
+            return domain, label
+        return None
+    return None
+
+
+def _try_restart_launchd_service(domain: str, label: str) -> bool:
+    """Restart the launchd job ``domain/label`` via ``launchctl kickstart``.
+
+    Called after the job's process has already been SIGTERM'd, so no ``-k``:
+    if ``KeepAlive`` already relaunched the job this is a no-op, otherwise it
+    starts it now (bypassing ``ThrottleInterval``).  Returns ``True`` when
+    launchctl exits 0.
+    """
+    try:
+        r = subprocess.run(
+            ["launchctl", "kickstart", f"{domain}/{label}"],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=30,
+        )
+        return r.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
     """Return the exact argv of a running process, when recoverable.
 

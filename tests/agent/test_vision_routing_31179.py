@@ -238,6 +238,25 @@ auxiliary:
         from tools.vision_tools import check_vision_requirements
         assert check_vision_requirements() is True
 
+    def test_check_vision_logs_resolver_exception(self, isolated_home, caplog):
+        """Capability probe failures must explain why tools were stripped."""
+        from unittest.mock import patch
+
+        _fresh_modules()
+        from tools.vision_tools import check_vision_requirements
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                side_effect=RuntimeError("profile context unavailable"),
+            ),
+            caplog.at_level("WARNING", logger="tools.vision_tools"),
+        ):
+            assert check_vision_requirements() is False
+
+        assert "Vision capability probe failed" in caplog.text
+        assert "profile context unavailable" in caplog.text
+
 
 
 

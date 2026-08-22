@@ -6624,10 +6624,21 @@ def resolve_provider_client(
         # entries that coincidentally match a canonical provider (e.g. ``nous``)
         # still defer to the built-in per `_get_named_custom_provider`'s guard.
         custom_entry = None
-        if original_provider and original_provider != provider:
-            custom_entry = _get_named_custom_provider(original_provider)
-        if custom_entry is None:
-            custom_entry = _get_named_custom_provider(provider)
+        try:
+            if original_provider and original_provider != provider:
+                custom_entry = _get_named_custom_provider(original_provider)
+            if custom_entry is None:
+                custom_entry = _get_named_custom_provider(provider)
+        except Exception:
+            # Profile-backed config lookup can fail independently of the live
+            # turn in a long-lived multi-profile process. The context-local
+            # runtime fallback below can still resolve the exact same requested
+            # provider safely.
+            logger.warning(
+                "resolve_provider_client: named custom provider lookup failed",
+                exc_info=True,
+            )
+            custom_entry = None
         if custom_entry:
             custom_base = (custom_entry.get("base_url") or "").strip()
             custom_key = (custom_entry.get("api_key") or "").strip()
@@ -6730,9 +6741,55 @@ def resolve_provider_client(
             logger.warning(
                 "resolve_provider_client: named custom provider %r has no base_url",
                 provider)
-            return None, None
     except ImportError:
         pass
+
+    # A live turn has already resolved its main custom endpoint. Reuse that
+    # answer when (and only when) the explicit named request is the same
+    # identity. This keeps profile/context lookup failures from stripping
+    # auxiliary capabilities without ever borrowing another session/provider's
+    # endpoint.
+    runtime_requested = str(
+        (main_runtime or {}).get("requested_provider") or ""
+    ).strip().lower()
+    runtime_provider = str(
+        (main_runtime or {}).get("provider") or ""
+    ).strip().lower()
+    runtime_base_url = str(
+        (main_runtime or {}).get("base_url") or ""
+    ).strip()
+
+    def _custom_identity(value: str) -> str:
+        value = (value or "").strip().lower()
+        return value.removeprefix("custom:")
+
+    requested_identity = _custom_identity(original_provider or provider)
+    if (
+        runtime_base_url
+        and runtime_requested
+        and (runtime_provider == "custom" or runtime_provider.startswith("custom:"))
+        and _custom_identity(runtime_requested) == requested_identity
+    ):
+        runtime_api_key = (main_runtime or {}).get("api_key")
+        if not isinstance(runtime_api_key, str):
+            runtime_api_key = None
+        logger.debug(
+            "resolve_provider_client: reusing matching live runtime for named "
+            "custom provider %r",
+            original_provider or provider,
+        )
+        return resolve_provider_client(
+            "custom",
+            model=model or (main_runtime or {}).get("model"),
+            async_mode=async_mode,
+            raw_codex=raw_codex,
+            explicit_base_url=runtime_base_url,
+            explicit_api_key=runtime_api_key,
+            api_mode=api_mode or (main_runtime or {}).get("api_mode") or None,
+            main_runtime=main_runtime,
+            is_vision=is_vision,
+            task=task,
+        )
 
     # ── Azure Foundry (delegates to runtime resolver for auth_mode-aware routing) ─
     #

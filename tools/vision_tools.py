@@ -1635,6 +1635,11 @@ def check_vision_requirements() -> bool:
     try:
         from agent.auxiliary_client import aux_probe_mode, resolve_vision_provider_client
     except ImportError:
+        logger.warning(
+            "Vision capability probe could not import the auxiliary resolver; "
+            "vision tools will be unavailable this turn",
+            exc_info=True,
+        )
         return False
     try:
         # Probe mode answers "is a vision client resolvable?" without paying
@@ -1649,6 +1654,11 @@ def check_vision_requirements() -> bool:
             _provider, client, _model = resolve_vision_provider_client(provider="auto")
             return client is not None
     except Exception:
+        logger.warning(
+            "Vision capability probe failed; vision tools will be unavailable "
+            "this turn",
+            exc_info=True,
+        )
         return False
 
 

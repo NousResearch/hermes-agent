@@ -122,6 +122,65 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         # no-key-required should be used
 
+    def test_named_custom_recovers_matching_live_runtime(self, tmp_path):
+        """A matching context-local runtime remains authoritative when the
+        profile-backed named-provider lookup is unavailable for this call."""
+        _write_config(tmp_path, {
+            "auxiliary": {
+                "vision": {
+                    "provider": "ai2.example.com:8081",
+                    "model": "/models/Qwen3.8-27B-IQ4_NL.gguf",
+                },
+            },
+        })
+        from agent.auxiliary_client import resolve_vision_provider_client
+
+        runtime = {
+            "provider": "custom",
+            "requested_provider": "ai2.example.com:8081",
+            "base_url": "http://ai2.example.com:8081/v1",
+            "api_key": "runtime-key",
+            "model": "/models/Qwen3.8-27B-IQ4_NL.gguf",
+        }
+        with patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            side_effect=RuntimeError("profile context unavailable"),
+        ):
+            provider, client, model = resolve_vision_provider_client(
+                main_runtime=runtime,
+            )
+
+        assert provider == "ai2.example.com:8081"
+        assert client is not None
+        assert model == runtime["model"]
+        assert "ai2.example.com:8081" in str(client.base_url)
+        assert client.api_key == "runtime-key"
+
+    def test_named_custom_rejects_unrelated_live_runtime(self, tmp_path):
+        """Runtime recovery must never borrow another provider's endpoint."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        runtime = {
+            "provider": "custom",
+            "requested_provider": "other-provider",
+            "base_url": "https://other.example.com/v1",
+            "api_key": "other-key",
+            "model": "other-model",
+        }
+        with patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            return_value=None,
+        ):
+            client, model = resolve_provider_client(
+                "ai2.example.com:8081",
+                model="vision-model",
+                main_runtime=runtime,
+                is_vision=True,
+            )
+
+        assert client is None
+        assert model is None
+
 
 
 class TestResolveProviderClientModelNormalization:

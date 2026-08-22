@@ -11,6 +11,7 @@ from hermes_cli.config import (
     DEFAULT_CONFIG,
     check_config_version,
     get_hermes_home,
+    get_missing_config_fields,
     ensure_hermes_home,
     get_compatible_custom_providers,
     _explicit_config_paths,
@@ -71,10 +72,72 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["model"] == DEFAULT_CONFIG["model"]
             assert config["agent"]["max_turns"] == DEFAULT_CONFIG["agent"]["max_turns"]
+            assert config["goals"]["max_turns"] == 20
+            assert config["goals"]["evidence_pack"]["enabled"] is False
             assert "max_turns" not in config
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
+
+    def test_goals_evidence_pack_default_merges_with_max_turns_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("goals:\n  max_turns: 7\n")
+
+        config = load_config()
+
+        assert config["goals"]["max_turns"] == 7
+        assert config["goals"]["evidence_pack"]["enabled"] is False
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_goals_evidence_pack_explicit_boolean_preserved(self, tmp_path, monkeypatch, enabled):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"goals": {"evidence_pack": {"enabled": enabled}}})
+        )
+
+        config = load_config()
+
+        assert config["goals"]["max_turns"] == 20
+        assert config["goals"]["evidence_pack"]["enabled"] is enabled
+
+    @pytest.mark.parametrize("enabled", ["yes", 1, 0, [], {}])
+    def test_goals_evidence_pack_non_boolean_values_are_preserved(self, tmp_path, monkeypatch, enabled):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"goals": {"evidence_pack": {"enabled": enabled}}})
+        )
+
+        config = load_config()
+
+        assert config["goals"]["max_turns"] == 20
+        assert config["goals"]["evidence_pack"]["enabled"] == enabled
+        assert type(config["goals"]["evidence_pack"]["enabled"]) is type(enabled)
+
+    def test_old_goals_config_receives_evidence_pack_without_version_bump(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"_config_version": DEFAULT_CONFIG["_config_version"], "goals": {"max_turns": 11}})
+        )
+
+        config = load_config()
+
+        assert config["goals"]["max_turns"] == 11
+        assert config["goals"]["evidence_pack"]["enabled"] is False
+        assert check_config_version() == (
+            DEFAULT_CONFIG["_config_version"],
+            DEFAULT_CONFIG["_config_version"],
+        )
+
+    def test_goals_evidence_pack_is_not_reported_missing_after_deep_merge(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("goals:\n  max_turns: 7\n")
+
+        missing_keys = {item["key"] for item in get_missing_config_fields()}
+        config = load_config()
+
+        assert "goals.evidence_pack" not in missing_keys
+        assert "goals.evidence_pack.enabled" not in missing_keys
+        assert config["goals"]["evidence_pack"]["enabled"] is False
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

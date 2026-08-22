@@ -1,0 +1,112 @@
+{
+  "$id": "https://hermes.local/schemas/executive_runtime/objective_completeness_analysis.v0.1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Executive Runtime Objective Completeness Analysis v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "objective_fingerprint",
+    "normalized_objective",
+    "objective_type",
+    "confidence",
+    "ambiguity_score",
+    "known_information",
+    "missing_information",
+    "contradictions",
+    "recommended_questions",
+    "ready_for_strategy"
+  ],
+  "properties": {
+    "objective_fingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "normalized_objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "objective_type": {
+      "enum": [
+        "RESEARCH",
+        "BUILD",
+        "ANALYZE",
+        "AUTOMATE",
+        "INTEGRATE",
+        "OPTIMIZE",
+        "DOCUMENT",
+        "VERIFY",
+        "MAINTAIN",
+        "STRATEGIC",
+        "OTHER"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "ambiguity_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "known_information": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "intent",
+        "target_detected",
+        "success_criteria_detected",
+        "scope_boundary_detected",
+        "verification_path_detected",
+        "deliverables",
+        "forbidden_actions",
+        "tokens"
+      ],
+      "properties": {
+        "intent": {"type": "string"},
+        "target_detected": {"type": "boolean"},
+        "success_criteria_detected": {"type": "boolean"},
+        "scope_boundary_detected": {"type": "boolean"},
+        "verification_path_detected": {"type": "boolean"},
+        "deliverables": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "forbidden_actions": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "tokens": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "missing_information": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "severity", "recoverable", "suggested_question"],
+        "properties": {
+          "kind": {"type": "string"},
+          "severity": {"enum": ["low", "medium", "high", "critical"]},
+          "recoverable": {"type": "boolean"},
+          "suggested_question": {"type": "string"}
+        }
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "recommended_questions": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "ready_for_strategy": {
+      "type": "boolean"
+    }
+  }
+}

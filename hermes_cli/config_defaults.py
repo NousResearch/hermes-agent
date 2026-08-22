@@ -150,6 +150,7 @@ DEFAULT_CONFIG = {
             "cost_threshold_usd": 0.25,
         },
         "service_tier": "",
+        "executive_v2_enabled": False,
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false
@@ -1982,6 +1983,9 @@ DEFAULT_CONFIG = {
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
         "max_turns": 20,
+        "evidence_pack": {
+            "enabled": False,
+        },
     },
 
 

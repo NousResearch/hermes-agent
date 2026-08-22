@@ -11998,6 +11998,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_resume_command(cmd_original)
         elif canonical == "sessions":
             self._handle_sessions_command(cmd_original)
+        elif canonical == "objective":
+            self._handle_executive_v2_dryrun(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
         elif canonical == "codex-runtime":
@@ -12530,6 +12532,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         try:
             from hermes_cli.goals import GoalManager
             from hermes_cli.config import load_config
+            from agent.executive.services import build_objective_services
+            from agent.executive.knowledge_discovery.factory import (
+                build_evidence_pack_engine,
+            )
         except Exception as exc:
             logging.debug("goal manager unavailable: %s", exc)
             return None
@@ -12542,14 +12548,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if existing is not None and getattr(existing, "session_id", None) == sid:
             return existing
 
+        # Borrow the per-CLI SessionDB for the canonical
+        # build_evidence_pack_engine factory. The factory borrows this
+        # reference for the engine's lifetime; ownership and close
+        # responsibility remain with HermesCLI.
+        session_db = getattr(self, "_session_db", None)
+
         try:
             cfg = load_config() or {}
             goals_cfg = cfg.get("goals") or {}
             max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+            services = build_objective_services(
+                session_id=sid,
+                config=cfg,
+                storage=session_db,
+                evidence_pack_engine_factory=build_evidence_pack_engine,
+            )
         except Exception:
             max_turns = 20
+            services = build_objective_services(
+                session_id=sid,
+                config=None,
+                storage=session_db,
+                evidence_pack_engine_factory=build_evidence_pack_engine,
+            )
 
-        mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
+        mgr = GoalManager(
+            session_id=sid,
+            default_max_turns=max_turns,
+            services=services,
+        )
         self._goal_manager = mgr
         return mgr
 

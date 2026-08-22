@@ -1,0 +1,135 @@
+{
+  "$id": "https://hermes.local/schemas/executive_runtime/goal_discovery_report.v0.1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Executive Runtime Goal Discovery Report v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "matched_goals",
+    "matched_reports",
+    "matched_checkpoints",
+    "matched_contracts",
+    "matched_kanban_refs",
+    "matched_capabilities",
+    "possible_duplicates",
+    "related_work",
+    "confidence",
+    "reusable_prior_work",
+    "missing_goal_context"
+  ],
+  "properties": {
+    "matched_goals": {"$ref": "#/$defs/matches"},
+    "matched_reports": {"$ref": "#/$defs/matches"},
+    "matched_checkpoints": {"$ref": "#/$defs/matches"},
+    "matched_contracts": {"$ref": "#/$defs/matches"},
+    "matched_kanban_refs": {"$ref": "#/$defs/matches"},
+    "matched_capabilities": {"$ref": "#/$defs/matches"},
+    "possible_duplicates": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/possible_duplicate"}
+    },
+    "related_work": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/related_work"}
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "reusable_prior_work": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/reusable_prior_work"}
+    },
+    "missing_goal_context": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "goals",
+          "reports",
+          "checkpoints",
+          "contracts",
+          "kanban_refs",
+          "capabilities"
+        ]
+      },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "matches": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/match"}
+    },
+    "match": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "path", "score", "reasons", "digest", "excerpt"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "goal",
+            "report",
+            "checkpoint",
+            "contract",
+            "kanban_ref",
+            "capability",
+            "skill",
+            "workflow",
+            "role",
+            "policy",
+            "template"
+          ]
+        },
+        "name": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+        "reasons": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "excerpt": {"type": "string"}
+      }
+    },
+    "possible_duplicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left", "right", "reason", "shared_terms"],
+      "properties": {
+        "left": {"$ref": "#/$defs/match"},
+        "right": {"$ref": "#/$defs/match"},
+        "reason": {"enum": ["same_digest", "shared_name_terms"]},
+        "shared_terms": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "related_work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "path", "score", "evidence_digest", "relationship"],
+      "properties": {
+        "kind": {"type": "string"},
+        "name": {"type": "string"},
+        "path": {"type": "string"},
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "relationship": {"type": "string"}
+      }
+    },
+    "reusable_prior_work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "path", "score", "reuse_reason"],
+      "properties": {
+        "kind": {"type": "string"},
+        "name": {"type": "string"},
+        "path": {"type": "string"},
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+        "reuse_reason": {"type": "string"}
+      }
+    }
+  }
+}

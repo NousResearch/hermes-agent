@@ -976,8 +976,61 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
 
 
 # ---------------------------------------------------------------------------
-# Attachments — kanban_attach / kanban_attach_url / kanban_attachments
+# Attachments and artifacts — kanban_attach / kanban_attach_url / kanban_attachments
 # ---------------------------------------------------------------------------
+
+
+def test_attach_defaults_to_artifact_and_list_exposes_type(worker_env):
+    import base64
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    for schema in (kt.KANBAN_ATTACH_SCHEMA, kt.KANBAN_ATTACH_URL_SCHEMA):
+        type_schema = schema["parameters"]["properties"]["attachment_type"]
+        assert set(type_schema["enum"]) == kb.VALID_ATTACHMENT_TYPES
+        assert type_schema["default"] == kb.DEFAULT_WORKER_ATTACHMENT_TYPE
+
+    payload = b"generated report"
+    created = json.loads(
+        kt._handle_attach(
+            {
+                "filename": "report.txt",
+                "content_base64": base64.b64encode(payload).decode("ascii"),
+                "content_type": "text/plain",
+            }
+        )
+    )
+    assert created["ok"] is True
+    assert created["attachment_type"] == "artifact"
+
+    explicit_input = json.loads(
+        kt._handle_attach(
+            {
+                "filename": "brief.txt",
+                "content_base64": base64.b64encode(b"input context").decode("ascii"),
+                "attachment_type": "attachment",
+            }
+        )
+    )
+    assert explicit_input["ok"] is True
+    assert explicit_input["attachment_type"] == "attachment"
+
+    listed = json.loads(kt._handle_attachments({}))
+    assert [item["attachment_type"] for item in listed["attachments"]] == [
+        "artifact",
+        "attachment",
+    ]
+
+    conn = kb.connect()
+    try:
+        artifact, attachment = kb.list_attachments(conn, worker_env)
+        assert artifact.attachment_type == "artifact"
+        assert attachment.attachment_type == "attachment"
+        assert Path(artifact.stored_path).read_bytes() == payload
+    finally:
+        conn.close()
 
 
 @pytest.fixture
@@ -1130,6 +1183,7 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
     try:
         atts = kb.list_attachments(conn, worker_env)
         assert [a.filename for a in atts] == ["spec.pdf"]
+        assert atts[0].attachment_type == "artifact"
         assert atts[0].content_type == "application/pdf"
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:

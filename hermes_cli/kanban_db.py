@@ -160,6 +160,28 @@ def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
+ATTACHMENT_TYPE_ATTACHMENT = "attachment"
+ATTACHMENT_TYPE_ARTIFACT = "artifact"
+VALID_ATTACHMENT_TYPES = frozenset(
+    {ATTACHMENT_TYPE_ATTACHMENT, ATTACHMENT_TYPE_ARTIFACT}
+)
+
+# Defaults follow the actor's domain intent rather than cosmetic consistency:
+# human uploads provide task context, while worker tool uploads publish task
+# outputs. Callers can always override the classification explicitly.
+DEFAULT_HUMAN_ATTACHMENT_TYPE = ATTACHMENT_TYPE_ATTACHMENT
+DEFAULT_WORKER_ATTACHMENT_TYPE = ATTACHMENT_TYPE_ARTIFACT
+
+
+def _sqlite_string_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+_ATTACHMENT_TYPE_CHECK_SQL = (
+    "attachment_type TEXT CHECK (attachment_type IN ("
+    + ", ".join(_sqlite_string_literal(value) for value in sorted(VALID_ATTACHMENT_TYPES))
+    + "))"
+)
 
 
 def _assert_not_delegated_child_mutation() -> None:
@@ -1313,6 +1335,7 @@ class Attachment:
     size: int
     uploaded_by: Optional[str]
     created_at: int
+    attachment_type: str
 
 
 @dataclass
@@ -1329,7 +1352,7 @@ class Event:
 # Schema
 # ---------------------------------------------------------------------------
 
-SCHEMA_SQL = """
+SCHEMA_SQL = f"""
 CREATE TABLE IF NOT EXISTS tasks (
     id                   TEXT PRIMARY KEY,
     title                TEXT NOT NULL,
@@ -1491,7 +1514,8 @@ CREATE TABLE IF NOT EXISTS task_attachments (
     content_type TEXT,
     size         INTEGER NOT NULL DEFAULT 0,
     uploaded_by  TEXT,
-    created_at   INTEGER NOT NULL
+    created_at   INTEGER NOT NULL,
+    {_ATTACHMENT_TYPE_CHECK_SQL}
 );
 
 -- Subscription from a gateway source (platform + chat + thread) to a
@@ -2533,6 +2557,22 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
     Called by ``init_db`` so opening an old DB is always safe.
     """
+    attachment_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(task_attachments)")
+    }
+    if attachment_cols and "attachment_type" not in attachment_cols:
+        # NULL deliberately means "attachment" at read time. That preserves
+        # every legacy row and keeps downgraded/older writers compatible when
+        # they insert without knowing about this nullable column. Some focused
+        # migration tests exercise a minimal schema without the attachments
+        # table, so skip this additive migration until that table exists.
+        _add_column_if_missing(
+            conn,
+            "task_attachments",
+            "attachment_type",
+            _ATTACHMENT_TYPE_CHECK_SQL,
+        )
+
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
     if "tenant" not in cols:
         _add_column_if_missing(conn, "tasks", "tenant", "tenant TEXT")
@@ -4103,6 +4143,15 @@ def _collision_free_path(dest_dir: Path, safe_name: str) -> Path:
     return dest_dir / candidate
 
 
+def normalize_attachment_type(value: Optional[str]) -> str:
+    """Return the canonical task-file type, treating legacy NULL as input."""
+    normalized = value or DEFAULT_HUMAN_ATTACHMENT_TYPE
+    if normalized not in VALID_ATTACHMENT_TYPES:
+        choices = ", ".join(sorted(VALID_ATTACHMENT_TYPES))
+        raise ValueError(f"attachment_type must be one of: {choices}")
+    return normalized
+
+
 def store_attachment_bytes(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4111,6 +4160,7 @@ def store_attachment_bytes(
     *,
     content_type: Optional[str] = None,
     uploaded_by: Optional[str] = None,
+    attachment_type: str = DEFAULT_HUMAN_ATTACHMENT_TYPE,
     board: Optional[str] = None,
     max_bytes: Optional[int] = None,
 ) -> int:
@@ -4131,6 +4181,7 @@ def store_attachment_bytes(
     after the blob is written (e.g. the task disappeared) the orphaned blob
     is removed before re-raising.
     """
+    attachment_type = normalize_attachment_type(attachment_type)
     if max_bytes is None:
         max_bytes = KANBAN_ATTACHMENT_MAX_BYTES
     if len(data) > max_bytes:
@@ -4151,6 +4202,7 @@ def store_attachment_bytes(
             content_type=content_type,
             size=len(data),
             uploaded_by=uploaded_by,
+            attachment_type=attachment_type,
         )
     except Exception:
         # Don't leave an orphan blob if the metadata insert fails (most
@@ -4171,6 +4223,7 @@ def add_attachment(
     content_type: Optional[str] = None,
     size: int = 0,
     uploaded_by: Optional[str] = None,
+    attachment_type: str = DEFAULT_HUMAN_ATTACHMENT_TYPE,
 ) -> int:
     """Record a file attachment for a task. Returns the new attachment id.
 
@@ -4178,6 +4231,7 @@ def add_attachment(
     first (under :func:`task_attachments_dir`); this only persists the
     metadata row and appends an ``attached`` event.
     """
+    attachment_type = normalize_attachment_type(attachment_type)
     if not filename or not filename.strip():
         raise ValueError("attachment filename is required")
     if not stored_path or not stored_path.strip():
@@ -4190,8 +4244,8 @@ def add_attachment(
             raise ValueError(f"unknown task {task_id}")
         cur = conn.execute(
             "INSERT INTO task_attachments "
-            "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at, attachment_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task_id,
                 filename.strip(),
@@ -4200,13 +4254,19 @@ def add_attachment(
                 int(size),
                 uploaded_by,
                 now,
+                attachment_type,
             ),
         )
         _append_event(
             conn,
             task_id,
             "attached",
-            {"filename": filename.strip(), "size": int(size), "by": uploaded_by},
+            {
+                "filename": filename.strip(),
+                "size": int(size),
+                "by": uploaded_by,
+                "attachment_type": attachment_type,
+            },
         )
         return int(cur.lastrowid or 0)
 
@@ -4226,6 +4286,7 @@ def list_attachments(conn: sqlite3.Connection, task_id: str) -> list[Attachment]
             size=r["size"] or 0,
             uploaded_by=r["uploaded_by"],
             created_at=r["created_at"],
+            attachment_type=normalize_attachment_type(r["attachment_type"]),
         )
         for r in rows
     ]
@@ -4246,6 +4307,7 @@ def get_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Att
         size=r["size"] or 0,
         uploaded_by=r["uploaded_by"],
         created_at=r["created_at"],
+        attachment_type=normalize_attachment_type(r["attachment_type"]),
     )
 
 
@@ -5765,15 +5827,27 @@ def _insert_completion_attachment(
     """Record a worker-produced artifact in the existing attachment table."""
     conn.execute(
         "INSERT INTO task_attachments "
-        "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-        "VALUES (?, ?, ?, NULL, ?, 'kanban_complete', ?)",
-        (task_id, filename, stored_path, size, created_at),
+        "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at, attachment_type) "
+        "VALUES (?, ?, ?, NULL, ?, 'kanban_complete', ?, ?)",
+        (
+            task_id,
+            filename,
+            stored_path,
+            size,
+            created_at,
+            ATTACHMENT_TYPE_ARTIFACT,
+        ),
     )
     _append_event(
         conn,
         task_id,
         "attached",
-        {"filename": filename, "size": size, "by": "kanban_complete"},
+        {
+            "filename": filename,
+            "size": size,
+            "by": "kanban_complete",
+            "attachment_type": ATTACHMENT_TYPE_ARTIFACT,
+        },
     )
 
 
@@ -11073,7 +11147,15 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # full file-tool access, can read them directly (read_file, terminal
     # `pdftotext`, etc.). On the local terminal backend the path resolves
     # as-is; remote backends need the kanban attachments dir mounted.
-    attachments = list_attachments(conn, task_id)
+    task_files = list_attachments(conn, task_id)
+    attachments = [
+        item for item in task_files
+        if item.attachment_type == ATTACHMENT_TYPE_ATTACHMENT
+    ]
+    artifacts = [
+        item for item in task_files
+        if item.attachment_type == ATTACHMENT_TYPE_ARTIFACT
+    ]
     if attachments:
         lines.append("## Attachments")
         lines.append(
@@ -11085,6 +11167,21 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             size_str = f", {size_kb} KB" if size_kb else ""
             ctype = f", {att.content_type}" if att.content_type else ""
             lines.append(f"- `{att.filename}`{ctype}{size_str} → `{att.stored_path}`")
+        lines.append("")
+
+    if artifacts:
+        lines.append("## Artifacts")
+        lines.append(
+            "Files generated by this task. Read them with the file/terminal "
+            "tools at the absolute paths below:"
+        )
+        for artifact in artifacts:
+            size_kb = max(1, (artifact.size + 1023) // 1024) if artifact.size else 0
+            size_str = f", {size_kb} KB" if size_kb else ""
+            ctype = f", {artifact.content_type}" if artifact.content_type else ""
+            lines.append(
+                f"- `{artifact.filename}`{ctype}{size_str} → `{artifact.stored_path}`"
+            )
         lines.append("")
 
     # Prior attempts — show closed runs so a retrying worker sees the

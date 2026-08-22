@@ -581,9 +581,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_attach.add_argument("--name", default=None,
                           help="Stored filename (default: the source file's basename)")
     p_attach.add_argument("--author", default=None,
-                          help="uploaded_by label (default: $HERMES_PROFILE or 'user')")
+                           help="uploaded_by label (default: $HERMES_PROFILE or 'user')")
+    p_attach.add_argument(
+        "--type",
+        dest="attachment_type",
+        choices=sorted(kb.VALID_ATTACHMENT_TYPES),
+        default=kb.DEFAULT_HUMAN_ATTACHMENT_TYPE,
+        help="File purpose (default: attachment for user-provided task context)",
+    )
 
-    p_attachments = sub.add_parser("attachments", help="List a task's attachments")
+    p_attachments = sub.add_parser("attachments", help="List a task's attachments and artifacts")
     p_attachments.add_argument("task_id")
     p_attachments.add_argument("--json", action="store_true")
 
@@ -2148,11 +2155,15 @@ def _cmd_attach(args: argparse.Namespace) -> int:
                 data,
                 content_type=content_type,
                 uploaded_by=uploaded_by,
+                attachment_type=args.attachment_type,
             )
     except kb.AttachmentTooLarge as exc:
         print(f"kanban: {exc}", file=sys.stderr)
         return 1
-    print(f"Attached {name} to {args.task_id} (attachment {att_id}, {len(data)} bytes)")
+    print(
+        f"Attached {name} to {args.task_id} "
+        f"({args.attachment_type} {att_id}, {len(data)} bytes)"
+    )
     return 0
 
 
@@ -2173,6 +2184,7 @@ def _cmd_attachments(args: argparse.Namespace) -> int:
                 "uploaded_by": a.uploaded_by,
                 "stored_path": a.stored_path,
                 "created_at": a.created_at,
+                "attachment_type": a.attachment_type,
             }
             for a in atts
         ], indent=2))
@@ -2180,10 +2192,13 @@ def _cmd_attachments(args: argparse.Namespace) -> int:
     if not atts:
         print(f"No attachments on {args.task_id}")
         return 0
-    print(f"Attachments on {args.task_id}:")
+    print(f"Attachments and artifacts on {args.task_id}:")
     for a in atts:
         ct = a.content_type or "-"
-        print(f"  [{a.id}] {a.filename}  ({a.size} bytes, {ct}, by {a.uploaded_by or '-'})")
+        print(
+            f"  [{a.id}] [{a.attachment_type}] {a.filename}  "
+            f"({a.size} bytes, {ct}, by {a.uploaded_by or '-'})"
+        )
         print(f"        {a.stored_path}")
     return 0
 

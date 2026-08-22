@@ -3755,20 +3755,24 @@
     return (n / (1024 * 1024)).toFixed(1) + " MB";
   }
 
-  // Attachments section in the task drawer (#35338). Upload button +
-  // list with download links and a delete (×) per row. The download
-  // link hits GET /attachments/:id which streams the file; the worker
-  // context surfaces the same files' absolute paths so a kanban worker
-  // can read them with the file/terminal tools.
-  function AttachmentsSection(props) {
+  // Task files in the drawer (#35338, #83960). Input attachments and
+  // worker-generated artifacts share storage/download/delete mechanics, but
+  // render in separate groups so their role in the task lifecycle is clear.
+  function TaskFilesSection(props) {
     const i18n = props.i18n;
-    const atts = props.attachments || [];
+    const files = props.attachments || [];
+    const attachments = files.filter(function (a) {
+      return !a.attachment_type || a.attachment_type === "attachment";
+    });
+    const artifacts = files.filter(function (a) {
+      return a.attachment_type === "artifact";
+    });
     const fileRef = useRef(null);
     const [dlErr, setDlErr] = useState(null);
     // Download via authenticated fetch → blob → synthetic anchor click.
     // A plain <a href> can't carry the auth the dashboard middleware requires,
     // so fetch authenticated and hand the browser a blob URL instead.
-    function downloadAttachment(a) {
+    function downloadTaskFile(a) {
       // SDK.authedFetch handles auth in BOTH modes (loopback token header /
       // gated cookie) and applies the dashboard base-path prefix. The old
       // hand-rolled Authorization:Bearer + credentials:'same-origin' sent an
@@ -3796,73 +3800,96 @@
         })
         .catch(function (e) { setDlErr(String(e.message || e)); });
     }
-    return h("div", { className: "hermes-kanban-section" },
-      h("div", { className: "hermes-kanban-section-head" },
-        `${tx(i18n, "attachments", "Attachments")} (${atts.length})`),
-      h("input", {
-        ref: fileRef,
-        type: "file",
-        multiple: true,
-        style: { display: "none" },
-        onChange: function (e) {
-          if (props.onUpload) props.onUpload(e.target.files);
-          // Reset so selecting the same file again re-triggers onChange.
-          try { e.target.value = ""; } catch (_e) { /* ignore */ }
+    function renderRows(items, emptyKey, emptyLabel, removeKey, removeLabel,
+        confirmKey, confirmLabel) {
+      if (items.length === 0) {
+        return h("div", { className: "text-xs text-muted-foreground" },
+          tx(i18n, emptyKey, emptyLabel));
+      }
+      return items.map(function (a) {
+        return h("div", {
+          key: a.id,
+          className: "flex items-center justify-between gap-2 py-1 text-sm",
         },
-      }),
-      h("div", { className: "flex items-center gap-2 mb-2" },
-        h(Button, {
-          size: "sm",
-          variant: "outline",
-          disabled: !!props.uploadBusy,
-          onClick: function () { if (fileRef.current) fileRef.current.click(); },
-        }, props.uploadBusy
-            ? tx(i18n, "uploading", "Uploading…")
-            : tx(i18n, "uploadFile", "Upload file")),
-      ),
-      (props.uploadErr || dlErr)
-        ? h("div", { className: "text-xs text-destructive mb-2" }, props.uploadErr || dlErr)
-        : null,
-      atts.length === 0
-        ? h("div", { className: "text-xs text-muted-foreground" },
-            tx(i18n, "noAttachments", "— no attachments —"))
-        : atts.map(function (a) {
-            return h("div", {
-              key: a.id,
-              className: "flex items-center justify-between gap-2 py-1 text-sm",
+          h("button", {
+            type: "button",
+            className: "hermes-kanban-attachment-link truncate",
+            title: a.filename,
+            onClick: function () { downloadTaskFile(a); },
+          }, a.filename),
+          h("span", { className: "text-xs text-muted-foreground whitespace-nowrap" },
+            _fmtBytes(a.size)),
+          h("button", {
+            type: "button",
+            className: "hermes-kanban-drawer-close",
+            title: tx(i18n, removeKey, removeLabel),
+            onClick: function () {
+              const title = tx(i18n, removeKey, removeLabel);
+              const description = tx(i18n, confirmKey, confirmLabel);
+              if (props.requestDialog) {
+                props.requestDialog({
+                  kind: "confirm",
+                  title: title,
+                  description: description,
+                  confirmLabel: tx(i18n, "common.delete", "Delete"),
+                  destructive: true,
+                }).then(function (r) {
+                  if (r.confirmed && props.onDelete) props.onDelete(a.id);
+                }).catch(function () { /* cancelled */ });
+              } else if (window.confirm(description)) {
+                if (props.onDelete) props.onDelete(a.id);
+              }
             },
-              h("button", {
-                type: "button",
-                className: "hermes-kanban-attachment-link truncate",
-                title: a.filename,
-                onClick: function () { downloadAttachment(a); },
-              }, a.filename),
-              h("span", { className: "text-xs text-muted-foreground whitespace-nowrap" },
-                _fmtBytes(a.size)),
-              h("button", {
-                type: "button",
-                className: "hermes-kanban-drawer-close",
-                title: tx(i18n, "removeAttachment", "Remove attachment"),
-                onClick: function () {
-                  if (props.requestDialog) {
-                    props.requestDialog({
-                      kind: "confirm",
-                      title: tx(i18n, "removeAttachment", "Remove attachment"),
-                      description: tx(i18n, "confirmRemoveAttachment",
-                        "Remove this attachment?"),
-                      confirmLabel: tx(i18n, "common.delete", "Delete"),
-                      destructive: true,
-                    }).then(function (r) {
-                      if (r.confirmed && props.onDelete) props.onDelete(a.id);
-                    }).catch(function () { /* cancelled */ });
-                  } else if (window.confirm(tx(i18n, "confirmRemoveAttachment",
-                      "Remove this attachment?"))) {
-                    if (props.onDelete) props.onDelete(a.id);
-                  }
-                },
-              }, "×"),
-            );
-          }),
+          }, "×"),
+        );
+      });
+    }
+    return h(React.Fragment, null,
+      h("div", { className: "hermes-kanban-section" },
+        h("div", { className: "hermes-kanban-section-head" },
+          `${tx(i18n, "attachments", "Attachments")} (${attachments.length})`),
+        h("input", {
+          ref: fileRef,
+          type: "file",
+          multiple: true,
+          style: { display: "none" },
+          onChange: function (e) {
+            if (props.onUpload) props.onUpload(e.target.files);
+            // Reset so selecting the same file again re-triggers onChange.
+            try { e.target.value = ""; } catch (_e) { /* ignore */ }
+          },
+        }),
+        h("div", { className: "flex items-center gap-2 mb-2" },
+          h(Button, {
+            size: "sm",
+            variant: "outline",
+            disabled: !!props.uploadBusy,
+            onClick: function () { if (fileRef.current) fileRef.current.click(); },
+          }, props.uploadBusy
+              ? tx(i18n, "uploading", "Uploading…")
+              : tx(i18n, "uploadFile", "Upload file")),
+        ),
+        (props.uploadErr || dlErr)
+          ? h("div", { className: "text-xs text-destructive mb-2" }, props.uploadErr || dlErr)
+          : null,
+        renderRows(
+          attachments,
+          "noAttachments", "— no attachments —",
+          "removeAttachment", "Remove attachment",
+          "confirmRemoveAttachment", "Remove this attachment?",
+        ),
+      ),
+      h("div", { className: "hermes-kanban-section" },
+        h("div", { className: "hermes-kanban-section-head" },
+          `${tx(i18n, "artifacts", "Artifacts")} (${artifacts.length})`),
+        renderRows(
+          artifacts,
+          "noArtifacts", "— no artifacts —",
+          "removeArtifact", "Remove artifact",
+          "confirmRemoveArtifact",
+          "Permanently remove this generated artifact? This cannot be undone, and later workers may rely on it.",
+        ),
+      ),
     );
   }
 
@@ -4001,7 +4028,7 @@
           );
         }),
       ) : null,
-      h(AttachmentsSection, {
+      h(TaskFilesSection, {
         attachments: attachments,
         boardSlug: props.boardSlug,
         onUpload: props.onUpload,
@@ -4781,6 +4808,7 @@
   // Register
   // -------------------------------------------------------------------------
 
+  KanbanPage.TaskFilesSection = TaskFilesSection;
   if (window.__HERMES_PLUGINS__ && typeof window.__HERMES_PLUGINS__.register === "function") {
     window.__HERMES_PLUGINS__.register("kanban", KanbanPage);
   }

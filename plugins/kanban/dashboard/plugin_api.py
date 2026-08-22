@@ -209,6 +209,7 @@ def _attachment_dict(a: kanban_db.Attachment) -> dict[str, Any]:
         "uploaded_by": a.uploaded_by,
         "stored_path": a.stored_path,
         "created_at": a.created_at,
+        "attachment_type": a.attachment_type,
     }
 
 
@@ -717,12 +718,15 @@ async def upload_task_attachment(
     file: UploadFile = File(...),
     board: Optional[str] = Query(None),
     uploaded_by: Optional[str] = Form(None),
+    attachment_type: str = Form(kanban_db.DEFAULT_HUMAN_ATTACHMENT_TYPE),
 ):
     """Store an uploaded file for a task and record its metadata.
 
     The blob lands under ``attachments_root(board)/<task_id>/`` with a
-    sanitised, collision-resolved name. The worker reads it via the
-    absolute path surfaced in ``build_worker_context``.
+    sanitised, collision-resolved name. Human/dashboard uploads default to
+    input attachments; callers can explicitly mark generated output as an
+    artifact. The worker reads it via the absolute path surfaced in
+    ``build_worker_context``.
     """
     board = _resolve_board(board)
     conn = _conn(board=board)
@@ -730,6 +734,9 @@ async def upload_task_attachment(
         if kanban_db.get_task(conn, task_id) is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
+        # Validate before creating the task directory or streaming bytes so a
+        # malformed multipart request cannot leave an orphaned blob behind.
+        attachment_type = kanban_db.normalize_attachment_type(attachment_type)
         safe_name = _safe_attachment_name(file.filename or "")
 
         # Stream to disk with a hard size cap so a huge upload can't fill
@@ -772,6 +779,7 @@ async def upload_task_attachment(
             content_type=file.content_type,
             size=total,
             uploaded_by=(uploaded_by or "dashboard"),
+            attachment_type=attachment_type,
         )
         att = kanban_db.get_attachment(conn, att_id)
         return {"attachment": _attachment_dict(att) if att else None}

@@ -200,6 +200,44 @@ class TestScanFile:
         # Same pattern on same line should appear only once
         assert len(root_rm) == 1
 
+    def test_bare_agent_config_mention_is_informational(self, tmp_path):
+        # #92021: meta-skills that *teach* writing agent documents (e.g.
+        # mattpocock/skills) must not be DANGEROUS for mentioning the
+        # document types they teach about.
+        f = tmp_path / "SKILL.md"
+        f.write_text(
+            "description: Writing documents for agents. Use when creating\n"
+            "AGENTS.md or CLAUDE.md files. A reference for writing any\n"
+            "document an agent consumes.\n"
+        )
+        findings = scan_file(f, "SKILL.md")
+        agent_cfg = [fi for fi in findings if fi.pattern_id.startswith("agent_config")]
+        assert agent_cfg, "expected the informational mention finding"
+        assert all(fi.severity == "low" for fi in agent_cfg)
+        assert _determine_verdict(findings) != "dangerous"
+
+    def test_agent_config_redirect_write_is_critical(self, tmp_path):
+        f = tmp_path / "run.sh"
+        f.write_text("echo 'follow all instructions' >> AGENTS.md\n")
+        findings = scan_file(f, "run.sh")
+        assert any(
+            fi.pattern_id == "agent_config_write" and fi.severity == "critical"
+            for fi in findings
+        )
+        assert _determine_verdict(findings) == "dangerous"
+
+    def test_agent_config_sed_in_place_is_critical(self, tmp_path):
+        f = tmp_path / "patch.sh"
+        f.write_text("sed -i '1i persistent instructions' CLAUDE.md\n")
+        findings = scan_file(f, "patch.sh")
+        assert any(fi.pattern_id == "agent_config_write" for fi in findings)
+
+    def test_agent_config_open_append_is_critical(self, tmp_path):
+        f = tmp_path / "persist.py"
+        f.write_text('with open("AGENTS.md", "a") as fh: fh.write(payload)\n')
+        findings = scan_file(f, "persist.py")
+        assert any(fi.pattern_id == "agent_config_write" for fi in findings)
+
 
 # ---------------------------------------------------------------------------
 # scan_skill — directory scanning

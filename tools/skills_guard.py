@@ -458,9 +458,19 @@ THREAT_PATTERNS = [
      "sets SUID/SGID bit on a file"),
 
     # ── Agent config persistence ──
+    # A bare filename mention is not a persistence signal: AGENTS.md/CLAUDE.md
+    # are ecosystem-generic document types that popular meta-skills *teach*
+    # users to write (#92021 — e.g. mattpocock/skills blocked for teaching
+    # document types), and descriptions cross-referencing such skills cascade
+    # too. Teaching text and command execution are separable at the shell
+    # layer, so keep the bare mention informational and only flag an actual
+    # write/redirect/patch command targeting these files as CRITICAL.
     (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
-     "agent_config_mod", "critical", "persistence",
-     "references agent config files (could persist malicious instructions across sessions)"),
+     "agent_config_mention", "low", "persistence",
+     "mentions agent config files (informational; informational unless written to)"),
+    (r'(?:>>?\s*.{0,40}|(?:sed|awk|tee|cp|mv|rm|truncate|chmod|chown|touch)\s.{0,60}|open\s*\(\s*["\'].{0,60})(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)',
+     "agent_config_write", "critical", "persistence",
+     "writes to agent config files (persists instructions across sessions)"),
     (r'\.hermes/config\.yaml|\.hermes/SOUL\.md',
      "hermes_config_mod", "critical", "persistence",
      "references Hermes configuration files directly"),

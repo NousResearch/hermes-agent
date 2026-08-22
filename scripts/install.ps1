@@ -2711,9 +2711,9 @@ function Install-Dependencies {
     # but the bootstrap runs install stages (venv, python-deps) as separate
     # processes, so the env var set in Install-Venv does NOT survive into a
     # separate python-deps invocation. Re-deriving it here covers that path.
-    # Without it, an inherited $env:UV_PYTHON = "3.14" makes the uv sync/pip
-    # tiers below recreate the venv at 3.14 and fail the maturin source build
-    # (no cp314 wheels yet).
+    # Without it, an inherited $env:UV_PYTHON can recreate the venv at a
+    # different Python and fail the maturin source build, so pin UV_PYTHON to
+    # the interpreter we just created.
     if (-not $NoVenv) {
         $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
         if (Test-Path $venvPythonExe) {

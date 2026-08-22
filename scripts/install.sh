@@ -1482,8 +1482,8 @@ install_deps() {
     # but the bootstrap runs install stages (`venv`, `python-deps`) as separate
     # processes, so an export from setup_venv does NOT survive into a separate
     # python-deps invocation. Re-deriving it here covers that path. Without it,
-    # an inherited UV_PYTHON=3.14 makes the uv sync/pip tiers below recreate the
-    # venv at 3.14 and fail the maturin source build (no cp314 wheels yet).
+    # an inherited UV_PYTHON makes the uv sync/pip tiers below recreate the
+    # venv at a different Python and fail the maturin source build.
     if [ "$DISTRO" != "termux" ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
         export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
     fi

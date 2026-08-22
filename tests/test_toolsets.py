@@ -41,6 +41,14 @@ class TestGetToolset:
         assert "xurl" in description
         assert "authenticated" in description
 
+    def test_xai_collections_search_toolset(self):
+        ts = get_toolset("xai_collections_search")
+        assert ts is not None
+        assert ts["tools"] == ["xai_collections_search"]
+        description = ts["description"].lower()
+        assert "collection" in description
+        assert "file_search" in description or "rag" in description
+
     def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(

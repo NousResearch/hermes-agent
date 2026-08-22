@@ -119,6 +119,13 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
     )
+    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda **_k: None)
+    monkeypatch.setattr("hermes_cli.managed_uv.update_managed_uv", lambda **_k: None)
+    monkeypatch.setattr(
+        "tools.skills_sync.sync_skills",
+        lambda **_k: {"copied": [], "updated": []},
+    )
+    monkeypatch.setattr("shutil.which", lambda name, **_k: None)
 
 
 def test_update_success_when_head_moves(monkeypatch, tmp_path, capsys):
@@ -147,3 +154,42 @@ def test_update_fails_loudly_when_head_pinned(monkeypatch, tmp_path, capsys):
     assert "Code did not move" in out
     assert "✓ Code updated!" not in out
     assert "checkout main" in out
+
+
+def test_update_ref_already_at_pin_skips_head_moved_gate(monkeypatch, tmp_path, capsys):
+    """``hermes update --ref`` at the current SHA is success, not #79678.
+
+    The HEAD-moved gate stays for branch-tip updates that claimed new commits
+    but did not move. A pin that is already checked out must not fail.
+    """
+    sha = "abc1234"
+    recorded = []
+
+    def side_effect(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        recorded.append(joined)
+        if "rev-parse" in joined and "--is-shallow-repository" in joined:
+            return SimpleNamespace(returncode=0, stdout="false\n", stderr="")
+        if "rev-parse" in joined and "--verify" in joined:
+            spec = cmd[-1]
+            if spec == f"{sha}^{{commit}}":
+                return SimpleNamespace(returncode=0, stdout=f"{sha}\n", stderr="")
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        if joined.endswith("rev-parse HEAD"):
+            return SimpleNamespace(returncode=0, stdout=f"{sha}\n", stderr="")
+        if "rev-list" in joined:
+            return SimpleNamespace(returncode=0, stdout="3\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    args = SimpleNamespace(
+        branch=None, ref=sha, yes=False, force=False, force_venv=False
+    )
+    _patch_update_deps(monkeypatch, tmp_path, side_effect)
+
+    hermes_main.cmd_update(args)
+
+    out = capsys.readouterr().out
+    assert "Code did not move" not in out
+    assert f"Already at {sha}" in out
+    assert not any("merge --ff-only" in c for c in recorded)
+    assert not any("rev-list" in c for c in recorded)

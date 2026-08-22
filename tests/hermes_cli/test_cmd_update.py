@@ -1236,3 +1236,108 @@ class TestUpdateNodeDependencies:
         assert cwd_calls, "expected at least one npm call"
         for cwd in cwd_calls:
             assert cwd == tmp_path, f"npm must run from PROJECT_ROOT; got cwd={cwd}"
+
+
+def _systemctl_restart_units(mock_run):
+    """Return unit names passed to ``systemctl ... restart <unit>``."""
+    units = []
+    for call in mock_run.call_args_list:
+        if not call.args:
+            continue
+        cmd = [str(part) for part in call.args[0]]
+        if "systemctl" not in cmd or "restart" not in cmd:
+            continue
+        restart_at = cmd.index("restart")
+        if restart_at + 1 < len(cmd):
+            units.append(cmd[restart_at + 1])
+    return units
+
+
+def _make_update_run_side_effect(commit_count="1", systemd_units=None):
+    """Git mocks from ``_make_run_side_effect`` plus systemd fleet-restart replies."""
+    git_side_effect = _make_run_side_effect(branch="main", verify_ok=True, commit_count=commit_count)
+    units = list(systemd_units or [])
+
+    def side_effect(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        if "list-units" in joined:
+            stdout = "".join(f"{name}.service loaded active running\n" for name in units)
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+        if "is-active" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+        if "systemctl" in joined and "show" in joined:
+            if "MainPID" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="100ms\n", stderr="")
+        return git_side_effect(cmd, **kwargs)
+
+    return side_effect
+
+
+class TestCmdUpdateNoRestart:
+    """``hermes update --no-restart`` skips fleet restart after a successful update."""
+
+    def _run_successful_update(self, *, no_restart):
+        import argparse
+
+        from hermes_cli.subcommands.update import build_update_parser
+
+        args = SimpleNamespace(no_restart=no_restart)
+        with patch("shutil.which", return_value=None), patch(
+            "subprocess.run"
+        ) as mock_run, patch(
+            "hermes_cli.gateway.supports_systemd_services", return_value=True
+        ), patch(
+            "hermes_cli.gateway.is_macos", return_value=False
+        ), patch(
+            "hermes_cli.gateway.find_gateway_pids", return_value=[]
+        ), patch(
+            "hermes_cli.gateway.find_profile_gateway_processes", return_value=[]
+        ), patch(
+            "hermes_cli.gateway._ensure_user_systemd_env"
+        ), patch(
+            "hermes_cli.gateway._get_service_pids", return_value=[]
+        ), patch(
+            "hermes_cli.update_cmd._service_unit_supports_graceful_sigusr1_restart",
+            return_value=False,
+        ), patch(
+            "hermes_cli.update_cmd._time.sleep"
+        ), patch(
+            "hermes_cli.update_cmd._finish_dashboard_update_cleanup"
+        ):
+            mock_run.side_effect = _make_update_run_side_effect(
+                commit_count="1", systemd_units=["hermes-gateway"]
+            )
+            cmd_update(args)
+        return mock_run
+
+    def test_parser_defaults_restart_and_accepts_flag(self):
+        import argparse
+
+        from hermes_cli.subcommands.update import build_update_parser
+
+        parser = argparse.ArgumentParser()
+        build_update_parser(parser.add_subparsers(), cmd_update=lambda _args: None)
+        assert parser.parse_args(["update"]).no_restart is False
+        assert parser.parse_args(["update", "--no-restart"]).no_restart is True
+
+    def test_skips_fleet_restart_when_flag_set(self, capsys):
+        mock_run = self._run_successful_update(no_restart=True)
+        out = capsys.readouterr().out
+
+        assert "Updating Python dependencies" in out
+        assert "Skipped restarting running gateway profiles" in out
+        assert _systemctl_restart_units(mock_run) == []
+
+    def test_restarts_fleet_when_flag_unset(self, capsys):
+        from unittest.mock import MagicMock
+
+        with patch(
+            "hermes_cli.main._purge_stale_hermes_modules", MagicMock()
+        ) as purge:
+            self._run_successful_update(no_restart=False)
+        out = capsys.readouterr().out
+
+        assert "Updating Python dependencies" in out
+        assert "Skipped restarting running gateway profiles" not in out
+        purge.assert_called_once()

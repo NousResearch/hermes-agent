@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.base import MessageType
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
 
 
 def _make_adapter(
@@ -222,40 +222,106 @@ def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions
     asyncio.run(_run())
 
 
-def test_observed_group_context_preserves_slash_command_text_for_dispatch():
-    from gateway.platforms.base import MessageEvent, MessageType, Platform, SessionSource
-
+def test_observed_group_command_keeps_actor_but_routes_to_shared_session():
     adapter = _make_adapter(
         require_mention=True,
         allowed_chats=["-100"],
         group_allowed_chats=["-100"],
         observe_unmentioned_group_messages=True,
     )
-    event = MessageEvent(
-        text="/new@hermes_bot",
-        message_type=MessageType.COMMAND,
-        source=SessionSource(
-            platform=Platform.TELEGRAM,
-            chat_id="-100",
-            user_id="111",
-            user_name="Alice",
-            chat_type="group",
-            thread_id="7",
-        ),
-        raw_message=_group_message(
-            "/new@hermes_bot",
-            entities=[_bot_command_entity("/new@hermes_bot", "/new@hermes_bot")],
-        ),
+    raw_message = _group_message(
+        "/new@hermes_bot",
+        from_user_id=111,
+        from_user_name="Alice Example",
+        entities=[_bot_command_entity("/new@hermes_bot", "/new@hermes_bot")],
     )
+    event = adapter._build_message_event(raw_message, MessageType.COMMAND)
 
     attributed = adapter._apply_telegram_group_observe_attribution(event)
 
     assert attributed.text == "/new@hermes_bot"
     assert attributed.get_command() == "new"
-    # Commands preserve sender identity for slash-access control (#67816).
-    assert attributed.source.user_id == "111"
-    assert attributed.source.user_name == "Alice"
+    # Session routing and actor identity are separate concerns. The source is
+    # shared so /new resets the same transcript ordinary observed/mentioned
+    # group messages use, while MessageEvent retains the real sender for slash
+    # access control and /whoami.
+    assert attributed.source.user_id is None
+    assert attributed.source.user_name is None
+    assert attributed.user_id == "111"
+    assert attributed.user_name == "Alice Example"
+    assert build_session_key(
+        attributed.source, group_sessions_per_user=True
+    ) == "agent:main:telegram:group:-100"
     assert "observed Telegram group context" in attributed.channel_prompt
+
+
+def test_observed_group_model_bare_and_suffixed_forms_share_the_exact_key():
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True,
+    )
+    keys = []
+
+    for command in ("/model", "/model@hermes_bot"):
+        raw_message = _group_message(
+            command,
+            entities=[_bot_command_entity(command, command)],
+        )
+        assert adapter._should_process_message(raw_message, is_command=True) is True
+        event = adapter._apply_telegram_group_observe_attribution(
+            adapter._build_message_event(raw_message, MessageType.COMMAND)
+        )
+        keys.append(build_session_key(event.source, group_sessions_per_user=True))
+        assert event.source.user_id is None
+        assert event.user_id == "111"
+
+    assert keys == [
+        "agent:main:telegram:group:-100",
+        "agent:main:telegram:group:-100",
+    ]
+
+
+def test_observed_group_bare_command_exception_preserves_other_routing_modes():
+    bare = _group_message(
+        "/model", entities=[_bot_command_entity("/model", "/model")]
+    )
+    suffixed = _group_message(
+        "/model@hermes_bot",
+        entities=[_bot_command_entity("/model@hermes_bot", "/model@hermes_bot")],
+    )
+
+    # Non-observe groups retain require-mention behavior and per-user routing.
+    ordinary = _make_adapter(require_mention=True, allowed_chats=["-100"])
+    assert ordinary._should_process_message(bare, is_command=True) is False
+    assert ordinary._should_process_message(suffixed, is_command=True) is True
+    ordinary_event = ordinary._build_message_event(suffixed, MessageType.COMMAND)
+    assert build_session_key(
+        ordinary_event.source, group_sessions_per_user=True
+    ).endswith(":111")
+
+    # DMs remain unrestricted.
+    assert ordinary._should_process_message(_dm_message("/model"), is_command=True) is True
+
+    # Observe-mode forum topics keep the topic component while sharing within it.
+    observed = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True,
+    )
+    topic_bare = _group_message(
+        "/model",
+        thread_id=7,
+        entities=[_bot_command_entity("/model", "/model")],
+    )
+    assert observed._should_process_message(topic_bare, is_command=True) is True
+    topic_event = observed._apply_telegram_group_observe_attribution(
+        observed._build_message_event(topic_bare, MessageType.COMMAND)
+    )
+    assert topic_event.source.thread_id == "7"
+    assert topic_event.source.user_id is None
 
 
 def test_shared_group_observe_source_is_authorized_by_group_allowed_chats(monkeypatch):

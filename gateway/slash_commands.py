@@ -144,6 +144,9 @@ class GatewaySlashCommandsMixin:
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
+        actor_user_id = getattr(event, "user_id", None) or source.user_id
+        if not actor_user_id:
+            return "⛔ /reset requires an identifiable user."
         
         # Get existing session key
         session_key = self._session_key_for_source(source)
@@ -264,14 +267,14 @@ class GatewaySlashCommandsMixin:
         # Emit session:end hook (session is ending)
         await self.hooks.emit("session:end", {
             "platform": source.platform.value if source.platform else "",
-            "user_id": source.user_id,
+            "user_id": actor_user_id,
             "session_key": session_key,
         })
 
         # Emit session:reset hook
         await self.hooks.emit("session:reset", {
             "platform": source.platform.value if source.platform else "",
-            "user_id": source.user_id,
+            "user_id": actor_user_id,
             "session_key": session_key,
         })
 
@@ -416,11 +419,23 @@ class GatewaySlashCommandsMixin:
         from gateway.slash_access import policy_for_source as _policy_for_source
 
         source = event.source
-        policy = _policy_for_source(self.config, source)
+        # Report the tier of the profile actually serving this source — under
+        # multiplex, self.config is the multiplexer's own policy and would
+        # misreport every secondary profile's admins/allowlists.
+        policy_cfg, policy_resolved = self._effective_gateway_config_for_source(
+            source
+        )
+        if not policy_resolved:
+            return "⛔ /whoami is unavailable without profile policy context."
+        policy = _policy_for_source(policy_cfg, source)
         platform = source.platform.value if source and source.platform else "?"
         chat_type = (source.chat_type if source else "") or "dm"
         scope = "DM" if chat_type.lower() in {"dm", "direct", "private", ""} else "group/channel"
-        user_id = (source.user_id if source else None) or "?"
+        user_id = (
+            getattr(event, "user_id", None)
+            or (source.user_id if source else None)
+            or "?"
+        )
 
         if not policy.enabled:
             return (
@@ -1086,7 +1101,9 @@ class GatewaySlashCommandsMixin:
         # the same owner — fail closed.
         return False
 
-    def _resume_caller_is_admin(self, source: SessionSource) -> bool:
+    def _resume_caller_is_admin(
+        self, source: SessionSource, actor_user_id: Optional[str] = None
+    ) -> bool:
         """Whether *source* is an EXPLICITLY-configured admin allowed to make a
         cross-origin /resume or /sessions listing.
 
@@ -1099,14 +1116,29 @@ class GatewaySlashCommandsMixin:
         """
         try:
             from gateway.slash_access import policy_for_source
-            policy = policy_for_source(self.config, source)
-            uid = getattr(source, "user_id", None)
+            # Cross-origin data access must be judged by the profile actually
+            # serving this source; an unresolvable profile fails closed rather
+            # than inheriting the multiplexer's admin list.
+            policy_cfg, policy_resolved = (
+                self._effective_gateway_config_for_source(source)
+            )
+            if not policy_resolved:
+                return False
+            policy = policy_for_source(policy_cfg, source)
+            # Shared observed-group sources intentionally omit participant
+            # identity for routing. The actual command actor remains on the
+            # MessageEvent and is passed separately at the handler boundary.
+            uid = actor_user_id or getattr(source, "user_id", None)
             return bool(policy.enabled and uid and policy.is_admin(uid))
         except Exception:
             return False
 
     async def _resume_target_allowed(
-        self, source: SessionSource, target_id: str, allow_override: bool = False
+        self,
+        source: SessionSource,
+        target_id: str,
+        allow_override: bool = False,
+        actor_user_id: Optional[str] = None,
     ) -> bool:
         """Whether *source* may resume the persisted session *target_id*.
 
@@ -1118,7 +1150,7 @@ class GatewaySlashCommandsMixin:
         the row PROVES the same owner; a row that lacks enough ownership data
         fails closed. An explicit admin ``--all`` override bypasses scoping.
         """
-        if allow_override and self._resume_caller_is_admin(source):
+        if allow_override and self._resume_caller_is_admin(source, actor_user_id):
             return True
         # Use the live origin only when it resolves to a real SessionSource; a
         # store that can't resolve it (or an unexpected lookup error) must not
@@ -1249,7 +1281,11 @@ class GatewaySlashCommandsMixin:
         return False
 
     async def _resume_row_visible(
-        self, source: SessionSource, row: dict, allow_all: bool
+        self,
+        source: SessionSource,
+        row: dict,
+        allow_all: bool,
+        actor_user_id: Optional[str] = None,
     ) -> bool:
         """Whether a titled-session listing *row* belongs to the caller's origin.
 
@@ -1265,12 +1301,14 @@ class GatewaySlashCommandsMixin:
             # like the non-Matrix branch below. A non-admin Matrix ``--all``
             # falls back to same-room scoping rather than exposing every Matrix
             # titled session.
-            if allow_all and self._resume_caller_is_admin(source):
+            if allow_all and self._resume_caller_is_admin(source, actor_user_id):
                 return True
             return self._same_matrix_room(source, self._gateway_session_origin_for_id(sid))
-        if allow_all and self._resume_caller_is_admin(source):
+        if allow_all and self._resume_caller_is_admin(source, actor_user_id):
             return True
-        return await self._resume_target_allowed(source, sid, allow_override=False)
+        return await self._resume_target_allowed(
+            source, sid, allow_override=False, actor_user_id=actor_user_id
+        )
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
@@ -2153,7 +2191,17 @@ class GatewaySlashCommandsMixin:
                                 _chat_id, model_id, provider_slug
                             )
 
-                    metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                    metadata = dict(
+                        self._thread_metadata_for_source(
+                            source, self._reply_anchor_for_event(event)
+                        )
+                        or {}
+                    )
+                    picker_user_id = getattr(event, "user_id", None) or getattr(
+                        source, "user_id", None
+                    )
+                    if picker_user_id is not None:
+                        metadata["picker_user_id"] = str(picker_user_id)
                     result = await adapter.send_model_picker(
                         chat_id=source.chat_id,
                         providers=providers,
@@ -3666,9 +3714,15 @@ class GatewaySlashCommandsMixin:
         if not has_picker:
             return False
         try:
-            metadata = self._thread_metadata_for_source(
-                event.source, self._reply_anchor_for_event(event)
+            metadata = dict(
+                self._thread_metadata_for_source(
+                    event.source, self._reply_anchor_for_event(event)
+                )
+                or {}
             )
+            picker_user_id = event.user_id or event.source.user_id
+            if picker_user_id is not None:
+                metadata["picker_user_id"] = str(picker_user_id)
             result = await adapter.send_choice_picker(
                 chat_id=event.source.chat_id,
                 title=title,
@@ -3970,9 +4024,22 @@ class GatewaySlashCommandsMixin:
         requested = event.get_command_args().strip() or None
         # This mutates profile-wide security policy. The central slash gate can
         # allow selected commands to non-admin users, so enforce admin again at
-        # this side-effect boundary. Unconfigured policies remain unrestricted.
-        policy = policy_for_source(self.config, event.source)
-        if requested and not policy.is_admin(event.source.user_id):
+        # this side-effect boundary — against the policy of the profile
+        # actually serving this source, not the multiplexer's own config.
+        # Missing actors and unresolvable profiles always fail closed;
+        # otherwise unconfigured policies remain unrestricted.
+        policy_cfg, policy_resolved = self._effective_gateway_config_for_source(
+            event.source
+        )
+        policy = policy_for_source(
+            policy_cfg if policy_resolved else None, event.source
+        )
+        actor_user_id = getattr(event, "user_id", None) or event.source.user_id
+        if requested and (
+            not policy_resolved
+            or not actor_user_id
+            or not policy.is_admin(actor_user_id)
+        ):
             return "Only gateway admins can change the persistent approval mode."
         result = run_approval_mode_command(requested)
         # Approval checks load config dynamically; do not evict the cached agent
@@ -4539,6 +4606,11 @@ class GatewaySlashCommandsMixin:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
+        actor_user_id = getattr(event, "user_id", None) or source.user_id
+        if not actor_user_id:
+            return t("gateway.topic.unauthorized")
+        actor_source = dataclasses.replace(source, user_id=str(actor_user_id))
+
         # Authorization: /topic activates multi-session mode and mutates
         # SQLite side tables. Unauthorized senders (not in allowlist) must
         # not be able to do that. Gateway routes already authorize the
@@ -4546,7 +4618,7 @@ class GatewaySlashCommandsMixin:
         auth_fn = getattr(self, "_is_user_authorized", None)
         if callable(auth_fn):
             try:
-                if not auth_fn(source):
+                if not auth_fn(actor_source):
                     return t("gateway.topic.unauthorized")
             except Exception:
                 logger.debug("Topic auth check failed", exc_info=True)
@@ -4559,12 +4631,16 @@ class GatewaySlashCommandsMixin:
 
         # /topic off — clean disable path so users don't have to edit the DB.
         if args.lower() in {"off", "disable", "stop"}:
-            return await self._disable_telegram_topic_mode_for_chat(source)
+            return await self._disable_telegram_topic_mode_for_chat(
+                source, actor_user_id=str(actor_user_id)
+            )
 
         if args:
             if not source.thread_id:
                 return t("gateway.topic.restore_needs_topic")
-            return await self._restore_telegram_topic_session(event, args)
+            return await self._restore_telegram_topic_session(
+                event, args, actor_user_id=str(actor_user_id)
+            )
 
         capabilities = await self._get_telegram_topic_capabilities(source)
         if capabilities.get("checked"):
@@ -4582,7 +4658,7 @@ class GatewaySlashCommandsMixin:
         try:
             await self._session_db.enable_telegram_topic_mode(
                 chat_id=str(source.chat_id),
-                user_id=str(source.user_id),
+                user_id=str(actor_user_id),
                 has_topics_enabled=capabilities.get("has_topics_enabled"),
                 allows_users_to_create_topics=capabilities.get("allows_users_to_create_topics"),
             )
@@ -4617,7 +4693,9 @@ class GatewaySlashCommandsMixin:
                 )
             return t("gateway.topic.thread_ready")
 
-        return await self._telegram_topic_root_status_message(source)
+        return await self._telegram_topic_root_status_message(
+            source, actor_user_id=str(actor_user_id)
+        )
 
     async def _handle_save_command(self, event: MessageEvent) -> str:
         """Handle /save — export the current session and send it as a document.
@@ -4778,6 +4856,7 @@ class GatewaySlashCommandsMixin:
         source = await asyncio.to_thread(
             self._normalize_source_for_session_key, event.source
         )
+        actor_user_id = getattr(event, "user_id", None) or source.user_id
         session_key = self._session_key_for_source(source)
         raw_args = event.get_command_args().strip()
         try:
@@ -4800,7 +4879,9 @@ class GatewaySlashCommandsMixin:
 
         async def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            widen = allow_all and self._resume_caller_is_admin(source)
+            widen = allow_all and self._resume_caller_is_admin(
+                source, actor_user_id
+            )
             sessions = await self._session_db.list_sessions_rich(
                 source=user_source,
                 session_key=None if widen else session_key,
@@ -4814,7 +4895,9 @@ class GatewaySlashCommandsMixin:
                 titled = await _list_titled_sessions()
                 titled = [
                     s for s in titled
-                    if await self._resume_row_visible(source, s, allow_all)
+                    if await self._resume_row_visible(
+                        source, s, allow_all, actor_user_id=actor_user_id
+                    )
                 ]
                 if not titled:
                     if source.platform == Platform.MATRIX and not allow_all:
@@ -4842,7 +4925,9 @@ class GatewaySlashCommandsMixin:
                 titled = await _list_titled_sessions()
                 titled = [
                     s for s in titled
-                    if await self._resume_row_visible(source, s, allow_all)
+                    if await self._resume_row_visible(
+                        source, s, allow_all, actor_user_id=actor_user_id
+                    )
                 ]
             except Exception as e:
                 logger.debug("Failed to list titled sessions for numeric resume: %s", e)
@@ -4881,7 +4966,10 @@ class GatewaySlashCommandsMixin:
                     name=name,
                 )
         elif not await self._resume_target_allowed(
-            source, target_id, allow_override=(allow_all or allow_cross_room)
+            source,
+            target_id,
+            allow_override=(allow_all or allow_cross_room),
+            actor_user_id=actor_user_id,
         ):
             # IDOR guard: a session id/title is a routing handle, not authority.
             # Bind /resume to the caller's own platform/user/chat on every
@@ -4967,6 +5055,7 @@ class GatewaySlashCommandsMixin:
         source = await asyncio.to_thread(
             self._normalize_source_for_session_key, event.source
         )
+        actor_user_id = getattr(event, "user_id", None) or source.user_id
         session_key = self._session_key_for_source(source)
 
         # A cross-origin listing (`/sessions all`) is honored only for an
@@ -4974,7 +5063,9 @@ class GatewaySlashCommandsMixin:
         # user argument, so without this gate any caller could run
         # `/sessions all` and enumerate other origins' session ids / titles /
         # previews / sources — the enumeration half of the /resume IDOR.
-        cross_origin = include_all and self._resume_caller_is_admin(source)
+        cross_origin = include_all and self._resume_caller_is_admin(
+            source, actor_user_id
+        )
         current_entry = await self.async_session_store.get_or_create_session(source)
         rows = await asyncio.to_thread(
             query_session_listing,
@@ -4995,7 +5086,9 @@ class GatewaySlashCommandsMixin:
             # session ids/previews from other users/rooms aren't enumerable.
             rows = [
                 row for row in rows
-                if await self._resume_row_visible(source, row, allow_all=False)
+                if await self._resume_row_visible(
+                    source, row, allow_all=False, actor_user_id=actor_user_id
+                )
             ]
         rows = rows[:10]
         if search_query:

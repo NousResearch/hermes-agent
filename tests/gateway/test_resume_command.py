@@ -281,7 +281,7 @@ class TestHandleResumeCommand:
         db.set_session_title("other_lane", "Other Lane Work")
 
         runner = _make_runner(session_db=db, event=event)
-        runner._resume_caller_is_admin = lambda _source: True
+        runner._resume_caller_is_admin = lambda _source, _actor_user_id=None: True
         result = await runner._handle_resume_command(event)
 
         assert "Other Lane Work" in result
@@ -563,11 +563,68 @@ class TestHandleSessionsCommand:
         db.set_session_title("discord_named", "Discord Work")
 
         runner = _make_runner(session_db=db, event=event)
-        runner._resume_caller_is_admin = lambda _source: True
+        runner._resume_caller_is_admin = lambda _source, _actor_user_id=None: True
         result = await runner._handle_sessions_command(event)
 
         assert "Telegram Work" in result
         assert "Discord Work" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["/resume --all", "/sessions all"])
+    async def test_observed_group_admin_actor_keeps_cross_origin_override(
+        self, tmp_path, command
+    ):
+        """Shared routing identity must not erase the admin command actor."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        shared_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id=None,
+            chat_id="-100-observed",
+            chat_type="group",
+        )
+        event = MessageEvent(
+            text=command,
+            source=shared_source,
+            user_id="group-admin",
+            user_name="admin",
+        )
+        db.create_session(
+            "other_platform",
+            "discord",
+            session_key="agent:main:discord:dm:other",
+            user_id="other-user",
+            chat_id="other",
+        )
+        db.set_session_title("other_platform", "Discord Cross Origin Work")
+
+        runner = _make_runner(session_db=db, event=event)
+        runner.config.platforms[Platform.TELEGRAM] = {
+            "group_allow_admin_from": ["group-admin"],
+        }
+        expected_title = "Discord Cross Origin Work"
+        if command.startswith("/resume"):
+            # /resume --all widens only within the source platform by design.
+            db.create_session(
+                "other_telegram_group",
+                "telegram",
+                session_key="agent:main:telegram:group:other",
+                user_id="other-user",
+                chat_id="-100-other",
+                chat_type="group",
+            )
+            expected_title = "Telegram Cross Origin Work"
+            db.set_session_title("other_telegram_group", expected_title)
+
+        result = await (
+            runner._handle_resume_command(event)
+            if command.startswith("/resume")
+            else runner._handle_sessions_command(event)
+        )
+
+        assert expected_title in result
         db.close()
 
     @pytest.mark.asyncio
@@ -848,7 +905,7 @@ class TestResumeRowVisibleMatrixAllScoping:
     @pytest.mark.asyncio
     async def test_non_admin_all_does_not_expose_other_room(self):
         runner = _make_runner()
-        runner._resume_caller_is_admin = lambda src: False
+        runner._resume_caller_is_admin = lambda src, actor_user_id=None: False
         # Titled row whose live origin is a DIFFERENT Matrix room.
         other_room = SessionSource(platform=Platform.MATRIX, chat_id="!room-b:hs",
                                    chat_type="group", user_id="@bob:hs")

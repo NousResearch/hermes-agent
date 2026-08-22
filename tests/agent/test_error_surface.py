@@ -152,6 +152,31 @@ def test_result_disk_full_wins_over_reason():
     assert surface["retryable"] is False
 
 
+def test_result_session_persistence_failed_maps_to_disk_layer():
+    """turn_finalizer stamps failure_reason as
+    "session_persistence_failed:<cause>" (hermes_state.PERSISTENCE_ERROR_CAUSES)
+    with a generic error string that never trips the disk-full text check.
+    Every cause is a local-storage fault, not a provider verdict, so all of
+    them — not just the "disk" cause — must land on LAYER_DISK instead of
+    falling through to the exact-match _REASON_TO_LAYER miss and defaulting
+    to LAYER_PROVIDER (which would offer a nonsensical "Switch provider"
+    action for a SQLite lock/corruption/lease problem). Iterates the real
+    cause tuple rather than a hardcoded list, per hermes_state's own note
+    that consumers enumerating causes must not desync from it."""
+    from hermes_state import PERSISTENCE_ERROR_CAUSES
+
+    generic_error = (
+        "session storage could not be written — check the state database "
+        "health (`hermes doctor`), then send your message again"
+    )
+    for cause in PERSISTENCE_ERROR_CAUSES:
+        surface = build_error_surface_from_result(
+            _failed_result(f"session_persistence_failed:{cause}", error=generic_error)
+        )
+        assert surface["layer"] == LAYER_DISK, cause
+        assert surface["code"] == f"session_persistence_failed:{cause}"
+
+
 # ── build_error_surface_from_exception ───────────────────────────────────
 
 

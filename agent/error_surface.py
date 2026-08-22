@@ -53,6 +53,16 @@ _REASON_TO_LAYER = {
     "billing_unverified": LAYER_BILLING,
 }
 
+# turn_finalizer stamps failure_reason as
+# "session_persistence_failed:<cause>" (see hermes_state.PERSISTENCE_ERROR_CAUSES
+# for the cause vocabulary — locked/compression/compression_closed/turn_lease/
+# corrupt/disk/unknown) when a turn dies because the local SessionDB write
+# failed. The cause varies per turn, so this can't be a fixed key in
+# _REASON_TO_LAYER; every one of those causes is a local-storage fault, never
+# a provider verdict, which is exactly what LAYER_DISK's own docstring
+# entry ("local disk full / persistence failure") already promises.
+_PERSISTENCE_FAILURE_REASON_PREFIX = "session_persistence_failed:"
+
 # Transport-ish reasons: the failure is between us and the base_url, not a
 # verdict the provider returned. On a custom/local endpoint these point at
 # the user's endpoint config, so they surface as LAYER_ENDPOINT there.
@@ -191,7 +201,9 @@ def build_error_surface_from_result(
 
         layer = _REASON_TO_LAYER.get(reason)
         if layer is None:
-            if reason in _TRANSPORT_REASONS and _is_custom_endpoint(provider):
+            if reason.startswith(_PERSISTENCE_FAILURE_REASON_PREFIX):
+                layer = LAYER_DISK
+            elif reason in _TRANSPORT_REASONS and _is_custom_endpoint(provider):
                 layer = LAYER_ENDPOINT
             elif _looks_like_stream_drop(error_text):
                 layer = LAYER_STREAMING

@@ -206,14 +206,21 @@ async def test_baseline_non_interrupted_agent_renders_progress(monkeypatch, tmp_
 
 @pytest.mark.asyncio
 async def test_partial_empty_agent_response_is_normalized(monkeypatch, tmp_path):
-    """Messaging gateways should not echo raw truncation errors as final text."""
+    """Messaging gateways should not echo raw truncation errors as final text.
+
+    The empty-partial fallback first wraps the engine error as
+    "⚠️ Processing stopped: {error}. Try again."; since that error is an
+    engine give-up sentinel, the chat-surface sanitizer then replaces the
+    whole wrapped form with the human retry nudge — the raw truncation
+    diagnostic must not survive to the final response.
+    """
+    gateway_run = importlib.import_module("gateway.run")
     adapter, result = await _run_once(
         monkeypatch, tmp_path, PartialTruncationAgent, "sess-partial-empty"
     )
 
-    assert result["final_response"].startswith("⚠️ Processing stopped:")
-    assert "Response truncated due to output length limit" in result["final_response"]
-    assert result["final_response"] != "⚠️ Response truncated due to output length limit"
+    assert result["final_response"] == gateway_run._GATEWAY_GIVEUP_REPLY
+    assert "Response truncated due to output length limit" not in result["final_response"]
     assert result["partial"] is True
     assert adapter.sent == []
 

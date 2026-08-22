@@ -273,6 +273,10 @@ import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createStreamThrottle } from './stream-throttle'
 import { registerTerminalIpc } from './terminal-ipc'
+import {
+  registrySshScopeForWindowRoute,
+  WindowConnectionRouteRegistry
+} from './window-connection-route'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import {
   backgroundMaterialFor,
@@ -9112,43 +9116,84 @@ async function teardownSshConnection(profile) {
 // any cached SSH state. A per-profile token/OAuth override wins over a global
 // SSH connection — so if the active profile resolves to a NON-SSH backend, the
 // terminal must NOT fall through to a global SSH host.
-function activeSshTerminalTarget() {
-  const profile = primaryProfileKey()
-  const config = readDesktopConnectionConfig()
+function activeSshTerminalTarget(webContentsId?: number) {
+  const windowRoute =
+    typeof webContentsId === 'number' ? windowConnectionRoutes.get(webContentsId) : null
 
-  if (profileSshOverride(config, profile)) {
-    const scope = sshScopeKey(profile)
+  if (windowRoute?.registryScoped && windowRoute.connectionId) {
+    const scope = registrySshScopeForWindowRoute(
+      windowRoute,
+      readDesktopConnectionsRegistry()
+    )
+
+    if (!scope) {
+      return null
+    }
+
     const state = sshConnections.get(scope)
 
     return state && state.ssh ? { ssh: state.ssh, scope } : 'pending'
   }
 
-  if (profileRemoteOverride(config, profile)) {
+  const profile = windowRoute?.profile ?? primaryProfileKey()
+  const config = readDesktopConnectionConfig()
+  const route = resolveDesktopRemoteRoute({
+    config,
+    env: {
+      token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
+      url: process.env.HERMES_DESKTOP_REMOTE_URL
+    },
+    profile,
+    registry: readDesktopConnectionsRegistry()
+  })
+
+  if (!route || route.kind !== 'ssh') {
     return null
   }
 
-  if (process.env.HERMES_DESKTOP_REMOTE_URL) {
-    return null
+  const scope = route.connectionId
+    ? backendScopeKey(route.connectionId, profile)
+    : sshScopeKey(route.source === 'profile' ? profile : null)
+  const state = sshConnections.get(scope)
+
+  return state && state.ssh ? { ssh: state.ssh, scope } : 'pending'
+}
+
+async function ensureTerminalBackend(webContentsId: number) {
+  const windowRoute = windowConnectionRoutes.get(webContentsId)
+
+  if (windowRoute?.registryScoped && windowRoute.connectionId) {
+    return ensureRegistryBackend(windowRoute.connectionId, windowRoute.profile)
   }
 
-  if (config.mode === 'ssh') {
-    const state = sshConnections.get('')
-
-    return state && state.ssh ? { ssh: state.ssh, scope: '' } : 'pending'
-  }
-
-  return null
+  return ensureBackend(windowRoute?.profile ?? primaryProfileKey())
 }
 
 // Loopback reach for the browser pane. Scoped to the SSH connection that
 // authorized it: a different host (or none) must never inherit live forwards
 // into somebody else's machine.
-const previewReach = new PreviewReachRegistry()
-let previewReachScope: null | string = null
+const previewReachByWebContents = new Map<
+  number,
+  { registry: PreviewReachRegistry; scope: string }
+>()
 
-async function resetPreviewReach() {
-  previewReachScope = null
-  await previewReach.closeAll()
+async function resetPreviewReach(webContentsId?: number) {
+  if (typeof webContentsId === 'number') {
+    const current = previewReachByWebContents.get(webContentsId)
+
+    previewReachByWebContents.delete(webContentsId)
+
+    if (current) {
+      await current.registry.closeAll()
+    }
+
+    return
+  }
+
+  const open = [...previewReachByWebContents.values()]
+
+  previewReachByWebContents.clear()
+  await Promise.allSettled(open.map(entry => entry.registry.closeAll()))
 }
 
 /**
@@ -9159,25 +9204,33 @@ async function resetPreviewReach() {
  * remote with no tunnel to borrow. Callers must not treat an unchanged URL as
  * failure; the pane explains an unreachable one on its own.
  */
-async function reachablePreviewUrl(rawUrl: string): Promise<string> {
-  const target = activeSshTerminalTarget()
+async function reachablePreviewUrl(webContentsId: number, rawUrl: string): Promise<string> {
+  let target = activeSshTerminalTarget(webContentsId)
+
+  if (target === 'pending') {
+    await ensureTerminalBackend(webContentsId).catch(() => undefined)
+    target = activeSshTerminalTarget(webContentsId)
+  }
 
   if (!target || target === 'pending') {
-    // No SSH transport behind this gateway; nothing to forward through.
-    await resetPreviewReach()
+    // No SSH transport behind this renderer's gateway. Another window's
+    // forward must never be reused for this preview.
+    await resetPreviewReach(webContentsId)
 
     return rawUrl
   }
 
   const { scope, ssh } = target as { scope: string; ssh: any }
+  let reach = previewReachByWebContents.get(webContentsId)
 
-  if (previewReachScope !== scope) {
-    await resetPreviewReach()
-    previewReachScope = scope
+  if (!reach || reach.scope !== scope) {
+    await resetPreviewReach(webContentsId)
+    reach = { registry: new PreviewReachRegistry(), scope }
+    previewReachByWebContents.set(webContentsId, reach)
   }
 
   try {
-    const rewritten = await previewReach.resolve(rawUrl, {
+    const rewritten = await reach.registry.resolve(rawUrl, {
       cancel: (localPort, remotePort) => ssh.cancelForward(localPort, remotePort),
       forward: (localPort, remotePort, remoteHost) => ssh.forward(localPort, remotePort, remoteHost),
       isCurrent: () => sshConnections.get(scope)?.ssh === ssh,
@@ -9187,8 +9240,6 @@ async function reachablePreviewUrl(rawUrl: string): Promise<string> {
 
     return rewritten || rawUrl
   } catch (error: any) {
-    // A failed forward is a preview problem, not a session problem: log it and
-    // let the original URL through so the pane shows its own explanation.
     sshRememberLog(`preview reach failed for ${rawUrl}: ${error?.message || error}`)
 
     return rawUrl
@@ -12268,6 +12319,32 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
 
   return { ...connection, connectionId: id, registryScoped: true }
 })
+
+const windowConnectionRoutes = new WindowConnectionRouteRegistry()
+const windowConnectionRouteOwners = new Set<number>()
+
+ipcMain.on('hermes:connection:active-route', (event, route) => {
+  const id = event.sender.id
+  const previous = windowConnectionRoutes.get(id)
+  const next = windowConnectionRoutes.set(id, route)
+
+  if (
+    previous?.connectionId !== next?.connectionId ||
+    previous?.profile !== next?.profile ||
+    previous?.registryScoped !== next?.registryScoped
+  ) {
+    void resetPreviewReach(id)
+  }
+
+  if (!windowConnectionRouteOwners.has(id)) {
+    windowConnectionRouteOwners.add(id)
+    event.sender.once('destroyed', () => {
+      windowConnectionRoutes.delete(id)
+      windowConnectionRouteOwners.delete(id)
+      void resetPreviewReach(id)
+    })
+  }
+})
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connection promise never
 // fire — once the remote becomes unreachable across a sleep/wake the renderer
@@ -14462,7 +14539,9 @@ ipcMain.handle('hermes:stop-find-in-page', event => {
 
 // The renderer can't know whether a loopback URL is reachable — only main
 // knows which transport backs this gateway. Ask before loading one.
-ipcMain.handle('hermes:preview:reach', async (_event, url) => reachablePreviewUrl(String(url || '')))
+ipcMain.handle('hermes:preview:reach', async (event, url) =>
+  reachablePreviewUrl(event.sender.id, String(url || ''))
+)
 
 ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
   if (!(await openPreviewInBrowser(url))) {
@@ -14564,7 +14643,7 @@ const terminalIpc = registerTerminalIpc({
   findOnPath,
   rememberLog,
   activeSshTerminalTarget,
-  ensureBackend: () => ensureBackend(primaryProfileKey()),
+  ensureBackend: webContentsId => ensureTerminalBackend(webContentsId),
   getSshConnectionState: scope => sshConnections.get(scope)
 })
 

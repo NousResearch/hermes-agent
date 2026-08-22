@@ -232,6 +232,77 @@ test('URL route fails closed for different token, headers, kind, or Cloud org', 
   }
 })
 
+
+test('profile remote wins over a registry-backed global SSH route', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: {
+      mode: 'ssh',
+      remote: { mode: 'ssh', host: 'global-box.test', user: 'hermes' },
+      profiles: {
+        worker: { mode: 'remote', url: 'https://worker.test', authMode: 'token', token: tokenA }
+      }
+    },
+    profile: 'worker',
+    registry: registry('global-ssh', [
+      { id: 'global-ssh', kind: 'ssh', label: 'Global SSH', host: 'global-box.test', user: 'hermes' },
+      { id: 'worker-remote', kind: 'remote', label: 'Worker', url: 'https://worker.test', token: tokenA }
+    ])
+  })
+
+  assert.equal(route?.kind, 'remote')
+  assert.equal(route?.source, 'profile')
+  assert.equal(route?.connectionId, 'worker-remote')
+})
+
+test('profile SSH wins over a different registry primary SSH route', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: {
+      mode: 'ssh',
+      remote: { mode: 'ssh', host: 'global-box.test', user: 'hermes' },
+      profiles: {
+        worker: { mode: 'ssh', host: 'worker-box.test', user: 'hermes' }
+      }
+    },
+    profile: 'worker',
+    registry: registry('global-ssh', [
+      { id: 'global-ssh', kind: 'ssh', label: 'Global SSH', host: 'global-box.test', user: 'hermes' },
+      { id: 'worker-ssh', kind: 'ssh', label: 'Worker SSH', host: 'worker-box.test', user: 'hermes' }
+    ])
+  })
+
+  assert.equal(route?.kind, 'ssh')
+  assert.equal(route?.source, 'profile')
+  assert.equal(route?.connectionId, 'worker-ssh')
+})
+
+test('environment remote wins over a registry-backed global SSH route', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: {
+      mode: 'ssh',
+      remote: { mode: 'ssh', host: 'global-box.test', user: 'hermes' }
+    },
+    env: { url: 'https://env.test', token: 'env-token' },
+    registry: registry('global-ssh', [
+      { id: 'global-ssh', kind: 'ssh', label: 'Global SSH', host: 'global-box.test', user: 'hermes' }
+    ])
+  })
+
+  assert.equal(route?.kind, 'remote')
+  assert.equal(route?.source, 'env')
+  assert.equal(route?.connectionId, undefined)
+})
+
+test('local route does not inherit an unrelated registry SSH connection', () => {
+  const route = resolveDesktopRemoteRoute({
+    config: { mode: 'local' },
+    registry: registry('local', [
+      { id: 'unused-ssh', kind: 'ssh', label: 'Unused SSH', host: 'box.test', user: 'hermes' }
+    ])
+  })
+
+  assert.equal(route, null)
+})
+
 test('local config without overrides returns null', () => {
   assert.equal(resolveDesktopRemoteRoute({ config: { mode: 'local' }, registry: registry('local', []) }), null)
 })

@@ -130,6 +130,15 @@ export function useGatewayBoot({
     const publish = (next: HermesConnection | null) => {
       callbacksRef.current.onConnectionReady(next)
       setConnection(next)
+      desktop?.setActiveConnectionRoute?.(
+        next
+          ? {
+              connectionId: next.connectionId ?? null,
+              profile: next.profile,
+              registryScoped: next.registryScoped === true
+            }
+          : null
+      )
     }
 
     if (!desktop) {

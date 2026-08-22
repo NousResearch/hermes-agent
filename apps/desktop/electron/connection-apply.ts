@@ -54,4 +54,17 @@ async function resolveTerminalConnection(getTarget, ensureBackend) {
   return target
 }
 
-export { applyConnectionChange, commitConnectionFailure, resolveTerminalConnection }
+async function resolveTerminalConnectionForSender(webContentsId, getTarget, ensureBackend) {
+  return resolveTerminalConnection(
+    () => getTarget(webContentsId),
+    () => ensureBackend(webContentsId)
+  )
+}
+
+
+export {
+  applyConnectionChange,
+  commitConnectionFailure,
+  resolveTerminalConnection,
+  resolveTerminalConnectionForSender
+}

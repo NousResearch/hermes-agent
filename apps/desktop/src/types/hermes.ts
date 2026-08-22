@@ -846,6 +846,7 @@ export interface CronJob {
   id: string
   last_error?: null | string
   last_run_at?: null | string
+  last_status?: null | string
   model?: null | string
   name?: null | string
   next_run_at?: null | string

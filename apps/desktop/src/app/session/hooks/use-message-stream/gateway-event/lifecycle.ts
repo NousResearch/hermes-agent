@@ -1,5 +1,6 @@
 import type { HermesSkin } from '@hermes/shared/skin'
 
+import { resetCronCompletionNotifications } from '@/store/cron-completion-notifications'
 import {
   notifyCronChanged,
   notifyPairingChanged,
@@ -21,6 +22,13 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, fromActiveSource } = ctx
 
   if (event.type === 'gateway.ready') {
+    // A reconnect may replay a jobs snapshot whose last_run_at advanced while
+    // the desktop was offline. Treat the active source's snapshot as hydration,
+    // not a fresh completion; background profile sockets must not reset it.
+    if (fromActiveSource()) {
+      resetCronCompletionNotifications()
+    }
+
     // Seed the active skin into the desktop theme registry without applying,
     // so a fresh connect never overrides the user's persisted desktop theme.
     ingestBackendSkin((payload as { skin?: HermesSkin } | undefined)?.skin, { apply: false })

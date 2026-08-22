@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -133,6 +134,60 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+
+_NOT_BEFORE_RE = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})T"
+    r"(?P<time>\d{2}:\d{2}:\d{2})"
+    r"(?P<fraction>\.\d+)?"
+    r"(?P<zone>Z|[+-]\d{2}:\d{2})$"
+)
+
+
+def normalize_not_before(value: Optional[str]) -> Optional[str]:
+    """Validate and canonicalise an optional not-before instant.
+
+    Accepted values are explicit timezone-aware ISO8601 date-times with
+    seconds and either ``Z`` or a numeric ``±HH:MM`` offset. Values are stored
+    as UTC with a trailing ``Z``. Fractional-second digits are kept verbatim,
+    including precision beyond Python's microsecond resolution, so
+    normalisation can never move a safety gate earlier than the supplied
+    instant.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(
+            "not_before must be a timezone-aware ISO8601 instant, "
+            "for example 2026-08-08T11:26:00Z"
+        )
+    candidate = value.strip()
+    match = _NOT_BEFORE_RE.fullmatch(candidate)
+    if match is None:
+        raise ValueError(
+            "not_before must be a timezone-aware ISO8601 instant, "
+            "for example 2026-08-08T11:26:00Z"
+        )
+
+    zone = match.group("zone")
+    parse_zone = "+00:00" if zone == "Z" else zone
+    try:
+        aware = datetime.fromisoformat(
+            f"{match.group('date')}T{match.group('time')}{parse_zone}"
+        )
+        if aware.tzinfo is None or aware.utcoffset() is None:
+            raise ValueError("timezone required")
+        utc = aware.astimezone(timezone.utc)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError(
+            "not_before must be a valid timezone-aware ISO8601 instant, "
+            "for example 2026-08-08T11:26:00Z"
+        ) from exc
+
+    fraction = match.group("fraction") or ""
+    return (
+        f"{utc.year:04d}-{utc.month:02d}-{utc.day:02d}T"
+        f"{utc.hour:02d}:{utc.minute:02d}:{utc.second:02d}{fraction}Z"
+    )
 
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
@@ -1141,6 +1196,9 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Optional machine-readable scheduling metadata. Stored canonically as an
+    # explicit UTC instant; dispatch enforcement is intentionally separate.
+    not_before: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1172,6 +1230,7 @@ class Task:
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
+            not_before=row["not_before"] if "not_before" in keys else None,
             result=row["result"] if "result" in keys else None,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             consecutive_failures=(
@@ -1410,6 +1469,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
     session_id           TEXT,
+    -- Optional scheduling metadata only. Canonical timezone-aware ISO8601 UTC
+    -- instant; dispatch enforcement is deliberately out of scope here.
+    not_before           TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -2663,6 +2725,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "not_before" not in cols:
+        # Optional machine-readable scheduling metadata. Existing tasks remain
+        # ungated (NULL); dispatch enforcement is intentionally separate.
+        _add_column_if_missing(conn, "tasks", "not_before", "not_before TEXT")
+
     if "block_kind" not in cols:
         # Typed block reason (VALID_BLOCK_KINDS) or NULL for legacy/un-typed
         # blocks. Existing blocked rows get NULL, which is treated as a
@@ -3180,6 +3247,7 @@ def create_task(
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    not_before: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
@@ -3226,6 +3294,7 @@ def create_task(
     model_override = (model_override or "").strip() or None
     provider_override = (provider_override or "").strip() or None
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    not_before = normalize_not_before(not_before)
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
     assignee = _canonical_assignee(assignee)
@@ -3497,8 +3566,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, not_before
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3524,6 +3593,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        not_before,
                     ),
                 )
                 for pid in parents:
@@ -3552,6 +3622,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "not_before": not_before,
                     },
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
@@ -11047,6 +11118,8 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     lines.append("")
     lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
     lines.append(f"Status:   {task.status}")
+    if task.not_before:
+        lines.append(f"Not before: {task.not_before}")
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")

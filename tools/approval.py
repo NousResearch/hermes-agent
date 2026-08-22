@@ -920,6 +920,21 @@ DANGEROUS_PATTERNS = [
     # profile flag can't slip the agent past the guard.
     (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    # `hermes config set` on a security-policy key. config.yaml IS the security
+    # policy (approvals.mode, command_allowlist, security.*), and the config
+    # cache is mtime-keyed so a write takes effect mid-session. The CLI refuses
+    # these keys without --force (config.py #81101); this pattern additionally
+    # gates the terminal path the same way sed/tee on config.yaml are gated, so
+    # even an explicit --force variant is surfaced to the operator for approval.
+    # ``["']?`` covers the quoted key form the shell strips before the CLI sees
+    # it (``--force "approvals.mode" off``), so quoting cannot slip past the gate.
+    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*config\s+set\s+(?:--force\s+)?["\']?(?:approvals|security|command_allowlist)\b',
+     "hermes config set on a security-policy key (approvals/security/command_allowlist)"),
+    # Alternate supported entrypoint: ``python -m hermes_cli.main`` reaches the
+    # same config CLI as ``hermes`` (main.py exposes ``if __name__ ==
+    # "__main__"``), so an agent typing the module form must hit the same gate.
+    (r'\bpython(?:3|3\.\d+)?\s+-m\s+hermes_cli\.main\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*config\s+set\s+(?:--force\s+)?["\']?(?:approvals|security|command_allowlist)\b',
+     "python -m hermes_cli.main config set on a security-policy key (approvals/security/command_allowlist)"),
     # Docker container lifecycle — any user with docker.sock mounted (a common
     # Docker Compose pattern) gives the agent the ability to restart/stop/kill
     # containers without approval.  These are agent-initiated lifecycle operations

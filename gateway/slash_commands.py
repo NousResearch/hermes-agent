@@ -3970,9 +3970,13 @@ class GatewaySlashCommandsMixin:
         requested = event.get_command_args().strip() or None
         # This mutates profile-wide security policy. The central slash gate can
         # allow selected commands to non-admin users, so enforce admin again at
-        # this side-effect boundary. Unconfigured policies remain unrestricted.
+        # this side-effect boundary. A *change* additionally requires an
+        # explicit admin policy: with gating disabled (no admin list
+        # configured), policy.is_admin() returns True for everyone, which would
+        # let a non-admin caller persist approvals.mode: off through the
+        # gateway and disable approval checks (#81108). Queries stay open.
         policy = policy_for_source(self.config, event.source)
-        if requested and not policy.is_admin(event.source.user_id):
+        if requested and (not policy.enabled or not policy.is_admin(event.source.user_id)):
             return "Only gateway admins can change the persistent approval mode."
         result = run_approval_mode_command(requested)
         # Approval checks load config dynamically; do not evict the cached agent

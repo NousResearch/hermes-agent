@@ -4291,6 +4291,10 @@ class TelegramAdapter(BasePlatformAdapter):
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message
         ))
+        app.add_handler(TelegramMessageHandler(
+            filters.StatusUpdate.FORUM_TOPIC_CREATED,
+            self._handle_forum_topic_created,
+        ))
         # Handle inline keyboard button callbacks (update prompts)
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # gateway_platform_event observer (see _on_platform_update); group 99 so
@@ -9565,6 +9569,53 @@ class TelegramAdapter(BasePlatformAdapter):
         consuming channel posts without ever building a gateway event.
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
+
+    async def _handle_forum_topic_created(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Cache a user-created private-chat topic from Telegram's service update.
+
+        ``forum_topic_created`` is a service message, so it does not match the
+        normal text, command, location, or media handlers.  Keep this handler
+        limited to private chats: group forum topics have a separate discovery
+        and routing model and must not enter the DM topic cache.
+        """
+        message = self._effective_update_message(update)
+        if message is None:
+            return
+
+        created = getattr(message, "forum_topic_created", None)
+        chat = getattr(message, "chat", None)
+        if created is None or chat is None:
+            return
+
+        chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        if chat_type != "private":
+            return
+
+        chat_id = getattr(chat, "id", None)
+        thread_id = getattr(message, "message_thread_id", None)
+        topic_name = getattr(created, "name", None)
+        if (
+            chat_id is None
+            or isinstance(chat_id, bool)
+            or thread_id is None
+            or isinstance(thread_id, bool)
+            or not isinstance(topic_name, str)
+            or not topic_name.strip()
+        ):
+            return
+
+        try:
+            thread_id_int = int(thread_id)
+        except (TypeError, ValueError):
+            return
+
+        self._cache_dm_topic_from_message(
+            str(chat_id), str(thread_id_int), topic_name.strip()
+        )
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.

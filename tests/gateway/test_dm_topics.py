@@ -327,6 +327,38 @@ def test_cache_dm_topic_from_message_no_overwrite():
     assert adapter._dm_topics["111:General"] == 100  # unchanged
 
 
+@pytest.mark.asyncio
+async def test_handle_forum_topic_created_caches_private_dm_topic():
+    """A user-created private topic should be discovered from the service update."""
+    adapter = _make_adapter()
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=111, type="private"),
+        message_thread_id=999,
+        forum_topic_created=SimpleNamespace(name="Newly created"),
+    )
+    update = SimpleNamespace(effective_message=message, message=message)
+
+    await adapter._handle_forum_topic_created(update, None)
+
+    assert adapter._dm_topics["111:Newly created"] == 999
+
+
+@pytest.mark.asyncio
+async def test_handle_forum_topic_created_ignores_group_forum_topic():
+    """Group forum topics must not be inserted into the DM topic cache."""
+    adapter = _make_adapter()
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=-100111, type="supergroup"),
+        message_thread_id=999,
+        forum_topic_created=SimpleNamespace(name="Group topic"),
+    )
+    update = SimpleNamespace(effective_message=message, message=message)
+
+    await adapter._handle_forum_topic_created(update, None)
+
+    assert adapter._dm_topics == {}
+
+
 # ── _build_message_event: auto_skill binding ──
 
 
@@ -476,5 +508,4 @@ def test_group_topic_skill_binding_second_topic():
 
 
 # ── _build_message_event: from_user=None fallback in DMs ──
-
 

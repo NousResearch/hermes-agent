@@ -36,6 +36,27 @@ if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
 
+# ---------------------------------------------------------------------------
+# python-telegram-bot is an optional dep; mock it so the adapter imports
+# (same shim as test_telegram_network_reconnect / test_telegram_plugin_handlers).
+# ---------------------------------------------------------------------------
+def _ensure_telegram_mock() -> None:
+    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
+        return
+    telegram_mod = MagicMock()
+    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
+    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
+    telegram_mod.constants.ChatType.GROUP = "group"
+    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
+    telegram_mod.constants.ChatType.CHANNEL = "channel"
+    telegram_mod.constants.ChatType.PRIVATE = "private"
+    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
+        sys.modules.setdefault(name, telegram_mod)
+
+
+_ensure_telegram_mock()
+
+import plugins.platforms.telegram.adapter as telegram_adapter  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
 from gateway.profile_routing import ProfileRoute  # noqa: E402
@@ -652,7 +673,8 @@ class TestRegisterHandlers:
 
     _HANDLER_ATTRS = (
         "_handle_text_message", "_handle_command", "_handle_location_message",
-        "_handle_media_message", "_handle_callback_query", "_on_platform_update",
+        "_handle_media_message", "_handle_forum_topic_created",
+        "_handle_callback_query", "_on_platform_update",
     )
 
     def _adapter_with_handlers(self) -> TelegramAdapter:
@@ -670,15 +692,35 @@ class TestRegisterHandlers:
     def test_registers_core_handlers_plus_observer(self):
         a = self._adapter_with_handlers()
         app = MagicMock()
-        a._register_handlers(app)
+        registered_message_handlers = []
 
-        # Five core handlers (default group, no group kwarg) plus the
+        def capture_message_handler(filter_, callback):
+            registered_message_handlers.append((filter_, callback))
+            return object()
+
+        expected_topic_filter = object()
+        with patch.object(
+            telegram_adapter,
+            "TelegramMessageHandler",
+            side_effect=capture_message_handler,
+        ), patch.object(
+            telegram_adapter.filters.StatusUpdate,
+            "FORUM_TOPIC_CREATED",
+            expected_topic_filter,
+        ):
+            a._register_handlers(app)
+
+        # Six core handlers (default group, no group kwarg) plus the
         # gateway_platform_event observer alone in group 99, so it observes
         # alongside rather than displacing the core handlers.
         calls = app.add_handler.call_args_list
-        assert len(calls) == 6
+        assert len(calls) == 7
         assert len([c for c in calls if c.kwargs.get("group") == 99]) == 1
-        assert len([c for c in calls if not c.kwargs]) == 5
+        assert len([c for c in calls if not c.kwargs]) == 6
+        assert (
+            expected_topic_filter,
+            a._handle_forum_topic_created,
+        ) in registered_message_handlers
 
     def test_rebuild_re_registers_observer(self):
         """A second call on a fresh app (e.g. a future rebuild) re-registers
@@ -690,7 +732,7 @@ class TestRegisterHandlers:
         a._register_handlers(first_app)
         a._register_handlers(rebuilt_app)  # the rebuild path
 
-        assert rebuilt_app.add_handler.call_count == 6
+        assert rebuilt_app.add_handler.call_count == 7
         assert len(self._observer_calls(rebuilt_app)) == 1
 
     def test_transient_init_rebuild_uses_shared_registration(self, monkeypatch):

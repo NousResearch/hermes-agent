@@ -26,7 +26,9 @@ test('source contract: settings dialog edits name and picture after creation', (
 test('source contract: rename re-keys the room AND local memberships, keeps sessions', () => {
   // The room record moves wholesale under the new key (sessions included, so
   // members keep resuming their per-group sessions by stored sid).
-  assert.match(pluginSource, /const room = all\[oldName\]\s*\n\s*\n?\s*delete all\[oldName\]/)
+  assert.match(pluginSource, /const room = all\[oldName\][\s\S]{0,320}?delete all\[oldName\]/)
+  // Window-local composer drafts follow the immutable room identity too.
+  assert.match(pluginSource, /migrateGroupComposerDraft\(groupComposerDraftKey\(oldName, room\), groupComposerDraftKey\(next, room\)\)/)
   // Local members' canonical groups lists swap old → new via ui_meta.
   assert.match(pluginSource, /botGroups\(meta\)\.map\(g => \(g === oldName \? next : g\)\)/)
   // Collisions are rejected, not silently suffixed — rename is explicit intent.

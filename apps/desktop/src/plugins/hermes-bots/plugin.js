@@ -6203,6 +6203,10 @@ async function renameGroupChat(oldName, newName, members) {
   const all = { ...$groupChats.get() }
   const room = all[oldName]
 
+  if (room) {
+    migrateGroupComposerDraft(groupComposerDraftKey(oldName, room), groupComposerDraftKey(next, room))
+  }
+
   delete all[oldName]
 
   if (room) {
@@ -11301,11 +11305,131 @@ function GroupClarifyCard({ entry, members }) {
   })
 }
 
+// Group composer drafts are window-local UI state. They must survive pane
+// parking/re-registration and owner switches, but must never enter shared room
+// metadata (where another Desktop would see half-typed text or attachment
+// bytes). Current rooms key by immutable roomId; legacy rooms fall back to the
+// display name until they are upgraded.
+const groupComposerDrafts = new Map()
+
+function emptyGroupComposerDraft() {
+  return { activeReplyThread: null, main: '', pendingAttachments: {}, replies: {}, revision: 0 }
+}
+
+function groupComposerDraftKey(group, room) {
+  return groupChatRoomKey(group, room)
+}
+
+function groupComposerDraftSnapshot(key) {
+  return groupComposerDrafts.get(key) || emptyGroupComposerDraft()
+}
+
+function updateGroupComposerDraft(key, mutate) {
+  const current = groupComposerDraftSnapshot(key)
+  const next = mutate({
+    ...current,
+    pendingAttachments: Object.fromEntries(
+      Object.entries(current.pendingAttachments || {}).map(([thread, attachments]) => [
+        thread,
+        [...(attachments || [])]
+      ])
+    ),
+    replies: { ...(current.replies || {}) }
+  })
+
+  next.revision = current.revision + 1
+  groupComposerDrafts.delete(key)
+  groupComposerDrafts.set(key, next)
+
+  return next
+}
+
+function restoreGroupComposerDraft(key, expectedRevision, snapshot) {
+  const current = groupComposerDraftSnapshot(key)
+
+  if (current.revision !== expectedRevision) {
+    return null
+  }
+
+  const restored = {
+    ...snapshot,
+    pendingAttachments: Object.fromEntries(
+      Object.entries(snapshot.pendingAttachments || {}).map(([thread, attachments]) => [
+        thread,
+        [...(attachments || [])]
+      ])
+    ),
+    replies: { ...(snapshot.replies || {}) },
+    revision: current.revision + 1
+  }
+
+  groupComposerDrafts.set(key, restored)
+
+  return restored
+}
+
+function clearGroupComposerDraft(key) {
+  groupComposerDrafts.delete(key)
+}
+
+function migrateGroupComposerDraft(oldKey, newKey) {
+  if (oldKey === newKey || !groupComposerDrafts.has(oldKey)) {
+    return
+  }
+
+  if (!groupComposerDrafts.has(newKey)) {
+    groupComposerDrafts.set(newKey, groupComposerDrafts.get(oldKey))
+  }
+
+  groupComposerDrafts.delete(oldKey)
+}
+
 function GroupChatWorkspace({ group, members, onBack, visible = true }) {
   const rooms = useValue($groupChats)
   const allMeta = useValue($botMeta)
   const room = rooms[group] || { log: [], running: false }
-  const [draft, setDraft] = useState('')
+  const composerKey = groupComposerDraftKey(group, room)
+  const composerKeyRef = useRef(composerKey)
+  const [composerDraft, setComposerDraft] = useState(() => groupComposerDraftSnapshot(composerKey))
+
+  if (composerKeyRef.current !== composerKey) {
+    migrateGroupComposerDraft(composerKeyRef.current, composerKey)
+    composerKeyRef.current = composerKey
+  }
+
+  const updateComposerDraft = mutate => {
+    const next = updateGroupComposerDraft(composerKeyRef.current, mutate)
+    setComposerDraft(next)
+
+    return next
+  }
+
+  const draft = composerDraft.main || ''
+  const replyDrafts = composerDraft.replies || {}
+  const replyThread = composerDraft.activeReplyThread || null
+  const pendingImages = composerDraft.pendingAttachments || {}
+  const setDraft = value =>
+    updateComposerDraft(current => ({
+      ...current,
+      main: typeof value === 'function' ? value(current.main || '') : value
+    }))
+  const setReplyDrafts = value =>
+    updateComposerDraft(current => ({
+      ...current,
+      replies: typeof value === 'function' ? value(current.replies || {}) : value
+    }))
+  const setReplyThread = value =>
+    updateComposerDraft(current => ({
+      ...current,
+      activeReplyThread:
+        typeof value === 'function' ? value(current.activeReplyThread || null) : value
+    }))
+  const setPendingImages = value =>
+    updateComposerDraft(current => ({
+      ...current,
+      pendingAttachments:
+        typeof value === 'function' ? value(current.pendingAttachments || {}) : value
+    }))
   const [confirmDisband, setConfirmDisband] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Click-to-disambiguate: which log entry is showing its speaker's full
@@ -11318,12 +11442,9 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
   // `replyThread` is the thread whose reply box currently owns the composer
   // (null = the main composer, which STARTS a new thread).
   const [openThreads, setOpenThreads] = useState({})
-  const [replyThread, setReplyThread] = useState(null)
-  const [replyDrafts, setReplyDrafts] = useState({})
   // Pending image attachments per composer: `null` thread key = the main
   // composer, otherwise the reply box of that thread. Data URLs, already
   // downscaled — they ride the send into every responding member's session.
-  const [pendingImages, setPendingImages] = useState({})
 
   // Scroll anchoring (#89835): rooms used to open at scroll position 0 and
   // stay there while replies streamed in. Scroll the bottom sentinel into
@@ -11383,11 +11504,6 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
 
     const key = thread ?? 'main'
     setPendingImages(prev => ({ ...prev, [key]: [...(prev[key] || []), ...picked] }))
-  }
-
-  const clearImages = thread => {
-    const key = thread ?? 'main'
-    setPendingImages(prev => ({ ...prev, [key]: [] }))
   }
 
   const removeImage = (thread, index) => {
@@ -11579,8 +11695,12 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
       return
     }
 
-    setDraft('')
-    clearImages(null)
+    const before = groupComposerDraftSnapshot(composerKeyRef.current)
+    const cleared = updateComposerDraft(current => ({
+      ...current,
+      main: '',
+      pendingAttachments: { ...(current.pendingAttachments || {}), main: [] }
+    }))
     // Main composer = START A NEW THREAD with the whole group (Slack shape).
     // Full descriptors ride into the turn loop: remote members keep their
     // connection fields so their turns route to their own machines.
@@ -11588,6 +11708,12 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
 
     if (minted) {
       setOpenThreads(prev => ({ ...prev, [minted]: true }))
+    } else {
+      const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
+
+      if (restored) {
+        setComposerDraft(restored)
+      }
     }
   }
 
@@ -11599,12 +11725,25 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
       return
     }
 
-    setReplyDrafts(prev => ({ ...prev, [thread]: '' }))
-    clearImages(thread)
+    const before = groupComposerDraftSnapshot(composerKeyRef.current)
+    const cleared = updateComposerDraft(current => ({
+      ...current,
+      pendingAttachments: { ...(current.pendingAttachments || {}), [thread]: [] },
+      replies: { ...(current.replies || {}), [thread]: '' }
+    }))
     // Reply box = CONTINUE this thread; the member turns it triggers are
     // scoped to it.
-    sendToGroupChat(group, memberDescriptors(), text, thread, images)
-    setOpenThreads(prev => ({ ...prev, [thread]: true }))
+    const sent = sendToGroupChat(group, memberDescriptors(), text, thread, images)
+
+    if (sent) {
+      setOpenThreads(prev => ({ ...prev, [thread]: true }))
+    } else {
+      const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
+
+      if (restored) {
+        setComposerDraft(restored)
+      }
+    }
   }
 
   /** Pending-attachment chips + the picker for one composer (thread = null →
@@ -12040,6 +12179,7 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
         doneLabel: 'Disbanded',
         onClose: () => setConfirmDisband(false),
         onConfirm: async () => {
+          clearGroupComposerDraft(composerKeyRef.current)
           await disbandGroupChat(group, members)
           host.notify({ kind: 'success', message: `Disbanded “${group}”` })
         }

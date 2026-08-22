@@ -19,6 +19,7 @@ import asyncio
 import dataclasses
 import hashlib
 import inspect
+import json
 import logging
 import os
 import re
@@ -54,6 +55,30 @@ logger = logging.getLogger("gateway.run")
 # past this the reset proceeds and the cleanup is left to finish (or leak) in
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
+
+# Module-level tunables so tests can patch the exact constant instead of
+# globally monkeypatching ``asyncio.wait_for``. Production values come from
+# the spec: dispatcher waits up to 8.0s for the helper's ack; the outer
+# tool waits up to 10.0s for the dispatcher's tuple.
+_RESTART_DISPATCH_ACK_TIMEOUT_S = 8.0
+_RESTART_OUTER_WORKER_TIMEOUT_S = 10.0
+
+
+async def _shielded_wait_for_ack(
+    ack_future: "asyncio.Future[bool]", timeout: float
+) -> None:
+    """Wait for ``ack_future`` with an outer CancelledError shield.
+
+    Critical contract (spec section 一):
+    * ``asyncio.wait_for`` cancels its inner awaitable when the timeout
+      fires OR when the outer caller is cancelled. We do NOT want either
+      to cancel ``ack_future`` itself — the helper may still write to it
+      after we exit (the dispatcher has already observed the timeout /
+      CancelledError and moved on to outcome_unknown).
+    * ``asyncio.shield`` wraps the awaitable so a cancellation of the
+      outer task does not propagate to the inner future.
+    """
+    await asyncio.wait_for(asyncio.shield(ack_future), timeout=timeout)
 
 
 def _clean_str(value: Any) -> str:
@@ -121,6 +146,489 @@ def _home_thread_from_source(source) -> Optional[str]:
     ):
         return None
     return str(thread_id)
+
+
+from enum import Enum
+
+
+class _RestartStage(Enum):
+    PREPARING = "PREPARING"
+    # ABORTING: caller has acquired the abort gate. helper MUST NOT enter
+    # IN_FLIGHT from this state.
+    ABORTING = "ABORTING"
+    # IN_FLIGHT: helper has crossed the commit barrier and is about to /
+    # has performed the irreversible handoff. Caller cannot rollback.
+    IN_FLIGHT = "IN_FLIGHT"
+    HANDOFF_COMMITTED = "HANDOFF_COMMITTED"
+    # ABORTED: abort gate won, restart task done, marker rolled back.
+    # Caller may retry.
+    ABORTED = "ABORTED"
+    # OUTCOME_UNKNOWN: helper entered IN_FLIGHT but final commit status
+    # could not be confirmed (timeout, CancelledError, helper exception).
+    # Marker MUST NOT be rolled back; can_retry MUST be False.
+    OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN"
+    STOPPING = "STOPPING"
+
+
+class _RestartStateBackup:
+    """Transactional backup/rollback helper for restart state and files."""
+
+    def __init__(self, request_id: str, notify_path: Path, dedup_path: Path, original_source: Any):
+        self.request_id = request_id
+        self.notify_path = notify_path
+        self.dedup_path = dedup_path
+        self.notify_existed = notify_path.exists()
+        self.notify_content = notify_path.read_bytes() if self.notify_existed else None
+        self.dedup_existed = dedup_path.exists()
+        self.dedup_content = dedup_path.read_bytes() if self.dedup_existed else None
+        self.original_source = original_source
+
+    def rollback(self, runner: Any) -> bool:
+        """Roll back flags and restore original marker files if uncommitted.
+
+        CAS-safe: before restoring a previously-existing file, verifies the
+        current file still belongs to this request_id. If another request
+        has since replaced it, the current file is left intact.
+        Returns True if rollback completed safely, False if an error occurred.
+        """
+        runner._restart_requested = False
+        runner._restart_task_started = False
+        runner._detached_restart_helper_started = False
+        runner._draining = False
+        runner._restart_command_source = self.original_source
+
+        rollback_ok = True
+
+        def _current_request_id(path: Path) -> Optional[str]:
+            """Read the request_id from the current file, if any."""
+            try:
+                if path.exists():
+                    return json.loads(path.read_text(encoding="utf-8")).get("request_id")
+            except Exception:
+                return None
+            return None
+
+        # Roll back notify file
+        if self.notify_existed and self.notify_content is not None:
+            # Only restore if the file still belongs to this request
+            cur_id = _current_request_id(self.notify_path)
+            if cur_id is None or cur_id == self.request_id:
+                try:
+                    self.notify_path.write_bytes(self.notify_content)
+                except Exception as e:
+                    logger.error("Failed to restore notify file during rollback: %s", e)
+                    rollback_ok = False
+        else:
+            try:
+                if self.notify_path.exists():
+                    data = json.loads(self.notify_path.read_text(encoding="utf-8"))
+                    if data.get("request_id") == self.request_id:
+                        self.notify_path.unlink(missing_ok=True)
+            except Exception:
+                self.notify_path.unlink(missing_ok=True)
+
+        # Roll back dedup file
+        if self.dedup_existed and self.dedup_content is not None:
+            cur_id = _current_request_id(self.dedup_path)
+            if cur_id is None or cur_id == self.request_id:
+                try:
+                    self.dedup_path.write_bytes(self.dedup_content)
+                except Exception as e:
+                    logger.error("Failed to restore dedup file during rollback: %s", e)
+                    rollback_ok = False
+        else:
+            try:
+                if self.dedup_path.exists():
+                    data = json.loads(self.dedup_path.read_text(encoding="utf-8"))
+                    if data.get("request_id") == self.request_id:
+                        self.dedup_path.unlink(missing_ok=True)
+            except Exception:
+                self.dedup_path.unlink(missing_ok=True)
+
+        return rollback_ok
+
+
+class _RestartFinalOutcome(Enum):
+    """Settles what actually happened after the restart task completes."""
+    UNKNOWN = "unknown"
+    ABORTED = "aborted"
+    COMMITTED = "committed"
+
+
+class _RestartAckOutcome(Enum):
+    """Three-state ack from helper to dispatcher (spec section 二).
+
+    * ACCEPTED: the transaction was claimed by the helper — claim_handoff
+      succeeded and the helper entered the safe, non-reentrant IN_FLIGHT
+      state (P1 #71876). The dispatcher returns so the requesting turn can
+      finish. This ack does NOT mean drain/launcher/stop completed; the
+      terminal outcome is carried by stage / final_outcome.
+    * NOT_STARTED: the launcher returned False early and the contract
+      guarantees no side-effect (stage is ABORTED, task is done, marker
+      was rolled back). The caller may retry.
+    * OUTCOME_UNKNOWN: the launcher raised an exception, or the result
+      could not be confirmed. The dispatcher MUST NOT cancel the restart
+      task or rollback the marker. can_retry=False.
+    """
+    ACCEPTED = "accepted"
+    NOT_STARTED = "not_started"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+
+
+class _LauncherResult(Enum):
+    """Result of _launch_detached_restart_command() — explicit three-state
+    mapping per spec section 三.
+
+    * NOT_STARTED: Popen was not invoked (e.g. early validation failed
+      before fork). Safe to rollback the marker.
+    * STARTED: the detached watcher process is running. The marker
+      CANNOT be rolled back; outcome must be outcome_unknown or accepted.
+    * UNKNOWN: launch was attempted but the result cannot be confirmed
+      (Popen raised after fork, helper raised BaseException before
+      recording the result, helper task was cancelled mid-launch). The
+      caller MUST treat this as outcome_unknown.
+    """
+    NOT_STARTED = "not_started"
+    STARTED = "started"
+    UNKNOWN = "unknown"
+
+
+class _TransitionResult(Enum):
+    """Return value for atomic terminal transitions.
+
+    * TRANSITIONED: the transition was applied successfully.
+    * ALREADY_COMPLETE: the transaction was already at the target
+      terminal stage (idempotent).
+    * LOST_RACE: another competitor reached a different terminal
+      stage first (caller must not write ack, rollback, or retry).
+    """
+    TRANSITIONED = "transitioned"
+    ALREADY_COMPLETE = "already_complete"
+    LOST_RACE = "lost_race"
+
+
+class _RestartTransaction:
+    """Per-request state holder for a single restart attempt.
+
+    Concurrency contract (spec sections 二 / 三):
+
+    * A single asyncio.Lock (``_state_lock``) protects stage
+      transitions. Locks are held only inside a tiny critical section
+      (``claim_*`` and ``_complete_atomic``) — NEVER across Popen, detached
+      helpers, sleep, stop() or any external / awaiting operation.
+    * Two parties race: CALLER (claim_abort) and HELPER (claim_handoff).
+      The first transition PREPARING → {ABORTING, IN_FLIGHT} wins; the
+      other side's claim_* must return False.
+    * Terminal transitions are atomic: ``_complete_atomic`` updates stage,
+      final_outcome, launcher_result, writes the ack_future, and sets
+      final_outcome_event — all inside a single critical section.
+    * ack_outcome is a three-state future (``_RestartAckOutcome``) so the
+      dispatcher can distinguish NOT_STARTED from OUTCOME_UNKNOWN.
+    """
+
+    def __init__(
+        self,
+        request_id: str,
+        backup: _RestartStateBackup,
+        loop: asyncio.AbstractEventLoop,
+        detached: bool,
+        via_service: bool,
+    ) -> None:
+        self.request_id = request_id
+        self.backup = backup
+        self.loop = loop
+        self.detached = detached
+        self.via_service = via_service
+        self.stage: _RestartStage = _RestartStage.PREPARING
+        # Three-state ack future. Shielded by the dispatcher's wait_for
+        # so an outer CancelledError never cancels the future itself.
+        #
+        # P1 #71876: the helper writes ACCEPTED here immediately after
+        # claim_handoff — that is the *claimed* acknowledgement, meaning
+        # "transaction claimed; restart will proceed". It is NOT a terminal
+        # signal. The terminal outcome is carried by stage / final_outcome
+        # (set by complete_*). A later complete_* transition therefore never
+        # rewrites the ack_future (it is already ACCEPTED), and an
+        # ACCEPTED-then-UNKNOWN/NOT_STARTED sequence is NOT an ack conflict
+        # — it is the normal claimed-then-failed path.
+        self.ack_future: asyncio.Future[_RestartAckOutcome] = loop.create_future()
+        self.claimed_ack: bool = False
+        self.restart_task: Optional[asyncio.Task] = None
+        self.final_outcome: _RestartFinalOutcome = _RestartFinalOutcome.UNKNOWN
+        self.final_outcome_event: asyncio.Event = asyncio.Event()
+        self._state_lock: asyncio.Lock = asyncio.Lock()
+        # Mapping: helper-internal launcher outcome. None until recorded.
+        self.launcher_result: Optional[_LauncherResult] = None
+
+    def is_committed(self) -> bool:
+        return self.stage == _RestartStage.HANDOFF_COMMITTED
+
+    def is_aborted(self) -> bool:
+        return self.stage == _RestartStage.ABORTED
+
+    def is_unknown(self) -> bool:
+        return self.stage == _RestartStage.OUTCOME_UNKNOWN
+
+    def is_pre_commit(self) -> bool:
+        return self.stage in (
+            _RestartStage.PREPARING,
+            _RestartStage.ABORTING,
+            _RestartStage.ABORTED,
+        )
+
+    def in_flight(self) -> bool:
+        return self.stage in (
+            _RestartStage.IN_FLIGHT,
+            _RestartStage.HANDOFF_COMMITTED,
+            _RestartStage.OUTCOME_UNKNOWN,
+            _RestartStage.STOPPING,
+        )
+
+    def can_retry(self) -> bool:
+        """True only when the caller owns the abort and may safely retry.
+
+        ABORTED means the abort gate won AND the restart task is fully
+        done AND the marker was rolled back. Other stages forbid retry.
+        """
+        return self.stage == _RestartStage.ABORTED
+
+    def set_final_outcome(self, outcome: _RestartFinalOutcome) -> None:
+        """Pre-commit rejection path: set outcome without state lock.
+        Only used when request_restart returned False and no complete_*
+        was called.
+        """
+        self.final_outcome = outcome
+        try:
+            self.final_outcome_event.set()
+        except Exception:
+            pass
+
+    # ---- ack helpers ----------------------------------------------------
+
+    def try_write_ack(self, outcome: _RestartAckOutcome) -> bool:
+        """Helper-side: write ack only if the future has not been set or
+        cancelled. Returns True on success, False if the future was
+        already done (cancelled or previously set). Never raises.
+        """
+        if self.ack_future.done():
+            return False
+        try:
+            self.ack_future.set_result(outcome)
+            if outcome is _RestartAckOutcome.ACCEPTED:
+                # P1 #71876: the claimed acknowledgement (written right
+                # after claim_handoff) is recorded so a later terminal
+                # transition (complete_unknown / complete_not_started)
+                # knows the ack already carries the claimed signal and
+                # must not raise an "ack conflict".
+                self.claimed_ack = True
+            return True
+        except asyncio.InvalidStateError:
+            return False
+
+    # ---- short-critical-section state transitions ---------------------
+
+    async def claim_abort(self) -> bool:
+        """Caller-side: try to win the abort race.
+
+        Holds the state lock only for the duration of the stage
+        transition. The lock is released before the caller cancels the
+        restart task or awaits it. The helper, observing ABORTING after
+        this returns, must refuse to launch.
+        """
+        async with self._state_lock:
+            if self.stage is not _RestartStage.PREPARING:
+                return False
+            self.stage = _RestartStage.ABORTING
+            return True
+
+    async def claim_handoff(self) -> bool:
+        """Helper-side: try to win the handoff race.
+
+        Holds the lock only for the PREPARING → IN_FLIGHT transition.
+        The lock is released BEFORE the helper invokes any external
+        operation (Popen, service signal, etc.).
+        """
+        async with self._state_lock:
+            if self.stage is not _RestartStage.PREPARING:
+                return False
+            self.stage = _RestartStage.IN_FLIGHT
+            return True
+
+    # ---- atomic terminal transition (single critical section) -----------
+
+    _TERMINAL_STAGES = frozenset({
+        _RestartStage.ABORTED,
+        _RestartStage.HANDOFF_COMMITTED,
+        _RestartStage.OUTCOME_UNKNOWN,
+    })
+
+    async def _complete_atomic(
+        self,
+        expected_source: _RestartStage,
+        target_stage: _RestartStage,
+        target_final_outcome: _RestartFinalOutcome,
+        target_launcher_result: Optional[_LauncherResult],
+        ack_outcome: _RestartAckOutcome,
+    ) -> _TransitionResult:
+        """Atomic terminal transition — all synchronous operations inside
+        a single critical section.
+
+        Inside the lock:
+          1. Verifies source stage.
+          2. Checks existing ack does not conflict.
+          3. Updates stage, final_outcome, launcher_result.
+          4. Writes ack_future.
+          5. Sets final_outcome_event.
+
+        Returns TRANSITIONED, ALREADY_COMPLETE, or LOST_RACE.
+        Raises RuntimeError on impossible source stage.
+        """
+        async with self._state_lock:
+            # Already at the target terminal stage — idempotent.
+            if self.stage == target_stage:
+                return _TransitionResult.ALREADY_COMPLETE
+
+            # Another terminal stage already won — lost the race.
+            if self.stage in self._TERMINAL_STAGES:
+                return _TransitionResult.LOST_RACE
+
+            # Impossible source stage.
+            if self.stage is not expected_source:
+                raise RuntimeError(
+                    f"Invalid transition: {self.stage.value} → "
+                    f"{target_stage.value} "
+                    f"(expected {expected_source.value}) "
+                    f"(request_id={self.request_id})"
+                )
+
+            # Check ack_future state before modifying state.
+            if self.ack_future.cancelled():
+                raise RuntimeError(
+                    f"ack future cancelled: cannot write {ack_outcome.value} "
+                    f"(request_id={self.request_id})"
+                )
+            ack_already_set = self.ack_future.done()
+            if ack_already_set:
+                existing = self.ack_future.result()
+                if existing is not ack_outcome and not self.claimed_ack:
+                    raise RuntimeError(
+                        f"ack conflict: existing={existing.value}, "
+                        f"attempted={ack_outcome.value} "
+                        f"(request_id={self.request_id})"
+                    )
+                # Same ack already set, OR the claimed acknowledgement
+                # (ACCEPTED written right after claim_handoff, P1 #71876).
+                # The claimed ack is NOT a terminal signal: we must still
+                # apply the terminal state transition below
+                # (stage / final_outcome / launcher_result) so the
+                # transaction reaches its true terminal stage. The ack write
+                # itself is skipped because the future is already done.
+
+            # Update state.
+            self.stage = target_stage
+            self.final_outcome = target_final_outcome
+            self.launcher_result = target_launcher_result
+
+            if not ack_already_set:
+                # Write ack (synchronous, inside lock).
+                # The future is guaranteed pending at this point (checked above).
+                self.ack_future.set_result(ack_outcome)
+
+            # Set event (synchronous, inside lock).
+            self.final_outcome_event.set()
+
+            return _TransitionResult.TRANSITIONED
+
+    async def complete_claimed_abort(self) -> _TransitionResult:
+        """Caller-side: ABORTING → ABORTED. Publishes ack NOT_STARTED."""
+        return await self._complete_atomic(
+            expected_source=_RestartStage.ABORTING,
+            target_stage=_RestartStage.ABORTED,
+            target_final_outcome=_RestartFinalOutcome.ABORTED,
+            target_launcher_result=None,
+            ack_outcome=_RestartAckOutcome.NOT_STARTED,
+        )
+
+    async def complete_not_started(self) -> _TransitionResult:
+        """Helper-side: IN_FLIGHT → ABORTED (no side-effect).
+        Publishes ack NOT_STARTED.
+        """
+        return await self._complete_atomic(
+            expected_source=_RestartStage.IN_FLIGHT,
+            target_stage=_RestartStage.ABORTED,
+            target_final_outcome=_RestartFinalOutcome.ABORTED,
+            target_launcher_result=_LauncherResult.NOT_STARTED,
+            ack_outcome=_RestartAckOutcome.NOT_STARTED,
+        )
+
+    async def complete_started(self) -> _TransitionResult:
+        """Helper-side: IN_FLIGHT → HANDOFF_COMMITTED.
+        Publishes ack ACCEPTED.
+        """
+        return await self._complete_atomic(
+            expected_source=_RestartStage.IN_FLIGHT,
+            target_stage=_RestartStage.HANDOFF_COMMITTED,
+            target_final_outcome=_RestartFinalOutcome.COMMITTED,
+            target_launcher_result=_LauncherResult.STARTED,
+            ack_outcome=_RestartAckOutcome.ACCEPTED,
+        )
+
+    async def complete_unknown(self) -> _TransitionResult:
+        """Helper/caller-side: IN_FLIGHT → OUTCOME_UNKNOWN.
+        Publishes ack OUTCOME_UNKNOWN.
+        """
+        return await self._complete_atomic(
+            expected_source=_RestartStage.IN_FLIGHT,
+            target_stage=_RestartStage.OUTCOME_UNKNOWN,
+            target_final_outcome=_RestartFinalOutcome.UNKNOWN,
+            target_launcher_result=_LauncherResult.UNKNOWN,
+            ack_outcome=_RestartAckOutcome.OUTCOME_UNKNOWN,
+        )
+
+    async def cancel_restart_task_and_await(self) -> bool:
+        """Caller-side (must have already won claim_abort): cancel the
+        restart task and await its terminal state.
+
+        Returns True if the task is done after awaiting; False if it
+        remains running (the helper may have crossed IN_FLIGHT in the
+        meantime — in which case the caller MUST treat the outcome as
+        unknown).
+        """
+        task = self.restart_task
+        if task is None:
+            return True
+        if task.done():
+            return True
+        task.cancel()
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        return task.done()
+
+    def __repr__(self) -> str:
+        return (
+            f"_RestartTransaction(request_id={self.request_id}, "
+            f"stage={self.stage})"
+        )
+
+
+def _read_marker_payload(path: Path) -> Optional[dict]:
+    """Read and parse a JSON marker file, returning None on any failure."""
+    try:
+        raw = path.read_bytes()
+        return json.loads(raw.rstrip(b" \t\r\n\0"))
+    except Exception:
+        return None
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Atomically write bytes to a file using a tempfile + rename."""
+    tmp = path.with_suffix(f"{path.suffix}.tmp.{os.getpid()}")
+    tmp.write_bytes(data)
+    tmp.replace(path)
 
 
 class GatewaySlashCommandsMixin:
@@ -1599,20 +2107,307 @@ class GatewaySlashCommandsMixin:
             "  /platform resume <name> — re-queue a paused platform"
         )
 
+    async def dispatch_gateway_restart(
+        self,
+        source: SessionSource,
+        reason: str = "",
+        update_id: Optional[int] = None,
+        message_id: Optional[str] = None,
+        origin: str = "slash_command",
+    ) -> tuple[bool, str]:
+        """Shared async restart coordinator used by both /restart and Agent tools.
+
+        Returns (success: bool, user_message: str).
+        """
+        import uuid
+        from gateway.restart import is_gateway_supervisor_process
+        from gateway.run import _hermes_home
+
+        if self._restart_requested or self._draining:
+            count = self._running_agent_count()
+            if count:
+                return False, t("gateway.draining", count=count)
+            return False, t("gateway.restart.in_progress")
+
+        # P1 #71876 lifecycle remediation: after a claimed restart whose
+        # launch outcome could not be confirmed, an explicit FINITE retry
+        # block prevents an immediate re-trigger. It is a monotonic
+        # deadline, NOT a permanent flag: once it expires the gateway
+        # accepts a new restart normally.
+        retry_blocked_until = getattr(self, "_restart_retry_blocked_until", 0.0)
+        if retry_blocked_until:
+            try:
+                loop_now = asyncio.get_running_loop().time()
+            except RuntimeError:
+                loop_now = 0.0
+            if loop_now < retry_blocked_until:
+                remaining = int(retry_blocked_until - loop_now) + 1
+                return (
+                    False,
+                    "Restart outcome could not be confirmed earlier. "
+                    f"Please wait ~{remaining}s before retrying.",
+                )
+            # Window expired: clear the block so later dispatches are
+            # unambiguous.
+            self._restart_retry_blocked_until = 0.0
+
+        request_id = f"req-{uuid.uuid4().hex[:8]}"
+        notify_path = _hermes_home / ".restart_notify.json"
+        dedup_path = _hermes_home / ".restart_last_processed.json"
+        backup = _RestartStateBackup(
+            request_id=request_id,
+            notify_path=notify_path,
+            dedup_path=dedup_path,
+            original_source=self._restart_command_source,
+        )
+
+        effective_msg_id = message_id or source.message_id
+
+        # 1. Transactionally write notify file
+        notify_written = False
+        try:
+            notify_data: dict = {
+                "request_id": request_id,
+                "platform": source.platform.value if source.platform else None,
+                "chat_id": source.chat_id,
+                "chat_type": source.chat_type,
+            }
+            if getattr(source, "delivered_via_upstream_relay", None) is True:
+                notify_data["delivered_via_upstream_relay"] = True
+                if source.user_id:
+                    notify_data["user_id"] = source.user_id
+                if getattr(source, "scope_id", None):
+                    notify_data["scope_id"] = source.scope_id
+            if source.thread_id:
+                notify_data["thread_id"] = source.thread_id
+            if effective_msg_id:
+                notify_data["message_id"] = str(effective_msg_id)
+
+            try:
+                self._restart_command_source = dataclasses.replace(
+                    source,
+                    message_id=str(effective_msg_id)
+                    if effective_msg_id is not None
+                    else source.message_id,
+                )
+            except Exception:
+                self._restart_command_source = source
+
+            await asyncio.to_thread(
+                atomic_json_write,
+                notify_path,
+                notify_data,
+                indent=None,
+            )
+            notify_written = True
+        except Exception as e:
+            logger.error("dispatch_gateway_restart: failed to write notify file: %s", e)
+            backup.rollback(self)
+            return False, "Failed to persist restart notification file: Gateway remains active."
+
+        # 2. Transactionally write dedup file
+        try:
+            dedup_data = {
+                "request_id": request_id,
+                "platform": source.platform.value if source.platform else None,
+                "chat_id": source.chat_id,
+                "thread_id": source.thread_id,
+                "requested_at": time.time(),
+                "origin": origin,
+            }
+            if update_id is not None:
+                dedup_data["update_id"] = update_id
+            if effective_msg_id:
+                dedup_data["message_id"] = str(effective_msg_id)
+            if reason:
+                dedup_data["reason"] = reason[:200]
+
+            await asyncio.to_thread(
+                atomic_json_write,
+                dedup_path,
+                dedup_data,
+                indent=None,
+            )
+        except Exception as e:
+            logger.error("dispatch_gateway_restart: failed to write dedup marker: %s", e)
+            backup.rollback(self)
+            return False, "Failed to persist restart dedup marker: Gateway remains active."
+
+        _under_service = is_gateway_supervisor_process()
+        _in_container = os.path.exists("/.dockerenv") or os.path.exists(
+            "/run/.containerenv"
+        )
+        detached = not (_under_service or _in_container)
+        via_service = _under_service or _in_container
+
+        loop = getattr(self, "_gateway_loop", None) or asyncio.get_running_loop()
+
+        # Create request-scoped transaction
+        transaction = _RestartTransaction(
+            request_id=request_id,
+            backup=backup,
+            loop=loop,
+            detached=detached,
+            via_service=via_service,
+        )
+        self._restart_transaction = transaction
+
+        accepted = self.request_restart(
+            detached=detached,
+            via_service=via_service,
+            transaction=transaction,
+        )
+        if not accepted:
+            transaction.set_final_outcome(_RestartFinalOutcome.ABORTED)
+            transaction.backup.rollback(self)
+            if self._restart_transaction is transaction:
+                self._restart_transaction = None
+            return False, t("gateway.restart.in_progress")
+
+        # 3. Await handoff acknowledgement with the dispatcher's ack timeout.
+        # The ack_future is shielded: an outer CancelledError or timeout
+        # never cancels the future itself — only the wait. The helper may
+        # still write the ack after we exit (which becomes no-op via
+        # try_write_ack, spec section 一).
+        #
+        # ack_future now returns _RestartAckOutcome (three-state):
+        #   ACCEPTED → handoff confirmed, proceed to success path.
+        #   NOT_STARTED → launcher confirmed no side-effect, rollback.
+        #   OUTCOME_UNKNOWN → cannot confirm, must not rollback.
+        ack_outcome = None
+        try:
+            await _shielded_wait_for_ack(
+                transaction.ack_future, timeout=_RESTART_DISPATCH_ACK_TIMEOUT_S
+            )
+            ack_outcome = transaction.ack_future.result()
+        except asyncio.TimeoutError:
+            logger.error("Handoff acknowledgement timed out.")
+            await self._handle_timeout_or_cancel(transaction)
+        except asyncio.CancelledError:
+            logger.error("Handoff cancelled before timeout/cancel handling.")
+            await self._handle_timeout_or_cancel(transaction)
+            raise  # Caller cancellation must propagate
+
+        # Re-derive ack_outcome from terminal stage if we hit timeout/cancel.
+        if ack_outcome is None:
+            if transaction.is_committed():
+                ack_outcome = _RestartAckOutcome.ACCEPTED
+            elif transaction.is_aborted():
+                ack_outcome = _RestartAckOutcome.NOT_STARTED
+            else:
+                ack_outcome = _RestartAckOutcome.OUTCOME_UNKNOWN
+
+        # Map ack_outcome → (success, message, rollback_marker).
+        if ack_outcome is _RestartAckOutcome.ACCEPTED:
+            # P1 #71876: the accepted ack is now written by the helper
+            # immediately after claim_handoff — it means "transaction
+            # claimed; restart will proceed", NOT "drain/launcher/stop
+            # completed". Do NOT set final_outcome=COMMITTED here: the
+            # helper sets it later via complete_started() once the launcher
+            # actually started (or complete_not_started / complete_unknown
+            # on failure). Dispatch returns so the requesting turn can
+            # finish; drain/launcher/stop failures are recorded via
+            # transaction final_outcome, marker rollback, and notification.
+            active_agents = self._running_agent_count()
+            if active_agents:
+                return True, t("gateway.draining", count=active_agents)
+            return True, t("gateway.restart.restarting")
+
+        if ack_outcome is _RestartAckOutcome.NOT_STARTED:
+            # Definite failure: no side-effect, safe to rollback.
+            # The helper already called complete_not_started() which set
+            # stage=ABORTED and final_outcome=ABORTED.
+            logger.info(
+                "Handoff ack: NOT_STARTED — rolling back marker "
+                "(request_id=%s).",
+                transaction.request_id,
+            )
+            try:
+                transaction.backup.rollback(self)
+            except Exception:
+                pass
+            if self._restart_transaction is transaction:
+                self._restart_transaction = None
+            return False, "Handoff failed to initialize: detached restart helper could not be spawned. Gateway remains active."
+
+        # OUTCOME_UNKNOWN
+        logger.info(
+            "Handoff ack: OUTCOME_UNKNOWN — marker preserved "
+            "(request_id=%s).",
+            transaction.request_id,
+        )
+        if self._restart_transaction is transaction:
+            self._restart_transaction = None
+        return False, "Restart outcome could not be confirmed. Do not retry immediately."
+
+    async def _handle_timeout_or_cancel(
+        self, transaction: "_RestartTransaction"
+    ) -> None:
+        """Common handler for pre-commit timeout AND caller cancellation.
+
+        Implements spec sections 二 / 三:
+          * Caller-side: claim_abort() — if True, we own the abort decision
+            and may cancel the task and rollback the marker.
+          * If helper already entered IN_FLIGHT (or beyond), claim_abort
+            returns False. The dispatcher is a pure observer — it MUST NOT
+            modify transaction state, cancel the restart task, rollback the
+            marker, or write any ack/event. The helper continues running
+            and will eventually complete the transaction.
+
+        observer role when claim_abort fails:
+          1. Does NOT call any complete_*
+          2. Does NOT modify stage/final_outcome/launcher_result
+          3. Does NOT write ack/event
+          4. Does NOT cancel restart_task
+          5. Does NOT rollback
+          6. Only returns to the caller who then returns outcome_unknown
+
+        The state lock is acquired only for the short stage transition;
+        we never hold it across Popen / detached helpers / await on the
+        restart task.
+        """
+        aborted_owned = await transaction.claim_abort()
+        if not aborted_owned:
+            # Helper already won the commit race. We MUST NOT cancel the
+            # task, rollback the marker, or modify transaction state.
+            # The helper will eventually complete the transaction
+            # (STARTED → complete_started → stop, or NOT_STARTED →
+            # rollback → complete_not_started, or UNKNOWN →
+            # complete_unknown).
+            # The dispatcher returns outcome_unknown to the caller.
+            return
+
+        # We won the abort gate. Cancel the restart task and await it.
+        task_done = await transaction.cancel_restart_task_and_await()
+
+        if not task_done:
+            # Task refused to die — helper may have crossed IN_FLIGHT
+            # despite ABORTING. This is a contradiction: claim_abort
+            # succeeded (stage=ABORTING) so claim_handoff should have
+            # failed. Log the inconsistency and return outcome_unknown
+            # without modifying transaction state.
+            logger.error(
+                "Pre-commit cancel: restart task still running after cancel "
+                "(request_id=%s). Abort gate was won but task refused to die. "
+                "Returning outcome_unknown.",
+                transaction.request_id,
+            )
+            return
+
+        # Definite abort path: rollback marker and finalize.
+        try:
+            transaction.backup.rollback(self)
+        except Exception:
+            pass
+        tr = await transaction.complete_claimed_abort()
+        if tr is _TransitionResult.LOST_RACE:
+            # Another terminal state won (cannot happen after successful
+            # cancel_restart_task_and_await, but defensive).
+            logger.error("complete_claimed_abort returned LOST_RACE after abort win.")
+            return
+
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /restart command - drain active work, then restart the gateway."""
-        from gateway.run import _hermes_home
-        # Defensive idempotency check: if the previous gateway process
-        # recorded this same /restart (same platform + update_id) and the new
-        # process is seeing it *again*, this is a re-delivery caused by PTB's
-        # graceful-shutdown `get_updates` ACK failing on the way out ("Error
-        # while calling `get_updates` one more time to mark all fetched
-        # updates. Suppressing error to ensure graceful shutdown. When
-        # polling for updates is restarted, updates may be received twice."
-        # in gateway.log).  Ignoring the stale redelivery prevents a
-        # self-perpetuating restart loop where every fresh gateway
-        # re-processes the same /restart command and immediately restarts
-        # again.
         if self._is_stale_restart_redelivery(event):
             logger.info(
                 "Ignoring redelivered /restart (platform=%s, update_id=%s) — "
@@ -1622,94 +2417,18 @@ class GatewaySlashCommandsMixin:
             )
             return ""
 
-        if self._restart_requested or self._draining:
-            count = self._running_agent_count()
-            if count:
-                return t("gateway.draining", count=count)
-            return EphemeralReply(t("gateway.restart.in_progress"))
-
-        # Save the requester's routing info so the new gateway process can
-        # notify them once it comes back online.
-        try:
-            notify_data = {
-                "platform": event.source.platform.value if event.source.platform else None,
-                "chat_id": event.source.chat_id,
-                "chat_type": event.source.chat_type,
-            }
-            if event.source.delivered_via_upstream_relay is True:
-                notify_data["delivered_via_upstream_relay"] = True
-                if event.source.user_id:
-                    notify_data["user_id"] = event.source.user_id
-                if event.source.scope_id:
-                    notify_data["scope_id"] = event.source.scope_id
-            if event.source.thread_id:
-                notify_data["thread_id"] = event.source.thread_id
-            if event.message_id:
-                notify_data["message_id"] = event.message_id
-            if event.source is not None:
-                try:
-                    self._restart_command_source = dataclasses.replace(
-                        event.source,
-                        message_id=str(event.message_id)
-                        if event.message_id is not None
-                        else event.source.message_id,
-                    )
-                except Exception:
-                    self._restart_command_source = event.source
-            await asyncio.to_thread(
-                atomic_json_write,
-                _hermes_home / ".restart_notify.json",
-                notify_data,
-                indent=None,
-            )
-        except Exception as e:
-            logger.debug("Failed to write restart notify file: %s", e)
-
-        # Record the triggering platform + update_id in a dedicated dedup
-        # marker.  Unlike .restart_notify.json (which gets unlinked once the
-        # new gateway sends the "gateway restarted" notification), this
-        # marker persists so the new gateway can still detect a delayed
-        # /restart redelivery from Telegram.  Overwritten on every /restart.
-        try:
-            dedup_data = {
-                "platform": event.source.platform.value if event.source.platform else None,
-                "requested_at": time.time(),
-            }
-            if event.platform_update_id is not None:
-                dedup_data["update_id"] = event.platform_update_id
-            await asyncio.to_thread(
-                atomic_json_write,
-                _hermes_home / ".restart_last_processed.json",
-                dedup_data,
-                indent=None,
-            )
-        except Exception as e:
-            logger.debug("Failed to write restart dedup marker: %s", e)
-
-        active_agents = self._running_agent_count()
-        # When running under a service manager (systemd/launchd) or inside a
-        # Docker/Podman container, use the service restart path: exit with
-        # code 75 so the service manager / container restart policy restarts
-        # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        # Native supervisor markers cover direct systemd/launchd starts. The
-        # explicit marker covers wrappers such as ``sudo env -i`` that strip
-        # those markers before execing the foreground gateway.
-        from gateway.restart import (
-            is_container_restart_context,
-            is_gateway_supervisor_process,
+        success, msg = await self.dispatch_gateway_restart(
+            source=event.source,
+            update_id=event.platform_update_id,
+            message_id=event.message_id,
+            origin="slash_command",
         )
-
-        _under_service = is_gateway_supervisor_process()
-        _in_container = is_container_restart_context()
-        if _under_service or _in_container:
-            self.request_restart(detached=False, via_service=True)
-        else:
-            self.request_restart(detached=True, via_service=False)
-        if active_agents:
-            return t("gateway.draining", count=active_agents)
-        return EphemeralReply(t("gateway.restart.restarting"))
+        if not success and msg == t("gateway.restart.in_progress"):
+            return EphemeralReply(msg)
+        return msg if not success else (
+            t("gateway.draining", count=self._running_agent_count())
+            if self._running_agent_count() else EphemeralReply(msg)
+        )
 
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""

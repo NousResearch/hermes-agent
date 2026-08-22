@@ -6747,6 +6747,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _restart_via_service: bool = False
     _detached_restart_helper_started: bool = False
     _restart_command_source: Optional[SessionSource] = None
+    # Finite monotonic deadline (loop.time()) during which a claimed
+    # restart whose outcome could not be confirmed is NOT retried.
+    # 0.0 = no block. Unlike _restart_requested/_draining, this never
+    # wedges the gateway: it expires and the gateway accepts messages and
+    # later restarts normally.
+    _restart_retry_blocked_until: float = 0.0
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
@@ -11385,17 +11391,370 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
-    async def _launch_detached_restart_command(self) -> None:
+    def _rollback_restart_state(self, backup: Optional[Any] = None) -> None:
+        """Roll back restart flags and restore notification files if handoff fails."""
+        if backup is not None:
+            backup.rollback(self)
+            return
+
+        self._restart_requested = False
+        self._restart_task_started = False
+        self._detached_restart_helper_started = False
+        self._draining = False
+        try:
+            (_hermes_home / ".restart_notify.json").unlink(missing_ok=True)
+            (_hermes_home / ".restart_last_processed.json").unlink(missing_ok=True)
+        except Exception as exc:
+            logger.debug("Failed to clean up restart files during rollback: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Failure-notification target snapshot (P2-A / P2-B #71876)
+    #
+    # The notify target is captured BEFORE any marker mutation so that a
+    # pre-launch abort / NOT_STARTED / UNKNOWN finalization can send the
+    # failure notification AFTER rollback has removed or restored the
+    # marker. The snapshot is immutable and identity-checked against the
+    # transaction's request_id: a missing/corrupt/replaced marker yields
+    # None (never read or notify a successor request's target).
+    # ------------------------------------------------------------------
+
+    # Finite bound on best-effort failure notifications. If the transport
+    # hangs (no adapter timeout), the helper must still exit and leave the
+    # gateway fully usable; the notification is best-effort and MUST NOT
+    # delay core state cleanup.
+    _RESTART_OUTCOME_NOTIFY_TIMEOUT_S = 8.0
+
+    def _capture_restart_notify_target(self, transaction: Any) -> Optional[dict]:
+        """Build an immutable notification-target snapshot for `transaction`.
+
+        Returns a dict with request_id / platform / chat_id / chat_type /
+        thread_id / message_id / user_id / scope_id /
+        delivered_via_upstream_relay, or None when the marker is missing,
+        corrupt, or already replaced by a successor request.
+        """
+        try:
+            from gateway.run import _hermes_home
+
+            notify_path = _hermes_home / ".restart_notify.json"
+            if not notify_path.exists():
+                return None
+            data = json.loads(notify_path.read_text(encoding="utf-8"))
+            if data.get("request_id") != getattr(transaction, "request_id", None):
+                # Marker belongs to a successor request (or was restored to a
+                # prior one). Never notify that target for THIS transaction.
+                logger.debug(
+                    "Restart notify target capture skipped: marker request_id "
+                    "%r != transaction request_id %r",
+                    data.get("request_id"),
+                    getattr(transaction, "request_id", None),
+                )
+                return None
+            return {
+                "request_id": data.get("request_id"),
+                "platform": data.get("platform"),
+                "chat_id": data.get("chat_id"),
+                "chat_type": data.get("chat_type"),
+                "thread_id": data.get("thread_id"),
+                "message_id": data.get("message_id"),
+                "user_id": data.get("user_id"),
+                "scope_id": data.get("scope_id"),
+                "delivered_via_upstream_relay": data.get("delivered_via_upstream_relay") is True,
+            }
+        except Exception as exc:
+            logger.warning(
+                "Failed to capture restart notify target (%s) "
+                "(request_id=%s).",
+                exc,
+                getattr(transaction, "request_id", "?"),
+            )
+            return None
+
+    async def _finalize_claimed_pre_launch(
+        self,
+        transaction: Any,
+        *,
+        notify_msg: str,
+    ) -> None:
+        """Idempotent terminal finalization for a claimed transaction that
+        failed BEFORE the launcher was attempted (drain error / cancellation
+        / drain→launch boundary exception).
+
+        Because no launcher side-effect can have occurred, this is a SAFE
+        abort: it atomically terminates as ABORTED, CAS-rolls back the
+        notify/dedup markers, resets the runner's runtime flags (the gateway
+        accepts new messages and a later restart again), clears the live
+        transaction pointer (identity-checked), and sends a best-effort
+        failure notification to the originating chat. CancelledError is
+        re-raised by the caller after this returns.
+        """
+        # Capture the immutable notification target BEFORE any marker
+        # mutation (P2-A #71876). This snapshot is identity-checked against
+        # the transaction's request_id; a missing/corrupt/replaced marker
+        # yields None (never notify a successor request's target).
+        target = (
+            self._capture_restart_notify_target(transaction)
+            if transaction is not None
+            else None
+        )
+
+        # Atomic terminal transition first (idempotent: if the transaction
+        # is already terminal, complete_not_started returns ALREADY_COMPLETE
+        # or LOST_RACE and no state is rewritten).
+        if transaction is not None:
+            try:
+                await transaction.complete_not_started()
+            except Exception as exc:
+                logger.warning(
+                    "Restart pre-launch finalize: complete_not_started failed "
+                    "(%s) (request_id=%s).",
+                    exc,
+                    getattr(transaction, "request_id", "?"),
+                )
+
+            # CAS-safe marker rollback (restores prior files / removes this
+            # request's marker only if it still belongs to this request).
+            if transaction.backup is not None:
+                try:
+                    transaction.backup.rollback(self)
+                except Exception as exc:
+                    logger.warning(
+                        "Restart pre-launch finalize: marker rollback failed "
+                        "(%s) (request_id=%s).",
+                        exc,
+                        getattr(transaction, "request_id", "?"),
+                    )
+
+            # Reset runtime flags so the gateway is fully usable again.
+            self._restart_requested = False
+            self._restart_task_started = False
+            self._detached_restart_helper_started = False
+            self._draining = False
+            if transaction.backup is not None:
+                self._restart_command_source = transaction.backup.original_source
+
+            # Clear the live transaction pointer only if it still points at
+            # this transaction (never clobber a successor request's state).
+            if self._restart_transaction is transaction:
+                self._restart_transaction = None
+
+            # Best-effort failure notification, sent LAST from the captured
+            # snapshot. The send is bounded by a finite timeout, so even a
+            # hanging transport cannot delay the core state cleanup above.
+            # Notification failures only log — they never break the state
+            # machine (P2-B #71876).
+            await self._send_restart_outcome_notification(target, notify_msg)
+
+    async def _finalize_claimed_launch_unknown(
+        self,
+        transaction: Any,
+        *,
+        notify_msg: str,
+    ) -> None:
+        """Idempotent terminal finalization for a claimed transaction whose
+        launcher was ATTEMPTED but whose outcome cannot be confirmed
+        (mid-launch CancelledError / KeyboardInterrupt / SystemExit, or a
+        generic launcher exception that may have forked a watcher).
+
+        The launcher MAY have produced an external side-effect, so this is
+        NOT a safe abort: the transaction is atomically terminated as
+        OUTCOME_UNKNOWN and the marker is NOT rolled back. Instead:
+          * the runtime flags are reset so the gateway does NOT wedge
+            (no permanent _draining / _restart_task_started);
+          * a FINITE retry block (`_restart_retry_blocked_until`,
+            loop.time() + 30s) prevents an immediate re-trigger without a
+            permanent flag;
+          * the notify marker is CAS-rewritten to an explicit
+            `outcome=unknown` state so a later boot sends an
+            uncertain/incomplete notification, NEVER a "restarted
+            successfully" one;
+          * the live transaction pointer is cleared (identity-checked);
+          * a best-effort failure notification is sent.
+        """
+        # Capture the immutable notification target BEFORE the marker is
+        # CAS-rewritten to outcome=unknown, so the notification is never
+        # racing the marker write (P2-A #71876). The marker is still
+        # preserved (NOT rolled back) — only its outcome field changes.
+        target = (
+            self._capture_restart_notify_target(transaction)
+            if transaction is not None
+            else None
+        )
+
+        if transaction is not None:
+            try:
+                await transaction.complete_unknown()
+            except Exception as exc:
+                logger.warning(
+                    "Restart launch-unknown finalize: complete_unknown failed "
+                    "(%s) (request_id=%s).",
+                    exc,
+                    getattr(transaction, "request_id", "?"),
+                )
+
+            # Reset runtime flags (no wedge). Do NOT rollback the marker.
+            self._restart_requested = False
+            self._restart_task_started = False
+            self._detached_restart_helper_started = False
+            self._draining = False
+            if transaction.backup is not None:
+                self._restart_command_source = transaction.backup.original_source
+
+            # Finite retry block (monotonic deadline), not a permanent flag.
+            try:
+                self._restart_retry_blocked_until = (
+                    asyncio.get_running_loop().time() + 30.0
+                )
+            except Exception:
+                self._restart_retry_blocked_until = 0.0
+
+            # CAS-rewrite the notify marker to an explicit unknown state so
+            # the next boot can never interpret it as a successful restart.
+            self._mark_restart_notify_unknown(transaction)
+
+            if self._restart_transaction is transaction:
+                self._restart_transaction = None
+
+            # Best-effort failure notification from the pre-captured
+            # snapshot, bounded by a finite timeout (P2-B #71876).
+            await self._send_restart_outcome_notification(target, notify_msg)
+
+    def _mark_restart_notify_unknown(self, transaction: Any) -> None:
+        """CAS-safe rewrite of .restart_notify.json to outcome=unknown.
+
+        Only touches the marker if it still belongs to this request; if a
+        successor request already replaced it, the successor's marker is
+        left intact.
+        """
+        try:
+            from gateway.run import _hermes_home
+
+            notify_path = _hermes_home / ".restart_notify.json"
+            if not notify_path.exists():
+                return
+            data = json.loads(notify_path.read_text(encoding="utf-8"))
+            if data.get("request_id") != getattr(transaction, "request_id", None):
+                return
+            data["outcome"] = "unknown"
+            data["outcome_message"] = (
+                "restart result could not be confirmed; gateway may still be online"
+            )
+            notify_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        except Exception as exc:
+            logger.warning(
+                "Failed to mark restart notify outcome=unknown (%s) "
+                "(request_id=%s).",
+                exc,
+                getattr(transaction, "request_id", "?"),
+            )
+
+    async def _send_restart_outcome_notification(
+        self,
+        target: Optional[dict],
+        message: str,
+    ) -> None:
+        """Best-effort failure/uncertain notification to the originating chat.
+
+        `target` is an immutable snapshot produced by
+        ``_capture_restart_notify_target`` BEFORE any marker mutation; this
+        function does NOT re-read the marker (P2-A #71876), so it stays
+        correct even after rollback removed/restored it. The send is bounded
+        by ``_RESTART_OUTCOME_NOTIFY_TIMEOUT_S`` so a hanging transport can
+        never block core state cleanup (P2-B #71876); timeout, adapter
+        exception, or ``success=False`` are logged only and never change the
+        terminal state. This does NOT unlink the notify marker — the caller
+        owns the marker lifecycle (pre-launch abort rollback removes it;
+        launch-unknown rewrites it to outcome=unknown for the next boot).
+        """
+        if target is None:
+            return
+        try:
+            platform_str = target.get("platform")
+            chat_id = target.get("chat_id")
+            chat_type = target.get("chat_type")
+            thread_id = target.get("thread_id")
+            message_id = target.get("message_id")
+
+            if not platform_str or not chat_id:
+                return
+
+            platform = Platform(platform_str)
+            transport = resolve_delivery_transport(platform, self.config, self.adapters)
+            if transport is None:
+                logger.debug(
+                    "Restart outcome notification skipped: no live transport for %s",
+                    platform_str,
+                )
+                return
+
+            platform_cfg = self.config.platforms.get(platform)
+            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                logger.info(
+                    "Restart outcome notification suppressed: %s has "
+                    "gateway_restart_notification=false",
+                    platform_str,
+                )
+                return
+
+            metadata = self._thread_metadata_for_target(
+                platform,
+                chat_id,
+                thread_id,
+                chat_type=chat_type,
+                reply_to_message_id=message_id,
+                adapter=transport.adapter,
+            )
+            if target.get("delivered_via_upstream_relay"):
+                metadata = dict(metadata or {})
+                if target.get("user_id"):
+                    metadata["user_id"] = str(target["user_id"])
+                if target.get("scope_id"):
+                    metadata["scope_id"] = str(target["scope_id"])
+
+            # Bounded send: a transport that never returns must NOT wedge
+            # the helper. Timeout / exception / success=False are log-only.
+            result = await asyncio.wait_for(
+                transport.send(
+                    platform,
+                    str(chat_id),
+                    message,
+                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                ),
+                timeout=self._RESTART_OUTCOME_NOTIFY_TIMEOUT_S,
+            )
+            if result is not None and getattr(result, "success", True) is False:
+                logger.warning(
+                    "Restart outcome notification to %s:%s was not delivered: %s",
+                    platform_str,
+                    chat_id,
+                    getattr(result, "error", "send returned success=False"),
+                )
+                return
+            logger.info(
+                "Sent restart outcome notification to %s:%s",
+                platform_str,
+                chat_id,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Restart outcome notification to %s:%s timed out after %.0fs "
+                "(best-effort; state already finalized).",
+                target.get("platform"),
+                target.get("chat_id"),
+                self._RESTART_OUTCOME_NOTIFY_TIMEOUT_S,
+            )
+        except Exception as exc:
+            logger.warning("Restart outcome notification failed: %s", exc)
+
+    async def _launch_detached_restart_command(self) -> bool:
         import shutil
         import subprocess
 
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
             logger.error("Could not locate hermes binary for detached /restart")
-            return
+            return False
         if self._detached_restart_helper_started:
-            return
-        self._detached_restart_helper_started = True
+            return True
 
         current_pid = os.getpid()
         restart_after_s = max(float(getattr(self, "_restart_drain_timeout", 0.0) or 0.0) + 5.0, 5.0)
@@ -11509,6 +11868,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     env=watcher_env,
                     **windows_detach_popen_kwargs(),
                 )
+                self._detached_restart_helper_started = True
+                return True
             except OSError:
                 try:
                     subprocess.Popen(
@@ -11518,6 +11879,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         env=watcher_env,
                         creationflags=windows_detach_flags_without_breakaway(),
                     )
+                    self._detached_restart_helper_started = True
+                    return True
                 except OSError as exc:
                     # Both spawn attempts failed (a breakaway-denying job object
                     # is the common cause, but OSError covers others too).
@@ -11538,7 +11901,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         error_field,
                         error_code,
                     )
-            return
+                    return False
 
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
         shell_cmd = (
@@ -11555,22 +11918,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
         watcher_env.pop("_HERMES_GATEWAY", None)
         setsid_bin = shutil.which("setsid")
-        if setsid_bin:
-            subprocess.Popen(
-                [setsid_bin, "bash", "-lc", shell_cmd],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=watcher_env,
-                start_new_session=True,
-            )
-        else:
-            subprocess.Popen(
-                ["bash", "-lc", shell_cmd],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=watcher_env,
-                start_new_session=True,
-            )
+        try:
+            if setsid_bin:
+                subprocess.Popen(
+                    [setsid_bin, "bash", "-lc", shell_cmd],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=watcher_env,
+                    start_new_session=True,
+                )
+            else:
+                subprocess.Popen(
+                    ["bash", "-lc", shell_cmd],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=watcher_env,
+                    start_new_session=True,
+                )
+            self._detached_restart_helper_started = True
+            return True
+        except Exception as exc:
+            logger.error("Failed to spawn detached restart watcher: %s", exc)
+            return False
 
     def _launch_systemd_restart_shortcut(self) -> None:
         """Best-effort helper to bypass systemd's automatic restart delay.
@@ -11809,7 +12178,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         return True
 
-    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
+    def request_restart(
+        self,
+        *,
+        detached: bool = False,
+        via_service: bool = False,
+        transaction: Optional[Any] = None,
+    ) -> bool:
         if self._restart_task_started:
             return False
         self._restart_requested = True
@@ -11822,32 +12197,341 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._draining = True
 
         async def _run_restart() -> None:
-            await self._await_active_work_before_restart()
-            # Launch the detached helper only AFTER the after-turn wait.
-            # Its deadline is drain_timeout+5 and covers stop() teardown —
-            # launching earlier would fire `hermes gateway restart` while
-            # the requesting turn was still running.
-            if detached:
-                try:
-                    await self._launch_detached_restart_command()
-                except Exception as e:
-                    logger.error("Failed to launch detached gateway restart helper: %s", e)
-            await asyncio.sleep(0.05)
-            await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
+            # Lazy import to avoid circular import at module load time.
+            try:
+                from gateway.slash_commands import (
+                    _LauncherResult,
+                    _RestartAckOutcome,
+                    _RestartFinalOutcome,
+                    _RestartStage,
+                    _TransitionResult,
+                )
+            except ImportError:
+                _LauncherResult = None  # type: ignore
+                _RestartAckOutcome = None  # type: ignore
+                _RestartFinalOutcome = None  # type: ignore
+                _RestartStage = None  # type: ignore
 
-        # _run_restart is a short-lived self-terminating task (calls stop()
-        # then returns).  Don't add it to _background_tasks — _stop_impl
-        # cancels all entries in that set, which would cancel _run_restart
-        # while it's awaiting _stop_task, propagating CancelledError into
-        # _stop_impl and preventing _shutdown_event.set() / _exit_code = 75.
-        # See #12875.
-        #
-        # We still hold a strong reference in self._restart_task: a bare
-        # asyncio.create_task() keeps only a weak reference, so the event
-        # loop may garbage-collect a still-pending task mid-flight.  The
-        # cancel loop in _stop_impl explicitly skips _restart_task for the
-        # same reason it skips _stop_task.
-        self._restart_task = asyncio.create_task(_run_restart())
+            # Drain in-flight work before any restart side-effect (upstream #77184): refuse new turns and wait for active
+            # agents/cron/api work to reach zero, then let the launch / stop path run against an idle gateway. This also
+            # honors upstream's guidance to launch the detached helper only AFTER the after-turn wait.
+            #
+            # IMPORTANT (self-deadlock fix, P1 #71876): the requesting turn — the natural-language agent turn that
+            # invoked request_gateway_restart — still holds its _running_agents slot while dispatch_gateway_restart is
+            # awaiting the handoff acknowledgement. If we drain BEFORE claiming the transaction, the drain waits for
+            # that turn, the turn waits for dispatch to return, and dispatch waits for our ack → ack timeout → abort.
+            # Claim the transaction FIRST (entering IN_FLIGHT is the safe, non-reentrant state), publish the
+            # accepted/claimed ack so dispatch returns and the requesting turn can finish, THEN drain in the
+            # background. The ack means "transaction claimed; restart will proceed" — it does NOT mean drain,
+            # launcher, or stop has completed. Drain/launcher/stop failures are recorded via transaction
+            # final_outcome, marker rollback, and notification.
+            if transaction is not None:
+                # ----- CLAIM HANDOFF (spec section 二) ------------------
+                # The helper MUST win the handoff gate BEFORE performing
+                # any irreversible external side-effect (Popen, supervisor
+                # signal). The lock is released before we call out to any
+                # external operation. If the caller already won the abort
+                # gate, claim_handoff returns False and we must NOT
+                # launch.
+                #
+                # CancelledError propagates naturally (spec section 三):
+                # if the helper is cancelled before claiming handoff,
+                # the caller owns the abort and must not be overridden.
+                try:
+                    handoff_won = await transaction.claim_handoff()
+                except asyncio.CancelledError:
+                    # Helper was cancelled before claiming handoff.
+                    # The caller-side abort path handles state; do NOT
+                    # write NOT_STARTED here.
+                    raise
+                if not handoff_won:
+                    logger.warning(
+                        "Restart helper refused: caller owns abort gate "
+                        "(request_id=%s).",
+                        transaction.request_id,
+                    )
+                    # The caller owns the abort; do NOT write ack or
+                    # final_outcome here. The caller's
+                    # _handle_timeout_or_cancel will do that.
+                    return
+
+                # Publish the accepted/claimed ack immediately so dispatch
+                # returns and the requesting turn can finish (P1 #71876).
+                # try_write_ack is idempotent and safe to call before any
+                # external side-effect has occurred.
+                transaction.try_write_ack(_RestartAckOutcome.ACCEPTED)
+
+            # ------------------------------------------------------------------
+            # PHASE A: drain in-flight work AFTER the handoff was claimed.
+            #
+            # The requesting turn is now free to finish, so the drain will
+            # actually converge (P1 #71876). The launch / stop path still
+            # runs only after active work reaches zero (upstream #77184).
+            #
+            # If the helper is cancelled or an exception escapes the drain
+            # (or the drain→launch boundary) BEFORE the launcher was
+            # attempted, we can PROVE no launcher side-effect happened:
+            # finalize as ABORTED, CAS-rollback the marker, reset the
+            # runtime flags, clear the transaction pointer, send a
+            # best-effort failure notification, then re-raise (lifecycle
+            # remediation, PR #71876).
+            try:
+                await self._await_active_work_before_restart()
+            except asyncio.CancelledError:
+                if transaction is not None:
+                    await self._finalize_claimed_pre_launch(
+                        transaction,
+                        notify_msg=(
+                            "Restart did not begin: the gateway was cancelled "
+                            "while waiting for active work to finish. "
+                            "Gateway remains active."
+                        ),
+                    )
+                raise
+            except BaseException:
+                if transaction is not None:
+                    await self._finalize_claimed_pre_launch(
+                        transaction,
+                        notify_msg=(
+                            "Restart did not begin: an error occurred while "
+                            "waiting for active work to finish. "
+                            "Gateway remains active."
+                        ),
+                    )
+                raise
+
+            if transaction is not None:
+
+                # ----- LAUNCH (no lock held) -----------------------------
+                # Map the helper's outcome to the three-state terminal
+                # transition. Each complete_* method updates stage,
+                # final_outcome, and launcher_result atomically in a
+                # single critical section, then publishes the matching
+                # ack and sets final_outcome_event.
+                launcher_result = _LauncherResult.UNKNOWN
+                launched = False
+                if detached:
+                    try:
+                        launched = await self._launch_detached_restart_command()
+                        launcher_result = (
+                            _LauncherResult.STARTED if launched
+                            else _LauncherResult.NOT_STARTED
+                        )
+                    except asyncio.CancelledError:
+                        # Helper was cancelled mid-launch while IN_FLIGHT.
+                        # The launcher MAY have spawned a watcher (Popen can
+                        # fork before the cancel lands), so the outcome is
+                        # UNKNOWN — NOT_STARTED cannot be proven. Finalize
+                        # with outcome_unknown (no rollback, finite retry
+                        # block, failure notification) then re-raise.
+                        await self._finalize_claimed_launch_unknown(
+                            transaction,
+                            notify_msg=(
+                                "Restart result could not be confirmed: the "
+                                "launch was cancelled mid-flight. Gateway "
+                                "remains online; please check and retry shortly."
+                            ),
+                        )
+                        raise
+                    except (KeyboardInterrupt, SystemExit):
+                        await self._finalize_claimed_launch_unknown(
+                            transaction,
+                            notify_msg=(
+                                "Restart result could not be confirmed: the "
+                                "launch was interrupted. Gateway remains "
+                                "online; please check and retry shortly."
+                            ),
+                        )
+                        raise
+                    except Exception:
+                        # Popen raised after potentially forking; or any
+                        # other launch-time exception. Per spec section
+                        # 三: NOT_STARTED must only be claimed when we can
+                        # prove no side-effect occurred. A generic
+                        # exception cannot prove that — UNKNOWN.
+                        launcher_result = _LauncherResult.UNKNOWN
+                        launched = False
+                else:
+                    # Service / container / supervisor path: the OS-level
+                    # supervisor (systemd, launchd, runit, k8s, docker
+                    # restart policy) already owns process lifecycle. There
+                    # is no detached watcher helper to spawn here — the
+                    # restart is acknowledged by virtue of having claimed
+                    # the handoff gate above. The supervisor will pick up
+                    # the exit code 75 path emitted by GatewayRunner.stop()
+                    # below and respawn the gateway out of band.
+                    #
+                    # We MUST NOT call _launch_detached_restart_command()
+                    # on this branch:
+                    #   1. The detached-launcher protocol is only defined
+                    #      for the detached=True case (it spawns a Popen
+                    #      watcher that polls getppid()); under a service
+                    #      supervisor, the launcher would either find no
+                    #      ``hermes`` binary in $PATH (containers running
+                    #      a venv-mounted binary) or, worse, fork a real
+                    #      watcher that races the supervisor's own
+                    #      respawn logic — leading to two gateway
+                    #      instances fighting over the same port/socket
+                    #      (#34201).
+                    #   2. The launcher itself can raise (Popen failure,
+                    #      OSError, FileNotFoundError). Per spec section 三,
+                    #      a generic exception on the service branch must
+                    #      NOT regress to OUTCOME_UNKNOWN — there is no
+                    #      side-effect to confirm or deny, because we never
+                    #      asked the OS to do anything. The correct terminal
+                    #      state is HANDOFF_COMMITTED: we accepted the
+                    #      handoff, the supervisor will restart us.
+                    #
+                    # Therefore the launcher_result is unconditionally
+                    # STARTED here and transaction proceeds straight to
+                    # HANDOFF_COMMITTED then stop(restart=True,
+                    # detached_restart=False, service_restart=True).
+                    launcher_result = _LauncherResult.STARTED
+                    launched = True
+
+                if launcher_result is _LauncherResult.STARTED:
+                    tr = await transaction.complete_started()
+                    if tr is _TransitionResult.LOST_RACE:
+                        # Another terminal stage won. This is a consistency
+                        # error — after Fix 1, the dispatcher no longer
+                        # terminates IN_FLIGHT, so the only way to reach
+                        # another terminal before STARTED is a genuine
+                        # state machine violation. Log and do NOT stop.
+                        if transaction.stage is _RestartStage.ABORTED:
+                            runner_logger.error(
+                                "STARTED → ABORTED: state machine conflict "
+                                "(request_id=%s). stop() NOT called.",
+                                transaction.request_id,
+                            )
+                        elif transaction.stage is _RestartStage.OUTCOME_UNKNOWN:
+                            runner_logger.error(
+                                "STARTED → OUTCOME_UNKNOWN: internal inconsistency "
+                                "(request_id=%s). stop() NOT called.",
+                                transaction.request_id,
+                            )
+                        return
+                elif launcher_result is _LauncherResult.NOT_STARTED:
+                    # NOT_STARTED: helper claims ownership of CAS rollback
+                    # because the dispatcher may have already returned
+                    # OUTCOME_UNKNOWN and left.
+                    # Per spec section 三: detached NOT_STARTED guarantees
+                    # no side-effect (Popen never ran). Safe to rollback.
+                    # Rollback BEFORE complete_* so it happens even if the
+                    # transaction is already in a terminal state (LOST_RACE).
+                    #
+                    # P2-A #71876: capture the immutable notify target BEFORE
+                    # the marker is mutated, then rollback, finalize, reset
+                    # flags, clear the pointer, and ONLY THEN send the
+                    # best-effort failure notification from the captured
+                    # snapshot (bounded timeout). The notification no longer
+                    # re-reads the marker, so it cannot be lost by rollback
+                    # nor misrouted to a restored old marker; it cannot block
+                    # the cleanup because it runs last under wait_for.
+                    target = self._capture_restart_notify_target(transaction)
+                    if transaction.backup is not None:
+                        try:
+                            transaction.backup.rollback(self)
+                        except Exception:
+                            pass
+                    tr = await transaction.complete_not_started()
+                    if tr is _TransitionResult.LOST_RACE:
+                        return
+                    if self._restart_transaction is transaction:
+                        self._restart_transaction = None
+                    await self._send_restart_outcome_notification(
+                        target,
+                        "Restart did not begin: the detached restart helper "
+                        "could not be started. Gateway remains active.",
+                    )
+                    return
+                else:  # UNKNOWN
+                    # Launcher raised a generic exception. The launcher may
+                    # have spawned a watcher before the failure, so the
+                    # marker must NOT be rolled back. Finalize with
+                    # outcome_unknown: terminal stage + event, reset the
+                    # runtime flags (no wedge), install a FINITE retry
+                    # block, rewrite the notify marker to an explicit
+                    # unknown state, clear the transaction pointer, and
+                    # send a best-effort failure notification.
+                    await self._finalize_claimed_launch_unknown(
+                        transaction,
+                        notify_msg=(
+                            "Restart result could not be confirmed: the "
+                            "detached restart helper launch failed with an "
+                            "unknown outcome. Gateway remains online; "
+                            "please check and retry shortly."
+                        ),
+                    )
+                    return
+
+                # ----- POST-LAUNCH (helper may be cancelled here) ------
+                # Spec section 四: any BaseException (including
+                # CancelledError) AFTER HANDOFF_COMMITTED must NOT regress
+                # stage to PREPARING, and MUST leave ack / final_outcome
+                # in a consistent state. complete_started() already
+                # published the ACCEPTED ack and set the event.
+                try:
+                    await asyncio.sleep(0.05)
+                    await self.stop(
+                        restart=True,
+                        detached_restart=detached,
+                        service_restart=via_service,
+                    )
+                except Exception:
+                    # Stage is HANDOFF_COMMITTED already. DO NOT regress.
+                    # Re-raise so the task is properly cancelled.
+                    raise
+                # P1 #71876: dispatch returns at claim_handoff (accepted
+                # ack), so the helper is the last party to observe the
+                # terminal state. Clear the runner's live-transaction
+                # pointer here (dispatch's NOT_STARTED/OUTCOME_UNKNOWN
+                # cleanup branches are no longer reached for claimed
+                # transactions).
+                if self._restart_transaction is transaction:
+                    self._restart_transaction = None
+            else:
+                # Legacy fallback for callers without a transaction object
+                if detached:
+                    try:
+                        launched = await self._launch_detached_restart_command()
+                    except Exception as e:
+                        logger.error(
+                            "Failed to launch detached gateway restart helper: %s", e
+                        )
+                        launched = False
+
+                    if not launched:
+                        logger.error(
+                            "Detached restart helper launch failed. "
+                            "Aborting gateway shutdown."
+                        )
+                        self._rollback_restart_state(
+                            getattr(self, "_restart_backup", None)
+                        )
+                        ack_fut = getattr(self, "_handoff_ack_future", None)
+                        if ack_fut is not None and not ack_fut.done():
+                            ack_fut.set_result(False)
+                        return
+                    else:
+                        ack_fut = getattr(self, "_handoff_ack_future", None)
+                        if ack_fut is not None and not ack_fut.done():
+                            ack_fut.set_result(True)
+                else:
+                    ack_fut = getattr(self, "_handoff_ack_future", None)
+                    if ack_fut is not None and not ack_fut.done():
+                        ack_fut.set_result(True)
+
+                await asyncio.sleep(0.05)
+                await self.stop(
+                    restart=True,
+                    detached_restart=detached,
+                    service_restart=via_service,
+                )
+
+        task = asyncio.create_task(_run_restart())
+        self._restart_task = task
+        if transaction is not None:
+            transaction.restart_task = task
         return True
 
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
@@ -16540,6 +17224,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return None
 
+        if self._is_stale_restart_redelivery(event):
+            logger.info(
+                "Suppressing stale restart redelivery message on platform=%s chat=%s msg=%s",
+                source.platform.value if source.platform else "unknown",
+                getattr(source, "chat_id", None),
+                getattr(event, "message_id", None),
+            )
+            return ""
+
         if (
             getattr(self, "_startup_restore_in_progress", False)
             and not is_internal
@@ -21071,71 +21764,79 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
-        """Return True if this /restart is a Telegram re-delivery we already handled.
+        """Return True if this message is a redelivery we already handled.
 
-        The previous gateway wrote ``.restart_last_processed.json`` with the
-        triggering platform + update_id when it processed the /restart.  If
-        we now see a /restart on the same platform with an update_id <= that
-        recorded value, it is a redelivery when this process booted from that
-        restart. Otherwise the marker must still be recent (< 5 minutes).
-
-        Only applies to Telegram today (the only platform that exposes a
-        numeric cross-session update ordering); other platforms return False.
+        Checks ``.restart_last_processed.json``:
+        - For slash_command (Telegram): update_id <= recorded_update_id.
+        - For agent_tool (natural language): exact 4-tuple match on
+          (platform, chat_id, normalized thread_id, message_id) across ANY platform.
         """
         if event is None or event.source is None:
             return False
-        if event.platform_update_id is None:
-            return False
         if event.source.platform is None:
             return False
-        # Only Telegram populates platform_update_id currently; be explicit
-        # so future platforms aren't accidentally gated by this check.
         try:
             platform_value = event.source.platform.value
         except Exception:
-            return False
-        if platform_value != "telegram":
             return False
 
         try:
             marker_path = _hermes_home / ".restart_last_processed.json"
             if not marker_path.exists():
-                # Belt-and-suspenders for when the dedup marker goes missing
-                # (manually cleaned up, or the previous cycle's write failed).
-                # Without a marker the update_id comparison below can't run, so
-                # a redelivered /restart would sail through and re-restart the
-                # gateway — an infinite loop (issue #18528).
-                #
-                # Suppress ONLY when we can independently confirm we just came
-                # out of a restart cycle: this process booted from a
-                # chat-originated /restart (_booted_from_restart) AND is still
-                # within a short post-boot window. This never swallows a
-                # genuine first /restart on a fresh boot (no restart marker on
-                # boot → flag stays False). Consume the flag one-shot so a
-                # legitimate /restart sent later in the same session is honored.
-                if (
-                    getattr(self, "_booted_from_restart", False)
-                    and time.time() - getattr(self, "_startup_time", 0.0) < 60
-                ):
-                    self._booted_from_restart = False
-                    return True
+                if getattr(self, "_booted_from_restart", False):
+                    startup_time = getattr(self, "_startup_time", 0.0)
+                    if startup_time and (time.time() - startup_time) < 60.0:
+                        self._booted_from_restart = False
+                        return True
                 return False
+
             data = json.loads(marker_path.read_text(encoding="utf-8"))
-        except Exception:
-            return False
+            if data.get("platform") != platform_value:
+                return False
 
-        if data.get("platform") != platform_value:
-            return False
-        recorded_uid = data.get("update_id")
-        if not isinstance(recorded_uid, int):
-            return False
-        if event.platform_update_id > recorded_uid:
-            return False
+            booted_from_restart = getattr(self, "_booted_from_restart", False)
+            req_at = float(data.get("requested_at", 0))
+            is_recent = (time.time() - req_at) < 300.0 or booted_from_restart
+            if not is_recent:
+                return False
 
-        # A service-managed restart can legitimately take longer than the
-        # marker's normal five-minute trust window while adapters, cron, and
-        # in-flight deliveries drain. If this process booted from the recorded
-        # chat restart, the first same-or-older update is still that restart's
+            origin = data.get("origin", "slash_command")
+
+            if origin == "slash_command":
+                if platform_value == "telegram":
+                    last_update_id = data.get("update_id")
+                    if (
+                        event.platform_update_id is not None
+                        and last_update_id is not None
+                        and event.platform_update_id <= last_update_id
+                    ):
+                        if booted_from_restart:
+                            self._booted_from_restart = False
+                        return True
+
+            elif origin == "agent_tool":
+                recorded_chat_id = data.get("chat_id")
+                recorded_thread_id = data.get("thread_id")
+                recorded_msg_id = data.get("message_id")
+
+                evt_chat_id = event.source.chat_id
+                evt_thread_id = event.source.thread_id or None
+                evt_msg_id = str(event.message_id) if event.message_id is not None else None
+
+                if (
+                    evt_chat_id == recorded_chat_id
+                    and evt_thread_id == (recorded_thread_id or None)
+                    and evt_msg_id is not None
+                    and recorded_msg_id is not None
+                    and evt_msg_id == str(recorded_msg_id)
+                ):
+                    if booted_from_restart:
+                        self._booted_from_restart = False
+                    return True
+
+        except Exception as e:
+            logger.debug("Failed to check restart redelivery marker: %s", e)
+        return False
         # redelivery regardless of elapsed wall time. Consume the boot signal
         # one-shot so a later genuine command is evaluated normally.
         if getattr(self, "_booted_from_restart", False):
@@ -24215,10 +24916,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata["user_id"] = str(data["user_id"])
                 if data.get("scope_id"):
                     metadata["scope_id"] = str(data["scope_id"])
+
+            # P1 #71876 lifecycle remediation: a marker rewritten to
+            # outcome=unknown (launch attempted, result unconfirmed) must
+            # NEVER surface as a fake "restarted successfully" — send an
+            # explicit uncertain/incomplete notification instead.
+            if data.get("outcome") == "unknown":
+                message = (
+                    "⚠ Gateway restart result could not be confirmed. "
+                    "The gateway is currently online; please verify and "
+                    "retry if needed."
+                )
+                logger.info(
+                    "Restart notification: outcome=unknown marker -> uncertain "
+                    "message to %s:%s",
+                    platform_str,
+                    chat_id,
+                )
+            else:
+                message = "♻ Gateway restarted successfully. Your session continues."
+
             result = await transport.send(
                 platform,
                 str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
+                message,
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")

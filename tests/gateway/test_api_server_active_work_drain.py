@@ -20,7 +20,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
 from hermes_state import SessionDB
-from tests.gateway.restart_test_helpers import make_restart_runner
+from tests.gateway.restart_test_helpers import attach_real_stop, make_restart_runner
 
 # Safety net so a regression parks the executor thread forever instead of
 # hanging CI.  No assertion below depends on elapsed time.
@@ -525,6 +525,7 @@ class TestShutdownSettleWindow:
         import tools.terminal_tool as _tt
 
         runner, adapter = make_restart_runner()
+        attach_real_stop(runner)
         runner._restart_drain_timeout = 0.01  # force the drain-timeout path
         adapter.disconnect = _make_async_noop()
         api = _SettlingApiAdapter()
@@ -569,6 +570,7 @@ class TestShutdownSettleWindow:
         import tools.terminal_tool as _tt
 
         runner, adapter = make_restart_runner()
+        attach_real_stop(runner)
         runner._restart_drain_timeout = 0.01
         adapter.disconnect = _make_async_noop()
         api = _SettlingApiAdapter(polls_to_settle=10_000)  # never settles

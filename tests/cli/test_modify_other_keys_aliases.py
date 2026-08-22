@@ -560,3 +560,47 @@ def test_lock_bits_on_cmd_backspace_alias():
     assert _parse("\x1b[127;137u") == [Keys.ControlU]  # Cmd+Backspace + NumLock
     assert _parse("\x1b[127;73u") == [Keys.ControlU]   # Cmd+Backspace + Caps
     assert _parse("\x1b[3;137~") == [Keys.ControlK]    # Cmd+FwdDel + NumLock
+
+
+def test_split_esc_delivery_does_not_leak():
+    """#91937 — Ghostty + macOS IME can deliver the modifyOtherKeys
+    sequence with the ESC byte in a *separate read* from the CSI body.
+    prompt_toolkit's read loop feeds each stdin chunk sequentially: two
+    back-to-back reads (no intervening flush) must still merge into one
+    keypress — the capital letter — and never leak ``[27;2;65~`` into
+    the prompt.
+
+    This pins the alias-table contract against the split failure mode
+    that #87511's whole-sequence fix could not surface: an edit that
+    drops the ``ESC[27;2;<cp>~`` mappings would fail these asserts even
+    while every whole-sequence test in this file still passes.
+
+    The third case documents *why* the Ghostty push is level 1: with a
+    flush between the two reads (idle gap, the IME timing), the lone ESC
+    is emitted as the Escape key and the body lands as literal
+    characters. If that case ever stops leaking, the parser gained
+    split-sequence memory and level 2 could be reconsidered — until
+    then, keep the push at level 1.
+    """
+    def _feed_chunks(chunks, flush_between):
+        out = []
+        parser = Vt100Parser(out.append)
+        for chunk in chunks:
+            parser.feed(chunk)
+            if flush_between:
+                parser.flush()
+        parser.flush()
+        return [kp.key for kp in out]
+
+    # Whole sequence in one read → 'A' (baseline contract).
+    assert _feed_chunks(["\x1b[27;2;65~"], False) == ["A"]
+    # ESC split from the CSI body across two reads, no intervening
+    # flush → still 'A'; nothing leaks as literal text.
+    assert _feed_chunks(["\x1b", "[27;2;65~"], False) == ["A"]
+    # Same split with a flush between reads (idle gap) → ESC becomes its
+    # own keypress and the body leaks as literal characters. Pinned as
+    # the documented reason the Ghostty push stays at modifyOtherKeys
+    # level 1 (#91937).
+    assert _feed_chunks(["\x1b", "[27;2;65~"], True) == [
+        Keys.Escape, "[", "2", "7", ";", "2", ";", "6", "5", "~"
+    ]

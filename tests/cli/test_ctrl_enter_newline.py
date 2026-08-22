@@ -168,7 +168,10 @@ class _FakeOutput:
 
 
 def test_ghostty_uses_modify_other_keys_only():
-    """Ghostty must NOT push the Kitty keyboard protocol (CSI >1u)."""
+    """Ghostty must NOT push the Kitty keyboard protocol (CSI >1u), and must
+    push modifyOtherKeys LEVEL 1 (CSI >4;1m) — level 2 re-encodes every
+    Shift+letter, which leaks as literal '[27;2;<code>~' text when
+    Ghostty+macOS IME splits the ESC byte (see _is_ghostty_terminal)."""
     import cli as cli_mod
 
     out = _FakeOutput()
@@ -177,14 +180,17 @@ def test_ghostty_uses_modify_other_keys_only():
         env={"TERM_PROGRAM": "ghostty", "TERM": "xterm-ghostty"},
     )
     assert result is True
-    # Must contain modifyOtherKeys push ...
-    assert b"\x1b[>4;2m" in out.written
-    # ... but NOT the Kitty protocol push.
+    # Must contain the level-1 modifyOtherKeys push ...
+    assert b"\x1b[>4;1m" in out.written
+    # ... but NOT level 2 (re-encodes Shift+letters → leak) ...
+    assert b"\x1b[>4;2m" not in out.written
+    # ... and NOT the Kitty protocol push.
     assert b"\x1b[>1u" not in out.written
 
 
 def test_ghostty_via_term_var_uses_modify_other_keys_only():
-    """xterm-ghostty TERM (without TERM_PROGRAM) also skips Kitty protocol."""
+    """xterm-ghostty TERM (without TERM_PROGRAM) also skips Kitty protocol
+    and uses modifyOtherKeys level 1."""
     import cli as cli_mod
 
     out = _FakeOutput()
@@ -193,7 +199,8 @@ def test_ghostty_via_term_var_uses_modify_other_keys_only():
         env={"TERM": "xterm-ghostty"},
     )
     assert result is True
-    assert b"\x1b[>4;2m" in out.written
+    assert b"\x1b[>4;1m" in out.written
+    assert b"\x1b[>4;2m" not in out.written
     assert b"\x1b[>1u" not in out.written
 
 

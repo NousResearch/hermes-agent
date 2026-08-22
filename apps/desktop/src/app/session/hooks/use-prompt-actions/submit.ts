@@ -204,9 +204,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // Queue drains carry their source session explicitly. A background drain
       // must never inherit the currently selected session after the user moves
       // to another chat.
-      const targetStoredSessionId = options?.storedSessionId ?? selectedStoredSessionIdRef.current
+      let targetStoredSessionId = options?.storedSessionId ?? selectedStoredSessionIdRef.current
 
-      const targetStartedInCurrentView =
+      let targetStartedInCurrentView =
         !targetStoredSessionId || targetStoredSessionId === selectedStoredSessionIdRef.current
 
       // A queued/background drain whose runtime binding was reaped must NOT
@@ -273,9 +273,24 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           startingActiveSessionId !== routedRuntimeId)
       )
 
+      // For an ordinary foreground submit, the durable route is the authority
+      // when renderer selection publication is stale after reconnect. Pin the
+      // operation to that route before any recovery; explicit queue/tile targets
+      // remain authoritative and never inherit the foreground route.
+      if (!options?.storedSessionId && routedSessionNeedsResume && routedStoredSessionId) {
+        targetStoredSessionId = routedStoredSessionId
+        targetStartedInCurrentView = true
+      }
+
       let startingStoredSessionId = routedSessionNeedsResume
         ? routedStoredSessionId
         : (selectedStoredSessionId ?? routedStoredSessionId)
+
+      // Selection publishes independently from the durable route. Keep its
+      // entry snapshot as the drift baseline instead of rewriting history to
+      // the routed target: an already-stale ref is not evidence that the user
+      // switched chats while this submit was in flight.
+      let startingSelectedStoredSessionId = selectedStoredSessionId
 
       let startingRouteToken = getRouteToken()
 
@@ -294,7 +309,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           ? sessionContextDrift({
               startRouteToken: startingRouteToken,
               nowRouteToken: getRouteToken(),
-              startSelectedStoredId: startingStoredSessionId,
+              startSelectedStoredId: startingSelectedStoredSessionId,
               nowSelectedStoredId: selectedStoredSessionIdRef.current,
               submitTargetStoredId: startingStoredSessionId,
               composerScope: options?.composerScope,
@@ -510,7 +525,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         scope.setMessages(current => [...current, buildUserMessage()])
       }
 
-      if (!sessionId && routedStoredSessionId && routedSessionNeedsResume) {
+      if (!options?.storedSessionId && !sessionId && routedStoredSessionId && routedSessionNeedsResume) {
         // The URL still names a durable conversation, but a profile
         // swap/reconnect left its volatile session binding incomplete or
         // cross-wired. Run the full profile-aware resume path. Creating here
@@ -532,20 +547,20 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         const recoveredRuntimeId = activeSessionIdRef.current
         const validatedRuntimeId = getRuntimeIdForStoredSession(routedStoredSessionId)
 
-        // Recovery only succeeded when both sides of the cache agree that the
-        // live runtime belongs to the durable routed session. A failed profile
-        // swap may leave the previous profile's runtime active, while a recycled
-        // runtime id may leave a cross-wired stored-session mapping.
+        // Adopt the high-level resume only after its renderer-side ownership
+        // publications agree. Those refs/caches update independently, so a
+        // successful resume can legitimately return before they settle. That
+        // is not a failed recovery and not evidence of navigation: leave the
+        // runtime unresolved and let the direct, profile-aware session.resume
+        // rung below return an authoritative id for this exact durable target.
         if (
-          !recoveredRuntimeId ||
-          recoveredRuntimeId !== validatedRuntimeId ||
-          selectedStoredSessionIdRef.current !== routedStoredSessionId
+          recoveredRuntimeId &&
+          recoveredRuntimeId === validatedRuntimeId &&
+          selectedStoredSessionIdRef.current === routedStoredSessionId
         ) {
-          return abortForSessionSwitch(null)
+          sessionId = recoveredRuntimeId
+          seedOptimistic(sessionId)
         }
-
-        sessionId = recoveredRuntimeId
-        seedOptimistic(sessionId)
       }
 
       if (!sessionId && targetStoredSessionId) {
@@ -655,6 +670,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // Re-pin the baseline to the created chat for the rest of the
         // pipeline; the closures (seedOptimistic et al) see the new value.
         startingStoredSessionId = selectedStoredSessionIdRef.current
+        startingSelectedStoredSessionId = selectedStoredSessionIdRef.current
         startingRouteToken = getRouteToken()
 
         seedOptimistic(sessionId)

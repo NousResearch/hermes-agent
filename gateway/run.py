@@ -12488,6 +12488,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._gateway_loop = None
         if self._gateway_loop is not None:
             self._start_loop_liveness_guards(self._gateway_loop)
+            # The event loop is confirmed live: the startup-liveness
+            # watchdog's job is done and the loop-liveness watchdog (armed
+            # just above) takes over from here (OOF-298). Disarm even when
+            # the loop guards are config-disabled — the startup watchdog
+            # only covers the pre-loop window, never adapter connects or
+            # steady-state. Deliberately inside the loop-confirmed branch:
+            # if the loop somehow isn't live, startup has NOT reached the
+            # milestone and the watchdog must stay armed.
+            try:
+                from gateway.startup_watchdog import disarm_startup_watchdog
+
+                disarm_startup_watchdog()
+            except Exception:
+                logger.debug("Startup watchdog disarm failed", exc_info=True)
         logger.info("Session storage: %s", self.config.sessions_dir)
 
         # Sanity-check that systemd's TimeoutStopSec covers our drain
@@ -31144,6 +31158,19 @@ def main():
 
         register_self("gateway")
         attach_self_to_kill_on_close_job()
+    except Exception:
+        pass
+
+    # Startup-liveness watchdog (OOF-298): armed before config load, DB
+    # opens, and the rest of pre-loop startup so a deadlock in that window
+    # still gets the process respawned by the service supervisor instead of
+    # wedging as a live-PID zombie. (Import-time coverage for the standard
+    # ``hermes gateway run`` path is provided even earlier, by the argv
+    # fast-path in hermes_cli.main.) Disarmed by GatewayRunner once the
+    # event loop is confirmed live.
+    try:
+        from gateway.startup_watchdog import arm_startup_watchdog
+        arm_startup_watchdog()
     except Exception:
         pass
 

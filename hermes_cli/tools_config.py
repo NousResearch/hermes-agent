@@ -660,6 +660,17 @@ TOOL_CATEGORIES = {
                 "post_setup": "camofox",
             },
             {
+                "name": "Camofox (exec mode)",
+                "badge": "free · local",
+                "tag": "Anti-detection Camoufox with script-per-call browser_exec",
+                "env_vars": [
+                    {"key": "CAMOFOX_URL", "prompt": "Camofox server URL", "default": "http://localhost:9377",
+                     "url": "https://github.com/jo-inc/camofox-browser"},
+                ],
+                "browser_backend": "camofox",
+                "post_setup": "camofox",
+            },
+            {
                 "name": "Browser Use",
                 "badge": "free · local · cloud",
                 "tag": "New SOTA web harness (CLI 3.0)",

@@ -104,7 +104,7 @@ SIGNAL_HTTP_URL=http://127.0.0.1:8080
 SIGNAL_ACCOUNT=+1234567890
 
 # Security (recommended)
-SIGNAL_ALLOWED_USERS=+1234567890,+0987654321    # Comma-separated E.164 numbers or UUIDs
+SIGNAL_ALLOWED_USERS=+15550123456,+15550987654    # Comma-separated E.164 numbers or UUIDs
 
 # Optional
 SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # Enable groups (omit to disable, * for all)
@@ -194,7 +194,7 @@ You can still see tool activity in the CLI, and final Signal replies can include
 ### Phone Number Redaction
 
 All phone numbers are automatically redacted in logs:
-- `+15551234567` → `+155****4567`
+- `+15551234567` → `+15550123456`
 - This applies to both Hermes gateway logs and the global redaction system
 
 ### Note to Self (Single-Number Setup)

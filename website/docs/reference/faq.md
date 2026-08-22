@@ -113,7 +113,7 @@ agent = AIAgent(model="anthropic/claude-opus-4.7")
 response = agent.chat("Explain quantum computing briefly")
 ```
 
-See the [Python Library guide](../user-guide/features/code-execution.md) for full API usage.
+See the [Python Library guide](../guides/python-library.md) for full API usage.
 
 ---
 

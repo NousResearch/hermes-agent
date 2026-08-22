@@ -632,7 +632,7 @@ cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 
 **Fix**:
 1. Verify `libolm` is installed on your system (see the E2EE section above).
-2. Make sure `MATRIX_ENCRYPTION=true` is set in your `.env`.
+2. Make sure E2EE is enabled: `MATRIX_E2EE_MODE=required` (or legacy `MATRIX_ENCRYPTION=true`) is set in your `.env`.
 3. In your Matrix client (Element), go to the bot's profile -> Sessions -> verify/trust the bot's device.
 4. If the bot just joined an encrypted room, it can only decrypt messages sent *after* it joined. Older messages are inaccessible.
 

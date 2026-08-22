@@ -21,7 +21,10 @@ Each route defines:
 Security:
   - HMAC secret is required per route (validated at startup)
   - Rate limiting per route (fixed-window, configurable)
-  - Idempotency cache prevents duplicate agent runs on webhook retries
+  - Idempotency caches prevent duplicate agent runs on webhook retries:
+    delivery-level (same delivery id) and event-level (same logical event
+    re-POSTed under a fresh delivery id, 24h TTL configurable via
+    ``event_dedup_ttl``)
   - Body size limits checked before reading payload
   - Generic HMAC supports a V2 signature (X-Webhook-Signature-V2) that
     binds a timestamp into the signed data for replay protection; the
@@ -169,6 +172,33 @@ def _hmac_str_equal(provided: str, expected: str) -> bool:
     return hmac.compare_digest(provided.encode(), expected.encode())
 
 
+# Stable event-id shapes.  A value that matches one of these is a
+# sender-declared identifier that survives retries (svix ``msg_*`` message
+# ids, ``evt_*`` event ids, UUIDs).  Anything else — a bare entity/row id,
+# a per-attempt timestamp, an opaque short token — is NOT a stable event
+# identity: reusing it as an event key would either suppress distinct events
+# that happen to share an entity id (false positive) or fail to dedup retries
+# whose per-attempt component changes (false negative).
+_STABLE_EVENT_ID_RE = re.compile(
+    r"^(?:"
+    r"msg_[A-Za-z0-9_]+"          # svix-style message id
+    r"|evt_[A-Za-z0-9_]+"         # generic event id prefix
+    r"|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"  # UUID
+    r")$"
+)
+
+
+def _is_stable_event_id(value: str) -> bool:
+    """True when ``value`` looks like a stable sender-declared event id.
+
+    This gates BOTH the payload ``id`` fallback and the delivery-id embedding
+    heuristic.  A per-attempt timestamp suffix (the ai-coach
+    ``<type>-<epoch-ts>`` delivery shape) or a generic row id fails the check
+    so it can never become a silently-suppressing event key.
+    """
+    return bool(_STABLE_EVENT_ID_RE.match(value.strip()))
+
+
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -222,6 +252,20 @@ class WebhookAdapter(BasePlatformAdapter):
         self._seen_deliveries: Dict[str, float] = {}
         self._idempotency_ttl: int = 3600  # 1 hour
         self._seen_deliveries_next_prune_at: float = 0.0
+
+        # Event-level idempotency: TTL cache of logical event identities
+        # extracted from the payload / embedded message ID (NOT the delivery
+        # ID).  A sender that retries the SAME event under a fresh delivery
+        # ID (e.g. the ai-coach backend re-POSTing a crash-survivor event
+        # with a new ``X-Request-ID`` timestamp) must not wake the agent a
+        # second time.  Default TTL 24h, overridable per route
+        # (``event_dedup_ttl``) or globally (``platforms.webhook.extra.
+        # event_dedup_ttl``).
+        self._seen_events: Dict[str, tuple] = {}  # event_key -> (seen_at, ttl)
+        self._event_dedup_ttl: int = int(
+            config.extra.get("event_dedup_ttl", 24 * 3600)
+        )
+        self._seen_events_next_prune_at: float = 0.0
 
         # Rate limiting: per-route timestamps in a fixed window.
         self._rate_counts: Dict[str, Deque[float]] = {}
@@ -458,6 +502,194 @@ class WebhookAdapter(BasePlatformAdapter):
         self._seen_deliveries[delivery_id] = now
         if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
             self._prune_seen_deliveries(now)
+        return True
+
+    # ------------------------------------------------------------------
+    # Event-level idempotency
+    # ------------------------------------------------------------------
+
+    # Fields whose value is a sender-declared STABLE event identity.  The
+    # value is used as-is only when it matches a stable shape
+    # (``msg_*`` / ``evt_*`` / UUID) — see ``_is_stable_event_id``.  Bare
+    # ``id`` (a generic entity/row id) is deliberately NOT trusted on its
+    # own: distinct events for the same entity routinely share it, and using
+    # it as an event key would silently suppress the later ones within the
+    # TTL.
+    _EVENT_KEY_PAYLOAD_FIELDS = (
+        "dedup_key", "event_id", "eventId", "id",
+    )
+
+    @staticmethod
+    def _extract_event_key(
+        delivery_id: str,
+        event_type: str,
+        payload: dict,
+    ) -> str:
+        """Derive a stable identity for the LOGICAL event a POST carries.
+
+        The delivery ID is a retry/transport identifier: providers hand out a
+        fresh one on every attempt, so it cannot be used to recognise that two
+        deliveries are the SAME event.  This returns a deterministic key from
+        the parts that survive retries:
+
+        1. An explicit event identity in the payload — ``dedup_key``,
+           ``event_id``, ``eventId`` (the sender's own stable event id,
+           e.g. ai-coach's ``dedup_key`` / a svix ``msg_*`` id).  Bare ``id``
+           is accepted ONLY when its value itself matches a stable shape
+           (``msg_*`` / ``evt_*`` / UUID): a generic entity/row id is
+           routinely reused across DISTINCT events for the same entity, so it
+           must never become a suppress-everything key.
+        2. A composite body fingerprint over ``(trigger_type, data)`` — the
+           ai-coach backend identifies events by ``trigger_type`` + ``data``
+           (its delivery id ``ai-coach-<type>-<per-attempt-ts>`` changes on
+           every retry, so the payload is the only stable part).  Identical
+           re-POSTs of the same event fingerprint identically; genuinely new
+           events (new data) fingerprint differently.  Only payloads that
+           carry these event-specific semantic fields are fingerprinted —
+           a generic GitHub push whose fingerprint would be constant must
+           never become a 24h suppress-everything key.
+        3. The embedded message ID inside the delivery ID (``svix-id`` /
+           ``X-GitHub-Delivery`` style) when the payload carries NO semantic
+           identity at all.  Only a trailing segment that looks like a
+           stable sender-declared id (``msg_*`` / ``evt_*`` / a UUID) is
+           used.  The ai-coach delivery shape
+           (``ai-coach-<type>-<per-attempt-epoch-ts>``) is REJECTED: its
+           per-attempt timestamp changes on every retry, so returning the
+           full id would silently fail to dedup (each retry would get a
+           fresh key).  Payloads from ai-coach carry ``trigger_type`` +
+           ``data`` anyway, so the composite fingerprint in step 2 is the
+           correct identity for that shape.
+
+        Returns ``""`` when NO stable identity can be derived (generic
+        delivery-ID-only POSTs with no payload id and an opaque delivery id
+        like ``d3f8a2``) — the caller then skips event-level dedup entirely,
+        preserving the existing delivery-level behaviour for those routes.
+
+        NOTE: the event ``type`` alone (``trigger_type`` / header event_type)
+        is deliberately NOT used as a standalone key — ``sleep_ready`` or
+        ``weight`` would wrongly suppress every subsequent event of that class
+        within the TTL.  The type is only a component of the composite
+        fingerprint.
+        """
+        # 1. Explicit event identity in the payload (sender-declared, stable).
+        for field in WebhookAdapter._EVENT_KEY_PAYLOAD_FIELDS:
+            if field not in payload:
+                continue
+            value = payload.get(field)
+            if isinstance(value, str) and value.strip():
+                # ``id`` is a generic entity/row id that many senders reuse
+                # across distinct events for the same entity.  Only treat it
+                # as an event identity when its value itself looks like a
+                # stable sender-declared event id; the explicitly named
+                # dedup fields (dedup_key / event_id / eventId) are trusted
+                # as-is.
+                if field == "id" and not _is_stable_event_id(value):
+                    continue
+                return value.strip()
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if field == "id":
+                    continue
+                return str(value)
+        # 2. Composite body fingerprint — ONLY for payloads that carry
+        #    event-specific semantic fields (ai-coach shape:
+        #    ``{"trigger_type": ..., "data": {...}}``).  Generic webhooks
+        #    (GitHub pushes etc.) must NOT be fingerprinted here: their
+        #    fingerprint would be constant across events, and a constant key
+        #    would suppress every subsequent event of that type within the
+        #    TTL — the exact opposite of what this cache is for.
+        data = payload.get("data")
+        if isinstance(data, (dict, list)) or payload.get("trigger_type"):
+            semantic: Dict[str, Any] = {
+                "trigger_type": payload.get("trigger_type"),
+                "data": data,
+            }
+            for field in WebhookAdapter._EVENT_KEY_PAYLOAD_FIELDS:
+                if field in payload:
+                    semantic[field] = payload.get(field)
+            return "body:" + hashlib.sha256(
+                json.dumps(
+                    semantic, sort_keys=True, separators=(",", ":"), default=str
+                ).encode("utf-8")
+            ).hexdigest()
+        # 3. Embedded message ID inside the delivery ID.  Common shapes:
+        #    ``msg_<id>`` (svix), ``evt_<id>``, ``<uuid>`` (github).
+        #    Opaque 1-2 segment delivery ids (``d3f8a2``,
+        #    ``delivery-123``) are NOT stable event identities — they change
+        #    per attempt.  Per-attempt ids with 3+ segments are rejected too:
+        #    the ai-coach delivery shape
+        #    ``ai-coach-<type>-<per-attempt-epoch-ts>`` ends in a fresh
+        #    timestamp on every retry, so returning the full id would
+        #    silently fail to dedup (each retry would get a fresh key) while
+        #    claiming to dedup.  Only a delivery id that IS a stable
+        #    sender-declared event id (a bare ``msg_*`` / ``evt_*`` / UUID)
+        #    or that embeds one as its trailing segment is used.
+        did = (delivery_id or "").strip()
+        if did:
+            # The whole delivery id may itself be a stable event id — a
+            # bare UUID (``1e8f9c0a-2b3c-...``) or a bare ``msg_*`` /
+            # ``evt_*`` token.
+            if _is_stable_event_id(did):
+                return did
+            # Otherwise look for a stable trailing segment embedded in a
+            # prefixed delivery id (svix ``evt_abc-msg_2xabc``).
+            segments = [s for s in did.replace("/", "-").split("-") if s]
+            if segments and _is_stable_event_id(segments[-1]):
+                return segments[-1]
+        return ""
+
+    def _event_dedup_ttl_for_route(self, route_config: dict) -> int:
+        """Per-route ``event_dedup_ttl`` override, else the global default."""
+        raw = route_config.get("event_dedup_ttl")
+        if raw is None:
+            return self._event_dedup_ttl
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return self._event_dedup_ttl
+
+    def _prune_seen_events(self, now: float, *, force: bool = False) -> None:
+        """Drop expired event identities.
+
+        Each entry records its OWN ttl (routes may override the global
+        ``event_dedup_ttl``), so the cutoff is per-entry — an entry stored
+        with a 120s route TTL must not live for the 24h global default.
+        The time gate (``_seen_events_next_prune_at``) bounds how often we
+        scan; ``force=True`` bypasses it so a map that has actually exceeded
+        its cap is pruned immediately instead of growing unboundedly
+        between windows.
+        """
+        if not force and now < self._seen_events_next_prune_at:
+            return
+        stale = [
+            k
+            for k, (seen_at, ttl) in self._seen_events.items()
+            if now - seen_at >= ttl
+        ]
+        for k in stale:
+            self._seen_events.pop(k, None)
+        if not force:
+            self._seen_events_next_prune_at = now + min(
+                3600.0, max(60.0, self._event_dedup_ttl / 10)
+            )
+
+    def _record_event(self, event_key: str, ttl: int, now: float) -> bool:
+        """Return True when this EVENT should be processed (first sight).
+
+        On a repeat within ``ttl`` seconds, returns False and leaves the
+        original timestamp untouched (so the 24h window is measured from
+        first sight, not extended by each retry).
+        """
+        entry = self._seen_events.get(event_key)
+        if entry is not None:
+            seen_at, entry_ttl = entry
+            if now - seen_at < entry_ttl:
+                return False
+            self._seen_events.pop(event_key, None)
+        self._seen_events[event_key] = (now, ttl)
+        if len(self._seen_events) > max(self._rate_limit * 2, 128):
+            # Cap exceeded: prune NOW (per-entry expiry), not whenever the
+            # next scheduled prune window happens to roll around.
+            self._prune_seen_events(now, force=True)
         return True
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -848,6 +1080,37 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "duplicate", "delivery_id": delivery_id},
                 status=200,
             )
+
+        # ── Event-level idempotency ─────────────────────────────
+        # The delivery-level check above only catches retries that reuse the
+        # SAME delivery ID.  Senders that re-POST the same logical event with
+        # a FRESH delivery ID (ai-coach backend crash-recovery, provider
+        # requeues) would otherwise wake the agent again for an event it
+        # already processed.  Derive a stable event identity from the payload
+        # / embedded message ID and no-op silently when it was already seen.
+        # If no stable identity can be derived, fall through to the existing
+        # behaviour (delivery-level dedup only).
+        event_key = self._extract_event_key(delivery_id, event_type, payload)
+        if event_key:
+            event_ttl = self._event_dedup_ttl_for_route(route_config)
+            if event_ttl > 0 and not self._record_event(event_key, event_ttl, now):
+                logger.info(
+                    "[webhook] Skipping duplicate event %s route=%s "
+                    "delivery=%s (event already processed within %ds TTL)",
+                    event_key,
+                    route_name,
+                    delivery_id,
+                    event_ttl,
+                )
+                return web.json_response(
+                    {
+                        "status": "duplicate",
+                        "reason": "event",
+                        "event": event_key,
+                        "delivery_id": delivery_id,
+                    },
+                    status=200,
+                )
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we

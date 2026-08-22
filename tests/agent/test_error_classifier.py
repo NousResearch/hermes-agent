@@ -988,6 +988,83 @@ class TestSSLCertVerificationFailFast:
         assert result.retryable is True
 
 
+# ── Test: key_cmd credential failures (fail fast) ──────────────────────
+
+class TestCommandTokenErrorFailFast:
+    """A ``key_cmd`` helper with an expired OAuth session fails identically on
+    every retry, so it must not consume the retry budget.
+
+    ``CommandTokenError`` is raised while the provider SDK is inside its own
+    request path, so the SDK re-raises it as ``APIConnectionError("Connection
+    error.")``. The generic message defeats pattern matching and the type name
+    matches the transport-error heuristics, so the real cause survives only in
+    the exception chain.
+    """
+
+    @staticmethod
+    def _sdk_wrapped(inner):
+        """Build the shape ``raise APIConnectionError(...) from inner`` makes."""
+        class APIConnectionError(Exception):
+            pass
+
+        exc = APIConnectionError("Connection error.")
+        exc.__cause__ = inner
+        return exc
+
+    def test_wrapped_command_token_error_is_non_retryable(self):
+        from agent.command_token_source import CommandTokenError
+
+        e = self._sdk_wrapped(
+            CommandTokenError("key_cmd for provider 'gateway' exited 1.")
+        )
+        result = classify_api_error(e, provider="custom", model="some-model")
+        assert result.reason == FailoverReason.auth_permanent
+        assert result.retryable is False
+
+    def test_bare_command_token_error_is_non_retryable(self):
+        from agent.command_token_source import CommandTokenError
+
+        e = CommandTokenError("key_cmd for provider 'gateway' produced no output")
+        result = classify_api_error(e, provider="custom", model="some-model")
+        assert result.reason == FailoverReason.auth_permanent
+        assert result.retryable is False
+
+    def test_context_chain_is_inspected(self):
+        """An implicitly chained cause (bare ``raise``) is also detected."""
+        from agent.command_token_source import CommandTokenError
+
+        class APIConnectionError(Exception):
+            pass
+
+        exc = APIConnectionError("Connection error.")
+        exc.__context__ = CommandTokenError("key_cmd for provider 'g' exited 1.")
+        result = classify_api_error(exc, provider="custom", model="some-model")
+        assert result.reason == FailoverReason.auth_permanent
+        assert result.retryable is False
+
+    def test_genuine_connection_error_still_retries(self):
+        """Regression guard: a real transport failure keeps retrying."""
+        class APIConnectionError(Exception):
+            pass
+
+        result = classify_api_error(
+            APIConnectionError("Connection error."),
+            provider="custom", model="some-model",
+        )
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+
+    def test_cyclic_cause_chain_terminates(self):
+        """A self-referential chain must not spin forever."""
+        class APIConnectionError(Exception):
+            pass
+
+        exc = APIConnectionError("Connection error.")
+        exc.__cause__ = exc
+        result = classify_api_error(exc, provider="custom", model="some-model")
+        assert result.retryable is True
+
+
 # ── Test: RateLimitError without status_code (Copilot/GitHub Models) ──────────
 
 class TestRateLimitErrorWithoutStatusCode:

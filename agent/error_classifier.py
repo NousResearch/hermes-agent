@@ -762,6 +762,25 @@ _SSL_TRANSIENT_PATTERNS = [
 
 # ── Classification pipeline ─────────────────────────────────────────────
 
+def _has_command_token_error(error: BaseException) -> bool:
+    """True when *error* or anything in its cause chain is a key_cmd failure.
+
+    ``CommandTokenError`` is raised while the SDK is inside its own request
+    path, so the provider SDK re-raises it as a generic connection error and
+    only ``__cause__`` / ``__context__`` still carries the real reason.
+    """
+    from agent.command_token_source import CommandTokenError
+
+    seen: set[int] = set()
+    current: Optional[BaseException] = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, CommandTokenError):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def classify_api_error(
     error: Exception,
     *,
@@ -779,6 +798,7 @@ def classify_api_error(
       2. HTTP status code + message-aware refinement
       3. Error code classification (from body)
       4. Message pattern matching (billing vs rate_limit vs context vs auth)
+      4b. key_cmd credential failures → fail fast (non-retryable)
       5. SSL/TLS transient alert patterns → retry as timeout
       6. Server disconnect + large session → context overflow
       7. Transport error heuristics
@@ -1090,6 +1110,21 @@ def classify_api_error(
     )
     if classified is not None:
         return classified
+
+    # ── 4b. key_cmd credential failures → fail fast ─────────────────
+    # A key_cmd helper raises CommandTokenError from inside the HTTP
+    # send stack, so the SDK wraps it as APIConnectionError with the
+    # generic text "Connection error." — the transport-error heuristics
+    # below then classify it as transient.  An expired OAuth session
+    # fails identically on every retry, so the retry budget is spent
+    # before the user sees the one message that names the fix.  Inspect
+    # the exception chain, which is where the real cause survives.
+    if _has_command_token_error(error):
+        return _result(
+            FailoverReason.auth_permanent,
+            retryable=False,
+            should_fallback=True,
+        )
 
     # ── 5. SSL certificate verification failures → fail fast ────────
     # A broken certificate chain (TLS-inspecting proxy, missing custom CA,

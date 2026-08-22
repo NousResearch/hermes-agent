@@ -40,6 +40,22 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().sessions).toBe(true)
   })
 
+  it('opens the skin picker for bare /skin', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/skin')).toBe(true)
+    expect(getOverlayState().skinPicker).toBe(true)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('keeps direct /skin <name> selection on config.set', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/skin poseidon')).toBe(true)
+    expect(getOverlayState().skinPicker).toBe(false)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', { key: 'skin', value: 'poseidon' })
+  })
+
   it('resumes a prior session by id when /resume has an argument', () => {
     const ctx = buildCtx()
 

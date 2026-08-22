@@ -13,6 +13,11 @@ describe('slashCommandMatches', () => {
     ])
   })
 
+  it('recognizes digit-prefixed skills when pasted or restored', () => {
+    expect(commands('/03-gh-go ', { trailingCommitted: true })).toEqual(['skill:/03-gh-go'])
+    expect(commands('use /03-gh-go here')).toEqual(['skill:/03-gh-go'])
+  })
+
   it('leaves a path alone — /usr/local/bin is not a command', () => {
     expect(commands('see /usr/local/bin ')).toEqual([])
   })

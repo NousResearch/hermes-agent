@@ -53,6 +53,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _COMPRESSION_CHILD_SQL,
     _FTS_CJK_TRIGGERS,
     _FTS_TRIGGERS,
+    _fts_object_missing,
     _LISTABLE_CHILD_SQL,
     _PREVIEW_ELIGIBLE_SQL,
     _PREVIEW_RAW_SELECT,
@@ -7473,6 +7474,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             conn.execute(
                 "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
                 (model_config_json, model, session_id),
+            )
+        self._execute_write(_do)
+
+    def update_claude_sdk_session_id(
+        self, session_id: str, sdk_session_id: Optional[str]
+    ) -> None:
+        """Persist (or clear, with None) the claude-agent-sdk session id used
+        to resume the SDK conversation across gateway restarts and
+        agent-cache eviction (#25267 continuity)."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET claude_sdk_session_id = ? WHERE id = ?",
+                (sdk_session_id, session_id),
             )
         self._execute_write(_do)
 

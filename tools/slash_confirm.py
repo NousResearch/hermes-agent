@@ -96,6 +96,57 @@ def clear_if_stale(session_key: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -
         return False
 
 
+def claim(
+    session_key: str,
+    confirm_id: str,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> Optional[Dict[str, Any]]:
+    """Atomically claim and remove a pending confirmation.
+
+    Returns the claimed entry when ``confirm_id`` still matches and is not
+    stale.  The caller is then responsible for running the handler via
+    ``resolve_claimed``.  This is for platform callbacks that must decide
+    synchronously whether to update an interactive prompt as resolved.
+    """
+    with _lock:
+        entry = _pending.get(session_key)
+        if not entry:
+            return None
+        if entry.get("confirm_id") != confirm_id:
+            return None
+        _pending.pop(session_key, None)
+        if time.time() - float(entry.get("created_at", 0) or 0) > timeout:
+            return None
+        return dict(entry)
+
+
+def restore_claim(session_key: str, claimed: Dict[str, Any]) -> None:
+    """Restore a claimed confirmation if the session has not moved on."""
+    if not claimed:
+        return
+    with _lock:
+        _pending.setdefault(session_key, dict(claimed))
+
+
+async def resolve_claimed(claimed: Dict[str, Any], choice: str) -> Optional[str]:
+    """Run the handler from a previously claimed confirmation."""
+    if not claimed:
+        return None
+    handler = claimed.get("handler")
+    command = claimed.get("command", "?")
+    if not handler:
+        return None
+    try:
+        result = await handler(choice)
+    except Exception as exc:
+        logger.error(
+            "Slash-confirm handler for /%s raised: %s",
+            command, exc, exc_info=True,
+        )
+        return f"❌ Error handling confirmation: {exc}"
+    return result if isinstance(result, str) else None
+
+
 async def resolve(
     session_key: str,
     confirm_id: str,
@@ -112,32 +163,10 @@ async def resolve(
     Safe to call from an asyncio callback (button click) or from the
     gateway's message intercept path.
     """
-    with _lock:
-        entry = _pending.get(session_key)
-        if not entry:
-            return None
-        if entry.get("confirm_id") != confirm_id:
-            # Stale confirm_id — superseded by a newer prompt on the same session.
-            return None
-        # Pop before we run the handler to prevent duplicate callbacks
-        # (e.g. button double-click) from running it twice.
-        _pending.pop(session_key, None)
-        if time.time() - float(entry.get("created_at", 0) or 0) > timeout:
-            return None
-        handler = entry.get("handler")
-        command = entry.get("command", "?")
-
-    if not handler:
+    claimed = claim(session_key, confirm_id, timeout=timeout)
+    if not claimed:
         return None
-    try:
-        result = await handler(choice)
-    except Exception as exc:
-        logger.error(
-            "Slash-confirm handler for /%s raised: %s",
-            command, exc, exc_info=True,
-        )
-        return f"❌ Error handling confirmation: {exc}"
-    return result if isinstance(result, str) else None
+    return await resolve_claimed(claimed, choice)
 
 
 def resolve_sync_compat(

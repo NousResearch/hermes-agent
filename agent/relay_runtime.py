@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import asyncio
+import concurrent.futures
 import contextvars
 import importlib
 import inspect
@@ -25,6 +26,14 @@ from hermes_cli.relay_plugin_cutover import (
 )
 
 logger = logging.getLogger(__name__)
+
+# One worker thread reused across flush fallbacks; a shared executor is far
+# cheaper than constructing a fresh pool on every session close. The thread
+# only ever runs ``relay.subscribers.flush``, which is idempotent.
+_subscribers_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="hermes-relay-flush",
+)
 
 SESSION_SCOPE = "hermes.session"
 TURN_SCOPE = "hermes.turn"
@@ -135,6 +144,29 @@ def pop_relay_scope(
     ):
         kwargs = {key: value for key, value in kwargs.items() if key in params}
     return pop(handle, **kwargs)
+
+_FLUSH_ASYNCIO_TIMEOUT_S = 5
+
+
+def flush_subscribers_safely(relay: Any) -> None:
+    """Flush ``relay.subscribers`` without blocking a running asyncio loop.
+
+    ``relay.subscribers.flush`` is synchronous and raises
+    ``RuntimeError: cannot block a running asyncio event loop`` when invoked
+    from a coroutine; uncaught, that would tear down the gateway. Delegate the
+    drain to the shared worker thread instead so it still completes. Any other
+    :class:`RuntimeError` (for example Relay not initialised) is re-raised so
+    the caller can surface it as a session/closing failure.
+    """
+    try:
+        relay.subscribers.flush()
+    except RuntimeError as exc:
+        if "asyncio" not in str(exc).lower():
+            raise
+        _subscribers_executor.submit(relay.subscribers.flush).result(
+            timeout=_FLUSH_ASYNCIO_TIMEOUT_S,
+        )
+
 
 
 class _RelayPluginConfigurationState(Enum):

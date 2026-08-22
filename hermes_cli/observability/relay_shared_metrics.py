@@ -600,7 +600,7 @@ class _Runtime:
             finished = self._finish_task(session, task_id, event)
         if finished:
             try:
-                self.relay.subscribers.flush()
+                relay_runtime.flush_subscribers_safely(self.relay)
             except Exception:
                 logger.warning(
                     "Hermes shared-metrics task flush failed",
@@ -633,7 +633,7 @@ class _Runtime:
                 )
             self._end_pending_model_calls(session, event)
         try:
-            self.relay.subscribers.flush()
+            relay_runtime.flush_subscribers_safely(self.relay)
         except Exception as exc:
             failures.append(f"subscriber flush failed: {exc}")
         else:
@@ -657,7 +657,7 @@ class _Runtime:
         if not self._registered:
             return
         try:
-            self.relay.subscribers.flush()
+            relay_runtime.flush_subscribers_safely(self.relay)
         except Exception:
             logger.warning(
                 "Hermes shared-metrics shutdown flush failed",

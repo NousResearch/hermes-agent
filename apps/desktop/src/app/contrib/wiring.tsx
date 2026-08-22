@@ -304,9 +304,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     useSessionListActions({ profileScope })
 
   const updateActiveSessionRuntimeInfo = useCallback(
-    (info: { branch?: string; cwd?: string }) => {
-      const sessionId = activeSessionIdRef.current
-
+    (sessionId: string, info: { branch?: string; cwd?: string }) => {
       if (!sessionId) {
         return
       }
@@ -317,10 +315,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         cwd: info.cwd ?? state.cwd
       }))
     },
-    [activeSessionIdRef, updateSessionState]
+    [updateSessionState]
   )
 
-  const { refreshProjectBranch } = useCwdActions({
+  const { changeSessionCwd, refreshProjectBranch } = useCwdActions({
     activeSessionIdRef,
     onSessionRuntimeInfo: updateActiveSessionRuntimeInfo,
     requestGateway
@@ -963,7 +961,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     openCommandCenterSection,
     requestGateway,
     selectModel,
-    toggleCommandCenter
+    toggleCommandCenter,
+    changeSessionCwd
   }
 
   if (actionsRef.current) {

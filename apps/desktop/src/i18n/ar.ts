@@ -77,7 +77,8 @@ export const ar = defineLocale({
     renameLabel: 'الاسم الجديد',
     deleteTitle: name => `حذف ${name}؟`,
     deleteBody: 'سيتم نقله إلى سلة المهملات — يمكنك استعادته من هناك.',
-    pathCopied: 'تم نسخ المسار'
+    pathCopied: 'تم نسخ المسار',
+    changeCwdTitle: 'تغيير المسار'
   },
   boot: {
     ready: 'Hermes Desktop جاهز',

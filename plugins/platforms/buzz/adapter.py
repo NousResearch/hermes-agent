@@ -392,6 +392,21 @@ class BuzzAdapter(BasePlatformAdapter):
             _rm_cfg = _rm_raw
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
 
+        # Whether a reply is threaded onto the message that triggered it.
+        # Buzz renders a threaded reply as a collapsed "Thread" pane, so with
+        # this on every answer lands in a sidebar instead of in the channel.
+        # The gateway anchors every reply to the incoming message
+        # (gateway/run.py: initial_reply_to_id=ctx.event_message_id, with no
+        # platform condition), so suppressing it has to happen here. Defaults
+        # to True (behavior unchanged). Env (BUZZ_REPLY_IN_THREAD) overrides
+        # config.yaml, mirroring require_mention above.
+        _rit_raw = os.getenv("BUZZ_REPLY_IN_THREAD")
+        if _rit_raw is None:
+            _rit_cfg = extra.get("reply_in_thread", True)
+        else:
+            _rit_cfg = _rit_raw
+        self.reply_in_thread = str(_rit_cfg).strip().lower() not in ("false", "0", "no", "off")
+
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
         # or "poll" (CLI polling only). Env (BUZZ_TRANSPORT) overrides
@@ -610,6 +625,8 @@ class BuzzAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
         reply_target = reply_to or (metadata or {}).get("thread_id")
+        if not self.reply_in_thread:
+            reply_target = None
         if reply_target:
             args += ["--reply-to", str(reply_target)]
         code, out, err = await self._run_cli(args, input_text=content)
@@ -681,7 +698,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
-            if reply_to:
+            if reply_to and self.reply_in_thread:
                 args += ["--reply-to", str(reply_to)]
             code, out, err = await self._run_cli(args, input_text=caption or "")
             if code != 0:

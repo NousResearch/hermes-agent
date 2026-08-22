@@ -171,6 +171,7 @@ CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
 # same constants the emission sites use) through the gateway noise filter.
 ROUTINE_COMPRESSION_STATUS_SAMPLES = (
     COMPACTION_STATUS,
+    COMPACTION_DONE_STATUS,
     PRE_API_COMPRESSION_STATUS_TEMPLATE.format(tokens=123456),
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(tokens=120000, threshold=100000),
     IDLE_COMPACTION_STATUS_TEMPLATE.format(idle_seconds=3600, tokens=120000),
@@ -2414,16 +2415,20 @@ def compress_context(
     if _compaction_status:
         agent._emit_status(_compaction_status)
     _compaction_done_emitted = False
+    _compaction_succeeded = False
 
-    def _complete_compaction_lifecycle() -> None:
+    def _complete_compaction_lifecycle(*, force_terminal: bool = False) -> None:
         nonlocal _compaction_done_emitted
         if _compaction_done_emitted:
             return
         _compaction_done_emitted = True
         # A suppressed start (quiet context engine) opened no visible
         # compaction phase — emit no terminal edge either. Failure warnings
-        # go through agent._emit_warning and are never suppressed here.
-        if _compaction_status_emitted:
+        # go through agent._emit_warning and are never suppressed here. A lock
+        # contender is the one exception: it did not compact, but still needs
+        # the structured terminal edge so clients can retire their compaction
+        # phase. Chat surfaces filter this routine notice independently.
+        if _compaction_status_emitted and (_compaction_succeeded or force_terminal):
             _emit_compaction_done(agent)
 
     # ── Compression lock ────────────────────────────────────────────────
@@ -2644,7 +2649,7 @@ def compress_context(
                 split_status="aborted",
                 failure_class="lock_contended",
             )
-            _complete_compaction_lifecycle()
+            _complete_compaction_lifecycle(force_terminal=True)
             return messages, _existing_sp
     _lock_released = False
     _lock_release_guard = threading.Lock()
@@ -3962,6 +3967,7 @@ def compress_context(
                 else None
             ),
         )
+        _compaction_succeeded = _commit_status == "committed"
         return compressed, new_system_prompt
     finally:
         # Release the lock on the OLD session_id only AFTER rotation completed
@@ -4037,13 +4043,15 @@ def _compress_context_via_codex_app_server(
         pass
 
     _compaction_done_emitted = False
+    _compaction_succeeded = False
 
     def _complete_compaction_lifecycle() -> None:
         nonlocal _compaction_done_emitted
         if _compaction_done_emitted:
             return
         _compaction_done_emitted = True
-        _emit_compaction_done(agent)
+        if _compaction_succeeded:
+            _emit_compaction_done(agent)
 
     _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
     try:
@@ -4117,6 +4125,7 @@ def _compress_context_via_codex_app_server(
     existing_prompt = getattr(agent, "_cached_system_prompt", None)
     if not existing_prompt:
         existing_prompt = agent._build_system_prompt(system_message)
+    _compaction_succeeded = True
     _complete_compaction_lifecycle()
     return messages, existing_prompt
 

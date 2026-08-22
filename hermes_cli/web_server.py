@@ -16380,9 +16380,9 @@ def _resolve_chat_argv(
         env["HERMES_HOME"] = str(profile_dir)
     try:
         from hermes_cli.config import (
-            TERMINAL_CONFIG_ENV_MAP,
             apply_terminal_config_to_env,
             read_raw_config,
+            terminal_config_owned_env_vars,
         )
 
         if profile_dir is not None:
@@ -16392,12 +16392,7 @@ def _resolve_chat_argv(
             # exported by the operator for keys omitted from the launch profile
             # remain valid fallbacks, matching apply_terminal_config_to_env().
             raw_launch_terminal = read_raw_config().get("terminal")
-            if not isinstance(raw_launch_terminal, dict):
-                raw_launch_terminal = {}
-            for config_key in raw_launch_terminal:
-                env_var = TERMINAL_CONFIG_ENV_MAP.get(config_key)
-                if env_var is None:
-                    continue
+            for env_var in terminal_config_owned_env_vars(raw_launch_terminal):
                 env.pop(env_var, None)
             with _config_profile_scope(requested):
                 apply_terminal_config_to_env(env=env)

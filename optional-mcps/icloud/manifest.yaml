@@ -1,0 +1,90 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: icloud
+description: iCloud Calendar (CalDAV), optional Contacts and Mail, as a local stdio MCP.
+source: https://github.com/ThomasCrouzet/icloud-mcp
+
+# Static Go binary built from a SHA-pinned git checkout. No npm/PyPI wrapper.
+# Requires a local Go toolchain (1.25.12+) for the bootstrap build only.
+install:
+  type: git
+  url: https://github.com/ThomasCrouzet/icloud-mcp.git
+  # v0.4.0 tag object peels to this commit (2026-07-25).
+  # Catalog policy prefers pins at least ~2 weeks old; reviewers may ask to
+  # wait or repin if that cooldown is enforced at merge time.
+  ref: 6be9cebb4f1a6dba942b458604c89dc045205ff5
+  bootstrap:
+    - "go version"
+    # A directory target makes Go create bin/ and apply the native .exe suffix.
+    - 'go build -trimpath -ldflags="-s -w -X main.version=v0.4.0" -o bin/ ./cmd/icloud-mcp'
+
+transport:
+  type: stdio
+  command: "${INSTALL_DIR}/bin/icloud-mcp${EXE_SUFFIX}"
+  version: "0.4.0"
+  env:
+    # Recommended first deploy: Calendar only, global read-only (7 tools).
+    ICLOUD_MCP_READ_ONLY: "true"
+    # Credentials are prompted into ~/.hermes/.env, then interpolated here so
+    # Hermes's filtered stdio env actually passes them to the subprocess.
+    ICLOUD_EMAIL: "${ICLOUD_EMAIL}"
+    ICLOUD_PASSWORD: "${ICLOUD_PASSWORD}"
+    ICLOUD_MCP_DEFAULT_TZ: "${ICLOUD_MCP_DEFAULT_TZ}"
+
+auth:
+  type: api_key
+  env:
+    - name: ICLOUD_EMAIL
+      prompt: "iCloud email (Apple ID used for Calendar/Contacts)"
+      required: true
+      secret: false
+    - name: ICLOUD_PASSWORD
+      prompt: "Apple app-specific password (not the main Apple Account password)"
+      required: true
+      secret: true
+    - name: ICLOUD_MCP_DEFAULT_TZ
+      prompt: "IANA timezone for calendar wall-clock times (e.g. Europe/Paris)"
+      required: true
+      secret: false
+      default: "UTC"
+
+# Default to Calendar read surface + local helpers. Mutation tools remain
+# available in the install checklist when ICLOUD_MCP_READ_ONLY is later set
+# false in config; Contacts/Mail tools only appear after those domains are
+# enabled in the process environment (off by default in this entry).
+tools:
+  default_enabled:
+    - icloud_capabilities
+    - list_calendars
+    - search_events
+    - get_event
+    - find_free_slots
+    - validate_event
+    - calendar_capabilities
+
+post_install: |
+  This entry builds icloud-mcp from source at a pinned commit. You need Go
+  1.25.12+ on PATH for the bootstrap `go build`.
+
+  Default env is Calendar-only with ICLOUD_MCP_READ_ONLY=true (7 tools).
+  Create an app-specific password at https://appleid.apple.com; never use
+  the main Apple Account password.
+
+  After install, start a new Hermes session and call icloud_capabilities.
+
+  Optional domains (edit mcp_servers.icloud.env, then restart Hermes):
+    ICLOUD_MCP_ENABLE_CONTACTS=true
+    ICLOUD_MCP_ENABLE_MAIL=true
+    ICLOUD_MAIL_ADDRESS=mailbox@icloud.com
+    ICLOUD_MCP_ENABLE_MAIL_WRITE=true   # IMAP flags/move/trash; needs read-only off
+    ICLOUD_MCP_ENABLE_MAIL_SEND=true    # also needs ICLOUD_MCP_SMTP_ALLOWED_RECIPIENTS
+    ICLOUD_MCP_READ_ONLY=false          # required for any mutation or send tools
+
+  Reminders, Notes, Photos, Drive, and Messages are out of scope.
+  Release archives also ship linux/amd64, linux/arm64, and darwin/arm64;
+  Windows is CI smoke-build only (not packaged).
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure icloud

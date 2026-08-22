@@ -2589,7 +2589,7 @@ def _mark_job_run_locked(
                             "Job '%s' (%s) could not compute next_run_at; "
                             "leaving enabled and marking state=error so the "
                             "job is not silently disabled.",
-                            job.get("name", job.get("id", "?")),
+                            (job.get("name") or job.get("id", "unknown")),
                             kind,
                         )
                     else:
@@ -2707,7 +2707,7 @@ def claim_dispatch(job_id: str) -> bool:
                 _write_wedged_oneshot_diagnostic(job)
                 logger.info(
                     "Job '%s': dispatch limit reached (%d/%d) — removing",
-                    job.get("name", job.get("id", "?")),
+                    (job.get("name") or job.get("id", "unknown")),
                     completed,
                     times,
                 )
@@ -2717,7 +2717,7 @@ def claim_dispatch(job_id: str) -> bool:
             save_jobs(jobs)
             logger.debug(
                 "Job '%s': claimed dispatch %d/%d",
-                job.get("name", job.get("id", "?")),
+                (job.get("name") or job.get("id", "unknown")),
                 repeat["completed"],
                 times,
             )
@@ -3296,7 +3296,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 next_run = recovered_next
                 logger.info(
                     "Job '%s' had no next_run_at; recovering %s run at %s",
-                    job.get("name", job.get("id", "?")),
+                    (job.get("name") or job.get("id", "unknown")),
                     recovery_kind,
                     recovered_next,
                 )
@@ -3337,7 +3337,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     logger.info(
                         "Job '%s' next_run_at offset changed (%s -> %s). "
                         "Recomputing cron run to preserve local wall-clock intent: %s",
-                        job.get("name", job.get("id", "?")),
+                        (job.get("name") or job.get("id", "unknown")),
                         raw_next_run_dt.utcoffset(),
                         now.utcoffset(),
                         new_next,
@@ -3420,7 +3420,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             "Job '%s' missed its scheduled time (%s, grace=%ds). "
                             "Running now; next run provisionally set to: %s "
                             "(re-anchored on completion)",
-                            job.get("name", job.get("id", "?")),
+                            (job.get("name") or job.get("id", "unknown")),
                             next_run,
                             grace,
                             new_next,
@@ -3466,7 +3466,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                     "Job '%s': dispatch limit reached (%d/%d) "
                                     "but its run is still in flight in this "
                                     "process — keeping entry",
-                                    job.get("name", job.get("id", "?")),
+                                    (job.get("name") or job.get("id", "unknown")),
                                     completed,
                                     times,
                                 )
@@ -3474,7 +3474,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             logger.info(
                                 "Job '%s': one-shot dispatch limit reached (%d/%d) "
                                 "— removing stale due entry",
-                                job.get("name", job.get("id", "?")),
+                                (job.get("name") or job.get("id", "unknown")),
                                 completed,
                                 times,
                             )

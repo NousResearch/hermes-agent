@@ -43,6 +43,12 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EGRESS_LABEL_KEY = "hermes-egress"
+_WINDOWS_DAEMON_MOUNT_RE = re.compile(
+    r"^/(?:mnt|host_mnt)/([A-Za-z])(?:/(.*))?$"
+)
+_WINDOWS_DESKTOP_MOUNT_RE = re.compile(
+    r"^/run/desktop/mnt/host/([A-Za-z])(?:/(.*))?$"
+)
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -114,6 +120,13 @@ def _load_hermes_env_vars() -> dict[str, str]:
 # safely through `docker ps --filter label=key=value`. Profile and task names
 # can technically contain other characters; sanitize defensively.
 _LABEL_VALUE_OK_RE = re.compile(r"[^A-Za-z0-9_.-]")
+_TASK_IDENTITY_LABEL_KEY = "hermes-task-key"
+_WINDOWS_PATH_INVALID_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED_PATH_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
 
 
 def _sanitize_label_value(value: str) -> str:
@@ -128,6 +141,72 @@ def _sanitize_label_value(value: str) -> str:
     cleaned = _LABEL_VALUE_OK_RE.sub("_", value)
     cleaned = cleaned[:63] or "unknown"
     return cleaned
+
+
+def _sandbox_task_component(task_id: str) -> str:
+    """Return a portable, collision-resistant directory name for *task_id*.
+
+    Session IDs remain the logical container/cache key, but persistent Docker
+    filesystems also use them as host path components. Windows rejects several
+    characters that are valid in session IDs (notably ``:``), reserved device
+    names, and trailing dots/spaces. Preserve already-portable IDs for backward
+    compatibility; transformed values carry a digest so distinct IDs cannot
+    collapse onto the same persistent sandbox.
+    """
+    raw = str(task_id or "default")
+    cleaned = _WINDOWS_PATH_INVALID_RE.sub("_", raw).rstrip(" .")
+    reserved = cleaned.split(".", 1)[0].upper() in _WINDOWS_RESERVED_PATH_STEMS
+    portable = (
+        cleaned == raw
+        and cleaned not in {"", ".", ".."}
+        and not reserved
+        and len(cleaned) <= 63
+    )
+    if portable:
+        return cleaned
+
+    if cleaned in {"", ".", ".."}:
+        cleaned = "task"
+    elif reserved:
+        cleaned = f"_{cleaned}"
+    stem = cleaned[:50].rstrip(" .") or "task"
+    digest = hashlib.sha256(raw.encode("utf-8", errors="surrogatepass")).hexdigest()[:12]
+    return f"{stem}-{digest}"
+
+
+def _sandbox_task_dir(
+    docker_root: Path,
+    task_id: str,
+    *,
+    allow_legacy: Optional[bool] = None,
+) -> Path:
+    """Resolve persistent storage while preserving valid POSIX legacy paths."""
+    raw = str(task_id or "default")
+    portable = docker_root / _sandbox_task_component(raw)
+    if portable.name == raw:
+        return portable
+
+    if allow_legacy is None:
+        allow_legacy = os.name != "nt"
+    legacy_is_single_component = (
+        raw not in {"", ".", ".."}
+        and "/" not in raw
+        and "\x00" not in raw
+    )
+    if allow_legacy and legacy_is_single_component:
+        legacy = docker_root / raw
+        try:
+            if legacy.is_dir():
+                return legacy
+        except OSError:
+            pass
+    return portable
+
+
+def _task_identity_fingerprint(task_id: str) -> str:
+    """Return a collision-resistant label value for the unsanitized task ID."""
+    raw = str(task_id or "default")
+    return hashlib.sha256(raw.encode("utf-8", errors="surrogatepass")).hexdigest()[:48]
 
 
 def _get_active_profile_name() -> str:
@@ -980,7 +1059,7 @@ class DockerEnvironment(BaseEnvironment):
         self._home_dir: Optional[str] = None
         writable_args = []
         if self._persistent:
-            sandbox = get_sandbox_dir() / "docker" / task_id
+            sandbox = _sandbox_task_dir(get_sandbox_dir() / "docker", task_id)
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([
@@ -1370,9 +1449,11 @@ class DockerEnvironment(BaseEnvironment):
         # container-start time and never changes for the container's lifetime.
         profile_name = _sanitize_label_value(_get_active_profile_name())
         task_label = _sanitize_label_value(task_id)
+        task_fingerprint = _task_identity_fingerprint(task_id)
         label_args = [
             "--label", "hermes-agent=1",
             "--label", f"hermes-task-id={task_label}",
+            "--label", f"{_TASK_IDENTITY_LABEL_KEY}={task_fingerprint}",
             "--label", f"hermes-profile={profile_name}",
             "--label", f"{_EGRESS_LABEL_KEY}={egress_label}",
         ]
@@ -1385,6 +1466,7 @@ class DockerEnvironment(BaseEnvironment):
         self._labels = {
             "hermes-agent": "1",
             "hermes-task-id": task_label,
+            _TASK_IDENTITY_LABEL_KEY: task_fingerprint,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label,
         }
@@ -1403,7 +1485,7 @@ class DockerEnvironment(BaseEnvironment):
         reused = False
         if persist_across_processes:
             existing = self._find_reusable_container(
-                task_label, profile_name, egress_label,
+                task_label, task_fingerprint, profile_name, egress_label,
             )
             if existing is not None:
                 container_id, state = existing
@@ -1661,9 +1743,13 @@ class DockerEnvironment(BaseEnvironment):
 
         # 1. Try label-based reuse (another process may have recreated it).
         task_label = self._labels.get("hermes-task-id", "")
+        task_fingerprint = self._labels.get(_TASK_IDENTITY_LABEL_KEY, "")
         profile_label = self._labels.get("hermes-profile", "")
         existing = self._find_reusable_container(
-            task_label, profile_label, self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            task_label,
+            task_fingerprint,
+            profile_label,
+            self._labels.get(_EGRESS_LABEL_KEY, "off"),
         )
         if existing is not None:
             cid, state = existing
@@ -1826,6 +1912,7 @@ class DockerEnvironment(BaseEnvironment):
     def _find_reusable_container(
         self,
         task_label: str,
+        task_fingerprint: str,
         profile_label: str,
         egress_label: str,
     ) -> Optional[tuple[str, str]]:
@@ -1845,6 +1932,7 @@ class DockerEnvironment(BaseEnvironment):
             filters = [
                 "--filter", "label=hermes-agent=1",
                 "--filter", f"label=hermes-task-id={task_label}",
+                "--filter", f"label={_TASK_IDENTITY_LABEL_KEY}={task_fingerprint}",
                 "--filter", f"label=hermes-profile={profile_label}",
             ]
             if egress_label != "off":
@@ -1882,7 +1970,9 @@ class DockerEnvironment(BaseEnvironment):
             return None
         lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
         if not lines:
-            return None
+            return self._find_legacy_reusable_container(
+                task_label, profile_label, egress_label,
+            )
         # Multiple matches are unusual (one (task, profile) should produce one
         # container) but can happen if a previous Hermes process crashed
         # mid-cleanup. Prefer a running one if present; otherwise pick the
@@ -1914,6 +2004,130 @@ class DockerEnvironment(BaseEnvironment):
             if state == "running" and running is None:
                 running = (cid, state)
         return running or first
+
+    def _find_legacy_reusable_container(
+        self,
+        task_label: str,
+        profile_label: str,
+        egress_label: str,
+    ) -> Optional[tuple[str, str]]:
+        """Find a pre-fingerprint persistent container by its bind sources.
+
+        Containers created before ``hermes-task-key`` cannot pass the strict
+        identity-label lookup.  The readable task label is lossy, so it is
+        only a candidate selector: both persistent bind sources must match the
+        paths this environment resolved for ``/root`` and ``/workspace``.
+        """
+        if not self._persistent:
+            return None
+        expected_mounts = self._persistent_bind_sources()
+        if set(expected_mounts) != {"/root", "/workspace"}:
+            return None
+
+        filters = [
+            "--filter", "label=hermes-agent=1",
+            "--filter", f"label=hermes-task-id={task_label}",
+            "--filter", f"label=hermes-profile={profile_label}",
+        ]
+        if egress_label != "off":
+            filters.extend(["--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"])
+        fmt = (
+            '{{.ID}}\t{{.State}}\t{{.Label "'
+            + _TASK_IDENTITY_LABEL_KEY
+            + '"}}\t{{.Label "'
+            + _EGRESS_LABEL_KEY
+            + '"}}'
+        )
+        try:
+            result = subprocess.run(
+                [self._docker_exe, "ps", "-a", *filters, "--format", fmt],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=10,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("legacy docker ps probe failed: %s", e)
+            return None
+        if result.returncode != 0:
+            return None
+
+        matches: list[tuple[str, str]] = []
+        # A healthy task has at most one candidate. Bound daemon inspections
+        # when stale/crashed processes left an abnormal number behind.
+        for line in result.stdout.splitlines()[:20]:
+            parts = line.split("\t", 3)
+            if len(parts) != 4:
+                continue
+            cid, state, task_key, legacy_egress = parts
+            if task_key not in ("", "<no value>"):
+                continue
+            if egress_label == "off" and legacy_egress not in ("", "<no value>", "off"):
+                continue
+            if self._legacy_mounts_match(cid, expected_mounts):
+                matches.append((cid, state.lower()))
+        return next((item for item in matches if item[1] == "running"), None) or (
+            matches[0] if matches else None
+        )
+
+    def _persistent_bind_sources(self) -> dict[str, str]:
+        """Return the effective persistent bind source for required targets."""
+        sources: dict[str, str] = {}
+        args = self._all_run_args
+        for index, arg in enumerate(args[:-1]):
+            if arg not in ("-v", "--volume"):
+                continue
+            spec = str(args[index + 1])
+            for destination in ("/root", "/workspace"):
+                marker = f":{destination}"
+                split_at = spec.rfind(marker)
+                if split_at >= 0 and spec[split_at + len(marker):] in ("", ":ro", ":rw"):
+                    sources[destination] = spec[:split_at]
+        return sources
+
+    def _legacy_mounts_match(
+        self,
+        container_id: str,
+        expected_mounts: dict[str, str],
+    ) -> bool:
+        """Return whether a legacy container has the exact expected binds."""
+        try:
+            result = subprocess.run(
+                [self._docker_exe, "inspect", "--format", "{{json .Mounts}}", container_id],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=10,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+            mounts = json.loads(result.stdout) if result.returncode == 0 else None
+        except (subprocess.TimeoutExpired, OSError, ValueError, TypeError):
+            return False
+        if not isinstance(mounts, list):
+            return False
+        actual = {
+            str(mount.get("Destination")): str(mount.get("Source"))
+            for mount in mounts
+            if isinstance(mount, dict) and mount.get("Type") == "bind"
+        }
+
+        def _normalized(path: str) -> str:
+            if os.name == "nt":
+                normalized_slashes = path.replace("\\", "/")
+                match = _WINDOWS_DAEMON_MOUNT_RE.match(normalized_slashes)
+                if match is None:
+                    match = _WINDOWS_DESKTOP_MOUNT_RE.match(normalized_slashes)
+                if match is not None:
+                    tail = match.group(2) or ""
+                    path = f"{match.group(1)}:/{tail}"
+            return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+        return all(
+            destination in actual
+            and _normalized(actual[destination]) == _normalized(source)
+            for destination, source in expected_mounts.items()
+        )
 
     def cleanup(self, *, force_remove: bool = False):
         """Tear down the container according to persist mode and *force_remove*.

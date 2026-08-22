@@ -165,6 +165,16 @@ DEFAULT_CONFIG = {
         # qwen/glm/minimax/mimo/mistral models), true/false (force on/off for
         # all models), or a list of model-name substrings to match.
         "execution_guidance": "auto",
+        # Mixed-batch tool execution permissiveness. When a model emits a batch
+        # of tool calls where some names are valid and some are invalid:
+        #   true (default, since #348e9912f): execute the valid calls and emit
+        #     error results only for the invalid ones. Prevents long-context
+        #     model degradation from voiding entire turns.
+        #   false: void the whole batch when any name is invalid (pre-#348e9912f
+        #     behavior). Provides negative-reinforcement that constrains
+        #     enforcement-gated models (deepseek, qwen) from over-emitting
+        #     tool calls in early turns (#68339).
+        "tool_use_enforcement_permissive_batches": True,
         # Intent-ack continuation: when the model opens a turn by narrating an
         # action it will take ("I'll go check the logs...") but emits no tool
         # call, intercept the turn-end, inject a "continue now, execute the

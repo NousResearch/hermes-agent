@@ -6954,10 +6954,18 @@ def run_conversation(
                 # when a turn contains NO valid call, so a fully-degenerate
                 # model still halts at 3 while a mostly-coherent one keeps
                 # working.
+                # #68339 opt-out: when
+                # `agent.tool_use_enforcement_permissive_batches` is False,
+                # mixed batches fall through to the strict (pre-#348e9912f)
+                # path that voids the whole turn — restoring the negative-
+                # reinforcement signal for enforcement-gated models.
+                _permissive_batches = bool(
+                    getattr(agent, "tool_use_enforcement_permissive_batches", True)
+                )
                 _mixed_invalid_batch = bool(invalid_tool_calls) and any(
                     tc.function.name in agent.valid_tool_names
                     for tc in assistant_message.tool_calls
-                )
+                ) and _permissive_batches
                 if _mixed_invalid_batch:
                     agent._invalid_tool_retries = 0
                     invalid_name = invalid_tool_calls[0]

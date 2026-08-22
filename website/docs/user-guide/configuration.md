@@ -1685,6 +1685,20 @@ agent:
   tool_use_enforcement: ["gpt", "codex", "gemini", "grok", "my-custom-model"]
 ```
 
+### Mixed-batch tool execution
+
+When a model emits a batch of tool calls where some names are valid and some are invalid (common with degraded models at long context), the agent has two behaviors:
+
+```yaml
+agent:
+  tool_use_enforcement_permissive_batches: true   # true (default) | false
+```
+
+| Value | Behavior |
+|-------|----------|
+| `true` (default) | Execute the valid calls and emit error results only for the invalid ones. Prevents long-context model degradation from voiding entire turns. |
+| `false` | Void the whole batch when any name is invalid (pre-`#348e9912f` behavior). Provides negative-reinforcement that constrains enforcement-gated models (deepseek, qwen) from over-emitting tool calls in early turns. |
+
 ## Execution-Discipline Guidance
 
 Separately from tool-use enforcement, Hermes injects an **execution-discipline** block for model families that share a set of agentic failure modes observed in eval traces: doing arithmetic in prose instead of code, skipping read-back verification after external writes, "repairing" malformed identifiers, claiming completeness despite count mismatches, and declaring "done" without verifying every acceptance criterion.
@@ -1711,7 +1725,6 @@ The injected block covers:
 - **Verification-gated completion** — "done" means every named acceptance criterion is verified, never a plausible subset.
 
 The gate is independent of `tool_use_enforcement` — either can be on without the other. The guidance is chosen once at session start keyed on the model name, so the system prompt stays byte-stable (and prompt-cache-friendly) for the life of the conversation. Gemini/Gemma are excluded from the auto list because they receive the more specific Google operational guidance; Claude is excluded because it doesn't exhibit these failure modes — opt any model in with `true` or a substring list.
-
 ## Tool-Loop Guardrails
 
 Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it injects a **warning** into the tool result so the model self-corrects; it does not hard-stop, since a person watching the CLI/TUI can intervene.

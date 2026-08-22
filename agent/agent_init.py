@@ -1991,6 +1991,26 @@ def init_agent(
         agent._empty_guard_cost_threshold_usd,
     ) = resolve_guard_settings(_agent_section.get("empty_response_guard"))
 
+    # Mixed-batch tool execution: when a model emits a batch of tool calls
+    # where some names are valid and some are invalid, the loop has two
+    # possible behaviors:
+    #   - permissive (default, since #348e9912f): execute the valid calls
+    #     and emit error_results only for the invalid ones. Prevents long-
+    #     context model degradation from voiding entire turns.
+    #   - strict (pre-#348e9912f): void the whole batch when any name is
+    #     invalid. Provides a negative-reinforcement signal (#68339) that
+    #     constrains enforcement-gated models (deepseek, qwen) from
+    #     over-emitting tool calls in early turns.
+    # Per-install opt-out: `agent.tool_use_enforcement_permissive_batches: false`
+    # in config.yaml. Default true preserves #348e9912f's long-context fix.
+    agent.tool_use_enforcement_permissive_batches = True
+    try:
+        agent.tool_use_enforcement_permissive_batches = bool(
+            _agent_section.get("tool_use_enforcement_permissive_batches", True)
+        )
+    except Exception:
+        agent.tool_use_enforcement_permissive_batches = True
+
     # Intent-ack continuation config: "auto" (default — codex_responses only,
     # the historical gate), true (all api_modes), false (never), or a list of
     # model-name substrings.  Resolved against the active api_mode/model in the

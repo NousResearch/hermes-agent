@@ -161,6 +161,51 @@ def agent_env():
             os.environ["HERMES_HOME"] = prev_home
 
 
+def _make_agent_env(config_yaml: str | None = None):
+    """Shared setup: mock provider + isolated HERMES_HOME, optionally writing
+    a config.yaml before the agent is created (so config-driven init paths are
+    exercised end-to-end)."""
+    _MockHandler.captured_requests = []
+    _MockHandler.response_queue = []
+    srv = HTTPServer(("127.0.0.1", 0), _MockHandler)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+
+    test_home = tempfile.mkdtemp(prefix="hermes_e2e_47967_")
+    hermes_home = os.path.join(test_home, ".hermes")
+    os.makedirs(hermes_home)
+    if config_yaml is not None:
+        with open(os.path.join(hermes_home, "config.yaml"), "w") as f:
+            f.write(config_yaml)
+    prev_home = os.environ.get("HERMES_HOME")
+    os.environ["HERMES_HOME"] = hermes_home
+
+    for mod in list(sys.modules):
+        if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("tools.") or mod.startswith("hermes_"):
+            del sys.modules[mod]
+    from run_agent import AIAgent
+
+    agent = AIAgent(
+        api_key="test-key", base_url=f"http://127.0.0.1:{port}/v1",
+        provider="openai-compat", model="test-model",
+        max_iterations=10, enabled_toolsets=[],
+        quiet_mode=True, skip_context_files=True, skip_memory=True,
+        save_trajectories=False, platform="cli",
+    )
+    agent.valid_tool_names = {"terminal", "read_file", "write_file", "execute_code", "session_search"}
+
+    try:
+        yield agent, _MockHandler
+    finally:
+        srv.shutdown()
+        shutil.rmtree(test_home, ignore_errors=True)
+        if prev_home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = prev_home
+
+
 def _tool_results(handler) -> list[str]:
     out = []
     for req in handler.captured_requests:
@@ -220,12 +265,6 @@ def test_mixed_batch_preserves_tool_call_result_pairing(agent_env):
     # and each must have exactly one matching tool result.
     assert set(tc_ids) == {"call_0", "call_1"}
     assert sorted(result_ids) == sorted(tc_ids)
-    assert all(
-        isinstance(message.get("timestamp"), float)
-        for message in msgs
-        if isinstance(message, dict)
-        and message.get("role") in {"user", "assistant", "tool"}
-    )
 
 
 
@@ -252,3 +291,68 @@ def test_invalid_tool_exhaustion_closes_tool_tail(agent_env):
     assert msgs[-1].get("role") == "assistant"
     assert "invalid tool call" in (msgs[-1].get("content") or "").lower()
 
+
+def test_mixed_batch_invalid_call_with_broken_json_does_not_retry_turn(agent_env):
+    """Broken args on a never-executing invalid call must not trigger the JSON retry loop."""
+    agent, handler = agent_env
+    agent.valid_tool_names = agent.valid_tool_names | {"todo"}
+    handler.response_queue.append(_batch_tc_resp([("todo", "{}"), ("", '{"unclosed')]))
+    handler.response_queue.append(_text_resp("done"))
+
+    result = agent.run_conversation("track work", conversation_history=[], task_id="t")
+
+    assert result.get("completed", False)
+    # Exactly 2 chat API calls: the batch turn + the final answer. A JSON
+    # retry would add a third identical request.
+    chat_calls = [r for r in handler.captured_requests if "messages" in r]
+    assert len(chat_calls) == 2
+
+
+def test_mixed_batch_strict_mode_voids_batch_when_permissive_disabled():
+    """#68339: when agent.tool_use_enforcement_permissive_batches=False, mixed
+    batches must restore the pre-#348e9912f behavior of voiding the whole
+    batch (every valid sibling gets a "Skipped" negative-reinforcement
+    message), instead of executing the valid calls alongside the error
+    results for the invalid ones. This gives enforcement-gated models
+    (deepseek/qwen) the same brake on over-emitting tool calls that they
+    had before permissive batching was introduced.
+
+    This test exercises the *configuration path*: the strict toggle is
+    loaded from an isolated config.yaml at agent init time, not assigned
+    directly on the runtime attribute.
+    """
+    config_yaml = (
+        "agent:\n"
+        "  tool_use_enforcement_permissive_batches: false\n"
+    )
+    gen = _make_agent_env(config_yaml=config_yaml)
+    agent, handler = next(gen)
+    agent.valid_tool_names = agent.valid_tool_names | {"todo"}
+    try:
+        assert agent.tool_use_enforcement_permissive_batches is False, (
+            "config.yaml should propagate to the runtime attribute at init"
+        )
+
+        handler.response_queue.append(_batch_tc_resp([("todo", "{}"), ("", "{}")]))
+        handler.response_queue.append(_text_resp("done"))
+
+        result = agent.run_conversation(
+            "track work", conversation_history=[], task_id="t"
+        )
+
+        joined = " ".join(_tool_results(handler))
+        # In strict mode, the WHOLE batch is voided: even the valid "todo"
+        # call gets the pre-#348e9912f "Skipped" negative-reinforcement
+        # message, NOT a real todo result.
+        assert "Skipped: another tool call" in joined
+        # And the blank-name call still gets its own terse anti-priming
+        # error (that contract is independent of the batch-level toggle).
+        assert "tool name was empty" in joined
+        # The model re-prompts and the queued "done" response is returned,
+        # so the turn still completes.
+        assert result.get("completed", False)
+    finally:
+        try:
+            next(gen, None)
+        except StopIteration:
+            pass

@@ -2697,7 +2697,7 @@ button[data-slot='aui_msg-reactions'] svg {
      because the one time the transcript's own container was collapsed the
      messages spilled out of a zero-height box. Translate rather than scale: the
      panel keeps its proportions on the way out instead of being squashed.
- 
+
      The height below still tracks the transcript; only the offset animates on
      exit, and it finishes ahead of the fade so the panel has left while the last
      of the text is still going. */

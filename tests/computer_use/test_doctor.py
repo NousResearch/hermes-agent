@@ -428,4 +428,3 @@ class TestDoctorVersionIdentity:
         assert code == 0
         payload = json.loads(out.getvalue())
         assert payload["hermes_identity"]["version_mismatch"] is False
-

@@ -124,3 +124,14 @@ def test_list_unmanaged_itemizes_and_explains(curator_status_env):
     assert "curator adopt" in out
 
 
+def test_list_unmanaged_reports_clean_state(curator_status_env):
+    env = curator_status_env
+    env["make_skill"]("managed-one")
+    env["skill_usage"].mark_agent_created("managed-one")
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = env["curator_cli"]._cmd_list_unmanaged(Namespace())
+
+    assert rc == 0
+    assert "no unmanaged skills" in buf.getvalue()

@@ -138,7 +138,7 @@ tts:
   gemini:
     model: gemini-3.1-flash-tts-preview
     audio_tags: true
-  xai: 
+  xai:
     auto_speech_tags: true
 ```
 

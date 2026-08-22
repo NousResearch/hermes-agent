@@ -69,7 +69,9 @@ def _strip_terminal_fence_leaks(text: str) -> str:
 
     cleaned_lines: List[str] = []
     for line in text.splitlines(keepends=True):
-        had_terminal_wrapper = "__HERMES_FENCE_" in line or "\x1b]" in line
+        had_terminal_wrapper = (
+            "__HERMES_FENCE_" in line or "\x1b]" in line or "\x07" in line
+        )
         cleaned = _OSC_SEQUENCE_RE.sub("", line)
         cleaned = _FENCE_MARKER_RE.sub("", cleaned)
         cleaned = cleaned.replace("\x07", "")

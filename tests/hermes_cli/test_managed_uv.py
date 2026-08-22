@@ -1283,7 +1283,9 @@ class TestVenvPythonUpdateBoundary:
 
         monkeypatch.setattr("importlib.reload", _no_reload)
 
-        expected = Path("/opt/hermes/venv/Scripts/python.exe") \
-            if sys.platform == "win32" else Path("/opt/hermes/venv/bin/python")
+        expected = (
+            Path("/opt/hermes/venv/Scripts/python.exe")
+            if sys.platform == "win32"
+            else Path("/opt/hermes/venv/bin/python")
+        )
         assert _venv_python(Path("/opt/hermes/venv")) == expected
-

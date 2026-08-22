@@ -1264,7 +1264,7 @@ DEFAULT_CONFIG = {
             # NOTE: no reasoning_effort here by design — see moa_reference above.
         },
     },
-    
+
     "display": {
         "compact": False,
         "personality": "",
@@ -1839,13 +1839,13 @@ DEFAULT_CONFIG = {
             "keyword": "jarvis",
         },
     },
-    
+
     "human_delay": {
         "mode": "off",
         "min_ms": 800,
         "max_ms": 2500,
     },
-    
+
     # Context engine -- controls how the context window is managed when
     # approaching the model's token limit.
     # "compressor" = built-in lossy summarization (default).

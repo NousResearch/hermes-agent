@@ -196,5 +196,3 @@ def test_agent_init_meta_provider_without_meta_url_falls_through_to_chat_complet
     )
     assert agent_custom.api_mode == "chat_completions"
     assert agent_custom.provider == "meta"
-
-

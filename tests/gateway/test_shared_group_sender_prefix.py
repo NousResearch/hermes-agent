@@ -16,6 +16,95 @@ def _make_runner(config: GatewayConfig) -> GatewayRunner:
 
 
 @pytest.mark.asyncio
+async def test_preprocess_prefixes_sender_for_shared_non_thread_group_session():
+    runner = _make_runner(
+        GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+            group_sessions_per_user=False,
+        )
+    )
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1002285219667",
+        chat_name="Test Group",
+        chat_type="group",
+        user_name="Alice",
+    )
+    event = MessageEvent(text="hello", source=source)
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == "[Alice] hello"
+
+
+@pytest.mark.asyncio
+async def test_preprocess_keeps_plain_text_for_default_group_sessions():
+    runner = _make_runner(
+        GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+    )
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1002285219667",
+        chat_name="Test Group",
+        chat_type="group",
+        user_name="Alice",
+    )
+    event = MessageEvent(text="hello", source=source)
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == "hello"
+
+
+@pytest.mark.asyncio
+async def test_preprocess_prefixes_sender_for_platform_grouping_override():
+    runner = _make_runner(
+        GatewayConfig(
+            platforms={
+                Platform.VOICE_SERVER: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "url": "ws://127.0.0.1:7860/events",
+                        "group_sessions_per_user": False,
+                    },
+                ),
+            },
+            group_sessions_per_user=True,
+        )
+    )
+    source = SessionSource(
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_name="Personal Room",
+        chat_type="channel",
+        user_name="Caller",
+    )
+    event = MessageEvent(text="hello", source=source)
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == "[Caller] hello"
+
+
+@pytest.mark.asyncio
 async def test_preprocess_includes_slack_author_mention_for_shared_thread():
     """Shared Slack threads expose the current author's verifiable user ID
     next to the display name so 'mention me again' requests can bind the

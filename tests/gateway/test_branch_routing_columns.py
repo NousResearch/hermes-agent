@@ -152,4 +152,3 @@ class TestBranchRoutingColumns:
         assert origin.get("thread_id") == "544520"
 
         _ = real_switch_session  # silence unused
-

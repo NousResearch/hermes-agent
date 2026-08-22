@@ -34,8 +34,8 @@ Hermes Agent 通过 FAL.ai 根据文字提示生成图像。默认内置 8 个�
 
 ### 获取 FAL API Key
 
-1. 在 [fal.ai](https://fal.ai/) 注册  
-2. 在控制台生成 API Key  
+1. 在 [fal.ai](https://fal.ai/) 注册
+2. 在控制台生成 API Key
 
 ### 配置并选择模型
 
@@ -115,11 +115,11 @@ Make me a futuristic cityscape, landscape orientation
 
 ## 内部流程概要
 
-1. **模型解析** — `_resolve_fal_model()` 读取 `config.yaml` 的 `image_gen.model`，否则看 `FAL_IMAGE_MODEL` 环境变量，再否则默认 `fal-ai/flux-2/klein/9b`。  
-2. **构造请求体** — `_build_fal_payload()` 将 `aspect_ratio` 转为各模型枚举或字面量，合并默认参数与调用方覆盖，并按 `supports` 白名单过滤非法字段。  
-3. **提交** — `_submit_fal_request()` 根据凭据走直连 FAL 或 Nous 托管网关。  
-4. **超分** — 仅当调用显式传入 `upscale: true` 时执行；所有模型目录默认关闭。  
-5. **交付** — 最终图像 URL 返回给智能体，并发出 `MEDIA:<url>`，由各平台适配器转为原生媒体消息。  
+1. **模型解析** — `_resolve_fal_model()` 读取 `config.yaml` 的 `image_gen.model`，否则看 `FAL_IMAGE_MODEL` 环境变量，再否则默认 `fal-ai/flux-2/klein/9b`。
+2. **构造请求体** — `_build_fal_payload()` 将 `aspect_ratio` 转为各模型枚举或字面量，合并默认参数与调用方覆盖，并按 `supports` 白名单过滤非法字段。
+3. **提交** — `_submit_fal_request()` 根据凭据走直连 FAL 或 Nous 托管网关。
+4. **超分** — 仅当调用显式传入 `upscale: true` 时执行；所有模型目录默认关闭。
+5. **交付** — 最终图像 URL 返回给智能体，并发出 `MEDIA:<url>`，由各平台适配器转为原生媒体消息。
 
 ## 调试
 
@@ -144,7 +144,7 @@ export IMAGE_TOOLS_DEBUG=true
 
 ## 限制
 
-- **需要 FAL 凭据**（直连 `FAL_KEY` 或 Nous 订阅网关）  
-- **仅文生图** — 不支持局部重绘、图生图或编辑类工作流  
-- **临时 URL** — FAL 托管链接会在数小时至数天后过期；请自行落盘保存  
-- **按模型能力裁剪** — 部分模型不支持 `seed`、`num_inference_steps` 等；`supports` 会静默丢弃不支持的参数，属预期行为  
+- **需要 FAL 凭据**（直连 `FAL_KEY` 或 Nous 订阅网关）
+- **仅文生图** — 不支持局部重绘、图生图或编辑类工作流
+- **临时 URL** — FAL 托管链接会在数小时至数天后过期；请自行落盘保存
+- **按模型能力裁剪** — 部分模型不支持 `seed`、`num_inference_steps` 等；`supports` 会静默丢弃不支持的参数，属预期行为

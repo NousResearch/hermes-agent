@@ -96,4 +96,3 @@ async def test_event_loop_stays_responsive_during_resolution(slow_probe):
     assert ctx == 128000
     # The loop was never blocked for anything close to the probe duration.
     assert max(lags) < PROBE_SECONDS / 2, f"event loop stalled {max(lags):.3f}s"
-

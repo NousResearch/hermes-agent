@@ -39,4 +39,3 @@ def test_check_node_managed_requires_npm() -> None:
         '[ -x "$HERMES_HOME/node/bin/node" ] && [ -x "$HERMES_HOME/node/bin/npm" ] \\'
         in text
     )
-

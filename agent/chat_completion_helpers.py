@@ -2563,7 +2563,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 or base_url_hostname(fb_base_url_hint) == "api.anthropic.com"
             ):
                 fb_api_mode = "anthropic_messages"
-        
+
         # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
         # when no explicit key is in the fallback config. Host match
         # (not substring) — see GHSA-76xc-57q6-vm5m.

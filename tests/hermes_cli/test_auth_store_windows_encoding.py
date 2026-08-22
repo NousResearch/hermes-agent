@@ -353,4 +353,3 @@ class TestAuthJsonSiblingReaders:
         assert nous.get("agent_key") == "k"
         # The non-ASCII label round-trips intact.
         assert nous.get("label") == "工作账号"
-

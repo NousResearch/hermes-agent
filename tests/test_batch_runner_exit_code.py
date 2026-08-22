@@ -60,5 +60,3 @@ def test_invalid_prefill_messages_file_exits_nonzero(tmp_path):
     )
     assert result.returncode == 1
     assert "Error loading prefill messages" in result.stdout
-
-

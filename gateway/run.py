@@ -15794,9 +15794,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         async def _await_running_then_schedule() -> None:
             if self._running:
-                self._schedule_secondary_profile_reconnect(
-                    profile_name, platform, adapter
-                )
+                try:
+                    self._schedule_secondary_profile_reconnect(
+                        profile_name, platform, adapter
+                    )
+                except Exception:
+                    # Same GC-time-exception hazard as the post-poll handoff
+                    # below; surface it in gateway.log instead.
+                    logger.exception(
+                        "secondary-startup-reconnect handoff failed "
+                        "(profile=%s platform=%s)",
+                        profile_name,
+                        platform.value,
+                    )
                 return
             # Modest poll interval: startup completion has no dedicated event,
             # and the reconnect runner's own backoff makes sub-100ms precision
@@ -15804,9 +15814,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             while not self._running and not self._shutdown_event.is_set():
                 await asyncio.sleep(0.1)
             if self._running and not self._shutdown_event.is_set():
-                self._schedule_secondary_profile_reconnect(
-                    profile_name, platform, adapter
-                )
+                try:
+                    self._schedule_secondary_profile_reconnect(
+                        profile_name, platform, adapter
+                    )
+                except Exception:
+                    # The handoff touches live registries; if it raises, the
+                    # parked task would otherwise die as an unretrieved-task
+                    # exception logged only at GC time. Surface it where
+                    # operators look.
+                    logger.exception(
+                        "secondary-startup-reconnect handoff failed "
+                        "(profile=%s platform=%s)",
+                        profile_name,
+                        platform.value,
+                    )
 
         task = asyncio.create_task(
             _await_running_then_schedule(),

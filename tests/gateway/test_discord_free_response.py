@@ -204,6 +204,105 @@ async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
     assert event.source.chat_type == "group"
 
 
+@pytest.mark.parametrize("use_parent_scope", [False, True])
+@pytest.mark.asyncio
+async def test_free_response_admits_human_reply_to_other_bot(adapter, monkeypatch, use_parent_scope):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._ready_event.set()
+    adapter._is_allowed_user = MagicMock(return_value=True)
+    adapter._threads.mark = MagicMock()
+
+    parent = FakeTextChannel(channel_id=789)
+    channel = FakeThread(channel_id=790, parent=parent) if use_parent_scope else parent
+    other_bot = SimpleNamespace(id=55, bot=True)
+    message = make_message(
+        channel=channel,
+        content="Does this still exist?",
+        mentions=[other_bot],
+        msg_type=discord_platform.discord.MessageType.reply,
+    )
+    message.guild = SimpleNamespace(id=1, name=channel.guild.name)
+    message.reference = SimpleNamespace(
+        message_id=456,
+        resolved=SimpleNamespace(content="publisher alert", attachments=[]),
+    )
+
+    assert await adapter._dispatch_discord_message(message) is True
+    event = adapter.handle_message.await_args.args[0]
+    assert event.reply_to_message_id == "456"
+    assert event.reply_to_text == "publisher alert"
+
+
+@pytest.mark.asyncio
+async def test_non_free_response_rejects_human_reply_to_other_bot(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    adapter._ready_event.set()
+    adapter._is_allowed_user = MagicMock(return_value=True)
+    channel = FakeTextChannel(channel_id=321)
+    message = make_message(
+        channel=channel,
+        content="following up",
+        mentions=[SimpleNamespace(id=55, bot=True)],
+        msg_type=discord_platform.discord.MessageType.reply,
+    )
+    message.guild = channel.guild
+
+    assert await adapter._dispatch_discord_message(message) is False
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_free_response_rejects_human_direct_mention_of_other_bot(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    adapter._ready_event.set()
+    adapter._is_allowed_user = MagicMock(return_value=True)
+    channel = FakeTextChannel(channel_id=789)
+    message = make_message(
+        channel=channel,
+        content="<@55> can you handle this?",
+        mentions=[SimpleNamespace(id=55, bot=True)],
+    )
+    message.guild = channel.guild
+
+    assert await adapter._dispatch_discord_message(message) is False
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_free_response_rejects_bot_reply_to_other_bot(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter._ready_event.set()
+    channel = FakeTextChannel(channel_id=789)
+    message = make_message(
+        channel=channel,
+        content="bot reply directed elsewhere",
+        mentions=[SimpleNamespace(id=55, bot=True)],
+        msg_type=discord_platform.discord.MessageType.reply,
+    )
+    message.author.bot = True
+    message.guild = channel.guild
+
+    assert await adapter._dispatch_discord_message(message) is False
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ignored_free_response_channel_stays_blocked(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "789")
+    adapter._ready_event.set()
+    adapter._is_allowed_user = MagicMock(return_value=True)
+    channel = FakeTextChannel(channel_id=789)
+    message = make_message(channel=channel, content="ordinary question")
+    message.guild = channel.guild
+
+    assert await adapter._dispatch_discord_message(message) is False
+    adapter.handle_message.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
@@ -825,5 +924,3 @@ async def test_discord_reply_in_free_channel_triggers_backfill(adapter, monkeypa
     assert event.channel_context == (
         "[Context around the replied-to message]\n[Hermes [bot]] earlier answer"
     )
-
-

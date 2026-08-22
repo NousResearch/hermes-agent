@@ -1154,6 +1154,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # shutdown from a runtime websocket crash.
         self._disconnecting = False
         self._missed_message_backfill_task: Optional[asyncio.Task] = None
+        self._missed_message_backfill_periodic_task: Optional[asyncio.Task] = None
         from hermes_constants import get_hermes_home
         from plugins.platforms.discord.recovery import DiscordRecoveryStore
         self._discord_recovery_store = DiscordRecoveryStore(get_hermes_home())
@@ -1402,6 +1403,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 if adapter_self._missed_message_backfill_enabled():
                     adapter_self._ensure_missed_message_backfill_task()
+                    adapter_self._ensure_missed_message_backfill_periodic_task()
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -1573,7 +1575,8 @@ class DiscordAdapter(BasePlatformAdapter):
             return False, False
 
         role_authorized = False
-        if getattr(message.author, "bot", False):
+        author_is_bot = getattr(message.author, "bot", False)
+        if author_is_bot:
             allow_bots = self._get_allow_bots()
             if allow_bots == "none":
                 return False, False
@@ -1608,23 +1611,34 @@ class DiscordAdapter(BasePlatformAdapter):
         if not isinstance(message.channel, discord.DMChannel) and (
             message.mentions or raw_self_mention
         ):
+            parent_id = self._get_parent_channel_id(message.channel)
+            free_channels = self._discord_free_response_channels()
+            channel_keys = self._discord_channel_keys(message, parent_id)
+            is_free_response = "*" in free_channels or bool(channel_keys & free_channels)
             other_bots_mentioned = any(
                 mentioned.bot and mentioned != self._client.user
                 for mentioned in message.mentions
             )
-            if other_bots_mentioned and not raw_self_mention:
+            if (
+                other_bots_mentioned
+                and not raw_self_mention
+                and (
+                    author_is_bot
+                    or not is_free_response
+                    or message.type != discord.MessageType.reply
+                )
+            ):
                 return False, False
             ignore_no_mention = os.getenv(
                 "DISCORD_IGNORE_NO_MENTION", "true"
             ).lower() in {"true", "1", "yes"}
-            if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
-                parent_id = None
-                if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                    parent_id = str(message.channel.parent_id)
-                free_channels = self._discord_free_response_channels()
-                channel_keys = self._discord_channel_keys(message, parent_id)
-                if "*" not in free_channels and not (channel_keys & free_channels):
-                    return False, False
+            if (
+                ignore_no_mention
+                and not raw_self_mention
+                and not other_bots_mentioned
+                and not is_free_response
+            ):
+                return False, False
 
         return True, role_authorized
 
@@ -2193,6 +2207,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._post_connect_task
             except asyncio.CancelledError:
                 pass
+        if (
+            self._missed_message_backfill_periodic_task
+            and not self._missed_message_backfill_periodic_task.done()
+        ):
+            self._missed_message_backfill_periodic_task.cancel()
+            try:
+                await self._missed_message_backfill_periodic_task
+            except asyncio.CancelledError:
+                pass
         if self._missed_message_backfill_task and not self._missed_message_backfill_task.done():
             self._missed_message_backfill_task.cancel()
             try:
@@ -2206,6 +2229,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._post_connect_task = None
         self._liveness_task = None
         self._missed_message_backfill_task = None
+        self._missed_message_backfill_periodic_task = None
 
         self._release_platform_lock()
 
@@ -2551,6 +2575,35 @@ class DiscordAdapter(BasePlatformAdapter):
             value = 10
         return max(1, min(value, 100))
 
+    def _missed_message_backfill_interval_seconds(self) -> float:
+        configured = self.config.extra.get("missed_message_backfill")
+        raw = (
+            configured.get("interval_seconds", 60)
+            if isinstance(configured, dict)
+            else os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_INTERVAL_SECONDS", "60")
+        )
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[%s] Invalid Discord missed-message backfill interval_seconds %r; "
+                "periodic recovery disabled",
+                self.name,
+                raw,
+            )
+            return 0.0
+        if value == 0:
+            return 0.0
+        if not math.isfinite(value) or value < 0:
+            logger.warning(
+                "[%s] Invalid Discord missed-message backfill interval_seconds %r; "
+                "periodic recovery disabled",
+                self.name,
+                raw,
+            )
+            return 0.0
+        return value
+
     def _ensure_missed_message_backfill_task(self) -> asyncio.Task:
         """Return the active recovery task, or start one when none is running."""
         task = self._missed_message_backfill_task
@@ -2566,6 +2619,34 @@ class DiscordAdapter(BasePlatformAdapter):
                 runner._startup_restore_tasks = tasks
             tasks.append(task)
         return task
+
+    def _ensure_missed_message_backfill_periodic_task(self) -> Optional[asyncio.Task]:
+        """Start the one adapter-owned periodic recovery loop when configured."""
+        interval = self._missed_message_backfill_interval_seconds()
+        if interval <= 0:
+            return None
+        task = self._missed_message_backfill_periodic_task
+        if task is not None and not task.done():
+            return task
+        task = asyncio.create_task(self._run_missed_message_backfill_periodically(interval))
+        self._missed_message_backfill_periodic_task = task
+        return task
+
+    async def _run_missed_message_backfill_periodically(self, interval: float) -> None:
+        """Reconcile sequentially after each configured polling interval."""
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._ensure_missed_message_backfill_task()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning(
+                    "[%s] Periodic missed-message backfill failed: %s",
+                    self.name,
+                    exc,
+                    exc_info=True,
+                )
 
     async def _run_missed_message_backfill(self) -> None:
         """Find and enqueue recent Discord messages missed while the bot was down.
@@ -2701,7 +2782,7 @@ class DiscordAdapter(BasePlatformAdapter):
             ):
                 return False
         admitted, role_authorized = self._discord_message_admission(
-            message, claim=False,
+            message, claim=True,
         )
         if not admitted:
             return False

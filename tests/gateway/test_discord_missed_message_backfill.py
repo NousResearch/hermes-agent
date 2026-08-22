@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime as dt
+import logging
 import os
 import sys
 from datetime import datetime, timezone
@@ -243,6 +244,30 @@ async def test_run_backfill_dispatches_unaddressed_messages(adapter, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_recovered_claim_blocks_same_live_event_during_dispatch(adapter, monkeypatch):
+    message = make_message(message_id=72)
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handle(*_args, **_kwargs):
+        entered.set()
+        await release.wait()
+        return True
+
+    adapter._handle_message.side_effect = handle
+    recovered = asyncio.create_task(adapter._dispatch_recovered_message(message))
+    await entered.wait()
+
+    assert await adapter._dispatch_discord_message(message) is False
+    release.set()
+    assert await recovered is True
+    adapter._handle_message.assert_awaited_once_with(
+        message, role_authorized=False, recovered=True,
+    )
+
+
+@pytest.mark.asyncio
 async def test_repeated_ready_coalesces_instead_of_cancelling_active_recovery(adapter):
     started = asyncio.Event()
     release = asyncio.Event()
@@ -261,6 +286,119 @@ async def test_repeated_ready_coalesces_instead_of_cancelling_active_recovery(ad
     assert first.cancelled() is False
     release.set()
     await first
+
+
+@pytest.mark.asyncio
+async def test_periodic_pass_recovers_late_untagged_question_exactly_once(adapter, monkeypatch):
+    message = make_message(message_id=77, content="?")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
+    pass_number = 0
+    recovered = asyncio.Event()
+
+    async def candidates(_channels):
+        nonlocal pass_number
+        pass_number += 1
+        if pass_number == 2:
+            yield message
+
+    monkeypatch.setattr(adapter, "_iter_missed_message_backfill_candidates", candidates)
+    monkeypatch.setattr(adapter, "_should_backfill_discord_message", AsyncMock(return_value=True))
+    monkeypatch.setattr(adapter, "_missed_message_backfill_channels", lambda: {"123"})
+    adapter._handle_message.side_effect = lambda *_args, **_kwargs: recovered.set() or True
+
+    await adapter._run_missed_message_backfill()  # immediate ready scan
+    periodic = asyncio.create_task(adapter._run_missed_message_backfill_periodically(0.001))
+    await asyncio.wait_for(recovered.wait(), timeout=1)
+    periodic.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await periodic
+
+    adapter._handle_message.assert_awaited_once_with(
+        message, role_authorized=False, recovered=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_consecutive_scans_use_durable_completion_to_dispatch_once(adapter, monkeypatch):
+    message = make_message(message_id=78)
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
+
+    async def candidates(_channels):
+        yield message
+
+    async def handle(*_args, **_kwargs):
+        adapter._record_discord_response(
+            reply_to=str(message.id),
+            result=SimpleNamespace(success=True, message_id="9001"),
+            content="Done",
+            final=True,
+        )
+        return True
+
+    monkeypatch.setattr(adapter, "_iter_missed_message_backfill_candidates", candidates)
+    monkeypatch.setattr(adapter, "_missed_message_backfill_channels", lambda: {"123"})
+    adapter._handle_message.side_effect = handle
+
+    await adapter._run_missed_message_backfill()
+    adapter._dedup.clear()
+    await adapter._run_missed_message_backfill()
+
+    adapter._handle_message.assert_awaited_once_with(
+        message, role_authorized=False, recovered=True,
+    )
+    assert await adapter._should_backfill_discord_message(message) is False
+
+
+@pytest.mark.asyncio
+async def test_periodic_loop_serializes_scans_survives_failure_and_propagates_cancel(adapter, monkeypatch):
+    calls = 0
+
+    async def scan():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("scan failed")
+        raise asyncio.CancelledError
+
+    async def no_wait(_interval):
+        return None
+
+    monkeypatch.setattr(adapter, "_run_missed_message_backfill", scan)
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+
+    with pytest.raises(asyncio.CancelledError):
+        await adapter._run_missed_message_backfill_periodically(1)
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_periodic_task_coalesces_and_zero_disables(adapter):
+    adapter.config.extra["missed_message_backfill"] = {"interval_seconds": 0}
+    assert adapter._ensure_missed_message_backfill_periodic_task() is None
+
+    adapter.config.extra["missed_message_backfill"]["interval_seconds"] = 60
+    first = adapter._ensure_missed_message_backfill_periodic_task()
+    second = adapter._ensure_missed_message_backfill_periodic_task()
+    assert second is first
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+
+def test_periodic_interval_env_and_invalid_values_fail_closed(adapter, monkeypatch, caplog):
+    assert adapter._missed_message_backfill_interval_seconds() == 60
+    monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL_INTERVAL_SECONDS", "12.5")
+    assert adapter._missed_message_backfill_interval_seconds() == 12.5
+    for value in ("invalid", "nan", "inf", "-1"):
+        monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL_INTERVAL_SECONDS", value)
+        with caplog.at_level(logging.WARNING):
+            assert adapter._missed_message_backfill_interval_seconds() == 0
+        assert value in caplog.messages[-1]
+
+    caplog.clear()
+    monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL_INTERVAL_SECONDS", "0")
+    assert adapter._missed_message_backfill_interval_seconds() == 0
+    assert caplog.messages == []
 
 
 @pytest.mark.asyncio
@@ -300,6 +438,7 @@ def test_default_config_exposes_missed_message_backfill_settings():
     assert DEFAULT_CONFIG["discord"]["missed_message_backfill"] == {
         "enabled": False,
         "channels": "",
+        "interval_seconds": 60,
         "window_seconds": 21600,
         "limit": 100,
         "max_dispatches": 10,
@@ -313,6 +452,7 @@ def test_missed_message_backfill_config_stays_per_adapter():
             "missed_message_backfill": {
                 "enabled": True,
                 "channels": ["111"],
+                "interval_seconds": 30,
                 "window_seconds": 60,
                 "limit": 5,
                 "max_dispatches": 2,
@@ -325,6 +465,7 @@ def test_missed_message_backfill_config_stays_per_adapter():
             "missed_message_backfill": {
                 "enabled": False,
                 "channels": ["222"],
+                "interval_seconds": 0,
                 "window_seconds": 120,
                 "limit": 6,
                 "max_dispatches": 3,
@@ -337,11 +478,13 @@ def test_missed_message_backfill_config_stays_per_adapter():
 
     assert first._missed_message_backfill_enabled() is True
     assert first._missed_message_backfill_channels() == {"111"}
+    assert first._missed_message_backfill_interval_seconds() == 30
     assert first._missed_message_backfill_window_seconds() == 60
     assert first._missed_message_backfill_limit() == 5
     assert first._missed_message_backfill_max_dispatches() == 2
     assert second._missed_message_backfill_enabled() is False
     assert second._missed_message_backfill_channels() == {"222"}
+    assert second._missed_message_backfill_interval_seconds() == 0
     assert second._missed_message_backfill_window_seconds() == 120
     assert second._missed_message_backfill_limit() == 6
     assert second._missed_message_backfill_max_dispatches() == 3
@@ -456,5 +599,3 @@ async def test_iter_candidates_keeps_latest_messages_when_window_exceeds_limit(a
         got.append(msg.id)
 
     assert got == [2, 3, 4]
-
-

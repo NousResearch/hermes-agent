@@ -799,6 +799,7 @@ class TestDiscordVoiceChannelMethods:
         adapter._ready_event = MagicMock()
         adapter._post_connect_task = None
         adapter._missed_message_backfill_task = None
+        adapter._missed_message_backfill_periodic_task = None
 
         await adapter.disconnect()
 
@@ -808,6 +809,32 @@ class TestDiscordVoiceChannelMethods:
             "cancel_bot_task",
             "close_client",
         ]
+
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_periodic_recovery_before_active_scan(self):
+        adapter = self._make_adapter()
+        events = []
+
+        async def wait_for_cancel(name):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                events.append(name)
+
+        adapter._client = None
+        adapter._bot_task = None
+        adapter._ready_event = MagicMock()
+        adapter._post_connect_task = None
+        adapter._missed_message_backfill_task = asyncio.create_task(wait_for_cancel("scan"))
+        adapter._missed_message_backfill_periodic_task = asyncio.create_task(
+            wait_for_cancel("periodic")
+        )
+        await asyncio.sleep(0)
+
+        await adapter.disconnect()
+
+        assert events == ["periodic", "scan"]
 
 
     @pytest.mark.asyncio

@@ -221,9 +221,11 @@ export const en: Translations = {
     copyLink: 'Copy link',
     uploadIdFallback: id => `No view link returned — quote upload ID ${id} to support`,
     doneTitle: 'Diagnostics sent',
-    doneDescription: 'Your bundle was uploaded privately. Share the link below in your support thread so the team can see your logs.',
+    doneDescription:
+      'Your bundle was uploaded privately. Share the link below in your support thread so the team can see your logs.',
     failedTitle: 'Upload failed',
-    failedHint: 'You can also run `hermes debug share --nous` from a terminal, or `hermes debug share --local` to print the report without uploading.',
+    failedHint:
+      'You can also run `hermes debug share --nous` from a terminal, or `hermes debug share --local` to print the report without uploading.',
     handoffLead: 'Pick up the discussion in:',
     links: {
       github: 'GitHub Issues',

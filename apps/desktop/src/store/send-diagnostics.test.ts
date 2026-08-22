@@ -8,7 +8,9 @@ import {
   requestSendDiagnostics
 } from '@/store/send-diagnostics'
 
-function stubGateway(request: (method: string, params?: Record<string, unknown>, timeout?: number) => Promise<unknown>) {
+function stubGateway(
+  request: (method: string, params?: Record<string, unknown>, timeout?: number) => Promise<unknown>
+) {
   const original = $gateway.get()
 
   $gateway.set({ request } as never)
@@ -145,9 +147,7 @@ describe('send-diagnostics store', () => {
   it('dismissal mid-upload is immediate and a stale completion cannot resurrect the dialog', async () => {
     let resolveRequest: (value: unknown) => void = () => {}
 
-    const request = vi.fn().mockImplementation(
-      () => new Promise(resolve => (resolveRequest = resolve))
-    )
+    const request = vi.fn().mockImplementation(() => new Promise(resolve => (resolveRequest = resolve)))
 
     const restoreGateway = stubGateway(request as never)
     const restoreDesktop = stubDesktopLogs(null)

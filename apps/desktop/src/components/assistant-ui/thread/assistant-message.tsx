@@ -32,7 +32,16 @@ import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { type ErrorSurface, formatErrorDiagnostics } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
-import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, SmilePlusIcon, Upload, VolumeXIcon, XIcon } from '@/lib/icons'
+import {
+  AudioLines,
+  GitForkIcon,
+  Loader2Icon,
+  RefreshCwIcon,
+  SmilePlusIcon,
+  Upload,
+  VolumeXIcon,
+  XIcon
+} from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -555,11 +564,7 @@ const ErrorRecoveryActions: FC = () => {
           {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
         </button>
       )}
-      <button
-        className="aui-error-action"
-        onClick={() => requestSendDiagnostics(diagnosticsText())}
-        type="button"
-      >
+      <button className="aui-error-action" onClick={() => requestSendDiagnostics(diagnosticsText())} type="button">
         <Upload className="size-3" />
         {copy.errorSendDiagnostics}
       </button>

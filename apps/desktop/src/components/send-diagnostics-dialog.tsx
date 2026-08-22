@@ -23,11 +23,7 @@ import {
 import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { ExternalLink, Loader2Icon, Lock } from '@/lib/icons'
-import {
-  $sendDiagnostics,
-  confirmSendDiagnostics,
-  dismissSendDiagnostics
-} from '@/store/send-diagnostics'
+import { $sendDiagnostics, confirmSendDiagnostics, dismissSendDiagnostics } from '@/store/send-diagnostics'
 
 const SUPPORT_LINKS = [
   { key: 'github', url: 'https://github.com/NousResearch/hermes-agent/issues' },
@@ -60,9 +56,7 @@ export function SendDiagnosticsHost() {
                 <Lock className="size-4 text-(--ui-text-tertiary)" />
                 {copy.title}
               </DialogTitle>
-              <DialogDescription className="whitespace-pre-line text-left">
-                {copy.privacyNotice}
-              </DialogDescription>
+              <DialogDescription className="whitespace-pre-line text-left">{copy.privacyNotice}</DialogDescription>
             </DialogHeader>
             <DialogFooter>
               <Button onClick={dismissSendDiagnostics} variant="ghost">
@@ -117,12 +111,7 @@ export function SendDiagnosticsHost() {
             <div className="text-[0.8rem] text-(--ui-text-secondary)">{copy.handoffLead}</div>
             <div className="flex flex-wrap gap-1.5">
               {SUPPORT_LINKS.map(link => (
-                <Button
-                  key={link.key}
-                  onClick={() => openExternalLink(link.url)}
-                  size="sm"
-                  variant="outline"
-                >
+                <Button key={link.key} onClick={() => openExternalLink(link.url)} size="sm" variant="outline">
                   <ExternalLink className="size-3" />
                   {copy.links[link.key]}
                 </Button>

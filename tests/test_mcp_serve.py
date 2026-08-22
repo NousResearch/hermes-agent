@@ -1258,10 +1258,14 @@ class TestEventBridgePollE2E:
         )
         conn.commit()
         conn.close()
-        # Touch the DB file to update mtime (WAL mode may not update mtime on small writes)
-        os.utime(db_path, None)
+        # Force a later mtime on state.db even on filesystems with coarse
+        # timestamp resolution (e.g. whole-second mtimes). The EventBridge
+        # poll gate checks state.db mtime, not sessions.json (#9006).
+        current_mtime = db_path.stat().st_mtime
+        forced_mtime = max(time.time(), current_mtime + 1.1)
+        os.utime(db_path, (forced_mtime, forced_mtime))
 
-        # Update sessions.json updated_at to trigger re-check
+        # Update sessions.json updated_at to keep the index consistent
         sessions_data["agent:main:telegram:dm:new"]["updated_at"] = "2026-03-29T15:00:10"
         (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
 

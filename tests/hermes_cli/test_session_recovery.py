@@ -648,4 +648,81 @@ def test_partial_recovery_clears_only_unreadable_system_prompt_refs(
         conn.close()
 
 
+def test_reconstruct_clamps_garbage_timestamps(tmp_path):
+    """Regression #91536: salvage can leave garbage IEEE-754 doubles in
+    messages.timestamp; _reconstruct_missing_sessions must not copy them
+    into sessions.started_at — one such value crashed every Date consumer."""
+    from hermes_state import SessionDB
+
+    source = tmp_path / "garbage-ts.db"
+    output = tmp_path / "garbage-ts-recovered.db"
+    db = SessionDB(db_path=source)
+    try:
+        db.create_session("doomed", "cli")
+        db.append_message("doomed", "user", "m1")
+        db.append_message("doomed", "user", "m2")
+    finally:
+        db.close()
+
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute("DELETE FROM sessions")
+        rows = conn.execute("SELECT rowid FROM messages ORDER BY rowid").fetchall()
+        conn.execute(
+            "UPDATE messages SET timestamp=? WHERE rowid=?",
+            (1_700_000_000.0, rows[0][0]),
+        )
+        conn.execute(
+            "UPDATE messages SET timestamp=? WHERE rowid=?",
+            (5.49e246, rows[1][0]),
+        )
+    finally:
+        conn.close()
+
+    recover_session_database(
+        source, output, work_dir=tmp_path, chunk_size=16, allow_partial=True,
+    )
+
+    with sqlite3.connect(str(output)) as verify:
+        started = verify.execute(
+            "SELECT started_at FROM sessions WHERE source='recovered'"
+        ).fetchone()[0]
+    assert started == 1_700_000_000.0, (
+        "reconstructed started_at must use the sane timestamp, not the "
+        f"garbage double (got {started!r})"
+    )
+
+
+def test_reconstruct_all_garbage_timestamps_falls_back_to_zero(tmp_path):
+    """When every salvaged timestamp is garbage, started_at must be 0.0
+    (renders as a valid 1970 date) rather than a Date-crashing double."""
+    from hermes_state import SessionDB
+
+    source = tmp_path / "garbage-all.db"
+    output = tmp_path / "garbage-all-recovered.db"
+    db = SessionDB(db_path=source)
+    try:
+        db.create_session("doomed", "cli")
+        db.append_message("doomed", "user", "m1")
+    finally:
+        db.close()
+
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute("DELETE FROM sessions")
+        conn.execute("UPDATE messages SET timestamp=?", (3.9e-310,))
+    finally:
+        conn.close()
+
+    recover_session_database(
+        source, output, work_dir=tmp_path, chunk_size=16, allow_partial=True,
+    )
+
+    with sqlite3.connect(str(output)) as verify:
+        started = verify.execute(
+            "SELECT started_at FROM sessions WHERE source='recovered'"
+        ).fetchone()[0]
+    assert started == 0.0
+
+
 

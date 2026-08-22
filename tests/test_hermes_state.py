@@ -2017,6 +2017,51 @@ class TestListSessionsRich:
         assert activity["last_activity_description"] == ""
         assert activity["last_activity_provenance"] == "unknown"
 
+    def test_last_active_ignores_corrupt_salvaged_timestamps(self, db):
+        """Garbage IEEE-754 doubles salvaged into messages.timestamp (or
+        last_activity_at) must not poison last_active — one bad row used to
+        crash every consumer that formats it as a Date (#91536)."""
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "hello")
+        db.append_message("s1", "assistant", "hi")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND role=?",
+                (1_700_000_000.0, "s1", "user"),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND role=?",
+                (5.4905047707024164e246, "s1", "assistant"),
+            )
+            db._conn.commit()
+
+        # The corrupt row is ignored; last_active falls back to the sane
+        # message timestamp rather than propagating 5.49e+246.
+        assert db.list_sessions_rich()[0]["last_active"] == 1_700_000_000.0
+
+        # An out-of-window last_activity_at is ignored the same way.
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET last_activity_at=? WHERE id=?",
+                (3.9e-310, "s1"),
+            )
+            db._conn.commit()
+        assert db.list_sessions_rich()[0]["last_active"] == 1_700_000_000.0
+
+    def test_last_active_all_garbage_falls_back_to_started_at(self, db):
+        """When every recency input is out of window, last_active falls back
+        to started_at instead of returning a Date-crashing value."""
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "hello")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=?",
+                (1.3e-152, "s1"),
+            )
+            db._conn.commit()
+        row = db.get_session("s1")
+        assert db.list_sessions_rich()[0]["last_active"] == row["started_at"]
+
     def test_last_active_uses_newer_message_over_stale_heartbeat(self, db):
         """Rate-limited heartbeats can lag message writes; last_active must take max."""
         db.create_session("s1", "cli")

@@ -252,6 +252,16 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
     )
 
 
+# Sane unix-epoch-seconds window (2001..2100). Session-recovery salvage can
+# copy garbage IEEE-754 doubles (uninitialised-memory bit patterns like
+# 5.49e+246) into messages.timestamp / last_activity_at verbatim; one such
+# value propagates through MAX() into last_active and crashes every consumer
+# that multiplies by 1000 and formats a Date (#91536). Values outside the
+# window are treated as absent — the expression falls back to started_at.
+_SANE_EPOCH_MIN = 1_000_000_000.0
+_SANE_EPOCH_MAX = 4_200_000_000.0
+
+
 def _sql_session_last_active(alias: str = "s") -> str:
     """SQL expression for session recency used by list/status surfaces.
 
@@ -261,15 +271,22 @@ def _sql_session_last_active(alias: str = "s") -> str:
     Must not prefer a stale heartbeat over a newer message: durable
     heartbeats are rate-limited (~60s), so after a turn writes messages
     ``last_activity_at`` can lag ``MAX(messages.timestamp)``.
+
+    Both inputs are constrained to the sane epoch window: out-of-range
+    values (corrupt salvage output) read as NULL here instead of poisoning
+    ``last_active`` (#91536).
     """
     msg_max = (
         f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m "
-        f"WHERE _act_m.session_id = {alias}.id)"
+        f"WHERE _act_m.session_id = {alias}.id "
+        f"AND _act_m.timestamp BETWEEN {_SANE_EPOCH_MIN!r} AND {_SANE_EPOCH_MAX!r})"
     )
     return (
         f"COALESCE("
         f"(SELECT MAX(_act_v.v) FROM ("
-        f"SELECT {alias}.last_activity_at AS v "
+        f"SELECT CASE WHEN {alias}.last_activity_at "
+        f"BETWEEN {_SANE_EPOCH_MIN!r} AND {_SANE_EPOCH_MAX!r} "
+        f"THEN {alias}.last_activity_at END AS v "
         f"UNION ALL "
         f"SELECT {msg_max}"
         f") _act_v), "
@@ -281,7 +298,8 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     """Same freshest-of expression keyed by a session-id SQL expression."""
     msg_max = (
         f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m "
-        f"WHERE _act_m.session_id = {session_id_expr})"
+        f"WHERE _act_m.session_id = {session_id_expr} "
+        f"AND _act_m.timestamp BETWEEN {_SANE_EPOCH_MIN!r} AND {_SANE_EPOCH_MAX!r})"
     )
     activity = (
         f"(SELECT last_activity_at FROM sessions _act_s "
@@ -294,7 +312,9 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     return (
         f"COALESCE("
         f"(SELECT MAX(_act_v.v) FROM ("
-        f"SELECT {activity} AS v "
+        f"SELECT CASE WHEN {activity} "
+        f"BETWEEN {_SANE_EPOCH_MIN!r} AND {_SANE_EPOCH_MAX!r} "
+        f"THEN {activity} END AS v "
         f"UNION ALL "
         f"SELECT {msg_max}"
         f") _act_v), "

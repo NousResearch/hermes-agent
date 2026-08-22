@@ -38,25 +38,35 @@ def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
         db.create_session("s_started_later", source="cli")
         db.create_session("s_active_later", source="cli")
         # Force started_at ordering so the test is deterministic regardless
-        # of how quickly the two inserts land.
+        # of how quickly the two inserts land. The values must sit inside
+        # the sane epoch window (2001..2100): _sql_session_last_active
+        # treats out-of-window timestamps as corrupt salvage output and
+        # ignores them (#91536), which would silently change this test's
+        # meaning.
         with db._lock:
-            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (2000.0, "s_started_later"))
-            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (1000.0, "s_active_later"))
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?",
+                (1_000_002_000.0, "s_started_later"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?",
+                (1_000_001_000.0, "s_active_later"),
+            )
             db._conn.commit()
 
         db.append_message("s_active_later", role="user", content="hi")
         with db._lock:
             db._conn.execute(
                 "UPDATE messages SET timestamp=? WHERE session_id=?",
-                (3000.0, "s_active_later"),
+                (1_000_003_000.0, "s_active_later"),
             )
             db._conn.commit()
 
         rows = db.search_sessions(source="cli", limit=5)
         ids = {r["id"]: r.get("last_active") for r in rows}
 
-        assert ids["s_started_later"] == 2000.0
-        assert ids["s_active_later"] == 3000.0
+        assert ids["s_started_later"] == 1_000_002_000.0
+        assert ids["s_active_later"] == 1_000_003_000.0
         assert rows[0]["id"] == "s_active_later"
     finally:
         db.close()

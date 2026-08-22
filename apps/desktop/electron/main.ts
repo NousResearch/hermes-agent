@@ -96,6 +96,7 @@ import {
   tokenPreview,
   translateSelfProfileQuery
 } from './connection-config'
+import { applyConnectionConfigAtomically } from './connection-config-apply'
 import {
   backendScopeKey,
   backendScopePrefix,
@@ -105,6 +106,7 @@ import {
   migrateV1ToRegistry,
   normalizeConnectionInput,
   normalizeRegistry,
+  reconcileAppliedGlobalConnection,
   rememberSshEnumeration,
   removeConnection,
   resolvedConnectionId,
@@ -9676,10 +9678,11 @@ async function testDesktopConnectionConfig(input: any = {}) {
   const wantRemote =
     modeIsRemoteLike(block?.mode) || (!key && modeIsRemoteLike(config.mode)) || (modeIsRemoteLike(input.mode) && block)
 
-  // ``/api/status`` is public on every gateway (no creds needed), so a
-  // reachability test works for local, token, and oauth modes alike — we only
-  // need a base URL. For a remote config we normalize the URL from the input;
-  // for local we fall back to the resolved/started backend.
+  // Test ``/api/status`` through the connection's real auth path. Self-hosted
+  // gateways may protect it, and an anonymous success/failure would not prove
+  // that the OAuth cookie/native bearer or configured token is reusable. For
+  // a remote config we normalize the URL from the input; for local we fall
+  // back to the resolved/started backend.
   let baseUrl
   let token = null
   let authMode = 'token'
@@ -9701,7 +9704,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
     testHeaders = remote.headers || {}
   }
 
-  const status = (await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000, headers: testHeaders })) as any
+  const status = (await fetchConnectionStatus(baseUrl, authMode, token, testHeaders)) as any
 
   // The HTTP status check above proves the backend is reachable, but the chat
   // surface only works once the renderer's live WebSocket to ``/api/ws``
@@ -9733,6 +9736,22 @@ async function testDesktopConnectionConfig(input: any = {}) {
     baseUrl,
     version: status?.version || null
   }
+}
+
+async function fetchConnectionStatus(baseUrl, authMode, token, headers = {}) {
+  const url = `${baseUrl}/api/status`
+
+  if (authMode === 'oauth') {
+    const nativeAt = await ensureNativeAccessToken(baseUrl).catch(() => null)
+
+    if (nativeAt) {
+      return fetchJson(url, null, { timeoutMs: 8_000, bearer: nativeAt, headers })
+    }
+
+    return fetchJsonViaOauthSession(url, { timeoutMs: 8_000, headers })
+  }
+
+  return fetchJson(url, token, { timeoutMs: 8_000, headers })
 }
 
 function resetBootProgressForReconnect() {
@@ -12294,7 +12313,7 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
         connectionPromise,
         currentConnectionPromise: () => backendConnectionState.getPromise(),
         log: rememberLog,
-        probe: fetchPublicJson,
+        probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
         resetConnection: resetHermesConnection,
         tracker: remoteLiveness
       }),
@@ -12325,7 +12344,7 @@ function revalidatePool() {
   return revalidatePooledRemoteBackends({
     entries: backendPool.entries(),
     log: rememberLog,
-    probe: fetchPublicJson,
+    probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
     stopBackend: stopPoolBackend,
     tracker: remoteLiveness
   })
@@ -12768,7 +12787,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
     }
   }
 
-  const status = (await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000, headers: testHeaders })) as any
+  const status = (await fetchConnectionStatus(baseUrl, authMode, token, testHeaders)) as any
 
   // The Test button is the cheapest moment to (re)learn this backend's stable
   // identity for the same-backend roster collapse + Settings hint.
@@ -13281,32 +13300,50 @@ ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
-  const config = coerceDesktopConnectionConfig(payload)
-  writeDesktopConnectionConfig(config)
+  const previousConfig = readDesktopConnectionConfig()
+  const previousRegistry = readDesktopConnectionsRegistry()
+  const config = coerceDesktopConnectionConfig(payload, previousConfig)
 
   const key = connectionScopeKey(payload?.profile)
   const scope = key || ''
+  const nextRegistry = key ? previousRegistry : reconcileAppliedGlobalConnection(previousRegistry, config)
 
-  await applyConnectionChange({
-    cancelAndWait: value => sshBootstrapCoordinator.cancelAndWait(value),
-    isPrimary: !key || key === primaryProfileKey(),
-    rehomePrimary: () =>
-      rehomePrimaryConnection({
-        clearLocalBootstrapFailure: () => {
-          // A remote connection bypasses local runtime/bootstrap failures. Clear
-          // the local-install latch so unsupported/failure escape paths can re-home.
-          bootstrapFailure = null
-        },
-        mode: config.mode,
-        notifyConnectionApplied: sendConnectionApplied,
-        resumeFirstRunRemote: abandonFirstRunSetupChoiceForRemoteApply,
-        teardownPrimaryBackend: teardownPrimaryBackendAndWait
-      }),
-    scope,
-    sendApplied: sendConnectionApplied,
-    stopPool: stopPoolBackend,
-    teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
-    teardownSsh: value => teardownSshConnection(value || null)
+  // Exercise the same authenticated REST + real WebSocket legs before either
+  // config file changes. A rejected OAuth session or blocked /api/ws leaves
+  // the previous primary/current connection intact.
+  if (!key && modeIsRemoteLike(config.mode)) {
+    await testDesktopConnectionConfig(payload)
+  }
+
+  await applyConnectionConfigAtomically({
+    previousConfig,
+    previousRegistry,
+    nextConfig: config,
+    nextRegistry,
+    writeConfig: writeDesktopConnectionConfig,
+    writeRegistry: writeDesktopConnectionsRegistry,
+    apply: () =>
+      applyConnectionChange({
+        cancelAndWait: value => sshBootstrapCoordinator.cancelAndWait(value),
+        isPrimary: !key || key === primaryProfileKey(),
+        rehomePrimary: () =>
+          rehomePrimaryConnection({
+            clearLocalBootstrapFailure: () => {
+              // A remote connection bypasses local runtime/bootstrap failures. Clear
+              // the local-install latch so unsupported/failure escape paths can re-home.
+              bootstrapFailure = null
+            },
+            mode: config.mode,
+            notifyConnectionApplied: sendConnectionApplied,
+            resumeFirstRunRemote: abandonFirstRunSetupChoiceForRemoteApply,
+            teardownPrimaryBackend: teardownPrimaryBackendAndWait
+          }),
+        scope,
+        sendApplied: sendConnectionApplied,
+        stopPool: stopPoolBackend,
+        teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+        teardownSsh: value => teardownSshConnection(value || null)
+      })
   })
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)

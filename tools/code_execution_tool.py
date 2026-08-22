@@ -545,6 +545,28 @@ def _connect():
         _sock.settimeout(300)
     return _sock
 
+def _parse_response(buf):
+    """Parse the newline-terminated RPC response buffer and return the last
+    complete object.
+
+    The transport uses newline-terminated JSON, but Windows TCP can surface
+    a partial earlier response in the same recv() burst (e.g. a delayed ack
+    from a previous in-flight call), giving us ``json.JSONDecodeError:
+    Extra data`` on a naive ``json.loads(buf.decode())``. Parse each line
+    independently and return the last complete object — every response is
+    newline-terminated by the server (#81610).
+    """
+    lines = [line for line in buf.decode("utf-8", errors="replace").split("\\n") if line.strip()]
+    if not lines:
+        raise RuntimeError("Agent returned an empty response")
+    result = json.loads(lines[-1])
+    if isinstance(result, str):
+        try:
+            return json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return result
+    return result
+
 def _call(tool_name, args):
     """Send a tool call to the parent process and return the parsed result."""
     request = json.dumps({
@@ -563,14 +585,7 @@ def _call(tool_name, args):
             buf += chunk
             if buf.endswith(b"\\n"):
                 break
-    raw = buf.decode().strip()
-    result = json.loads(raw)
-    if isinstance(result, str):
-        try:
-            return json.loads(result)
-        except (json.JSONDecodeError, TypeError):
-            return result
-    return result
+    return _parse_response(buf)
 
 '''
 

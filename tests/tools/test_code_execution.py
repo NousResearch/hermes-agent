@@ -116,6 +116,50 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("_seq_lock = threading.Lock()", src)
         self.assertIn("with _seq_lock:", src)
 
+    def test_tcp_transport_parses_concatenated_responses(self):
+        """Regression (#81610): TCP recv() can surface a delayed ack from a
+        previous in-flight call in the same buffer as the current response.
+        Naive json.loads() on the whole raw buffer raises ``Extra data``; the
+        template must parse each newline-terminated line independently and
+        return the last (current) response."""
+        src = generate_hermes_tools_module(["terminal"], transport="tcp")
+        # Behavioural check: exec the generated module in an isolated
+        # namespace and drive the real buffer-parse path with a genuine
+        # two-line concatenated buffer (delayed ack + current response).
+        # A textual marker like split("\\n") would not catch a regression
+        # that keeps the text but parses the wrong line.
+        ns = {}
+        exec(compile(src, "<generated>", "exec"), ns)
+        parse = ns["_parse_response"]
+        # First line: a delayed ack / older response from a prior in-flight
+        # call. Second line: the current response. Both newline-terminated.
+        current = {"output": "hello world", "exit_code": 0, "tool": "terminal"}
+        buf = (
+            json.dumps({"ack": True, "seq": 1}).encode()
+            + b"\n"
+            + json.dumps(current).encode()
+            + b"\n"
+        )
+        # Must return the LAST (current) object, not the stale ack, and must
+        # not raise json.JSONDecodeError from parsing the whole buffer.
+        self.assertEqual(parse(buf), current)
+        # Same shape as the old code produced for a single clean response.
+        self.assertEqual(parse(json.dumps(current).encode() + b"\n"), current)
+        # A string-wrapped JSON payload (server double-encoded result) still
+        # collapses to the inner object.
+        self.assertEqual(parse(json.dumps(json.dumps(current)).encode() + b"\n"), current)
+        # Empty / whitespace-only buffer must surface a clear error, not a
+        # confusing json.JSONDecodeError or silently an empty result.
+        with self.assertRaisesRegex(RuntimeError, "empty response"):
+            parse(b"\n\n   \n")
+        # A response whose final line is incomplete (no trailing newline yet)
+        # but is still valid JSON on its own must still parse.
+        self.assertEqual(parse(json.dumps(current).encode()), current)
+        # Naive json.loads on the raw concatenated buffer would blow up:
+        # confirm the fix is what makes the difference.
+        with self.assertRaises(json.JSONDecodeError):
+            json.loads(buf)  # "Extra data" — proves two objects concatenated
+
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):
     def test_execute_remote_uses_backend_temp_dir_for_sandbox(self):

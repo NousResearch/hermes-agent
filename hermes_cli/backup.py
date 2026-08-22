@@ -1326,6 +1326,51 @@ _QUICK_STATE_FILES = (
 # ``_QUICK_SNAPSHOTS_DIR`` lives with the exclusion rules at the top of the module.
 _QUICK_DEFAULT_KEEP = 20
 
+# File names of the databases Hermes owns.  Matched by name rather than by full
+# relative path: the same stores appear at different depths (non-root profiles
+# resolve outside HERMES_HOME, and each non-default Kanban board keeps its own
+# kanban.db under kanban/boards/<slug>/), and a Hermes database must stay
+# fail-closed wherever it lives.
+_KNOWN_HERMES_DB_NAMES = frozenset(
+    Path(entry).name for entry in _QUICK_STATE_FILES if entry.endswith(".db")
+)
+
+
+def _is_known_hermes_db(rel_path: Path) -> bool:
+    """True when *rel_path* names a database Hermes itself manages."""
+    return rel_path.name in _KNOWN_HERMES_DB_NAMES
+
+
+def _looks_like_sqlite(path: Path) -> bool:
+    """True unless *path* is positively identified as *not* SQLite.
+
+    Deliberately conservative: ``read_header_bytes_preopen`` refuses the read
+    and returns ``None`` when a live connection holds *path*, and that must not
+    be mistaken for "foreign file". Only a header we actually read, and which
+    lacks the magic bytes, downgrades a file off the SQLite backup path.
+    """
+    from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
+
+    head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
+    if head is None:
+        return True
+    return head.startswith(_SQLITE_HEADER)
+
+
+def _use_sqlite_backup_api(abs_path: Path, rel_path: Path) -> bool:
+    """True when *abs_path* should be copied through the SQLite backup API.
+
+    ``.db`` is not a reserved suffix. Unrelated files use it — the report in
+    #75724 was a Windows ``cversions.2.db`` cache blob copied into a Kanban
+    workspace — and routing one of those through ``sqlite3`` raises "file is
+    not a database", which used to abort and delete the entire archive. Hermes'
+    own databases are still matched by name so a corrupt one keeps failing
+    closed rather than being captured as an opaque blob.
+    """
+    if abs_path.suffix != ".db":
+        return False
+    return _is_known_hermes_db(rel_path) or _looks_like_sqlite(abs_path)
+
 
 def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
     home = hermes_home or get_hermes_home()
@@ -1996,7 +2041,16 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         ) as zf:
             for index, (abs_path, rel_path) in enumerate(files_to_add, 1):
                 try:
-                    if abs_path.suffix == ".db":
+                    if abs_path.suffix == ".db" and not _use_sqlite_backup_api(
+                        abs_path, rel_path
+                    ):
+                        logger.warning(
+                            "Full-zip backup: %s has a .db suffix but is not a "
+                            "SQLite database; archiving it as a regular file",
+                            rel_path,
+                        )
+                        zf.write(abs_path, arcname=str(rel_path))
+                    elif abs_path.suffix == ".db":
                         # Stage the snapshot alongside the output zip so that the
                         # temp file lives on the same filesystem.  The system
                         # default (/tmp) may be a small tmpfs that cannot hold

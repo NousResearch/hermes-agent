@@ -3697,7 +3697,11 @@ def _run_pre_update_backup(args) -> Optional[str]:
     elapsed = _time.monotonic() - t0
 
     if out_path is None:
-        print("  ⚠ Backup skipped (no files found or write failed); continuing update.")
+        print(
+            "  ⚠ No full pre-update backup was created (no files found or write "
+            "failed); there is no full rollback archive for this update."
+        )
+        print("  Continuing with update.")
         print()
         return snapshot_id
 

@@ -139,6 +139,7 @@ Slug: 2-4 words kebab-case from topic. Conflict: append `-YYYYMMDD-HHMMSS`.
 - Preserve source data faithfully — no summarization or rephrasing (but **strip any credentials, API keys, tokens, or secrets** before including in outputs)
 - Define learning objectives before structuring content
 - Structure for visual communication (headlines, labels, visual elements)
+- Honor the user's configured image generation backend: use the Hermes `image_generate` tool, not a scripted substitute
 
 ## Workflow
 
@@ -209,12 +210,13 @@ Save the assembled prompt to `prompts/infographic.md` using `write_file`.
 
 ### Step 6: Generate Image
 
-Use the `image_generate` tool with the assembled prompt from Step 5.
+**You MUST use** the Hermes `image_generate` tool with the assembled prompt from Step 5. This skill is designed to prompt the configured Hermes image-generation backend, not to silently replace the generation step with a handmade/scripted graphic.
 
 - Map aspect ratio to image_generate's format: `16:9` → `landscape`, `9:16` → `portrait`, `1:1` → `square`
 - For custom ratios, pick the closest named aspect
 - On failure, auto-retry once
 - Save the resulting image URL/path to the output directory
+- If exact, readable text is more important than illustration quality, explicitly tell the user that a deterministic HTML/SVG/Pillow overlay may be better before switching away from `image_generate`. Do not substitute a scripted infographic without saying so.
 
 ### Step 7: Output Summary
 
@@ -235,3 +237,4 @@ Report: topic, layout, style, aspect, language, output path, files created.
 3. **One message per section** — each infographic section should convey one clear concept. Overloading sections reduces readability.
 4. **Style consistency** — the style definition from the references file must be applied consistently across the entire infographic. Don't mix styles.
 5. **image_generate aspect ratios** — the tool only supports `landscape`, `portrait`, and `square`. Custom ratios like `3:4` should map to the nearest option (portrait in that case).
+6. **Do not silently substitute image generation**: this skill is designed to use the configured Hermes `image_generate` tool. A scripted or handmade infographic (HTML/SVG/Pillow) bypasses the user's chosen image backend. If text readability is a concern, tell the user before switching away from `image_generate`.

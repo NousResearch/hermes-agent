@@ -487,6 +487,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
+        # Photo burst batching (mirrors Telegram adapter pattern).
+        # WhatsApp has no media_group_id — a multi-photo "album" arrives as
+        # separate messages in quick succession. Without buffering, each
+        # photo fires its own handle_message() call and interrupts/replaces
+        # the in-flight turn from the prior photo, so only one photo's data
+        # survives into the reply. Buffer by session key and flush after a
+        # short quiet period so all photos merge into one MessageEvent.
+        self._media_batch_delay_seconds = self._coerce_float_extra(
+            "media_batch_delay_seconds", 1.2
+        )
+        self._pending_photo_batches: Dict[str, MessageEvent] = {}
+        self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
+
     def _coerce_float_extra(self, key: str, default: float) -> float:
         """Read a float from ``config.extra``, guarding against bad/non-finite values.
 
@@ -1350,6 +1363,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 asyncio.create_task(self._send_read_receipt(msg_data))
                                 if event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
+                                elif event.message_type == MessageType.PHOTO:
+                                    self._enqueue_photo_event(event)
                                 else:
                                     await self.handle_message(event)
             except asyncio.CancelledError:
@@ -1448,6 +1463,55 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
+
+    # ── Photo burst batching ────────────────────────────────────────
+
+    def _photo_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for photo burst batching (no media_group_id on WhatsApp)."""
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=event.source.profile,
+        )
+
+    def _enqueue_photo_event(self, event: MessageEvent) -> None:
+        """Merge photo events into a pending batch and (re)schedule the flush.
+
+        Each photo in a multi-image "album" arrives as its own message with
+        no shared grouping id, so we buffer by session and merge media into
+        one event, restarting the quiet-period timer on every new photo.
+        """
+        key = self._photo_batch_key(event)
+        existing = self._pending_photo_batches.get(key)
+        if existing is None:
+            self._pending_photo_batches[key] = event
+        else:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                existing.text = self._merge_caption(existing.text, event.text)
+
+        prior_task = self._pending_photo_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_photo_batch_tasks[key] = asyncio.create_task(
+            self._flush_photo_batch(key)
+        )
+
+    async def _flush_photo_batch(self, key: str) -> None:
+        """Wait for the quiet period then dispatch the merged photo burst."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._media_batch_delay_seconds)
+            event = self._pending_photo_batches.pop(key, None)
+            if not event:
+                return
+            await self.handle_message(event)
+        finally:
+            if self._pending_photo_batch_tasks.get(key) is current_task:
+                self._pending_photo_batch_tasks.pop(key, None)
 
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""

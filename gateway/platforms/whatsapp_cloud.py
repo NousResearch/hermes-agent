@@ -317,6 +317,21 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._accepted_count: int = 0
         self._rejected_signature_count: int = 0
 
+        # Photo burst batching. Meta's Cloud API has no album/media_group_id
+        # concept — a multi-photo send arrives as separate message objects
+        # (sometimes in the same webhook batch, sometimes across several
+        # webhook deliveries). Dispatching each straight to handle_message()
+        # makes every new photo interrupt/replace the in-flight turn from
+        # the previous one, so only one photo's data survives into the
+        # reply. Buffer by session key and flush after a short quiet period
+        # so all photos merge into a single MessageEvent (mirrors the
+        # Telegram and Baileys WhatsApp adapters' batching).
+        self._media_batch_delay_seconds: float = float(
+            extra.get("media_batch_delay_seconds", 1.2)
+        )
+        self._pending_photo_batches: Dict[str, MessageEvent] = {}
+        self._pending_photo_batch_tasks: Dict[str, "asyncio.Task"] = {}
+
         # One-shot flags for warnings that would otherwise spam the log.
         self._warned_no_ffmpeg: bool = False
 
@@ -1641,7 +1656,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         continue
                     self._accepted_count += 1
                     try:
-                        await self.handle_message(event)
+                        if event.message_type == MessageType.PHOTO:
+                            self._enqueue_photo_event(event)
+                        else:
+                            await self.handle_message(event)
                     except Exception:
                         # Dispatch errors must not bubble out — Meta would
                         # retry the whole batch, multiplying the bug.
@@ -1883,6 +1901,55 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # regular message. Could be a tap from a plugin-defined adapter
         # we don't know about; treating it as text is the safe default.
         return False
+
+    def _photo_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for photo burst batching (no album id on Cloud API)."""
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=event.source.profile,
+        )
+
+    def _enqueue_photo_event(self, event: MessageEvent) -> None:
+        """Merge photo events into a pending batch and (re)schedule the flush.
+
+        Multiple photos sent "together" arrive as separate message objects
+        with no shared grouping id. Buffer by session and merge media into
+        one event, restarting the quiet-period timer on every new photo.
+        """
+        key = self._photo_batch_key(event)
+        existing = self._pending_photo_batches.get(key)
+        if existing is None:
+            self._pending_photo_batches[key] = event
+        else:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                existing.text = self._merge_caption(existing.text, event.text)
+
+        prior_task = self._pending_photo_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_photo_batch_tasks[key] = asyncio.create_task(
+            self._flush_photo_batch(key)
+        )
+
+    async def _flush_photo_batch(self, key: str) -> None:
+        """Wait for the quiet period then dispatch the merged photo burst."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._media_batch_delay_seconds)
+            event = self._pending_photo_batches.pop(key, None)
+            if not event:
+                return
+            await self.handle_message(event)
+        except Exception:
+            logger.exception("[whatsapp_cloud] photo batch flush failed for key %s", key)
+        finally:
+            if self._pending_photo_batch_tasks.get(key) is current_task:
+                self._pending_photo_batch_tasks.pop(key, None)
 
     async def _build_message_event_from_cloud(
         self,

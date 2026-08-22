@@ -4344,6 +4344,14 @@ class AIAgent:
             extra={
             "current_tool": self._current_tool,
             "api_call_count": self._api_call_count,
+            # B3 per-child usage telemetry: surface the authoritative session
+            # token counters (maintained by the conversation loop per response,
+            # conversation_loop.py:4187+) so delegation manifests can report
+            # per-child tokens without a second accounting path.  getattr
+            # defaults keep summary construction working for partially
+            # initialized agents (tests, gateway paths).
+            "prompt_tokens": getattr(self, "session_prompt_tokens", 0) or 0,
+            "completion_tokens": getattr(self, "session_completion_tokens", 0) or 0,
             "max_iterations": self.max_iterations,
             "budget_used": self.iteration_budget.used,
             "budget_max": self.iteration_budget.max_total,

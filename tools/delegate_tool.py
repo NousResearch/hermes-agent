@@ -2423,6 +2423,22 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         )
 
 
+def _tokens_per_sec(completion_tokens: Any, duration_seconds: Any) -> float:
+    """B3 per-child usage telemetry: completion tokens per active second.
+
+    Defensive: non-numeric or non-positive duration yields 0.0 (never a
+    ZeroDivisionError), values coerced to int/float first.
+    """
+    try:
+        tokens = int(completion_tokens or 0)
+        duration = float(duration_seconds or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if duration <= 0:
+        return 0.0
+    return round(tokens / duration, 2)
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -2830,9 +2846,15 @@ def _run_single_child(
             # See #14726 — without this, 0-API-call hangs are black boxes.
             diagnostic_path: Optional[str] = None
             child_api_calls = 0
+            _summary_prompt_tokens = 0
+            _summary_completion_tokens = 0
             try:
                 _summary = child.get_activity_summary()
                 child_api_calls = int(_summary.get("api_call_count", 0) or 0)
+                _summary_prompt_tokens = int(_summary.get("prompt_tokens", 0) or 0)
+                _summary_completion_tokens = int(
+                    _summary.get("completion_tokens", 0) or 0
+                )
             except Exception:
                 pass
             if is_timeout and child_api_calls == 0:
@@ -2899,6 +2921,9 @@ def _run_single_child(
                 "exit_reason": "timeout" if is_timeout else "error",
                 "api_calls": child_api_calls,
                 "duration_seconds": duration,
+                "total_prompt_tokens": _summary_prompt_tokens,
+                "total_completion_tokens": _summary_completion_tokens,
+                "tokens_per_sec": _tokens_per_sec(_summary_completion_tokens, duration),
                 "timeout_seconds": child_timeout if is_timeout else None,
                 "timed_out_after_seconds": duration if is_timeout else None,
                 "timeout_phase": (
@@ -3080,12 +3105,27 @@ def _run_single_child(
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
 
+        # B3 per-child usage telemetry: surface per-child token totals plus a
+        # completion-tokens-per-second rate in every delegation manifest, so
+        # parents can judge spend and throughput without another source.
+        try:
+            _prompt_int = int(_input_tokens or 0)
+        except (TypeError, ValueError):
+            _prompt_int = 0
+        try:
+            _completion_int = int(_output_tokens or 0)
+        except (TypeError, ValueError):
+            _completion_int = 0
+
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
             "summary": summary,
             "api_calls": api_calls,
             "duration_seconds": duration,
+            "total_prompt_tokens": _prompt_int,
+            "total_completion_tokens": _completion_int,
+            "tokens_per_sec": _tokens_per_sec(_completion_int, duration),
             "model": _model if isinstance(_model, str) else None,
             "exit_reason": exit_reason,
             # Explicit, parent-visible truncation flag. A subagent that
@@ -4452,6 +4492,24 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
 
     if configured_base_url and not _is_native_sdk_provider:
+        # delegation.request_overrides: same semantics as the named-provider
+        # branch below (runtime.get("request_overrides")) — a dict merged into
+        # the child's API kwargs by the transport's profile path. Keys are
+        # top-level kwargs (e.g. service_tier); an "extra_body" sub-dict is
+        # merged into extra_body. This is how a direct-endpoint delegation
+        # (provider=custom) forwards OpenRouter routing hints such as
+        # extra_body.provider = {"sort": "throughput"} to its children —
+        # the child's CustomProfile does not emit provider preferences, and
+        # the parent-inheritance path is deliberately cleared when
+        # delegation.provider/base_url overrides the parent (see the
+        # provider-preference clearing in _build_child_agent).
+        configured_request_overrides = cfg.get("request_overrides")
+        request_overrides = (
+            dict(configured_request_overrides)
+            if isinstance(configured_request_overrides, dict)
+            else None
+        )
+
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This
@@ -4495,6 +4553,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "request_overrides": request_overrides,
         }
 
     if not configured_provider:

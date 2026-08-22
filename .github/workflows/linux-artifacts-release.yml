@@ -215,6 +215,10 @@ jobs:
           sudo lxd init --minimal
           sudo lxc network set lxdbr0 ipv4.address=10.100.0.1/24
           sudo lxc network set lxdbr0 ipv4.nat=true
+          # GH runners ship FORWARD policy DROP; without accepting forwarded
+          # packets, NATed container traffic never reaches the internet
+          sudo iptables -I FORWARD -i lxdbr0 -j ACCEPT
+          sudo iptables -I FORWARD -o lxdbr0 -m state --state RELATED,ESTABLISHED -j ACCEPT
           sudo usermod -aG lxd "$USER"
 
       - name: Setup Node

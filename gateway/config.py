@@ -2285,6 +2285,20 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     api_server_cors_origins = getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = getenv("API_SERVER_PORT")
     api_server_host = getenv("API_SERVER_HOST")
+    # ``API_SERVER_ENABLED`` is documented as the on/off toggle, but the block
+    # below only ever gated on a usable key and never read the env var — and a
+    # fresh install auto-generates a usable ``API_SERVER_KEY`` on first boot, so
+    # ``API_SERVER_ENABLED=false`` was effectively dead and the listener started
+    # anyway (#87856). Read it as a raw tri-state (unset / on / off) so an
+    # explicit ``false`` from the deployment env is honored as a fail-safe off
+    # switch, on par with an explicit ``enabled: false`` in config.yaml. An
+    # unset or unrecognized value keeps the historical key-based behavior.
+    _api_server_enabled_raw = _getenv("API_SERVER_ENABLED")
+    api_server_env_off = (
+        _api_server_enabled_raw is not None
+        and _api_server_enabled_raw.strip() != ""
+        and _coerce_bool(_api_server_enabled_raw, default=True) is False
+    )
     # Require a usable key: API_SERVER_ENABLED alone would load an
     # unauthenticated platform whose adapter refuses to start at connect()
     # anyway (startup guard in gateway/platforms/api_server.py), leaving the
@@ -2304,7 +2318,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         # later registry pass re-enables it), so this both consumes the flag and
         # avoids reading it twice, matching the pop convention used elsewhere.
         api_server_explicit = config.platforms[Platform.API_SERVER].extra.pop("_enabled_explicit", False)
-        if not api_server_explicit or config.platforms[Platform.API_SERVER].enabled:
+        if api_server_env_off:
+            # An explicit deployment off-switch wins over the key-based
+            # force-enable (and over a config.yaml ``enabled: true``): a user
+            # who sets ``API_SERVER_ENABLED=false`` must get no listener even
+            # though a usable key is present.
+            config.platforms[Platform.API_SERVER].enabled = False
+        elif not api_server_explicit or config.platforms[Platform.API_SERVER].enabled:
             config.platforms[Platform.API_SERVER].enabled = True
         if api_server_key:
             config.platforms[Platform.API_SERVER].extra["key"] = api_server_key

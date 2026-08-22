@@ -41,6 +41,19 @@ DEFAULT_CONFIG = {
         # most-recent one. Set false to restore the old latest-session
         # behavior everywhere.
         "terminal_continue": True,
+        # Write every finished session to Markdown automatically, so a transcript
+        # reaches a notes vault (Obsidian, Logseq, ...) without anyone
+        # remembering to run `hermes sessions export`. Off by default:
+        # persisting full conversations to disk is a privacy-relevant side
+        # effect that has to be opted into, never inherited.
+        "auto_export": False,
+        # Destination for auto_export. Empty means $HERMES_HOME/session-exports
+        # — the same directory `hermes sessions export` writes to by default,
+        # so manual and automatic exports share one manifest instead of
+        # drifting into two half-complete sets.
+        "auto_export_dir": "",
+        # "md" or "qmd" — the formats `hermes sessions export` accepts.
+        "auto_export_format": "md",
     },
     "agent": {
         # Unlimited by default. The agent turn cap caused more problems than

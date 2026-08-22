@@ -58,6 +58,17 @@ def finalize_session(**kwargs: Any) -> List[Any]:
         except Exception:
             logger.warning("Core Relay session finalization failed", exc_info=True)
 
+        # Opt-in Markdown export of the finished conversation. Runs after the
+        # Relay close so a slow disk write can never delay releasing the
+        # conversation, and swallows its own errors: a failed export must not
+        # turn into a failed shutdown.
+        try:
+            from hermes_cli.session_auto_export import export_finalized_session
+
+            export_finalized_session(session_id)
+        except Exception:
+            logger.warning("Session auto-export failed", exc_info=True)
+
     from hermes_cli import plugins
 
     return plugins.invoke_hook("on_session_finalize", **kwargs)

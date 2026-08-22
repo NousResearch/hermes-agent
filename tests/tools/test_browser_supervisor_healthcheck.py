@@ -68,11 +68,20 @@ def stub_cdp_supervisor(monkeypatch):
     created: list[SimpleNamespace] = []
 
     class _StubSupervisor:
-        def __init__(self, *, task_id, cdp_url, dialog_policy, dialog_timeout_s):
+        def __init__(
+            self,
+            *,
+            task_id,
+            cdp_url,
+            dialog_policy,
+            dialog_timeout_s,
+            viewport=None,
+        ):
             self.task_id = task_id
             self.cdp_url = cdp_url
             self.dialog_policy = dialog_policy
             self.dialog_timeout_s = dialog_timeout_s
+            self.viewport = dict(viewport or {})
             # Healthy by default — real thread, running "loop".
             hold = threading.Event()
             self._thread = threading.Thread(target=hold.wait, daemon=True)

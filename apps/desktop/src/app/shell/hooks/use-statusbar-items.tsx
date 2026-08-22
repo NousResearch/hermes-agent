@@ -48,12 +48,40 @@ import {
   $updateStatus,
   openUpdateOverlayFor
 } from '@/store/updates'
-import type { StatusResponse, UsageStats } from '@/types/hermes'
+import type { ContextBreakdown, StatusResponse, UsageStats } from '@/types/hermes'
 
 import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
 
 const EMPTY_USAGE: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
+
+/**
+ * Pick which usage figure the context gauge should paint.
+ *
+ * While a turn is in flight the backend streams live ``session.usage``
+ * snapshots (tui_gateway/server.py `_start_usage_ticker`, 1s interval) and
+ * the pre-turn breakdown would freeze the bar at the turn-start value — the
+ * "context meter frozen during streaming, jumps at turn end" bug (#70871,
+ * named in the #87903 discussion). Streamed usage wins mid-turn. Only when
+ * the turn is idle does the breakdown win: a resumed session's streamed
+ * store has no context fields, and the idle breakdown answers for it.
+ */
+export function resolveContextGaugeUsage(opts: {
+  busy: boolean
+  breakdown: ContextBreakdown | null | undefined
+  current: UsageStats
+}): UsageStats {
+  const { busy, breakdown, current } = opts
+
+  return !busy && breakdown
+    ? {
+        ...current,
+        context_max: breakdown.context_max,
+        context_percent: breakdown.context_percent,
+        context_used: breakdown.context_used
+      }
+    : current
+}
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
@@ -244,24 +272,14 @@ export function useStatusbarItems({
     sessionId: activeSessionId
   })
 
-  // The breakdown wins whenever we have one, for two reasons: it reports the
-  // MEASURED occupancy once the backend has it (falling back to the estimate
-  // only before that), and it is keyed to the session it describes. The global
-  // `$currentUsage` is neither — a resumed session reports no context fields,
-  // and the store merges rather than replaces, so the PREVIOUS session's gauge
-  // numbers survive the switch. Mid-turn there's no breakdown by design and
-  // the streamed usage carries the gauge.
+  // NOTE: the original "breakdown wins whenever we have one" is now gated on
+  // `busy` — the breakdown could report MEASURED occupancy (or an estimate)
+  // keyed to the session it describes, but it is a PRE-TURN value once a turn
+  // is streaming, and overlaying it would freeze the live streamed gauge.
+  // Mid-turn the streamed usage carries the gauge (see resolveContextGaugeUsage).
   const gaugeUsage = useMemo<UsageStats>(
-    () =>
-      contextBreakdown
-        ? {
-            ...currentUsage,
-            context_max: contextBreakdown.context_max,
-            context_percent: contextBreakdown.context_percent,
-            context_used: contextBreakdown.context_used
-          }
-        : currentUsage,
-    [contextBreakdown, currentUsage]
+    () => resolveContextGaugeUsage({ busy, breakdown: contextBreakdown, current: currentUsage }),
+    [busy, contextBreakdown, currentUsage]
   )
 
   const contextUsage = useMemo(() => usageContextLabel(gaugeUsage), [gaugeUsage])

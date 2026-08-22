@@ -8560,7 +8560,7 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     "feishu": {
         "name": "Feishu / Lark",
         "description": "Use Hermes inside Feishu / Lark.",
-        "docs_url": "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/intro",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/feishu/",
         "env_vars": (
             "FEISHU_APP_ID",
             "FEISHU_APP_SECRET",

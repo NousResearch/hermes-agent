@@ -1317,6 +1317,21 @@ class TestWebServerEndpoints:
         assert "GATEWAY_PROXY_URL" in _MESSAGING_KEYS_PAGE_KEYS
 
 
+    def test_feishu_setup_guide_points_to_hermes_docs(self):
+        """Keep the Feishu setup link on the maintained Hermes guide.
+
+        The former Feishu API reference URL was removed upstream and rendered
+        as a 404 from the Desktop Messaging page.
+        """
+        from hermes_cli.web_server import _build_catalog_entry
+
+        feishu = _build_catalog_entry("feishu")
+
+        assert feishu["docs_url"] == (
+            "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/feishu/"
+        )
+
+
 
     def test_model_set_maps_unknown_vendor_to_aggregator(self, monkeypatch):
         """A bare vendor name from analytics rows (no billing_provider) is not

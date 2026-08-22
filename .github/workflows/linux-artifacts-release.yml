@@ -207,7 +207,11 @@ jobs:
 
       - name: Install Snapcraft
         # snapcraft CLI from the snap store (snapcore/action-install does not exist)
-        run: sudo snap install snapcraft --classic
+        run: |
+          sudo snap install snapcraft --classic
+          # wait for snapd seeding to finish — installing content snaps
+          # (mesa-2404 etc.) right after boot races with snapd refresh
+          sudo snap wait system seed.loaded || true
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

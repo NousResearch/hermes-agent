@@ -674,6 +674,14 @@ class PlatformConfig:
     # Telegram, Matrix, …) ignore it.
     typing_status_text: Optional[str] = None
 
+    # Whether to echo the 🎙️ STT transcript for inbound voice messages on this
+    # platform. Overrides the global ``stt_echo_transcripts`` default for this
+    # platform when set; ``None`` (default) defers to the global setting. Set
+    # ``platforms.<platform>.show_stt_transcription: false`` to silence the
+    # transcript echo here while keeping it enabled on other platforms.
+    show_stt_transcription: Optional[bool] = None
+
+
     # Per-channel model/provider/system_prompt overrides (channel_id -> ChannelOverride)
     channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
 
@@ -690,6 +698,8 @@ class PlatformConfig:
         }
         if self.typing_status_text is not None:
             result["typing_status_text"] = self.typing_status_text
+        if self.show_stt_transcription is not None:
+            result["show_stt_transcription"] = self.show_stt_transcription
         if self.token:
             result["token"] = self.token
         if self.api_key:
@@ -731,6 +741,13 @@ class PlatformConfig:
         if _typing_text is None:
             _typing_text = extra.get("typing_status_text")
 
+        # show_stt_transcription mirrors gateway_restart_notification /
+        # typing_indicator: it may arrive top-level or bridged into extra.
+        _show_stt = data.get("show_stt_transcription")
+        if _show_stt is None:
+            _show_stt = extra.get("show_stt_transcription")
+
+
         channel_overrides: Dict[str, ChannelOverride] = {}
         raw_overrides = data.get("channel_overrides") or {}
         if isinstance(raw_overrides, dict):
@@ -747,6 +764,7 @@ class PlatformConfig:
             gateway_restart_notification=_coerce_bool(_grn, True),
             typing_indicator=_coerce_bool(_typing, True),
             typing_status_text=_typing_text,
+            show_stt_transcription=_coerce_bool(_show_stt, None),
             channel_overrides=channel_overrides,
             extra=extra,
         )
@@ -957,7 +975,9 @@ class GatewayConfig:
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
-    stt_echo_transcripts: bool = True  # Whether to echo raw STT transcripts back to the user
+    # Whether to echo raw STT transcripts back to the user. Global default;
+    # a per-platform override can be set with ``platforms.<platform>.show_stt_transcription``.
+    stt_echo_transcripts: bool = True
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available

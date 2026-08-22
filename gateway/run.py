@@ -18372,7 +18372,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # when configured. Lets users verify STT quality in real-time,
                 # while allowing quiet STT for users who only want the agent to
                 # receive the transcription.
-                if _successful_transcripts and self._should_echo_stt_transcripts():
+                if _successful_transcripts and self._should_echo_stt_transcripts(source.platform):
                     _echo_adapter = self._adapter_for_source(source)
                     _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     if _echo_adapter:
@@ -22215,9 +22215,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return True
 
-    def _should_echo_stt_transcripts(self) -> bool:
-        """Return whether inbound voice/STT transcripts should be echoed to chat."""
-        return bool(getattr(self.config, "stt_echo_transcripts", True))
+    def _should_echo_stt_transcripts(self, platform=None) -> bool:
+        """Return whether inbound voice/STT transcripts should be echoed to chat.
+
+        The global ``stt_echo_transcripts`` default applies unless the given
+        platform configures ``show_stt_transcription`` (``PlatformConfig``),
+        which overrides it for that platform. ``platform`` may be a
+        ``Platform`` enum or a string platform id; it is normalized so a
+        per-platform override can never silently no-op on a key-type mismatch.
+        """
+        global_default = bool(getattr(self.config, "stt_echo_transcripts", True))
+        if platform is None:
+            return global_default
+        if not isinstance(platform, Platform):
+            try:
+                platform = Platform(platform)
+            except (TypeError, ValueError):
+                return global_default
+        pc = getattr(self.config, "platforms", {}).get(platform)
+        if pc is not None:
+            override = getattr(pc, "show_stt_transcription", None)
+            if override is not None:
+                return bool(override)
+        return global_default
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
@@ -24987,7 +25007,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if (
             not transcripts
-            or not self._should_echo_stt_transcripts()
+            or not self._should_echo_stt_transcripts(getattr(source, "platform", None))
             or adapter is None
         ):
             return

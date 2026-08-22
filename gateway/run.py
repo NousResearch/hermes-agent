@@ -4404,8 +4404,9 @@ class TurnRunner:
         if not ctx.tool_progress_enabled:
             return
 
-        # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
-        if event_type not in {"tool.started",}:
+        # Only act on visible progress events (ignore tool.completed,
+        # reasoning.available, etc.)
+        if event_type not in {"tool.started", "subagent.start"}:
             return
 
         # Never render a progress bubble for the clarify tool.  The
@@ -4434,6 +4435,35 @@ class TurnRunner:
                 return
         except Exception:
             pass
+
+        if event_type == "subagent.start":
+            subagent_label = "Subagent"
+            task_index = kwargs.get("task_index")
+            task_count = kwargs.get("task_count")
+            if (
+                isinstance(task_index, int)
+                and isinstance(task_count, int)
+                and task_count > 1
+            ):
+                subagent_label = f"Subagent {task_index + 1}/{task_count}"
+            dedup_key = (
+                "subagent.start",
+                kwargs.get("subagent_id"),
+                task_index,
+                preview,
+            )
+            if ctx.progress_mode == "new" and dedup_key == ctx.last_tool[0]:
+                return
+            ctx.last_tool[0] = dedup_key
+            model = (kwargs.get("model") or "").strip()
+            msg = f"🤖 {subagent_label}"
+            if preview:
+                msg += f": \"{preview}\""
+            if model:
+                msg += f"\nModel: `{model}`"
+            ctx.last_was_terminal_block[0] = False
+            ctx.progress_queue.put(msg)
+            return
 
         # "new" mode: only report when tool changes
         if ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]:

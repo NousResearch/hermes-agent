@@ -315,6 +315,7 @@ class ThinkingAgent:
     thinking_progress is enabled but tool_progress is off.
     """
 
+
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
@@ -323,6 +324,61 @@ class ThinkingAgent:
         cb = self.tool_progress_callback
         if cb is not None:
             cb("_thinking", "weighing the options here")
+            time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class SubagentProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb(
+                "subagent.start",
+                preview="Audit the codebase",
+                model="claude-sonnet-4-6",
+                task_index=0,
+                task_count=1,
+            )
+            time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class TwoSubagentProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb(
+                "subagent.start",
+                preview="Audit gateway progress",
+                model="claude-sonnet-4-6",
+                task_index=0,
+                task_count=2,
+                subagent_id="child-a",
+            )
+            cb(
+                "subagent.start",
+                preview="Audit fallback restore",
+                model="claude-sonnet-4-6",
+                task_index=1,
+                task_count=2,
+                subagent_id="child-b",
+            )
             time.sleep(0.35)
         return {
             "final_response": "done",
@@ -478,6 +534,218 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == [
+        {
+            "chat_id": "-1001",
+            "content": '💻 Running pwd',
+            "reply_to": None,
+            "metadata": {"thread_id": "17585"},
+        }
+    ]
+    assert adapter.edits
+    assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_edits_keep_originating_topic_metadata(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = MetadataEditProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-progress-edit-topic",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.edits
+    assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.edits)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_shows_subagent_model(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = SubagentProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-subagent",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert "Subagent" in adapter.sent[0]["content"]
+    assert "Audit the codebase" in adapter.sent[0]["content"]
+    assert "claude-sonnet-4-6" in adapter.sent[0]["content"]
+    assert adapter.sent[0]["metadata"] == {"thread_id": "17585"}
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_shows_each_subagent_in_new_mode(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "new")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TwoSubagentProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-subagent-new-mode",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    assert result["final_response"] == "done"
+    progress_text = "\n".join(
+        [call["content"] for call in adapter.sent]
+        + [call["content"] for call in adapter.edits]
+    )
+    assert progress_text.count("Subagent 1/2") >= 1
+    assert "Audit gateway progress" in progress_text
+    assert progress_text.count("Subagent 2/2") >= 1
+    assert "Audit fallback restore" in progress_text
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(monkeypatch, tmp_path):
+    """Telegram DM progress must not reuse event message id as thread metadata."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-2",
+        session_key="agent:main:telegram:dm:12345",
+        event_message_id="777",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert adapter.sent[0]["metadata"] is None
+    assert all(call["metadata"] is None for call in adapter.typing)
 
 
 @pytest.mark.asyncio

@@ -1080,12 +1080,24 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     return None
 
 
+def claude_code_credentials_path() -> Path:
+    """Location Claude Code CLI writes its shared OAuth credentials file.
+
+    This file is not profile-owned: every Hermes profile's credential pool
+    reads and writes the *same* path, so cross-profile refresh races on a
+    ``claude_code`` pool entry must be serialized against this exact path
+    (see ``CredentialPool._claude_code_credentials_lock`` in
+    ``agent/credential_pool.py``).
+    """
+    return Path.home() / ".claude" / ".credentials.json"
+
+
 def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
     """Read Claude Code OAuth credentials from ~/.claude/.credentials.json.
 
     Returns dict with {accessToken, refreshToken?, expiresAt?, source} or None.
     """
-    cred_path = Path.home() / ".claude" / ".credentials.json"
+    cred_path = claude_code_credentials_path()
     if not cred_path.exists():
         return None
     try:
@@ -1294,7 +1306,7 @@ def _write_claude_code_credentials(
     as valid.  Claude Code >=2.1.81 gates on the presence of ``"user:inference"``
     in the stored scopes before it will use the token.
     """
-    cred_path = Path.home() / ".claude" / ".credentials.json"
+    cred_path = claude_code_credentials_path()
     try:
         # Read existing file to preserve other fields
         existing = {}

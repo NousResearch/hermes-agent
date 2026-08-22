@@ -904,6 +904,49 @@ class CredentialPool:
             logger.debug("Failed to sync from credentials file: %s", exc)
         return entry
 
+    def _sync_anthropic_entry_from_pool_store(
+        self, entry: PooledCredential
+    ) -> PooledCredential:
+        """Adopt an Anthropic token pair rotated by another pool instance.
+
+        Unlike ``_sync_anthropic_entry_from_credentials_file`` (which only
+        helps ``entry.source == "claude_code"`` by re-reading
+        ``~/.claude/.credentials.json``), this re-reads the exact persisted
+        row from the credential-pool store itself
+        (``~/.hermes/auth.json`` / profile equivalent), so it works for
+        every Anthropic source — ``claude_code``, ``hermes_pkce``, and
+        dashboard-issued ``manual:dashboard_pkce`` entries alike. Called
+        while the shared cross-process auth-store lock is held, mirroring
+        ``_sync_xai_oauth_entry_from_pool_store``.
+        """
+        if self.provider != "anthropic":
+            return entry
+        try:
+            persisted = next(
+                (
+                    payload
+                    for payload in read_credential_pool(self.provider)
+                    if isinstance(payload, dict) and payload.get("id") == entry.id
+                ),
+                None,
+            )
+            if not isinstance(persisted, dict):
+                return entry
+            stored = PooledCredential.from_dict(self.provider, persisted)
+            if (
+                stored.access_token != entry.access_token
+                or stored.refresh_token != entry.refresh_token
+            ):
+                logger.debug(
+                    "Pool entry %s: adopting Anthropic OAuth tokens rotated by another pool instance",
+                    entry.id,
+                )
+                self._replace_entry(entry, stored)
+                return stored
+        except Exception as exc:
+            logger.debug("Failed to sync Anthropic OAuth entry from credential pool: %s", exc)
+        return entry
+
     def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync a Codex device_code pool entry from auth.json if tokens differ.
 
@@ -1319,11 +1362,22 @@ class CredentialPool:
         # resolve_codex_runtime_credentials()).  When a waiter finally acquires
         # the lock, the in-lock re-sync below picks up the rotated token the
         # winner persisted and skips the POST.
-        if self.provider in ("openai-codex", "xai-oauth"):
+        # Anthropic's OAuth refresh tokens are single-use too (see
+        # agent/anthropic_adapter.py::_refresh_oauth_token), so the same
+        # cross-process serialization Codex/xAI get is required here.
+        # Previously "anthropic" was excluded from this tuple: two Hermes
+        # processes racing to refresh the same stale token would both POST,
+        # the loser got invalid_grant, and — for any source other than
+        # "claude_code" (hermes_pkce, dashboard-issued manual entries) —
+        # there was no recovery path at all, so the loser was marked
+        # exhausted despite a valid token existing on disk from the winner.
+        if self.provider in ("openai-codex", "xai-oauth", "anthropic"):
             sync_entry = (
                 self._sync_codex_entry_from_auth_store
                 if self.provider == "openai-codex"
                 else self._sync_xai_oauth_entry_from_pool_store
+                if self.provider == "xai-oauth"
+                else self._sync_anthropic_entry_from_pool_store
             )
             with _auth_store_lock(
                 timeout_seconds=self._single_use_refresh_lock_timeout()
@@ -1340,8 +1394,45 @@ class CredentialPool:
                     or synced.refresh_token != entry.refresh_token
                 ):
                     return synced
+                if self.provider == "anthropic" and synced.source == "claude_code":
+                    # claude_code entries are NOT profile-owned: the refresh
+                    # token lives in a single shared ~/.claude/.credentials.json
+                    # (or macOS Keychain) that every Hermes profile's pool
+                    # reads from. The profile-scoped lock above only protects
+                    # THIS profile's auth.json, so two different profiles (or
+                    # a fleet worker + a CLI session) racing to refresh the
+                    # same shared token would still both POST it. Take the
+                    # dedicated shared-file lock (inner, per the ordering
+                    # invariant documented on ``_auth_store_lock``) so the
+                    # whole sync -> POST -> write-back sequence for this
+                    # source is atomic across profiles too, not just within
+                    # one. This does not (and cannot) protect against the
+                    # official `claude` CLI itself rotating the token
+                    # out-of-band — that race is handled by the existing
+                    # sync-and-retry-once fallback in ``_refresh_entry_impl``.
+                    with self._claude_code_credentials_lock():
+                        synced = self._sync_anthropic_entry_from_credentials_file(synced)
+                        if synced.refresh_token != entry.refresh_token:
+                            return synced
+                        return self._refresh_entry_impl(synced, force=force)
                 return self._refresh_entry_impl(synced, force=force)
         return self._refresh_entry_impl(entry, force=force)
+
+    def _claude_code_credentials_lock(self):
+        """Cross-process lock over the shared claude_code credentials file.
+
+        Distinct from the per-profile ``_auth_store_lock()`` above: this one
+        is keyed to ``claude_code_credentials_path()`` itself, so it
+        serializes every profile (and every Hermes process) that might
+        refresh a ``claude_code``-sourced Anthropic entry, not just callers
+        sharing one profile's ``auth.json``.
+        """
+        from agent.anthropic_adapter import claude_code_credentials_path
+
+        return _auth_store_lock(
+            timeout_seconds=self._single_use_refresh_lock_timeout(),
+            target_path=claude_code_credentials_path(),
+        )
 
     def _single_use_refresh_lock_timeout(self) -> float:
         """Lock timeout for single-use-refresh-token providers.
@@ -1355,6 +1446,8 @@ class CredentialPool:
             "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS"
             if self.provider == "openai-codex"
             else "HERMES_XAI_REFRESH_TIMEOUT_SECONDS"
+            if self.provider == "xai-oauth"
+            else "HERMES_ANTHROPIC_REFRESH_TIMEOUT_SECONDS"
         )
         refresh_timeout_seconds = auth_mod.env_float(env_var, 20)
         return max(
@@ -1481,6 +1574,31 @@ class CredentialPool:
                     # Credentials file had a valid (non-expired) token — use it directly
                     logger.debug("Credentials file has valid token, using without refresh")
                     return synced
+            elif self.provider == "anthropic":
+                # Backstop for non-claude_code sources (hermes_pkce,
+                # manual:dashboard_pkce): the in-lock pre-check in
+                # _refresh_entry() should already have adopted a winner's
+                # rotated token before this POST was even attempted, but if
+                # the failure still happened (e.g. the winner persisted
+                # between our pre-check and our POST), re-read the pool
+                # store once more before giving up.
+                synced = self._sync_anthropic_entry_from_pool_store(entry)
+                if synced.refresh_token != entry.refresh_token:
+                    logger.debug(
+                        "Anthropic OAuth refresh failed but pool store has newer tokens — adopting"
+                    )
+                    updated = replace(
+                        synced,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(synced, updated)
+                    self._persist()
+                    return updated
             # For xai-oauth: same race as nous — another process may have
             # consumed the refresh token between our proactive sync and the
             # HTTP call.  Re-check auth.json and adopt the fresh tokens if

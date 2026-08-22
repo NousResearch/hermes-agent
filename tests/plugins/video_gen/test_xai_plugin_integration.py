@@ -180,3 +180,51 @@ class TestXAIClamping:
         provider, captured = xai_provider
         provider.generate("x", aspect_ratio="21:9")
         assert _last_post(captured)["json"]["aspect_ratio"] == "16:9"
+
+
+class TestXAIResolution:
+    """1080p is model-gated on xAI: 1.5 supports it, reference-to-video does not."""
+
+    def test_1080p_passes_through_for_image_to_video(self, xai_provider):
+        provider, captured = xai_provider
+        provider.generate(
+            "animate this",
+            image_url="https://example.com/cat.png",
+            resolution="1080p",
+        )
+        payload = _last_post(captured)["json"]
+        assert payload["model"] == "grok-imagine-video-1.5"
+        assert payload["resolution"] == "1080p"
+
+    def test_1080p_passes_through_for_explicit_1_5_text_to_video(self, xai_provider):
+        provider, captured = xai_provider
+        provider.generate(
+            "a sunlit meadow",
+            model="grok-imagine-video-1.5",
+            _model_override_explicit=True,
+            resolution="1080p",
+        )
+        payload = _last_post(captured)["json"]
+        assert payload["model"] == "grok-imagine-video-1.5"
+        assert payload["resolution"] == "1080p"
+
+    def test_1080p_clamped_to_720p_for_reference_to_video(self, xai_provider):
+        """xAI caps reference-to-video at 720p; asking for 1080p must not leak out."""
+        provider, captured = xai_provider
+        provider.generate(
+            "keep this character",
+            reference_image_urls=["https://example.com/a.png"],
+            resolution="1080p",
+        )
+        payload = _last_post(captured)["json"]
+        assert payload["resolution"] == "720p"
+
+    def test_unknown_resolution_still_falls_back_to_default(self, xai_provider):
+        provider, captured = xai_provider
+        provider.generate("a dog on a skateboard", resolution="4k")
+        payload = _last_post(captured)["json"]
+        assert payload["resolution"] == "720p"
+
+    def test_capabilities_advertise_1080p(self, xai_provider):
+        provider, _ = xai_provider
+        assert "1080p" in provider.capabilities()["resolutions"]

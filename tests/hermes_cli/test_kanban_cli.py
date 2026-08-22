@@ -29,6 +29,16 @@ def kanban_home(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("branch", ["bad..name", "bad~name", "bad^name"])
+def test_parse_branch_flag_rejects_invalid_git_branch_name(branch):
+    with pytest.raises(argparse.ArgumentTypeError, match="invalid branch name"):
+        kc._parse_branch_flag(branch)
+
+
+def test_parse_branch_flag_accepts_valid_git_branch_name():
+    assert kc._parse_branch_flag("feature/kanban-fix") == "feature/kanban-fix"
+
+
 
 
 

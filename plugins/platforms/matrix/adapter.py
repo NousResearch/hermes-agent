@@ -62,6 +62,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 
@@ -3541,6 +3542,14 @@ class MatrixAdapter(BasePlatformAdapter):
             # top-level fields. Mirror them so matrix matches signal/slack.
             user_id=sender,
             user_name=display_name,
+            # Pass the Matrix origin_server_ts (seconds) as the event
+            # timestamp so downstream consumers (session persistence,
+            # cron feedback bridges, debugging) see when the user
+            # actually sent the message — not when the adapter processed
+            # it.  Without this, MessageEvent falls back to
+            # datetime.now() at construction, losing the original
+            # server-side timestamp.
+            timestamp=datetime.fromtimestamp(event_ts, tz=timezone.utc) if event_ts else datetime.now(tz=timezone.utc),
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -3774,6 +3783,9 @@ class MatrixAdapter(BasePlatformAdapter):
             reply_to_author_name=reply_to_author_name,
             user_id=sender,
             user_name=display_name,
+            # Pass the Matrix origin_server_ts (seconds) as the event
+            # timestamp — see _handle_text_message for rationale.
+            timestamp=datetime.fromtimestamp(event_ts, tz=timezone.utc) if event_ts else datetime.now(tz=timezone.utc),
         )
 
         await self.handle_message(msg_event)

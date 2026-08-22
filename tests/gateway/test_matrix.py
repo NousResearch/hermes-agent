@@ -471,7 +471,7 @@ class TestMatrixBangCommandAlias:
         self.adapter._background_read_receipt = MagicMock()
         self.adapter._text_batch_delay_seconds = 0
 
-    async def _dispatch_text(self, body: str, *, is_dm: bool = True):
+    async def _dispatch_text(self, body: str, *, is_dm: bool = True, event_ts: float = 0.0):
         captured_event = None
         self.adapter._is_dm_room = AsyncMock(return_value=is_dm)
         self.adapter._require_mention = True
@@ -486,7 +486,7 @@ class TestMatrixBangCommandAlias:
             room_id="!room:example.org",
             sender="@alice:example.org",
             event_id="$matrix-command-test",
-            event_ts=0.0,
+            event_ts=event_ts,
             source_content={"msgtype": "m.text", "body": body},
             relates_to={},
         )
@@ -577,6 +577,42 @@ class TestMatrixBangCommandAlias:
         assert captured_event is not None
         assert captured_event.text == "/model"
         assert captured_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_text_message_preserves_event_ts_as_timestamp(self):
+        """The Matrix adapter must pass origin_server_ts (event_ts) to the
+        MessageEvent timestamp field, not fall back to datetime.now().
+
+        Regression test: event_ts was available in _handle_text_message but
+        never passed to MessageEvent, so downstream consumers (session
+        persistence, cron feedback bridges) saw the adapter processing time
+        instead of when the user actually sent the message.
+        """
+        from datetime import datetime, timezone
+
+        # Use a fixed epoch: 2026-01-15 09:30:00 UTC = 1768481400.0
+        fixed_ts = 1768481400.0
+        expected_dt = datetime.fromtimestamp(fixed_ts, tz=timezone.utc)
+
+        captured_event = await self._dispatch_text(
+            "hello world", event_ts=fixed_ts
+        )
+
+        assert captured_event is not None
+        assert captured_event.timestamp == expected_dt
+
+    @pytest.mark.asyncio
+    async def test_text_message_falls_back_to_now_when_no_event_ts(self):
+        """When event_ts is 0.0 or falsy, the adapter should fall back to
+        datetime.now() rather than producing a 1970 epoch timestamp."""
+        captured_event = await self._dispatch_text(
+            "hello world", event_ts=0.0
+        )
+
+        assert captured_event is not None
+        # Should be a recent timestamp, not epoch
+        from datetime import datetime, timezone
+        assert captured_event.timestamp.year >= 2025
 
 
 # ---------------------------------------------------------------------------

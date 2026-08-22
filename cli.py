@@ -8738,9 +8738,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         kept so the session still opens (the first turn surfaces the auth
         error instead of the resume dying).
 
-        Skips when the session has no model recorded or when the CLI was
-        launched with an explicit ``-m`` override (user intent wins).
+        Skips when ``resume.restore_model`` is disabled in config.yaml, when the
+        session has no model recorded, or when the CLI was launched with an
+        explicit ``-m`` override (user intent wins).
         """
+        resume_cfg = CLI_CONFIG.get("resume", {})
+        if isinstance(resume_cfg, dict):
+            if not resume_cfg.get("restore_model", True):
+                return
+        elif resume_cfg is False:
+            return
+
         stored_model = (session_meta or {}).get("model")
         if not stored_model:
             return

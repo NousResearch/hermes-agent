@@ -95,6 +95,44 @@ def test_restore_session_model_no_stored_model_is_noop():
     assert stub.model == "ambient-model"
 
 
+def test_restore_session_model_disabled_by_config_preserves_ambient_model(monkeypatch):
+    stub = _make_stub(model="config-default-model")
+    monkeypatch.setitem(cli_mod.CLI_CONFIG, "resume", {"restore_model": False})
+    stub._restore_session_model(_row(model="session-stored-model"))
+    assert stub.model == "config-default-model"
+
+
+def test_restore_session_model_enabled_by_config_restores_model(monkeypatch):
+    stub = _make_stub(model="config-default-model")
+    monkeypatch.setitem(cli_mod.CLI_CONFIG, "resume", {"restore_model": True})
+    stub._restore_session_model(_row(model="session-stored-model"))
+    assert stub.model == "session-stored-model"
+
+
+@pytest.mark.parametrize(
+    "resume_cfg,expected",
+    [
+        ({"restore_model": False}, "config-default-model"),  # documented opt-out
+        ({"restore_model": True}, "session-stored-model"),   # documented opt-in
+        ({}, "session-stored-model"),                        # section present, key absent
+        (False, "config-default-model"),                     # bare `resume: false`
+        (True, "session-stored-model"),                      # bare `resume: true`
+        (None, "session-stored-model"),                      # bare `resume:` -> default
+    ],
+)
+def test_restore_session_model_config_shapes(monkeypatch, resume_cfg, expected):
+    """Pin every shape a user can write, including the scalar shorthands.
+
+    The scalar branch (`resume: false`) and the null case are easy to
+    "simplify" away, and only the dict shapes were covered — losing either
+    would silently change what a bare key does.
+    """
+    stub = _make_stub(model="config-default-model")
+    monkeypatch.setitem(cli_mod.CLI_CONFIG, "resume", resume_cfg)
+    stub._restore_session_model(_row(model="session-stored-model"))
+    assert stub.model == expected
+
+
 def test_restore_session_model_matching_state_is_silent_noop():
     notes = []
     stub = _make_stub(model="glm-4.7", provider="custom:feather",

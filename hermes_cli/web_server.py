@@ -1181,6 +1181,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "type": "boolean",
         "description": "Run the local browser in headed mode (visible window). Also keeps the window open between turns; idle sessions are still reaped after browser.inactivity_timeout.",
     },
+    "resume.restore_model": {
+        "type": "boolean",
+        "description": "Restore the session-stored model on resume (--resume, -c, /resume) rather than falling back to the current config default model.",
+    },
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
@@ -1232,6 +1236,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # `session.terminal_continue` is the only schema-surfaced session field —
     # fold it into general rather than spawning a one-field orphan category.
     "session": "general",
+    # `resume.restore_model` (#89084) is the only schema-surfaced resume
+    # field — fold it into general rather than spawning a one-field orphan category.
+    "resume": "general",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.

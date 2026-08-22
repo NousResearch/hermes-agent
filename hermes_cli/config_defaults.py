@@ -42,6 +42,13 @@ DEFAULT_CONFIG = {
         # behavior everywhere.
         "terminal_continue": True,
     },
+    "resume": {
+        # When true (default), resuming a session (--resume, -c, /resume)
+        # restores the model that was active in that session unless an
+        # explicit --model flag was passed on the CLI. When false, resume
+        # leaves the current config.yaml default model active.
+        "restore_model": True,
+    },
     "agent": {
         # Unlimited by default. The agent turn cap caused more problems than
         # it solved (silent mid-task truncation). null = unlimited; set a

@@ -8156,16 +8156,19 @@ def _handoff_carries_live_user_content(message: Any) -> bool:
     ask, leaving a non-empty remainder after ``_SUMMARY_END_MARKER``. Either
     shape must remain actionable (#80622 must not treat them as sole-handoff).
 
-    Delegates to the canonical live-user projection.  That projection uses
-    ``_strip_context_summary_handoff_message`` for string and multimodal
-    carriers, then excludes typed synthetic rows and empty/non-actionable
-    remainders.  Callers must still pre-filter with
-    ``is_compaction_summary_message`` because an ordinary human row naturally
-    has a live-user projection too.
+    Delegates to ``_strip_context_summary_handoff_message`` — the canonical
+    "does anything survive once the handoff is removed" logic.  This helper
+    also applies to merged assistant carriers whose pending tool calls keep an
+    exchange in flight, so it must not use the user-row-only display projection.
+    Callers must pre-filter with ``is_compaction_summary_message`` because a
+    non-summary row is returned unchanged by the strip helper.
     """
     if not isinstance(message, dict):
         return False
-    return user_originated_turn_view(message) is not None
+    return (
+        ContextCompressor._strip_context_summary_handoff_message(message)
+        is not None
+    )
 
 
 def reference_handoff_would_drive_next_model_call(

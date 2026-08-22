@@ -1134,3 +1134,69 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+def test_create_worktree_child_inherits_root_project(worker_env):
+    """A worktree child keeps the canonical project of its worker task."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import projects_db as pdb
+    from tools import kanban_tools as kt
+
+    repo = os.path.join(os.environ["HERMES_HOME"], "repo")
+    os.mkdir(repo)
+    with pdb.connect_closing() as project_conn:
+        project_id = pdb.create_project(
+            project_conn, name="Root project", primary_path=repo
+        )
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET project_id=?, workspace_kind=? WHERE id=?",
+            (project_id, "worktree", worker_env),
+        )
+        conn.commit()
+        assert kb.get_task(conn, worker_env).project_id == project_id
+    finally:
+        conn.close()
+
+    out = kt._handle_create({
+        "title": "child",
+        "assignee": "child-worker",
+        "parents": [worker_env],
+        "workspace_kind": "worktree",
+    })
+    created = json.loads(out)
+    assert created["project_id"] == project_id, out
+
+
+def test_create_child_rejects_different_project_id(worker_env):
+    """A worker cannot silently switch a child to another project."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import projects_db as pdb
+    from tools import kanban_tools as kt
+
+    repo = os.path.join(os.environ["HERMES_HOME"], "repo")
+    os.mkdir(repo)
+    with pdb.connect_closing() as project_conn:
+        project_id = pdb.create_project(
+            project_conn, name="Root project", primary_path=repo
+        )
+
+    conn = kb.connect()
+    try:
+        conn.execute("UPDATE tasks SET project_id=? WHERE id=?", (project_id, worker_env))
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_create({
+        "title": "child",
+        "assignee": "child-worker",
+        "parents": [worker_env],
+        "workspace_kind": "worktree",
+        "project_id": "other-project",
+    })
+    created = json.loads(out)
+    assert "error" in created, out
+    assert "canonical project" in created["error"], out

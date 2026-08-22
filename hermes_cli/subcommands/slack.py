@@ -83,11 +83,10 @@ def build_slack_parser(subparsers, *, cmd_slack: Callable) -> None:
         "Slack's Assistant thread pane.",
     )
     slack_messaging.add_argument(
-        "--agent-view",
+        "--assistant-view",
         action="store_true",
-        help="Emit Slack's Agent messaging experience (agent_view, "
-        "app_home_opened + message.im) instead of the legacy assistant_view "
-        "experience. This changes Slack's app messaging surface and cannot "
-        "be reversed in Slack after applying the manifest.",
+        help="Use the legacy Assistant messaging experience (assistant_view) "
+        "instead of the default Agent experience (agent_view). For existing "
+        "apps only — Slack no longer permits assistant_view on new apps.",
     )
     slack_parser.set_defaults(func=cmd_slack)

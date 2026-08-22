@@ -42,18 +42,18 @@ def _build_full_manifest(
     for a Hermes deployment — users can tweak them in the Slack UI after
     pasting.
 
-    By default, this keeps Hermes on Slack's older Assistant messaging
-    experience (``assistant_view``) for backward compatibility. Pass
-    ``messaging_experience="agent"`` (``--agent-view``) to emit Slack's Agent
-    messaging experience (``agent_view`` + ``app_home_opened``). Pass
-    ``include_assistant=False`` or ``messaging_experience="none"``
+    By default, this emits Slack's Agent messaging experience
+    (``agent_view`` + ``app_home_opened``).  Pass
+    ``messaging_experience="assistant"`` (``--assistant-view``) to use the
+    legacy Assistant messaging experience (``assistant_view``) for existing
+    apps.  Pass ``include_assistant=False`` or ``messaging_experience="none"``
     (``--no-assistant``) to omit Slack AI messaging features and get a flat DM
     surface where ``/help``, ``/new``, etc. work inline.
     """
     from hermes_cli.commands import slack_app_manifest
 
     if messaging_experience is None:
-        messaging_experience = "assistant" if include_assistant else "none"
+        messaging_experience = "agent" if include_assistant else "none"
     messaging_experience = str(messaging_experience).strip().lower()
     if messaging_experience not in {"assistant", "agent", "none"}:
         raise ValueError(
@@ -175,13 +175,13 @@ def slack_manifest_command(args) -> int:
       --long-description-file PATH  Read the long app description from a UTF-8 file
       --slashes-only  Emit only the ``features.slash_commands`` array (for
                       merging into an existing manifest manually)
-      --no-assistant  Omit Slack AI Assistant mode (assistant_view feature,
-                      assistant:write scope, assistant_thread_* events) so
-                      DMs render as a flat chat where bare slash commands
-                      work inline instead of the Assistant thread pane.
-      --agent-view    Use Slack's Agent messaging experience (agent_view,
-                      app_home_opened + message.im) instead of the legacy
-                      Assistant messaging experience.
+      --no-assistant    Omit Slack AI messaging features (agent_view or
+                      assistant_view) so DMs render as a flat chat where
+                      bare slash commands work inline.
+      --assistant-view  Use the legacy Assistant messaging experience
+                      (assistant_view) instead of the default Agent
+                      experience.  For existing apps only — Slack no longer
+                      permits assistant_view on new apps.
     """
     name = getattr(args, "name", None) or "Hermes"
     description = getattr(args, "description", None) or "Your Hermes agent on Slack"
@@ -231,12 +231,12 @@ def slack_manifest_command(args) -> int:
             file=sys.stderr,
         )
         return 2
-    if getattr(args, "agent_view", False):
-        messaging_experience = "agent"
-    elif getattr(args, "no_assistant", False):
+    if getattr(args, "no_assistant", False):
         messaging_experience = "none"
-    else:
+    elif getattr(args, "assistant_view", False):
         messaging_experience = "assistant"
+    else:
+        messaging_experience = "agent"
 
     if getattr(args, "slashes_only", False):
         from hermes_cli.commands import slack_app_manifest

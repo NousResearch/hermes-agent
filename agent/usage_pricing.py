@@ -79,6 +79,12 @@ class CanonicalUsage:
     reasoning_tokens: int = 0
     request_count: int = 1
     raw_usage: Optional[dict[str, Any]] = None
+    # True when the provider actually exposed cache telemetry (even if the
+    # counters are zero). Distinguishes a reported cache miss / cold write
+    # from a provider that never surfaces cache fields at all — the durable
+    # per-call log needs this so an explicit zero is not mistaken for an
+    # unavailable field (#84460).
+    cache_telemetry_present: bool = False
 
     @property
     def prompt_tokens(self) -> int:
@@ -1268,6 +1274,17 @@ def get_pricing_entry(
     return _lookup_official_docs_pricing(route)
 
 
+def _attr_present(obj: Any, name: str) -> bool:
+    """Return True when ``name`` exists on ``obj`` (attribute, dict key, or
+    Pydantic field) regardless of its value. Used to tell a provider-reported
+    zero apart from a field the provider never surfaced (#84460)."""
+    if obj is None:
+        return False
+    if isinstance(obj, dict):
+        return name in obj
+    return hasattr(obj, name)
+
+
 def normalize_usage(
     response_usage: Any,
     *,
@@ -1298,6 +1315,9 @@ def normalize_usage(
         cache_write_tokens = _usage_count(
             _usage_get(response_usage, "cache_creation_input_tokens", 0)
         )
+        cache_telemetry_present = _attr_present(
+            response_usage, "cache_read_input_tokens"
+        ) or _attr_present(response_usage, "cache_creation_input_tokens")
     elif mode == "codex_responses":
         input_total = _usage_count(_usage_get(response_usage, "input_tokens", 0))
         output_tokens = _usage_count(_usage_get(response_usage, "output_tokens", 0))
@@ -1317,6 +1337,11 @@ def normalize_usage(
                 _usage_get(details, "cache_creation_tokens", 0) if details else 0
             )
         input_tokens = max(0, input_total - cache_read_tokens - cache_write_tokens)
+        cache_telemetry_present = (
+            _attr_present(details, "cached_tokens")
+            or _attr_present(details, "cache_write_tokens")
+            or _attr_present(details, "cache_creation_tokens")
+        ) if details else False
     else:
         # OpenAI-style names first; fall back to Anthropic-style
         # (input_tokens/output_tokens). Local OpenAI-compatible servers like
@@ -1376,6 +1401,13 @@ def normalize_usage(
             cache_write_tokens = _usage_count(
                 _usage_get(response_usage, "cache_write_tokens", 0)
             )
+        cache_telemetry_present = (
+            _attr_present(details, "cached_tokens")
+            or _attr_present(details, "cache_write_tokens")
+            or _attr_present(response_usage, "cache_read_input_tokens")
+            or _attr_present(response_usage, "prompt_cache_hit_tokens")
+            or _attr_present(response_usage, "cache_creation_input_tokens")
+        )
         input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
 
     reasoning_tokens = 0
@@ -1420,6 +1452,7 @@ def normalize_usage(
         cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens,
         reasoning_tokens=reasoning_tokens,
+        cache_telemetry_present=cache_telemetry_present,
     )
 
 

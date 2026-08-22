@@ -39,6 +39,55 @@ def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():
     assert normalized.output_tokens == 400
 
 
+def test_normalize_usage_marks_present_cache_telemetry_with_zero_reads():
+    """A provider that reports cache telemetry with zero read tokens is a
+    cache *miss*, not an unavailable field. cache_telemetry_present must be
+    True so the durable log can distinguish a reported miss from no_field
+    (#84460)."""
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=200,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+    )
+
+    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 0
+    assert normalized.cache_telemetry_present is True
+
+
+def test_normalize_usage_marks_cold_write_when_cache_write_present():
+    """A cold write (cache_write_tokens > 0, read == 0) is reported telemetry
+    and must carry cache_telemetry_present=True (#84460)."""
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=200,
+        cache_creation_input_tokens=2000,
+    )
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    assert normalized.cache_write_tokens == 2000
+    assert normalized.cache_read_tokens == 0
+    assert normalized.cache_telemetry_present is True
+
+
+def test_normalize_usage_marks_no_field_when_cache_telemetry_absent():
+    """When the provider exposes no cache fields at all, cache_telemetry_present
+    stays False so the durable log emits no_field instead of synthesizing a
+    reported zero (#84460)."""
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=200,
+    )
+
+    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 0
+    assert normalized.cache_write_tokens == 0
+    assert normalized.cache_telemetry_present is False
+
+
 
 
 def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():

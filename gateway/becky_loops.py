@@ -171,9 +171,18 @@ class TelegramTopicSender:
         label = "Becky:" if reply_to_message_id is not None else "Cory via Becky:"
         metadata = {
             "thread_id": thread_id,
-            "direct_messages_topic_id": thread_id,
             "notify": True,
         }
+        # Telegram forum/supergroup topics require message_thread_id, which
+        # Hermes derives from metadata.thread_id. direct_messages_topic_id is
+        # only valid for positive private-chat topic lanes; including it for a
+        # -100... forum chat causes the adapter to omit message_thread_id and
+        # silently deliver into General.
+        try:
+            if int(chat_id) > 0:
+                metadata["direct_messages_topic_id"] = thread_id
+        except (TypeError, ValueError):
+            pass
         try:
             result = await self._adapter.send(
                 chat_id=chat_id,

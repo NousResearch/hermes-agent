@@ -1316,6 +1316,33 @@ async def test_telegram_topic_sender_adds_labels_and_exact_private_topic_metadat
 
 
 @pytest.mark.asyncio
+async def test_telegram_topic_sender_routes_forum_group_topics_with_message_thread_id() -> (
+    None
+):
+    adapter = FakeTelegramAdapter()
+    sender = becky_loops.TelegramTopicSender(adapter)
+
+    await sender.send_topic(
+        chat_id="-1004476874933",
+        thread_id="3964",
+        text="Can you clarify the next step?",
+        reply_to_message_id=None,
+    )
+
+    assert adapter.calls == [
+        {
+            "chat_id": "-1004476874933",
+            "content": "Cory via Becky: Can you clarify the next step?",
+            "reply_to": None,
+            "metadata": {
+                "thread_id": "3964",
+                "notify": True,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_telegram_topic_sender_anchors_to_the_last_long_message_chunk() -> None:
     outcome = SimpleNamespace(
         success=True,

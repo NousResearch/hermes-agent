@@ -11628,6 +11628,46 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             return False
 
+    def _should_handle_readonly_dispatch_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when a read-only dispatch-policy command should run immediately.
+
+        Commands with ``busy_policy="dispatch"`` in their CommandDef are meant
+        to run without queuing behind the active turn. The gateway honors this;
+        the classic CLI ignores it. Derive eligibility from the CommandDef
+        instead of a hard-coded name list so new dispatch-policy commands
+        pick up the behavior automatically.
+
+        A command is safe to dispatch inline only while the agent is
+        running — idle commands follow the normal ``process_loop`` path.
+        Eligibility: ``execute is not None`` (shared read-only executor) or
+        known read-only dispatch commands (/status, /agents, /context).
+        Handled-by-other-detector commands (/model, /steer, /background) and
+        ``gateway_only`` commands are excluded.
+        """
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip("/")
+            cmd = resolve_command(base)
+            if not cmd or cmd.busy_policy != "dispatch":
+                return False
+            if cmd.gateway_only:
+                return False
+            if cmd.name in {"model", "steer", "background"}:
+                return False
+            # Shared read-only executor path (/profile, /version, /help, /egress)
+            if cmd.execute is not None:
+                return True
+            # Known read-only dispatch commands without an execute attribute
+            if cmd.name in {"status", "agents", "context"}:
+                return True
+            return False
+        except Exception:
+            return False
+
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -17868,6 +17908,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # process_command() prints through patch_stdout and never
                     # invalidates the app, so the submitted text can linger in
                     # the input area looking unsent.
+                    event.app.invalidate()
+                    return
+
+                # Handle read-only dispatch-policy commands (/status, /agents,
+                # /context, /egress) immediately on the UI thread. Same queue
+                # problem as /steer: ``process_loop`` is blocked inside
+                # ``self.chat()``, so queuing through ``_pending_input`` would
+                # silently delay these commands until after the turn finishes.
+                # They are safe to run concurrently with an agent — read-only.
+                if self._should_handle_readonly_dispatch_inline(text, has_images=has_images):
+                    self.process_command(text)
+                    event.app.current_buffer.reset(append_to_history=True)
                     event.app.invalidate()
                     return
 

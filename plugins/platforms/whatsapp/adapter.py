@@ -1702,7 +1702,7 @@ def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> 
     return "document"
 
 
-def _normalize_outbound_mentions(mentions: Any) -> list:
+def _normalize_outbound_mentions(mentions: Any) -> list[str]:
     """Validate an outbound mention list into bridge-ready JID strings.
 
     The bridge ``/send`` route forwards ``mentions`` to Baileys as the message
@@ -1721,7 +1721,13 @@ def _normalize_outbound_mentions(mentions: Any) -> list:
         if not isinstance(candidate, str):
             continue
         jid = to_whatsapp_jid(candidate)
-        if not jid or jid in seen:
+        user, separator, domain = jid.partition("@")
+        if (
+            not separator
+            or not user.isdigit()
+            or domain not in {"s.whatsapp.net", "lid"}
+            or jid in seen
+        ):
             continue
         seen.add(jid)
         out.append(jid)
@@ -1798,9 +1804,15 @@ async def _standalone_send(
                     # so nothing silently disappears.
                     if media_caption:
                         try:
+                            fallback_payload: Dict[str, Any] = {
+                                "chatId": normalized_chat_id,
+                                "message": media_caption,
+                            }
+                            if normalized_mentions:
+                                fallback_payload["mentions"] = normalized_mentions
                             async with session.post(
                                 f"http://localhost:{bridge_port}/send",
-                                json={"chatId": normalized_chat_id, "message": media_caption},
+                                json=fallback_payload,
                                 timeout=aiohttp.ClientTimeout(total=30),
                             ) as resp:
                                 if resp.status == 200:
@@ -1818,6 +1830,8 @@ async def _standalone_send(
                     payload["fileName"] = os.path.basename(media_path)
                 if media_caption:
                     payload["caption"] = media_caption
+                if normalized_mentions:
+                    payload["mentions"] = normalized_mentions
                 async with session.post(
                     f"http://localhost:{bridge_port}/send-media",
                     json=payload,

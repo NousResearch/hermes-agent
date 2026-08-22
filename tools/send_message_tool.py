@@ -238,11 +238,6 @@ SEND_MESSAGE_SCHEMA = {
             "message_id": {
                 "type": "string",
                 "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
-            },
-            "mentions": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "For WhatsApp group sends: list of phone numbers or JIDs to @-mention. Each entry is normalized to a WhatsApp JID and forwarded to the bridge on the first chunk only so the message pings those participants in the group without the ping repeating across continuation chunks."
             }
         },
         "required": []
@@ -493,8 +488,9 @@ def _handle_send(args):
             "thread_id": thread_id,
             "media_files": media_files,
             "force_document": force_document_attachments,
-            "mentions": mentions,
         }
+        if platform_name == "whatsapp" and mentions:
+            send_kwargs["mentions"] = mentions
         # Preserve the exact built-in call contract; only custom handlers need
         # the complete typed request.
         if entry is not None and entry.send_message_handler is not None:

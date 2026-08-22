@@ -178,3 +178,55 @@ def test_standalone_send_without_mentions_omits_field():
 
     assert res["success"] is True
     assert "mentions" not in calls[0][1]
+
+
+def test_text_mentions_are_normalized_deduplicated_and_invalid_values_dropped():
+    session_ctx, calls = _session_with([_resp(200, {"messageId": "t1"})])
+    with patch("aiohttp.ClientSession", return_value=session_ctx):
+        res = asyncio.run(
+            _standalone_send(
+                _pconfig(),
+                "120363000000000000@g.us",
+                "hello team",
+                mentions=[
+                    "+1 (555) 000-0001",
+                    "15550000001@s.whatsapp.net",
+                    "15550000002@lid",
+                    "not-a-phone",
+                    "",
+                    None,
+                ],
+            )
+        )
+
+    assert res["success"] is True
+    assert calls[0][0].endswith("/send")
+    assert calls[0][1]["mentions"] == [
+        "15550000001@s.whatsapp.net",
+        "15550000002@lid",
+    ]
+
+
+def test_captioned_media_preserves_mentions_on_send_media():
+    image = _tmpfile(".png")
+    try:
+        session_ctx, calls = _session_with([_resp(200, {"messageId": "m1"})])
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            res = asyncio.run(
+                _standalone_send(
+                    _pconfig(),
+                    "120363000000000000@g.us",
+                    "",
+                    media_files=[(image, False)],
+                    caption="hello team",
+                    mentions=["15550000001"],
+                )
+            )
+
+        assert res["success"] is True
+        assert len(calls) == 1
+        assert calls[0][0].endswith("/send-media")
+        assert calls[0][1]["caption"] == "hello team"
+        assert calls[0][1]["mentions"] == ["15550000001@s.whatsapp.net"]
+    finally:
+        os.unlink(image)

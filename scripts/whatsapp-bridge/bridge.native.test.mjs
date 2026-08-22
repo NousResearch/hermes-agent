@@ -295,6 +295,20 @@ import {
 }
 
 {
+  const mentions = ['15550000001@s.whatsapp.net'];
+  const payload = mediaPayloadForFile({
+    buffer: Buffer.from('png'),
+    filePath: '/tmp/photo.png',
+    mediaType: 'image',
+    caption: 'hello team',
+    mentions,
+  });
+
+  assert.deepEqual(payload.mentions, mentions);
+  console.log('  ✓ outbound media captions preserve mention JIDs');
+}
+
+{
   const payload = buildPollPayload({
     question: 'Proceed?',
     options: ['Approve', 'Deny'],

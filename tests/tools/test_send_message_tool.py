@@ -315,7 +315,6 @@ class TestSendMessageTool:
             thread_id=None,
             media_files=[],
             force_document=False,
-            mentions=None,
         )
 
 
@@ -355,7 +354,6 @@ class TestSendMessageTool:
             thread_id=None,
             media_files=[],
             force_document=False,
-            mentions=None,
         )
 
     def test_top_level_send_failure_redacts_query_token(self):
@@ -822,6 +820,51 @@ class TestSendToPlatformWhatsapp:
             assert "mentions" not in call.kwargs
         # media rides the last chunk
         assert calls[-1].kwargs.get("media_files") == [(str(media), False)]
+
+    def test_whatsapp_captioned_media_forwards_mentions(self, tmp_path):
+        from hermes_cli.plugins import discover_plugins
+        from gateway.platform_registry import platform_registry
+
+        discover_plugins()
+        chat_id = "120363000000000000@g.us"
+        mentions = ["15550000001"]
+        image = tmp_path / "photo.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        async_mock = AsyncMock(
+            return_value={
+                "success": True,
+                "platform": "whatsapp",
+                "chat_id": chat_id,
+                "message_id": "abc123",
+            }
+        )
+
+        wa_entry = platform_registry.get("whatsapp")
+        original_sender = wa_entry.standalone_sender_fn
+        wa_entry.standalone_sender_fn = async_mock
+        try:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WHATSAPP,
+                    SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000}),
+                    chat_id,
+                    "hello team",
+                    media_files=[(str(image), False)],
+                    mentions=mentions,
+                )
+            )
+        finally:
+            wa_entry.standalone_sender_fn = original_sender
+
+        assert result["success"] is True
+        async_mock.assert_awaited_once()
+        assert async_mock.await_args.kwargs["caption"] == "hello team"
+        assert async_mock.await_args.kwargs["mentions"] == mentions
+
+    def test_model_tool_schema_does_not_expose_mentions(self):
+        from tools.send_message_tool import SEND_MESSAGE_SCHEMA
+
+        assert "mentions" not in SEND_MESSAGE_SCHEMA["parameters"]["properties"]
 
 
 class TestSendTelegramHtmlDetection:

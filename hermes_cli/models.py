@@ -5216,13 +5216,112 @@ def normalize_copilot_model_id(
     return raw
 
 
+# Cache for the reasoning-lookup token resolution. `github_model_reasoning_efforts`
+# is a hot path (the WebUI reasoning chip and the agent's per-turn send gates both
+# call it with no explicit credential), and `_resolve_copilot_catalog_api_key()` is
+# expensive: it can shell out to `gh auth token` and exchange pool candidates,
+# measured at ~1.1s per call on a cold path. `fetch_github_model_catalog` already
+# has its own 5-minute TTL, so without this the catalog was served from cache while
+# the token was re-resolved from scratch every single call.
+#
+# A negative result is cached too, with a shorter TTL: when there is no usable
+# credential the resolution is just as slow, and the offline fallback is the
+# correct answer for that window anyway.
+_copilot_reasoning_token_cache: Optional[str] = None
+_copilot_reasoning_token_cache_time: float = 0.0
+_COPILOT_REASONING_TOKEN_TTL = 300  # 5 min, matches the catalog cache
+_COPILOT_REASONING_TOKEN_NEGATIVE_TTL = 60  # retry a missing credential sooner
+
+
+def _cached_copilot_reasoning_token() -> str:
+    """`_resolve_copilot_catalog_api_key()` behind a short TTL.
+
+    Keeps the reasoning lookup off the credential-resolution path on every
+    call while still picking up a newly-added credential within a minute.
+    """
+    global _copilot_reasoning_token_cache, _copilot_reasoning_token_cache_time
+
+    now = time.monotonic()
+    if _copilot_reasoning_token_cache is not None:
+        ttl = (
+            _COPILOT_REASONING_TOKEN_TTL
+            if _copilot_reasoning_token_cache
+            else _COPILOT_REASONING_TOKEN_NEGATIVE_TTL
+        )
+        if (now - _copilot_reasoning_token_cache_time) < ttl:
+            return _copilot_reasoning_token_cache
+
+    try:
+        token = _resolve_copilot_catalog_api_key()
+    except Exception:
+        token = ""
+    _copilot_reasoning_token_cache = token or ""
+    _copilot_reasoning_token_cache_time = now
+    return _copilot_reasoning_token_cache
+
+
+def _copilot_claude_supports_reasoning_effort(bare_model: str) -> bool:
+    """True for Copilot-hosted Claude models that advertise an effort ladder.
+
+    Offline fallback only — used when the live ``/models`` catalog is
+    unreachable. The catalog stays authoritative whenever it answers.
+
+    Fails CLOSED: a Claude id must positively prove it carries a version at
+    or above the adaptive-thinking generation, otherwise it resolves to
+    "no ladder". Guessing the other way is the expensive direction — it
+    offers the user a control the provider then rejects with a 400.
+
+    Live catalog (2026-08): opus/sonnet 4.6+ and 5.x expose
+    ``reasoning_effort``; 3.x, 4.0-4.5 and haiku-4.5 do not.
+    """
+    raw = (bare_model or "").strip().lower()
+    if "claude" not in raw:
+        return False
+
+    # An explicit major.minor is the only fully unambiguous form.
+    # `(?!\d)` keeps a trailing date stamp from being read as a minor.
+    match = re.search(r"(\d+)[.\-](\d{1,2})(?!\d)", raw)
+    if match:
+        return (int(match.group(1)), int(match.group(2))) >= (4, 6)
+
+    # No minor version. Only a bare major >= 5 qualifies, and it must be a
+    # real version token — NOT a date stamp, and NOT a size qualifier that
+    # happens to follow a digit. Require the number to be delimited and to
+    # carry no 6+ digit run (date stamps such as 4-20250514).
+    major_only = re.search(r"(?:^|[-.])(\d{1,2})(?![\d])", raw)
+    if major_only and not re.search(r"\d{6,}", raw):
+        return int(major_only.group(1)) >= 5
+
+    # Unversioned ("claude-sonnet", "claude-opus") or otherwise unparseable:
+    # fail closed. Previously this returned True, which exposed a ladder for
+    # ids whose generation we cannot establish.
+    return False
+
+
 def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
+    """Offline fallback when the live Copilot catalog is unavailable.
+
+    Conservative intersection of what Copilot currently accepts: GPT-5 /
+    o-series keep their existing ladders; Claude 4.6+, Gemini 3+, Grok 4.5+
+    and MAI-Code get low/medium/high. Catalog-backed lookups remain
+    authoritative and may advertise extra levels (xhigh/max) or deny a
+    family entirely (haiku-4.5).
+    """
     raw = (model_id or "").strip().lower()
     if raw.startswith(("openai/o1", "openai/o3", "openai/o4", "o1", "o3", "o4")):
         return list(COPILOT_REASONING_EFFORTS_O_SERIES)
     normalized = normalize_copilot_model_id(model_id).lower()
-    if normalized.startswith("gpt-5"):
+    bare = normalized.rsplit("/", 1)[-1]
+    if bare.startswith("gpt-5"):
         return list(COPILOT_REASONING_EFFORTS_GPT5)
+    if "claude" in bare:
+        return ["low", "medium", "high"] if _copilot_claude_supports_reasoning_effort(bare) else []
+    if re.match(r"gemini-(?:3|[4-9]|2\.[5-9])", bare):
+        return ["low", "medium", "high"]
+    if re.match(r"grok-(?:4\.[5-9]|[5-9])", bare):
+        return ["low", "medium", "high"]
+    if bare.startswith("mai-code"):
+        return ["low", "medium", "high"]
     return []
 
 
@@ -5576,7 +5675,23 @@ def github_model_reasoning_efforts(
     catalog: Optional[list[dict[str, Any]]] = None,
     api_key: Optional[str] = None,
 ) -> list[str]:
-    """Return supported reasoning-effort levels for a Copilot-visible model."""
+    """Return supported reasoning-effort levels for a Copilot-visible model.
+
+    The live ``/models`` catalog is authoritative: Claude, Gemini, Grok and
+    MAI-Code all advertise ``capabilities.supports.reasoning_effort`` there,
+    but the static offline table historically only knew GPT-5 / o-series.
+    Callers (WebUI chip, agent send gates) usually pass neither ``catalog``
+    nor ``api_key``, so resolve a Copilot token automatically and fetch the
+    cached catalog. An explicit catalog still wins and skips auth.
+    """
+    if catalog is None and not api_key:
+        resolved = _cached_copilot_reasoning_token()
+        if resolved:
+            api_key = resolved
+
+    if catalog is None and api_key:
+        catalog = fetch_github_model_catalog(api_key=api_key)
+
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
     if not normalized:
         return []
@@ -5584,10 +5699,6 @@ def github_model_reasoning_efforts(
     catalog_entry = None
     if catalog is not None:
         catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
-    elif api_key:
-        fetched_catalog = fetch_github_model_catalog(api_key=api_key)
-        if fetched_catalog:
-            catalog_entry = next((item for item in fetched_catalog if item.get("id") == normalized), None)
 
     if catalog_entry is not None:
         capabilities = catalog_entry.get("capabilities")

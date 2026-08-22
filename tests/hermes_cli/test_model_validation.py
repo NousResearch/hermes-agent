@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hermes_cli.models import (
     azure_foundry_model_api_mode,
     copilot_model_api_mode,
@@ -220,7 +222,31 @@ class TestFetchApiModels:
         assert probe["used_fallback"] is False
 
 
+def _reset_reasoning_token_cache(models_mod):
+    """Clear the reasoning-lookup token cache.
+
+    The cache is module-level and deliberately long-lived in production, so
+    tests must reset it or they leak a resolved token into each other and
+    become order-dependent.
+    """
+    models_mod._copilot_reasoning_token_cache = None
+    models_mod._copilot_reasoning_token_cache_time = 0.0
+
+
 class TestGithubReasoningEfforts:
+    @pytest.fixture(autouse=True)
+    def _isolate_token_cache(self):
+        """Keep the module-level token cache from leaking between tests.
+
+        Reset before AND after: a test that resolves a real token would
+        otherwise satisfy a later test's cache assertion for free.
+        """
+        import hermes_cli.models as models_mod
+
+        _reset_reasoning_token_cache(models_mod)
+        yield
+        _reset_reasoning_token_cache(models_mod)
+
     def test_gpt5_supports_minimal_to_high(self):
         catalog = [{
             "id": "gpt-5.4",
@@ -232,6 +258,277 @@ class TestGithubReasoningEfforts:
             "medium",
             "high",
         ]
+
+    def test_explicit_catalog_is_authoritative_for_non_gpt_families(self):
+        catalog = [
+            {
+                "id": "claude-opus-5",
+                "capabilities": {
+                    "type": "chat",
+                    "supports": {"reasoning_effort": ["low", "medium", "high", "xhigh", "max"]},
+                },
+            },
+            {
+                "id": "gemini-3.6-flash",
+                "capabilities": {
+                    "type": "chat",
+                    "supports": {"reasoning_effort": ["minimal", "low", "medium", "high"]},
+                },
+            },
+            {
+                "id": "grok-4.6",
+                "capabilities": {
+                    "type": "chat",
+                    "supports": {"reasoning_effort": ["low", "medium", "high", "xhigh"]},
+                },
+            },
+            {
+                "id": "claude-haiku-4.5",
+                "capabilities": {"type": "chat", "supports": {}},
+            },
+        ]
+        assert github_model_reasoning_efforts("claude-opus-5", catalog=catalog) == [
+            "low", "medium", "high", "xhigh", "max",
+        ]
+        assert github_model_reasoning_efforts("gemini-3.6-flash", catalog=catalog) == [
+            "minimal", "low", "medium", "high",
+        ]
+        assert github_model_reasoning_efforts("grok-4.6", catalog=catalog) == [
+            "low", "medium", "high", "xhigh",
+        ]
+        assert github_model_reasoning_efforts("claude-haiku-4.5", catalog=catalog) == []
+
+    def test_missing_catalog_auto_resolves_token_and_uses_live_catalog(self):
+        catalog = [{
+            "id": "claude-opus-5",
+            "capabilities": {
+                "type": "chat",
+                "supports": {"reasoning_effort": ["low", "medium", "high", "xhigh", "max"]},
+            },
+        }]
+        with patch(
+            "hermes_cli.models._resolve_copilot_catalog_api_key",
+            return_value="tok",
+        ) as mock_key, patch(
+            "hermes_cli.models.fetch_github_model_catalog",
+            return_value=catalog,
+        ) as mock_fetch:
+            assert github_model_reasoning_efforts("claude-opus-5") == [
+                "low", "medium", "high", "xhigh", "max",
+            ]
+        mock_key.assert_called_once()
+        mock_fetch.assert_called_once()
+
+    def test_explicit_catalog_skips_token_resolve(self):
+        catalog = [{
+            "id": "claude-opus-5",
+            "capabilities": {
+                "type": "chat",
+                "supports": {"reasoning_effort": ["low", "medium", "high"]},
+            },
+        }]
+        with patch(
+            "hermes_cli.models._resolve_copilot_catalog_api_key",
+            return_value="tok",
+        ) as mock_key:
+            assert github_model_reasoning_efforts(
+                "claude-opus-5", catalog=catalog
+            ) == ["low", "medium", "high"]
+        mock_key.assert_not_called()
+
+    def test_token_resolution_reaches_the_credential_pool(self, monkeypatch):
+        """A pool-only Copilot credential must reach the reasoning lookup.
+
+        The token helper resolves credentials in two stages: the provider
+        credentials (env vars / `gh auth token`), then `read_credential_pool`.
+        Only the second stage covers users whose token lives in
+        `credential_pool.copilot[]` (added by `hermes auth add copilot`).
+
+        This asserts the observable behaviour — with the first stage empty,
+        a pool entry still ends up as the api_key the catalog is fetched
+        with. Any regression that bypasses the pool-aware path (including a
+        duplicate helper definition shadowing it) fails here, because the
+        catalog is then fetched with no credential and the model resolves
+        through the offline fallback instead of the catalog ladder.
+        """
+        import hermes_cli.models as models_mod
+
+        # Stage 1 yields nothing; stage 2 (the pool) holds the only token.
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            lambda _provider: {},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth.read_credential_pool",
+            lambda _provider: [{"access_token": "gho_pool_only"}],
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.copilot_auth.validate_copilot_token",
+            lambda _token: (True, ""),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.copilot_auth.exchange_copilot_token",
+            lambda token, **_kw: (f"exchanged::{token}", 9e9),
+            raising=False,
+        )
+        _reset_reasoning_token_cache(models_mod)
+
+        seen_keys = []
+
+        def _capture(api_key=None, **_kw):
+            seen_keys.append(api_key)
+            return [{
+                "id": "claude-opus-5",
+                "capabilities": {
+                    "type": "chat",
+                    "supports": {"reasoning_effort": ["low", "medium", "high"]},
+                },
+            }]
+
+        monkeypatch.setattr(models_mod, "fetch_github_model_catalog", _capture)
+
+        efforts = models_mod.github_model_reasoning_efforts("claude-opus-5")
+
+        assert seen_keys and seen_keys[0], (
+            "the catalog was fetched with no credential — the pool-aware "
+            "resolution path was bypassed"
+        )
+        assert "gho_pool_only" in seen_keys[0], (
+            f"expected the pool token to reach the catalog fetch, got {seen_keys[0]!r}"
+        )
+        # And the catalog ladder wins, rather than the offline fallback.
+        assert efforts == ["low", "medium", "high"]
+
+    def test_resolved_token_is_cached_across_calls(self, monkeypatch):
+        """The token must not be re-resolved on every lookup.
+
+        `github_model_reasoning_efforts` runs on hot paths (the composer's
+        reasoning chip, the agent's per-turn send gates). Token resolution
+        can shell out to `gh auth token` and exchange pool candidates, so
+        re-resolving per call adds a large fixed cost to every turn.
+        """
+        import hermes_cli.models as models_mod
+
+        calls = []
+        monkeypatch.setattr(
+            models_mod,
+            "_resolve_copilot_catalog_api_key",
+            lambda: (calls.append(1), "tok")[1],
+        )
+        monkeypatch.setattr(
+            models_mod,
+            "fetch_github_model_catalog",
+            lambda **_kw: [{
+                "id": "claude-opus-5",
+                "capabilities": {
+                    "type": "chat",
+                    "supports": {"reasoning_effort": ["low", "medium", "high"]},
+                },
+            }],
+        )
+        _reset_reasoning_token_cache(models_mod)
+
+        for _ in range(5):
+            models_mod.github_model_reasoning_efforts("claude-opus-5")
+
+        assert len(calls) == 1, (
+            f"token resolved {len(calls)} times for 5 lookups — expected 1 "
+            "(the result must be cached)"
+        )
+
+    def test_offline_fallback_covers_known_copilot_reasoning_families(self):
+        with patch(
+            "hermes_cli.models._resolve_copilot_catalog_api_key",
+            return_value="",
+        ), patch(
+            "hermes_cli.models.fetch_github_model_catalog",
+            return_value=None,
+        ):
+            for model_id in (
+                "claude-opus-5",
+                "claude-opus-4.6",
+                "claude-sonnet-4.6",
+                "claude-sonnet-5",
+                "gemini-3.6-flash",
+                "gemini-3.7-flash",
+                "grok-4.5",
+                "grok-4.6",
+                "mai-code-1.1-flash",
+            ):
+                efforts = github_model_reasoning_efforts(model_id)
+                assert "medium" in efforts, model_id
+                assert "high" in efforts, model_id
+            assert github_model_reasoning_efforts("claude-haiku-4.5") == []
+            assert github_model_reasoning_efforts("gpt-5.5") == [
+                "minimal", "low", "medium", "high",
+            ]
+
+    @pytest.mark.parametrize(
+        "model_id,expected",
+        [
+            # Explicit major.minor at or above the adaptive-thinking line.
+            ("claude-opus-4.6", True),
+            ("claude-opus-4.7", True),
+            ("claude-opus-4.8", True),
+            ("claude-sonnet-4.6", True),
+            # Bare major >= 5 — no minor component at all.
+            ("claude-opus-5", True),
+            ("claude-sonnet-5", True),
+            ("claude-5", True),
+            # A size qualifier after the version must not change the verdict.
+            # Haiku having no ladder is a fact about the 4.5 generation, not
+            # about the name "haiku", so a hypothetical 5-series haiku follows
+            # its version like every other model.
+            ("claude-5-haiku", True),
+            # Below the line: explicit minor < 6 on major 4.
+            ("claude-haiku-4.5", False),
+            ("claude-sonnet-4.5", False),
+            ("claude-opus-4.1", False),
+            # Bare major 4 — no minor, and 4 < 5.
+            ("claude-4", False),
+            ("claude-opus-4", False),
+            # Claude 3 family.
+            ("claude-3-opus", False),
+            ("claude-3-5-sonnet", False),
+            ("claude-3.7-sonnet", False),
+            # Date-stamped builds must read as their major, never as a minor.
+            ("claude-opus-4-20250514", False),
+            ("claude-sonnet-4-20250514", False),
+            # Unversioned ids: the generation cannot be established, so the
+            # fallback must fail closed rather than guess.
+            ("claude-sonnet", False),
+            ("claude-opus", False),
+            ("claude", False),
+        ],
+    )
+    def test_offline_claude_version_boundaries(self, model_id, expected):
+        """Pin the offline Claude gate at every boundary.
+
+        This is the fallback used when the live catalog is unreachable, so a
+        wrong verdict here is user-visible: too permissive offers a control
+        the provider rejects with a 400, too strict hides a working one.
+        """
+        with patch(
+            "hermes_cli.models._resolve_copilot_catalog_api_key",
+            return_value="",
+        ), patch(
+            "hermes_cli.models.fetch_github_model_catalog",
+            return_value=None,
+        ):
+            efforts = github_model_reasoning_efforts(model_id)
+
+        if expected:
+            assert efforts == ["low", "medium", "high"], (
+                f"{model_id} should expose the conservative offline ladder"
+            )
+        else:
+            assert efforts == [], (
+                f"{model_id} must not expose a ladder offline — its generation "
+                "is either below the adaptive-thinking line or unknown"
+            )
 
 
 class TestCopilotNormalization:

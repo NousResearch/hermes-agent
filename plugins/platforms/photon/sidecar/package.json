@@ -13,6 +13,7 @@
     "node": ">=18.17"
   },
   "dependencies": {
+    "ffmpeg-static": "^5.3.0",
     "spectrum-ts": "8.0.0"
   },
   "overrides": {

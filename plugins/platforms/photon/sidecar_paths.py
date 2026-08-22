@@ -53,6 +53,7 @@ _MIRROR_FILES = (
     "package.json",
     "package-lock.json",
     "patch-spectrum-mixed-attachments.mjs",
+    "voice-send.mjs",
 )
 
 

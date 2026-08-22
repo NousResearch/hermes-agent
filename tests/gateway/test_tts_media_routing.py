@@ -86,6 +86,40 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
     adapter.send_document.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_voice_reply_delivers_tts_media_not_inbound_caf(tmp_path, monkeypatch):
+    """Photon live loopback: inbound CAF must not be re-sent when TTS is tagged."""
+    adapter = _MediaRoutingAdapter()
+    inbound = _allowed_media_path(tmp_path, monkeypatch, "audio_01f0c3748bc6.caf")
+    tts = inbound.parent / "tts_20260821_021929_492327.mp3"
+    tts.write_bytes(b"id3-ara-tts")
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    event = MessageEvent(
+        text="(voice)",
+        message_type=MessageType.VOICE,
+        source=source,
+        message_id="in-voice-1",
+        media_urls=[str(inbound)],
+    )
+    adapter._message_handler = AsyncMock(
+        return_value=f"Here she is, Tom.\n\nMEDIA:{tts}"
+    )
+    adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="out-v"))
+    adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    adapter.send_voice.assert_awaited_once()
+    sent = adapter.send_voice.await_args.kwargs["audio_path"]
+    assert sent == str(tts)
+    assert sent != str(inbound)
+    adapter.send_document.assert_not_awaited()
+
+
 def _fake_runner(thread_meta):
     """Build a fake GatewayRunner-like object with the helper methods needed by
     _deliver_media_from_response."""

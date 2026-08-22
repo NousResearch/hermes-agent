@@ -128,3 +128,28 @@ async def test_standalone_send_text_then_attachments(
     assert posted[1][1]["path"] == str(img)
     assert posted[1][1]["kind"] == "attachment"
     assert posted[1][1]["mimeType"] == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_send_voice_posts_tts_path_not_inbound_caf(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Voice replies must upload the TTS file, never the inbound CAF cache."""
+    _patch_safe_path(monkeypatch)
+    inbound = tmp_path / "audio_01f0c3748bc6.caf"
+    tts = tmp_path / "tts_20260821_021929_492327.mp3"
+    inbound.write_bytes(b"caffinbound-original")
+    tts.write_bytes(b"id3tts-ara-reply")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.send_voice("any;-;+15551234567", str(tts))
+
+    assert result.success is True
+    assert len(calls) == 1
+    path, body = calls[0]
+    assert path == "/send-attachment"
+    assert body["kind"] == "voice"
+    assert body["path"] == str(tts)
+    assert body["path"] != str(inbound)
+    assert body["mimeType"] == "audio/mpeg"

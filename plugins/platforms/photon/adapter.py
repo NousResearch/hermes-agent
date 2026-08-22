@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -2620,6 +2621,20 @@ class PhotonAdapter(BasePlatformAdapter):
             body["mimeType"] = mime_type
         if caption:
             body["caption"] = caption
+        try:
+            raw = Path(safe_path).read_bytes()
+            digest = hashlib.sha256(raw).hexdigest()
+            logger.info(
+                "[photon] send-attachment kind=%s bytes=%d sha256=%s path=%s",
+                body["kind"],
+                len(raw),
+                digest,
+                safe_path,
+            )
+        except OSError as exc:
+            logger.warning(
+                "[photon] send-attachment could not hash %s: %s", safe_path, exc
+            )
         try:
             data = await self._sidecar_call("/send-attachment", body)
         except PhotonSidecarError as e:

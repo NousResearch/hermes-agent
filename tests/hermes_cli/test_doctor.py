@@ -947,6 +947,67 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
     )
 
 
+def test_run_doctor_bedrock_probe_uses_runtime_region_resolver(monkeypatch, tmp_path):
+    """AWS Bedrock connectivity probe must show/probe the same region the
+    runtime actually calls (config-first resolve_bedrock_runtime_region),
+    not the bare env/profile-only resolve_bedrock_region — otherwise doctor
+    can show a green ✓ for a region the runtime never talks to."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    import agent.bedrock_adapter as ba
+    monkeypatch.setattr(ba, "has_aws_credentials", lambda: True)
+    monkeypatch.setattr(ba, "resolve_aws_auth_env_var", lambda: "AWS_BEARER_TOKEN_BEDROCK")
+    # Deliberately distinct sentinels: the config-first resolver must win.
+    monkeypatch.setattr(ba, "resolve_bedrock_runtime_region", lambda: "eu-central-1")
+    monkeypatch.setattr(ba, "resolve_bedrock_region", lambda: "us-east-1")
+
+    calls: list[tuple] = []
+
+    class _FakeBedrockClient:
+        def list_foundation_models(self):
+            return {"modelSummaries": [{"modelId": "anthropic.claude-3"}]}
+
+    import boto3
+
+    def fake_boto3_client(service_name, region_name=None, config=None):
+        calls.append((service_name, region_name))
+        return _FakeBedrockClient()
+
+    monkeypatch.setattr(boto3, "client", fake_boto3_client)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert ("bedrock", "eu-central-1") in calls
+    assert not any(region == "us-east-1" for _svc, region in calls)
+    assert "eu-central-1" in out
+    assert "us-east-1" not in out
+
+
 @pytest.mark.parametrize("base_url", [None, "https://opencode.ai/zen/go/v1"])
 def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path, base_url):
     home = tmp_path / ".hermes"

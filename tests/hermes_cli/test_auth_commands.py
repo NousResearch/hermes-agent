@@ -840,3 +840,31 @@ def test_auth_remove_env_seeded_dotenv_with_bom_no_shell_hint(tmp_path, monkeypa
     out = capsys.readouterr().out
     assert "Cleared DEEPSEEK_API_KEY from .env" in out
     assert "still set in your shell environment" not in out
+
+
+def test_interactive_auth_bedrock_region_uses_runtime_resolver(tmp_path, monkeypatch, capsys):
+    """`hermes auth`'s bare Bedrock status line must show the same region the
+    runtime actually calls (config-first resolve_bedrock_runtime_region), not
+    the bare env/profile-only resolve_bedrock_region — otherwise a user who
+    pinned bedrock.region in config.yaml sees a different region here than
+    what inference/model-discovery actually use."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    import agent.bedrock_adapter as ba
+
+    monkeypatch.setattr(ba, "has_aws_credentials", lambda: True)
+    monkeypatch.setattr(ba, "resolve_aws_auth_env_var", lambda: "AWS_BEARER_TOKEN_BEDROCK")
+    # Deliberately distinct sentinels: the config-first resolver must win.
+    monkeypatch.setattr(ba, "resolve_bedrock_runtime_region", lambda: "eu-central-1")
+    monkeypatch.setattr(ba, "resolve_bedrock_region", lambda: "us-east-1")
+
+    # Short-circuit the trailing interactive menu.
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: (_ for _ in ()).throw(EOFError()))
+
+    from hermes_cli.auth_commands import _interactive_auth
+    _interactive_auth()
+
+    out = capsys.readouterr().out
+    assert "Region: eu-central-1" in out
+    assert "us-east-1" not in out

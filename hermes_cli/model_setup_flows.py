@@ -2453,7 +2453,7 @@ def _model_flow_bedrock(config, current_model=""):
         from agent.bedrock_adapter import (
             has_aws_credentials,
             resolve_aws_auth_env_var,
-            resolve_bedrock_region,
+            resolve_bedrock_runtime_region,
             discover_bedrock_models,
         )
     except ImportError:
@@ -2474,8 +2474,12 @@ def _model_flow_bedrock(config, current_model=""):
         print("  AWS credentials: boto3 default chain (instance role / SSO)")
     print()
 
-    # 2. Region selection
-    current_region = resolve_bedrock_region()
+    # 2. Region selection. Config-first resolver: on a reconfigure, a
+    # bedrock.region already pinned in config.yaml must win over the ambient
+    # AWS env/profile default, or an accepted default here (bare Enter)
+    # re-saves the wrong region below and silently regresses a previously
+    # correct config-pinned region.
+    current_region = resolve_bedrock_runtime_region()
     try:
         region_input = line_input(f"  AWS Region [{current_region}]: ").strip()
     except (KeyboardInterrupt, EOFError):

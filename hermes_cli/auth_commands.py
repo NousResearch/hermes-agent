@@ -555,10 +555,13 @@ def _interactive_auth() -> None:
 
     # Show AWS Bedrock credential status (not in the pool — uses boto3 chain)
     try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_runtime_region
         if has_aws_credentials():
             auth_source = resolve_aws_auth_env_var() or "unknown"
-            region = resolve_bedrock_region()
+            # Config-first resolver, matching what the runtime actually uses —
+            # the bare env/profile-only resolver can disagree with a pinned
+            # bedrock.region in config.yaml and display the wrong region.
+            region = resolve_bedrock_runtime_region()
             print("bedrock (AWS SDK credential chain):")
             print(f"  Auth: {auth_source}")
             print(f"  Region: {region}")

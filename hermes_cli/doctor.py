@@ -2692,14 +2692,18 @@ def run_doctor(args):
             from agent.bedrock_adapter import (
                 has_aws_credentials,
                 resolve_aws_auth_env_var,
-                resolve_bedrock_region,
+                resolve_bedrock_runtime_region,
             )
         except ImportError:
             return _ConnectivityResult("AWS Bedrock", [], [])
         if not has_aws_credentials():
             return _ConnectivityResult("AWS Bedrock", [], [])
         auth_var = resolve_aws_auth_env_var()
-        region = resolve_bedrock_region()
+        # Config-first resolver (bedrock.region, then AWS env/profile), not
+        # the bare env/profile-only resolver — otherwise a user who pinned
+        # bedrock.region in config.yaml sees doctor probe (and report "✓
+        # for") a different region than the one the runtime actually calls.
+        region = resolve_bedrock_runtime_region()
         label = "AWS Bedrock".ljust(20)
         try:
             import boto3

@@ -13,6 +13,7 @@ These tests assert both gates now pass a bot message through when
 DISCORD_ALLOW_BOTS permits it AND no user allowlist entry exists.
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -162,3 +163,76 @@ def test_discord_role_config_does_not_leak_to_other_platforms(monkeypatch):
         user_id="999888777",
     )
     assert runner._is_user_authorized(telegram_user) is False
+
+
+# -----------------------------------------------------------------------------
+# `is_bot` must survive persistence, or the ALLOW_BOTS bypass silently expires
+#
+# The bypass above reads `source.is_bot`, but SessionSource.to_dict() did not
+# emit the flag, so it only ever lived in memory.  Sessions are persisted as
+# `origin_json` and rehydrated via from_dict() on gateway restart / auto-resume,
+# where is_bot came back False -> the bypass no longer fired -> the session fell
+# through to the human allowlist and was dropped with "session owner is no
+# longer authorized under the current allowlist".  Every bot-authored thread was
+# therefore revoked by any restart, including scheduled ones.
+# -----------------------------------------------------------------------------
+
+
+def _roundtrip(source: SessionSource) -> SessionSource:
+    """Persist and rehydrate through the same path gateway sessions use."""
+    return SessionSource.from_dict(json.loads(json.dumps(source.to_dict())))
+
+
+@pytest.mark.parametrize(
+    "platform",
+    [Platform.DISCORD, Platform.TELEGRAM, Platform.SLACK, Platform.FEISHU],
+)
+def test_is_bot_survives_source_roundtrip(platform):
+    """Every adapter that sets is_bot (discord/telegram/slack/feishu) must get
+    it back after persistence — the flag is session state, not per-message state.
+    """
+    source = SessionSource(
+        platform=platform,
+        chat_id="123",
+        chat_type="channel",
+        user_id="999888777",
+        user_name="SomeBot",
+        is_bot=True,
+    )
+    assert _roundtrip(source).is_bot is True
+
+
+def test_human_source_does_not_become_a_bot_on_roundtrip():
+    """Negative control: the flag must round-trip its actual value, not default
+    to True.  A human must never gain the ALLOW_BOTS bypass by being persisted.
+    """
+    assert _roundtrip(_make_discord_human_source()).is_bot is False
+
+
+def test_bot_stays_authorized_after_session_is_rehydrated(monkeypatch):
+    """The regression itself: a bot admitted by DISCORD_ALLOW_BOTS must remain
+    authorized after its session is persisted and reloaded, so a gateway restart
+    does not revoke in-flight bot threads.
+    """
+    runner = _make_bare_runner()
+
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")  # human-only allowlist
+
+    source = _make_discord_bot_source(bot_id="999888777")
+    assert runner._is_user_authorized(source) is True, "precondition: live bot is authorized"
+    assert runner._is_user_authorized(_roundtrip(source)) is True
+
+
+def test_rehydrated_bot_still_denied_when_allow_bots_is_off(monkeypatch):
+    """Negative control for the test above: persistence must not become an
+    authorization path of its own.  With ALLOW_BOTS unset, the rehydrated bot is
+    still denied — proving the assertion above tracks the policy, not the
+    round-trip.
+    """
+    runner = _make_bare_runner()
+
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
+    # DISCORD_ALLOW_BOTS deliberately not set (fixture cleared it).
+
+    assert runner._is_user_authorized(_roundtrip(_make_discord_bot_source())) is False

@@ -115,6 +115,14 @@ class WSTransport:
         # writes need an async boundary because several batches can be queued on
         # the owning loop while it recovers from a stall.
         self._send_lock = asyncio.Lock()
+        # Strong references to the in-flight batch sends started by the coalesce
+        # timer. A bare asyncio.create_task() keeps only a weak reference, so
+        # the loop may garbage-collect a still-pending task mid-flight — and
+        # _flush_tokens has already swapped the batch out of _pending_tokens by
+        # the time it creates that task, so a collected task takes the only
+        # surviving copy of those frames with it. Mutated only on the loop
+        # thread (the timer callback and the done callback below).
+        self._background_tasks: set[asyncio.Task] = set()
 
     @staticmethod
     def _is_streaming_frame(obj: dict) -> bool:
@@ -208,6 +216,11 @@ class WSTransport:
 
         The send is scheduled under the lock so its wire order is fixed relative
         to a concurrent non-streaming flush in :meth:`write`.
+
+        The batch leaves ``_pending_tokens`` before the task exists, so the task
+        holds the only reference to those frames: it is anchored in
+        ``_background_tasks`` until it completes, or the loop can collect it and
+        the tokens are lost with it.
         """
         with self._token_lock:
             self._token_flush_handle = None
@@ -217,7 +230,9 @@ class WSTransport:
                 return
             batch = self._pending_tokens
             self._pending_tokens = []
-            self._loop.create_task(self._safe_send_many(batch))
+            task = self._loop.create_task(self._safe_send_many(batch))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
     async def write_async(self, obj: dict) -> bool:
         """Send from the owning event loop. Awaits until the frame is on the wire."""
@@ -262,6 +277,31 @@ class WSTransport:
         if handle is not None:
             handle.cancel()
             self._token_flush_handle = None
+        # Cancelling that timer removed the only thing that would ever have
+        # drained the coalesce buffer, so drop what is still queued in it rather
+        # than pinning frames on a transport that can no longer send them.
+        with self._token_lock:
+            self._pending_tokens = []
+        # Release the anchored batch sends. Latching _closed above is not enough
+        # on its own: _safe_send_many only re-checks it between frames, so a
+        # send already suspended inside ws.send_text() on a wedged socket never
+        # observes it — and now that the transport holds a strong reference to
+        # that task, the two keep each other alive after handle_ws has returned.
+        # close() is synchronous and runs on the loop thread, so it cannot await
+        # the drain the way GatewayPlatform.cancel_background_tasks does;
+        # cancelling without awaiting is the bounded half of the same contract.
+        for task in [t for t in self._background_tasks if not t.done()]:
+            task.cancel()
+        # Then drop the tracking outright, as cancel_background_tasks does after
+        # its own drain. Waiting for each done callback to discard its task
+        # would leave transport -> _background_tasks -> task -> bound
+        # _safe_send_many -> transport intact until the loop next runs, so the
+        # pair would only be reclaimable by the cycle collector rather than by
+        # refcount — and on a wedged send_text() that wait is unbounded.
+        # Clearing is terminal here: _flush_tokens returns early once _closed is
+        # latched, so nothing repopulates the set, and set.discard on an
+        # already-removed task is a no-op.
+        self._background_tasks.clear()
 
 
 def _ws_peer_label(ws: Any) -> str:

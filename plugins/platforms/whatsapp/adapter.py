@@ -449,7 +449,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             allow_raw = None
         self._allow_from = self._coerce_allow_list(allow_raw)
         self._group_policy = str(config.extra.get("group_policy") or _wenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        # Mirror DM allowlist precedence: explicit config (including an empty
+        # list) is authoritative, with the documented profile-scoped env var
+        # as a fallback for legacy/setup-created configurations.
+        if "group_allow_from" in config.extra:
+            group_allow_raw = config.extra.get("group_allow_from")
+        elif "groupAllowFrom" in config.extra:
+            group_allow_raw = config.extra.get("groupAllowFrom")
+        else:
+            group_allow_raw = _wenv("WHATSAPP_GROUP_ALLOWED_USERS")
+        self._group_allow_from = self._coerce_allow_list(group_allow_raw)
         read_receipts = config.extra.get("send_read_receipts", False)
         self._send_read_receipts = (
             read_receipts if isinstance(read_receipts, bool)

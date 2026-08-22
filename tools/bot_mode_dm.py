@@ -46,6 +46,7 @@ import os
 import re
 import shlex
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -310,9 +311,86 @@ def message_agent_tool(
     return _spawn_delivery(command, f"@{_handle(resolved)}", task_id=task_id, agent=agent)
 
 
+BOT_DM_SUBDIR = "cache/bot-dm"
+BOT_DM_MAX_AGE_HOURS = 6
+
+_dm_prune_lock = threading.Lock()
+_dm_pruned_once = False
+
+
+def get_bot_dm_dir() -> Path:
+    """Return ``$HERMES_HOME/cache/bot-dm`` as a Path (not created)."""
+    from hermes_constants import get_hermes_home
+
+    return Path(get_hermes_home()) / BOT_DM_SUBDIR
+
+
+def cleanup_bot_dm_cache(max_age_hours: int = BOT_DM_MAX_AGE_HOURS) -> int:
+    """Delete DM payload files older than *max_age_hours*.
+
+    Same contract as the other ``cleanup_*_cache`` helpers — returns the
+    number of files removed — so the gateway housekeeping loop can prune
+    this dir on the same hourly cadence as the media caches.
+    """
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
+    try:
+        entries = list(get_bot_dm_dir().iterdir())
+    except OSError:
+        return 0
+    for f in entries:
+        try:
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _prune_bot_dm_once() -> None:
+    """Best-effort prune, at most once per process.
+
+    The gateway housekeeping loop prunes hourly, but a Bot Mode agent
+    driven from the CLI never runs it — without this, DM payloads would
+    accumulate forever on those installs.
+    """
+    global _dm_pruned_once
+    with _dm_prune_lock:
+        if _dm_pruned_once:
+            return
+        _dm_pruned_once = True
+    try:
+        removed = cleanup_bot_dm_cache()
+        if removed:
+            logger.debug("Pruned %d expired bot-DM payload(s)", removed)
+    except Exception as exc:  # noqa: BLE001 - never break a DM on cleanup
+        logger.debug("Bot-DM cache prune failed: %s", exc)
+
+
 def _write_dm_file(content: str) -> str:
-    """The message rides a temp file — never inline shell text."""
-    fd, path = tempfile.mkstemp(prefix="hermes-dm-", suffix=".txt", text=True)
+    """The message rides a file — never inline shell text.
+
+    Written under ``$HERMES_HOME/cache/bot-dm`` rather than the OS temp
+    dir: the delivery runs in the background, so the file has to outlive
+    this call and cannot be removed here, and nothing else was reaping it.
+    Keeping Hermes-owned payloads beside the other caches is what makes
+    them sweepable — the same reasoning ``tools/tool_result_storage.py``
+    gives for spillover.
+
+    Falls back to the OS temp dir if the cache dir cannot be created, so a
+    read-only or missing HERMES_HOME degrades to today's behavior instead
+    of failing the DM.
+    """
+    _prune_bot_dm_once()
+    try:
+        target_dir = get_bot_dm_dir()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        fd, path = tempfile.mkstemp(
+            prefix="dm-", suffix=".txt", dir=str(target_dir), text=True
+        )
+    except OSError:
+        fd, path = tempfile.mkstemp(prefix="hermes-dm-", suffix=".txt", text=True)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(content)
     return path

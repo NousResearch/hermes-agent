@@ -391,6 +391,78 @@ def _install_fake_sherpa(monkeypatch, tmp_path):
 # ── Multi-profile phrase routing ─────────────────────────────────────────
 
 
+def _build_sherpa_engine(monkeypatch, tmp_path, phrase, enrolled=None, tokenizable=None):
+    """Build a _SherpaKwsEngine offline against a fake model dir.
+
+    ``tokenizable`` is the set of case variants the fake BPE vocabulary can
+    tokenize; anything outside it returns an empty token list, mirroring
+    sherpa's ``text2token`` behaviour for phrases with no pieces in the
+    vocabulary (#88245). Returns (engine, attempted-variant-calls).
+    """
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    attempted: list[list[str]] = []
+
+    def fake_text2token(phrases, tokens, tokens_type, bpe_model):
+        attempted.append(list(phrases))
+        return [p.split() if p in (tokenizable or set()) else [] for p in phrases]
+
+    sys.modules["sherpa_onnx"].text2token = fake_text2token
+    monkeypatch.setattr(ww, "_active_profile_name", lambda: "default")
+    monkeypatch.setattr(ww, "enrolled_profile_phrases", lambda: dict(enrolled or {}))
+    cfg = {"provider": "sherpa", "phrase": phrase, "sherpa": {"model_dir": str(model_dir)}}
+    return ww._SherpaKwsEngine(cfg), attempted
+
+
+def test_sherpa_uppercase_variant_still_wins_first_for_bundled_model(monkeypatch, tmp_path):
+    # The bundled English model tokenizes uppercased phrases — one call, no
+    # fallback, behaviour unchanged for every existing user.
+    eng, attempted = _build_sherpa_engine(
+        monkeypatch, tmp_path, "hey hermes", tokenizable={"HEY HERMES"}
+    )
+    assert attempted == [["HEY HERMES"]]
+    content = Path(eng._keywords_file).read_text(encoding="utf-8")
+    assert content.strip() == "HEY HERMES @HEY_HERMES"
+    os.unlink(eng._keywords_file)
+
+
+def test_sherpa_lowercase_bpe_vocab_falls_back_to_configured_case(monkeypatch, tmp_path):
+    # Lowercase-only vocabulary (e.g. a Spanish KWS model): the uppercased
+    # variant yields no tokens, the phrase as configured tokenizes fine.
+    # The old blanket .upper() wrote a blank keyword line here and the wake
+    # word never fired (#88245).
+    eng, attempted = _build_sherpa_engine(
+        monkeypatch, tmp_path, "Hola hermes", tokenizable={"Hola hermes"}
+    )
+    assert attempted == [["HOLA HERMES"], ["Hola hermes"]]
+    content = Path(eng._keywords_file).read_text(encoding="utf-8")
+    assert content.strip() == "Hola hermes @HOLA_HERMES"
+    assert eng._display_to_profile == {"HOLA_HERMES": "default"}
+    os.unlink(eng._keywords_file)
+
+
+def test_sherpa_untokenizable_enrolled_phrase_is_skipped_not_blank(monkeypatch, tmp_path, caplog):
+    # One profile's phrase has no BPE pieces in any case: it is dropped with
+    # an error log instead of poisoning the keywords file with a blank line.
+    with caplog.at_level("ERROR", logger="tools.wake_word"):
+        eng, _attempted = _build_sherpa_engine(
+            monkeypatch,
+            tmp_path,
+            "hey hermes",
+            enrolled={"coder": "Bonjour"},
+            tokenizable={"hey hermes"},
+        )
+    lines = [ln for ln in Path(eng._keywords_file).read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert lines == ["hey hermes @HEY_HERMES"]
+    assert eng._display_to_profile == {"HEY_HERMES": "default"}
+    assert any("Bonjour" in r.message for r in caplog.records)
+    os.unlink(eng._keywords_file)
+
+
+def test_sherpa_raises_when_no_phrase_tokenizes(monkeypatch, tmp_path):
+    with pytest.raises(RuntimeError, match="no tokens for any wake phrase"):
+        _build_sherpa_engine(monkeypatch, tmp_path, "Привет", tokenizable=set())
+
+
 # ── Detector loop ────────────────────────────────────────────────────────
 
 

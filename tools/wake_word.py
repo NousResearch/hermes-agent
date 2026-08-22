@@ -656,6 +656,35 @@ def _ensure_sherpa_model(root: Optional[Path] = None) -> Path:
     return target
 
 
+def _tokenize_kws_phrase(text2token, phrase: str, model_dir: Path) -> list[str]:
+    """Tokenize one wake phrase case-adaptively against the KWS BPE vocabulary.
+
+    The bundled English model's BPE vocabulary happens to carry uppercase
+    pieces, and the historical blanket ``.upper()`` relied on that accident.
+    Community KWS models trained on lowercase text have no uppercase pieces
+    at all: sentencepiece emits one unknown piece, sherpa's ``text2token``
+    skips it and returns an empty token list, and the keyword line written
+    to the keywords file is blank — the wake word dies silently (#88245).
+    Try the uppercased form first (bundled-model compatibility), then the
+    phrase as configured, then lowercase, and keep the first case variant
+    that yields at least one token.
+    """
+    seen: set[str] = set()
+    for variant in (phrase.upper(), phrase, phrase.lower()):
+        if variant in seen:
+            continue
+        seen.add(variant)
+        toks = text2token(
+            [variant],
+            tokens=str(model_dir / "tokens.txt"),
+            tokens_type="bpe",
+            bpe_model=str(model_dir / "bpe.model"),
+        )
+        if toks and toks[0]:
+            return toks[0]
+    return []
+
+
 class _SherpaKwsEngine(_Engine):
     """sherpa-onnx open-vocabulary keyword spotting — any typed phrase, zero training.
 
@@ -695,12 +724,29 @@ class _SherpaKwsEngine(_Engine):
 
         phrases = list(phrase_map)
         # Runtime tokenization of the arbitrary phrases — the open-vocab core.
-        tokens = text2token(
-            [p.upper() for p in phrases],
-            tokens=str(d / "tokens.txt"),
-            tokens_type="bpe",
-            bpe_model=str(d / "bpe.model"),
-        )
+        # Per-phrase case-adaptive tokenization (see _tokenize_kws_phrase):
+        # the old blanket `.upper()` silently blanked phrases for models
+        # whose BPE vocabulary has no uppercase pieces (#88245).
+        tokens: list[list[str]] = []
+        for p in phrases:
+            toks = _tokenize_kws_phrase(text2token, p, d)
+            if not toks:
+                logger.error(
+                    "sherpa KWS model at %s has no BPE tokens for wake "
+                    "phrase %r (tried upper/original/lower case) — the wake "
+                    "word would never fire; skipping this phrase",
+                    d,
+                    p,
+                )
+                phrases = [q for q in phrases if q != p]
+                del phrase_map[p]
+                continue
+            tokens.append(toks)
+        if not phrases:
+            raise RuntimeError(
+                f"sherpa KWS model at {d} produced no tokens for any wake "
+                "phrase (tried upper/original/lower case)"
+            )
         import tempfile
 
         # sherpa keyword entries reject spaces in the @display-name; underscore

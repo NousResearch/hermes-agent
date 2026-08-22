@@ -6160,8 +6160,21 @@ class SlackAdapter(BasePlatformAdapter):
                     return
 
         if not is_one_to_one_dm and bot_uid:
-            # Check allowed channels — if set, only respond in these channels (whitelist)
-            allowed_channels = self._slack_allowed_channels()
+            if self._slack_channel_approval_required():
+                if await self._handle_slack_channel_approval_gate(
+                    channel_id=channel_id,
+                    user_id=user_id,
+                    text=routing_text,
+                    is_mentioned=is_mentioned,
+                    thread_ts=thread_ts,
+                    team_id=team_id,
+                    force_process=force_process,
+                ):
+                    return
+                allowed_channels = self._slack_approved_channels(team_id=team_id)
+            else:
+                # Check allowed channels — if set, only respond in these channels (whitelist)
+                allowed_channels = self._slack_allowed_channels()
             if allowed_channels and channel_id not in allowed_channels:
                 logger.debug(
                     "[Slack] Ignoring message in non-allowed channel: %s", channel_id
@@ -8240,6 +8253,17 @@ class SlackAdapter(BasePlatformAdapter):
                 user_id,
             )
             return
+        if not is_dm and channel_id and self._slack_channel_approval_required():
+            if await self._handle_slack_channel_approval_gate(
+                channel_id=channel_id,
+                user_id=user_id,
+                text=text,
+                is_mentioned=True,
+                thread_ts=thread_id,
+                team_id=team_id,
+                force_process=True,
+            ):
+                return
         source = self.build_source(
             chat_id=channel_id,
             chat_type="dm" if is_dm else "group",
@@ -8910,6 +8934,299 @@ class SlackAdapter(BasePlatformAdapter):
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
 
+    def _slack_channel_approval_required(self) -> bool:
+        """Return whether unapproved shared Slack channels should ask Patrick.
+
+        This is intentionally a tiny overlay on top of ``allowed_channels``:
+        when enabled, the existing allowed-channel list becomes the initial set
+        of approved channels, and unknown channels get a local approval prompt
+        instead of a silent drop.
+        """
+        raw = self.config.extra.get("channel_approval_required")
+        if raw is None:
+            raw = os.getenv("SLACK_CHANNEL_APPROVAL_REQUIRED", "false")
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(raw)
+
+    def _slack_channel_approval_owners(self) -> set:
+        """Return Slack user IDs allowed to approve this agent in a channel."""
+        raw = self.config.extra.get("channel_approval_owners")
+        if raw is None:
+            raw = os.getenv("SLACK_CHANNEL_APPROVAL_OWNERS", "")
+        if raw is None or raw == "":
+            # Keep setup dead simple for existing local agents: their Slack
+            # ``allow_from`` is already Patrick-only, so use it as the default
+            # owner list unless an explicit owner list is configured.
+            raw = self.config.extra.get("allow_from") or os.getenv("SLACK_ALLOWED_USERS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip() and str(part).strip() != "*"}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip() and part.strip() != "*"}
+        return set()
+
+    def _slack_channel_approval_file(self) -> _Path:
+        raw = self.config.extra.get("channel_approval_file") or os.getenv(
+            "SLACK_CHANNEL_APPROVAL_FILE",
+            "",
+        )
+        if raw:
+            path = _Path(str(raw)).expanduser()
+            if not path.is_absolute():
+                path = _Path(os.getcwd()) / path
+            return path
+        try:
+            from hermes_constants import get_hermes_home
+
+            return get_hermes_home() / "slack_channel_approvals.json"
+        except Exception:  # pragma: no cover - defensive fallback
+            return _Path(os.path.expanduser("~/.hermes/slack_channel_approvals.json"))
+
+    def _read_slack_channel_approval_state(self) -> dict:
+        path = self._slack_channel_approval_file()
+        if not path.exists():
+            return {"approved_channels": {}, "pending_channels": {}, "revoked_channels": {}}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning("[Slack] Could not read channel approval file: %s", path)
+            return {"approved_channels": {}, "pending_channels": {}, "revoked_channels": {}}
+        if not isinstance(data, dict):
+            data = {}
+        for key in ("approved_channels", "pending_channels", "revoked_channels"):
+            if not isinstance(data.get(key), dict):
+                data[key] = {}
+        return data
+
+    def _write_slack_channel_approval_state(self, data: dict) -> None:
+        path = self._slack_channel_approval_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+
+    def _slack_channel_approval_state_key(self, channel_id: str, team_id: str = "") -> str:
+        channel = str(channel_id or "").strip()
+        team = str(team_id or "").strip()
+        return f"{team}:{channel}" if team else channel
+
+    def _slack_channel_approval_state_entry_matches(
+        self,
+        key: str,
+        meta: Any,
+        channel_id: str,
+        team_id: str = "",
+    ) -> bool:
+        channel = str(channel_id or "").strip()
+        team = str(team_id or "").strip()
+        if not channel:
+            return False
+        if team and str(key) == f"{team}:{channel}":
+            return True
+        stored_team = str(meta.get("team_id", "")) if isinstance(meta, dict) else ""
+        if stored_team:
+            # Team-scoped state is never global; missing team_id must not match.
+            return bool(team and stored_team == team and str(key) == channel)
+        if str(key) != channel:
+            return False
+        # Legacy no-team state remains valid for single-workspace adapters only.
+        return not self._slack_multi_workspace_active()
+
+    def _slack_multi_workspace_active(self) -> bool:
+        return len(getattr(self, "_team_clients", {}) or {}) > 1
+
+    def _slack_allowed_channels_for_team(self, team_id: str = "") -> set:
+        allowed = set()
+        team = str(team_id or "").strip()
+        multi = self._slack_multi_workspace_active()
+        for raw in self._slack_allowed_channels():
+            entry = str(raw).strip()
+            if not entry:
+                continue
+            if ":" in entry:
+                entry_team, entry_channel = entry.split(":", 1)
+                if team and entry_team.strip() == team and entry_channel.strip():
+                    allowed.add(entry_channel.strip())
+            elif not multi:
+                allowed.add(entry)
+        return allowed
+
+    def _slack_approved_channels(self, team_id: str = "") -> set:
+        approved = set(self._slack_allowed_channels_for_team(team_id=team_id))
+        state = self._read_slack_channel_approval_state()
+        for ch, meta in state.get("approved_channels", {}).items():
+            channel = str(ch).split(":", 1)[-1].strip()
+            if channel and self._slack_channel_approval_state_entry_matches(ch, meta, channel, team_id):
+                approved.add(channel)
+        for ch, meta in state.get("revoked_channels", {}).items():
+            channel = str(ch).split(":", 1)[-1].strip()
+            if channel and self._slack_channel_approval_state_entry_matches(ch, meta, channel, team_id):
+                approved.discard(channel)
+        return approved
+
+    def _slack_agent_approval_aliases(self) -> set:
+        raw = self.config.extra.get("channel_approval_aliases") or os.getenv(
+            "SLACK_CHANNEL_APPROVAL_ALIASES",
+            "",
+        )
+        aliases = set()
+        has_explicit_aliases = False
+        if isinstance(raw, list):
+            aliases.update(str(item).strip().lower() for item in raw if str(item).strip())
+            has_explicit_aliases = bool(aliases)
+        elif isinstance(raw, str) and raw.strip():
+            aliases.update(part.strip().lower() for part in raw.split(",") if part.strip())
+            has_explicit_aliases = bool(aliases)
+        if not has_explicit_aliases:
+            bot_name = (self._bot_display_name or "").strip().lower()
+            if bot_name:
+                aliases.add(bot_name)
+                aliases.add(bot_name.replace("_local", ""))
+                aliases.add(bot_name.replace("-local", ""))
+            try:
+                profile_name = _Path(os.environ.get("HERMES_HOME", "")).name.lower()
+                if profile_name:
+                    aliases.add(profile_name)
+            except Exception:
+                pass
+        return {alias for alias in aliases if alias}
+
+    def _slack_channel_approval_action(self, text: str) -> Optional[str]:
+        """Return 'approve'/'revoke' for owner channel commands, else None."""
+        norm = re.sub(r"<@([^>|\s]+)(?:\|[^>]*)?>", " ", text or "")
+        norm = re.sub(r"[^a-z0-9_ -]+", " ", norm.lower())
+        norm = re.sub(r"\s+", " ", norm).strip()
+        if not norm:
+            return None
+        for alias in self._slack_agent_approval_aliases():
+            alias_norm = re.sub(r"[^a-z0-9_ -]+", " ", alias.lower()).strip()
+            if not alias_norm:
+                continue
+            if norm == f"approve {alias_norm} here":
+                return "approve"
+            if norm == f"revoke {alias_norm} here":
+                return "revoke"
+        return None
+
+    async def _send_slack_channel_approval_message(
+        self,
+        channel_id: str,
+        text: str,
+        *,
+        thread_ts: Optional[str] = None,
+        team_id: str = "",
+    ) -> None:
+        kwargs = {"channel": channel_id, "text": text}
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        try:
+            await self._get_client(channel_id, team_id=team_id).chat_postMessage(**kwargs)
+        except Exception as exc:  # pragma: no cover - best-effort notice
+            logger.warning("[Slack] Failed to send channel approval notice in %s: %s", channel_id, exc)
+
+    async def _handle_slack_channel_approval_gate(
+        self,
+        *,
+        channel_id: str,
+        user_id: str,
+        text: str,
+        is_mentioned: bool,
+        thread_ts: Optional[str],
+        team_id: str,
+        force_process: bool = False,
+    ) -> bool:
+        """Return True when the message was handled and must not reach the agent."""
+        if not self._slack_channel_approval_required():
+            return False
+        owners = self._slack_channel_approval_owners()
+        action = self._slack_channel_approval_action(text)
+        is_owner = bool(user_id and user_id in owners)
+        state = self._read_slack_channel_approval_state()
+        state_key = self._slack_channel_approval_state_key(channel_id, team_id)
+
+        # Approval/revoke commands must be honored even in currently approved
+        # channels; otherwise Patrick could not revoke without editing files.
+        if action == "approve":
+            if not is_owner:
+                await self._send_slack_channel_approval_message(
+                    channel_id,
+                    "Only an approval owner can approve me to work in this channel.",
+                    thread_ts=thread_ts,
+                    team_id=team_id,
+                )
+                return True
+            state.setdefault("approved_channels", {})[state_key] = {
+                "approved_by": user_id,
+                "approved_at": time.time(),
+                "team_id": team_id,
+                "channel_id": channel_id,
+            }
+            state.setdefault("pending_channels", {}).pop(state_key, None)
+            state.setdefault("pending_channels", {}).pop(channel_id, None)
+            state.setdefault("revoked_channels", {}).pop(state_key, None)
+            state.setdefault("revoked_channels", {}).pop(channel_id, None)
+            self._write_slack_channel_approval_state(state)
+            await self._send_slack_channel_approval_message(
+                channel_id,
+                "Approved — I can now work in this channel when mentioned.",
+                thread_ts=thread_ts,
+                team_id=team_id,
+            )
+            return True
+
+        if action == "revoke":
+            if not is_owner:
+                await self._send_slack_channel_approval_message(
+                    channel_id,
+                    "Only an approval owner can revoke my access to this channel.",
+                    thread_ts=thread_ts,
+                    team_id=team_id,
+                )
+                return True
+            state.setdefault("approved_channels", {}).pop(state_key, None)
+            state.setdefault("approved_channels", {}).pop(channel_id, None)
+            state.setdefault("pending_channels", {}).pop(state_key, None)
+            state.setdefault("pending_channels", {}).pop(channel_id, None)
+            state.setdefault("revoked_channels", {})[state_key] = {
+                "revoked_by": user_id,
+                "revoked_at": time.time(),
+                "team_id": team_id,
+                "channel_id": channel_id,
+            }
+            self._write_slack_channel_approval_state(state)
+            await self._send_slack_channel_approval_message(
+                channel_id,
+                "Revoked — I will not work in this channel unless an approval owner approves me again.",
+                thread_ts=thread_ts,
+                team_id=team_id,
+            )
+            return True
+
+        if channel_id in self._slack_approved_channels(team_id=team_id):
+            return False
+
+        if is_mentioned or force_process:
+            pending = state.setdefault("pending_channels", {}).setdefault(state_key, {})
+            pending.setdefault("first_seen_at", time.time())
+            pending["channel_id"] = channel_id
+            if user_id:
+                pending["last_requested_by"] = user_id
+            if team_id:
+                pending["team_id"] = team_id
+            self._write_slack_channel_approval_state(state)
+            owner_hint = "an approval owner"
+            if owners:
+                owner_hint = "an approval owner " + " ".join(f"<@{owner}>" for owner in sorted(owners))
+            aliases = sorted(a for a in self._slack_agent_approval_aliases() if a != "this agent")
+            alias = aliases[0] if aliases else "this agent"
+            await self._send_slack_channel_approval_message(
+                channel_id,
+                f"I’m not approved to work in this channel yet. {owner_hint} needs to reply `approve {alias} here` before I can help here.",
+                thread_ts=thread_ts,
+                team_id=team_id,
+            )
+        return True
+
     def _slack_require_mention_channels(self) -> set:
         """Return channel IDs where a bot @mention is ALWAYS required.
 
@@ -9545,6 +9862,22 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
+    if "channel_approval_required" in slack_cfg and not os.getenv("SLACK_CHANNEL_APPROVAL_REQUIRED"):
+        os.environ["SLACK_CHANNEL_APPROVAL_REQUIRED"] = str(
+            slack_cfg["channel_approval_required"]
+        ).lower()
+    owners = slack_cfg.get("channel_approval_owners")
+    if owners is not None and not os.getenv("SLACK_CHANNEL_APPROVAL_OWNERS"):
+        if isinstance(owners, list):
+            owners = ",".join(str(v) for v in owners)
+        os.environ["SLACK_CHANNEL_APPROVAL_OWNERS"] = str(owners)
+    aliases = slack_cfg.get("channel_approval_aliases")
+    if aliases is not None and not os.getenv("SLACK_CHANNEL_APPROVAL_ALIASES"):
+        if isinstance(aliases, list):
+            aliases = ",".join(str(v) for v in aliases)
+        os.environ["SLACK_CHANNEL_APPROVAL_ALIASES"] = str(aliases)
+    if "channel_approval_file" in slack_cfg and not os.getenv("SLACK_CHANNEL_APPROVAL_FILE"):
+        os.environ["SLACK_CHANNEL_APPROVAL_FILE"] = str(slack_cfg["channel_approval_file"])
     # ignored_channels: blacklist channels where Slack must never respond.
     ic = slack_cfg.get("ignored_channels")
     if ic is not None and not os.getenv("SLACK_IGNORED_CHANNELS"):
@@ -9589,7 +9922,8 @@ def register(ctx) -> None:
         # YAML→env config bridge — owns the translation of config.yaml slack:
         # keys (require_mention, strict_mention, ignore_other_user_mentions,
         # thread_require_mention, allow_bots, free_response_channels,
-        # reactions, disable_dms, allowed_channels, ignored_channels) into
+        # reactions, disable_dms, allowed_channels, channel approval settings,
+        # ignored_channels) into
         # SLACK_* env vars that
         # the adapter reads via os.getenv(). Replaces the
         # hardcoded block in gateway/config.py. Hook contract: #24849.

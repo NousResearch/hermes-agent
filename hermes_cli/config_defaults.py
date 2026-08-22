@@ -2182,6 +2182,10 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        "channel_approval_required": False,  # If true, unknown Slack channels get an approval prompt before the bot can work there
+        "channel_approval_owners": "",      # Comma-separated Slack user IDs allowed to approve/revoke channels; defaults to allow_from / SLACK_ALLOWED_USERS
+        "channel_approval_aliases": "",     # Comma-separated agent names accepted in "approve <agent> here" / "revoke <agent> here"
+        "channel_approval_file": "",        # Optional JSON state file path; defaults to $HERMES_HOME/slack_channel_approvals.json
         # Channel IDs where @mention is ALWAYS required, even when
         # require_mention is false globally (per-channel force-mention override).
         "require_mention_channels": "",

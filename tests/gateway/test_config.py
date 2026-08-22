@@ -351,6 +351,31 @@ class TestLoadGatewayConfig:
         assert os.getenv("SLACK_IGNORED_CHANNELS") == "C0123456789,C0987654321"
 
 
+    def test_slack_channel_approval_config_bridges_to_extra(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "slack:\n"
+            "  enabled: true\n"
+            "  channel_approval_required: true\n"
+            "  channel_approval_owners:\n"
+            "    - U_OWNER\n"
+            "  channel_approval_aliases:\n"
+            "    - cleo\n"
+            "  channel_approval_file: /tmp/approvals.json\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.SLACK].extra
+        assert extra["channel_approval_required"] is True
+        assert extra["channel_approval_owners"] == ["U_OWNER"]
+        assert extra["channel_approval_aliases"] == ["cleo"]
+        assert extra["channel_approval_file"] == "/tmp/approvals.json"
+
+
     def test_typing_status_text_from_nested_platforms_block(self, tmp_path, monkeypatch):
         """``platforms.slack.typing_status_text`` reaches PlatformConfig via
         _merge_platform_map + the from_dict top-level read."""

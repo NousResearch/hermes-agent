@@ -346,6 +346,10 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `SLACK_ALLOW_ALL_USERS` | Allow any Slack user to trigger the bot (dev only). |
 | `SLACK_ALLOW_BOTS` | Accept messages from other Slack bots: `none` (default), `mentions`, or `all`. The bot always ignores its own messages. |
 | `SLACK_THREAD_REQUIRE_MENTION` | Require an explicit @mention for Slack thread replies while preserving top-level free-response channels |
+| `SLACK_CHANNEL_APPROVAL_REQUIRED` | Enable the one-time Slack shared-channel approval gate (`true`/`false`). |
+| `SLACK_CHANNEL_APPROVAL_OWNERS` | Comma-separated Slack user IDs allowed to approve/revoke an agent in a channel. Defaults to `SLACK_ALLOWED_USERS` when unset. |
+| `SLACK_CHANNEL_APPROVAL_ALIASES` | Comma-separated agent names accepted in exact `approve <agent> here` / `revoke <agent> here` phrases. |
+| `SLACK_CHANNEL_APPROVAL_FILE` | Optional JSON state file path for channel approvals; defaults to `$HERMES_HOME/slack_channel_approvals.json`. |
 | `SLACK_HOME_CHANNEL` | Default Slack channel for cron delivery |
 | `SLACK_HOME_CHANNEL_NAME` | Display name for the Slack home channel |
 | `GOOGLE_CHAT_PROJECT_ID` | GCP project hosting the Pub/Sub topic (falls back to `GOOGLE_CLOUD_PROJECT`) |

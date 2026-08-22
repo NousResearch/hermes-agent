@@ -1000,6 +1000,21 @@ class GatewayKanbanWatchersMixin:
                                     sub["task_id"], _wk_err, exc_info=True,
                                 )
                         if task_terminal:
+                            # Event-driven lead shared-memory injection
+                            # (locked decision 2 / R5, restored 2026-08-22).
+                            # Best-effort — the helper never raises into
+                            # this tick; see its docstring for the full
+                            # scope-safety contract.
+                            try:
+                                await asyncio.to_thread(
+                                    self._kanban_shared_injection,
+                                    sub, task, board_slug,
+                                )
+                            except Exception as _si_err:
+                                logger.warning(
+                                    "kanban notifier: shared injection failed for %s: %s",
+                                    sub["task_id"], _si_err,
+                                )
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,
                             )
@@ -1046,6 +1061,57 @@ class GatewayKanbanWatchersMixin:
             )
         finally:
             conn.close()
+
+    def _kanban_shared_injection(
+        self,
+        sub: dict,
+        task: Optional[Any],
+        board_slug: Optional[str],
+    ) -> None:
+        """Event-driven lead shared-memory injection (locked decision 2 / R5).
+
+        Restored 2026-08-22 after the original call site was lost in an
+        upstream merge of the notifier rewrite. On terminal task
+        transition, distil the team's shared surface into the lead's
+        scope. Best-effort and scope-safe: only a REGISTERED team (task
+        tenant key present in the TEAMS registry) with SEVERIAN_STORAGE
+        set triggers anything; all failures are logged, never raised —
+        the notifier tick must not wedge.
+        """
+        from gateway.shared_injection import (
+            TEAMS as _SI_TEAMS,
+            inject_on_task_completion,
+        )
+        from severian.composition import build_bundle as _si_bundle
+        from severian.infrastructure.embedding_resolver import (
+            embedding_from_env as _si_embedding_from_env,
+        )
+
+        _team_key = getattr(task, "tenant", None) or ""
+        _team_key = _team_key if _team_key in _SI_TEAMS else ""
+        _store = os.environ.get("SEVERIAN_STORAGE", "").strip()
+        if not (_store and _team_key):
+            return
+        # embedding_from_env is the resolver's single SEVERIAN_EMBEDDING
+        # entry point (F-03 contract): the seam honours the exact same
+        # embedding space as gateways and cron scripts.
+        _bundle = _si_bundle(
+            backend="sqlite",
+            database=Path(_store) / "severian.db",
+            fts=Path(_store) / "severian.fts",
+            vectors=Path(_store) / "severian.vec",
+            embedding=_si_embedding_from_env(),
+        )
+        try:
+            inject_on_task_completion(
+                bundle=_bundle,
+                task_id=sub["task_id"],
+                title=(task.title if task else "")[:120],
+                board=board_slug or "",
+                team=_team_key,
+            )
+        finally:
+            _bundle.close()
 
     def _kanban_rewind(
         self,

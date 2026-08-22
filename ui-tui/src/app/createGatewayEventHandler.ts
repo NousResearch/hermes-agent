@@ -36,6 +36,24 @@ import { isWakeUserDisabled } from './wakeState.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
+// The compaction lifecycle reaches the TUI under three different `kind` values,
+// from three different producers, all meaning the same thing to the user — part
+// of the conversation was rewritten:
+//
+//   compressing  manual /compress progress    tui_gateway/methods_session.py
+//   compacting   auto-compaction started      tui_gateway/server.py re-tags the
+//                                             `lifecycle` status that carries
+//                                             COMPACTION_STATUS_MARKER
+//   compacted    auto-compaction finished     agent/conversation_compression.py
+//                                             (_emit_compaction_done)
+//
+// Only `compressing` used to be recognised here, so the compaction the user did
+// NOT ask for — the one that most needs explaining, because the transcript looks
+// like it reset itself — left no durable record at all: just a status-bar line
+// that restoreStatusAfter() wipes four seconds later (#88102). The desktop app
+// already handles all three (use-message-stream/gateway-event.ts).
+const COMPACTION_TRANSCRIPT_KINDS: ReadonlySet<string> = new Set(['compacted', 'compacting', 'compressing'])
+
 type VoiceSubmitMode = 'direct' | 'draft'
 
 const normalizeVoiceSubmitMode = (value: unknown): VoiceSubmitMode =>
@@ -849,9 +867,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         setStatus(p.text)
 
-        if (p.kind === 'compressing') {
+        if (COMPACTION_TRANSCRIPT_KINDS.has(p.kind ?? '')) {
           sys(p.text)
+        }
 
+        if (p.kind === 'compressing') {
           return
         }
 

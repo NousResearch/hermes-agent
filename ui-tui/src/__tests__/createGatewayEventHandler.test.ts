@@ -196,6 +196,53 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
   })
 
+  it('prints an auto-compaction start into the transcript (#88102)', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+    // Auto-compaction never says 'compressing'. It reaches the TUI as a
+    // 'lifecycle' status that tui_gateway re-tags to 'compacting', so matching
+    // only the manual /compress kind dropped it on the floor.
+    const text = '🗜️ Compacting context — summarizing earlier conversation so I can continue...'
+
+    onEvent({ payload: { kind: 'compacting', text }, type: 'status.update' } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith(text)
+    // Additive: the in-turn activity entry these kinds already got is still
+    // there. The transcript line is the durable record, not a replacement for
+    // the live indicator.
+    expect(getTurnState().activity.map(item => item.text)).toEqual([text])
+  })
+
+  it('prints the auto-compaction terminal edge into the transcript (#88102)', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+    // agent/conversation_compression.py::_emit_compaction_done sends this one
+    // directly, under a third kind again.
+    const text = '✓ Context compaction complete — continuing turn...'
+
+    onEvent({ payload: { kind: 'compacted', text }, type: 'status.update' } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith(text)
+    expect(getTurnState().activity.map(item => item.text)).toEqual([text])
+  })
+
+  it('keeps unrelated lifecycle statuses out of the transcript', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+    // The guard against fixing the kind mismatch by matching everything with a
+    // kind: ordinary lifecycle notes belong in the status bar and the activity
+    // strip, and a transcript line each would bury the conversation.
+    const text = 'Reconnecting to gateway…'
+
+    onEvent({ payload: { kind: 'lifecycle', text }, type: 'status.update' } as any)
+
+    expect(ctx.system.sys).not.toHaveBeenCalled()
+    expect(getTurnState().activity.map(item => item.text)).toEqual([text])
+  })
+
   it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)

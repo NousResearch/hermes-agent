@@ -7983,11 +7983,17 @@ KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 
 # Patterns in last_failure_error that indicate a quota / auth blocker.
 # These errors won't resolve by retrying immediately — auto-block instead.
+#
+# Boundaries deliberately reject ``-``, ``/`` and ``.`` neighbours instead of
+# plain ``\b``: error text often embeds git branch names / paths / URLs
+# (e.g. "git worktree add failed ... on branch dev/3627-auth-login-..."),
+# and a bare \b would match the "auth" inside such slugs — parking the task
+# as a phantom auth blocker forever even though nothing auth-related failed.
 _RESPAWN_BLOCKER_RE = re.compile(
-    r"\b(quota|rate[\s_\-]?limit|429|403|auth\w*|"
+    r"(?<![\w\-/.])(quota|rate[\s_\-]?limit|429|403|auth\w*|"
     r"unauthorized|forbidden|billing|subscription|"
     r"access[\s_]denied|permission[\s_]denied|"
-    r"invalid[\s_]api[\s_]key)\b",
+    r"invalid[\s_]api[\s_]key)(?![\w\-/])",
     re.IGNORECASE,
 )
 

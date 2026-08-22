@@ -367,6 +367,53 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kb.check_respawn_guard(conn, tid) is None
 
 
+def test_respawn_guard_branch_slug_containing_auth_is_not_auth_blocker(
+    kanban_home,
+):
+    """A workspace/git error that merely embeds a branch name containing
+    ``auth`` must not classify as ``blocker_auth`` — that parks the task
+    forever (respawn guard defers every tick) even though nothing
+    auth-related failed."""
+    err = (
+        "workspace: git worktree add failed for /mnt/d/wt/main/t_x on branch "
+        "dev/3627-auth-auth-login-and-auth-change-password-share: "
+        "Preparing worktree (checking out "
+        "'dev/3627-auth-auth-login-and-auth-change-password-share')\n"
+        "fatal: 'dev/3627-auth-auth-login-and-auth-change-password-share' is "
+        "already used by worktree at '/mnt/d/wt/main/t_y'"
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="wt-conflict", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='ready', last_failure_error=? WHERE id=?",
+            (err, tid),
+        )
+        conn.commit()
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_respawn_guard_still_flags_real_auth_and_quota_errors(kanban_home):
+    """Genuine quota/auth failures — standalone words in prose — still defer
+    as ``blocker_auth``."""
+    cases = [
+        "provider returned 403 Forbidden: invalid api key",
+        "worker exited: authentication required (HTTP 401 Unauthorized)",
+        "EX_TEMPFAIL quota exceeded for tenant; retry later",
+        "rate limit hit on provider — back off",
+        "billing subscription expired for model access",
+    ]
+    with kb.connect() as conn:
+        for i, err in enumerate(cases):
+            tid = kb.create_task(conn, title=f"real-auth-{i}", assignee="a")
+            conn.execute(
+                "UPDATE tasks SET status='ready', last_failure_error=? "
+                "WHERE id=?",
+                (err, tid),
+            )
+            conn.commit()
+            assert kb.check_respawn_guard(conn, tid) == "blocker_auth", err
+
+
 
 
 

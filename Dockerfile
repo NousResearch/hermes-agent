@@ -49,6 +49,47 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 # 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
 # #4977.
 FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73 AS node_source
+
+# Buzz CLI build stage (OOF-208). The Buzz platform adapter shells out to the
+# `buzz` binary for every relay operation, but block/buzz publishes no
+# prebuilt CLI artifacts (releases only contain the desktop app bundles), so
+# hosted images shipped the adapter without its binary — Buzz-enabled
+# instances then died at startup. Build the CLI from a pinned source tag.
+# The buzz-cli dependency tree uses rustls (ring/aws-lc-rs providers) with
+# no OpenSSL/native-tls linkage, so the resulting binary carries no
+# shared-lib deps beyond glibc/libm/libgcc; bookworm's glibc 2.36 runs
+# cleanly on the trixie (2.41) runtime, mirroring the node_source rationale
+# above. Layer-cached: only re-runs when the pinned ref changes. Bumping
+# Buzz is a one-line ARG change.
+#
+# Toolchain pinning: the pinned Buzz checkout ships rust-toolchain.toml
+# (channel = "1.95.0"), and the official rust images are rustup-managed —
+# without an override, rustup would silently download whatever toolchain
+# the checkout requests at build time, making the compiler undetermined by
+# the digest-pinned image and adding a hidden network dependency on
+# static.rust-lang.org. The base image ships 1.95 AND RUSTUP_TOOLCHAIN
+# forces it explicitly, so the effective compiler is exactly the baked one
+# regardless of what a future BUZZ_GIT_REF's rust-toolchain.toml says.
+# When bumping BUZZ_GIT_REF, check the new checkout's rust-toolchain.toml
+# and bump the image + RUSTUP_TOOLCHAIN together if it moved.
+FROM rust:1.95-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082 AS buzz_build
+ENV RUSTUP_TOOLCHAIN=1.95.0
+# v0.5.2 — pin the commit SHA, not the tag: tags are mutable, SHAs are not.
+ARG BUZZ_GIT_REF=3e48f1b2365d326ee1c9582448d86a99b44ecd5d
+RUN apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+        ca-certificates curl git pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+RUN git init /tmp/buzz && \
+    cd /tmp/buzz && \
+    git remote add origin https://github.com/block/buzz && \
+    git fetch --depth 1 origin "${BUZZ_GIT_REF}" && \
+    git checkout FETCH_HEAD && \
+    cargo build --release -p buzz-cli --locked && \
+    install -m 0755 target/release/buzz /usr/local/bin/buzz && \
+    rm -rf /tmp/buzz "${CARGO_HOME:-/usr/local/cargo}/registry" \
+        "${CARGO_HOME:-/usr/local/cargo}/git"
+
 FROM debian:13.4
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
@@ -165,6 +206,11 @@ COPY --chmod=0755 --from=node_source /usr/local/bin/node /usr/local/bin/
 COPY --from=node_source /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
     ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+# Buzz CLI binary (OOF-208): baked from the buzz_build stage so a
+# Buzz-enabled config never boots into a runtime that lacks the binary.
+# plugins/platforms/buzz/adapter.py resolves it via `buzz` on PATH.
+COPY --chmod=0755 --from=buzz_build /usr/local/bin/buzz /usr/local/bin/buzz
 
 WORKDIR /opt/hermes
 

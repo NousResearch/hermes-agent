@@ -12909,6 +12909,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 else:
                     logger.warning("No adapter available for %s", _pval)
+                # Surface the parked platform in runtime status (OOF-208):
+                # before this, a platform whose adapter couldn't be created
+                # (missing binary/SDK — e.g. Buzz without the buzz CLI on the
+                # hosted image) was invisible in /api/status: enabled in
+                # config, absent from platforms{}, no error anywhere. Use
+                # "fatal" (a recognised dead state) with a specific code so
+                # dashboards and the health briefing can attribute the outage
+                # to the platform instead of the gateway.
+                self._update_platform_runtime_status(
+                    _pval,
+                    platform_state="fatal",
+                    error_code="adapter_unavailable",
+                    error_message=(
+                        "adapter could not be created — missing dependency, "
+                        "binary, or credentials (see gateway log)"
+                    ),
+                    needs_attention=True,
+                )
+                # Queue for retry (OOF-208 review round 2): an unavailable
+                # adapter is usually an install-state problem — an operator
+                # can drop the missing binary in place or a lazy dep install
+                # can complete while the gateway is up. Without this queue
+                # entry, the ONLY recovery path was a full gateway restart
+                # even though the reconnect watcher re-runs check_fn via
+                # _create_adapter() every cycle. No adapter exists yet, so
+                # there are no credential/listener claims to record.
+                self._failed_platforms[platform] = {
+                    "config": platform_config,
+                    "attempts": 1,
+                    "next_retry": time.monotonic() + 30,
+                    "queued_at": time.monotonic(),
+                    "adapter_unavailable": True,
+                }
                 continue
 
             # Set up message + fatal error handlers. Under multiplexing the
@@ -14525,11 +14558,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     adapter = self._create_adapter(platform, platform_config)
                     if not adapter:
-                        logger.warning(
-                            "Reconnect %s: adapter creation returned None, removing from retry queue",
+                        # Do NOT evict (OOF-208 review round 2): create_adapter
+                        # returning None usually means check_fn failed — a
+                        # missing binary/SDK that an operator can install while
+                        # the gateway is up. Evicting here made recovery
+                        # impossible without a restart: the binary appearing
+                        # after the first retry tick could never be noticed.
+                        # check_fn is cheap (no network), so keep re-probing at
+                        # the standard backoff cap; the OOF-156 NEEDS_ATTENTION
+                        # escalation already flags perma-failing platforms.
+                        backoff = _reconnect_backoff(attempt)
+                        info["attempts"] = attempt
+                        info["next_retry"] = time.monotonic() + backoff
+                        self._update_platform_runtime_status(
                             platform.value,
+                            platform_state="retrying",
+                            error_code="adapter_unavailable",
+                            error_message=(
+                                "adapter could not be created — missing "
+                                "dependency, binary, or credentials "
+                                "(see gateway log)"
+                            ),
                         )
-                        del self._failed_platforms[platform]
+                        logger.warning(
+                            "Reconnect %s: adapter creation returned None "
+                            "(requirements not met?), next retry in %ds",
+                            platform.value, backoff,
+                        )
                         continue
 
                     adapter.set_message_handler(self._primary_message_handler())

@@ -111,6 +111,10 @@ _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
 # BUZZ_PRIVATE_KEY is not set.  Module-level so tests can point it at a tmpdir.
 _DEFAULT_CREDENTIALS_DIR = Path("~/.config/buzz").expanduser()
 
+# One-shot latch for the configured-but-binary-missing warning in
+# check_requirements() — that probe runs on hot status-poll paths.
+_WARNED_CLI_MISSING = False
+
 
 def _load_nostr_auth():
     """Import the sibling nostr_auth module in a loader-agnostic way.
@@ -463,8 +467,18 @@ class BuzzAdapter(BasePlatformAdapter):
             self._set_fatal_error("config_missing", "BUZZ_RELAY_URL must be set", retryable=False)
             return False
         if not self.cli_path:
+            # retryable=True (OOF-208): a missing binary is an install-state
+            # problem, not a config contradiction — the operator can drop the
+            # binary in place while the gateway is up, and the reconnect
+            # watcher should then recover the platform. retryable=False here
+            # used to escalate to gateway_state=startup_failed + exit 78
+            # (whole gateway down) whenever Buzz was the only enabled
+            # platform. Normally this path is unreachable now that
+            # check_requirements() gates on the binary (create_adapter
+            # returns None instead), but it still guards the race where the
+            # binary disappears between that check and connect().
             logger.error("Buzz: buzz CLI binary not found (set BUZZ_CLI_PATH or put 'buzz' on PATH)")
-            self._set_fatal_error("cli_missing", "buzz CLI binary not found", retryable=False)
+            self._set_fatal_error("cli_missing", "buzz CLI binary not found", retryable=True)
             return False
         self._private_key = _resolve_private_key(self._extra)
         if not self._private_key:
@@ -1255,10 +1269,88 @@ class BuzzAdapter(BasePlatformAdapter):
 # ---------------------------------------------------------------------------
 
 def check_requirements() -> bool:
-    """Check if Buzz is configured: a relay URL plus a resolvable key."""
-    if not os.getenv("BUZZ_RELAY_URL", "").strip():
+    """Check if Buzz is usable: a relay URL, a resolvable key, and the CLI binary.
+
+    The binary check matters as much as the credential checks (OOF-208):
+    ``check_fn`` is the passive gate ``create_adapter()`` consults before
+    constructing the adapter.  Without it, a configured-but-binary-less
+    install (e.g. a hosted image that doesn't bake the ``buzz`` CLI) sails
+    past adapter creation and then fails ``connect()`` with a non-retryable
+    ``cli_missing`` fatal — and when Buzz is the only enabled platform, that
+    single missing OPTIONAL binary escalates to gateway_state=startup_failed
+    and hard-exits the whole gateway (exit 78).  Returning False here means
+    the registry logs the install_hint and the gateway degrades gracefully
+    (#5196), exactly like Photon when node/npm are absent.
+
+    ``check_fn`` receives no PlatformConfig, but the adapter itself resolves
+    ``extra.cli_path`` / ``extra.credentials_file`` from config.yaml — so this
+    gate must consult the same sources or a documented YAML-only setup gets
+    parked as ``adapter_unavailable`` even though ``BuzzAdapter(config)``
+    would run fine (review finding on PR #88310).  Env vars win over YAML,
+    matching the adapter constructor's precedence.
+    """
+    extra = _config_yaml_extra()
+    relay = os.getenv("BUZZ_RELAY_URL", "").strip() or str(extra.get("relay_url", "") or "").strip()
+    if not relay:
         return False
-    return bool(_resolve_private_key())
+    if not _resolve_private_key(extra):
+        return False
+    configured_cli = os.getenv("BUZZ_CLI_PATH", "").strip() or str(extra.get("cli_path", "") or "").strip()
+    if not _resolve_cli_path(configured_cli):
+        # WARNING (not DEBUG): unlike the normal "not configured yet" state,
+        # relay+key present but no binary means the user finished setup and
+        # the install itself is broken — say so.  Logged once per process:
+        # check_fn runs from hot paths (GET /api/status polling,
+        # load_gateway_config), so an unconditional warning would spam.
+        global _WARNED_CLI_MISSING
+        if not _WARNED_CLI_MISSING:
+            _WARNED_CLI_MISSING = True
+            logger.warning(
+                "Buzz configured (relay + key) but the buzz CLI binary was not "
+                "found — set BUZZ_CLI_PATH or put 'buzz' on PATH. The platform "
+                "will stay offline until the binary is installed."
+            )
+        return False
+    return True
+
+
+def _config_yaml_extra() -> dict:
+    """Best-effort read of the buzz ``extra`` block from config.yaml.
+
+    ``check_requirements()`` runs both after the YAML→env bridge (gateway
+    startup) and from paths where no bridge has run (status polling, CLI
+    entrypoints), so it cannot rely on ``BUZZ_*`` env vars being populated
+    from YAML.  Mirrors the lookup order gateway/config.py uses to find a
+    platform block: top-level ``buzz:`` → ``platforms.buzz`` →
+    ``gateway.platforms.buzz``.  Fail-quiet: any read/parse problem returns
+    ``{}`` so the env-only path behaves exactly as before.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        if not isinstance(cfg, dict):
+            return {}
+        block = None
+        for candidate in (
+            cfg.get("buzz"),
+            (cfg.get("platforms") or {}).get("buzz") if isinstance(cfg.get("platforms"), dict) else None,
+            (
+                ((cfg.get("gateway") or {}).get("platforms") or {}).get("buzz")
+                if isinstance(cfg.get("gateway"), dict)
+                and isinstance((cfg.get("gateway") or {}).get("platforms"), dict)
+                else None
+            ),
+        ):
+            if isinstance(candidate, dict):
+                block = candidate
+                break
+        if block is None:
+            return {}
+        extra = block.get("extra", block)
+        return extra if isinstance(extra, dict) else {}
+    except Exception:
+        return {}
 
 
 def validate_config(config) -> bool:
@@ -1292,6 +1384,7 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
     _str_keys = {
         "relay_url": "BUZZ_RELAY_URL",
         "cli_path": "BUZZ_CLI_PATH",
+        "credentials_file": "BUZZ_CREDENTIALS_FILE",
         "home_channel": "BUZZ_HOME_CHANNEL",
         "transport": "BUZZ_TRANSPORT",
     }

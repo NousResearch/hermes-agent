@@ -24,6 +24,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 
@@ -2854,6 +2856,56 @@ def _is_channel_dm_topic(
             job_id, chat_id,
         )
     return is_channel
+
+
+def _cron_telegram_direct(text: str) -> Optional[str]:
+    """Send a cron job alert via direct Telegram Bot API (no platform channel needed).
+
+    Used when the normal delivery channel is unavailable (desktop backend, no
+    resolvable Telegram home channel) so alerts reach the user regardless of
+    which scheduler dispatched the job.  Same pattern as gateway_probe.py.
+    Returns None on success, an error string on failure.
+    """
+    hermes_home = get_hermes_home()
+    if not hermes_home:
+        return "no HERMES_HOME"
+    env_file = hermes_home / ".env"
+    if not env_file.exists():
+        return "no .env"
+    token = chat_id = None
+    try:
+        with open(env_file, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k == "TELEGRAM_BOT_TOKEN":
+                    token = v
+                elif k in ("TELEGRAM_CHAT_ID", "TELEGRAM_HOME_CHANNEL"):
+                    chat_id = v
+    except OSError as e:
+        return f".env read failed: {e}"
+    if not token or not chat_id:
+        return "missing TELEGRAM_BOT_TOKEN or chat id in .env"
+    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        req = urllib.request.Request(url, data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = json.loads(r.read().decode())
+        if body.get("ok"):
+            logger.info("cron: direct Bot API delivered (mid=%s)",
+                        body.get("result", {}).get("message_id"))
+            return None
+        msg = json.dumps(body)[:200]
+        logger.warning("cron: direct Bot API error: %s", msg)
+        return f"telegram API error: {msg}"
+    except Exception as e:
+        logger.warning("cron: direct Bot API send failed: %s", e)
+        return f"telegram send failed: {e}"
 
 
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
@@ -6929,12 +6981,19 @@ def _run_one_job_body(
                         if not owns_delivery:
                             raise _FireClaimLostDuringSideEffect
                         delivery_attempted = True
-                        delivery_error = _deliver_result(
-                            job,
-                            deliver_content,
-                            adapters=adapters,
-                            loop=loop,
-                        )
+                        if unresolved_origin:
+                            # deliver=origin with no origin or home channels
+                            # resolvable: _deliver_result() would silently skip
+                            # (output saved in last_output, nothing reaches the
+                            # user). Send via direct Bot API so alerts land.
+                            delivery_error = _cron_telegram_direct(deliver_content)
+                        else:
+                            delivery_error = _deliver_result(
+                                job,
+                                deliver_content,
+                                adapters=adapters,
+                                loop=loop,
+                            )
                 except Exception as de:
                     if isinstance(de, _FireClaimLostDuringSideEffect):
                         raise
@@ -7086,6 +7145,16 @@ def _run_one_job_body(
                 logger.error(
                     "Delivery failed for job %s: %s", job["id"], delivery_exc
                 )
+            if delivery_error:
+                # Normal delivery failed: try the direct Bot API fallback so the
+                # failure alert still reaches the user (e.g. desktop backend
+                # without a resolvable platform channel).
+                direct_err = _cron_telegram_direct(
+                    _summarize_cron_failure_for_delivery(job, _err_text)
+                )
+                if not direct_err:
+                    delivery_error = None
+                    delivery_outcome = "delivered"
             if not delivery_error and normalized_deliver == "origin":
                 unresolved_origin = not _resolve_delivery_targets(job)
             if delivery_error:

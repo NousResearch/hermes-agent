@@ -417,12 +417,13 @@ set) and can be disabled with `HERMES_KANBAN_STOP_NUDGE=0`.
 **Dispatcher-side recovery:** If the nudges are exhausted or the worker crashes
 before reaching the nudge, the dispatcher gives the violation a **bounded retry**
 (up to `_PROTOCOL_VIOLATION_FAILURE_LIMIT` consecutive violations, default 3)
-before auto-blocking the task instead of respawning it into the same loop. The
-budget counts only *consecutive* clean-exit protocol violations — interleaved
-rate-limited requeues are neutral, and any other failure kind resets the
-streak — and a per-task `max_retries` overrides the bound. This usually means
-the model wrote a plain-text answer and exited without using the Kanban tool
-surface.
+before auto-blocking the task instead of respawning it into the same loop. A
+protocol violation usually means the model wrote a plain-text answer and
+exited without using the Kanban tool surface. Without an explicit per-task
+`max_retries`, the budget counts only *consecutive* clean-exit protocol
+violations: rate-limited requeues are neutral and other failures reset the
+streak. With `max_retries=N`, every non-neutral failure instead counts into the
+same unified total, so the task blocks on its Nth failed run.
 
 The lifecycle plus the load-bearing reference details (workspace kinds, deliverable `artifacts`, claiming created cards) ship in that system-prompt block, so every worker has them regardless of which profile it runs under — no per-profile skill setup required.
 
@@ -1155,8 +1156,8 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `reconciled` | `{reason, claim_lock, claim_expires, worker_pid}` | Orphaned-card reconciliation: the card was `running` with broken claim bookkeeping (`claim_lock` or `claim_expires` NULL — crash mid-claim, manual SQL, DB restore) and no live worker, so none of the TTL/crash/stale paths could ever recover it. The dispatcher requeued it to `ready` with an explanatory comment. Gated by `kanban.reconcile_orphans` in config.yaml (default `true`). |
 | `respawn_guarded` | `{reason}` | Dispatcher refused to re-spawn this ready task this tick. Reasons: `blocker_auth` (last failure was a quota/auth/429 error — wait for the rate window to reset), `recent_success` (a completed run happened in the last hour — wait for review before re-running), `active_pr` (a GitHub PR URL appears in a recent comment — a prior worker already opened a PR). The task stays in `ready`; the next tick gets another chance to spawn. If the underlying condition persists, the normal `consecutive_failures` circuit breaker will auto-block via `gave_up` after `failure_limit` failures. |
 | `spawn_failed` | `{error, failures}` | One spawn attempt failed (missing PATH, workspace unmountable, …). Counter increments; task returns to `ready` for retry. |
-| `protocol_violation` | `{pid, claimer, exit_code, protocol_violation}` | Worker exited successfully while the task was still `running`, usually because it answered without calling `kanban_complete` or `kanban_block`. Emitted on every violation (the payload's `protocol_violation: true` marker is copied into the run metadata and feeds the violation-only retry budget). Below the budget — up to `_PROTOCOL_VIOLATION_FAILURE_LIMIT` (default 3) *consecutive* violations, per-task `max_retries` overriding — the task simply returns to `ready` for another attempt; when the streak reaches the bound the dispatcher also emits `gave_up` and auto-blocks. |
-| `gave_up` | `{failures, effective_limit, limit_source, error}` | Circuit breaker fired after N consecutive non-successful attempts. Task auto-blocks with the last error. The effective limit resolves as task `max_retries`, then dispatcher `failure_limit` / `kanban.failure_limit`, then the built-in default. |
+| `protocol_violation` | `{pid, claimer, exit_code, protocol_violation}` | Worker exited successfully while the task was still `running`, usually because it answered without calling `kanban_complete` or `kanban_block`. Without an explicit `max_retries`, violations use their own consecutive streak (default limit 3). With `max_retries=N`, they count into the unified `consecutive_failures` total with crashes and timeouts, and the task blocks on the Nth non-neutral failure. |
+| `gave_up` | `{failures, effective_limit, limit_source, error}` | Circuit breaker fired after N consecutive non-neutral failures. Rate-limited and stale/reclaimed requeues do not increment the counter. The effective limit resolves as task `max_retries`, then dispatcher `failure_limit` / `kanban.failure_limit`, then the built-in default. |
 
 `hermes kanban tail <id>` shows these for a single task. `hermes kanban watch` streams them board-wide.
 

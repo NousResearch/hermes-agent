@@ -3051,13 +3051,13 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     Nesting is an explicit opt-in: a caller already inside a transaction
     gets a loud ``RuntimeError`` unless it passes ``allow_nested=True``,
     in which case a SQLite savepoint is used instead of a second
-    ``BEGIN IMMEDIATE``. Only composition primitives that graph builders
-    deliberately run under one outer commit (``create_task``,
-    ``add_comment``) opt in — helpers with post-commit side effects
-    (``complete_task`` & co.) must never run under an open outer
-    transaction, because their side effects (workspace cleanup, ready
-    recomputation, failure-counter clears) would fire while the outer
-    transaction can still roll back.
+    ``BEGIN IMMEDIATE``. Composition primitives that deliberately run
+    under one outer commit (for example ``create_task``, ``add_comment``,
+    and dispatcher failure accounting) opt in. Helpers with post-commit
+    side effects (``complete_task`` & co.) must never run under an open
+    outer transaction, because their side effects (workspace cleanup,
+    ready recomputation, failure-counter clears) would fire while the
+    outer transaction can still roll back.
 
     The explicit ROLLBACK on exception is wrapped in try/except so that
     a SQLite auto-rollback (which leaves no active transaction) does not
@@ -8502,6 +8502,10 @@ def enforce_max_runtime(
                 (retry_status, tid, pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
+                error_text = (
+                    f"elapsed {int(elapsed)}s > limit "
+                    f"{int(row['max_runtime_seconds'])}s"
+                )
                 payload = {
                     "pid": pid,
                     "elapsed_seconds": int(elapsed),
@@ -8512,31 +8516,26 @@ def enforce_max_runtime(
                 run_id = _end_run(
                     conn, tid,
                     outcome="timed_out", status="timed_out",
-                    error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
+                    error=error_text,
                     metadata=payload,
                 )
                 _append_event(
                     conn, tid, "timed_out", payload, run_id=run_id,
                 )
                 timed_out.append(tid)
-        # Increment the unified failure counter. Outside the write_txn
-        # above because ``_record_task_failure`` opens its own. If the
-        # breaker trips, this flips the retried task to ``blocked`` and
-        # emits a ``gave_up`` event on top of the ``timed_out`` we
-        # already emitted.
-        if cur.rowcount == 1:
-            _record_task_failure(
-                conn, tid,
-                error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
-                outcome="timed_out",
-                release_claim=False,
-                end_run=False,
-                event_payload_extra={
-                    "pid": pid,
-                    "sigkill": killed,
-                    "retry_status": retry_status,
-                },
-            )
+                _record_task_failure(
+                    conn, tid,
+                    error=error_text,
+                    outcome="timed_out",
+                    release_claim=False,
+                    end_run=False,
+                    event_payload_extra={
+                        "pid": pid,
+                        "sigkill": killed,
+                        "retry_status": retry_status,
+                    },
+                    _allow_nested=True,
+                )
     return timed_out
 
 
@@ -8783,13 +8782,10 @@ def _error_fingerprint(error_text: str) -> str:
 # tool call next time), so a protocol violation is NOT deterministic — give it a
 # bounded retry before the breaker trips instead of blocking on the first hit.
 #
-# The budget is a violation-only STREAK, not a share of the unified
-# ``consecutive_failures`` counter: it counts consecutive clean-exit protocol
-# violations (derived from run history by ``_protocol_violation_streak``), so
-# earlier timeouts / nonzero exits neither consume nor extend it, and a
-# below-budget violation does not tick the unified counter either. A per-task
-# ``max_retries`` overrides this bound — the same "task override wins"
-# precedence ``_record_task_failure`` documents for every other failure kind.
+# Without a per-task override, the budget is a violation-only STREAK, not a
+# share of the unified ``consecutive_failures`` counter. With an explicit
+# ``max_retries``, violations use that unified counter like every other
+# non-neutral failure (#72174).
 _PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
 
 # How far back to walk a task's closed runs when counting the violation
@@ -8864,9 +8860,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     When the reap registry shows the worker exited cleanly (rc=0) but
     the task was still ``running`` in the DB, treat it as a protocol
     violation (worker answered conversationally without calling
-    ``kanban_complete`` / ``kanban_block``) and trip the circuit breaker
-    on the first occurrence — retrying a worker whose CLI keeps
-    returning 0 without a terminal transition just loops forever.
+    ``kanban_complete`` / ``kanban_block``). Without a per-task
+    ``max_retries``, violations use their own bounded consecutive streak;
+    with an explicit override, they share the unified failure counter
+    with crashes and timeouts.
 
     When the reap registry shows the worker exited with the rate-limit
     sentinel (``KANBAN_RATE_LIMIT_EXIT_CODE``), the worker bailed on a
@@ -8879,12 +8876,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """
     crashed: list[str] = []
     rate_limited: list[str] = []
-    # Per-crash details collected inside the main txn, used after it
-    # closes to run ``_record_task_failure`` (which needs its own
-    # write_txn so can't nest). ``protocol_violation`` flags the
-    # clean-exit-but-still-running case, which is accounted against its
-    # own bounded violation streak instead of the unified failure
-    # counter (see the post-txn loop below).
+    auto_blocked: list[str] = []
+    # Crash details are accounted before this transaction commits, keeping
+    # requeue, run closure, and failure accounting atomic.
     crash_details: list[tuple[str, int, str, bool, str]] = []
     # (task_id, pid, claimer, protocol_violation, error_text)
     # Worker-exit observer payloads (RFC #58548), collected inside the main
@@ -9041,89 +9035,72 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         (row["id"], pid, row["claim_lock"],
                          protocol_violation, error_text)
                     )
-    # Outside the main txn: account each crashed task and maybe trip the
-    # breaker (the retried task transitions to blocked with a ``gave_up`` event
-    # on top of the event we already emitted).
-    #
-    # Protocol-violation crashes (clean exit, no terminal tool call) get a
-    # BOUNDED retry, not an immediate trip: empirically ~96% of these tasks
-    # complete on a later run (a goal-mode finalize nudge, or the model simply
-    # emitting kanban_complete/kanban_block next time), so blocking on the first
-    # occurrence just churned them through the respawn cycle. The retry budget
-    # is a violation-only streak (``_protocol_violation_streak``): earlier
-    # timeouts / nonzero exits neither consume nor extend it, and a
-    # below-budget violation does not tick the unified
-    # ``consecutive_failures`` counter, so the two budgets stay independent.
-    # A per-task ``max_retries`` overrides the violation bound with the same
-    # top precedence it has for every other failure kind. Systemic same-error
-    # crashes still trip immediately.
-    auto_blocked: list[str] = []
-    if crash_details:
-        # Fingerprint errors to detect systemic failures.
-        _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
-            fp = _error_fingerprint(err_text)
-            _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
-        for tid, pid, claimer, protocol_violation, error_text in crash_details:
-            if protocol_violation:
-                streak = _protocol_violation_streak(conn, tid)
-                trow = conn.execute(
-                    "SELECT max_retries FROM tasks WHERE id = ?", (tid,),
-                ).fetchone()
-                if trow is None:
-                    continue  # task deleted mid-loop
-                task_override = (
-                    trow["max_retries"] if "max_retries" in trow.keys() else None
+        if crash_details:
+            fingerprint_counts: dict[str, int] = {}
+            for _, _, _, _, err_text in crash_details:
+                fingerprint = _error_fingerprint(err_text)
+                fingerprint_counts[fingerprint] = (
+                    fingerprint_counts.get(fingerprint, 0) + 1
                 )
-                violation_limit = (
-                    int(task_override)
-                    if task_override is not None
-                    else _PROTOCOL_VIOLATION_FAILURE_LIMIT
-                )
-                if streak < violation_limit:
-                    # Below budget: the task is already back at ``ready``
-                    # (respawn allowed) with ``last_failure_error`` stamped.
-                    # Deliberately no ``_record_task_failure`` call — a
-                    # below-budget violation must not consume the unified
-                    # failure budget, just as other failure kinds don't
-                    # consume this one.
-                    continue
-                # Streak reached the bound: trip the breaker. ``force_trip``
-                # skips the threshold resolution inside
-                # ``_record_task_failure`` because the decision — including
-                # the per-task ``max_retries`` override — was already made
-                # against the violation streak above.
-                tripped = _record_task_failure(
-                    conn, tid,
-                    error=error_text,
-                    outcome="crashed",
-                    failure_limit=violation_limit,
-                    force_trip=True,
-                    release_claim=False,
-                    end_run=False,
-                    event_payload_extra={
-                        "pid": pid,
-                        "claimer": claimer,
-                        "protocol_violations": streak,
-                        "protocol_violation_limit": violation_limit,
-                    },
-                )
+            for tid, pid, claimer, protocol_violation, error_text in crash_details:
+                if protocol_violation:
+                    task_row = conn.execute(
+                        "SELECT max_retries FROM tasks WHERE id = ?", (tid,),
+                    ).fetchone()
+                    if task_row is None:
+                        continue
+                    if task_row["max_retries"] is None:
+                        streak = _protocol_violation_streak(conn, tid)
+                        if streak < _PROTOCOL_VIOLATION_FAILURE_LIMIT:
+                            continue
+                        tripped = _record_task_failure(
+                            conn, tid,
+                            error=error_text,
+                            outcome="crashed",
+                            failure_limit=_PROTOCOL_VIOLATION_FAILURE_LIMIT,
+                            force_trip=True,
+                            release_claim=False,
+                            end_run=False,
+                            event_payload_extra={
+                                "pid": pid,
+                                "claimer": claimer,
+                                "protocol_violations": streak,
+                                "protocol_violation_limit":
+                                    _PROTOCOL_VIOLATION_FAILURE_LIMIT,
+                            },
+                            _allow_nested=True,
+                        )
+                    else:
+                        tripped = _record_task_failure(
+                            conn, tid,
+                            error=error_text,
+                            outcome="crashed",
+                            release_claim=False,
+                            end_run=False,
+                            event_payload_extra={
+                                "pid": pid,
+                                "claimer": claimer,
+                                "protocol_violation": True,
+                            },
+                            _allow_nested=True,
+                        )
+                else:
+                    fingerprint = _error_fingerprint(error_text)
+                    tripped = _record_task_failure(
+                        conn, tid,
+                        error=error_text,
+                        outcome="crashed",
+                        failure_limit=(
+                            1 if fingerprint_counts.get(fingerprint, 0) >= 3
+                            else None
+                        ),
+                        release_claim=False,
+                        end_run=False,
+                        event_payload_extra={"pid": pid, "claimer": claimer},
+                        _allow_nested=True,
+                    )
                 if tripped:
                     auto_blocked.append(tid)
-                continue
-            fp = _error_fingerprint(error_text)
-            is_systemic = _fp_counts.get(fp, 0) >= 3
-            tripped = _record_task_failure(
-                conn, tid,
-                error=error_text,
-                outcome="crashed",
-                failure_limit=1 if is_systemic else None,
-                release_claim=False,
-                end_run=False,
-                event_payload_extra={"pid": pid, "claimer": claimer},
-            )
-            if tripped:
-                auto_blocked.append(tid)
     # Stash auto-blocked ids on the function for the dispatch loop to pick up.
     # Keeps the public return type (``list[str]``) stable for direct callers
     # and tests that destructure the result; ``dispatch_once`` reads this
@@ -9160,6 +9137,7 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    _allow_nested: bool = False,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
     and maybe trip the circuit breaker.
@@ -9199,15 +9177,15 @@ def _record_task_failure(
     counter-vs-threshold comparison (the resolution order above is then
     only reported in the ``gave_up`` payload, not re-evaluated). Callers
     use it when they have already applied their own bounded-retry policy
-    — e.g. the clean-exit protocol-violation streak in
-    ``detect_crashed_workers``, which resolves the per-task
-    ``max_retries`` override against the violation streak itself. The
-    failure is still counted into ``consecutive_failures``.
+    — currently the clean-exit protocol-violation streak for tasks
+    without an explicit ``max_retries``. Tasks with an override use the
+    normal unified counter and threshold resolution instead. A forced
+    trip is still counted into ``consecutive_failures``.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     blocked = False
-    with write_txn(conn):
+    with write_txn(conn, allow_nested=_allow_nested):
         row = conn.execute(
             "SELECT consecutive_failures, status, max_retries, current_run_id "
             "FROM tasks WHERE id = ?", (task_id,),

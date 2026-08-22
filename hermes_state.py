@@ -397,6 +397,26 @@ def _default_db_path() -> Path:
     return get_hermes_home() / "state.db"
 
 
+def session_db_for_named_profile(current: "SessionDB | None", profile_name: str | None) -> "SessionDB | None":
+    """Return a SessionDB that owns ``profile_name``'s store.
+
+    Desktop Bot Mode often constructs the agent against the launch/root
+    ``state.db`` while stamping ``profile_name=worker``. Writes then land in
+    the root store and the named profile's own file stays empty. If ``current``
+    already is that profile's path, it is reused.
+    """
+    name = (profile_name or "").strip()
+    if current is None or not name or name in {"default", "custom"}:
+        return current
+    from hermes_cli.profiles import get_profile_dir
+
+    wanted = (get_profile_dir(name) / "state.db").resolve()
+    current_path = Path(current.db_path).resolve()
+    if current_path == wanted:
+        return current
+    return SessionDB(db_path=wanted)
+
+
 # ---------------------------------------------------------------------------
 # Live-DB test-isolation guard
 # ---------------------------------------------------------------------------

@@ -7047,6 +7047,37 @@ def _resolve_runtime_with_fallback(
         raise
 
 
+def _agent_session_db(sid: str, session_db=None):
+    """Bind the agent to the session's profile store, not the launch DB.
+
+    Bot Mode often hands the launch ``state.db`` into ``_make_agent``. If the
+    live session is a named profile, that handle must still be retargeted.
+    A failed profile-store open must not silently fall back to launch.
+    """
+    rec = _sessions.get(sid) or {}
+    home = rec.get("profile_home")
+    name = (
+        (rec.get("profile") or rec.get("profile_name") or "").strip()
+        or (Path(home).name if home else None)
+    )
+    if home:
+        from hermes_state import SessionDB
+
+        wanted = Path(home) / "state.db"
+        if session_db is not None and Path(session_db.db_path).resolve() == wanted.resolve():
+            return session_db
+        return SessionDB(db_path=wanted)
+    from hermes_state import session_db_for_named_profile
+
+    base = session_db if session_db is not None else _get_db()
+    bound = session_db_for_named_profile(base, name)
+    if bound is not None:
+        return bound
+    if not name or name in {"default", "custom"}:
+        return base
+    return bound
+
+
 def _make_agent(
     sid: str,
     key: str,
@@ -7224,7 +7255,7 @@ def _make_agent(
         provider_data_collection=_pr.get("data_collection"),
         platform=_resolve_agent_platform(platform_override),
         session_id=session_id or key,
-        session_db=session_db if session_db is not None else _get_db(),
+        session_db=_agent_session_db(sid, session_db),
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),

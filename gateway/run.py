@@ -3054,6 +3054,7 @@ def _try_resolve_fallback_provider() -> dict | None:
 
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"),
+                    target_model=entry.get("model"),
                     explicit_base_url=entry.get("base_url"),
                     explicit_api_key=resolve_entry_api_key(entry),
                 )

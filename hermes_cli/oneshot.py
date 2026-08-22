@@ -432,11 +432,57 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
-    runtime = resolve_runtime_provider(
-        requested=effective_provider,
-        target_model=effective_model or None,
-        explicit_base_url=explicit_base_url_from_alias,
-    )
+    # Read the effective fallback chain before resolving credentials. A fresh
+    # one-shot must be able to start on a configured fallback when the primary
+    # credential pool is already quarantined/exhausted; otherwise AIAgent is
+    # never constructed and its normal runtime fallback path cannot run.
+    _fb = get_fallback_chain(cfg)
+    try:
+        runtime = resolve_runtime_provider(
+            requested=effective_provider,
+            target_model=effective_model or None,
+            explicit_base_url=explicit_base_url_from_alias,
+        )
+    except Exception as primary_exc:
+        from hermes_cli.auth import AuthError
+        from hermes_cli.fallback_config import resolve_entry_api_key
+
+        if not isinstance(primary_exc, AuthError):
+            raise
+
+        runtime = None
+        for entry in _fb:
+            if not isinstance(entry, dict):
+                continue
+            fallback_provider = str(entry.get("provider") or "").strip().lower()
+            fallback_model = str(entry.get("model") or "").strip()
+            if not fallback_provider or not fallback_model:
+                continue
+            kwargs = {
+                "requested": fallback_provider,
+                "target_model": fallback_model,
+            }
+            if entry.get("base_url"):
+                kwargs["explicit_base_url"] = entry["base_url"]
+            fallback_api_key = resolve_entry_api_key(entry)
+            if fallback_api_key:
+                kwargs["explicit_api_key"] = fallback_api_key
+            try:
+                runtime = resolve_runtime_provider(**kwargs)
+            except Exception:
+                continue
+            logging.warning(
+                "Primary provider auth failed (%s). Starting one-shot on fallback: %s/%s",
+                primary_exc,
+                fallback_provider,
+                fallback_model,
+            )
+            effective_provider = fallback_provider
+            effective_model = fallback_model
+            break
+
+        if runtime is None:
+            raise primary_exc
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
@@ -468,11 +514,6 @@ def _run_agent(
     # os._exit and skips finalizers, so an un-closed connection here would leak.
     agent = None
     try:
-        # Read the effective fallback chain from profile config so oneshot
-        # workers honour the same merge semantics as interactive CLI and
-        # gateway sessions.
-        _fb = get_fallback_chain(cfg)
-
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),

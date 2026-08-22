@@ -259,6 +259,128 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
+def test_runtime_fallback_resolves_its_configured_model(monkeypatch):
+    """Fallback auth must be resolved against the fallback model, not the primary."""
+    cli = _import_cli()
+    calls = []
+
+    def _runtime_resolve(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("requested") == "kimi-coding":
+            raise AuthError("primary exhausted")
+        assert kwargs["requested"] == "openai-codex"
+        assert kwargs["target_model"] == "gpt-5.6-sol"
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "test-key",
+            "source": "credential_pool",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    shell = cli.HermesCLI(model="k3", provider="kimi-coding", compact=True, max_turns=1)
+    shell._fallback_model = [
+        {
+            "provider": "openai-codex",
+            "model": "gpt-5.6-sol",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+    ]
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.provider == "openai-codex"
+    assert shell.model == "gpt-5.6-sol"
+    assert len(calls) == 2
+
+
+def test_oneshot_uses_configured_fallback_when_primary_credentials_are_exhausted(monkeypatch):
+    from hermes_cli import oneshot
+
+    config = {
+        "model": {"default": "k3", "provider": "kimi-coding"},
+        "fallback_providers": [
+            {
+                "provider": "openai-codex",
+                "model": "gpt-5.6-sol",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+            }
+        ],
+    }
+    calls = []
+
+    def fake_resolve_runtime_provider(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("requested") in {None, "kimi-coding"}:
+            raise AuthError("No usable credentials found for provider 'kimi-coding'.")
+        return {
+            "api_key": "fallback-token",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "credential_pool": None,
+        }
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+
+        def run_conversation(self, prompt):
+            assert prompt == "canary"
+            assert self.kwargs["provider"] == "openai-codex"
+            assert self.kwargs["model"] == "gpt-5.6-sol"
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        fake_resolve_runtime_provider,
+    )
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    monkeypatch.setattr(oneshot, "_create_session_db_for_oneshot", lambda: None)
+
+    response, result = oneshot._run_agent("canary", toolsets="safe")
+
+    assert response == "ok"
+    assert result["final_response"] == "ok"
+    assert [call.get("requested") for call in calls] == [None, "openai-codex"]
+    assert calls[1]["target_model"] == "gpt-5.6-sol"
+
+
+def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://same-endpoint.example/v1",
+            "api_key": "same-key",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.provider = "openrouter"
+    shell.api_mode = "chat_completions"
+    shell.base_url = "https://same-endpoint.example/v1"
+    shell.api_key = "same-key"
+    shell.agent = object()
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.agent is None
+    assert shell.provider == "openai-codex"
+    assert shell.api_mode == "codex_responses"
 
 
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):

@@ -5412,6 +5412,7 @@ class TurnRunner:
                 "messages": [],
                 "api_calls": 0,
                 "tools": [],
+                "failed": True,
             }
 
         pr = self._runner._provider_routing

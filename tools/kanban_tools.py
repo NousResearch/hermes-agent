@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -47,6 +48,54 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+
+_PREFLIGHT_STOPWORDS = frozenset({
+    "a", "an", "and", "for", "from", "in", "of", "on", "or", "the",
+    "to", "with", "task", "work", "card", "add", "make", "update",
+})
+_PREFLIGHT_REUSABLE_STATUSES = frozenset({
+    "triage", "todo", "scheduled", "ready", "running", "review",
+})
+
+
+def _preflight_tokens(value: Optional[str]) -> set[str]:
+    """Return stable, low-noise words used by the create deduplication guard."""
+    return {
+        token for token in re.findall(r"[a-z0-9]{3,}", (value or "").casefold())
+        if token not in _PREFLIGHT_STOPWORDS
+    }
+
+
+def _find_preflight_overlap(conn: Any, *, title: str, body: Optional[str],
+                            project_id: Optional[str]) -> Optional[str]:
+    """Find one reusable task on this exact board/project, without writing.
+
+    Untyped legacy blocks are intentionally excluded: they remain evidence for
+    human audit, not proof that a new request is currently blocked.
+    """
+    requested_title = " ".join((title or "").casefold().split())
+    requested_tokens = _preflight_tokens(f"{title}\n{body or ''}")
+    candidates = []
+    for task in conn.execute(
+        "SELECT id, title, body, status, block_kind, project_id, created_at "
+        "FROM tasks WHERE status != 'archived' ORDER BY created_at ASC, id ASC"
+    ).fetchall():
+        if task["project_id"] != project_id:
+            continue
+        if task["status"] not in _PREFLIGHT_REUSABLE_STATUSES and not (
+            task["status"] == "blocked"
+            and task["block_kind"] in {"needs_input", "capability"}
+        ):
+            continue
+        candidate_title = " ".join((task["title"] or "").casefold().split())
+        candidate_tokens = _preflight_tokens(
+            f"{task['title']}\n{task['body'] or ''}"
+        )
+        exact_title = bool(requested_title and requested_title == candidate_title)
+        shared_words = len(requested_tokens & candidate_tokens)
+        if exact_title or shared_words >= 2:
+            candidates.append(task["id"])
+    return candidates[0] if candidates else None
 
 
 def _profile_has_kanban_toolset() -> bool:
@@ -1433,6 +1482,26 @@ def _handle_create(args: dict, **kw) -> str:
                     if _self_task is not None and _self_task.project_id:
                         project_id = _self_task.project_id
                         project_source_task_id = _self_task.id
+            preflight_project_id = project_id
+            if preflight_project_id is None:
+                try:
+                    preflight_project_id = kb.read_board_metadata(
+                        board or kb.get_current_board()
+                    ).get("project_id")
+                except Exception:
+                    preflight_project_id = None
+            overlap_id = _find_preflight_overlap(
+                conn,
+                title=str(title).strip(),
+                body=body,
+                project_id=preflight_project_id,
+            )
+            if overlap_id:
+                return _ok(
+                    task_id=overlap_id,
+                    reused=True,
+                    preflight="overlap",
+                )
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -2133,7 +2202,10 @@ KANBAN_CREATE_SCHEMA = {
     "name": "kanban_create",
     "description": (
         "Create a new kanban task, optionally as a child of the current "
-        "one (pass the current task id in ``parents``). Used by "
+        "one (pass the current task id in ``parents``). Before creating, "
+        "the default preflight checks this board for an active, review, or "
+        "typed real-blocked task with overlapping intent and returns that "
+        "task with ``reused=true`` instead of making a duplicate. Used by "
         "orchestrator workers to fan out — decompose work into child "
         "tasks with specific assignees, link them into a pipeline, "
         "then complete your own task. The dispatcher picks up the new "

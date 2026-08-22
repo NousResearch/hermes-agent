@@ -167,6 +167,7 @@ describe('serializeSelectionStructure', () => {
     const host = armSelection(
       '<p style="color: rgb(230, 237, 243); font-family: -apple-system, sans-serif">plain prose</p>'
     )
+
     const html = serializeSelectionStructure(window.getSelection()!, document)
 
     // Generic family on the wrapper: resolves to each platform's own face,

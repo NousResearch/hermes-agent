@@ -174,6 +174,7 @@ export function selectionInkLuma(sel: Selection, doc: Document): number | null {
   for (let i = 0; i < sel.rangeCount && lumas.length < MAX_PROBE_NODES; i++) {
     const range = sel.getRangeAt(i)
     const root = range.commonAncestorContainer
+
     const walker = doc.createTreeWalker(
       root.nodeType === 1 ? root : (root.parentElement ?? doc.body),
       NodeFilter.SHOW_TEXT

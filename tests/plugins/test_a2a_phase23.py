@@ -103,6 +103,56 @@ def _send_body(text, ctx="", method="message/send"):
 
 
 class TestStreamResponseFormat:
+    @pytest.mark.parametrize("info_separator", ["", " ", "\t"])
+    def test_artifact_update_exposes_fenced_json_as_structured_data(
+        self, info_separator,
+    ):
+        reply = (
+            'Summary\n````'
+            f'{info_separator}json\n[1, {{"markdown": "```"}}, 3]\n````'
+        )
+
+        ev = protocol.artifact_update("task-json", "ctx-json", reply)
+
+        assert ev["artifactUpdate"]["artifact"]["parts"] == [
+            {"text": reply, "mediaType": "text/plain"},
+            {
+                "data": [1, {"markdown": "```"}, 3],
+                "mediaType": "application/json",
+            },
+        ]
+
+    def test_artifact_update_keeps_tab_indented_closing_fence_as_text(self):
+        reply = 'Literal example:\n```json\n[1, 2, 3]\n\t```'
+
+        ev = protocol.artifact_update("task-json", "ctx-json", reply)
+
+        assert ev["artifactUpdate"]["artifact"]["parts"] == [
+            {"text": reply, "mediaType": "text/plain"},
+        ]
+
+    def test_artifact_update_keeps_deeply_nested_json_fence_as_text(self):
+        depth = protocol._MAX_STRUCTURED_JSON_DEPTH + 1
+        payload = "[" * depth + "0" + "]" * depth
+        reply = f"```json\n{payload}\n```"
+
+        ev = protocol.artifact_update("task-json", "ctx-json", reply)
+
+        assert ev["artifactUpdate"]["artifact"]["parts"] == [
+            {"text": reply, "mediaType": "text/plain"},
+        ]
+
+    def test_artifact_update_serializes_unpaired_surrogate_json_as_text(self):
+        reply = '```json\n"\\ud800"\n```'
+
+        ev = protocol.artifact_update("task-json", "ctx-json", reply)
+        encoded = protocol.sse_data(ev, 7).encode("utf-8")
+
+        assert ev["artifactUpdate"]["artifact"]["parts"] == [
+            {"text": reply, "mediaType": "text/plain"},
+        ]
+        assert encoded
+
     def test_status_update_shape(self):
         ev = protocol.status_update("task-1", "ctx-1", protocol.STATE_WORKING)
         assert set(ev.keys()) == {"statusUpdate"}

@@ -77,8 +77,15 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   extract_text renders file/data Parts into the text stream (URL +
   filename for files, JSON for data) so the agent sees them; it also
   accepts v0.3 (kind) and pre-0.3 (type) shapes from older peers.
-  Outbound replies are still text-only — the agent produces text, and
-  file/data Parts are for inbound richness.
+  Completed and streamed outbound artifacts retain the full text Part for
+  compatibility and add data Parts for valid fenced JSON; consumers should
+  prefer data Parts when present. Extraction accepts a fence info string of
+  exactly `json` (ignoring surrounding horizontal whitespace), so attributes
+  and `jsonc` remain text-only. Unsafe Unicode, nesting deeper than 100
+  containers, and payloads over 1 MiB of UTF-8 data also remain text-only.
+- Every generated skill advertises `text/plain` and `application/json` as its
+  input and output modes. These describe the platform boundary shared by all
+  current toolsets rather than toolset-specific file or media capabilities.
 - Push notification config: full CRUD — create (inline in message/send
   via configuration.taskPushNotificationConfig, or via the create
   method), get, list, delete. Each config has a configId and createdAt.

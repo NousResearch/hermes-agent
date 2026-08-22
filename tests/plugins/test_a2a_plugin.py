@@ -252,6 +252,12 @@ class TestAgentCardV1:
         assert "web_search" in web["tags"]
         assert "web_extract" in web["tags"]
 
+    def test_skills_advertise_supported_io_modes(self):
+        skills = protocol.skills_from_toolsets(["web"])
+
+        assert skills[0]["inputModes"] == ["text/plain", "application/json"]
+        assert skills[0]["outputModes"] == ["text/plain", "application/json"]
+
     def test_skills_default_when_empty(self):
         assert protocol.skills_from_toolsets([])[0]["id"] == "general"
         assert protocol.skills_from_toolsets({})[0]["id"] == "general"
@@ -376,6 +382,64 @@ class TestV1Parts:
 
 
 class TestV1Task:
+    @pytest.mark.parametrize("info_separator", ["", " ", "\t"])
+    def test_completed_task_exposes_fenced_json_as_structured_data(
+        self, info_separator,
+    ):
+        reply = (
+            'Result:\n```'
+            f'{info_separator}json\n{{"answer": 42, "markdown": "```"}}\n````'
+        )
+
+        task = protocol.build_task("t-json", "c-json", protocol.STATE_COMPLETED, reply)
+
+        assert task["artifacts"][0]["parts"] == [
+            {"text": reply, "mediaType": "text/plain"},
+            {
+                "data": {"answer": 42, "markdown": "```"},
+                "mediaType": "application/json",
+            },
+        ]
+
+    def test_completed_task_keeps_tab_indented_json_fence_as_text(self):
+        reply = 'Literal example:\n\t```json\n{"answer": 42}\n\t```'
+
+        task = protocol.build_task("t-json", "c-json", protocol.STATE_COMPLETED, reply)
+
+        assert task["artifacts"][0]["parts"] == [
+            {"text": reply, "mediaType": "text/plain"},
+        ]
+
+    def test_completed_task_keeps_oversized_json_fence_as_text(self):
+        payload = json.dumps("x" * protocol._MAX_STRUCTURED_JSON_BYTES)
+        reply = f"```json\n{payload}\n```"
+
+        task = protocol.build_task("t-json", "c-json", protocol.STATE_COMPLETED, reply)
+
+        assert task["artifacts"][0]["parts"] == [
+            {"text": reply, "mediaType": "text/plain"},
+        ]
+
+    def test_completed_task_keeps_deeply_nested_json_fence_as_text(self):
+        depth = protocol._MAX_STRUCTURED_JSON_DEPTH + 1
+        payload = "[" * depth + "0" + "]" * depth
+        reply = f"```json\n{payload}\n```"
+
+        task = protocol.build_task("t-json", "c-json", protocol.STATE_COMPLETED, reply)
+
+        assert task["artifacts"][0]["parts"] == [
+            {"text": reply, "mediaType": "text/plain"},
+        ]
+
+    def test_completed_task_keeps_unpaired_surrogate_json_as_text(self):
+        reply = '```json\n"\\ud800"\n```'
+
+        task = protocol.build_task("t-json", "c-json", protocol.STATE_COMPLETED, reply)
+
+        assert task["artifacts"][0]["parts"] == [
+            {"text": reply, "mediaType": "text/plain"},
+        ]
+
     def test_completed_task_shape(self):
         task = protocol.build_task("t1", "c1", protocol.STATE_COMPLETED, "the answer")
         assert task["status"]["state"] == "TASK_STATE_COMPLETED"

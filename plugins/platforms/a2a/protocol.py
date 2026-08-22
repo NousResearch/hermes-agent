@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import copy
 import os
+import re
 import threading
 import time
 import uuid
@@ -160,6 +161,8 @@ def skills_from_toolsets(toolsets: "list[str] | dict[str, list[str]] | None") ->
                 "name": ts_name,
                 "description": f"Hermes '{ts_name}' capabilities",
                 "tags": [ts_name] + tool_names[:10],
+                "inputModes": ["text/plain", "application/json"],
+                "outputModes": ["text/plain", "application/json"],
             })
     else:
         for ts in sorted(set(toolsets or [])):
@@ -168,6 +171,8 @@ def skills_from_toolsets(toolsets: "list[str] | dict[str, list[str]] | None") ->
                 "name": ts,
                 "description": f"Hermes '{ts}' capabilities",
                 "tags": [ts],
+                "inputModes": ["text/plain", "application/json"],
+                "outputModes": ["text/plain", "application/json"],
             })
     if not skills:
         skills.append({
@@ -175,6 +180,8 @@ def skills_from_toolsets(toolsets: "list[str] | dict[str, list[str]] | None") ->
             "name": "general",
             "description": "General-purpose conversational agent",
             "tags": ["general"],
+            "inputModes": ["text/plain", "application/json"],
+            "outputModes": ["text/plain", "application/json"],
         })
     return skills
 
@@ -256,6 +263,54 @@ def file_part(url: str = "", raw: str = "", filename: str = "",
 def data_part(data: Any, media_type: str = "application/json") -> dict:
     """Build a v1.0 data Part (structured data, no ``kind`` field)."""
     return {"data": data, "mediaType": media_type}
+
+
+_JSON_FENCE_RE = re.compile(
+    r"(?m:^[ ]{0,3}(?P<fence>\x60{3,})[ \t]*json[ \t]*\r?\n)"
+    r"(?P<payload>.*?)"
+    r"(?m:^[ ]{0,3}(?P=fence)\x60*[ \t]*\r?$)",
+    re.IGNORECASE | re.DOTALL,
+)
+_MAX_STRUCTURED_JSON_BYTES = 1_048_576
+_MAX_STRUCTURED_JSON_DEPTH = 100
+
+
+def _safe_structured_json(data: Any) -> bool:
+    """Return whether data is safe to embed in the outbound JSON envelope."""
+    stack = [(data, 0)]
+    try:
+        while stack:
+            value, depth = stack.pop()
+            if isinstance(value, str):
+                value.encode("utf-8")
+            elif isinstance(value, list):
+                if depth >= _MAX_STRUCTURED_JSON_DEPTH:
+                    return False
+                stack.extend((item, depth + 1) for item in value)
+            elif isinstance(value, dict):
+                if depth >= _MAX_STRUCTURED_JSON_DEPTH:
+                    return False
+                stack.extend((item, depth + 1) for pair in value.items() for item in pair)
+        encoded = json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError):
+        return False
+    return len(encoded) <= _MAX_STRUCTURED_JSON_BYTES
+
+
+def _artifact_parts(agent_text: str) -> list[dict]:
+    """Preserve reply text and expose valid fenced JSON as structured Parts."""
+    parts = [text_part(agent_text)]
+    for match in _JSON_FENCE_RE.finditer(agent_text):
+        payload = match.group("payload")
+        try:
+            if len(payload.encode("utf-8")) > _MAX_STRUCTURED_JSON_BYTES:
+                continue
+            data = json.loads(payload)
+        except (TypeError, ValueError, UnicodeEncodeError, RecursionError):
+            continue
+        if _safe_structured_json(data):
+            parts.append(data_part(data))
+    return parts
 
 
 def text_message(role: str, text: str, context_id: str = "") -> dict:
@@ -391,7 +446,7 @@ def build_task(
         if state == STATE_COMPLETED:
             task["artifacts"] = [{
                 "artifactId": uuid.uuid4().hex,
-                "parts": [text_part(agent_text)],
+                "parts": _artifact_parts(agent_text),
             }]
     return task
 
@@ -416,7 +471,7 @@ def artifact_update(task_id: str, context_id: str, text: str) -> dict:
             "contextId": context_id,
             "artifact": {
                 "artifactId": uuid.uuid4().hex,
-                "parts": [text_part(text)],
+                "parts": _artifact_parts(text),
             },
         }
     }

@@ -189,7 +189,19 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
             source=src,
             final_response="partial progress",
         )
-        await asyncio.sleep(0.05)
+        # No wait here, deliberately. `_post_turn_goal_continuation` awaits
+        # every step and ends in a synchronous `_enqueue_fifo`; there is no
+        # create_task / ensure_future / call_soon anywhere in it, so once the
+        # await above returns the enqueue has already happened. The 50ms sleep
+        # this replaces was not too short, it was measuring nothing.
+        #
+        # That matters for reading a CI failure here: `pending keys=[]` cannot
+        # be a lost race against the event loop. It means the hook took a path
+        # that never enqueued -- one of the early returns (no session id,
+        # `mgr.is_active()` false, `should_continue` false, no prompt) or the
+        # `except Exception` around the enqueue, which swallows into a
+        # logger.debug. Waiting longer cannot fix any of those, so do not
+        # "fix" a future flake here by adding a sleep back.
 
     assert adapter_key in adapter._pending_messages, (
         "continuation enqueued under a different key than the adapter "

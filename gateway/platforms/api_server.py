@@ -4203,11 +4203,13 @@ class APIServerAdapter(BasePlatformAdapter):
         offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
         source = request.query.get("source") or None
         include_children = _coerce_request_bool(request.query.get("include_children"), default=False)
+        include_hidden = _coerce_request_bool(request.query.get("include_hidden"), default=False)
         sessions = await asyncio.to_thread(db.list_sessions_rich,
             source=source,
             limit=limit,
             offset=offset,
             include_children=include_children,
+            include_hidden=include_hidden,
             order_by_last_active=True,
             # A pin means "always reachable", so a pinned conversation that has
             # aged past the recency window is back-filled rather than dropped.

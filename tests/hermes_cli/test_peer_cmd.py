@@ -2,6 +2,7 @@
 
 import json
 import threading
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from types import SimpleNamespace
 
@@ -91,8 +92,14 @@ def test_dm_unknown_peer_and_missing_key(monkeypatch):
 
 class _FakePeer(BaseHTTPRequestHandler):
     sessions: list = []
+    # Sessions the listing withholds unless ``include_hidden`` is requested.
+    # Bot Mode hides a canonical Bot Chat once it owns it, and the real
+    # api_server's title-uniqueness check still sees those rows — so a fake
+    # that always lists everything cannot reproduce the collision.
+    hidden_sessions: list = []
     chats: list = []
     auth_seen: list = []
+    list_queries: list = []
 
     def _json(self, payload, status=200):
         body = json.dumps(payload).encode()
@@ -105,7 +112,13 @@ class _FakePeer(BaseHTTPRequestHandler):
     def do_GET(self):
         type(self).auth_seen.append(self.headers.get("Authorization", ""))
         if self.path.startswith("/api/sessions"):
-            data = [{"id": s, "title": "Bot Chat"} for s in type(self).sessions]
+            type(self).list_queries.append(self.path)
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            include_hidden = (query.get("include_hidden") or ["0"])[0] in ("1", "true", "yes")
+            listed = list(type(self).sessions)
+            if include_hidden:
+                listed += list(type(self).hidden_sessions)
+            data = [{"id": s, "title": "Bot Chat"} for s in listed]
             return self._json({"object": "list", "data": data})
         return self._json({"error": {"message": "not found"}}, 404)
 
@@ -115,6 +128,14 @@ class _FakePeer(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length) or b"{}")
 
         if self.path == "/api/sessions":
+            # Title uniqueness spans hidden rows, exactly like the real
+            # api_server's ``SELECT id FROM sessions WHERE title = ?``.
+            clash = list(type(self).sessions) + list(type(self).hidden_sessions)
+            if body.get("title") == "Bot Chat" and clash:
+                return self._json(
+                    {"error": {"message": f"Title already in use by session {clash[0]}"}},
+                    400,
+                )
             type(self).sessions.append("bc_1")
             # REAL api_server create shape: the row is wrapped under "session"
             # (verified live Aug 2026 — a flat fake hid a parser bug).
@@ -122,10 +143,13 @@ class _FakePeer(BaseHTTPRequestHandler):
 
         if self.path.startswith("/api/sessions/") and self.path.endswith("/chat"):
             type(self).chats.append(body.get("message"))
+            # Echo the session the turn actually ran on, like the real
+            # api_server — a hardcoded id cannot show WHICH chat was targeted.
+            target = self.path[len("/api/sessions/"):-len("/chat")]
             return self._json(
                 {
                     "object": "hermes.session.chat.completion",
-                    "session_id": "bc_1",
+                    "session_id": target,
                     "message": {"role": "assistant", "content": "reply from the other machine"},
                 }
             )
@@ -139,8 +163,10 @@ class _FakePeer(BaseHTTPRequestHandler):
 @pytest.fixture()
 def fake_peer_server():
     _FakePeer.sessions = []
+    _FakePeer.hidden_sessions = []
     _FakePeer.chats = []
     _FakePeer.auth_seen = []
+    _FakePeer.list_queries = []
     server = HTTPServer(("127.0.0.1", 0), _FakePeer)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -186,3 +212,28 @@ def test_dm_reuses_existing_bot_chat(monkeypatch, capsys, fake_peer_server):
     assert payload["reply"] == "reply from the other machine"
     # No new session was created — the existing canonical chat was reused.
     assert _FakePeer.sessions == ["bc_existing"]
+
+
+def test_dm_reuses_hidden_bot_chat(monkeypatch, capsys, fake_peer_server):
+    """A HIDDEN canonical Bot Chat must still be found and reused.
+
+    Bot Mode hides a canonical chat once it owns it, so this is the normal
+    state of any agent that has ever been DM'd — not an edge case. Because
+    title uniqueness spans hidden rows, a lookup that cannot see them leaves
+    peer dm permanently broken: the find misses, the create collides, and the
+    caller gets "Title already in use by session <id>" forever.
+    """
+    _FakePeer.hidden_sessions = ["bc_hidden"]
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reply"] == "reply from the other machine"
+    assert payload["session_id"] == "bc_hidden"
+    # Nothing was created: the hidden chat was located, not collided with.
+    assert _FakePeer.sessions == []
+    # And the lookup asked for hidden rows rather than relying on luck.
+    assert any("include_hidden=1" in q for q in _FakePeer.list_queries)

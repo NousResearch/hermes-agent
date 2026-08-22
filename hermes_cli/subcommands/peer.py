@@ -108,8 +108,15 @@ def _base_url(peer: dict, profile: str | None) -> str:
 
 
 def _find_bot_chat(base: str, key: str) -> str | None:
-    """The remote canonical Bot Chat's session id, or None."""
-    listing = _request(f"{base}/api/sessions?limit=200", key)
+    """The remote canonical Bot Chat's session id, or None.
+
+    ``include_hidden`` is required, not cosmetic: a canonical Bot Chat is
+    hidden once Bot Mode has taken it over, while the create path's title
+    uniqueness check spans hidden rows too. Without it this lookup misses the
+    existing chat and the caller's create fails with "Title already in use",
+    permanently, for every agent that has one.
+    """
+    listing = _request(f"{base}/api/sessions?limit=200&include_hidden=1", key)
     for session in listing.get("data") or []:
         if isinstance(session, dict) and (session.get("title") or "").strip() == BOT_CHAT_TITLE:
             return str(session.get("id") or "") or None

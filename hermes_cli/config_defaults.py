@@ -1117,7 +1117,7 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "timeout": 30,
             "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+            "reasoning_effort": "none",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (default none for titles)
             "language": "",
         },
         "memory_query_rewrite": {

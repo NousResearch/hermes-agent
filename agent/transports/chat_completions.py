@@ -133,14 +133,28 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if not normalized_model.startswith("gemini"):
         return None
 
-    if reasoning_config.get("enabled") is False:
-        # Gemini can hide thought parts even when internal thinking still
-        # happens; omit thinkingLevel to avoid model-specific validation quirks.
-        return {"includeThoughts": False}
-
     effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
-    if effort == "none":
-        return {"includeThoughts": False}
+
+    if (
+        reasoning_config.get("enabled") is False
+        or effort == "none"
+        or (
+            isinstance(reasoning_config.get("thinking_budget"), (int, float))
+            and reasoning_config.get("thinking_budget") <= 0
+        )
+        or (
+            isinstance(reasoning_config.get("thinkingBudget"), (int, float))
+            and reasoning_config.get("thinkingBudget") <= 0
+        )
+        or (
+            isinstance(reasoning_config.get("budget"), (int, float))
+            and reasoning_config.get("budget") <= 0
+        )
+    ):
+        # Gemini can hide thought parts even when internal thinking still
+        # happens; setting thinkingBudget: 0 ensures thinking is disabled so
+        # tokens are not spent on internal reasoning.
+        return {"includeThoughts": False, "thinkingBudget": 0}
 
     thinking_config: Dict[str, Any] = {"includeThoughts": True}
 

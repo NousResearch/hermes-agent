@@ -8684,6 +8684,11 @@ def _build_call_kwargs(
     # ``extra_body.reasoning``. Profiles are the source of truth for those wire
     # shapes. Providers without a reasoning-aware profile retain the generic
     # ``extra_body.reasoning`` fallback used by Codex-compatible adapters.
+    effective_reasoning_config = reasoning_config
+    if effective_reasoning_config is None and isinstance(extra_body, dict):
+        if "reasoning" in extra_body and isinstance(extra_body["reasoning"], dict):
+            effective_reasoning_config = extra_body["reasoning"]
+
     effective_base = base_url or (
         _current_custom_base_url() if provider == "custom" else ""
     )
@@ -8700,12 +8705,12 @@ def _build_call_kwargs(
             profile_body = profile.build_extra_body(
                 model=model,
                 base_url=effective_base,
-                reasoning_config=reasoning_config,
+                reasoning_config=effective_reasoning_config,
             ) or {}
             profile_reasoning_extra, profile_top_level = (
                 profile.build_api_kwargs_extras(
-                    reasoning_config=reasoning_config,
-                    supports_reasoning=reasoning_config is not None,
+                    reasoning_config=effective_reasoning_config,
+                    supports_reasoning=effective_reasoning_config is not None,
                     model=model,
                     base_url=effective_base,
                 )
@@ -8728,17 +8733,19 @@ def _build_call_kwargs(
 
     kwargs.update(profile_top_level)
     merged_extra = dict(extra_body or {})
+    if profile_handles_reasoning and effective_reasoning_config is not None:
+        merged_extra.pop("reasoning", None)
     merged_extra.update(profile_body)
     merged_extra.update(profile_reasoning_extra)
     if (
-        reasoning_config
-        and isinstance(reasoning_config, dict)
+        effective_reasoning_config
+        and isinstance(effective_reasoning_config, dict)
         and not profile_handles_reasoning
     ):
-        if reasoning_config.get("enabled") is False:
+        if effective_reasoning_config.get("enabled") is False:
             merged_extra["reasoning"] = {"enabled": False}
         else:
-            effort = reasoning_config.get("effort") or "medium"
+            effort = effective_reasoning_config.get("effort") or "medium"
             merged_extra["reasoning"] = {"enabled": True, "effort": effort}
     # Portal product tags + sticky session_id. The provider profile usually
     # supplies both; this fallback covers profile-load failures and alias
@@ -8766,7 +8773,7 @@ def _build_call_kwargs(
     # ``extra_body.reasoning``). Do not expose this private kwarg to ordinary
     # OpenAI-compatible SDK clients, which would reject it. Portal Claude is
     # dual-wire — include it when the catalog id selects /v1/messages.
-    if reasoning_config and isinstance(reasoning_config, dict):
+    if effective_reasoning_config and isinstance(effective_reasoning_config, dict):
         provider_norm = str(provider or "").strip().lower()
         effective_base = base_url or ""
         _nous_on_messages = False
@@ -8780,7 +8787,7 @@ def _build_call_kwargs(
             or _endpoint_speaks_anthropic_messages(effective_base)
             or _is_anthropic_compat_endpoint(provider_norm, effective_base)
         ):
-            kwargs["_reasoning_config"] = dict(reasoning_config)
+            kwargs["_reasoning_config"] = dict(effective_reasoning_config)
 
     return kwargs
 

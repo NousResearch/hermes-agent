@@ -678,6 +678,212 @@ class TestMatrixMediaLiveAdapterReuse:
             ("disconnect",),
         ]
 
+class TestMatrixBridgeOnForeignLoop:
+    """Cron standalone delivery runs asyncio.run() on a fresh loop in the
+    scheduler thread, so the live adapter's aiohttp session lives on a
+    DIFFERENT loop. _send_matrix_via_adapter must bridge the send onto the
+    adapter's own loop instead of awaiting it cross-loop (which makes
+    aiohttp's TimerContext explode) or dropping to an ephemeral adapter
+    (which cannot open the shared crypto store, BAD_ACCOUNT_KEY)."""
+
+    def _adapter_with_loop(self, loop, send_result=None):
+        """Live adapter whose mautrix session reports the given loop."""
+
+        class LiveAdapter:
+            def __init__(self, loop, send_result):
+                self._client = SimpleNamespace(
+                    api=SimpleNamespace(session=SimpleNamespace(_loop=loop))
+                )
+                self._send_result = send_result
+                self.sends = []
+
+            async def send(self, chat_id, message, metadata=None):
+                self.sends.append((chat_id, message, metadata))
+                return self._send_result
+
+        return LiveAdapter(loop, send_result)
+
+    def _runner_with(self, adapter):
+        return SimpleNamespace(adapters={Platform.MATRIX: adapter})
+
+    def test_loop_match_sends_direct(self):
+        """Same-loop call uses the direct send path (no bridge, no
+        connect/disconnect): the normal gateway path stays untouched."""
+        # asyncio.run() always creates a fresh loop, so to test the same-loop
+        # path we must run on the SAME loop that the session reports.
+        loop = asyncio.new_event_loop()
+        try:
+            adapter = self._adapter_with_loop(loop, SimpleNamespace(success=True, message_id="$direct"))
+            with patch("gateway.run._gateway_runner_ref", return_value=self._runner_with(adapter)):
+                result = loop.run_until_complete(
+                    _send_matrix_via_adapter(
+                        SimpleNamespace(enabled=True, token="tok", extra={}),
+                        "!room:example.com",
+                        "hello",
+                    )
+                )
+            assert result["success"] is True
+            assert result["message_id"] == "$direct"
+            assert adapter.sends == [("!room:example.com", "hello", None)]
+        finally:
+            loop.close()
+
+    def test_loop_mismatch_bridges_onto_adapter_loop(self):
+        """Foreign-loop call must schedule the send onto the adapter's own
+        loop (run_coroutine_threadsafe), keep the persistent session, and
+        return the send result."""
+        adapter_loop = asyncio.new_event_loop()
+        adapter = self._adapter_with_loop(adapter_loop, SimpleNamespace(success=True, message_id="$bridged"))
+        import threading
+        t = threading.Thread(target=adapter_loop.run_forever, daemon=True)
+        t.start()
+        try:
+            with patch("gateway.run._gateway_runner_ref", return_value=self._runner_with(adapter)):
+                # Run from a DIFFERENT loop (cron path: fresh asyncio.run)
+                result = asyncio.run(
+                    _send_matrix_via_adapter(
+                        SimpleNamespace(enabled=True, token="tok", extra={}),
+                        "!room:example.com",
+                        "cron report",
+                    )
+                )
+            assert result["success"] is True
+            assert result["message_id"] == "$bridged"
+            assert adapter.sends == [("!room:example.com", "cron report", None)]
+        finally:
+            adapter_loop.call_soon_threadsafe(adapter_loop.stop)
+            t.join(timeout=5)
+            adapter_loop.close()
+
+    def test_loop_mismatch_bridge_send_error_returns_error_dict(self):
+        """A failing send on the adapter's loop must surface as a dict with
+        'error' so cron's standalone delivery path can inspect .get('error')
+        instead of crashing on attribute access."""
+        adapter_loop = asyncio.new_event_loop()
+        adapter = self._adapter_with_loop(
+            adapter_loop, SimpleNamespace(success=False, error="temporary Matrix API stall", message_id=None)
+        )
+        import threading
+        t = threading.Thread(target=adapter_loop.run_forever, daemon=True)
+        t.start()
+        try:
+            with patch("gateway.run._gateway_runner_ref", return_value=self._runner_with(adapter)):
+                result = asyncio.run(
+                    _send_matrix_via_adapter(
+                        SimpleNamespace(enabled=True, token="tok", extra={}),
+                        "!room:example.com",
+                        "report",
+                    )
+                )
+            # _matrix_send_core returns an _error dict ({error: ...}) when the
+            # adapter send fails; the bridge must surface it unchanged so
+            # cron's standalone path can inspect .get('error').
+            assert result.get("error") == "Matrix send failed: temporary Matrix API stall"
+            assert result.get("success") is not True
+        finally:
+            adapter_loop.call_soon_threadsafe(adapter_loop.stop)
+            t.join(timeout=5)
+            adapter_loop.close()
+
+    def test_unknown_session_loop_keeps_legacy_direct_await(self):
+        """When the adapter's loop cannot be determined (session missing or
+        _loop None), detection must not block the happy path: keep the
+        legacy direct await."""
+        adapter = self._adapter_with_loop(None, SimpleNamespace(success=True, message_id="$legacy"))
+        with patch("gateway.run._gateway_runner_ref", return_value=self._runner_with(adapter)):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "!room:example.com",
+                    "hello",
+                )
+            )
+        assert result["success"] is True
+        assert result["message_id"] == "$legacy"
+
+    def test_detection_failure_never_blocks_send(self):
+        """A broken adapter (no _client) must not raise out of
+        _matrix_adapter_loop_matches; detection defaults to the safe
+        'keep legacy behaviour' path (True)."""
+        from tools.send_message_tool import _matrix_adapter_loop_matches
+
+        class BrokenAdapter:
+            pass
+
+        with patch("gateway.run._gateway_runner_ref", return_value=self._runner_with(BrokenAdapter())):
+            # Detection itself must not raise, and must report 'matches'
+            # (legacy direct path) when it cannot inspect the adapter.
+            assert _matrix_adapter_loop_matches(BrokenAdapter()) is True
+
+    def test_loop_mismatch_bridge_timeout_returns_error(self):
+        """A send that exceeds the bridge timeout must surface a timed-out
+        error dict and cancel the scheduled future instead of blocking the
+        caller's event loop (review: replace blocking future.result with
+        asyncio.wrap_future + async timeout)."""
+        adapter_loop = asyncio.new_event_loop()
+        adapter = self._adapter_with_loop(
+            adapter_loop, SimpleNamespace(success=True, message_id="$never")
+        )
+        import threading
+        t = threading.Thread(target=adapter_loop.run_forever, daemon=True)
+        t.start()
+        try:
+            # Make the adapter's send block far past the patched 50ms cap.
+            orig_send = adapter.send
+
+            async def slow_send(chat_id, message, metadata=None):
+                await asyncio.sleep(5)
+                return await orig_send(chat_id, message, metadata)
+
+            adapter.send = slow_send
+
+            with patch(
+                "gateway.run._gateway_runner_ref", return_value=self._runner_with(adapter)
+            ), patch("tools.send_message_tool._MATRIX_BRIDGE_TIMEOUT", 0.05):
+                result = asyncio.run(
+                    _send_matrix_via_adapter(
+                        SimpleNamespace(enabled=True, token="tok", extra={}),
+                        "!room:example.com",
+                        "cron report",
+                    )
+                )
+            assert result.get("error") == "Matrix send timed out on adapter loop"
+            assert result.get("success") is not True
+        finally:
+            adapter_loop.call_soon_threadsafe(adapter_loop.stop)
+            t.join(timeout=5)
+            adapter_loop.close()
+
+    def test_loop_mismatch_bridge_schedule_failure_returns_error(self):
+        """If the send cannot be scheduled onto the adapter loop at all
+        (loop closed during a shutdown race), the bridge must return an
+        error dict, not raise."""
+        adapter_loop = asyncio.new_event_loop()
+        adapter = self._adapter_with_loop(
+            adapter_loop, SimpleNamespace(success=True, message_id="$x")
+        )
+        try:
+            with patch(
+                "gateway.run._gateway_runner_ref", return_value=self._runner_with(adapter)
+            ), patch(
+                "agent.async_utils.safe_schedule_threadsafe", return_value=None
+            ):
+                result = asyncio.run(
+                    _send_matrix_via_adapter(
+                        SimpleNamespace(enabled=True, token="tok", extra={}),
+                        "!room:example.com",
+                        "report",
+                    )
+                )
+            assert (
+                result.get("error")
+                == "Matrix send failed: could not schedule send on adapter loop"
+            )
+            assert result.get("success") is not True
+        finally:
+            adapter_loop.close()
+
+
 # ---------------------------------------------------------------------------
 # HTML auto-detection in Telegram send
 # ---------------------------------------------------------------------------

@@ -856,20 +856,22 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
-        # Bot Chat capability epoch: an eternal bot session must adopt
-        # user-initiated capability changes (skills/toolsets/MCP/SOUL/roster)
-        # on the next message, not at /new or compression. The stored prompt
-        # embeds a fingerprint of the capability surface; a mismatch against
-        # disk is a deliberate, once-per-change rebuild — the /model
-        # exception applied to capabilities. Prompts without the stamp
-        # (every non-Bot-Chat session) never take this branch, and the check
-        # fails closed to "reuse" so a probe failure can't burn cache.
+        # Bot Mode capability epoch: an eternal Bot Chat or routed topic must
+        # adopt user-initiated capability changes (skills/toolsets/MCP/SOUL/
+        # roster) on the next message, not at /new or compression. The stored
+        # prompt embeds a fingerprint of the capability surface; a mismatch
+        # against disk is a deliberate, once-per-change rebuild — the /model
+        # exception applied to capabilities. Prompts without the stamp never
+        # take this branch, and the check fails closed to "reuse" so a probe
+        # failure can't burn cache.
         _bot_stale = False
+        _canonical_bot_chat = False
         try:
             from tools.bot_mode_probe import (
                 BOT_CHAT_TITLE,
                 stored_bot_chat_prompt_needs_upgrade,
                 stored_prompt_capability_stale,
+                stored_prompt_has_bot_mode_stamp,
             )
 
             _home_for_epoch = None
@@ -880,31 +882,73 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             except Exception:
                 pass
             _bot_stale = stored_prompt_capability_stale(stored_prompt, _home_for_epoch)
-            if not _bot_stale and getattr(agent, "_bot_mode_protocol", True):
-                # Legacy upgrade: a Bot Chat whose prompt predates the epoch
-                # mechanism (no stamp, no protocol) gets ONE migration
-                # rebuild — otherwise pre-existing bots would never learn
-                # the messaging protocol. Title-gated so ordinary unstamped
-                # sessions (i.e. all of them) never take this path; the
-                # rebuilt prompt carries the stamp, so it cannot re-fire.
+            _protocol_enabled = getattr(agent, "_bot_mode_protocol", True)
+            _stamped_bot_prompt = stored_prompt_has_bot_mode_stamp(stored_prompt)
+            if not _bot_stale and (_protocol_enabled or _stamped_bot_prompt):
+                # Legacy upgrade: a canonical Bot Chat or an explicitly routed
+                # Telegram Bot Mode entry whose prompt predates the epoch
+                # mechanism gets ONE rebuild. Ordinary unstamped sessions never
+                # take this path. A stamped prompt whose route or protocol toggle
+                # was removed also gets one rebuild to drop the injected section.
                 _t = str(getattr(agent, "_session_title_hint", "") or "").strip()
                 if not _t and agent._session_db and agent.session_id:
                     try:
                         _t = str(agent._session_db.get_session_title(agent.session_id) or "").strip()
                     except Exception:
                         _t = ""
-                if _t == BOT_CHAT_TITLE:
-                    _bot_stale = stored_bot_chat_prompt_needs_upgrade(stored_prompt, _home_for_epoch)
+                _canonical_bot_chat = _t == BOT_CHAT_TITLE
+                _gateway_bot_state = getattr(
+                    agent, "_bot_mode_gateway_session", False
+                )
+                # Transition policy for a stored prompt whose runtime identity
+                # still matches. Decision chain (first hit wins):
+                #
+                # 1. Legacy upgrade — an UNSTAMPED prompt on a live entry
+                #    point (canonical Bot Chat or routed topic, protocol on)
+                #    gets ONE rebuild so it gains section + epoch stamp.
+                #    Ordinary unstamped sessions never take this path.
+                # 2. Route state indeterminate (gateway probe failed, None) —
+                #    PRESERVE the stored bytes: never drop a possibly-valid
+                #    section or burn cache on a transient failure.
+                # 3. Live entry point + protocol ON — keep section.
+                # 4. Anything else (route removed/disabled, protocol off,
+                #    ordinary session with coincidental stamp) — strip once.
+                _live_bot_entry = _protocol_enabled and (
+                    _canonical_bot_chat or _gateway_bot_state is True
+                )
+                _legacy_upgrade_needed = (
+                    not _stamped_bot_prompt
+                    and _live_bot_entry
+                    and stored_bot_chat_prompt_needs_upgrade(
+                        stored_prompt, _home_for_epoch
+                    )
+                )
+                if _legacy_upgrade_needed:
+                    _bot_stale = True
+                elif (
+                    not _stamped_bot_prompt
+                    and not _live_bot_entry
+                ):
+                    # Ordinary session (no stamp, not a Bot Mode entry point):
+                    # the pre-existing behavior — never rebuild, reuse bytes.
+                    _bot_stale = False
+                elif not _canonical_bot_chat and _gateway_bot_state is None:
+                    _bot_stale = False
+                elif _live_bot_entry:
+                    _bot_stale = False
+                else:
+                    _bot_stale = True
         except Exception:
             _bot_stale = False
         if _bot_stale:
             logger.info(
-                "Bot Chat capability epoch changed for session %s; rebuilding "
-                "system prompt to adopt the new capability surface (one-time "
+                "Bot Mode entry point or capability surface changed for session %s; "
+                "rebuilding system prompt to adopt the new Bot Mode state (one-time "
                 "prefix-cache break).",
                 agent.session_id,
             )
-            agent._session_title_hint = "Bot Chat"
+            if _canonical_bot_chat:
+                agent._session_title_hint = "Bot Chat"
             # The skills index inside the prompt comes from a two-layer cache
             # (in-process LRU + disk snapshot) that doesn't watch the skills
             # dir; a capability refresh must rebuild THROUGH it or a freshly
@@ -928,7 +972,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                     )
                 except Exception as exc:
                     logger.warning(
-                        "Session DB update_system_prompt failed after Bot Chat "
+                        "Session DB update_system_prompt failed after Bot Mode "
                         "capability refresh (session=%s): %s. The refresh will "
                         "re-fire next turn.",
                         agent.session_id, exc,

@@ -622,13 +622,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # Probe failure must never block prompt build.
             pass
 
-    # Bot Mode teammate protocol — injected ONLY into a bot's canonical
-    # "Bot Chat" session (the conversation teammate bots message into via
-    # `hermes -p <bot> chat --in ~ -c "Bot Chat"` and the desktop pins), on
-    # installs where Bot Mode manages profiles (ui_meta['hermes-bots']).
-    # Regular sessions never carry it — the desktop's composer middleware
-    # owns the @mention send path. Title is read once at first build and the
-    # rendered prompt is cached + DB-restored, so this is cache-safe.
+    # Bot Mode teammate protocol — injected into a bot's canonical "Bot Chat"
+    # session (the conversation teammate bots message into via `hermes -p
+    # <bot> chat --in ~ -c "Bot Chat"` and the desktop pins), plus exact
+    # Telegram topics explicitly mapped through gateway.profile_routes, on
+    # installs where Bot Mode manages profiles (ui_meta['hermes-bots']). Other
+    # regular sessions never carry it — the desktop's composer middleware owns
+    # the @mention send path. The rendered prompt is cached + DB-restored, so
+    # this is cache-safe.
     # Gated by config.yaml ``agent.bot_mode_protocol`` (default True).
     if getattr(agent, "_bot_mode_protocol", True):
         try:
@@ -642,7 +643,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 _sdb = getattr(agent, "_session_db", None)
                 _sid = getattr(agent, "session_id", None)
                 _title = str((_sdb.get_session_title(_sid) if (_sdb and _sid) else None) or "").strip()
-            if _title == BOT_CHAT_TITLE:
+            _gateway_bot_session = getattr(
+                agent, "_bot_mode_gateway_session", False
+            ) is True
+            if _title == BOT_CHAT_TITLE or _gateway_bot_session:
                 _bot_section = get_bot_mode_protocol_section(_agent_home(agent))
                 if _bot_section:
                     post_workspace_parts.append(_bot_section)

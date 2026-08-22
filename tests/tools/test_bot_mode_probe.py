@@ -41,6 +41,42 @@ def test_silent_when_no_profile_is_bot_managed(tmp_path):
     assert bot_mode_probe.get_bot_mode_protocol_section(home) == ""
 
 
+def test_stamp_detection_requires_epoch_line_last_and_heading_before(tmp_path):
+    """Structural anchor: prose quoting the heading or an epoch fragment must
+    not make an ordinary session look stamped (reviewer #1)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+
+    genuine = (
+        "Prompt body\n\n## Messaging other agents\nprotocol text\n\n"
+        f"{bot_mode_probe.epoch_line(home)}\n"
+    )
+    assert bot_mode_probe.stored_prompt_has_bot_mode_stamp(genuine)
+
+    # heading quoted in prose, epoch-shaped line NOT last -> not stamped
+    quoted = (
+        "My notes about ## Messaging other agents\n"
+        "Capability epoch: 0123456789ab\n"
+        "more prose after\n"
+    )
+    assert not bot_mode_probe.stored_prompt_has_bot_mode_stamp(quoted)
+
+    # heading + epoch-shaped line last, but malformed epoch -> not stamped
+    malformed = (
+        "## Messaging other agents\n"
+        "Capability epoch: NOTHEX12345\n"
+    )
+    assert not bot_mode_probe.stored_prompt_has_bot_mode_stamp(malformed)
+
+    # epoch line last but no heading at all -> not stamped
+    headingless = (
+        "Ordinary prompt\n"
+        f"{bot_mode_probe.epoch_line(home)}\n"
+    )
+    assert not bot_mode_probe.stored_prompt_has_bot_mode_stamp(headingless)
+
+
 def test_emits_for_default_when_any_profile_is_managed(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

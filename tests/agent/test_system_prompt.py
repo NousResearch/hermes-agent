@@ -82,6 +82,39 @@ def _prompt_parts(agent):
         return build_system_prompt_parts(agent)
 
 
+def test_bot_mode_protocol_injected_for_exact_routed_telegram_topic(tmp_path):
+    home = tmp_path / ".hermes"
+    managed = home / "profiles" / "builder"
+    managed.mkdir(parents=True)
+    (managed / "profile.yaml").write_text(
+        "ui_meta:\n  hermes-bots:\n    title: Builder\n", encoding="utf-8"
+    )
+
+    session_db = SimpleNamespace(
+        db_path=home / "state.db", get_session_title=lambda _sid: "Hermes"
+    )
+    agent = _make_agent(
+        _bot_mode_protocol=True,
+        _bot_mode_gateway_session=True,
+        _gateway_session_key="agent:main:telegram:group:42:100",
+        _session_title_hint="",
+        _session_db=session_db,
+        platform="telegram",
+        session_id="topic-session",
+    )
+
+    from tools.bot_mode_probe import _reset_cache_for_tests
+
+    _reset_cache_for_tests()
+    prompt = "\n\n".join(_prompt_parts(agent).values())
+    assert "## Messaging other agents" in prompt
+
+    agent._bot_mode_gateway_session = False
+    _reset_cache_for_tests()
+    unrelated = "\n\n".join(_prompt_parts(agent).values())
+    assert "## Messaging other agents" not in unrelated
+
+
 def _init_code_repo(path):
     """A git repo that actually holds code — the coding posture requires a source
     file (or manifest), not a bare ``.git`` (a prose/notes repo stays general)."""

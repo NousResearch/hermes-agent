@@ -538,3 +538,131 @@ class TestStandaloneSend:
         assert all("nsec1x" not in str(a) for a in captured["args"])
 
 
+# ── Editing and deleting (streaming) ──────────────────────────────────
+
+
+class TestBuzzAdapterEdit:
+
+    @pytest.mark.asyncio
+    async def test_edit_targets_the_original_event_and_uses_stdin(self):
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "edit", {"accepted": True, "event_id": "edit1", "message": ""})
+        adapter._run_cli = cli
+
+        result = await adapter.edit_message(CHANNEL, "orig1", "partial answer")
+        assert result.success is True
+
+        args, stdin_text = cli.calls[0]
+        assert args[:2] == ["messages", "edit"]
+        assert args[args.index("--event") + 1] == "orig1"
+        # Content travels via stdin (--content -), never argv, same as send
+        assert args[args.index("--content") + 1] == "-"
+        assert stdin_text == "partial answer"
+
+    @pytest.mark.asyncio
+    async def test_edit_returns_the_original_id_not_the_cli_event_id(self):
+        """The stream consumer re-edits ONE message id for the whole stream.
+
+        buzz-cli reports a fresh event id for each edit; returning that would
+        make the second edit address a message that was never sent.
+        """
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "edit", {"accepted": True, "event_id": "edit1"})
+        adapter._run_cli = cli
+
+        result = await adapter.edit_message(CHANNEL, "orig1", "text")
+        assert result.message_id == "orig1"
+
+    @pytest.mark.asyncio
+    async def test_edit_marks_its_own_event_seen(self):
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "edit", {"accepted": True, "event_id": "edit1"})
+        adapter._run_cli = cli
+
+        await adapter.edit_message(CHANNEL, "orig1", "text")
+        assert "edit1" in adapter._channel_state[CHANNEL]["seen"]
+
+    @pytest.mark.asyncio
+    async def test_edit_accepts_finalize_without_changing_behaviour(self):
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "edit", {"accepted": True, "event_id": "edit1"})
+        adapter._run_cli = cli
+
+        result = await adapter.edit_message(CHANNEL, "orig1", "text", finalize=True)
+        assert result.success is True
+        assert len(cli.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_edit_without_a_message_id_never_calls_the_cli(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+
+        result = await adapter.edit_message(CHANNEL, "", "text")
+        assert result.success is False
+        assert cli.calls == []
+
+    @pytest.mark.asyncio
+    async def test_edit_with_empty_content_never_calls_the_cli(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+
+        result = await adapter.edit_message(CHANNEL, "orig1", "")
+        assert result.success is False
+        assert cli.calls == []
+
+    @pytest.mark.asyncio
+    async def test_edit_relay_error_is_retryable_but_bad_input_is_not(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "edit", "", code=2, stderr="relay unreachable")
+        adapter._run_cli = cli
+        relay_failure = await adapter.edit_message(CHANNEL, "orig1", "text")
+        assert relay_failure.success is False
+        assert relay_failure.retryable is True
+
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "edit", "", code=1, stderr="bad input")
+        adapter._run_cli = cli
+        input_failure = await adapter.edit_message(CHANNEL, "orig1", "text")
+        assert input_failure.success is False
+        assert input_failure.retryable is False
+
+    @pytest.mark.asyncio
+    async def test_delete_targets_the_event(self):
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "delete", {"accepted": True, "event_id": "del1"})
+        adapter._run_cli = cli
+
+        assert await adapter.delete_message(CHANNEL, "orig1") is True
+        assert cli.calls[0][0] == ["messages", "delete", "--event", "orig1"]
+
+    @pytest.mark.asyncio
+    async def test_delete_failure_returns_false(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "delete", "", code=2, stderr="relay unreachable")
+        adapter._run_cli = cli
+
+        assert await adapter.delete_message(CHANNEL, "orig1") is False
+
+    @pytest.mark.asyncio
+    async def test_delete_without_a_message_id_never_calls_the_cli(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        adapter._run_cli = cli
+
+        assert await adapter.delete_message(CHANNEL, "") is False
+        assert cli.calls == []

@@ -894,6 +894,59 @@ def _prepend_path(env: dict, directory: str) -> dict:
     return updated
 
 
+def _apply_sanitize_hook(
+    server_name: str,
+    tool: dict,
+    fallback: dict,
+) -> Optional[dict]:
+    """Run the ``sanitize_tool_metadata`` plugin hook over one MCP tool.
+
+    Invoked at the tool-metadata pipeline immediately after the ``tools/list``
+    handshake (and on schema-cache registration), before the tool is exposed to
+    approval dialogs or model context. ``tool`` is a dict shaped like an MCP
+    ``tools/list`` entry: ``{"name", "description", "inputSchema"}``.
+
+    ``fallback`` is the original tool dict. If a plugin sanitizes it, the
+    sanitized version is returned; if every plugin quarantines it, the tool is
+    dropped from the pipeline (caller must handle a ``None`` return). If no
+    plugin handles the tool (or one raises), the original is returned.
+
+    Returns ``None`` when the tool must be quarantined (never registered).
+    """
+    from hermes_cli.plugins import invoke_hook, has_hook
+
+    if not has_hook("sanitize_tool_metadata"):
+        return fallback
+
+    try:
+        results = invoke_hook("sanitize_tool_metadata", tool=tool, server_name=server_name)
+    except Exception as exc:
+        # Fail-safe: a broken hook must not block discovery. Plugins that
+        # implement sanitization fail closed internally, so reaching here is an
+        # unexpected core/plugin defect — fall back to the original tool and
+        # let the existing description scan / core checks still apply.
+        logger.warning(
+            "MCP server '%s': sanitize_tool_metadata hook raised: %s; "
+            "delivering tool unchanged",
+            server_name, exc,
+        )
+        return fallback
+
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        if "quarantine" in result:
+            reason = result.get("quarantine") or "unspecified"
+            logger.warning(
+                "MCP server '%s': quarantining tool '%s' (%s)",
+                server_name, tool.get("name"), reason,
+            )
+            return None
+        if "tool" in result and isinstance(result.get("tool"), dict):
+            return result["tool"]
+    return fallback
+
+
 # Safety cap on nextCursor pagination loops so a misbehaving server that
 # returns a cursor forever cannot spin discovery indefinitely. 50 pages at
 # the common 50-100 items/page covers thousands of tools/resources/prompts.
@@ -6811,6 +6864,34 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             continue
 
         _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
+
+        # Sanitize the tool metadata right after the tools/list handshake,
+        # before it can reach approval dialogs or model context.
+        tool_dict = {
+            "name": mcp_tool.name,
+            "description": mcp_tool.description or "",
+            "inputSchema": getattr(mcp_tool, "input_schema", None)
+            or getattr(mcp_tool, "inputSchema", None)
+            or {},
+        }
+        sanitized = _apply_sanitize_hook(name, tool_dict, fallback=tool_dict)
+        if sanitized is None:
+            # Plugin quarantined the tool — never register/deliver it.
+            logger.warning(
+                "MCP server '%s': tool '%s' quarantined by sanitizer; not registered",
+                name, mcp_tool.name,
+            )
+            continue
+        # Mutate the in-memory MCP tool so every downstream consumer (schema
+        # cache write, handler, approval/metadata surfaces) sees the
+        # sanitized description and schema.
+        mcp_tool.description = sanitized.get("description", mcp_tool.description)
+        try:
+            mcp_tool.input_schema = sanitized.get("inputSchema", mcp_tool.input_schema)
+        except Exception:
+            pass  # pydantic model may reject schema mutation; schema cache and
+                  # registry use the sanitized copy below regardless.
+
         schema = _convert_mcp_schema(name, mcp_tool)
         candidates.append(
             {
@@ -7086,6 +7167,24 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
         # Defense-in-depth: the cache file is user-writable JSON, so run the
         # same injection scan the eager discovery path applies.
         _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
+        # Lazy (cache) registration is also a tool-metadata pipeline chokepoint:
+        # sanitize cached descriptions/schemas before they reach the registry,
+        # approval dialogs, or model context.
+        tool_dict = {
+            "name": mcp_tool.name,
+            "description": mcp_tool.description or "",
+            "inputSchema": mcp_tool.inputSchema or {},
+        }
+        sanitized = _apply_sanitize_hook(name, tool_dict, fallback=tool_dict)
+        if sanitized is None:
+            logger.warning(
+                "MCP server '%s' (lazy): cached tool '%s' quarantined by "
+                "sanitizer; not registered",
+                name, mcp_tool.name,
+            )
+            continue
+        mcp_tool.description = sanitized.get("description", mcp_tool.description)
+        mcp_tool.inputSchema = sanitized.get("inputSchema", mcp_tool.inputSchema)
         schema = _convert_mcp_schema(name, mcp_tool)
         registry_name = schema["name"]
         existing_toolset = registry.get_toolset_for_tool(registry_name)

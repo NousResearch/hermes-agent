@@ -1,0 +1,25 @@
+Hermes Agent mcp-unicode-sanitizer plugin
+=========================================
+
+The vendored sanitization core in plugins/mcp-unicode-sanitizer/sanitizer/ is
+the dependency-free (stdlib-only) `mcp-unicode-sanitization` library v1.0.0,
+which implements the Unicode concealment sanitization spec derived from:
+
+    Unicode TAG-Block Concealment of Tool-Metadata Payloads in the Model
+    Context Protocol: An Approval-View Fidelity Gap Across Three Independent
+    Server Implementations
+    arXiv:2607.05744 [cs.CR] (July 2026)
+    https://arxiv.org/abs/2607.05744
+
+    Copyright (c) 2026 KenseiAgent
+    License: MIT (see LICENSE in this directory)
+
+The sanitization rules implemented (TAG-block stripping, bidi override
+removal, invisible / zero-width stripping, confusable homoglyph folding,
+fail-closed re-validation, and schema-default checks) are the authors' own
+implementation of the paper's described techniques and require no code
+reproduction from the paper. The paper is cited for attribution of the
+underlying attack vector and mitigation taxonomy.
+
+The plugin integration layer (plugins/mcp-unicode-sanitizer/__init__.py and
+plugin.yaml) is written for Hermes Agent and is licensed under the MIT License.

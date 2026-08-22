@@ -1,0 +1,15 @@
+name: mcp-unicode-sanitizer
+version: 1.0.0
+description: >-
+  Hermes MCP Gateway plugin that sanitizes every MCP tool description (and
+  inputSchema string surface) after the tools/list handshake, before it can
+  reach approval dialogs or model context. Implements the Unicode concealment
+  sanitization spec (arXiv:2607.05744): NFC normalization, TAG-block stripping,
+  bidi-override removal, invisible/zero-width stripping, confusable folding,
+  fail-closed re-validation, and schema-default checks. Configurable per the
+  plugins.entries.mcp-unicode-sanitizer.* keys. Follows the standalone plugin
+  convention (hooks only; no registered tools).
+author: "Octacon backend / KenseiAgent"
+hooks:
+  - sanitize_tool_metadata
+requires_env: []

@@ -447,11 +447,20 @@ class TestBuzzAdapterLifecycle:
 
     @pytest.mark.asyncio
     async def test_connect_fails_when_identity_lock_held(self, monkeypatch):
-        """A second profile using the same relay+pubkey must fail fast."""
+        """A second profile using the same relay+pubkey must fail fast.
+
+        Regression: ``acquire_scoped_lock`` returns ``tuple[bool, Optional[dict]]``.
+        Testing the return for truthiness (``if not acquire_scoped_lock(...)``)
+        was always False because a non-empty 2-tuple is truthy, making the
+        refuse-branch unreachable dead code. The mock must return the real
+        tuple shape, not a bare bool.
+        """
         import gateway.status as gateway_status
 
         monkeypatch.setattr(
-            gateway_status, "acquire_scoped_lock", lambda platform, key: False
+            gateway_status,
+            "acquire_scoped_lock",
+            lambda platform, key, metadata=None: (False, {"pid": 999, "metadata": {"profile": "other"}}),
         )
         adapter = _make_adapter()
         adapter.cli_path = "/fake/buzz"

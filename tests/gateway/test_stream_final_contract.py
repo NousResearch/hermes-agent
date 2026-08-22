@@ -49,7 +49,13 @@ def _make_draft_adapter():
     a.send_draft = _send_draft
 
     async def _send(chat_id, content, reply_to=None, metadata=None, **kw):
-        a.send_calls.append({"content": content, "metadata": dict(metadata or {})})
+        a.send_calls.append(
+            {
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": dict(metadata or {}),
+            }
+        )
         return SendResult(success=True, message_id="sealed_ts_1")
     a.send = _send
 
@@ -260,9 +266,11 @@ class TestQueuedLaneReconcile:
             source=source,
             adapter=adapter,
             metadata=None,
+            event_message_id="transcript-echo-7",
             text_already_delivered=False,
             deliver_media=False,
             stream_consumer=sc,
         )
         assert adapter.edit_calls == []
         assert len(adapter.send_calls) == 1
+        assert adapter.send_calls[0]["reply_to"] == "transcript-echo-7"

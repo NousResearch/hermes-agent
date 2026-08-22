@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import random
+import re
 import ssl
 import time
 import uuid
@@ -65,6 +66,148 @@ CA_DOWNLOAD_TIMEOUT = 10  # seconds
 MAX_SEND_RATE_PER_CHAT = 2.0  # MAX: max 2 messages/sec per chat
 _TRUNCATION_NOTICE = "\n\n✂️ (сообщение обрезано — лимит MAX 4000 симв.)"
 _MEDIA_LABELS = {"image": "Фото", "video": "Видео", "audio": "Аудио", "file": "Файл", "voice": "Голосовое"}
+
+# ---------------------------------------------------------------------------
+# Reasoning display + Markdown→HTML conversion
+# ---------------------------------------------------------------------------
+
+# Env toggle: show the gateway's 💭 Reasoning block in MAX (default: hide).
+SHOW_REASONING_ENV = "MAX_SHOW_REASONING"
+
+# Matches the reasoning block the gateway prepends when display.show_reasoning
+# is on. Styles (see gateway/run.py): fenced  💭 **Reasoning:**\n```...```,
+# blockquote "> 💭 **Reasoning:**\n> ...", subtext "-# 💭 Reasoning\n-# ...".
+_REASONING_FENCE_RE = re.compile(
+    r"💭 \*\*Reasoning:\*\*[ \t]*\n+```[^\n]*\n.*?\n```[ \t]*\n?", re.DOTALL
+)
+_REASONING_QUOTE_RE = re.compile(r"(?:^|> )💭 \*\*Reasoning:\*\*[ \t]*\n(?:> .*\n?)+", re.MULTILINE)
+_REASONING_SUBTEXT_RE = re.compile(r"-# ?💭 Reasoning[ \t]*\n(?:-# .*\n?)+", re.MULTILINE)
+
+
+def _show_reasoning_requested() -> bool:
+    """True when MAX_SHOW_REASONING opts back into the reasoning block."""
+    return os.getenv(SHOW_REASONING_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def strip_reasoning_block(text: str) -> str:
+    """Remove the gateway's prepended 💭 Reasoning block from a reply.
+
+    MAX is a phone-first chat; scratch thinking reads as noise there, so the
+    adapter hides it by default. Set ``MAX_SHOW_REASONING=true`` to keep it.
+    Handles all three gateway render styles plus a bare <think> block.
+    """
+    if not isinstance(text, str):
+        return text
+    out = text
+    for pattern in (_REASONING_FENCE_RE, _REASONING_QUOTE_RE, _REASONING_SUBTEXT_RE):
+        out = pattern.sub("", out, count=1)
+    # Bare <think>...</think> (some providers emit it directly in content)
+    if "<think>" in out:
+        out = re.sub(r"<think>.*?</think>[ \t]*\n?", "", out, count=1, flags=re.DOTALL)
+    return out.lstrip() if out != text else out
+
+
+def _escape_html(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _md_inline_to_html(text: str) -> str:
+    """Convert inline Markdown to MAX's HTML subset.
+
+    Field-tested against a real client (2026-08): only <u>, <mark> and the
+    blockquote bar actually render; <b>/<i>/<code>/<pre> degrade to plain
+    text. Mapping favours what survives:
+      **bold** / __bold__   → <b>   (semantic; no visual style in client)
+      *italic* / _italic_   → <i>   (semantic; no visual style in client)
+      ~~strike~~            → <s>   (semantic; no visual style in client)
+      `code`                → <mark> (renders as highlight)
+      [label](url)          → <a href="url">label</a>
+    """
+    out = _escape_html(text)
+    # Links first, so their URL/text isn't mangled by emphasis rules below.
+    out = re.sub(
+        r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
+        r'<a href="\2">\1</a>',
+        out,
+    )
+    out = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", out, flags=re.DOTALL)
+    out = re.sub(r"__(.+?)__", r"<b>\1</b>", out, flags=re.DOTALL)
+    out = re.sub(r"(?<![\w*])\*([^*\n]+?)\*(?![\w*])", r"<i>\1</i>", out)
+    out = re.sub(r"(?<![\w_])_([^_\n]+?)_(?![\w_])", r"<i>\1</i>", out)
+    out = re.sub(r"~~(.+?)~~", r"<s>\1</s>", out, flags=re.DOTALL)
+    out = re.sub(r"`([^`\n]+?)`", r"<mark>\1</mark>", out)
+    return out
+
+
+def markdown_to_max_html(text: str) -> str:
+    """Convert agent Markdown to MAX HTML so code blocks survive.
+
+    MAX Markdown has no fenced code blocks — an inline `` ` `` block collapses
+    newlines into spaces, which destroys multi-line code. The API's HTML mode
+    supports real <pre> blocks, so: walk the text line by line, emit fenced
+    regions as <pre> (language attr dropped), convert the remaining inline
+    Markdown to MAX's HTML subset.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+
+    parts: List[str] = []
+
+    def _flush_pre() -> None:
+        # Keep a blank-line boundary between surrounding text and the block.
+        # Wrapped in <blockquote>: MAX renders the quote's left bar as a visual
+        # frame around the code (bare <pre> is just monospace text).
+        nonlocal fence_body
+        escaped = _escape_html("\n".join(fence_body))
+        inner = (
+            f'<pre><code class="language-{fence_lang}">{escaped}</code></pre>'
+            if fence_lang
+            else f"<pre>{escaped}</pre>"
+        )
+        if parts and not parts[-1].endswith("\n"):
+            parts.append("\n")
+        parts.append(f"<blockquote>{inner}</blockquote>")
+        parts.append("\n")
+        fence_body = []
+
+    in_fence = False
+    fence_lang = ""
+    fence_body: List[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not in_fence and stripped.startswith("```"):
+            # Opening fence: ```python / ``` / ```
+            in_fence = True
+            fence_lang = stripped[3:].strip()
+            continue
+        if in_fence:
+            if stripped.startswith("```"):
+                # Closing fence → flush the collected body
+                _flush_pre()
+                in_fence = False
+            else:
+                fence_body.append(line)
+        else:
+            parts.append(_md_inline_to_html(line) + "\n")
+    # Unclosed fence at EOF → still render what we collected
+    if in_fence:
+        _flush_pre()
+    return "".join(parts).rstrip("\n")
+
+
+def prepare_outgoing_text(text: str) -> tuple:
+    """Prepare an agent reply for MAX delivery.
+
+    Returns ``(payload_text, payload_format)`` — always MAX HTML. Field
+    tests (2026-08) showed MAX's Markdown mode paints nothing inline at
+    all (raw ``**`` and ```` ` ```` leak into the chat as literal chars),
+    while HTML mode renders <u>, <mark> and the blockquote frame; the rest
+    (<b>/<i>/<s>/<code>) degrades gracefully to plain text. Converting
+    every message keeps markup from leaking. The gateway's 💭 Reasoning
+    block is stripped unless ``MAX_SHOW_REASONING=true``.
+    """
+    out = strip_reasoning_block(text) if not _show_reasoning_requested() else text
+    return markdown_to_max_html(out), "html"
 
 
 def _find_media_url(obj: Any, depth: int = 0) -> Optional[str]:
@@ -1412,12 +1555,14 @@ class MaxAdapter(BasePlatformAdapter):
         chunks = self._split_text(content)
         last: SendResult = SendResult(success=False, error="no chunks")
         for i, chunk in enumerate(chunks):
-            # MAX supports markdown formatting for bot messages
+            # Reasoning block hidden by default (MAX_SHOW_REASONING=true keeps it);
+            # fenced code becomes MAX HTML <pre> so multi-line code survives.
+            text_out, fmt = prepare_outgoing_text(chunk)
             # Attachments go with the first chunk only
             payload = {
-                "text": chunk,
+                "text": text_out,
                 "attachments": attachments if i == 0 else [],
-                "format": "markdown",
+                "format": fmt,
             }
             body = json.dumps(payload).encode("utf-8")
             try:
@@ -1474,7 +1619,8 @@ class MaxAdapter(BasePlatformAdapter):
             params["user_id"] = user_id
         else:
             params["chat_id"] = chat_id
-        payload = {"text": text[:MAX_MESSAGE_LENGTH], "attachments": [att], "format": "markdown"}
+        cap_out, cap_fmt = prepare_outgoing_text(text[:MAX_MESSAGE_LENGTH])
+        payload = {"text": cap_out, "attachments": [att], "format": cap_fmt}
         try:
             await self._rate_limit_send(str(chat_id))
             resp = await self._http_client.post(
@@ -1692,7 +1838,8 @@ async def _standalone_send(
         except Exception as e:
             logger.warning("[max] standalone upload %s failed: %s", fp, e)
 
-    payload = {"text": text, "attachments": attachments, "format": "markdown"}
+    text_out, fmt = prepare_outgoing_text(text)
+    payload = {"text": text_out, "attachments": attachments, "format": fmt}
     body = json.dumps(payload).encode("utf-8")
     params: Dict[str, Any] = {}
     extra2 = getattr(pconfig, "extra", {}) or {}

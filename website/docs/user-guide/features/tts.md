@@ -323,6 +323,41 @@ tts:
 
 Credentials come from your shell environment (`VOLCENGINE_APP_ID` / `VOLCENGINE_ACCESS_TOKEN`) or `~/.doubao-speech/config.yaml`. Pick a voice by adding `--voice zh-female-warm` (or any other alias from `doubao-speech list-voices`) to the command. `doubao-speech` also bundles streaming ASR — see the [STT section below](#example-doubao--volcengine-asr) for Hermes integration. Source and full docs: [github.com/Hypnus-Yuan/doubao-speech](https://github.com/Hypnus-Yuan/doubao-speech).
 
+#### Example: Speko (routed TTS)
+
+[Speko](https://speko.ai) is a hosted router in front of many speech vendors: it benchmarks them per
+language and sends each request to whichever currently scores best, failing over to the runner-up
+when one degrades. Useful for a language whose best TTS vendor you would rather not track by hand.
+Nothing to install — `curl`, `jq`, and `ffmpeg` are enough:
+
+```bash
+export SPEKO_API_KEY="your-speko-api-key"   # platform.speko.ai -> API keys
+```
+
+```yaml
+tts:
+  provider: speko
+  providers:
+    speko:
+      type: command
+      command: >-
+        jq -Rs '{{text: ., intent: {{language: "en"}}, sampleRate: 24000}}' {input_path}
+        | curl -sS -X POST https://api.speko.dev/v1/synthesize
+        -H "Authorization: Bearer $SPEKO_API_KEY" -H "Content-Type: application/json"
+        --data-binary @-
+        | ffmpeg -hide_banner -loglevel error -f s16le -ar 24000 -ac 1 -i pipe:0 -y {output_path}
+      output_format: wav
+      env_passthrough: [SPEKO_API_KEY]
+      timeout: 60
+```
+
+`/v1/synthesize` answers with **headerless PCM** (`audio/pcm;rate=24000`, echoed in the
+`X-Speko-Audio-Format` header) rather than a container — that is what the `ffmpeg` step is for, and
+why `sampleRate` is pinned so the `-ar` flag stays correct. Change `language` inside the `intent`
+object to route the request elsewhere (`es`, `hi`, `ar`, …), or add `"voice": "<voice-id>"` from
+`GET /v1/voices` to pin one voice; add `voice_compatible: true` for Telegram voice bubbles. The
+transcription direction takes the same key — see [Speko under `stt.providers`](#example-speko-routed-stt).
+
 #### Placeholders
 
 Your command template can reference these placeholders. Hermes substitutes them at render time and shell-quotes each value for the surrounding context (bare / single-quoted / double-quoted), so paths with spaces and other shell-sensitive characters are safe.
@@ -564,6 +599,35 @@ stt:
 
 This complements the legacy `HERMES_LOCAL_STT_COMMAND` escape hatch via the built-in `local_command` path. Unlike the shell-driven command-provider registry, the legacy template is tokenized into argv and runs without implicit shell interpretation. Use `stt.providers.<name>` when you want **multiple** shell-driven STT engines, a name you can pick via `stt.provider`, or anything that needs per-provider `language` / `model` / `timeout`.
 
+#### Example: Speko (routed STT)
+
+The same [Speko](https://speko.ai) key drives the transcription direction — one hosted endpoint that
+routes to whichever STT vendor its benchmarks rank best for the language, with failover:
+
+```yaml
+stt:
+  provider: speko
+  language: en
+  providers:
+    speko:
+      type: command
+      command: >-
+        ffmpeg -hide_banner -loglevel error -i {input_path} -ac 1 -ar 24000 -f wav pipe:1
+        | curl -sS -X POST https://api.speko.dev/v1/transcribe
+        -H "Authorization: Bearer $SPEKO_API_KEY" -H "Content-Type: audio/wav"
+        -H 'x-speko-intent: {{"language": "{language}"}}' --data-binary @-
+        | grep '^data:' | tail -n1 | sed 's/^data: //' | jq -r .text > {output_path}
+      format: txt
+      env_passthrough: [SPEKO_API_KEY]
+      timeout: 120
+```
+
+Two details make that pipeline shape necessary. `/v1/transcribe` takes raw audio bytes with the
+routing intent in an `x-speko-intent` header, and it answers with **server-sent events** rather than
+JSON, so the transcript is the `text` field of the final `data:` line — hence the tail. And an Opus
+voice note posted as-is returns `200` with an *empty* transcript, so the incoming file is normalised
+to mono 24 kHz WAV first, which is what makes Telegram / WhatsApp / Discord voice messages work.
+
 #### STT placeholders
 
 Your command template can reference these placeholders. Hermes substitutes them at render time and shell-quotes each value for the surrounding context (bare / single-quoted / double-quoted), so paths with spaces are safe.
@@ -599,6 +663,7 @@ For `format: json` / `srt` / `vtt`, Hermes returns the raw file content as the `
 | `format`        | `txt`   | One of `txt` / `json` / `srt` / `vtt`. Sets the extension of `{output_path}`.                       |
 | `language`      | `en`    | Forwarded to `{language}`. Defaults to `stt.language` then `en`.                                     |
 | `model`         | empty   | Forwarded to `{model}`. The `model=` argument to `transcribe_audio()` overrides this.                |
+| `env_passthrough` | empty | Variable names copied back from the parent environment into the scrubbed child env — needed when the template reads its own API key. Same key as on the [TTS side](#custom-command-providers). |
 
 #### STT command-provider behavior notes
 

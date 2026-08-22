@@ -3509,6 +3509,56 @@ def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
     return cleaned.strip()
 
 
+def _invoke_plugin_command_handler(handler, raw_args: str, source):
+    """Invoke a plugin slash-command handler, passing sender context when asked.
+
+    Handlers are registered with the signature ``fn(raw_args: str)``. A
+    handler that declares a second positional parameter (conventionally
+    named ``context``) additionally receives a dict with the invoking
+    sender's identity::
+
+        {
+            "user_id":   source.user_id,
+            "user_name": source.user_name,
+            "chat_id":   source.chat_id,
+            "chat_type": source.chat_type,
+            "platform":  source.platform.value,
+        }
+
+    The arity check is opt-in and fully backward compatible: one-parameter
+    handlers are called exactly as before. Handlers wrapped with
+    ``functools.partial``/decorators that hide their signature fall back to
+    the legacy one-argument call.
+    """
+    try:
+        import inspect
+
+        params = list(inspect.signature(handler).parameters.values())
+        positional = [
+            p
+            for p in params
+            if p.kind
+            in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL)
+            and p.default is p.empty
+        ]
+        has_varargs = any(p.kind is p.VAR_POSITIONAL for p in params)
+        wants_context = has_varargs or len(positional) >= 2
+    except (TypeError, ValueError):
+        wants_context = False
+
+    if not wants_context:
+        return handler(raw_args)
+
+    context = {
+        "user_id": getattr(source, "user_id", None),
+        "user_name": getattr(source, "user_name", None),
+        "chat_id": getattr(source, "chat_id", None),
+        "chat_type": getattr(source, "chat_type", None),
+        "platform": getattr(getattr(source, "platform", None), "value", None),
+    }
+    return handler(raw_args, context)
+
+
 def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None]:
     """Derive the /command slug and declared frontmatter name from a SKILL.md.
 
@@ -17959,7 +18009,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
+                    result = _invoke_plugin_command_handler(plugin_handler, user_args, source)
                     if asyncio.iscoroutine(result):
                         result = await result
                     return str(result) if result else None

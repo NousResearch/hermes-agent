@@ -1187,6 +1187,21 @@ def register(ctx):
     ctx.register_command("check", handler=_handle_check, description="Run async check")
 ```
 
+**Sender context (opt-in):** A handler that declares a **second positional parameter** (conventionally named `context`) additionally receives a dict with the invoking sender's identity — platform, user id, chat id, etc. This is what lets identity/RBAC plugins implement commands like `/myplugin whoami` that answer differently per user:
+
+```python
+def _handle_whoami(raw_args: str, context: dict) -> str:
+    return (
+        f"You are {context['user_name'] or context['user_id']} "
+        f"on {context['platform']} (chat {context['chat_id']})"
+    )
+
+def register(ctx):
+    ctx.register_command("whoami", handler=_handle_whoami, description="Show your identity")
+```
+
+`context` keys (in gateway sessions): `user_id`, `user_name`, `chat_id`, `chat_type`, `platform`. One-parameter handlers keep working exactly as before — the extra argument is only passed when the handler asks for it, so existing plugins are unaffected.
+
 ### Dispatch tools from slash commands
 
 Slash command handlers that need to orchestrate tools (spawn a subagent via `delegate_task`, call `file_edit`, etc.) should use `ctx.dispatch_tool()` instead of reaching into framework internals. The parent-agent context (workspace hints, spinner, model inheritance) is wired up automatically.

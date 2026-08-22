@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import math
 import re
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,148 @@ CORE_MEMORY_PROVIDER_SENTINELS = frozenset({"", "default", "builtin", "built-in"
 def is_core_memory_provider(name: Optional[str]) -> bool:
     """True when ``memory.provider`` selects the built-in store rather than an external plugin."""
     return str(name or "").strip().lower() in CORE_MEMORY_PROVIDER_SENTINELS
+
+
+# Structured prefetch observations are an in-process extension surface. Keep
+# their budget deliberately small: providers can still inject their existing
+# formatted string, but an observer must not become an unbounded side channel.
+MAX_MEMORY_OBSERVATIONS = 16
+MAX_MEMORY_OBSERVATION_DEPTH = 6
+MAX_MEMORY_OBSERVATION_ITEMS = 64
+MAX_MEMORY_OBSERVATION_STRING_CHARS = 4096
+MAX_MEMORY_OBSERVATION_BYTES = 16 * 1024
+MAX_MEMORY_OBSERVATION_BATCH_BYTES = 64 * 1024
+MAX_MEMORY_OBSERVATION_FIELD_CHARS = 128
+
+
+class _FrozenDict(dict):
+    """A JSON-serializable dict with the mutating surface disabled."""
+
+    def __setitem__(self, key, value):
+        raise TypeError("frozen observation payload")
+
+    def __delitem__(self, key):
+        raise TypeError("frozen observation payload")
+
+    def clear(self):
+        raise TypeError("frozen observation payload")
+
+    def pop(self, key, default=None):
+        raise TypeError("frozen observation payload")
+
+    def popitem(self):
+        raise TypeError("frozen observation payload")
+
+    def setdefault(self, key, default=None):
+        raise TypeError("frozen observation payload")
+
+    def update(self, *args, **kwargs):
+        raise TypeError("frozen observation payload")
+
+    def __ior__(self, other):
+        raise TypeError("frozen observation payload")
+
+
+@dataclass(frozen=True)
+class MemoryObservation:
+    """One bounded, provider-authored observation attached to a prefetch.
+
+    ``payload`` is opaque to Hermes, but the manager only emits observations
+    after recursively validating and freezing it as JSON-shaped data. The
+    provider field is normally left empty by a provider and is bound to the
+    registered provider name by :class:`MemoryManager`; a non-empty mismatch
+    is rejected rather than allowing provenance to be spoofed.
+
+    The class is intentionally generic. It does not encode retrieval ranks,
+    tenants, incident identifiers, model identity, storage, cryptography, or
+    evaluation metrics.
+    """
+
+    source_kind: str
+    schema: str
+    version: int
+    payload: Any
+    provider: str = ""
+
+
+@dataclass(frozen=True)
+class MemoryPrefetchResult:
+    """Immutable context plus observations from one provider prefetch call.
+
+    Existing providers may continue returning ``str``. ``MemoryManager``
+    converts that legacy return to this shape internally, preserving the
+    context bytes. The manager also replaces provider payloads with bounded,
+    recursively immutable values before exposing this result to observers.
+    """
+
+    context: str = ""
+    observations: tuple[MemoryObservation, ...] = ()
+
+    def __post_init__(self) -> None:
+        # A provider may conveniently pass a list, but the operation result
+        # delivered to callers must never expose a mutable or unbounded
+        # observation list. Reject arbitrary iterables instead of consuming a
+        # potentially unbounded generator at the trust boundary.
+        raw_observations = self.observations
+        if raw_observations is None:
+            raw_observations = ()
+        if not isinstance(raw_observations, (list, tuple)):
+            raise TypeError("observations must be a list or tuple")
+        object.__setattr__(
+            self,
+            "observations",
+            tuple(raw_observations[:MAX_MEMORY_OBSERVATIONS]),
+        )
+
+
+def _freeze_json_value(value: Any, *, depth: int = 0) -> Any:
+    """Validate and recursively freeze one JSON-safe observation value."""
+    if depth > MAX_MEMORY_OBSERVATION_DEPTH:
+        raise ValueError("observation payload is too deeply nested")
+    if value is None or isinstance(value, (bool, int, str)):
+        if isinstance(value, str) and len(value) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
+            raise ValueError("observation payload string is too long")
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("observation payload contains a non-finite number")
+        return value
+    if isinstance(value, dict):
+        if len(value) > MAX_MEMORY_OBSERVATION_ITEMS:
+            raise ValueError("observation payload object has too many keys")
+        frozen = {}
+        for key, child in value.items():
+            if not isinstance(key, str) or len(key) > MAX_MEMORY_OBSERVATION_STRING_CHARS:
+                raise ValueError("observation payload object keys must be bounded strings")
+            frozen[key] = _freeze_json_value(child, depth=depth + 1)
+        return _FrozenDict(frozen)
+    if isinstance(value, list):
+        if len(value) > MAX_MEMORY_OBSERVATION_ITEMS:
+            raise ValueError("observation payload array has too many items")
+        return tuple(_freeze_json_value(child, depth=depth + 1) for child in value)
+    raise TypeError("observation payload must contain only JSON-safe values")
+
+
+def _thaw_json_value(value: Any) -> Any:
+    """Return a JSON-native copy of a frozen observation value for sizing."""
+    if isinstance(value, Mapping):
+        return {key: _thaw_json_value(child) for key, child in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json_value(child) for child in value]
+    return value
+
+
+def _freeze_memory_observation_payload(payload: Any) -> Any:
+    """Validate, freeze, and size a provider observation payload."""
+    frozen = _freeze_json_value(payload)
+    import json
+
+    encoded = json.dumps(
+        _thaw_json_value(frozen), ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    if len(encoded) > MAX_MEMORY_OBSERVATION_BYTES:
+        raise ValueError("observation payload is too large")
+    return frozen
 
 
 @dataclass(frozen=True)
@@ -117,9 +260,16 @@ class MemoryProvider(ABC):
         """STATIC system-prompt text; "" to skip. Recalled context goes through prefetch(), not here."""
         return ""
 
-    def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Formatted recall context for the upcoming turn ("" if none). Must be fast — recall
-        in the background and return cached results; ``session_id`` scopes concurrent sessions."""
+    def prefetch(
+        self, query: str, *, session_id: str = ""
+    ) -> str | MemoryPrefetchResult:
+        """Recall relevant context for the upcoming turn.
+
+        Return formatted context, or a :class:`MemoryPrefetchResult` carrying
+        that text plus optional bounded observations. Implementations should be
+        fast — use background threads for the actual recall and return cached
+        results here.
+        """
         return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:

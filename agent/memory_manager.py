@@ -16,7 +16,20 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
+from agent.memory_provider import (
+    MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+    MAX_MEMORY_OBSERVATION_BYTES,
+    MAX_MEMORY_OBSERVATION_FIELD_CHARS,
+    MAX_MEMORY_OBSERVATIONS,
+    MemoryObservation,
+    MemoryPrefetchResult,
+    MemoryProvider,
+    PRE_COMPRESS_CHECKPOINT_API_VERSION,
+    _freeze_memory_observation_payload,
+    _thaw_json_value,
+    ctx_bound,
+    spawn_context_thread,
+)
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
 from tools.registry import tool_error
@@ -444,17 +457,191 @@ class MemoryManager:
     # providers get just the user's instruction (None for a bare invocation).
     _strip_skill_scaffolding = staticmethod(extract_user_instruction_from_skill_message)
 
-    def prefetch_all(self, query: str, *, session_id: str = "") -> str:
-        """Merge non-empty prefetch context from all providers (failures are non-fatal)."""
+    @staticmethod
+    def _normalize_prefetch_result(
+        provider: MemoryProvider, raw_result: Any
+    ) -> MemoryPrefetchResult:
+        """Normalize one provider result without weakening legacy strings."""
+        if raw_result is None:
+            raw_result = ""
+        if isinstance(raw_result, str):
+            return MemoryPrefetchResult(context=raw_result)
+        if not isinstance(raw_result, MemoryPrefetchResult):
+            raise TypeError(
+                f"Memory provider '{provider.name}' prefetch() must return str "
+                "or MemoryPrefetchResult"
+            )
+        if not isinstance(raw_result.context, str):
+            raise TypeError(
+                f"Memory provider '{provider.name}' returned non-string prefetch context"
+            )
+
+        observations: List[MemoryObservation] = []
+        batch_bytes = 0
+        raw_observations = raw_result.observations
+        if not isinstance(raw_observations, tuple):
+            raw_observations = tuple(raw_observations or ())
+        if len(raw_observations) > MAX_MEMORY_OBSERVATIONS:
+            logger.warning(
+                "Memory provider '%s' returned too many prefetch observations; "
+                "keeping only the bounded prefix",
+                provider.name,
+            )
+
+        for candidate in raw_observations[:MAX_MEMORY_OBSERVATIONS]:
+            try:
+                if not isinstance(candidate, MemoryObservation):
+                    raise TypeError("observation has the wrong type")
+                for field_name in ("source_kind", "schema"):
+                    field = getattr(candidate, field_name)
+                    if (
+                        not isinstance(field, str)
+                        or not field
+                        or len(field) > MAX_MEMORY_OBSERVATION_FIELD_CHARS
+                    ):
+                        raise ValueError(f"observation {field_name} is invalid")
+                if (
+                    isinstance(candidate.version, bool)
+                    or not isinstance(candidate.version, int)
+                    or candidate.version < 1
+                ):
+                    raise ValueError("observation version is invalid")
+                if candidate.provider not in ("", provider.name):
+                    raise ValueError("observation provider does not match its source provider")
+                if not isinstance(provider.name, str) or not provider.name:
+                    raise ValueError("provider name is invalid")
+                if len(provider.name) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
+                    raise ValueError("provider name is too long")
+
+                frozen_payload = _freeze_memory_observation_payload(candidate.payload)
+                encoded = json.dumps(
+                    {
+                        "source_kind": candidate.source_kind,
+                        "provider": provider.name,
+                        "schema": candidate.schema,
+                        "version": candidate.version,
+                        "payload": _thaw_json_value(frozen_payload),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                if len(encoded) > MAX_MEMORY_OBSERVATION_BYTES:
+                    raise ValueError("observation envelope is too large")
+                if batch_bytes + len(encoded) > MAX_MEMORY_OBSERVATION_BATCH_BYTES:
+                    logger.warning(
+                        "Memory provider '%s' exceeded the prefetch observation batch "
+                        "budget; dropping remaining observations",
+                        provider.name,
+                    )
+                    break
+                observations.append(
+                    MemoryObservation(
+                        source_kind=candidate.source_kind,
+                        provider=provider.name,
+                        schema=candidate.schema,
+                        version=candidate.version,
+                        payload=frozen_payload,
+                    )
+                )
+                batch_bytes += len(encoded)
+            except (TypeError, ValueError, OverflowError) as exc:
+                # Observation data is an optional side channel. A malformed
+                # envelope is dropped, while the provider's formatted context
+                # remains usable. Provider call exceptions retain the older
+                # fail-isolated behavior in prefetch_all_result().
+                logger.warning(
+                    "Memory provider '%s' returned a malformed prefetch observation; "
+                    "dropping it: %s",
+                    provider.name,
+                    exc,
+                )
+
+        return MemoryPrefetchResult(
+            context=raw_result.context,
+            observations=tuple(observations),
+        )
+
+    @staticmethod
+    def _emit_prefetch_observation(
+        result: MemoryPrefetchResult,
+        *,
+        query: str,
+        session_id: str,
+    ) -> None:
+        """Notify opt-in plugins about this exact prefetch operation.
+
+        The result is immutable and created for this invocation; no mutable
+        provider ``last_*`` state is consulted. Hook return values are ignored
+        so observers cannot transform context or affect the agent turn.
+        """
+        if not result.observations:
+            return
+        try:
+            from hermes_cli.lifecycle import has_hook, invoke_hook
+
+            if not has_hook("memory_prefetch"):
+                return
+            invoke_hook(
+                "memory_prefetch",
+                query=query,
+                session_id=session_id,
+                result=result,
+            )
+        except Exception as exc:
+            # Plugin hook dispatch is best-effort; memory injection must remain
+            # independent of an observer's import, discovery, or callback error.
+            logger.debug("memory_prefetch observer dispatch failed: %s", exc)
+
+    def prefetch_all_result(
+        self, query: str, *, session_id: str = ""
+    ) -> MemoryPrefetchResult:
+        """Collect context and bounded observations from one prefetch operation.
+
+        Existing providers returning ``str`` are normalized without changing
+        their context bytes. Provider failures remain isolated as before;
+        malformed structured observations alone are dropped while that
+        provider's formatted context is retained.
+        """
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
-            return ""
-        parts = self._each_provider(
-            "prefetch failed (non-fatal)", lambda p: self._prefetch_provider(p, clean_query, session_id=session_id),
+            return MemoryPrefetchResult()
+        parts = []
+        observations: List[MemoryObservation] = []
+        for provider in self._providers:
+            try:
+                raw_result = self._prefetch_provider(
+                    provider, clean_query, session_id=session_id
+                )
+                result = self._normalize_prefetch_result(provider, raw_result)
+                if result.context and result.context.strip():
+                    parts.append(result.context)
+                observations.extend(result.observations)
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' prefetch failed (non-fatal): %s",
+                    provider.name, e,
+                )
+        result = MemoryPrefetchResult(
+            context="\n\n".join(parts),
+            observations=tuple(observations[:MAX_MEMORY_OBSERVATIONS]),
         )
-        return "\n\n".join(p for p in parts if p and p.strip())
+        self._emit_prefetch_observation(
+            result,
+            query=clean_query,
+            session_id=session_id,
+        )
+        return result
 
-    def _prefetch_provider(self, provider: MemoryProvider, query: str, *, session_id: str = "") -> str:
+    def prefetch_all(self, query: str, *, session_id: str = "") -> str:
+        """Collect prefetch context from all providers.
+
+        This compatibility method intentionally keeps its historical ``str``
+        return type. Use :meth:`prefetch_all_result` when the operation-bound
+        structured result is needed.
+        """
+        return self.prefetch_all_result(query, session_id=session_id).context
+
+    def _prefetch_provider(self, provider: MemoryProvider, query: str, *, session_id: str = "") -> Any:
         """Run one provider's prefetch; external providers are bounded by a timeout. A stuck external
         call keeps running on its daemon thread and the provider is skipped on later turns until it returns."""
         if provider.name == "builtin":
@@ -464,7 +651,7 @@ class MemoryManager:
 
         def _run() -> None:
             try:
-                result_box["value"] = provider.prefetch(query, session_id=session_id) or ""
+                result_box["value"] = provider.prefetch(query, session_id=session_id)
             except Exception as exc:  # pragma: no cover - re-raised by caller
                 result_box["error"] = exc
 
@@ -491,7 +678,7 @@ class MemoryManager:
         if "error" in result_box:
             raise result_box["error"]
         result = result_box.get("value", "")
-        if result and result.strip():
+        if isinstance(result, str) and result.strip():
             # Prefetch is stamped into the user turn's api_content and replayed every later turn;
             # spill oversized results like plugin hook output so one provider can't inflate the prefix.
             result = spill_if_oversized(

@@ -109,6 +109,11 @@ VALID_HOOKS: Set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
+    # Observer-only memory-provider prefetch boundary. Fired only when the
+    # operation produced at least one bounded structured observation; the
+    # result is immutable and may contain raw recalled context, so plugins
+    # must opt in deliberately and must not treat this as outbound telemetry.
+    "memory_prefetch",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",
@@ -203,9 +208,15 @@ VALID_HOOKS: Set[str] = {
     "pre_command",
 }
 
-# Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
-# the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+# Hooks that the shell-hook bridge cannot safely carry. Most entries have a
+# directive that ``agent/shell_hooks._parse_response`` cannot represent;
+# ``memory_prefetch`` is the in-process Python-plugin event whose result object
+# must not be stringified across a subprocess boundary. ``VALID_HOOKS`` doubles
+# as the shell-hook config allow-list, so registration is refused loudly.
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {
+    "transform_api_error_classification",
+    "memory_prefetch",
+}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

@@ -976,7 +976,21 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         summary = f"remove from {label}"
         detail = old_text or ""
 
-    decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
+    denied_pattern = wa.denied_background_memory_pattern(action, content)
+    if denied_pattern:
+        return tool_error(
+            "Background memory write rejected by "
+            "auxiliary.background_review.memory.deny_patterns "
+            f"(matched literal: {denied_pattern!r}).",
+            success=False,
+        )
+
+    decision = wa.evaluate_gate(
+        wa.MEMORY,
+        inline_summary=summary,
+        inline_detail=detail,
+        force_approval=wa.background_memory_confirmation_required(),
+    )
 
     if decision.allow:
         return None
@@ -1030,7 +1044,28 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
             detail_lines.append(f"- {act}: {_op_content}")
     detail = "\n".join(detail_lines)
 
-    decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
+    for op in operations:
+        op = op or {}
+        op_content = op.get("content")
+        if op_content is None:
+            op_content = op.get("new_text")
+        denied_pattern = wa.denied_background_memory_pattern(
+            op.get("action", ""), op_content
+        )
+        if denied_pattern:
+            return tool_error(
+                "Background memory batch rejected by "
+                "auxiliary.background_review.memory.deny_patterns "
+                f"(matched literal: {denied_pattern!r}). No operations were applied.",
+                success=False,
+            )
+
+    decision = wa.evaluate_gate(
+        wa.MEMORY,
+        inline_summary=summary,
+        inline_detail=detail,
+        force_approval=wa.background_memory_confirmation_required(),
+    )
 
     if decision.allow:
         return None

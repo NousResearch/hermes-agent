@@ -222,6 +222,13 @@ def _background_review_task_config(
     return task if isinstance(task, dict) else {}
 
 
+def _memory_review_config(task_cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return the nested memory-save policy from a background-review block."""
+    task = _background_review_task_config(task_cfg)
+    memory_cfg = task.get("memory", {})
+    return memory_cfg if isinstance(memory_cfg, dict) else {}
+
+
 def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
     """Single config read for the automatic-review gate + task block.
 
@@ -1035,6 +1042,10 @@ def _run_review_in_thread(
     # Local import to avoid a hard circular dep at module load.
     from run_agent import AIAgent
     from tools.terminal_tool import set_approval_callback as _set_approval_callback
+    from tools.write_approval import (
+        reset_background_memory_policy,
+        set_background_memory_policy,
+    )
 
     # Install a non-interactive approval callback on this worker
     # thread so any dangerous-command guard the review agent trips
@@ -1055,6 +1066,9 @@ def _run_review_in_thread(
     review_agent = None
     review_messages: List[Dict] = []
     review_usage: Dict[str, Any] = {}
+    memory_policy_token = set_background_memory_policy(
+        _memory_review_config(task_cfg)
+    )
 
     def _unregister_review_agent(agent_ref) -> None:
         """Idempotent: clears the review fork from both tracking slots.
@@ -1445,6 +1459,7 @@ def _run_review_in_thread(
             _log_review_completion(review_usage, "error")
         agent._emit_auxiliary_failure("background review", e)
     finally:
+        reset_background_memory_policy(memory_policy_token)
         # Safety-net cleanup for the exception path.  Normal completion already
         # shut down inside the thread-scoped silence above.  Re-enter the
         # thread-scoped silence here so teardown output (Honcho flush, Hindsight
@@ -1506,10 +1521,24 @@ def spawn_background_review_thread(
     # Pick the right prompt based on which triggers fired.  Allow per-agent
     # override (the prompts moved to module-level constants but old code paths
     # that set agent._MEMORY_REVIEW_PROMPT etc. directly keep working).
-    if review_memory and review_skills:
+    memory_cfg = _memory_review_config(task_cfg)
+    configured_memory_prompt = memory_cfg.get("review_prompt")
+    if not isinstance(configured_memory_prompt, str):
+        configured_memory_prompt = ""
+    configured_memory_prompt = configured_memory_prompt.strip()
+    if review_memory and review_skills and configured_memory_prompt:
+        prompt = (
+            f"{configured_memory_prompt}\n\n"
+            "After applying the memory instructions above, independently "
+            "review skills using these instructions:\n\n"
+            f"{getattr(agent, '_SKILL_REVIEW_PROMPT', _SKILL_REVIEW_PROMPT)}"
+        )
+    elif review_memory and review_skills:
         prompt = getattr(agent, "_COMBINED_REVIEW_PROMPT", _COMBINED_REVIEW_PROMPT)
     elif review_memory:
-        prompt = getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)
+        prompt = configured_memory_prompt or getattr(
+            agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT
+        )
     else:
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
 

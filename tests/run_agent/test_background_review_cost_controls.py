@@ -173,3 +173,48 @@ def test_enabled_false_disables_automatic_review():
     cfg = {"auxiliary": {"background_review": {"enabled": False}}}
     with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
         assert br.is_background_review_enabled() is False
+
+
+def test_memory_review_prompt_can_be_overridden_without_affecting_defaults():
+    agent = _FakeAgent()
+    task_cfg = {"memory": {"review_prompt": "Save only durable device facts."}}
+
+    _target, prompt = br.spawn_background_review_thread(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+        task_cfg=task_cfg,
+    )
+
+    assert prompt == "Save only durable device facts."
+    assert callable(_target)
+
+
+def test_custom_memory_prompt_keeps_skill_instructions_in_combined_review():
+    agent = _FakeAgent()
+    task_cfg = {"memory": {"review_prompt": "Save only durable device facts."}}
+
+    _target, prompt = br.spawn_background_review_thread(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+        review_skills=True,
+        task_cfg=task_cfg,
+    )
+
+    assert "Save only durable device facts." in prompt
+    assert "update the skill library" in prompt
+
+
+def test_unset_memory_policy_preserves_builtin_combined_prompt():
+    agent = _FakeAgent()
+
+    _target, prompt = br.spawn_background_review_thread(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+        review_skills=True,
+        task_cfg={},
+    )
+
+    assert prompt == br._COMBINED_REVIEW_PROMPT

@@ -1241,6 +1241,15 @@ DEFAULT_CONFIG = {
             "timeout": 120,
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+            "memory": {
+                # Empty keeps the built-in memory-review prompt.
+                "review_prompt": "",
+                # Case-insensitive literal substrings rejected from proposed
+                # background-review add/replace content. Removals remain allowed.
+                "deny_patterns": [],
+                # Stage background-review memory writes for /memory approval.
+                "require_confirmation": False,
+            },
         },
         "moa_reference": {
             "provider": "auto",

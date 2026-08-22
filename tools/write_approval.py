@@ -42,6 +42,7 @@ web dashboard.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -65,6 +66,49 @@ _SUBSYSTEMS = (MEMORY, SKILLS)
 # "block all writes" state — to disable a subsystem entirely use its own
 # enable flag (e.g. ``memory.memory_enabled: false``).
 CONFIG_KEY = "write_approval"
+
+_background_memory_policy: contextvars.ContextVar[Dict[str, Any]] = (
+    contextvars.ContextVar("background_memory_policy", default={})
+)
+
+
+def set_background_memory_policy(policy: Dict[str, Any]) -> contextvars.Token:
+    """Bind one review fork's memory-save policy to its execution context."""
+    return _background_memory_policy.set(policy if isinstance(policy, dict) else {})
+
+
+def reset_background_memory_policy(token: contextvars.Token) -> None:
+    """Restore the previous background memory policy."""
+    _background_memory_policy.reset(token)
+
+
+def denied_background_memory_pattern(action: str, content: Any) -> Optional[str]:
+    """Return the configured literal that rejects a background memory write.
+
+    Only new content is filtered: removals remain possible so a review can
+    delete an existing entry that contains a denied topic.
+    """
+    if not is_background() or action not in {"add", "replace"}:
+        return None
+    if not isinstance(content, str):
+        return None
+    patterns = _background_memory_policy.get().get("deny_patterns", [])
+    if not isinstance(patterns, list):
+        return None
+    folded = content.casefold()
+    for raw in patterns:
+        if isinstance(raw, str) and raw.strip() and raw.strip().casefold() in folded:
+            return raw.strip()
+    return None
+
+
+def background_memory_confirmation_required() -> bool:
+    """Return whether this background fork must stage memory writes."""
+    if not is_background():
+        return False
+    return _normalize_enabled(
+        _background_memory_policy.get().get("require_confirmation", False)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +295,7 @@ class GateDecision:
 
 
 def evaluate_gate(subsystem: str, *, inline_summary: str = "",
-                  inline_detail: str = "") -> GateDecision:
+                  inline_detail: str = "", force_approval: bool = False) -> GateDecision:
     """Decide what to do with a pending write for ``subsystem``.
 
     Args:
@@ -271,7 +315,7 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     delays a write for approval, never silently refuses it. ``blocked`` is
     still produced when the user *actively denies* an inline prompt.
     """
-    if not write_approval_enabled(subsystem):
+    if not force_approval and not write_approval_enabled(subsystem):
         return GateDecision(allow=True)
 
     background = is_background()
@@ -280,10 +324,15 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     # background skill write happens in a daemon thread with no user present.
     if subsystem == SKILLS or background:
         where = "/skills pending" if subsystem == SKILLS else "/memory pending"
+        gate_name = (
+            "auxiliary.background_review.memory.require_confirmation"
+            if force_approval and subsystem == MEMORY
+            else f"{subsystem}.write_approval"
+        )
         return GateDecision(
             stage=True,
             message=(
-                f"Staged for approval ({subsystem}.write_approval is on). "
+                f"Staged for approval ({gate_name} is on). "
                 f"Not yet saved — review with {where}."
             ),
         )

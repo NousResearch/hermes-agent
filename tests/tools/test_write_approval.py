@@ -264,6 +264,114 @@ def test_memory_invalid_params_rejected_before_staging(hermes_home):
     assert wa.pending_count("memory") == 0
 
 
+def _bind_background_memory_policy(wa, policy):
+    from tools.skill_provenance import set_current_write_origin
+
+    return (
+        set_current_write_origin("background_review"),
+        wa.set_background_memory_policy(policy),
+    )
+
+
+def _reset_background_memory_policy(wa, tokens):
+    from tools.skill_provenance import reset_current_write_origin
+
+    origin_token, policy_token = tokens
+    wa.reset_background_memory_policy(policy_token)
+    reset_current_write_origin(origin_token)
+
+
+def test_background_memory_deny_patterns_block_add_case_insensitively(hermes_home):
+    from tools.memory_tool import MemoryStore, memory_tool
+    from tools import write_approval as wa
+
+    tokens = _bind_background_memory_policy(wa, {"deny_patterns": ["deploy secret"]})
+    try:
+        store = MemoryStore(); store.load_from_disk()
+        result = json.loads(memory_tool("add", "memory", "Remember DEPLOY SECRET steps", store=store))
+    finally:
+        _reset_background_memory_policy(wa, tokens)
+
+    assert result["success"] is False
+    assert "deny_patterns" in result["error"]
+    assert store.memory_entries == []
+    assert wa.pending_count("memory") == 0
+
+
+def test_background_memory_deny_patterns_allow_removing_matching_entry(hermes_home):
+    from tools.memory_tool import MemoryStore, memory_tool
+    from tools import write_approval as wa
+
+    store = MemoryStore(); store.load_from_disk()
+    store.add("memory", "obsolete deploy secret steps")
+    tokens = _bind_background_memory_policy(wa, {"deny_patterns": ["deploy secret"]})
+    try:
+        result = json.loads(
+            memory_tool("remove", "memory", old_text="deploy secret", store=store)
+        )
+    finally:
+        _reset_background_memory_policy(wa, tokens)
+
+    assert result["success"] is True
+    assert store.memory_entries == []
+
+
+def test_background_memory_deny_patterns_reject_batch_atomically(hermes_home):
+    from tools.memory_tool import MemoryStore, memory_tool
+    from tools import write_approval as wa
+
+    store = MemoryStore(); store.load_from_disk()
+    operations = [
+        {"action": "add", "content": "durable device fact"},
+        {"action": "add", "content": "one-off deployment detail"},
+    ]
+    tokens = _bind_background_memory_policy(wa, {"deny_patterns": ["deployment"]})
+    try:
+        result = json.loads(memory_tool(target="memory", operations=operations, store=store))
+    finally:
+        _reset_background_memory_policy(wa, tokens)
+
+    assert result["success"] is False
+    assert store.memory_entries == []
+
+
+def test_background_memory_confirmation_stages_without_global_gate(hermes_home):
+    from tools.memory_tool import MemoryStore, memory_tool
+    from tools import write_approval as wa
+
+    store = MemoryStore(); store.load_from_disk()
+    tokens = _bind_background_memory_policy(wa, {"require_confirmation": True})
+    try:
+        result = json.loads(memory_tool("add", "memory", "durable device fact", store=store))
+    finally:
+        _reset_background_memory_policy(wa, tokens)
+
+    assert result["success"] is True
+    assert result["staged"] is True
+    assert store.memory_entries == []
+    pending = wa.list_pending("memory")
+    assert len(pending) == 1
+    assert pending[0]["origin"] == "background_review"
+
+
+def test_background_memory_policy_does_not_gate_foreground_writes(hermes_home):
+    from tools.memory_tool import MemoryStore, memory_tool
+    from tools import write_approval as wa
+
+    policy_token = wa.set_background_memory_policy(
+        {"deny_patterns": ["device"], "require_confirmation": True}
+    )
+    try:
+        store = MemoryStore(); store.load_from_disk()
+        result = json.loads(memory_tool("add", "memory", "durable device fact", store=store))
+    finally:
+        wa.reset_background_memory_policy(policy_token)
+
+    assert result["success"] is True
+    assert result.get("staged") is None
+    assert store.memory_entries == ["durable device fact"]
+
+
 class TestSkillGist:
     """skill_gist builds a heuristic one-line summary for a pending skill write.
 

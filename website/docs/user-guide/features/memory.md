@@ -346,6 +346,31 @@ auxiliary:
 With `enabled: false`, automatic post-turn forks do not spawn; manual
 `/refine` still works.
 
+### Controlling what the review saves
+
+Memory-save policy can be scoped to the background review without changing
+foreground memory writes:
+
+```yaml
+auxiliary:
+  background_review:
+    memory:
+      review_prompt: |-
+        Save only durable user preferences, device facts, and environment facts.
+        Skip one-off task details and completed-work logs.
+      deny_patterns: ["one-off deployment", "temporary credential"]
+      require_confirmation: false
+```
+
+`review_prompt` replaces only the memory portion of the review; combined
+memory-and-skill reviews keep the built-in skill instructions. `deny_patterns`
+are case-insensitive literal substrings enforced on proposed memory additions
+and replacements (including batches), so the model cannot bypass them by
+ignoring the prompt. Removals remain allowed. With `require_confirmation: true`,
+background-review memory writes are staged instead of saved immediately; review
+them with `/memory pending`, `/memory approve <id>`, or `/memory reject <id>`.
+All three settings default to the previous behavior when omitted.
+
 Fork usage is persisted in `session_model_usage` with `task='background_review'`
 and a completion line is written to `agent.log`
 (`Background review complete: thread=bg-review calls=… in=… out=… result=…`).

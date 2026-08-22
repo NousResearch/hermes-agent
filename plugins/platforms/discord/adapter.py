@@ -7615,7 +7615,7 @@ class DiscordAdapter(BasePlatformAdapter):
         plus a final "✏️ Other (type answer)" button. Picking "Other" flips
         the clarify entry into text-capture mode so the next user message in
         the session becomes the response. Numeric clicks resolve immediately
-        via ``resolve_gateway_clarify(clarify_id, choice_text)``.
+        via ``resolve_gateway_clarify(clarify_id, choice_text, session_key=...)``.
 
         Open-ended mode (``choices`` empty/None): renders the question as
         plain embed text — no buttons. The gateway's text-intercept captures
@@ -7699,6 +7699,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
+                    session_key=session_key,
                 )
             else:
                 embed.add_field(
@@ -9633,10 +9634,12 @@ def _define_discord_view_classes() -> None:
             clarify_id: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            session_key: str = "",
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
+            self.session_key = session_key or ""
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
@@ -9770,7 +9773,9 @@ def _define_discord_view_classes() -> None:
 
             try:
                 from tools.clarify_gateway import resolve_gateway_clarify
-                resolved = resolve_gateway_clarify(self.clarify_id, resolved_text)
+                resolved = resolve_gateway_clarify(
+                    self.clarify_id, resolved_text, session_key=self.session_key
+                )
                 logger.info(
                     "Discord clarify button resolved (id=%s, choice=%r, user=%s, ok=%s)",
                     self.clarify_id, resolved_text,

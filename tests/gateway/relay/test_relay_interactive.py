@@ -179,7 +179,7 @@ async def test_prompt_response_resolves_clarify_choice_and_other(monkeypatch):
     marked: list[str] = []
     monkeypatch.setattr(
         "tools.clarify_gateway.resolve_gateway_clarify",
-        lambda cid, resp: resolved.append((cid, resp)) or True,
+        lambda cid, resp, session_key=None, **kwargs: resolved.append((cid, resp)) or True,
     )
     monkeypatch.setattr(
         "tools.clarify_gateway.mark_awaiting_text", lambda cid: marked.append(cid)
@@ -278,7 +278,7 @@ async def test_sibling_gateway_ignores_another_instances_prompt_answer(monkeypat
     resolved: list[tuple] = []
     monkeypatch.setattr(
         "tools.clarify_gateway.resolve_gateway_clarify",
-        lambda cid, resp: resolved.append((cid, resp)) or True,
+        lambda cid, resp, session_key=None, **kwargs: resolved.append((cid, resp)) or True,
     )
     monkeypatch.setattr("tools.clarify_gateway.mark_awaiting_text", lambda cid: None)
 
@@ -305,7 +305,7 @@ async def test_repeat_answer_for_resolved_prompt_is_ignored(monkeypatch):
     resolved: list[tuple] = []
     monkeypatch.setattr(
         "tools.clarify_gateway.resolve_gateway_clarify",
-        lambda cid, resp: resolved.append((cid, resp)) or True,
+        lambda cid, resp, session_key=None, **kwargs: resolved.append((cid, resp)) or True,
     )
     event = _event({"prompt_id": prompt_id, "option_id": "c0"})
     assert await adapter._consume_prompt_response(event) is True

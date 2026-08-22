@@ -993,6 +993,8 @@ class SlackAdapter(BasePlatformAdapter):
         # Same guard for clarify prompts (interactive multiple-choice
         # buttons); mirrors _approval_resolved.
         self._clarify_resolved: Dict[Any, bool] = {}
+        # clarify_id → session_key for ownership-bound resolve (#87780)
+        self._clarify_session_by_id: Dict[str, str] = {}
         self._CLARIFY_RESOLVED_MAX = 1000
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
@@ -7150,6 +7152,11 @@ class SlackAdapter(BasePlatformAdapter):
                 self._trim_oldest_dict_entries(
                     self._clarify_resolved, self._CLARIFY_RESOLVED_MAX
                 )
+                if clarify_id:
+                    self._clarify_session_by_id[clarify_id] = session_key
+                    self._trim_oldest_dict_entries(
+                        self._clarify_session_by_id, self._CLARIFY_RESOLVED_MAX
+                    )
 
             return SendResult(success=True, message_id=msg_ts, raw_response=result)
         except Exception as e:
@@ -7607,7 +7614,12 @@ class SlackAdapter(BasePlatformAdapter):
         if resolved_text is None:
             resolved_text = f"choice {idx + 1}"
 
-        if _clarify_mod.resolve_gateway_clarify(clarify_id, resolved_text):
+        session_key = self._clarify_session_by_id.pop(clarify_id, "") or (
+            getattr(_clarify_mod._entries.get(clarify_id), "session_key", None) or ""
+        )
+        if _clarify_mod.resolve_gateway_clarify(
+            clarify_id, resolved_text, session_key=session_key
+        ):
             await self._update_clarify_message(
                 channel_id, msg_ts, original_text,
                 f"✅ {user_name}: {resolved_text}",

@@ -17110,6 +17110,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _clarify_mod.resolve_gateway_clarify(
                         _pending_clarify.clarify_id,
                         "",
+                        session_key=_pending_clarify.session_key,
                     )
 
         # Intercept messages that are responses to a pending /reload-mcp

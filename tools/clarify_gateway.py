@@ -9,7 +9,7 @@ that:
   * stores a pending clarify request (with a generated ``clarify_id``),
   * blocks the agent thread on an ``Event``,
   * resolves the wait when the gateway's button-callback or text-intercept
-    fires ``resolve_gateway_clarify(clarify_id, response)``,
+    fires ``resolve_gateway_clarify(clarify_id, response, session_key=...)``,
   * supports timeouts so a user who never responds does NOT hang the agent
     thread forever (which would also pin the gateway's running-agent guard).
 
@@ -161,15 +161,44 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
 # Public API — gateway / adapter side
 # =========================================================================
 
-def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
+def resolve_gateway_clarify(
+    clarify_id: str,
+    response: str,
+    *,
+    session_key: Optional[str] = None,
+) -> bool:
     """Unblock the agent thread waiting on ``clarify_id``.
 
-    Returns True if an entry was found and resolved, False otherwise
-    (already resolved, expired, or never existed).
+    Callers **must** pass ``session_key`` matching the entry registered for
+    this clarify. Button callbacks and text intercepts already know the
+    owning session; requiring it closes the ID-only resolution hole where a
+    forged/leaked ``clarify_id`` could answer another session's prompt
+    (see #87780). Omitting ``session_key`` or supplying a mismatch returns
+    False without resolving.
+
+    Returns True if an entry was found, ownership matched, and resolved.
+    Returns False when already resolved, expired, never existed, missing
+    ``session_key``, or session ownership mismatched.
     """
     with _lock:
         entry = _entries.get(clarify_id)
         if entry is None or entry.event.is_set():
+            return False
+        if not session_key:
+            logger.warning(
+                "resolve_gateway_clarify rejected: missing session_key "
+                "(clarify_id=%s)",
+                clarify_id,
+            )
+            return False
+        if entry.session_key != session_key:
+            logger.warning(
+                "resolve_gateway_clarify rejected: session_key mismatch "
+                "(clarify_id=%s expected=%r got=%r)",
+                clarify_id,
+                entry.session_key,
+                session_key,
+            )
             return False
         entry.response = str(response) if response is not None else ""
         entry.event.set()
@@ -446,7 +475,11 @@ def attempt_text_response_for_session(session_key: str, response: str) -> str:
             return TEXT_REJECTED_SELECTION
         return TEXT_REJECTED_PROSE
 
-    if resolve_gateway_clarify(entry.clarify_id, coerced):
+    if resolve_gateway_clarify(
+        entry.clarify_id,
+        coerced,
+        session_key=entry.session_key,
+    ):
         return TEXT_RESOLVED
     # Lost a race with a button/callback resolution — treat as no work left.
     return TEXT_NO_PENDING

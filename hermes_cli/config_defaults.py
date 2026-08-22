@@ -2754,6 +2754,25 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Disk guardian (OOF-250 / OOF-269): retention sweeps + low-space signal.
+    "disk": {
+        "retention": {
+            "enabled": True,
+            "sweep_interval_minutes": 30,   # How often the gateway sweeps
+            "diag_log_max_bytes": 2097152,  # Tail-truncate diag logs above this (2 MiB)
+            "diag_log_keep_bytes": 262144,  # Tail kept after truncation (256 KiB)
+            "cache_max_age_hours": 72,      # Backstop age for media caches
+            "db_backup_keep_count": 5,      # Newest state.db.malformed-* kept
+            "db_backup_max_age_days": 14,
+            "pkg_cache_max_age_days": 14,   # npm/pip caches under home/
+        },
+        "low_space": {
+            # Health/status endpoints flag low space when free space under
+            # HERMES_HOME drops below EITHER threshold.
+            "min_free_bytes": 209715200,    # 200 MiB
+            "min_free_percent": 10.0,
+        },
+    },
     # Logging — controls file logging to ~/.hermes/logs/.
     # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
     "logging": {

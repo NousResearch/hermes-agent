@@ -21,6 +21,7 @@ import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
@@ -1879,7 +1880,39 @@ SUPPORTED_IMAGE_DOCUMENT_TYPES = {
 # ``gateway/run.py``.
 # ---------------------------------------------------------------------------
 
-MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
+def _parse_extra_media_extensions(raw: Optional[Union[str, Sequence[str]]] = None) -> Tuple[str, ...]:
+    """Parse additional media delivery extensions from environment or configuration.
+
+    Accepts comma/semicolon-separated strings (e.g. '.dwg,.blend,.step') or lists.
+    Prepends leading dots if missing and lowercases.
+    """
+    if raw is None:
+        raw = os.getenv("HERMES_EXTRA_MEDIA_EXTENSIONS", "")
+    items: list[str] = []
+    if isinstance(raw, str):
+        for part in raw.replace(";", ",").split(","):
+            token = part.strip().lower()
+            if not token:
+                continue
+            if not token.startswith("."):
+                token = f".{token}"
+            if token not in items:
+                items.append(token)
+    elif isinstance(raw, (list, tuple, set)):
+        for part in raw:
+            if not isinstance(part, str):
+                continue
+            token = part.strip().lower()
+            if not token:
+                continue
+            if not token.startswith("."):
+                token = f".{token}"
+            if token not in items:
+                items.append(token)
+    return tuple(items)
+
+
+DEFAULT_MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Images (embed inline)
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",
     # Video (embed inline where supported)
@@ -1887,7 +1920,7 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Audio (delivered as voice/audio where supported)
     ".mp3", ".m2a", ".wav", ".ogg", ".opus", ".m4a", ".flac",
     # Documents (uploaded as file attachments)
-    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
+    ".pdf", ".docx", ".doc", ".hwp", ".hwpx", ".odt", ".rtf", ".txt", ".md", ".epub",
     # Spreadsheets / data
     ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
     # Geospatial / GIS (#24032)
@@ -1900,13 +1933,31 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     ".html", ".htm",
 )
 
+
+def get_media_delivery_extensions(extra: Optional[Union[str, Sequence[str]]] = None) -> Tuple[str, ...]:
+    """Return the effective tuple of media delivery extensions including any configured extras."""
+    extras = _parse_extra_media_extensions(extra)
+    if not extras:
+        return DEFAULT_MEDIA_DELIVERY_EXTS
+    combined = list(DEFAULT_MEDIA_DELIVERY_EXTS)
+    for ext in extras:
+        if ext not in combined:
+            combined.append(ext)
+    return tuple(combined)
+
+
+MEDIA_DELIVERY_EXTS: Tuple[str, ...] = get_media_delivery_extensions()
+
 # Regex alternation fragment of bare extensions (no leading dot), e.g.
 # ``png|jpe?g|...``. ``jpe?g`` collapses jpg/jpeg into one branch. Sorted
 # longest-first so the alternation never matches a shorter ext as a prefix of
 # a longer one (e.g. ``.tar`` before ``.tar.gz`` components).
-_MEDIA_EXT_ALTERNATION = "|".join(
-    sorted((e.lstrip(".") for e in MEDIA_DELIVERY_EXTS), key=len, reverse=True)
-)
+def _build_media_ext_alternation(exts: Sequence[str] = MEDIA_DELIVERY_EXTS) -> str:
+    return "|".join(
+        sorted((e.lstrip(".") for e in exts), key=len, reverse=True)
+    )
+
+_MEDIA_EXT_ALTERNATION = _build_media_ext_alternation(MEDIA_DELIVERY_EXTS)
 
 # Anchored ``MEDIA:<path>`` cleanup pattern. Unlike the old loose
 # ``MEDIA:\\s*\\S+``, this only strips a tag whose path ends in a known
@@ -2062,7 +2113,7 @@ def _path_lacks_deliverable_extension(path: str) -> bool:
     paths stay visible in the text.
     """
     suffix = Path(path).suffix.lower()
-    return not suffix or suffix not in MEDIA_DELIVERY_EXTS
+    return not suffix or suffix not in get_media_delivery_extensions()
 
 
 def _resolve_extensionless_candidate(path: str) -> Optional[str]:

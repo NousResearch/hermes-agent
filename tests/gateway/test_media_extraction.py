@@ -383,5 +383,31 @@ class TestStaleToolMediaLeak:
         )
 
 
+def test_hwp_and_hwpx_in_media_delivery_extensions():
+    from gateway.platforms.base import MEDIA_DELIVERY_EXTS, DEFAULT_MEDIA_DELIVERY_EXTS
+    assert ".hwp" in DEFAULT_MEDIA_DELIVERY_EXTS
+    assert ".hwpx" in DEFAULT_MEDIA_DELIVERY_EXTS
+    assert ".hwp" in MEDIA_DELIVERY_EXTS
+    assert ".hwpx" in MEDIA_DELIVERY_EXTS
+
+
+def test_extra_media_extensions_configuration(monkeypatch):
+    from gateway.platforms.base import get_media_delivery_extensions, _parse_extra_media_extensions
+
+    # Test explicit sequence
+    parsed = _parse_extra_media_extensions(["dwg", ".blend", "  .STEP  "])
+    assert parsed == (".dwg", ".blend", ".step")
+
+    # Test env var string parsing
+    monkeypatch.setenv("HERMES_EXTRA_MEDIA_EXTENSIONS", "dwg, .blend; step, .3ds")
+    exts = get_media_delivery_extensions()
+    assert ".dwg" in exts
+    assert ".blend" in exts
+    assert ".step" in exts
+    assert ".3ds" in exts
+    assert ".hwp" in exts
+    assert ".pdf" in exts
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

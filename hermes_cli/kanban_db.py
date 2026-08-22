@@ -5359,6 +5359,7 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True,
+    handles: Optional[list] = None,   # WELD: structured handle list, persisted in metadata
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
 
@@ -5393,6 +5394,12 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    # --- WELD (local, 2026-08-21): persist structured handles into metadata ---
+    if handles is not None and isinstance(handles, list):
+        if metadata is None or not isinstance(metadata, dict):
+            metadata = {}
+        metadata["weld_handles"] = handles  # board-persisted, resolvable by verifier
+    # --- end WELD ---
     # Fail before validating cards or staging artifacts; re-check inside the
     # final write transaction below to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
@@ -9805,6 +9812,77 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+def _weld_parent_handles_resolved(conn: sqlite3.Connection, task_id: str) -> "tuple[bool, str]":
+    """WELD (local, 2026-08-21): hold-at-dispatch gate.
+
+    Return (True, "") if the task has no parent (independent — skip the gate,
+    no strangle), or if every parent that completed carries resolvable
+    ``weld_handles`` (truth-transit verified). Return (False, reason) if a
+    parent exists but its handle has not resolved — the child's dispatch must
+    HOLD until the parent's handle is verifiable (B builds on verified A, not
+    A's prose).
+
+    A handle "resolves" by EXISTENCE check only (machine, no judgment):
+      - file:  path (strip :line) exists on disk
+      - sha:   git cat-file -e <sha> against the canonical repo succeeds
+      - url:   HTTP 200 (lightweight HEAD)
+      - pane:  pane record exists bound to wren_message_id
+    Truth of the work itself is Wren's (human) call, never a bot's.
+    """
+    try:
+        parents = conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ?",
+            (task_id,),
+        ).fetchall()
+        if not parents:
+            return True, ""  # independent task — gate does not apply
+        for (pid,) in parents:
+            row = conn.execute(
+                "SELECT metadata FROM task_runs WHERE task_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (pid,),
+            ).fetchone()
+            if not row or not row[0]:
+                return False, f"parent {pid} has no completed handle"
+            import json as _json
+            try:
+                meta = _json.loads(row[0]) if isinstance(row[0], str) else row[0]
+            except Exception:
+                return False, f"parent {pid} handle metadata unreadable"
+            handles = (meta or {}).get("weld_handles") or []
+            if not handles:
+                return False, f"parent {pid} completed without weld_handles"
+            for h in handles:
+                htype = h.get("type")
+                val = h.get("value", "")
+                if htype == "file":
+                    p = val.rsplit(":", 1)[0]
+                    if not os.path.exists(p):
+                        return False, f"parent {pid} handle file missing: {p}"
+                elif htype == "sha":
+                    # resolve against canonical repo if configured, else local
+                    import subprocess as _sp
+                    try:
+                        _sp.run(["git", "cat-file", "-e", val], check=True,
+                                capture_output=True, timeout=10)
+                    except Exception:
+                        return False, f"parent {pid} sha unresolvable: {val}"
+                elif htype == "url":
+                    import urllib.request as _ur
+                    try:
+                        _ur.urlopen(val, timeout=10).status
+                    except Exception:
+                        return False, f"parent {pid} url unreachable: {val}"
+                elif htype == "pane":
+                    if not h.get("wren_message_id"):
+                        return False, f"parent {pid} pane handle not Wren-bound"
+                # unknown handle type: do not block on it (fail open)
+        return True, ""
+    except Exception as _e:
+        # Gate failure must HOLD (fail closed), not silently dispatch.
+        return False, f"weld gate error: {_e}"
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -10215,6 +10293,28 @@ def _dispatch_once_locked(
                         {"reason": guard_reason},
                     )
             continue
+        # --- WELD (local, 2026-08-21): hold-at-dispatch seam gate ---
+        # If this task depends on a parent whose weld_handles have not resolved,
+        # HOLD it (do not dispatch B until A's handle is verifiable). Independent
+        # tasks (no parent) skip this entirely — no strangle. Fail-closed: any
+        # gate error holds the task rather than dispatching unverified.
+        try:
+            from hermes_cli.config import load_config as _lc
+            _weld_on = bool((_lc() or {}).get("kanban", {}).get("seam_gate", False))
+        except Exception:
+            _weld_on = False
+        if _weld_on:
+            _ok, _why = _weld_parent_handles_resolved(conn, row["id"])
+            if not _ok:
+                if not dry_run:
+                    with write_txn(conn):
+                        _append_event(
+                            conn, row["id"], "weld_held",
+                            {"reason": _why},
+                        )
+                result.skipped_nonspawnable.append(row["id"])
+                continue
+        # --- end WELD ---
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
             spawned += 1

@@ -737,6 +737,29 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(
             "provide at least one of: summary (preferred), result"
         )
+    # --- WELD (local, 2026-08-21): reject complete() with no structured handle ---
+    # Floor only: presence + shape. Truth is resolved later (dispatch gate / Wren-verify).
+    # Gated by config kanban.require_handle so it can be disabled if it wedges work.
+    try:
+        from hermes_cli.config import load_config
+        _kc = (load_config() or {}).get("kanban", {}) or {}
+        if _kc.get("require_handle", False):
+            _handles = args.get("handles")
+            if not isinstance(_handles, list) or not _handles:
+                return tool_error(
+                    "weld: complete() requires a structured 'handles' list "
+                    "(each: {type: sha|file|url|pane, value, profile}). "
+                    "No handle = no completion. Provide a verifiable handle."
+                )
+            for _h in _handles:
+                if not isinstance(_h, dict) or not _h.get("type") or not _h.get("value"):
+                    return tool_error(
+                        f"weld: handle {_h!r} invalid - needs type + value + profile"
+                    )
+    except Exception as _e:
+        # Surface config errors instead of silently disabling the gate (no false-done).
+        return tool_error(f"weld: config read failed, blocking completion: {_e}")
+    # --- end WELD ---
     if metadata is not None and not isinstance(metadata, dict):
         return tool_error(
             f"metadata must be an object/dict, got {type(metadata).__name__}"
@@ -771,6 +794,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    handles=args.get("handles"),   # WELD: forward structured handles to DB (persisted as weld_handles)
                 )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
@@ -1848,6 +1872,31 @@ KANBAN_COMPLETE_SCHEMA = {
                     "workspace are copied to durable task attachments before "
                     "cleanup; a missing declared scratch artifact keeps the "
                     "task in-flight so you can fix the path and retry."
+                ),
+            },
+            "handles": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["sha", "file", "url", "pane"],
+                            "description": "sha=git commit SHA; file=absolute path:line; url=live probe (deploy); pane=Wren-relayed pane-ref.",
+                        },
+                        "value": {"type": "string", "description": "The handle value (SHA, absolute path:line, URL, or pane id)."},
+                        "profile": {"type": "string", "description": "Profile that produced the handle (e.g. coder, technical-writer, wren)."},
+                        "wren_message_id": {"type": "string", "description": "For pane-type: the Wren message-id this handle is bound to (forge-proof)."},
+                    },
+                    "required": ["type", "value", "profile"],
+                },
+                "description": (
+                    "WELD (local 2026-08-21): structured, verifiable handoff handles. "
+                    "Required when kanban.require_handle is true. Each entry is a "
+                    "resolvable proof that the work exists (sha / file:line / url-probe / "
+                    "wren-pane). Bot B's downstream turn only proceeds once these resolve. "
+                    "Never invent a handle — if you cannot produce one, leave the task "
+                    "in-flight and report why."
                 ),
             },
             "board": _board_schema_prop(),

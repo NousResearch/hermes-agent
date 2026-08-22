@@ -17,7 +17,9 @@ transport:
   # with the path the catalog cloned the repo into. The catalog never
   # auto-updates: the user re-runs `hermes mcp install official/n8n` to
   # refresh.
-  command: "${INSTALL_DIR}/.venv/bin/python"
+  # Catalog-owned placeholders resolve to OS-correct absolute paths:
+  # .venv/bin/python on POSIX, .venv/Scripts/python.exe on Windows.
+  command: "${VENV_PYTHON}"
   args:
     - "${INSTALL_DIR}/server.py"
 
@@ -35,8 +37,10 @@ install:
   ref: 7a9ae00795593aa1fdb4e61ecd640e8bfd0c3841
   # Bootstrap commands run inside the cloned directory after clone.
   bootstrap:
-    - "python3 -m venv .venv"
-    - ".venv/bin/pip install -r requirements.txt"
+    - "${PYTHON} -m venv .venv"
+    # The pinned source declares mcp>=1.0.0, which now floats to incompatible
+    # mcp 2.x. Its FastMCP + postponed-annotation code is verified with 1.4.1.
+    - '${VENV_PYTHON} -m pip install "mcp==1.4.1" "pydantic>=2.7,<2.10" -r requirements.txt'
 
 # Authentication. Three shapes:
 #   type: api_key  — prompt for env vars, write to ~/.hermes/.env

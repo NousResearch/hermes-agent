@@ -27,16 +27,22 @@ See references/mcp-catalog.md (this repo's skill) for the manifest schema.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional
 
 import yaml
 
-from hermes_constants import get_hermes_home, get_optional_mcps_dir
+from hermes_constants import (
+    get_hermes_home,
+    get_optional_mcps_dir,
+    venv_python_path,
+)
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import (
@@ -51,6 +57,8 @@ _MANIFEST_VERSION = 1
 
 # Substituted at install time inside `transport.command` / `transport.args`.
 _INSTALL_DIR_VAR = "${INSTALL_DIR}"
+_PYTHON_VAR = "${PYTHON}"
+_VENV_PYTHON_VAR = "${VENV_PYTHON}"
 
 
 # ─── Data classes ────────────────────────────────────────────────────────────
@@ -442,15 +450,123 @@ def _install_root() -> Path:
     return root
 
 
+def _runtime_os_name() -> str:
+    return os.name
+
+
+def _runtime_python_executable() -> str:
+    return sys.executable
+
+
+def _venv_python_path(install_dir: Path, *, os_name: str) -> str:
+    path = venv_python_path(install_dir / ".venv", windows=os_name == "nt")
+    if os_name == "nt":
+        return str(PureWindowsPath(str(path)))
+    return str(PurePosixPath(str(path).replace("\\", "/")))
+
+
+def _install_dir_value(install_dir: Path, *, os_name: str) -> str:
+    """Render a catalog install directory with the target runtime's syntax."""
+    if os_name == "nt":
+        return str(PureWindowsPath(str(install_dir)))
+    return str(PurePosixPath(str(install_dir).replace("\\", "/")))
+
+
+def _expand_catalog_vars(
+    value: str,
+    install_dir: Optional[Path],
+    *,
+    os_name: Optional[str] = None,
+) -> str:
+    """Expand trusted catalog variables into raw transport argv values."""
+    resolved_os = os_name or _runtime_os_name()
+    needs_install = _INSTALL_DIR_VAR in value or _VENV_PYTHON_VAR in value
+    if needs_install and install_dir is None:
+        variable = (
+            _VENV_PYTHON_VAR if _VENV_PYTHON_VAR in value else _INSTALL_DIR_VAR
+        )
+        raise CatalogError(
+            f"manifest references {variable} but no install block exists"
+        )
+
+    replacements = {
+        _PYTHON_VAR: _runtime_python_executable(),
+    }
+    if install_dir is not None:
+        replacements[_INSTALL_DIR_VAR] = _install_dir_value(
+            install_dir, os_name=resolved_os
+        )
+        replacements[_VENV_PYTHON_VAR] = _venv_python_path(
+            install_dir, os_name=resolved_os
+        )
+
+    expanded = value
+    if resolved_os == "nt" and _INSTALL_DIR_VAR in value:
+        expanded = expanded.replace(
+            f"{_INSTALL_DIR_VAR}/", f"{replacements[_INSTALL_DIR_VAR]}\\"
+        )
+    for variable, replacement in replacements.items():
+        expanded = expanded.replace(variable, replacement)
+    return expanded
+
+
+_BOOTSTRAP_PYTHON_ENV = "HERMES_MCP_BOOTSTRAP_PYTHON"
+_BOOTSTRAP_INSTALL_DIR_ENV = "HERMES_MCP_BOOTSTRAP_INSTALL_DIR"
+_BOOTSTRAP_VENV_PYTHON_ENV = "HERMES_MCP_BOOTSTRAP_VENV_PYTHON"
+
+
+def _expand_bootstrap_vars(
+    value: str, install_dir: Path, *, os_name: str
+) -> tuple[str, Dict[str, str]]:
+    """Prepare a bootstrap command without interpolating paths into its shell.
+
+    Catalog bootstrap steps intentionally support shell operators such as
+    ``&&``. User-controlled install paths must therefore travel through child
+    environment variables instead of command text: this prevents cmd.exe and
+    POSIX shells from interpreting path characters such as ``&`` or ``%``.
+    """
+    env = {
+        _BOOTSTRAP_PYTHON_ENV: _runtime_python_executable(),
+        _BOOTSTRAP_INSTALL_DIR_ENV: _install_dir_value(install_dir, os_name=os_name),
+        _BOOTSTRAP_VENV_PYTHON_ENV: _venv_python_path(
+            install_dir, os_name=os_name
+        ),
+    }
+    if os_name == "nt":
+        references = {
+            _PYTHON_VAR: f'"%{_BOOTSTRAP_PYTHON_ENV}%"',
+            _INSTALL_DIR_VAR: f'"%{_BOOTSTRAP_INSTALL_DIR_ENV}%"',
+            _VENV_PYTHON_VAR: f'"%{_BOOTSTRAP_VENV_PYTHON_ENV}%"',
+        }
+    else:
+        references = {
+            _PYTHON_VAR: f'"${_BOOTSTRAP_PYTHON_ENV}"',
+            _INSTALL_DIR_VAR: f'"${_BOOTSTRAP_INSTALL_DIR_ENV}"',
+            _VENV_PYTHON_VAR: f'"${_BOOTSTRAP_VENV_PYTHON_ENV}"',
+        }
+
+    expanded = value
+    for variable, reference in references.items():
+        expanded = expanded.replace(variable, reference)
+    return expanded, env
+
+
 def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
     """Execute bootstrap commands in *cwd*. Raise CatalogError on first failure.
 
     Each command runs through the shell (so `&&` etc. work). The output is
     streamed to the user's terminal for visibility.
     """
-    for cmd in commands:
+    os_name = _runtime_os_name()
+    for raw_cmd in commands:
+        cmd, bootstrap_env = _expand_bootstrap_vars(raw_cmd, cwd, os_name=os_name)
         print(color(f"  $ {cmd}", Colors.DIM))
-        proc = subprocess.run(cmd, cwd=str(cwd), shell=True)
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            shell=True,
+            env={**os.environ, **bootstrap_env},
+        )
         if proc.returncode != 0:
             raise CatalogError(
                 f"bootstrap step failed (exit {proc.returncode}): {cmd}"
@@ -525,13 +641,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
 
 
 def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
-    if _INSTALL_DIR_VAR not in value:
-        return value
-    if install_dir is None:
-        raise CatalogError(
-            f"manifest references {_INSTALL_DIR_VAR} but no install block exists"
-        )
-    return value.replace(_INSTALL_DIR_VAR, str(install_dir))
+    return _expand_catalog_vars(value, install_dir)
 
 
 def _prompt_env_vars(specs: List[EnvVarSpec]) -> Dict[str, str]:

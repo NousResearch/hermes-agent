@@ -1249,3 +1249,76 @@ class TestUpdateNodeDependencies:
         assert cwd_calls, "expected at least one npm call"
         for cwd in cwd_calls:
             assert cwd == tmp_path, f"npm must run from PROJECT_ROOT; got cwd={cwd}"
+
+
+class TestShallowCloneFetch:
+    """A shallow clone's fetch must cross the shallow boundary (#88175)."""
+
+    def test_shallow_clone_uses_unshallow(self, tmp_path):
+        from hermes_cli import update_cmd
+
+        (tmp_path / ".git" / "shallow").mkdir(parents=True)
+        cmd = update_cmd._fetch_command(
+            ["git", "-c", "windows.appendAtomically=false"], "main", tmp_path
+        )
+        assert cmd == [
+            "git",
+            "-c",
+            "windows.appendAtomically=false",
+            "fetch",
+            "--unshallow",
+            "origin",
+            "main",
+        ]
+
+    def test_full_clone_uses_plain_fetch(self, tmp_path):
+        from hermes_cli import update_cmd
+
+        (tmp_path / ".git").mkdir(parents=True)
+        cmd = update_cmd._fetch_command(["git"], "main", tmp_path)
+        assert cmd == ["git", "fetch", "origin", "main"]
+
+    def test_linked_worktree_shallow_uses_unshallow(self, tmp_path):
+        """Linked worktrees have `.git` as a file pointing at a gitdir
+        elsewhere — the shallow marker lives in the common dir, so the probe
+        must resolve it via `git rev-parse --git-common-dir` (#88175 follow-up
+        from automated review).
+        """
+        from unittest.mock import patch
+
+        from hermes_cli import update_cmd
+
+        # Worktree: `.git` is a file, the common dir is elsewhere.
+        (tmp_path / ".git").write_text("gitdir: ../.realgit/worktrees/wt\n")
+        common_dir = tmp_path / ".realgit"
+        (common_dir / "shallow").mkdir(parents=True)
+
+        with patch(
+            "hermes_cli.update_cmd.subprocess.run"
+        ) as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = str(common_dir) + "\n"
+            cmd = update_cmd._fetch_command(["git"], "main", tmp_path)
+
+        assert cmd == ["git", "fetch", "--unshallow", "origin", "main"]
+
+    def test_worktree_without_shallow_uses_plain_fetch(self, tmp_path):
+        """A linked worktree with no shallow marker must keep the plain fetch
+        (the common-dir resolution must not force --unshallow).
+        """
+        from unittest.mock import patch
+
+        from hermes_cli import update_cmd
+
+        (tmp_path / ".git").write_text("gitdir: ../.realgit/worktrees/wt\n")
+        common_dir = tmp_path / ".realgit"
+        common_dir.mkdir(parents=True)
+
+        with patch(
+            "hermes_cli.update_cmd.subprocess.run"
+        ) as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = str(common_dir) + "\n"
+            cmd = update_cmd._fetch_command(["git"], "main", tmp_path)
+
+        assert cmd == ["git", "fetch", "origin", "main"]

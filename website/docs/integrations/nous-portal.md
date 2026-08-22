@@ -72,6 +72,18 @@ Because everything routes through one OAuth-authenticated Portal session, you do
 
 [Native Windows](/user-guide/windows-native) makes per-tool API key setup its rough edge — installing a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
 
+### Pricing and free models
+
+Model usage is pay-per-token against your credit balance. The full model catalog with per-model input/output rates (per 1M tokens) is published on the [Portal site](https://portal.nousresearch.com/) under **Models**, and you can look up a specific model's rate on the [model info page](https://portal.nousresearch.com/info).
+
+**Free models.** The catalog includes free models, listed at $0.00/1M. The Portal's **Free plan** ($0/month) covers exactly these — free models only, at standard rate limits — so you can log in and run Hermes Agent without a paid subscription.
+
+**Paid plans.** Plus ($20/month), Super ($100/month), and Ultra ($200/month) each include 10% bonus monthly credits ($22, $110, and $220 respectively), unlock the full model catalog and hosted [Tool Gateway](#the-nous-tool-gateway) usage, and raise rate limits. Unused credits roll over up to a per-plan cap ($10 / $50 / $100). You can also add one-off credit top-ups to your Nous balance on any plan.
+
+:::tip Keeping spend predictable
+Hermes may make several model calls per user turn, so your model choice is the main driver of spend. Check the per-model rate before settling on a daily driver, and use `/model` to switch between a frontier flagship for hard tasks and a cheaper model for routine work.
+:::
+
 ## A note on Hermes 4
 
 Nous Research's own **Hermes 4** family (Hermes-4-70B, Hermes-4-405B) is available through the Portal at heavily discounted rates. These are **frontier hybrid-reasoning chat models** — strong at math, science, instruction following, schema adherence, roleplay, and long-form writing.

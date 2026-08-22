@@ -110,6 +110,7 @@ import shutil
 import sys
 import threading
 import time
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
@@ -251,8 +252,8 @@ _MCP_NOTIFICATION_TYPES = False
 _MCP_ELICITATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
 _MCP_LOGGING_CALLBACK_SUPPORTED = False
-_MCP_NEW_HTTP = False
 sse_client = None
+_SDK_STDIO_CLIENT = None
 # Conservative fallback for SDK builds that don't export LATEST_PROTOCOL_VERSION.
 # Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
 # HTTP transport path even on older-but-supported SDK versions.
@@ -323,6 +324,7 @@ def _ensure_mcp_sdk() -> bool:
     global _MCP_SAMPLING_TYPES, _MCP_NOTIFICATION_TYPES, _MCP_ELICITATION_TYPES
     global _MCP_MESSAGE_HANDLER_SUPPORTED, _MCP_LOGGING_CALLBACK_SUPPORTED
     global _MCP_NEW_HTTP, _MCP_LEGACY_HTTP, LATEST_PROTOCOL_VERSION, LATEST_HANDSHAKE_VERSION, sse_client
+    global _SDK_STDIO_CLIENT
     global ClientSession, StdioServerParameters, stdio_client
     global streamablehttp_client, streamable_http_client
     global CreateMessageResult, CreateMessageResultWithTools, ErrorData
@@ -341,6 +343,7 @@ def _ensure_mcp_sdk() -> bool:
         try:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
+            _SDK_STDIO_CLIENT = stdio_client
             _MCP_AVAILABLE = True
             # Prefer the non-deprecated API (mcp >= 1.24.0); fall back to the
             # deprecated wrapper for older SDK versions.
@@ -1722,6 +1725,317 @@ def _format_connect_error(exc: BaseException) -> str:
     return _sanitize_error("; ".join(deduped[:3]))
 
 
+_mcp_stdio_noise_warned: set[tuple[str, str]] = set()
+
+
+def _warn_stdio_noise_once(server_name: str, line: str, *, recovered: bool) -> None:
+    """Log noisy stdio stdout without flooding on chatty servers."""
+    kind = "recovered" if recovered else "dropped"
+    key = (server_name, kind)
+    sample = _sanitize_error(str(line).strip())[:240]
+    if key in _mcp_stdio_noise_warned:
+        logger.debug(
+            "MCP server '%s': %s noisy stdout line before JSON-RPC: %s",
+            server_name,
+            kind,
+            sample,
+        )
+        return
+    _mcp_stdio_noise_warned.add(key)
+    if recovered:
+        logger.warning(
+            "MCP server '%s' wrote non-JSON stdout before a JSON-RPC frame; "
+            "discarding the prefix and continuing. First line: %s",
+            server_name,
+            sample,
+        )
+    else:
+        logger.warning(
+            "MCP server '%s' wrote non-JSON stdout on the MCP stdio channel; "
+            "ignoring it. First line: %s",
+            server_name,
+            sample,
+        )
+
+
+def _parse_stdio_jsonrpc_line(server_name: str, line: str):
+    """Parse one stdout line from a stdio MCP server.
+
+    The MCP stdio transport is newline-delimited JSON-RPC, but some real
+    servers write startup logs to stdout before the first response. The MCP SDK
+    turns a purely non-JSON line into an exception that the session can ignore,
+    but if a server writes a prefix and the JSON response on the same line the
+    response is lost and ``initialize`` times out. Recover a JSON-RPC object
+    embedded after leading junk, otherwise drop the noisy line.
+    """
+    if line is None:
+        return None
+    text = str(line).strip()
+    if not text:
+        return None
+
+    try:
+        message = _validate_stdio_jsonrpc_message(text)
+        return _stdio_session_message_model()(message)
+    except Exception:
+        pass
+
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        candidate = text[match.start():]
+        try:
+            parsed, end = decoder.raw_decode(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(parsed, dict) or parsed.get("jsonrpc") != "2.0":
+            continue
+        raw_json = candidate[:end]
+        try:
+            message = _validate_stdio_jsonrpc_message(raw_json)
+        except Exception:
+            continue
+        _warn_stdio_noise_once(server_name, line, recovered=raw_json.strip() != text)
+        return _stdio_session_message_model()(message)
+
+    _warn_stdio_noise_once(server_name, line, recovered=False)
+    return None
+
+
+def _validate_stdio_jsonrpc_message(raw_json: str):
+    """Validate one JSON-RPC frame across MCP SDK 1.x and 2.x."""
+    from mcp.client import stdio as _stdio_mod
+
+    adapter = getattr(_stdio_mod.types, "jsonrpc_message_adapter", None)
+    if adapter is not None:
+        return adapter.validate_json(raw_json, by_name=False)
+    return _stdio_mod.types.JSONRPCMessage.model_validate_json(raw_json)
+
+
+def _stdio_session_message_model():
+    from mcp.client import stdio as _stdio_mod
+
+    return _stdio_mod.SessionMessage
+
+
+@asynccontextmanager
+async def _tolerant_stdio_client_v2(server, errlog, *, server_name: str):
+    """MCP 2.x stdio lifecycle with Hermes' tolerant line parser."""
+    import anyio
+    import anyio.lowlevel
+    from mcp.client import stdio as _stdio_mod
+
+    command = _stdio_mod._get_executable_command(server.command)
+    process = await _stdio_mod._create_platform_compatible_process(
+        command=command,
+        args=server.args,
+        env=_stdio_mod.get_default_environment() | (server.env or {}),
+        errlog=errlog,
+        cwd=server.cwd,
+    )
+
+    read_stream_writer, read_stream = anyio.create_memory_object_stream(0)
+    write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
+    shutting_down = False
+    writer_done = anyio.Event()
+
+    async def stdout_reader() -> None:
+        assert process.stdout, "Opened process is missing stdout"
+        stdout = _stdio_mod.TextReceiveStream(
+            process.stdout,
+            encoding=server.encoding,
+            errors=server.encoding_error_handler,
+        )
+        try:
+            async with read_stream_writer:
+                try:
+                    buffer = ""
+                    async for chunk in stdout:
+                        lines = (buffer + chunk).split("\n")
+                        buffer = lines.pop()
+                        for line in lines:
+                            session_message = _parse_stdio_jsonrpc_line(
+                                server_name or str(server.command), line
+                            )
+                            if session_message is None:
+                                continue
+                            try:
+                                await read_stream_writer.send(session_message)
+                            except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+                                return
+                finally:
+                    await _stdio_mod._drain_stdout(process)
+        except anyio.ClosedResourceError:
+            pass
+        except (anyio.BrokenResourceError, ConnectionError):
+            if not shutting_down:
+                logger.exception("Reading from the MCP server's stdout failed mid-session")
+
+    async def stdin_writer() -> None:
+        assert process.stdin, "Opened process is missing stdin"
+        try:
+            async with write_stream_reader:
+                async for session_message in write_stream_reader:
+                    payload = session_message.message.model_dump_json(
+                        by_alias=True,
+                        exclude_unset=True,
+                    )
+                    await process.stdin.send(
+                        (payload + "\n").encode(
+                            encoding=server.encoding,
+                            errors=server.encoding_error_handler,
+                        )
+                    )
+        except (anyio.ClosedResourceError, anyio.BrokenResourceError, OSError):
+            await read_stream_writer.aclose()
+        finally:
+            writer_done.set()
+
+    async def shutdown() -> None:
+        read_stream.close()
+        write_stream.close()
+        with anyio.move_on_after(_stdio_mod._WRITER_FLUSH_TIMEOUT) as flush_scope:
+            await writer_done.wait()
+        if flush_scope.cancelled_caught:
+            await anyio.lowlevel.cancel_shielded_checkpoint()
+        await _stdio_mod._stop_server_process(process)
+        await _stdio_mod._aclose_all(
+            read_stream,
+            write_stream,
+            read_stream_writer,
+            write_stream_reader,
+        )
+        await anyio.lowlevel.checkpoint()
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(stdout_reader)
+        tg.start_soon(stdin_writer)
+        try:
+            yield read_stream, write_stream
+        finally:
+            shutting_down = True
+            with anyio.CancelScope(shield=True):
+                await shutdown()
+            tg.cancel_scope.cancel()
+    await anyio.lowlevel.cancel_shielded_checkpoint()
+
+
+@asynccontextmanager
+async def _tolerant_stdio_client(server, errlog=sys.stderr, *, server_name: str = ""):
+    """SDK-compatible stdio client with tolerant stdout JSON-RPC parsing.
+
+    This mirrors ``mcp.client.stdio.stdio_client`` process setup/teardown while
+    changing only stdout parsing: non-JSON stdout is logged and dropped, and a
+    JSON-RPC object after leading junk on the same line is recovered.
+    """
+    import anyio
+    import anyio.lowlevel
+    from mcp.client import stdio as _stdio_mod
+
+    # MCP 2.x hardened stdio cancellation, writer flushing, stdout draining,
+    # and process-tree reaping. Preserve that lifecycle while replacing only
+    # its strict line parser; older SDKs continue through the compatible path
+    # below.
+    if hasattr(_stdio_mod, "_stop_server_process"):
+        async with _tolerant_stdio_client_v2(
+            server,
+            errlog,
+            server_name=server_name,
+        ) as streams:
+            yield streams
+        return
+
+    read_stream_writer, read_stream = anyio.create_memory_object_stream(0)
+    write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
+
+    try:
+        command = _stdio_mod._get_executable_command(server.command)
+        process = await _stdio_mod._create_platform_compatible_process(
+            command=command,
+            args=server.args,
+            env=(
+                {**_stdio_mod.get_default_environment(), **server.env}
+                if server.env is not None
+                else _stdio_mod.get_default_environment()
+            ),
+            errlog=errlog,
+            cwd=server.cwd,
+        )
+    except OSError:
+        await read_stream.aclose()
+        await write_stream.aclose()
+        await read_stream_writer.aclose()
+        await write_stream_reader.aclose()
+        raise
+
+    async def stdout_reader():
+        assert process.stdout, "Opened process is missing stdout"
+        try:
+            async with read_stream_writer:
+                buffer = ""
+                async for chunk in _stdio_mod.TextReceiveStream(
+                    process.stdout,
+                    encoding=server.encoding,
+                    errors=server.encoding_error_handler,
+                ):
+                    lines = (buffer + chunk).split("\n")
+                    buffer = lines.pop()
+
+                    for line in lines:
+                        session_message = _parse_stdio_jsonrpc_line(
+                            server_name or str(server.command),
+                            line,
+                        )
+                        if session_message is not None:
+                            await read_stream_writer.send(session_message)
+        except anyio.ClosedResourceError:  # pragma: no cover
+            await anyio.lowlevel.checkpoint()
+
+    async def stdin_writer():
+        assert process.stdin, "Opened process is missing stdin"
+        try:
+            async with write_stream_reader:
+                async for session_message in write_stream_reader:
+                    payload = session_message.message.model_dump_json(
+                        by_alias=True,
+                        exclude_none=True,
+                    )
+                    await process.stdin.send(
+                        (payload + "\n").encode(
+                            encoding=server.encoding,
+                            errors=server.encoding_error_handler,
+                        )
+                    )
+        except anyio.ClosedResourceError:  # pragma: no cover
+            await anyio.lowlevel.checkpoint()
+
+    async with (
+        anyio.create_task_group() as tg,
+        process,
+    ):
+        tg.start_soon(stdout_reader)
+        tg.start_soon(stdin_writer)
+        try:
+            yield read_stream, write_stream
+        finally:
+            if process.stdin:
+                try:
+                    await process.stdin.aclose()
+                except Exception:  # pragma: no cover
+                    pass
+
+            try:
+                with anyio.fail_after(_stdio_mod.PROCESS_TERMINATION_TIMEOUT):
+                    await process.wait()
+            except TimeoutError:
+                await _stdio_mod._terminate_process_tree(process)
+            except ProcessLookupError:  # pragma: no cover
+                pass
+            await read_stream.aclose()
+            await write_stream.aclose()
+            await read_stream_writer.aclose()
+            await write_stream_reader.aclose()
+
+
 # ---------------------------------------------------------------------------
 # Sampling -- server-initiated LLM requests (MCP sampling/createMessage)
 # ---------------------------------------------------------------------------
@@ -3100,10 +3414,17 @@ class MCPServerTask:
         _write_stderr_log_header(self.name)
         _errlog = _get_mcp_stderr_log()
         try:
-            async with stdio_client(server_params, errlog=_errlog) as (
-                read_stream,
-                write_stream,
-            ):
+            if stdio_client is _SDK_STDIO_CLIENT:
+                stdio_cm = _tolerant_stdio_client(
+                    server_params,
+                    errlog=_errlog,
+                    server_name=self.name,
+                )
+            else:
+                # Keep the long-standing monkeypatch seam for tests and
+                # embedders that replace ``tools.mcp_tool.stdio_client``.
+                stdio_cm = stdio_client(server_params, errlog=_errlog)
+            async with stdio_cm as (read_stream, write_stream):
                 # Capture the newly spawned subprocess PID for force-kill cleanup.
                 # Filter out non-MCP children that race into the snapshot window:
                 # slash_worker and LSP servers (jdtls/pyright/yaml-ls) are spawned

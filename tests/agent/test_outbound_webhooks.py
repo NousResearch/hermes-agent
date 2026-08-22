@@ -219,21 +219,21 @@ class TestParseConfig:
         )
         assert targets[0].matcher == "terminal|delegate_task"
 
-    def test_secret_env_wins_over_literal(self, monkeypatch):
+    def test_inline_secret_field_rejects_the_target(self, monkeypatch):
         monkeypatch.setenv("MY_HOOK_SECRET", "from-env")
         targets = outbound_webhooks.iter_configured_targets(
             _cfg(
                 {
-                    "url": "https://example.com",
+                    "url": "https://example.com/hook",
                     "events": ["on_session_end"],
                     "secret_env": "MY_HOOK_SECRET",
                     "secret": "literal",
                 }
             )
         )
-        assert targets[0].secret == "from-env"
+        assert targets == []
 
-    def test_unset_secret_env_means_unsigned(self, monkeypatch):
+    def test_unset_secret_reference_skips_target(self, monkeypatch):
         monkeypatch.delenv("MISSING_SECRET_VAR", raising=False)
         targets = outbound_webhooks.iter_configured_targets(
             _cfg(
@@ -244,7 +244,7 @@ class TestParseConfig:
                 }
             )
         )
-        assert targets[0].secret is None
+        assert targets == []
 
 
 # ── matcher behaviour ─────────────────────────────────────────────────────
@@ -300,6 +300,7 @@ class TestPayload:
         assert payload["extra"]["duration_ms"] == 42
         assert payload["delivery_id"] == "did_1234"
         assert payload["timestamp"].endswith("Z")
+        assert payload["schema_version"] == 1
 
     def test_unserialisable_values_stringified(self):
         body = outbound_webhooks._serialize_payload(
@@ -349,13 +350,14 @@ class TestRegistration:
 
 
 class TestDelivery:
-    def test_delivery_with_hmac_signature(self, http_server):
+    def test_delivery_with_hmac_signature(self, http_server, monkeypatch):
         secret = "s3cret"
+        monkeypatch.setenv("WR_OUTBOUND_SECRET", secret)
         cfg = _cfg(
             {
                 "url": _url(http_server),
                 "events": ["on_session_end"],
-                "secret": secret,
+                "secret_ref": "WR_OUTBOUND_SECRET",
                 "name": "e2e",
             }
         )
@@ -376,19 +378,14 @@ class TestDelivery:
 
         assert len(http_server.captured) == 1
         req = http_server.captured[0]
-
         payload = json.loads(req["body"])
-        assert payload["hook_event_name"] == "on_session_end"
-        assert payload["session_id"] == "sess_e2e"
-        assert payload["extra"]["completed"] is True
-        assert payload["extra"]["model"] == "test-model"
-
-        assert req["headers"]["X-Hermes-Event"] == "on_session_end"
-        assert req["headers"]["X-Hermes-Delivery"]
-        expected = hmac.new(
-            secret.encode(), req["body"], hashlib.sha256
+        assert payload["schema_version"] == 1
+        assert req["headers"]["X-Hermes-Schema-Version"] == "1"
+        timestamp = req["headers"]["X-Hermes-Timestamp"]
+        expected_v2 = hmac.new(
+            secret.encode(), timestamp.encode("ascii") + b"." + req["body"], hashlib.sha256
         ).hexdigest()
-        assert req["headers"]["X-Hermes-Signature-256"] == f"sha256={expected}"
+        assert req["headers"]["X-Hermes-Signature-V2"] == f"sha256={expected_v2}"
 
     def test_unsigned_delivery_has_no_signature_header(self, http_server):
         cfg = _cfg({"url": _url(http_server), "events": ["on_session_end"]})
@@ -466,12 +463,13 @@ class TestDelivery:
         assert [c["method"] for c in http_server.captured] == ["POST"]
         assert http_server.captured[0]["path"] == "/hook"
 
-    def test_delivery_id_matches_header_and_body(self, http_server):
+    def test_delivery_id_matches_header_and_body(self, http_server, monkeypatch):
         """The X-Hermes-Delivery header and the signed body's delivery_id
         must be the same value, or receiver-side dedupe breaks."""
+        monkeypatch.setenv("WR_OUTBOUND_SECRET", "s")
         cfg = _cfg(
             {"url": _url(http_server), "events": ["on_session_end"],
-             "secret": "s"}
+             "secret_ref": "WR_OUTBOUND_SECRET"}
         )
         outbound_webhooks.register_from_config(cfg)
 

@@ -9,7 +9,9 @@ Every subprocess and auth call is mocked: these tests never invoke the real
 user config.
 """
 
+import asyncio
 import json
+import signal
 import threading
 import time
 
@@ -559,6 +561,188 @@ class TestResultNormalization:
 
 
 class TestProcessFailures:
+    def test_windows_tree_kill_happens_before_direct_wait(self, monkeypatch):
+        events = []
+
+        class _Process:
+            pid = 5151
+
+            async def wait(self):
+                events.append("wait")
+                return 0
+
+        import hermes_cli._subprocess_compat as sc
+
+        monkeypatch.setattr(cb.os, "name", "nt")
+        monkeypatch.setattr(sc, "kill_process_tree", lambda proc: events.append("tree-kill"))
+
+        asyncio.run(cb._cancel_process(_Process()))  # type: ignore[arg-type]
+        assert events == ["tree-kill", "wait"]
+
+    def test_cancellation_during_process_wait_cleans_reader_tasks(self, monkeypatch):
+        wait_started = asyncio.Event()
+        readers_started = asyncio.Event()
+        reader_count = 0
+
+        class _RunningProcess:
+            pid = 4241
+            stdout = object()
+            stderr = object()
+            returncode = None
+            terminated = False
+
+            async def wait(self):
+                wait_started.set()
+                if self.terminated:
+                    self.returncode = 0
+                    return 0
+                await asyncio.Future()
+
+        proc = _RunningProcess()
+        signals = []
+
+        async def _fake_create(*args, **kwargs):
+            return proc
+
+        async def _held_pipe(stream, cap):
+            nonlocal reader_count
+            reader_count += 1
+            if reader_count == 2:
+                readers_started.set()
+            await asyncio.Future()
+
+        def _fake_signal(group_id, sig):
+            signals.append(sig)
+            if sig == signal.SIGTERM:
+                proc.terminated = True
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create)
+        monkeypatch.setattr(cb, "_read_capped", _held_pipe)
+        monkeypatch.setattr(cb, "_signal_process_group", _fake_signal)
+
+        async def _scenario():
+            task = asyncio.create_task(
+                cb._run_claude_p_async(
+                    ["claude", "-p", "prompt"],
+                    env={},
+                    workdir=".",
+                    timeout_seconds=10,
+                )
+            )
+            await asyncio.wait_for(wait_started.wait(), timeout=1)
+            await asyncio.wait_for(readers_started.wait(), timeout=1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert asyncio.all_tasks() == {asyncio.current_task()}
+
+        asyncio.run(_scenario())
+        assert signal.SIGTERM in signals
+        assert signal.SIGKILL in signals
+
+    def test_cancellation_during_pipe_drain_cleans_all_tasks(self, monkeypatch):
+        class _ExitedProcess:
+            pid = 4343
+            stdout = object()
+            stderr = object()
+            returncode = 0
+
+            async def wait(self):
+                return 0
+
+        proc = _ExitedProcess()
+        signals = []
+        readers_started = asyncio.Event()
+        reader_count = 0
+
+        async def _fake_create(*args, **kwargs):
+            return proc
+
+        async def _held_pipe(stream, cap):
+            nonlocal reader_count
+            reader_count += 1
+            if reader_count == 2:
+                readers_started.set()
+            await asyncio.Future()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create)
+        monkeypatch.setattr(cb, "_read_capped", _held_pipe)
+        monkeypatch.setattr(
+            cb,
+            "_signal_process_group",
+            lambda group_id, sig: signals.append(sig),
+        )
+
+        async def _scenario():
+            task = asyncio.create_task(
+                cb._run_claude_p_async(
+                    ["claude", "-p", "prompt"],
+                    env={},
+                    workdir=".",
+                    timeout_seconds=1,
+                )
+            )
+            await asyncio.wait_for(readers_started.wait(), timeout=1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert asyncio.all_tasks() == {asyncio.current_task()}
+
+        asyncio.run(_scenario())
+        assert signal.SIGTERM in signals
+        assert signal.SIGKILL in signals
+
+    def test_parent_exit_with_descendant_held_pipes_is_bounded(self, monkeypatch):
+        class _FakeProcess:
+            pid = 4242
+            stdout = object()
+            stderr = object()
+            returncode = None
+            terminated = False
+
+            async def wait(self):
+                if self.terminated:
+                    self.returncode = 0
+                    return 0
+                await asyncio.Future()
+
+        proc = _FakeProcess()
+        signals = []
+
+        async def _fake_create(*args, **kwargs):
+            return proc
+
+        async def _held_pipe(stream, cap):
+            await asyncio.Future()
+
+        def _fake_signal(group_id, sig):
+            assert group_id == proc.pid
+            signals.append(sig)
+            if sig == signal.SIGTERM:
+                proc.terminated = True
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create)
+        monkeypatch.setattr(cb, "_read_capped", _held_pipe)
+        monkeypatch.setattr(cb, "_signal_process_group", _fake_signal)
+        monkeypatch.setattr(cb, "PROCESS_TERMINATE_GRACE_SECONDS", 0.01)
+        monkeypatch.setattr(cb, "PROCESS_KILL_GRACE_SECONDS", 0.01)
+        monkeypatch.setattr(cb, "PIPE_DRAIN_GRACE_SECONDS", 0.01)
+
+        started = time.monotonic()
+        result = asyncio.run(
+            cb._run_claude_p_async(
+                ["claude", "-p", "prompt"],
+                env={},
+                workdir=".",
+                timeout_seconds=0.01,
+            )
+        )
+
+        assert time.monotonic() - started < 1.0
+        assert result[3] is True
+        assert result[4] is True
+        assert signal.SIGKILL in signals
+
     def _run_with(self, monkeypatch, *, returncode, stdout=b"", timed_out=False):
         monkeypatch.setattr(cb, "resolve_claude_executable", lambda: "/usr/bin/claude")
 

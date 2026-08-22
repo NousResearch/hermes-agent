@@ -168,6 +168,9 @@ MAX_BUDGET_USD_CEILING = 50.0
 MAX_TIMEOUT_SECONDS_CEILING = 3600
 MAX_STDOUT_BYTES = 8 * 1024 * 1024
 MAX_STDERR_BYTES = 256 * 1024
+PROCESS_TERMINATE_GRACE_SECONDS = 5.0
+PROCESS_KILL_GRACE_SECONDS = 5.0
+PIPE_DRAIN_GRACE_SECONDS = 5.0
 
 DEFAULT_MAX_TURNS = 40
 DEFAULT_MAX_BUDGET_USD = 5.0
@@ -691,11 +694,11 @@ async def _read_capped(stream: asyncio.StreamReader, cap: int) -> tuple[bytes, b
     return bytes(retained), overflow
 
 
-def _terminate_process_group(pid: int) -> None:
+def _signal_process_group(process_group_id: int, sig: signal.Signals) -> None:
     if os.name == "nt":
         return
     try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        os.killpg(process_group_id, sig)
     except (ProcessLookupError, PermissionError, OSError):
         pass
 
@@ -727,6 +730,10 @@ async def _run_claude_p_async(
         env=dict(env),
         **popen_kwargs,
     )
+    # start_new_session=True makes the child's pid its process-group id. Keep
+    # this value even after the direct process exits; os.getpgid(pid) may no
+    # longer work while descendants still retain stdout/stderr pipe handles.
+    process_group_id = proc.pid if os.name != "nt" else None
 
     stdout_task = asyncio.ensure_future(_read_capped(proc.stdout, MAX_STDOUT_BYTES))
     stderr_task = asyncio.ensure_future(_read_capped(proc.stderr, MAX_STDERR_BYTES))
@@ -736,38 +743,104 @@ async def _run_claude_p_async(
         await asyncio.wait_for(proc.wait(), timeout=timeout_seconds)
     except asyncio.TimeoutError:
         timed_out = True
-        await _cancel_process(proc)
+        await _cancel_process(proc, process_group_id=process_group_id)
     except asyncio.CancelledError:
-        await _cancel_process(proc)
+        await _cancel_process(proc, process_group_id=process_group_id)
+        stdout_task.cancel()
+        stderr_task.cancel()
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
         raise
 
-    stdout, stdout_overflow = await stdout_task
-    stderr, stderr_overflow = await stderr_task
+    try:
+        stdout, stdout_overflow, stderr, stderr_overflow = await _drain_output_tasks(
+            proc,
+            stdout_task,
+            stderr_task,
+            process_group_id=process_group_id,
+        )
+    except asyncio.CancelledError:
+        await _cancel_process(proc, process_group_id=process_group_id)
+        stdout_task.cancel()
+        stderr_task.cancel()
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        raise
     returncode = proc.returncode if proc.returncode is not None else -1
     return returncode, stdout, stderr, timed_out, (stdout_overflow or stderr_overflow)
 
 
-async def _cancel_process(proc: "asyncio.subprocess.Process") -> None:
+async def _cancel_process(
+    proc: "asyncio.subprocess.Process",
+    *,
+    process_group_id: Optional[int] = None,
+) -> None:
     """Terminate-then-kill escalation on the process group, bounded grace."""
     if os.name == "nt":
-        try:
-            proc.terminate()
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    else:
-        _terminate_process_group(proc.pid)
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=5.0)
-        return
-    except asyncio.TimeoutError:
-        pass
-    from hermes_cli._subprocess_compat import kill_process_tree
+        # taskkill /T must run while the direct parent PID still identifies the
+        # tree. A graceful direct-parent terminate can orphan descendants and
+        # make the later tree lookup ineffective.
+        from hermes_cli._subprocess_compat import kill_process_tree
 
-    kill_process_tree(proc)  # type: ignore[arg-type]
+        kill_process_tree(proc)  # type: ignore[arg-type]
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=PROCESS_KILL_GRACE_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        return
+
+    _signal_process_group(process_group_id or proc.pid, signal.SIGTERM)
     try:
-        await asyncio.wait_for(proc.wait(), timeout=5.0)
+        await asyncio.wait_for(
+            proc.wait(), timeout=PROCESS_TERMINATE_GRACE_SECONDS
+        )
     except asyncio.TimeoutError:
         pass
+    # Do not return merely because the direct process exited. A descendant can
+    # ignore SIGTERM and retain duplicated pipe handles. Escalate the saved
+    # process-group id so output drains can reach EOF.
+    _signal_process_group(process_group_id or proc.pid, signal.SIGKILL)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=PROCESS_KILL_GRACE_SECONDS)
+    except asyncio.TimeoutError:
+        pass
+
+
+async def _drain_output_tasks(
+    proc: "asyncio.subprocess.Process",
+    stdout_task: "asyncio.Task[tuple[bytes, bool]]",
+    stderr_task: "asyncio.Task[tuple[bytes, bool]]",
+    *,
+    process_group_id: Optional[int],
+) -> tuple[bytes, bool, bytes, bool]:
+    """Drain both pipes without ever waiting indefinitely for descendant EOF."""
+    combined = asyncio.gather(stdout_task, stderr_task)
+    try:
+        (stdout, stdout_overflow), (stderr, stderr_overflow) = await asyncio.wait_for(
+            asyncio.shield(combined), timeout=PIPE_DRAIN_GRACE_SECONDS
+        )
+        return stdout, stdout_overflow, stderr, stderr_overflow
+    except asyncio.TimeoutError:
+        await _cancel_process(proc, process_group_id=process_group_id)
+    except asyncio.CancelledError:
+        combined.cancel()
+        await asyncio.gather(combined, return_exceptions=True)
+        raise
+
+    try:
+        (stdout, stdout_overflow), (stderr, stderr_overflow) = await asyncio.wait_for(
+            asyncio.shield(combined), timeout=PIPE_DRAIN_GRACE_SECONDS
+        )
+        return stdout, stdout_overflow, stderr, stderr_overflow
+    except asyncio.TimeoutError:
+        stdout_task.cancel()
+        stderr_task.cancel()
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        combined.cancel()
+        await asyncio.gather(combined, return_exceptions=True)
+        return b"", True, b"", True
+    except asyncio.CancelledError:
+        combined.cancel()
+        await asyncio.gather(combined, return_exceptions=True)
+        raise
 
 
 def run_claude_p_task(

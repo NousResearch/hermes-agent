@@ -89,6 +89,16 @@ def _patch_gateway_discovery():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _patch_python_lockfile_default(request):
+    """By default, assume python lockfile unchanged during update tests unless overridden."""
+    if "TestPythonLockfileTracking" in request.node.nodeid:
+        yield
+        return
+    with patch("hermes_cli.update_cmd._python_lockfile_changed", return_value=False):
+        yield
+
+
 class TestCmdUpdateNpmLockfileCache:
     @staticmethod
     def _cache_file(hermes_root, project_root):
@@ -1249,3 +1259,55 @@ class TestUpdateNodeDependencies:
         assert cwd_calls, "expected at least one npm call"
         for cwd in cwd_calls:
             assert cwd == tmp_path, f"npm must run from PROJECT_ROOT; got cwd={cwd}"
+
+
+class TestPythonLockfileTracking:
+    """Test Python lockfile digest computation and change detection."""
+
+    def test_python_lockfile_changed_when_no_cache(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd as uc
+
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='hermes'\n", encoding="utf-8")
+        (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir()
+
+        # Without recorded hash cache, un-synced installs must trip the change detector
+        assert uc._python_lockfile_changed(hermes_root) is True
+
+    def test_python_lockfile_detects_mutation_after_recorded(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd as uc
+
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='hermes'\n", encoding="utf-8")
+        (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir()
+
+        uc._record_python_lockfile_hash(hermes_root)
+        assert uc._python_lockfile_changed(hermes_root) is False
+
+        # Modifying uv.lock trips the change detector
+        (tmp_path / "uv.lock").write_text("version = 2\n", encoding="utf-8")
+        assert uc._python_lockfile_changed(hermes_root) is True
+
+    def test_install_python_dependencies_prefers_uv_sync(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+        (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+
+        recorded_commands = []
+        def fake_quarantined_install(cmd, env=None, scripts_dir=None):
+            recorded_commands.append(cmd)
+
+        monkeypatch.setattr(hm, "_run_quarantined_install", fake_quarantined_install)
+        monkeypatch.setattr(hm, "_verify_console_scripts_installed", lambda *a, **kw: None)
+
+        hm._install_python_dependencies_with_optional_fallback(["/bin/uv", "pip"], group="all")
+        assert len(recorded_commands) == 1
+        assert recorded_commands[0] == ["/bin/uv", "sync", "--extra", "all", "--locked"]

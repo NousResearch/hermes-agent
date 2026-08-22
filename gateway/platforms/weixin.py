@@ -180,6 +180,9 @@ TYPING_STOP = 2
 _HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
 _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
+_LIST_PREFIX_RE = re.compile(
+    r"^\s*(?:[-+*•]|\d+[.)]|[（(]\d+[）)])\s+(?:\[[ xX]\]\s+)?"
+)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
@@ -725,7 +728,7 @@ def _normalize_markdown_blocks(content: str) -> str:
 
 
 def _wrap_copy_friendly_lines_for_weixin(content: str) -> str:
-    """Wrap long display lines that are hard to copy in WeChat clients."""
+    """Wrap long non-list lines that are hard to copy in WeChat clients."""
     if not content:
         return content
 
@@ -747,6 +750,10 @@ def _wrap_copy_friendly_lines_for_weixin(content: str) -> str:
             or not stripped
             or stripped.startswith("|")
             or _TABLE_RULE_RE.match(stripped)
+            # WeChat clients handle native wrapping after list markers, but
+            # treat server-inserted newlines as new paragraphs and discard
+            # their leading spaces. Keep each list item on one physical line.
+            or _LIST_PREFIX_RE.match(line)
         ):
             wrapped.append(line)
             continue

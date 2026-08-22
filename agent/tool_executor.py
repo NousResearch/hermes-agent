@@ -1603,6 +1603,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                                 _ra()._set_interrupt(True, tid)
                             except Exception:
                                 pass
+                        # Give already-running tools a moment to notice the
+                        # per-thread interrupt signal and exit gracefully,
+                        # same as the user-interrupt branch below. Without
+                        # this, cooperative tools (terminal, execute_code)
+                        # that would have honored the signal within a couple
+                        # seconds are instead unconditionally left running
+                        # as detached daemon threads on every timeout, even
+                        # though f.cancel() above is a no-op for futures
+                        # already RUNNING and the signal just sent them is
+                        # the only thing that can actually stop them.
+                        concurrent.futures.wait(not_done, timeout=3.0)
                         break
 
                     # Check for interrupt — the per-thread interrupt signal

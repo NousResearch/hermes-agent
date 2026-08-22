@@ -15,13 +15,16 @@ import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { useI18n } from '@/i18n'
 import { detectArtifact } from '@/lib/artifact-detect'
+import { revealDesktopPath } from '@/lib/desktop-fs'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
+  filePathFromMediaPath,
   isFileMediaPath,
   isInlineMediaSrc,
   isMarkdownDocumentPath,
@@ -144,8 +147,10 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
 }
 
 function MediaAttachment({ path }: { path: string }) {
+  const { t } = useI18n()
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
+  const [revealFailed, setRevealFailed] = useState(false)
   const { open, openFailed } = useOpenMediaFile(path)
   const kind = mediaKind(path)
   const name = mediaName(path)
@@ -226,10 +231,10 @@ function MediaAttachment({ path }: { path: string }) {
   }
 
   return (
-    <span className="wrap-anywhere">
+    <span className="wrap-anywhere inline-flex flex-wrap items-center gap-x-2">
       <a
         className="ref wrap-anywhere"
-        href="#"
+        href={mediaExternalUrl(path)}
         onClick={event => {
           event.preventDefault()
           open()
@@ -237,7 +242,19 @@ function MediaAttachment({ path }: { path: string }) {
       >
         {failed ? `Open ${name}` : `Loading ${name}...`}
       </a>
+      {!isRemoteGateway() && (
+        <button
+          type="button"
+          className="ref text-xs font-medium text-muted-foreground hover:text-foreground"
+          onClick={() => {
+            void revealDesktopPath(filePathFromMediaPath(path)).catch(() => setRevealFailed(true))
+          }}
+        >
+          {t.fileMenu.revealFinder}
+        </button>
+      )}
       {openFailed && <OpenMediaFailedNote name={name} />}
+      {revealFailed && <OpenMediaFailedNote name={name} />}
     </span>
   )
 }

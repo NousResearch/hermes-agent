@@ -39,7 +39,10 @@ describe('markdown documents delivered via MEDIA', () => {
 
     render(<MarkdownTextContent isRunning={false} text={`[archive.zip](${href})`} />)
 
-    expect(await screen.findByText(/archive\.zip/)).toBeTruthy()
-    expect(screen.queryByRole('button')).toBeNull()
+    // Media fallback's file branch: an "Open ..." anchor + reveal-in-finder
+    // action — NOT the preview attachment's "Open preview" toggle.
+    expect(await screen.findByRole('link', { name: /Open archive\.zip/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Reveal in Finder' })).toBeTruthy()
   })
 })

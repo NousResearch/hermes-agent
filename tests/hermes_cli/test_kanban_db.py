@@ -510,6 +510,68 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("signal_source", "signal_kind"),
+    [
+        ("event", "status"),
+        ("event", "promoted"),
+        ("event", "unblocked"),
+        ("event", "reclaimed"),
+        ("run", "changes_requested"),
+    ],
+)
+def test_active_pr_guard_allows_newer_explicit_requeue_signal(
+    kanban_home, monkeypatch, signal_source, signal_kind
+):
+    comment_at = 1_800_000_000
+    monkeypatch.setattr(kb.time, "time", lambda: comment_at)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="rework merged PR", assignee="builder")
+        kb.add_comment(
+            conn,
+            task_id,
+            author="builder",
+            body="Opened https://github.com/example/repo/pull/123",
+        )
+        with kb.write_txn(conn):
+            if signal_source == "event":
+                conn.execute(
+                    "INSERT INTO task_events (task_id, kind, created_at) "
+                    "VALUES (?, ?, ?)",
+                    (task_id, signal_kind, comment_at),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO task_runs "
+                    "(task_id, profile, status, started_at, ended_at, outcome) "
+                    "VALUES (?, 'reviewer', 'done', ?, ?, ?)",
+                    (task_id, comment_at, comment_at, signal_kind),
+                )
+
+        monkeypatch.setattr(kb.time, "time", lambda: comment_at + 2)
+        assert kb.check_respawn_guard(conn, task_id) is None
+
+
+def test_active_pr_guard_still_defers_without_newer_requeue_signal(
+    kanban_home, monkeypatch
+):
+    comment_at = 1_800_000_000
+    monkeypatch.setattr(kb.time, "time", lambda: comment_at)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="PR still active", assignee="builder")
+        kb.add_comment(
+            conn,
+            task_id,
+            author="builder",
+            body="Opened https://github.com/example/repo/pull/123",
+        )
+
+        monkeypatch.setattr(kb.time, "time", lambda: comment_at + 1)
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
 
 
 

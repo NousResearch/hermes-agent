@@ -9438,6 +9438,8 @@ def check_respawn_guard(
         A GitHub PR URL appears in a recent task comment (within
         ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
         opened a PR; re-spawning risks a duplicate PR on the same task.
+        Bypassed when an explicit re-queue event or ``changes_requested``
+        run arrives after the newest matching comment.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -9526,12 +9528,36 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    As with recent_success, an explicit re-queue AFTER the newest matching
+    #    comment is a deliberate request to resume work on that PR, not create
+    #    a duplicate. Review changes are recorded as a terminal task run rather
+    #    than one of the generic task_events re-queue kinds, so include both.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    newest_pr_comment_at: Optional[int] = None
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            newest_pr_comment_at = int(c["created_at"])
+            break
+    if newest_pr_comment_at is not None:
+        requeued_after = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND created_at >= ? "
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            "LIMIT 1",
+            (task_id, newest_pr_comment_at),
+        ).fetchone()
+        changes_requested_after = conn.execute(
+            "SELECT 1 FROM task_runs "
+            "WHERE task_id = ? AND outcome = 'changes_requested' "
+            "AND ended_at >= ? LIMIT 1",
+            (task_id, newest_pr_comment_at),
+        ).fetchone()
+        if not requeued_after and not changes_requested_after:
             return "active_pr"
 
     return None

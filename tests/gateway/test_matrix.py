@@ -1341,6 +1341,209 @@ class TestMatrixSyncLoop:
         assert captured[0].source.chat_type == "dm"
 
     @pytest.mark.asyncio
+    async def test_sync_loop_retries_transient_error_instead_of_stopping(self):
+        """A timeout whose message text incidentally contains "401" must be retried, not fatal.
+
+        This is the actual production regression: a plain connection timeout
+        wraps the sync pagination token in its message, and that token is an
+        arbitrary digit string that happens to contain "401". The old naive
+        classifier did `"401" in str(exc).lower()` and stopped the sync loop
+        permanently on what was really a transient timeout with no auth
+        failure at all.
+
+        I confirmed this fixture actually discriminates the two classifiers
+        (see _verify_fixture.py, run manually against both): the OLD
+        substring check classifies it "permanent" (bug reproduces) and the
+        NEW layered classifier classifies it "transient" (fix works), since
+        the digits sit inside a pagination token, not a structured
+        http_status/errcode and not a whole-word match in the bounded
+        prefix scan. A fixture that both classifiers agree on (like the
+        old 502/SVG body used before this rework) proves nothing, since
+        agreement means nothing was actually being tested.
+
+        This test drives `_sync_loop` itself (not just the classifier
+        function) so a regression in how the loop wires the classifier in
+        would also be caught here.
+        """
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        transient_timeout_with_incidental_401 = (
+            "Connection timeout to host https://matrix.example.org/_matrix/"
+            "client/v3/sync?timeout=30000&since=s72802_401975_486_12943_11759"
+            "_12_1514_279_0_1_2_1_1"
+        )
+
+        calls = {"n": 0}
+
+        async def _sync_side_effect(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise Exception(transient_timeout_with_incidental_401)
+            # Second call: stop the loop cleanly after proving the retry
+            # happened, without needing a real sync payload.
+            adapter._closing = True
+            return {"next_batch": "s1"}
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_side_effect)
+        fake_client.sync_store = mock_sync_store
+        adapter._client = fake_client
+
+        with patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            await adapter._sync_loop()
+
+        # Retried rather than returning after the first (transient) error.
+        assert calls["n"] == 2
+        # The 5s backoff sleep on the retry path (not the 0s dispatch-yield).
+        assert 5 in [call.args[0] for call in mock_sleep.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_real_permanent_auth_error(self):
+        """A genuine 401/403 auth failure must stop the loop, not retry forever.
+
+        Note this fixture is not a discriminating RED/GREEN test between the
+        old and new classifier. The message text contains the word
+        "forbidden", so the old naive substring check also stops the loop
+        here, just for the wrong reason (a keyword match instead of a
+        structured errcode). I kept this test because it proves the loop
+        still stops on a real auth failure after the classifier rewrite, a
+        straightforward regression check, not proof that the fix changed
+        behavior on this specific input.
+        """
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        auth_exc = Exception("M_FORBIDDEN: Invalid access token")
+        auth_exc.errcode = "M_FORBIDDEN"
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=auth_exc)
+        fake_client.sync_store = mock_sync_store
+        adapter._client = fake_client
+
+        with patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            await adapter._sync_loop()
+
+        # No retry backoff: the loop returned on the first, permanent error.
+        assert fake_client.sync.await_count == 1
+        assert 5 not in [call.args[0] for call in mock_sleep.await_args_list]
+
+    # ------------------------------------------------------------------
+    # Result-object (non-exception) auth failures.
+    #
+    # The pinned mautrix 0.21.0 never returns an error object from sync():
+    # HTTPAPI._send raises make_request_error() for any non-2xx and otherwise
+    # returns parsed JSON, so a real auth failure arrives as an exception and
+    # is covered by the two tests above. The result-object branch in
+    # _sync_loop is inherited from the earlier matrix-nio client (whose
+    # SyncError objects were genuine) and is kept as defense in depth. These
+    # tests pin it to the same classifier the exception path uses so a future
+    # client swap cannot silently reintroduce the infinite-resync bug.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _result_obj(**attrs):
+        """Build an error *result object*, not a MagicMock.
+
+        A MagicMock would auto-create ``errcode``/``http_status`` attributes
+        and make the structured-vs-text branch untestable, so these fixtures
+        expose exactly the attributes a real client object would.
+        """
+        return type("SyncErrorResult", (), attrs)()
+
+    async def _run_loop_with_sync_result(self, result_obj):
+        """Drive _sync_loop with sync() returning result_obj, then a clean dict."""
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        calls = {"n": 0}
+
+        async def _sync_side_effect(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return result_obj
+            # If the loop treated the object as transient it comes back here;
+            # stop cleanly so the test can assert the retry happened.
+            adapter._closing = True
+            return {"next_batch": "s1"}
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_side_effect)
+        fake_client.sync_store = mock_sync_store
+        adapter._client = fake_client
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await adapter._sync_loop()
+
+        return fake_client.sync.await_count
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_result_object_with_permanent_errcode(self):
+        """An M_MISSING_TOKEN result object must stop the loop.
+
+        This is the discriminating RED/GREEN case for routing the branch
+        through _is_permanent_matrix_auth_error. The old code tested only
+        ``"m_unknown_token" in msg or "unknown_token" in msg``, and this
+        message ("Missing access token") contains neither, so the old branch
+        fell through and resynced forever against a credential that can
+        never succeed. Reading the structured errcode catches it.
+        """
+        obj = self._result_obj(
+            message="Missing access token", errcode="M_MISSING_TOKEN"
+        )
+        assert await self._run_loop_with_sync_result(obj) == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_result_object_with_401_http_status(self):
+        """A result object exposing only http_status=401 must stop the loop.
+
+        Also discriminating: the message text carries no auth keyword at all,
+        so only the structured status read reaches the right verdict.
+        """
+        obj = self._result_obj(message="Sync request failed", http_status=401)
+        assert await self._run_loop_with_sync_result(obj) == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_unstructured_result_object_via_message(self):
+        """With no errcode and no http_status, the message text is the only signal.
+
+        str(obj) on a result object is an opaque repr like
+        ``<SyncErrorResult object at 0x...>``, so the classifier must be
+        handed ``.message`` explicitly or this auth failure is missed.
+        """
+        obj = self._result_obj(message="M_FORBIDDEN: access token rejected")
+        assert await self._run_loop_with_sync_result(obj) == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_retries_transient_result_object_despite_auth_keyword(self):
+        """A structured 502 must be retried even though its body says "Forbidden".
+
+        This pins the precedence rule. A homeserver behind a reverse proxy can
+        return a 502 HTML error page containing the word "Forbidden"; if the
+        message-text scan were allowed to override the structured status, a
+        passing outage would permanently kill the sync loop. That is the same
+        false-positive class the classifier rework exists to prevent.
+        """
+        obj = self._result_obj(
+            message="<html><body><h1>502 Bad Gateway</h1>Forbidden</body></html>",
+            http_status=502,
+        )
+        assert await self._run_loop_with_sync_result(obj) == 2
+
+    @pytest.mark.asyncio
     async def test_connect_receives_dm_from_initial_sync_dispatch(self):
         """A DM delivered by initial sync should reach the message handler after connect."""
         from plugins.platforms.matrix.adapter import MatrixAdapter
@@ -3342,3 +3545,92 @@ class TestCryptoPickleKeyMigration:
         # start still sees a legacy-key account and retries the migration.
         store.put_account.assert_not_awaited()
         assert "retried on the next start" in caplog.text
+
+
+class TestMatrixPermanentAuthClassifier:
+    """Only genuine 401/403 auth failures may stop the sync loop.
+
+    A transient homeserver outage surfaces as a 5xx whose body may be an HTML
+    error page. The Umbrel app-proxy returns one whose embedded SVG contains the
+    coordinate ``40.4302``, which contains the substring ``403``. The old
+    ``"403" in str(exc)`` check false-positived on that and permanently halted
+    Matrix sync on a passing blip. The classifier must retry any status that is
+    not 401/403.
+    """
+
+    # Trimmed excerpt of the actual Umbrel 502 body that caused the outage;
+    # the SVG path coordinate 40.4302 contains the substring "403".
+    _REAL_502 = (
+        '502: <!DOCTYPE html><svg><path d="M17.4517 40.4302C12.7214 40.4302'
+        ' 9.82339 41.8182 7.98048 44.0001"/></svg>'
+    )
+
+    def _fn(self):
+        from plugins.platforms.matrix.adapter import _is_permanent_matrix_auth_error
+
+        return _is_permanent_matrix_auth_error
+
+    def test_transient_502_html_body_is_retried(self):
+        # The exact failure mode: a 502 whose HTML body embeds "403".
+        assert self._fn()(Exception(self._REAL_502)) is False
+
+    @pytest.mark.parametrize("status", [500, 502, 503, 504, 429])
+    def test_server_errors_are_retried(self, status):
+        assert self._fn()(Exception(f"{status}: upstream unavailable")) is False
+
+    def test_connection_errors_are_retried(self):
+        fn = self._fn()
+        assert fn(Exception("[Errno 104] Connection reset by peer")) is False
+        assert fn(Exception("Server disconnected")) is False
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_real_auth_status_stops_sync(self, status):
+        assert self._fn()(Exception(f"{status}: nope")) is True
+
+    def test_http_status_attribute_beats_body_digits(self):
+        # A structured 502 whose message text also contains "403" must retry.
+        exc = Exception("body 40.4302")
+        exc.http_status = 502
+        assert self._fn()(exc) is False
+
+    def test_errcode_unknown_token_stops_sync(self):
+        exc = Exception("sync failed")
+        exc.errcode = "M_UNKNOWN_TOKEN"
+        assert self._fn()(exc) is True
+
+    def test_bare_auth_keyword_without_status_stops_sync(self):
+        assert self._fn()(Exception("Unauthorized")) is True
+
+    def test_misleading_code_attribute_is_not_misclassified(self):
+        # A non-Matrix exception with a bare `.code` that happens to be 401
+        # must NOT be treated as an auth failure. `.code` on an arbitrary
+        # exception can be an errno or an exit code; only `.http_status`
+        # is trustworthy for HTTP status classification.
+        exc = Exception("subprocess failed")
+        exc.code = 401
+        assert self._fn()(exc) is False
+
+    def test_status_attribute_is_ignored_in_favor_of_http_status(self):
+        # aiohttp response objects and similar carry `.status`, which is a
+        # different namespace than mautrix's `.http_status`. A bare `.status`
+        # must not drive the classification.
+        exc = Exception("some http client error")
+        exc.status = 403
+        assert self._fn()(exc) is False
+
+    @pytest.mark.parametrize(
+        "exc_factory",
+        [
+            lambda: asyncio.TimeoutError("401 in the pagination token url"),
+            lambda: TimeoutError("403 in the pagination token url"),
+            lambda: ConnectionError("... forbidden ..."),
+            lambda: ConnectionResetError("Connection reset, status 401"),
+            lambda: OSError("network unreachable, code 403"),
+        ],
+    )
+    def test_transient_exception_types_never_classify_as_permanent(self, exc_factory):
+        # Transport-level exception types are short-circuited to "transient"
+        # before any text/status inspection runs, so a coincidental "401"
+        # or the keyword "forbidden" inside their message can never flip
+        # them to permanent.
+        assert self._fn()(exc_factory()) is False

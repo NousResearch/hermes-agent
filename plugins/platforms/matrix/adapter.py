@@ -409,6 +409,82 @@ def _strip_reply_fallback(body: str) -> str:
             past_fallback = True
         stripped.append(line)
     return "\n".join(stripped) if stripped else body
+# Auth errcodes that genuinely require re-authentication (never retried).
+_MATRIX_PERMANENT_ERRCODES = frozenset({
+    "m_unknown_token",
+    "m_missing_token",
+    "m_forbidden",
+})
+# Leading HTTP status on error strings formatted as ``"<status>: <body>"``.
+_MATRIX_LEADING_STATUS_RE = re.compile(r"^\s*(\d{3})\b")
+# Transport-level failures are always transient. Checked before any status or
+# text inspection so no amount of unlucky digits or keywords in a message can
+# ever promote a network timeout or dropped connection to "permanent".
+_MATRIX_TRANSIENT_EXC_TYPES: tuple[type[BaseException], ...] = (
+    asyncio.TimeoutError,
+    TimeoutError,
+    ConnectionError,  # covers ConnectionResetError, ConnectionRefusedError, ...
+    OSError,
+)
+
+
+def _is_permanent_matrix_auth_error(exc: object) -> bool:
+    """Return True only for genuine auth failures that must stop the sync loop.
+
+    A transient homeserver outage surfaces as a 5xx whose body may be an HTML
+    error page (Umbrel's app-proxy returns one). Naive substring checks like
+    ``"403" in str(exc)`` false-positive on digits embedded in that HTML (an SVG
+    coordinate such as ``40.4302`` contains ``403``), which previously stopped
+    the sync loop permanently on a passing blip. Classify on the real HTTP
+    status / errcode instead, and retry everything that is not 401/403.
+    """
+    # Transport failures are never permanent, regardless of what their
+    # message text says. A ConnectionError raised while retrying a call whose
+    # URL happens to contain "403" must still be retried.
+    if isinstance(exc, _MATRIX_TRANSIENT_EXC_TYPES):
+        return False
+
+    # Prefer structured attributes when the exception carries them.
+    errcode = getattr(exc, "errcode", None)
+    if (
+        isinstance(errcode, str)
+        and errcode.strip().lower() in _MATRIX_PERMANENT_ERRCODES
+    ):
+        return True
+
+    # mautrix's MatrixRequestError exposes ``.http_status``. Deliberately not
+    # ``.status``/``.status_code``/``.code``: those belong to unrelated
+    # exception shapes (aiohttp responses, OS errno, generic process exit
+    # codes) and a first-int-wins probe across all of them can misclassify on
+    # a coincidental integer that has nothing to do with the HTTP response.
+    status = getattr(exc, "http_status", None)
+    if isinstance(status, int):
+        return status in (401, 403)
+
+    # Fall back to parsing a leading status code off the string form
+    # (e.g. ``"502: <!DOCTYPE html>...``). A known status is authoritative:
+    # only 401/403 are permanent; 5xx/429/etc. must retry regardless of body.
+    text = str(exc)
+    m = _MATRIX_LEADING_STATUS_RE.match(text)
+    if m:
+        return int(m.group(1)) in (401, 403)
+
+    # No structured status available at all: fall back to a bounded,
+    # whole-word text scan. This is a deliberate divergence from a
+    # structured-only classifier. Some transports (a bare Exception wrapping a
+    # homeserver error) never expose http_status/errcode, so without this
+    # fallback we'd silently treat every unstructured auth failure as
+    # retryable forever.
+    # Bounded to the first 200 characters with \b word boundaries so a large
+    # HTML error body (which can run to kilobytes) has no way to smuggle a
+    # false positive the way the old unbounded substring check did.
+    head = text[:200].lower()
+    return bool(
+        re.search(
+            r"\b(m_unknown_token|m_missing_token|m_forbidden|unauthorized|forbidden)\b",
+            head,
+        )
+    )
 
 
 class _MatrixHtmlSanitizer(HTMLParser):
@@ -3037,14 +3113,35 @@ class MatrixAdapter(BasePlatformAdapter):
                     timeout=45.0,
                 )
 
-                # nio returns SyncError objects (not exceptions) for auth
-                # failures like M_UNKNOWN_TOKEN.  Detect and stop immediately.
+                # Defensive: handle an error *result object* rather than a
+                # raised exception. The pinned mautrix (0.21.0) never does
+                # this: HTTPAPI._send raises make_request_error() for any
+                # non-2xx and otherwise returns parsed JSON (a dict), so a
+                # real M_FORBIDDEN reaches the except branch below. This
+                # branch is inherited from the earlier matrix-nio client,
+                # where SyncError result objects were genuine, and is kept
+                # so a future client swap cannot silently reintroduce the
+                # infinite-resync bug. Classify with the same errcode /
+                # status logic as the exception path instead of a lone
+                # substring test.
                 _sync_msg = getattr(sync_data, "message", None)
                 if _sync_msg and isinstance(_sync_msg, str):
-                    _lower = _sync_msg.lower()
-                    if "m_unknown_token" in _lower or "unknown_token" in _lower:
+                    # A structured errcode/http_status is authoritative. Only
+                    # when the object exposes neither do we scan the message
+                    # text, because str(object) is an opaque repr that hides
+                    # the message. Never let the text scan override a
+                    # structured verdict: a transient 502 whose HTML body
+                    # happens to contain "forbidden" must still be retried.
+                    _structured = isinstance(
+                        getattr(sync_data, "errcode", None), str
+                    ) or isinstance(getattr(sync_data, "http_status", None), int)
+                    if _structured:
+                        _permanent = _is_permanent_matrix_auth_error(sync_data)
+                    else:
+                        _permanent = _is_permanent_matrix_auth_error(_sync_msg)
+                    if _permanent:
                         logger.error(
-                            "Matrix: permanent auth error from sync: %s — stopping",
+                            "Matrix: permanent auth error from sync: %s, stopping",
                             _sync_msg,
                         )
                         return
@@ -3081,17 +3178,11 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if self._closing:
                     return
-                # Detect permanent auth/permission failures.
-                err_str = str(exc).lower()
-                if (
-                    "401" in err_str
-                    or "403" in err_str
-                    or "unauthorized" in err_str
-                    or "forbidden" in err_str
-                ):
-                    logger.error(
-                        "Matrix: permanent auth error: %s — stopping sync", exc
-                    )
+                # Detect permanent auth/permission failures. Transient 5xx
+                # outages (e.g. a homeserver restart returning a 502 HTML page)
+                # must be retried, not treated as fatal.
+                if _is_permanent_matrix_auth_error(exc):
+                    logger.error("Matrix: permanent auth error, stopping sync: %s", exc)
                     return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
                 await asyncio.sleep(5)

@@ -403,7 +403,14 @@ test('waitForHermesReady surfaces actionable error for cloud agent 503', async (
         throw new Error('503: Service Unavailable')
       },
       sleep: async () => {},
-      now: () => currentTime.value,
+      // Advance the mock clock per poll — a frozen now() never crosses the
+      // deadline and the readiness loop spins forever (hung the whole vitest
+      // electron project for 20m in CI).
+      now: () => {
+        currentTime.value += 20
+
+        return currentTime.value
+      },
       timeoutMs: 100,
       pollMs: 1
     })
@@ -431,7 +438,12 @@ test('waitForHermesReady does not cloud-wrap non-cloud 503 errors', async () => 
         throw new Error('503: Service Unavailable')
       },
       sleep: async () => {},
-      now: () => currentTime.value,
+      // Same advancing clock as above — frozen now() = infinite loop.
+      now: () => {
+        currentTime.value += 20
+
+        return currentTime.value
+      },
       timeoutMs: 100,
       pollMs: 1
     })

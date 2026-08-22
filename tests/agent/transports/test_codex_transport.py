@@ -151,6 +151,35 @@ class TestCodexBuildKwargs:
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_id"
 
+    def test_codex_backend_drops_foreign_message_item_id_end_to_end(self, transport):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "123e4567-e89b-12d3-a456-426614174000",
+                        "phase": "final_answer",
+                    }
+                ],
+            },
+        ]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            is_codex_backend=True,
+        )
+
+        message_item = next(item for item in kw["input"] if item.get("type") == "message")
+        assert "id" not in message_item
+        assert message_item["phase"] == "final_answer"
+
     @pytest.mark.parametrize("model", [
         "gpt-5.5",
         "gpt-5.5-pro",

@@ -389,7 +389,8 @@ _RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
 # HTTP 400 ("string too long"). Codex-issued assistant message ids are
 # server-assigned base64 blobs that can run 400+ chars, while Hermes-minted
 # ids (msg_...) stay well under this cap and are worth keeping for
-# prefix-cache hits. Drop only the oversized ones on replay.
+# prefix-cache hits. The ChatGPT Codex backend additionally rejects ids that
+# do not begin with ``msg``; foreign Responses issuers may mint short UUIDs.
 _MAX_RESPONSES_ITEM_ID_LENGTH = 64
 
 
@@ -447,7 +448,7 @@ def _chat_messages_to_responses_input(
     ``status``/``content`` are still replayed; only ``id`` is unsafe to
     reuse across a Copilot connection.
 
-    ``current_issuer_kind`` enables a per-item cross-issuer guard. The
+    ``current_issuer_kind`` enables per-item cross-issuer guards. The
     Responses API's ``encrypted_content`` blob is decryptable only by the
     endpoint that minted it — replaying a Codex-issued blob against xAI
     (or vice versa) always yields HTTP 400 ``invalid_encrypted_content``
@@ -458,7 +459,10 @@ def _chat_messages_to_responses_input(
     (backwards-compatible).  The two guards compose:
     ``replay_encrypted_reasoning=False`` is the session-wide kill switch
     (drops ALL replay); ``current_issuer_kind`` is the per-item filter
-    that runs only when replay is still enabled.
+    that runs only when replay is still enabled. The ChatGPT Codex backend
+    also requires replayed message ids to begin with ``msg``. Foreign short
+    ids are omitted there while native Codex ids and other issuers' policies
+    remain unchanged.
 
     ``native_compaction_eligible`` mirrors, for THIS request, the decision
     made by ``native_compaction.native_compaction_context_management`` — it
@@ -624,7 +628,13 @@ def _chat_messages_to_responses_input(
                             and item_id.strip()
                         ):
                             stripped_id = item_id.strip()
-                            if len(stripped_id) <= _MAX_RESPONSES_ITEM_ID_LENGTH:
+                            if (
+                                len(stripped_id) <= _MAX_RESPONSES_ITEM_ID_LENGTH
+                                and (
+                                    current_issuer_kind != "codex_backend"
+                                    or stripped_id.startswith("msg")
+                                )
+                            ):
                                 replay_item["id"] = stripped_id
                         phase = raw_item.get("phase")
                         if isinstance(phase, str) and phase.strip():

@@ -259,6 +259,7 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
 
 _OVERSIZED_ITEM_ID = "x" * 408
 _VALID_ITEM_ID = "msg_abc123"
+_FOREIGN_ITEM_ID = "123e4567-e89b-12d3-a456-426614174000"
 
 
 
@@ -354,6 +355,38 @@ def test_preflight_codex_input_items_drops_short_id_for_github_responses():
     assert items[0]["status"] == "in_progress"
     assert items[0]["phase"] == "final_answer"
     assert items[0]["content"] == [{"type": "output_text", "text": "pong"}]
+
+
+def test_chat_messages_to_responses_input_drops_foreign_id_for_codex_backend():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "pong",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _FOREIGN_ITEM_ID,
+                    "phase": "final_answer",
+                }
+            ],
+        }
+    ]
+
+    codex_items = _chat_messages_to_responses_input(
+        messages, current_issuer_kind="codex_backend"
+    )
+    xai_items = _chat_messages_to_responses_input(
+        messages, current_issuer_kind="xai_responses"
+    )
+
+    codex_message = next(item for item in codex_items if item.get("type") == "message")
+    xai_message = next(item for item in xai_items if item.get("type") == "message")
+    assert "id" not in codex_message
+    assert codex_message["phase"] == "final_answer"
+    assert xai_message["id"] == _FOREIGN_ITEM_ID
 
 
 def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():

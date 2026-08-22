@@ -15,6 +15,7 @@ import pytest
 
 import tui_gateway.server as srv
 import hermes_cli.nous_billing as nb
+import hermes_cli.nous_account as na
 import agent.billing_view as bv
 from agent.billing_view import BillingState, CardInfo, MonthlyCap, PaymentMethodInfo
 
@@ -33,6 +34,7 @@ def _call(method: str, params: dict) -> dict:
 def test_billing_state_serializes_decimals_as_strings(monkeypatch):
     state = BillingState(
         logged_in=True,
+        org_id="org_1",
         org_name="Acme",
         role="OWNER",
         balance_usd=Decimal("142.5"),
@@ -52,8 +54,21 @@ def test_billing_state_serializes_decimals_as_strings(monkeypatch):
         portal_url="https://portal/billing?topup=open",
     )
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
+    monkeypatch.setattr(
+        na,
+        "get_nous_portal_account_info",
+        lambda *a, **kw: na.NousPortalAccountInfo(
+            logged_in=True,
+            source="account_api",
+            fresh=True,
+            org_id="org_1",
+            email="owner@acme.example",
+        ),
+    )
     res = _call("billing.state", {})
     assert res["ok"] is True and res["logged_in"] is True
+    assert res["account_email"] == "owner@acme.example"
+    assert res["org_id"] == "org_1"
     # Money on the wire is STRING, not float/number.
     assert res["balance_usd"] == "142.5"
     assert res["balance_display"] == "$142.50"

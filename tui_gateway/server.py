@@ -9466,9 +9466,12 @@ def _serialize_billing_state(state) -> dict:
             "reload_to_display": format_money(ar.reload_to_usd),
             "card": card_out,
         }
+    account_email = _billing_account_email(state)
     return {
         "ok": True,
         "logged_in": state.logged_in,
+        "account_email": account_email,
+        "org_id": state.org_id,
         "org_name": state.org_name,
         "org_slug": state.org_slug,
         "role": state.role,
@@ -9494,6 +9497,32 @@ def _serialize_billing_state(state) -> dict:
         # out or the portal is down.
         "usage": _usage_payload(state),
     }
+
+
+def _billing_account_email(state) -> Optional[str]:
+    """Best-effort Nous user email for the billing.state OAuth context.
+
+    The balance/org fields come from NAS through the same stored Nous OAuth
+    credential. Fetching the normalized account snapshot here keeps the rendered
+    Desktop identity in the same RPC generation as the balance, while failing
+    open on older/offline auth states instead of blocking the billing overview.
+    """
+    if not getattr(state, "logged_in", False):
+        return None
+    try:
+        from hermes_cli.nous_account import get_nous_portal_account_info
+
+        info = get_nous_portal_account_info(force_fresh=True)
+    except Exception:
+        return None
+    if not getattr(info, "logged_in", False):
+        return None
+    state_org_id = getattr(state, "org_id", None)
+    info_org_id = getattr(info, "org_id", None)
+    if state_org_id and info_org_id and state_org_id != info_org_id:
+        return None
+    email = getattr(info, "email", None)
+    return email.strip() if isinstance(email, str) and email.strip() else None
 
 
 def _usage_payload(state) -> dict:

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -32,6 +32,11 @@ const apiMocks = vi.hoisted(() => ({
   updateAutoReload: vi.fn()
 }))
 
+const oauthMocks = vi.hoisted(() => ({
+  pollOAuthSession: vi.fn(),
+  startOAuthLogin: vi.fn()
+}))
+
 vi.mock('./api', () => ({
   // Pass-through provider — the mocked useBillingApi ignores any override anyway.
   BillingApiProvider: ({ children }: { children: ReactNode }) => children,
@@ -46,6 +51,11 @@ vi.mock('./api', () => ({
     stepUp: apiMocks.stepUp,
     updateAutoReload: apiMocks.updateAutoReload
   })
+}))
+
+vi.mock('@/hermes', () => ({
+  pollOAuthSession: oauthMocks.pollOAuthSession,
+  startOAuthLogin: oauthMocks.startOAuthLogin
 }))
 
 function renderBilling(initialEntries: string[] = ['/settings?tab=billing']) {
@@ -65,6 +75,12 @@ function renderBilling(initialEntries: string[] = ['/settings?tab=billing']) {
 beforeEach(() => {
   apiMocks.fetchBillingState.mockResolvedValue(okBilling(todayBillingState))
   apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(todaySubscriptionState))
+  oauthMocks.startOAuthLogin.mockResolvedValue({
+    flow: 'device_code',
+    session_id: 'oauth-session-1',
+    verification_url: 'https://portal.nousresearch.com/device'
+  })
+  oauthMocks.pollOAuthSession.mockResolvedValue({ status: 'approved' })
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: {
@@ -74,6 +90,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   cleanup()
   vi.clearAllMocks()
 })
@@ -84,6 +101,9 @@ describe('BillingSettings', () => {
 
     expect(await screen.findByText('$996.47')).toBeTruthy()
     expect(screen.getByText('Ultra · $200/mo')).toBeTruthy()
+    expect(screen.getByText('owner@sid5.example')).toBeTruthy()
+    expect(screen.getByText('sid-5 · OWNER')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Reconnect \/ switch account/ })).toBeTruthy()
     expect(screen.getByText('Visa •••• 3206')).toBeTruthy()
     expect(
       screen.getByText(
@@ -96,6 +116,34 @@ describe('BillingSettings', () => {
     expect(screen.getByText('$876.47')).toBeTruthy()
     expect(screen.getByText('$10 of $100 used').classList.contains('tabular-nums')).toBe(true)
     expect(screen.getByText('Default ceiling')).toBeTruthy()
+  })
+
+  it('reconnects the billing identity through the Desktop Nous OAuth flow', async () => {
+    const client = renderBilling()
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    const reconnect = await screen.findByRole('button', { name: /Reconnect \/ switch account/ })
+
+    vi.useFakeTimers()
+    fireEvent.click(reconnect)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(oauthMocks.startOAuthLogin).toHaveBeenCalledWith('nous')
+    expect(apiMocks.openExternal).toHaveBeenCalledWith('https://portal.nousresearch.com/device')
+    expect(screen.getByRole('button', { name: /Waiting for approval/ })).toBeTruthy()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+
+    expect(oauthMocks.pollOAuthSession).toHaveBeenCalledWith('nous', 'oauth-session-1')
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'state'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'subscription'] })
   })
 
   it('renders the post-train payload with enabled buy controls and card provenance', async () => {

@@ -22,6 +22,8 @@ from tools.checkpoint_manager import (
     _ref_name,
     _project_meta_path,
     _touch_project,
+    _repair_stale_locks,
+    _index_path,
     prune_checkpoints,
     maybe_auto_prune_checkpoints,
     store_status,
@@ -168,6 +170,60 @@ class TestTakeCheckpoint:
         mgr.new_turn()
         (work_dir / "main.py").write_text("print('modified')\n")
         assert mgr.ensure_checkpoint(str(work_dir), "turn 2") is True
+
+
+# =========================================================================
+# CheckpointManager — stale lock recovery
+# =========================================================================
+
+class TestStaleLockRecovery:
+    """Git lock files left behind by killed git processes must not wedge
+    checkpoints forever (production: rc=128 ``Unable to create
+    '<index>.lock': File exists`` for 18+ days until a human removes the
+    lock by hand)."""
+
+    def _stale(self, path):
+        path.write_text("")
+        old = time.time() - 3600
+        os.utime(path, (old, old))
+        return path
+
+    def test_repair_only_removes_old_locks(self, work_dir, checkpoint_base):
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        fresh = store / "indexes" / "fresh.lock"
+        fresh.write_text("")
+        stale = self._stale(store / "indexes" / "stale.lock")
+        assert _repair_stale_locks(store) == 1
+        assert stale.exists() is False
+        assert fresh.exists() is True
+
+    def test_run_git_retries_once_after_clearing_stale_lock(
+        self, work_dir, checkpoint_base,
+    ):
+        store = _store_path(checkpoint_base)
+        assert _init_store(store, str(work_dir)) is None
+        index_file = _index_path(store, _project_hash(str(work_dir)))
+        # A git process killed mid-write left a lock on the project index.
+        stale = self._stale(Path(str(index_file) + ".lock"))
+        ok, _, err = _run_git(
+            ["add", "-A"], store, str(work_dir), index_file=index_file,
+        )
+        assert ok, err
+        assert stale.exists() is False
+
+    def test_snapshot_succeeds_after_stale_lock_repair(
+        self, mgr, work_dir, checkpoint_base,
+    ):
+        # First checkpoint seeds the store and the per-project index.
+        assert mgr.ensure_checkpoint(str(work_dir), "first") is True
+        store = _store_path(checkpoint_base)
+        index_file = _index_path(store, _project_hash(str(work_dir)))
+        self._stale(Path(str(index_file) + ".lock"))
+        mgr.new_turn()
+        (work_dir / "main.py").write_text("print('changed')\n")
+        assert mgr.ensure_checkpoint(str(work_dir), "second") is True
+        assert Path(str(index_file) + ".lock").exists() is False
 
 
 # =========================================================================

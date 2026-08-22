@@ -314,9 +314,17 @@ def normalize_profile_name(name: str) -> str:
     alias ``default`` is matched case-insensitively (``Default`` → ``default``).
     Dashboards and tools may pass title-cased display labels; normalize before
     validation, assignment, and subprocess spawn (see issue #18498).
+
+    Raises ``ValueError`` for non-string input: a numeric profile id (e.g. a
+    DB row id or a falsy sentinel) silently coerced via ``str()`` becomes a
+    real on-disk profile directory (``profiles/0/``, #88842). Callers that
+    hold a numeric id must resolve it to an actual profile name first.
     """
     if not isinstance(name, str):
-        name = str(name)
+        raise ValueError(
+            "profile name must be a string, got "
+            f"{type(name).__name__}: {name!r}"
+        )
     stripped = name.strip()
     if not stripped:
         raise ValueError("profile name cannot be empty")

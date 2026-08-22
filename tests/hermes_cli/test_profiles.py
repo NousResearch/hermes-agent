@@ -78,6 +78,21 @@ class TestNormalizeProfileName:
         assert normalize_profile_name("Jules") == "jules"
         assert normalize_profile_name("  Librarian ") == "librarian"
 
+    def test_non_string_name_rejected(self):
+        # A numeric profile id (DB row id / falsy sentinel) must not be
+        # silently coerced into a real on-disk profile directory (#88842).
+        with pytest.raises(ValueError):
+            normalize_profile_name(0)
+        with pytest.raises(ValueError):
+            normalize_profile_name(None)
+        with pytest.raises(ValueError):
+            normalize_profile_name(42)
+
+    def test_literal_zero_string_is_a_valid_explicit_name(self):
+        # A literal "0" typed by the user is a legal profile id; only the
+        # non-string coercion created the phantom profile.
+        assert normalize_profile_name("0") == "0"
+
 
 class TestValidateProfileName:
     """Tests for validate_profile_name()."""

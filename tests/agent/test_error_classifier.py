@@ -537,6 +537,25 @@ class TestClassifyApiError:
 
 
 
+    def test_thinking_signature_invalid_uses_encrypted_replay_recovery(self):
+        e = MockAPIError(
+            "Error code: 400 - "
+            "{'error': {'code': 'thinking_signature_invalid', "
+            "'message': 'The reasoning signature is no longer valid.'}}",
+            status_code=400,
+            body={
+                "error": {
+                    "code": "thinking_signature_invalid",
+                    "message": "The reasoning signature is no longer valid.",
+                },
+            },
+        )
+
+        result = classify_api_error(e, provider="openai", model="gpt-5.5")
+
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True
+        assert result.should_fallback is False
 
 
     @pytest.mark.parametrize("error_code", ["Invalid_Encrypted_Content", "INVALID_ENCRYPTED_CONTENT"])

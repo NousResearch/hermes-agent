@@ -1432,14 +1432,37 @@ class ProcessRegistry:
                     _append_chunk(tail)
             except Exception:
                 pass
-            # Always reap the child to prevent zombie processes.
-            try:
-                session.process.wait(timeout=5)
-            except Exception as e:
-                logger.debug("Process wait timed out or failed: %s", e)
+
+            # EOF on the capture pipe is NOT the same as process exit. The
+            # child may have redirected or closed its stdout/stderr while it
+            # is still alive (issue #86416). Only mark the session as exited
+            # and emit a completion if we can reap the process and obtain a
+            # real exit code. If the process is still alive, leave it in
+            # _running and let poll()/wait() reconcile via _reconcile_local_exit
+            # when it actually terminates.
+            proc = session.process
+            rc = None
+            if proc is not None:
+                try:
+                    rc = proc.wait(timeout=5)
+                except Exception as e:
+                    logger.debug("Process wait timed out or failed: %s", e)
+                    rc = proc.poll()
+
+            if rc is None and proc is not None:
+                # Direct child is still running after EOF — keep the session
+                # running and do not emit a completion.
+                logger.info(
+                    "Process %s reached EOF on capture pipe but the direct child "
+                    "is still running (pid=%s); not marking as exited.",
+                    session.id,
+                    session.pid,
+                )
+                return
+
             session.exited = True
             if session.completion_reason != "killed":
-                session.exit_code = session.process.returncode
+                session.exit_code = proc.returncode if proc is not None else None
                 session.completion_reason = "exited"
             self._move_to_finished(session)
 

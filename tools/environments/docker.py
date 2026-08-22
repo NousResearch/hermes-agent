@@ -1465,11 +1465,33 @@ class DockerEnvironment(BaseEnvironment):
                         )
                         self._container_id = None
                 if self._container_id:
-                    logger.info(
-                        "Reusing container %s (task=%s, profile=%s, prior state=%s)",
-                        container_id[:12], task_label, profile_name, state,
-                    )
-                    reused = True
+                    # Liveness probe: a container can report ``running`` while
+                    # its rootfs is dead (fuse-overlayfs daemon killed by a
+                    # gateway restart) — every later exec would fail with
+                    # ENOTCONN. Probe before committing to reuse and start
+                    # fresh if the mount is unresponsive (#77301).
+                    if not self._container_rootfs_alive(container_id):
+                        logger.warning(
+                            "Container %s reports %s but its rootfs is "
+                            "unresponsive (fuse-overlayfs daemon likely died "
+                            "with a prior gateway restart) — removing it and "
+                            "starting fresh (task=%s, profile=%s).",
+                            container_id[:12],
+                            state,
+                            task_label,
+                            profile_name,
+                        )
+                        self._remove_container(container_id)
+                        self._container_id = None
+                    else:
+                        logger.info(
+                            "Reusing container %s (task=%s, profile=%s, prior state=%s)",
+                            container_id[:12],
+                            task_label,
+                            profile_name,
+                            state,
+                        )
+                        reused = True
 
         if not reused:
             # tini/catatonit as PID 1 reaps zombie children — but s6-overlay
@@ -1641,9 +1663,20 @@ class DockerEnvironment(BaseEnvironment):
         "no such container",
     )
 
+    # Distinct from the patterns above: this means the container object still
+    # exists (``docker ps`` shows it Up) but its rootfs mount is dead — the
+    # fuse-overlayfs daemon backing the mount was killed with its parent
+    # cgroup. The container must be removed before recreation, or label-based
+    # reuse would pick the same corpse back up (#77301).
+    _DEAD_ROOTFS_PATTERNS = ("transport endpoint is not connected",)
+
     def _is_container_gone(self, output: str) -> bool:
         """Return True if the output indicates the container no longer exists."""
         return any(p in output for p in self._NO_CONTAINER_PATTERNS)
+
+    def _is_dead_rootfs(self, output: str) -> bool:
+        """Return True if the output indicates the container's rootfs mount is dead."""
+        return any(p in output for p in self._DEAD_ROOTFS_PATTERNS)
 
     def _recreate_container(self) -> bool:
         """Recreate the container after it was removed out-of-band.
@@ -1681,6 +1714,20 @@ class DockerEnvironment(BaseEnvironment):
                     logger.info("Recovery: restarted container %s", cid[:12])
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                     logger.warning("Recovery: failed to start container %s: %s", cid[:12], e)
+            # Same dead-rootfs guard as the reuse path: a container can report
+            # a live state while its mount is unresponsive, and label-based
+            # reuse would otherwise resurrect the exact outage we're recovering
+            # from (#77301).
+            if self._container_id and not self._container_rootfs_alive(cid):
+                logger.warning(
+                    "Recovery: container %s reports %s but its rootfs is "
+                    "unresponsive (fuse-overlayfs daemon likely died) — "
+                    "removing it and creating a fresh container",
+                    cid[:12],
+                    state,
+                )
+                self._remove_container(cid)
+                self._container_id = None
 
         # 2. No reusable container — create a fresh one.
         if not self._container_id:
@@ -1734,16 +1781,27 @@ class DockerEnvironment(BaseEnvironment):
 
         If the container was removed out-of-band (idle reaper, docker prune,
         OOM kill, daemon restart), detect the error and recreate the container
-        transparently before retrying once.
+        transparently before retrying once. Also covers a container whose
+        rootfs mount died while the container itself still reports "Up"
+        (fuse-overlayfs daemon killed by a gateway restart): the dead container
+        is removed first — otherwise label-based recreation would reuse it.
         """
         result = super().execute(command, cwd, **kwargs)
-        if (
-            result.get("returncode", 0) != 0
-            and self._is_container_gone(result.get("output", ""))
-            and self._persist_across_processes
-        ):
-            if self._recreate_container():
-                result = super().execute(command, cwd, **kwargs)
+        if result.get("returncode", 0) != 0 and self._persist_across_processes:
+            output = result.get("output", "")
+            if self._is_container_gone(output):
+                if self._recreate_container():
+                    result = super().execute(command, cwd, **kwargs)
+            elif self._is_dead_rootfs(output) and self._container_id:
+                logger.warning(
+                    "Container %s has a dead rootfs mount (transport endpoint "
+                    "is not connected) — removing and recreating it",
+                    self._container_id[:12],
+                )
+                self._remove_container(self._container_id)
+                self._container_id = None
+                if self._recreate_container():
+                    result = super().execute(command, cwd, **kwargs)
         return result
 
     @staticmethod
@@ -1822,6 +1880,61 @@ class DockerEnvironment(BaseEnvironment):
             return None
         mode = result.stdout.strip()
         return mode or None
+
+    def _container_rootfs_alive(self, container_id: str) -> bool:
+        """Probe whether *container_id*'s rootfs is actually usable.
+
+        ``docker ps`` reports a container ``running`` as long as its main
+        process is alive — but the rootfs mount can be backed by a dead FUSE
+        connection (the fuse-overlayfs daemon was SIGKILLed when its parent
+        cgroup, e.g. ``hermes-gateway.service``, was torn down on restart).
+        ``docker exec`` must lstat the merged rootfs to resolve the exec user,
+        so it fails with ``transport endpoint is not connected`` on a dead
+        mount — making ``docker exec <cid> true`` the cheapest reliable
+        liveness probe (#77301).
+        """
+        try:
+            result = subprocess.run(
+                [self._docker_exe, "exec", container_id, "true"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("Liveness probe exec %s failed: %s", container_id[:12], e)
+            return False
+        if result.returncode != 0:
+            logger.warning(
+                "Liveness probe failed for container %s: %s — treating as dead",
+                container_id[:12],
+                (result.stderr or result.stdout).strip()[:200],
+            )
+            return False
+        return True
+
+    def _remove_container(self, container_id: str) -> None:
+        """Best-effort ``docker rm -f`` of *container_id*; logs and swallows
+        failures so callers can fall through to a fresh container."""
+        try:
+            result = subprocess.run(
+                [self._docker_exe, "rm", "-f", container_id],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=30, check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.warning("Failed to remove container %s: %s", container_id[:12], e)
+            return
+        if result.returncode != 0:
+            logger.warning(
+                "Failed to remove container %s (rc=%d): %s",
+                container_id[:12], result.returncode,
+                (result.stderr or result.stdout).strip()[:200] or "<no output>",
+            )
 
     def _find_reusable_container(
         self,

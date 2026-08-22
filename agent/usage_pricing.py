@@ -1182,6 +1182,18 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
             entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
             if entry:
                 return entry
+    # Vendor snapshot ids pin a dated variant of a base model —
+    # gpt-5.4-2026-03-05, claude-opus-4-8-20260801,
+    # gpt-5.6-sol-2026-07-09 — and bill at the base model's rates (only the
+    # weights are frozen, never the price). Strip the trailing date in both
+    # documented formats (ISO with dashes, and the compact form Anthropic
+    # uses) and retry on the base before giving up, so pinned sessions
+    # don't price as unknown.
+    stripped = re.sub(r"-\d{4}-\d{2}-\d{2}$|-\d{8}$", "", model)
+    if stripped != model:
+        entry = _OFFICIAL_DOCS_PRICING.get((route.provider, stripped))
+        if entry:
+            return entry
     return None
 
 

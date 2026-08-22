@@ -6680,6 +6680,18 @@ def resolve_provider_client(
                 _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
                 if _headers2:
                     _extra2["default_headers"] = _headers2
+                # Per-provider extra_headers (providers.<name>.extra_headers /
+                # custom_providers[].extra_headers) — mirrors the main agent
+                # client so headers are identical for auxiliary calls too.
+                try:
+                    from hermes_cli.config import (
+                        apply_custom_provider_extra_headers_to_client_kwargs,
+                    )
+                    apply_custom_provider_extra_headers_to_client_kwargs(
+                        _extra2, _clean_base2,
+                    )
+                except Exception:
+                    logger.debug("custom-provider extra_headers skipped", exc_info=True)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
@@ -6705,6 +6717,16 @@ def resolve_provider_client(
                         _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
                         if _fb_headers:
                             _fb_extra["default_headers"] = _fb_headers
+                        # Per-provider extra_headers on the fallback path too.
+                        try:
+                            from hermes_cli.config import (
+                                apply_custom_provider_extra_headers_to_client_kwargs,
+                            )
+                            apply_custom_provider_extra_headers_to_client_kwargs(
+                                _fb_extra, _fb_clean,
+                            )
+                        except Exception:
+                            logger.debug("custom-provider extra_headers skipped", exc_info=True)
                         client = _create_openai_client(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))

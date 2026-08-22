@@ -74,6 +74,21 @@ SINGLE_HANDLER_CASES = [
 ]
 
 
+def test_debug_share_help_describes_best_effort_privacy_redaction(capsys):
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_debug_parser(sub, cmd_debug=_h("debug"))
+
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(["debug", "share", "--help"])
+
+    assert exc_info.value.code == 0
+    help_text = capsys.readouterr().out
+    normalized_help = " ".join(help_text.split())
+    assert "best-effort secret and privacy redaction" in normalized_help
+    assert "unrecognized personal data may remain" in normalized_help
+
+
 
 
 def test_config_get_unset_subcommands_parse():

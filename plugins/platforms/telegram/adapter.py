@@ -7455,8 +7455,7 @@ class TelegramAdapter(BasePlatformAdapter):
             tmp = response_path.with_suffix(".tmp")
             tmp.write_text(answer, encoding="utf-8")
             tmp.replace(response_path)
-            logger.info("Telegram update prompt answered '%s' by user %s",
-                        answer, getattr(query.from_user, "id", "unknown"))
+            logger.info("Telegram update prompt answered")
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
 
@@ -9581,11 +9580,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # generation. This prevents removed/blocked users from injecting prompts
         # into the agent path or the observed transcript context (#40863).
         if not self._is_user_authorized_from_message(msg):
-            logger.warning(
-                "[Telegram] Blocked unauthorized user %s in chat %s",
-                getattr(getattr(msg, "from_user", None), "id", None),
-                getattr(getattr(msg, "chat", None), "id", None),
-            )
+            logger.warning("[Telegram] Blocked unauthorized user")
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
@@ -9607,11 +9602,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg, is_command=True):
             return
         if not self._is_user_authorized_from_message(msg):
-            logger.warning(
-                "[Telegram] Blocked unauthorized user %s in chat %s",
-                getattr(getattr(msg, "from_user", None), "id", None),
-                getattr(getattr(msg, "chat", None), "id", None),
-            )
+            logger.warning("[Telegram] Blocked unauthorized user")
             return
         await self._ensure_forum_commands(msg)
 
@@ -9639,11 +9630,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not msg:
             return
         if not self._is_user_authorized_from_message(msg):
-            logger.warning(
-                "[Telegram] Blocked unauthorized user %s in chat %s",
-                getattr(getattr(msg, "from_user", None), "id", None),
-                getattr(getattr(msg, "chat", None), "id", None),
-            )
+            logger.warning("[Telegram] Blocked unauthorized user")
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
@@ -9859,11 +9846,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not update.message:
             return
         if not self._is_user_authorized_from_message(update.message):
-            logger.info(
-                "[Telegram] Blocked media from unauthorized user %s in chat %s",
-                getattr(getattr(update.message, "from_user", None), "id", None),
-                getattr(getattr(update.message, "chat", None), "id", None),
-            )
+            logger.info("[Telegram] Blocked media from unauthorized user")
             return
         if not self._should_process_message(update.message):
             if self._should_observe_unmentioned_group_message(update.message):

@@ -150,6 +150,18 @@ def _export_port_health_grace_timeout(config: dict[str, Any]) -> None:
     os.environ.setdefault(_PORT_HEALTH_GRACE_ENV, repr(seconds))
 
 
+def _daemon_stop_allowed(config: dict[str, Any]) -> bool:
+    """Whether the plugin may stop the embedded daemon on a config change.
+
+    ``is_running()`` only checks ``/health`` and ``stop()`` has no ownership
+    check either — neither can tell a daemon this plugin started apart from
+    one an external supervisor (e.g. systemd) owns. ``externally_managed``
+    lets the operator declare that themselves; the new config then applies
+    only on the daemon's next externally-triggered restart.
+    """
+    return not config.get("externally_managed", False)
+
+
 def _check_local_runtime() -> tuple[bool, str | None]:
     """Return whether local embedded Hindsight imports cleanly.
 
@@ -1207,6 +1219,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
             {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
+            {"key": "externally_managed", "description": "Daemon is supervised externally (e.g. systemd) — never stop/restart it on config change, even if settings differ from what's on disk. New config applies only on the daemon's next externally-triggered restart.", "default": False, "when": {"mode": "local_embedded"}},
         ]
 
     def _get_client(self):
@@ -1802,9 +1815,17 @@ class HindsightMemoryProvider(MemoryProvider):
                     if config_changed:
                         profile_env = _materialize_embedded_profile_env(self._config)
                         if client._manager.is_running(profile):
-                            with open(log_path, "a", encoding="utf-8") as f:
-                                f.write("\n=== Config changed, restarting daemon ===\n")
-                            client._manager.stop(profile)
+                            if _daemon_stop_allowed(self._config):
+                                with open(log_path, "a", encoding="utf-8") as f:
+                                    f.write("\n=== Config changed, restarting daemon ===\n")
+                                client._manager.stop(profile)
+                            else:
+                                with open(log_path, "a", encoding="utf-8") as f:
+                                    f.write(
+                                        "\n=== Config changed, but daemon is "
+                                        "externally_managed — leaving it running; "
+                                        "new config applies on its next restart ===\n"
+                                    )
 
                     client._ensure_started()
                     with open(log_path, "a", encoding="utf-8") as f:

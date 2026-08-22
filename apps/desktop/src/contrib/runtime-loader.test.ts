@@ -21,6 +21,7 @@ const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
 const readFileText = vi.fn<(path: string) => Promise<{ text: string }>>()
 const watchDirectory = vi.fn<(path: string) => Promise<{ id: string }>>()
 const watchPreviewFile = vi.fn<(path: string) => Promise<{ id: string }>>()
+const stopPreviewFileWatch = vi.fn<(id: string) => Promise<boolean>>()
 const onPreviewFileChanged = vi.fn()
 
 beforeEach(() => {
@@ -30,6 +31,8 @@ beforeEach(() => {
   readFileText.mockReset()
   watchDirectory.mockReset()
   watchPreviewFile.mockReset()
+  stopPreviewFileWatch.mockReset()
+  stopPreviewFileWatch.mockResolvedValue(true)
   onPreviewFileChanged.mockReset()
   getStatus.mockClear()
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
@@ -38,6 +41,7 @@ beforeEach(() => {
     onPreviewFileChanged,
     readDir,
     readFileText,
+    stopPreviewFileWatch,
     watchDirectory,
     watchPreviewFile
   }
@@ -72,22 +76,28 @@ describe('scanDiskPlugins (#66899)', () => {
     expect(readDir).not.toHaveBeenCalled()
   })
 
-  it('probes desktop/plugin.js inside agent-plugin packages (unified packaging)', async () => {
+  it('treats a package without a Desktop half as metadata, not a throwing file read', async () => {
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
     agentPluginsRoot.mockResolvedValue('/local/.hermes/plugins')
-    readDir.mockImplementation(async dir =>
-      dir === '/local/.hermes/plugins'
-        ? { entries: [{ isDirectory: true, name: 'my-feature', path: '/local/.hermes/plugins/my-feature' }] }
-        : { entries: [] }
-    )
-    // No desktop half in this package — probe must target desktop/plugin.js.
-    readFileText.mockRejectedValue(new Error('ENOENT'))
+    readDir.mockImplementation(async dir => {
+      if (dir === '/local/.hermes/plugins') {
+        return { entries: [{ isDirectory: true, name: 'my-feature', path: '/local/.hermes/plugins/my-feature' }] }
+      }
+
+      if (dir === '/local/.hermes/plugins/my-feature') {
+        return {
+          entries: [{ isDirectory: false, name: 'plugin.yaml', path: '/local/.hermes/plugins/my-feature/plugin.yaml' }]
+        }
+      }
+
+      return { entries: [] }
+    })
 
     await discoverRuntimePlugins()
 
-    expect(readFileText).toHaveBeenCalledWith('/local/.hermes/plugins/my-feature/desktop/plugin.js')
-    // The Python half's files must never be probed as a desktop entry.
-    expect(readFileText).not.toHaveBeenCalledWith('/local/.hermes/plugins/my-feature/plugin.js')
+    expect(readDir).toHaveBeenCalledWith('/local/.hermes/plugins/my-feature')
+    expect(readDir).not.toHaveBeenCalledWith('/local/.hermes/plugins/my-feature/desktop')
+    expect(readFileText).not.toHaveBeenCalled()
   })
 
   it('still scans the standalone root when agentPluginsRoot is absent (older shell)', async () => {
@@ -104,11 +114,35 @@ describe('scanDiskPlugins (#66899)', () => {
   it('loads a unified desktop half OPT-IN: inventoried but not activated by default', async () => {
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
     agentPluginsRoot.mockResolvedValue('/local/.hermes/plugins')
-    readDir.mockImplementation(async dir =>
-      dir === '/local/.hermes/plugins'
-        ? { entries: [{ isDirectory: true, name: 'uni', path: '/local/.hermes/plugins/uni' }] }
-        : { entries: [] }
-    )
+    let desktopEntryPresent = true
+
+    readDir.mockImplementation(async dir => {
+      if (dir === '/local/.hermes/plugins') {
+        return { entries: [{ isDirectory: true, name: 'uni', path: '/local/.hermes/plugins/uni' }] }
+      }
+
+      if (dir === '/local/.hermes/plugins/uni') {
+        return {
+          entries: [{ isDirectory: true, name: 'desktop', path: '/local/.hermes/plugins/uni/desktop' }]
+        }
+      }
+
+      if (dir === '/local/.hermes/plugins/uni/desktop') {
+        return {
+          entries: desktopEntryPresent
+            ? [
+                {
+                  isDirectory: false,
+                  name: 'plugin.js',
+                  path: '/local/.hermes/plugins/uni/desktop/plugin.js'
+                }
+              ]
+            : []
+        }
+      }
+
+      return { entries: [] }
+    })
 
     const register = vi.fn()
 
@@ -152,6 +186,14 @@ describe('scanDiskPlugins (#66899)', () => {
       await setPluginEnabled('uni', true)
       expect(register).toHaveBeenCalledTimes(1)
       expect($pluginRecords.get().uni.status).toBe('loaded')
+
+      // Removing only desktop/plugin.js (while the Python package folder
+      // remains) unloads the previous Desktop registration instead of leaving
+      // a live ghost behind.
+      desktopEntryPresent = false
+      await discoverRuntimePlugins()
+      expect($pluginRecords.get().uni).toBeUndefined()
+      expect(stopPreviewFileWatch).toHaveBeenCalledWith('w-uni')
     } finally {
       createObjectURL.mockRestore()
       revokeObjectURL.mockRestore()

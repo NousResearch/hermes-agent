@@ -64,7 +64,8 @@ IGNORED_EMAILS = {
     "noreply@github.com",
     "noreply@nousresearch.com",
     "cursoragent@cursor.com",
-    "hermes@nousresearch.com",
+    "hermes@nousresearch.com",  # legacy identity — kept for historical commits
+    "hermes-agent[bot]@users.noreply.github.com",  # canonical identity (unclaimable by humans)
     "hermes-audit@example.com",
     "nousbot@nousresearch.com",
     "hermes@habibilabs.dev",

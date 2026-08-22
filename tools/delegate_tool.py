@@ -1819,6 +1819,15 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
+    effective_requested_provider = (
+        "copilot-acp"
+        if override_acp_command
+        else override_provider
+        or getattr(parent_agent, "requested_provider", effective_provider)
+        or effective_provider
+        or ""
+    )
+
     # Resolve reasoning config: delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
@@ -1939,6 +1948,7 @@ def _build_child_agent(
                 api_key=effective_api_key,
                 model=effective_model,
                 provider=effective_provider,
+                requested_provider=effective_requested_provider,
                 api_mode=effective_api_mode,
                 acp_command=effective_acp_command,
                 acp_args=effective_acp_args,

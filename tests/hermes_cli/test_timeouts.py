@@ -12,6 +12,67 @@ def _write_config(tmp_path, body: str) -> None:
     (tmp_path / "config.yaml").write_text(textwrap.dedent(body), encoding="utf-8")
 
 
+def test_named_custom_timeout_survives_runtime_canonicalization(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          custom:
+            request_timeout_seconds: 300
+            stale_timeout_seconds: 200
+          Custom:Sub2API:
+            request_timeout_seconds: 900
+            stale_timeout_seconds: 600
+            models:
+              gpt-5.6-sol:
+                timeout_seconds: 1200
+                stale_timeout_seconds: 700
+        """,
+    )
+
+    from run_agent import AIAgent
+
+    agent = AIAgent(
+        model="gpt-5.6-sol",
+        provider="custom",
+        requested_provider="custom:sub2api",
+        api_key="sk-dummy",
+        base_url="https://example.invalid/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="cli",
+    )
+
+    assert agent._resolved_api_call_timeout() == 1200.0
+    assert agent._resolved_api_call_stale_timeout_base() == (700.0, False)
+    agent._anthropic_api_key = "sk-dummy"
+    agent._anthropic_base_url = "https://example.invalid"
+    assert agent._request_anthropic_client_key()[3] == 1200.0
+
+
+def test_named_custom_timeout_matches_display_name(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          proxy-route:
+            name: Sub2 API
+            request_timeout_seconds: 902
+            stale_timeout_seconds: 602
+        """,
+    )
+
+    assert get_provider_request_timeout(
+        "custom", "gpt-5.6-sol", requested_provider_id="custom:sub2-api"
+    ) == 902.0
+    assert get_provider_stale_timeout(
+        "custom", "gpt-5.6-sol", requested_provider_id="custom:sub2-api"
+    ) == 602.0
+
+
 
 
 

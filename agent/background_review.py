@@ -295,6 +295,7 @@ def _resolve_review_runtime(
         parent_api_mode = "codex_responses"
     parent = {
         "provider": agent.provider,
+        "requested_provider": getattr(agent, "requested_provider", agent.provider),
         "model": agent.model,
         "api_key": parent_runtime.get("api_key") or None,
         "base_url": parent_runtime.get("base_url") or None,
@@ -325,6 +326,7 @@ def _resolve_review_runtime(
         )
         return {
             "provider": rp.get("provider") or task_provider,
+            "requested_provider": rp.get("requested_provider") or task_provider,
             "model": rp.get("model") or task_model,
             "api_key": rp.get("api_key"),
             "base_url": rp.get("base_url"),
@@ -1190,6 +1192,12 @@ def _run_review_in_thread(
                 quiet_mode=True,
                 platform=agent.platform,
                 provider=_rt.get("provider") or agent.provider,
+                requested_provider=(
+                    _rt.get("requested_provider")
+                    or _rt.get("provider")
+                    or agent.provider
+                    or ""
+                ),
                 api_mode=_rt.get("api_mode"),
                 base_url=_rt.get("base_url") or None,
                 api_key=_rt.get("api_key") or None,

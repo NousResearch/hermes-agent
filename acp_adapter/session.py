@@ -649,6 +649,12 @@ class SessionManager:
             kwargs.update(
                 {
                     "provider": runtime.get("provider"),
+                    "requested_provider": (
+                        runtime.get("requested_provider")
+                        or requested_provider
+                        or config_provider
+                        or ""
+                    ),
                     "api_mode": api_mode or runtime.get("api_mode"),
                     "base_url": base_url or runtime.get("base_url"),
                     "api_key": runtime.get("api_key"),

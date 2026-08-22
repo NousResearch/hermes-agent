@@ -35,6 +35,7 @@ from gateway.platforms.api_server import (
     _hermes_version,
     _redact_api_error_text,
     _request_agent_overrides,
+    _resolve_request_runtime_agent_kwargs,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -356,6 +357,23 @@ def auth_adapter():
 
 
 class TestAgentExecution:
+    def test_request_runtime_keeps_named_provider_identity(self, monkeypatch):
+        import hermes_cli.runtime_provider as runtime_provider
+
+        monkeypatch.setattr(
+            runtime_provider,
+            "resolve_runtime_provider",
+            lambda **_kwargs: {"provider": "custom"},
+        )
+        monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: {})
+
+        runtime = _resolve_request_runtime_agent_kwargs(
+            "custom:sub2api", target_model="gpt-5.6-sol"
+        )
+
+        assert runtime["provider"] == "custom"
+        assert runtime["requested_provider"] == "custom:sub2api"
+
     @pytest.mark.asyncio
     async def test_run_agent_uses_session_id_as_task_id(self, adapter):
         mock_agent = MagicMock()

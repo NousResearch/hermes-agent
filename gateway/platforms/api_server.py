@@ -343,6 +343,7 @@ _RUNTIME_AGENT_OVERRIDE_KEYS = (
     "api_key",
     "base_url",
     "provider",
+    "requested_provider",
     "api_mode",
     "command",
     "args",
@@ -454,6 +455,7 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
+        "requested_provider": runtime.get("requested_provider") or provider,
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
@@ -2988,6 +2990,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _apply_runtime_agent_overrides(runtime_kwargs, provider_runtime)
             elif effective_provider and effective_provider != current_provider:
                 runtime_kwargs["provider"] = effective_provider
+                runtime_kwargs["requested_provider"] = effective_provider
             model = effective_model
             # Per-route explicit transport secrets/base URLs win within the
             # route contract after provider resolution.

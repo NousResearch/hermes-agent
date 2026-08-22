@@ -1883,6 +1883,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     _base_url = None
     _api_mode = None
     _resolved_provider = None
+    _requested_provider = None
     _credential_pool = None
     _request_overrides: Dict[str, Any] = {}
     _max_tokens = None
@@ -1905,6 +1906,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         _base_url = _rp.get("base_url")
         _api_mode = _rp.get("api_mode")
         _resolved_provider = _rp.get("provider") or _provider
+        _requested_provider = _rp.get("requested_provider") or _provider
         _credential_pool = _rp.get("credential_pool")
         _request_overrides = _merge_request_overrides(
             _rp.get("request_overrides"),
@@ -1932,6 +1934,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         review_agent = AIAgent(
             model=_model_name,
             provider=_resolved_provider,
+            requested_provider=_requested_provider or _resolved_provider or "",
             api_key=_api_key,
             base_url=_base_url,
             api_mode=_api_mode,

@@ -6,6 +6,7 @@ provider/base_url/api_key empty in AIAgent, causing HTTP 404.
 """
 
 import os
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -14,7 +15,8 @@ def test_make_agent_passes_resolved_provider():
     resolve_runtime_provider to AIAgent."""
 
     fake_runtime = {
-        "provider": "anthropic",
+        "provider": "custom",
+        "requested_provider": "custom:anthropic-proxy",
         "base_url": "https://api.anthropic.com",
         "api_key": "sk-test-key",
         "api_mode": "anthropic_messages",
@@ -54,10 +56,33 @@ def test_make_agent_passes_resolved_provider():
         assert mock_resolve.call_args.kwargs.get("requested") is None
 
         call_kwargs = mock_agent.call_args
-        assert call_kwargs.kwargs["provider"] == "anthropic"
+        assert call_kwargs.kwargs["provider"] == "custom"
+        assert call_kwargs.kwargs["requested_provider"] == "custom:anthropic-proxy"
         assert call_kwargs.kwargs["base_url"] == "https://api.anthropic.com"
         assert call_kwargs.kwargs["api_key"] == "sk-test-key"
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
+
+
+def test_background_agent_keeps_requested_provider():
+    parent = SimpleNamespace(
+        provider="custom",
+        requested_provider="custom:anthropic-proxy",
+        model="claude-opus-4-6",
+    )
+
+    with (
+        patch("tui_gateway.server._load_cfg", return_value={}),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("tui_gateway.server._load_service_tier", return_value=None),
+        patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
+    ):
+        from tui_gateway.server import _background_agent_kwargs
+
+        kwargs = _background_agent_kwargs(parent, "task-1")
+
+    assert kwargs["provider"] == "custom"
+    assert kwargs["requested_provider"] == "custom:anthropic-proxy"
 
 
 def test_probe_config_health_flags_null_sections():

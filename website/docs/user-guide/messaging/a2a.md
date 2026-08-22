@@ -58,9 +58,15 @@ a2a_agents:
   researcher:
     url: "http://research-box.local:9900"
     auth: { type: bearer, token: "..." }
-    timeout: 120
+    timeout: 120          # seconds; socket timeout for this peer's reply
     capabilities: [web_search, research]
 ```
+
+`timeout` is the socket timeout (seconds) for this peer's task reply. Set it to
+`0` (or omit it) for an **indefinite** wait — useful for peers that run a long
+local task (e.g. searching files/notes) before replying. The initial
+Agent-Card fetch is always capped at 30s so a dead peer fails fast; only the
+task reply itself is unbounded when `timeout: 0`.
 
 Then just ask: *"Ask the researcher agent to summarize today's arXiv postings."* Direct URLs work too — `a2a_call` accepts any A2A endpoint.
 

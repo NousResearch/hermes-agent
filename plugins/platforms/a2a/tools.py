@@ -154,12 +154,19 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     """
     base_url = peer.get("url", "")
     headers = _auth_header(peer.get("auth", {}) or {})
-    timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
+    # timeout: 0 or null => indefinite (no socket timeout); positive int => seconds
+    raw_timeout = peer.get("timeout", _DEFAULT_TIMEOUT)
+    try:
+        raw_timeout = int(raw_timeout)
+    except (TypeError, ValueError):
+        raw_timeout = _DEFAULT_TIMEOUT
+    timeout = None if raw_timeout in (0, None) else raw_timeout
 
     # Best-effort card fetch (to learn the rpc URL); non-fatal on failure.
+    # Capped at 30s even when the peer call itself is indefinite.
     card = None
     try:
-        card = _fetch_card(base_url, headers, min(timeout, 30))
+        card = _fetch_card(base_url, headers, 30 if timeout is None else min(timeout, 30))
     except Exception:
         pass
 

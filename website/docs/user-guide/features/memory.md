@@ -152,6 +152,25 @@ The agent should then:
 
 **Best practice:** When memory is above 80% capacity (visible in the system prompt header), consolidate entries before adding new ones. For example, merge three separate "project uses X" entries into one comprehensive project description entry.
 
+### Making Room in a Single Atomic Call
+
+When the store is full, the `memory` tool supports a batch `operations` form that applies multiple remove/replace and add changes atomically. The character limit is checked against the **final** result of the whole batch — not each operation individually — so one call can trim stale entries *and* add a new one, even when the add alone would overflow:
+
+```json
+{
+  "operations": [
+    { "action": "remove", "old_text": "a stale entry" },
+    { "action": "remove", "old_text": "another stale entry" },
+    { "action": "add", "content": "New note that would not fit on its own." }
+  ]
+}
+```
+
+Two details make eyeballing capacity unreliable near the cap, and worth accounting for:
+
+- Each entry costs its own length **plus** the `§` delimiter that separates entries, so the true cost of an entry is `len(content) + 1`.
+- Because the limit is enforced on the final post-batch total, an exact-count preflight — sum the `len()` of the entries you intend to keep plus their delimiters, then verify the total fits — turns guesswork into arithmetic and avoids burning a failed `add` call per attempt.
+
 ### Practical Examples of Good Memory Entries
 
 **Compact, information-dense entries work best:**

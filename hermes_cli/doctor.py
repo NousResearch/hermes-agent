@@ -261,6 +261,22 @@ def _termux_install_all_fallback_notes() -> list[str]:
     ]
 
 
+def _as_config_str(value: object) -> str:
+    """Coerce a raw config scalar to a stripped string, tolerating junk shapes.
+
+    ``config.yaml`` is user-authored, so ``model.default`` / ``model.provider``
+    can legitimately arrive as a list, dict, int, or None. Doctor is a
+    diagnostic: a malformed value must be reported, never crash the check.
+    Calling ``.strip()`` on a non-string raised AttributeError inside the
+    ~180-line ``try`` that guards the whole model/provider section, whose
+    blanket handler then hid every check in it (#71019).
+
+    Returns "" for anything that is not a string, so the surrounding checks
+    treat a malformed value as "not configured" rather than aborting.
+    """
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
@@ -1291,10 +1307,37 @@ def run_doctor(args):
             # Raw-file diagnostic: inspects what the user actually wrote.
             from hermes_cli.config import read_user_config_raw
             cfg = read_user_config_raw(config_path)
-            model_section = cfg.get("model") or {}
-            provider_raw = (model_section.get("provider") or "").strip()
+            # Coerce legacy/root-level shapes into the canonical nested mapping
+            # before reading, without giving up the raw-diagnostic contract:
+            # read_user_config_raw() deliberately skips migration, but every
+            # behavioural consumer (cli.py, config.py, managed_scope.py) applies
+            # _normalize_root_model_keys on load, so ``model: <id>`` + root
+            # ``provider:`` resolves fine at runtime. Doctor alone read the
+            # unmigrated shape, leaving ``model_section`` a str, so the first
+            # ``.get()`` raised AttributeError and the blanket handler below
+            # silently discarded every check in this block — unknown provider,
+            # vendor-prefixed id, and missing API key alike. See #71019.
+            try:
+                from hermes_cli.config import _normalize_root_model_keys
+
+                cfg = _normalize_root_model_keys(cfg)
+            except Exception:
+                pass
+            model_section = cfg.get("model")
+            # Defence in depth. Two distinct shapes reach here:
+            #   * ``model:`` itself not a mapping (a bare list, no root keys) —
+            #     migration leaves it alone, so coerce to {}.
+            #   * ``model:`` a list *with* root keys present — migration wraps it
+            #     as {"default": [...]}, so the mapping check passes but the
+            #     values are still non-strings and ``.strip()`` would raise.
+            # Coerce per value rather than trusting the container's type.
+            if not isinstance(model_section, dict):
+                model_section = {}
+            provider_raw = _as_config_str(model_section.get("provider"))
             provider = provider_raw.lower()
-            default_model = (model_section.get("default") or model_section.get("model") or "").strip()
+            default_model = _as_config_str(
+                model_section.get("default") or model_section.get("model")
+            )
 
             known_providers: set = set()
             try:

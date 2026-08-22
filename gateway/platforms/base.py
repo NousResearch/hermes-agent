@@ -21,6 +21,7 @@ import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from typing import Optional
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
@@ -74,6 +75,39 @@ _HISTORY_MEDIA_LOOKUP_MAX_WORKERS = 2
 _HISTORY_MEDIA_LOOKUP_ADMISSION = threading.BoundedSemaphore(
     _HISTORY_MEDIA_LOOKUP_MAX_WORKERS
 )
+
+_REACTION_RESPONSE_MARKER_RE = re.compile(
+    r"^\s*(?:\[\s*)?REACTION\s*:\s*(?P<emoji>\S+?)\s*(?:\])?\s*$",
+    re.IGNORECASE,
+)
+_REACTION_ONLY_RESPONSES = frozenset({
+    "👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱",
+    "🤬", "😢", "🎉", "🤩", "🤮", "💩", "🙏", "👌", "🕊", "🤡",
+    "🥱", "🥴", "😍", "🐳", "❤️‍🔥", "🌚", "🌭", "💯", "🤣", "⚡",
+    "🍌", "🏆", "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕", "😈",
+    "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈", "😇", "😨",
+    "🤝", "✍", "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🗿",
+    "🆒", "💘", "🙉", "🦄", "😘", "💊", "🙊", "😎", "👾", "🤷‍♂",
+    "🤷", "🤷‍♀", "😡",
+})
+
+
+def _extract_reaction_only_response(text: str) -> Optional[str]:
+    """Return a Telegram-compatible reaction emoji for reaction-only replies.
+
+    The gateway uses this as a delivery affordance, not a content filter: a
+    normal sentence containing an emoji remains a text bubble, while an exact
+    emoji reply (or explicit ``REACTION: <emoji>`` marker) can become a native
+    platform reaction when the adapter supports it.
+    """
+    stripped = str(text or "").strip()
+    if not stripped:
+        return None
+    marker = _REACTION_RESPONSE_MARKER_RE.match(stripped)
+    if marker:
+        candidate = marker.group("emoji").strip()
+        return candidate if candidate in _REACTION_ONLY_RESPONSES else None
+    return stripped if stripped in _REACTION_ONLY_RESPONSES else None
 
 
 def _platform_name(platform) -> str:
@@ -4066,6 +4100,15 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
+    async def react_to_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: str,
+    ) -> SendResult:
+        """React to an existing inbound message. Optional platform capability."""
+        return SendResult(success=False, error="Not supported", retryable=False)
+
     async def delete_message(
         self,
         chat_id: str,
@@ -6553,6 +6596,52 @@ class BasePlatformAdapter(ABC):
                             os.remove(_cleanup_path)
                         except OSError:
                             pass
+
+                # Convert reaction-only final replies into native platform
+                # reactions when supported. This lets a model answer a quick
+                # social ack with "🫡" / "REACTION: 🫡" without consuming a
+                # separate chat bubble. Fall back to the text send on failure
+                # so content is never silently lost.
+                _reaction_only = _extract_reaction_only_response(text_content)
+                if (
+                    _reaction_only
+                    and not is_ephemeral_response
+                    and not _tts_caption_delivered
+                    and not (images or local_files or media_files)
+                    and getattr(event, "message_id", None)
+                ):
+                    delivery_adapter = self._final_delivery_adapter(event.source)
+                    try:
+                        reaction_result = await delivery_adapter.react_to_message(
+                            chat_id=event.source.chat_id,
+                            message_id=str(event.message_id),
+                            emoji=_reaction_only,
+                        )
+                    except Exception as reaction_err:
+                        logger.debug(
+                            "[%s] reaction-only delivery failed: %s",
+                            delivery_adapter.name,
+                            reaction_err,
+                            exc_info=True,
+                        )
+                        reaction_result = SendResult(
+                            success=False,
+                            error=str(reaction_err),
+                            retryable=False,
+                        )
+                    _record_delivery(reaction_result)
+                    if getattr(reaction_result, "success", False):
+                        try:
+                            event.metadata["final_response_reaction"] = _reaction_only
+                        except Exception:
+                            pass
+                        logger.info(
+                            "[%s] Reacted to %s with %s instead of sending a text bubble",
+                            delivery_adapter.name,
+                            event.message_id,
+                            _reaction_only,
+                        )
+                        text_content = ""
 
                 # Send the text portion. A reconnect may have replaced this
                 # adapter while its in-flight handler was still producing a

@@ -484,3 +484,12 @@ class TestSkillsInVolatileBand:
         full = _build(build_system_prompt)
         assert full.index(_CONTEXT) < full.index(_SKILLS)
         assert full.index(_SKILLS) < full.index("Conversation started:")
+
+def test_telegram_prompt_advertises_tasteful_reaction_only_replies():
+    parts = _prompt_parts(_make_agent(platform="telegram"))
+    prompt = "\n\n".join(parts.values())
+
+    assert "native reaction" in prompt
+    assert "exactly one tasteful emoji" in prompt
+    assert "rather than defaulting to 👍" in prompt
+

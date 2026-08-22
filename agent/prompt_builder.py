@@ -911,7 +911,12 @@ PLATFORM_HINTS = {
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
         "bubbles, and videos (.mp4) play inline. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as native photos."
+        "URLs in markdown format ![alt](url) and they will be sent as native photos. "
+        "For tiny social acknowledgments where a text bubble would waste chat real "
+        "estate, prefer a native reaction: respond with exactly one tasteful emoji "
+        "(or `REACTION: <emoji>`) and no other text. Pick the emoji from the room's "
+        "energy/context — e.g. 🫡, 😭, 💀, 🤝, 🔥, 👀 — rather than defaulting to 👍 "
+        "unless thumbs-up is genuinely the best fit."
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. "

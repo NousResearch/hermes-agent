@@ -153,4 +153,53 @@ def test_config_bridges_telegram_reactions(monkeypatch, tmp_path):
     import os
     assert os.getenv("TELEGRAM_REACTIONS") == "true"
 
+# ── reaction-only final responses ────────────────────────────────────
+
+
+def test_extract_reaction_only_response_accepts_exact_emoji():
+    """A one-emoji assistant reply can be delivered as a native reaction."""
+    from gateway.platforms.base import _extract_reaction_only_response
+
+    assert _extract_reaction_only_response("🫡") == "🫡"
+    assert _extract_reaction_only_response("  REACTION: 👍  ") == "👍"
+    assert _extract_reaction_only_response("[REACTION: 🔥]") == "🔥"
+
+
+def test_extract_reaction_only_response_rejects_sentences():
+    """Emoji inside real text must remain a normal text bubble."""
+    from gateway.platforms.base import _extract_reaction_only_response
+
+    assert _extract_reaction_only_response("😭 fair") is None
+    assert _extract_reaction_only_response("ok 🫡") is None
+    assert _extract_reaction_only_response("REACTION: not-an-emoji") is None
+
+
+@pytest.mark.asyncio
+async def test_react_to_message_sets_reaction_without_text_bubble(monkeypatch):
+    """TelegramAdapter exposes a public reaction delivery primitive."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+
+    result = await adapter.react_to_message("123", "456", "🫡")
+
+    assert result.success is True
+    assert result.message_id == "456"
+    adapter._bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=123,
+        message_id=456,
+        reaction="🫡",
+    )
+
+
+@pytest.mark.asyncio
+async def test_processing_complete_preserves_final_response_reaction(monkeypatch):
+    """The lifecycle 👍 should not overwrite a deliberate reaction-only reply."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    event = _make_event()
+    event.metadata["final_response_reaction"] = "🫡"
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    adapter._bot.set_message_reaction.assert_not_awaited()
 

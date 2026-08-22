@@ -10654,6 +10654,21 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug("[%s] clear reactions failed: %s", self.name, _redact_telegram_error_text(e))
             return False
 
+    async def react_to_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: str,
+    ) -> SendResult:
+        """React to an existing Telegram message with a single emoji."""
+        if await self._set_reaction(chat_id, message_id, emoji):
+            return SendResult(success=True, message_id=message_id)
+        return SendResult(
+            success=False,
+            error="set_message_reaction failed",
+            retryable=False,
+        )
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
         if not self._reactions_enabled():
@@ -10681,6 +10696,8 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if not (chat_id and message_id):
+            return
+        if getattr(event, "metadata", {}).get("final_response_reaction"):
             return
         if outcome == ProcessingOutcome.CANCELLED:
             await self._clear_reactions(chat_id, message_id)

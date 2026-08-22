@@ -6329,6 +6329,11 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         property's schema where ordinary JSON Schema semantics resume (so any
         legitimately-nested ``definitions`` meta-keyword inside a property's
         schema is still promoted).
+
+        The values of ``definitions`` / ``$defs`` get the same treatment: their
+        keys are user-defined definition *names*, so a definition named
+        ``definitions`` keeps its name (only the container key is promoted),
+        keeping it in sync with the ``#/$defs/...`` refs that point at it.
         """
         if isinstance(node, dict):
             normalized = {}
@@ -6341,6 +6346,19 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
                     normalized[key] = {
                         prop_name: _rewrite_local_refs(prop_schema)
                         for prop_name, prop_schema in value.items()
+                    }
+                elif key in ("definitions", "$defs") and isinstance(value, dict):
+                    # Keys of this dict are user-defined *definition names*,
+                    # not meta-keywords - the same gate as ``properties``
+                    # above. A definition legitimately named ``definitions``
+                    # must keep its name: its ``$ref`` is rewritten to
+                    # ``#/$defs/definitions`` below, so renaming the member
+                    # would leave that ref dangling. Rename only the container
+                    # key itself, then recurse into each definition's schema.
+                    out_key = "$defs" if key == "definitions" else key
+                    normalized[out_key] = {
+                        def_name: _rewrite_local_refs(def_schema)
+                        for def_name, def_schema in value.items()
                     }
                 else:
                     out_key = "$defs" if key == "definitions" else key

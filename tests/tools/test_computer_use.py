@@ -19,11 +19,19 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_backend():
-    """Tear down the cached backend between tests."""
+    """Tear down the cached backend between tests.
+
+    Also bypasses computer_use approval by default: this file's tests exercise
+    schema/dispatch/routing/capture behavior, not approval semantics (that's
+    covered by test_computer_use_approval_isolation.py and the Phase C tests
+    in test_computer_use_delivery_ladder.py) — without an explicit bypass,
+    every destructive-action dispatch here would now fail closed (#87724).
+    """
     from tools.computer_use.tool import reset_backend_for_tests
     reset_backend_for_tests()
     # Force the noop backend.
-    with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
+    with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False), \
+         patch("tools.approval.is_approval_bypass_active_for_session", return_value=True):
         yield
     reset_backend_for_tests()
 
@@ -167,6 +175,128 @@ class TestDispatch:
         # No follow-up capture should have been issued.
         capture_calls = [c for c in noop_backend.calls if c[0] == "capture"]
         assert len(capture_calls) == 0, "capture must not be called after a failed action"
+
+
+# ---------------------------------------------------------------------------
+# Approval fail-closed (#87724): headless dispatch (cron, bot-platform
+# gateways, ACP) never calls set_approval_callback(), so a destructive action
+# must not silently execute just because no callback is wired.
+# ---------------------------------------------------------------------------
+
+class TestHeadlessApprovalFailClosed:
+    def test_destructive_action_denied_with_no_callback_and_no_bypass(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        with patch("tools.approval.is_approval_bypass_active_for_session",
+                    return_value=False):
+            out = handle_computer_use({"action": "click", "element": 3})
+
+        parsed = json.loads(out)
+        assert parsed.get("error"), out
+        assert parsed.get("code") == "approval_unavailable", out
+        assert not noop_backend.calls, (
+            "backend must not be invoked when approval cannot be resolved"
+        )
+
+    def test_bypass_check_failure_fails_closed_and_logs(self, noop_backend, caplog):
+        """A broken bypass check (e.g. a renamed function) must still deny —
+        and log, so the failure is diagnosable instead of a silent deny."""
+        import logging
+        from tools.computer_use.tool import handle_computer_use
+
+        with patch("tools.approval.is_approval_bypass_active_for_session",
+                    side_effect=RuntimeError("boom")), \
+             caplog.at_level(logging.WARNING, logger="tools.computer_use.tool"):
+            out = handle_computer_use({"action": "click", "element": 3})
+
+        parsed = json.loads(out)
+        assert parsed.get("error"), out
+        assert not noop_backend.calls
+        assert any("approval-bypass check failed" in r.message for r in caplog.records)
+
+    def test_destructive_action_allowed_when_bypass_active(self, noop_backend):
+        """Explicit unattended opt-in (/yolo, approvals.mode: off) must still
+        work in headless dispatch — this is not a blanket lockout."""
+        from tools.computer_use.tool import handle_computer_use
+
+        with patch("tools.approval.is_approval_bypass_active_for_session",
+                    return_value=True):
+            out = handle_computer_use({"action": "click", "element": 3})
+
+        parsed = json.loads(out)
+        assert "error" not in parsed, out
+        assert any(c[0] == "click" for c in noop_backend.calls)
+
+    def test_safe_action_unaffected_by_missing_callback(self, noop_backend):
+        """Read-only actions were never gated and must stay ungated."""
+        from tools.computer_use.tool import handle_computer_use
+
+        with patch("tools.approval.is_approval_bypass_active_for_session",
+                    return_value=False):
+            out = handle_computer_use({"action": "capture", "mode": "ax"})
+
+        parsed = json.loads(out)
+        assert "error" not in parsed, out
+
+    def test_cron_mode_approve_allows_destructive_action(self, monkeypatch):
+        """approvals.cron_mode: approve must auto-approve computer_use exactly
+        like it already does for a flagged dangerous shell command — the
+        no-callback fallback isn't limited to the global bypass.
+
+        Fetches the backend AFTER setting the cron/bypass state (rather than
+        via the ``noop_backend`` fixture, captured earlier): permission mode
+        is part of the backend cache key, so changing it here can rebuild a
+        fresh backend instance and a pre-captured reference would go stale.
+        """
+        import tools.approval as approval_module
+        from tools.computer_use import tool as cu_tool
+
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "approve")
+        with patch("tools.approval.is_approval_bypass_active_for_session",
+                    return_value=False):
+            backend = cu_tool._get_backend()
+            out = cu_tool.handle_computer_use({"action": "click", "element": 3})
+
+        parsed = json.loads(out)
+        assert "error" not in parsed, out
+        assert any(c[0] == "click" for c in backend.calls)
+
+    def test_cron_mode_deny_blocks_with_config_hint(self, monkeypatch):
+        """approvals.cron_mode: deny (the default) still blocks, with a
+        message pointing at the config key instead of a generic error."""
+        import tools.approval as approval_module
+        from tools.computer_use import tool as cu_tool
+
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "deny")
+        with patch("tools.approval.is_approval_bypass_active_for_session",
+                    return_value=False):
+            backend = cu_tool._get_backend()
+            out = cu_tool.handle_computer_use({"action": "click", "element": 3})
+
+        parsed = json.loads(out)
+        assert parsed.get("code") == "approval_unavailable", out
+        assert "cron_mode" in parsed.get("error", ""), out
+        assert not backend.calls
+
+    def test_callback_still_takes_precedence_over_bypass_check(self, noop_backend):
+        """When a callback IS wired (CLI), it decides — the bypass check is
+        only the no-callback fallback path, not a replacement for it."""
+        from tools.computer_use.tool import handle_computer_use, set_approval_callback
+
+        try:
+            set_approval_callback(lambda action, args, summary: "deny")
+            with patch("tools.approval.is_approval_bypass_active_for_session",
+                        return_value=True):
+                out = handle_computer_use({"action": "click", "element": 3})
+        finally:
+            set_approval_callback(None)
+
+        parsed = json.loads(out)
+        assert parsed.get("error") == "denied by user"
+        assert not noop_backend.calls
+
 
 # ---------------------------------------------------------------------------
 # Safety guards (type / key block lists)

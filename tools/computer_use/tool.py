@@ -640,9 +640,67 @@ def _request_approval(action: str, args: Dict[str, Any],
             return None
     cb = _approval_callback
     if cb is None:
-        # No CLI approval wired — default allow. Gateway approval is handled
-        # one layer out via the normal tool-approval infra.
-        return None
+        # No CLI approval callback wired — e.g. cron, bot-platform gateways,
+        # or ACP, none of which call set_approval_callback(). There is no
+        # other approval gate for computer_use (tools/approval.py's dangerous-
+        # command system is terminal/shell-specific and never inspects this
+        # tool).
+        #
+        # First honor the global bypass (mirrors _cua_permission_mode above):
+        # --yolo / a session's /yolo toggle / approvals.mode: off.
+        try:
+            from tools.approval import (
+                get_current_session_key,
+                is_approval_bypass_active_for_session,
+            )
+
+            if is_approval_bypass_active_for_session(session_id):
+                return None
+            current_key = get_current_session_key(default="")
+            if current_key and is_approval_bypass_active_for_session(current_key):
+                return None
+        except Exception:
+            # A broken bypass check (e.g. a renamed function) must not fail
+            # silently — log it, then fall through to the escalation gate
+            # below, which fails closed on its own if nothing else applies.
+            logger.warning(
+                "computer_use approval-bypass check failed for action %r; "
+                "falling through to the escalation gate",
+                action, exc_info=True,
+            )
+
+        # No global bypass — escalate through the same human-approval gate a
+        # Tier-2 dangerous shell command uses (tools.approval.request_tool_approval
+        # -> _run_approval_gate), instead of failing closed outright. This
+        # honors approvals.cron_mode / approvals.single_query_mode and does a
+        # real interactive gateway round-trip (Discord/Telegram/Slack) when
+        # one is available, exactly like a dangerous shell command already
+        # does in the same contexts. It fails closed on its own when none of
+        # those apply — no fail-open regression (#87724).
+        try:
+            from tools.approval import request_tool_approval
+
+            verdict = request_tool_approval(
+                "computer_use",
+                _summarize_action(action, args),
+                rule_key=f"computer_use:{scope_key[0]}:{scope_key[1]}",
+            )
+        except Exception:
+            logger.warning(
+                "computer_use approval escalation failed for action %r; "
+                "failing closed",
+                action, exc_info=True,
+            )
+            verdict = {"approved": False, "message": None}
+        if verdict.get("approved"):
+            return None
+        return json.dumps({
+            "error": verdict.get("message") or (
+                "approval required but no approval mechanism is available"
+            ),
+            "code": "approval_unavailable",
+            "action": action,
+        })
     summary = _summarize_action(action, args)
     try:
         verdict = cb(action, args, summary)

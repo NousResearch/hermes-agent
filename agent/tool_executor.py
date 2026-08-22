@@ -1886,9 +1886,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
 
     # ── /steer injection ──────────────────────────────────────────────
-    # Append any pending user steer text to the last tool result so the
-    # agent sees it on its next iteration. Runs AFTER budget enforcement
-    # so the steer marker is never truncated. See steer() for details.
+    # Append any pending user steer as a structural user message after the
+    # tool batch. Runs AFTER budget enforcement so the steer cannot be lost
+    # when a tool result is replaced. See steer() for details.
     if finalize and num_tools > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools)
 
@@ -2817,8 +2817,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
 
     # ── /steer injection ──────────────────────────────────────────────
-    # See _execute_tool_calls_parallel for the rationale. Same hook,
-    # applied to sequential execution as well.
+    # See _execute_tool_calls_parallel for the rationale. Same structural
+    # user-message hook, applied to sequential execution as well.
     if finalize and num_tools_seq > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools_seq)
 
@@ -2837,10 +2837,10 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     identical ordering and side-effect boundaries to fully-sequential
     execution, with I/O parallelism recovered inside the safe runs.
 
-    Turn-end work (aggregate budget enforcement + /steer injection) is done
+    Turn-end work (aggregate budget enforcement + structural /steer) is done
     once here for the WHOLE batch; the per-segment executor calls run with
     ``finalize=False`` so a multi-segment turn cannot multiply the budget or
-    truncate a steer marker.
+    consume the steer before the final user-message append.
 
     Interrupt semantics: each segment executor already checks
     ``agent._interrupt_requested`` up front and appends a cancelled/skipped

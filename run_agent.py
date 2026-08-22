@@ -3521,8 +3521,9 @@ class AIAgent:
                     return False
 
         # Never kill a tool merely to deliver conversational guidance. The
-        # existing steer drain puts it on the final tool result before the next
-        # model decision, including delegate_task children.
+        # existing steer drain appends a structural user message after the
+        # final tool result before the next model decision, including
+        # delegate_task children.
         if getattr(self, "_executing_tools", False):
             return self.steer(cleaned)
 

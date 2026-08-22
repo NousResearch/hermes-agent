@@ -2034,33 +2034,20 @@ def run_conversation(
         # steers sent during an API call only land after the NEXT tool batch,
         # which may never come if the model returns a final response.
         #
-        # We scan backwards for the last tool-role message in the messages
-        # list.  If found, the steer is appended there.  If not (first
-        # iteration, no tools yet), the steer stays pending for the next
-        # tool batch — injecting into a user message would break role
-        # alternation, and there's no tool output to piggyback on.
+        # We scan for a preceding tool-role message. If found, the steer is
+        # appended as a structural user message after the tool result. If not
+        # (first iteration, no tools yet), the steer stays pending for the next
+        # tool batch — there is no valid mid-turn boundary yet.
         _pre_api_steer = agent._drain_pending_steer()
         if _pre_api_steer:
             _injected = False
             for _si in range(len(messages) - 1, -1, -1):
                 _sm = messages[_si]
                 if isinstance(_sm, dict) and _sm.get("role") == "tool":
-                    from agent.prompt_builder import format_steer_marker
-                    marker = format_steer_marker(_pre_api_steer)
-                    existing = _sm.get("content", "")
-                    if isinstance(existing, str):
-                        _sm["content"] = existing + marker
-                    else:
-                        # Multimodal content blocks — append text block
-                        try:
-                            blocks = list(existing) if existing else []
-                            blocks.append({"type": "text", "text": marker})
-                            _sm["content"] = blocks
-                        except Exception:
-                            pass
+                    messages.append({"role": "user", "content": _pre_api_steer})
                     _injected = True
                     logger.debug(
-                        "Pre-API-call steer drain: injected into tool msg at index %d",
+                        "Pre-API-call steer drain: appended user msg after tool at index %d",
                         _si,
                     )
                     break

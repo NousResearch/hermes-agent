@@ -448,8 +448,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
 
-    # Steering only lands inside tool results, so it's only reachable when the
-    # agent has tools. Static text → byte-stable prompt (no cache hit).
+    # Steering is delivered after tool results, so it's only reachable when
+    # the agent has tools. Static text → byte-stable prompt (no cache hit).
     if agent.valid_tool_names:
         stable_parts.append(STEER_CHANNEL_NOTE)
 

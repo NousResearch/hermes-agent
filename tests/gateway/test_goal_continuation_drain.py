@@ -199,3 +199,56 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
     assert adapter._pending_messages[adapter_key].text.startswith(
         "[Continuing toward your standing goal]"
     )
+
+
+@pytest.mark.asyncio
+async def test_goal_judge_waits_for_own_async_delegations(hermes_home):
+    """A parent goal cannot complete before its commissioned work returns."""
+    from datetime import datetime
+    from unittest.mock import AsyncMock, MagicMock, patch
+    import uuid
+
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionEntry
+    from hermes_cli.goals import GoalManager
+
+    src = _slack_thread_source()
+    session_entry = SessionEntry(
+        session_key=build_session_key(src),
+        session_id=f"goal-sess-{uuid.uuid4().hex[:8]}",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.SLACK,
+        chat_type="channel",
+    )
+    runner = object.__new__(GatewayRunner)
+    runner._defer_goal_status_notice_after_delivery = AsyncMock()
+    GoalManager(session_entry.session_id).set("integrate the delegated analysis")
+
+    records = [
+        {
+            "status": "running",
+            "parent_session_id": session_entry.session_id,
+            "is_batch": True,
+            "goals": ["portal", "business", "field operations"],
+        },
+        {
+            "status": "running",
+            "parent_session_id": "another-session",
+        },
+    ]
+    with patch(
+        "tools.async_delegation.list_async_delegations",
+        return_value=records,
+    ), patch("hermes_cli.goals.judge_goal") as judge:
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="preliminary synthesis",
+        )
+
+    judge.assert_not_called()
+    runner._defer_goal_status_notice_after_delivery.assert_awaited_once_with(
+        src,
+        "⏳ Goal waiting — 3 delegated tasks still running.",
+    )

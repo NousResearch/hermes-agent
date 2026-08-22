@@ -21693,6 +21693,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not mgr.is_active():
             return
 
+        # A background delegation belongs to this goal turn even though it is
+        # not represented in the process registry. Judging the goal before the
+        # result re-enters the parent session can falsely mark the goal done and
+        # lets the parent publish a synthesis that never integrated the work it
+        # commissioned.
+        try:
+            from tools.async_delegation import list_async_delegations
+
+            pending_delegations = [
+                record
+                for record in list_async_delegations()
+                if record.get("status") in {"running", "stalling", "finalizing"}
+                and str(record.get("parent_session_id") or "") == sid
+            ]
+        except Exception:
+            logger.debug(
+                "goal continuation: async-delegation check failed",
+                exc_info=True,
+            )
+            pending_delegations = []
+
+        if pending_delegations:
+            pending_tasks = sum(
+                len(record.get("goals") or [])
+                if record.get("is_batch") and record.get("goals")
+                else 1
+                for record in pending_delegations
+            )
+            if source is not None:
+                noun = "task" if pending_tasks == 1 else "tasks"
+                await self._defer_goal_status_notice_after_delivery(
+                    source,
+                    f"⏳ Goal waiting — {pending_tasks} delegated {noun} still running.",
+                )
+            return
+
         try:
             from hermes_cli.goals import gather_background_processes as _gather_bg
             _bg_procs = _gather_bg()

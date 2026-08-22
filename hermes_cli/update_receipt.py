@@ -319,6 +319,41 @@ def collect_fleet_versions() -> list[dict[str, Any]]:
                     homes.append((entry.name, entry))
 
         for profile, home in homes:
+            # Prefer the gateway-owned control socket (#92091): a live
+            # `identify` answer is authoritative — no PID-reuse or stale-file
+            # heuristics. Fall back to gateway_state.json for gateways that
+            # predate the socket or whose socket didn't bind.
+            identity = None
+            try:
+                from gateway.control_socket import identify_gateway
+
+                identity = identify_gateway(home)
+            except Exception:
+                identity = None
+            if identity:
+                try:
+                    pid = int(identity.get("pid"))
+                except (TypeError, ValueError):
+                    pid = None
+                if pid is not None:
+                    code_sha = identity.get("code_sha")
+                    if not code_sha or not expected_sha:
+                        state = "unknown"
+                    elif str(code_sha) == str(expected_sha):
+                        state = "current"
+                    else:
+                        state = "stale"
+                    results.append(
+                        {
+                            "profile": profile,
+                            "pid": pid,
+                            "code_sha": str(code_sha) if code_sha else None,
+                            "code_version": identity.get("code_version"),
+                            "state": state,
+                            "source": "socket",
+                        }
+                    )
+                    continue
             status_path = home / "gateway_state.json"
             record = read_runtime_status(status_path)
             if not record:

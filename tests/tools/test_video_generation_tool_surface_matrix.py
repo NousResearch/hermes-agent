@@ -67,11 +67,22 @@ def matrix_env(tmp_path, monkeypatch):
             self.status_code = s
             self._p = p
             self.text = json.dumps(p)
+            self.headers = {}
         def raise_for_status(self):
             if self.status_code >= 400:
                 raise httpx.HTTPStatusError("err", request=None, response=self)  # type: ignore
         def json(self):
             return self._p
+        async def aiter_raw(self, chunk_size=None):
+            yield self.text.encode("utf-8")
+
+    class _Stream:
+        def __init__(self, response):
+            self._response = response
+        async def __aenter__(self):
+            return self._response
+        async def __aexit__(self, *args):
+            return None
     class _Client:
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return None
@@ -95,6 +106,28 @@ def matrix_env(tmp_path, monkeypatch):
                 },
                 "model": payload.get("model", "grok-imagine-video"),
             })
+
+        def stream(self, method, url, headers=None, json=None, timeout=None):
+            if method == "POST":
+                xai_calls.append({"url": url, "json": json})
+                return _Stream(_Resp({"request_id": "req-1"}))
+
+            payload = xai_calls[-1]["json"]
+            storage_options = payload.get("storage_options") or {}
+            return _Stream(_Resp({
+                "status": "done",
+                "video": {
+                    "url": "https://xai-cdn/out.mp4",
+                    "duration": 8,
+                    "file_output": {
+                        "file_id": "file-123",
+                        "filename": storage_options.get("filename", "out.mp4"),
+                        "public_url": "https://xai-files.example/out.mp4",
+                        "public_url_expires_at": 1234567890,
+                    },
+                },
+                "model": payload.get("model", "grok-imagine-video"),
+            }))
     import plugins.video_gen.xai as xai_plugin
     monkeypatch.setattr(xai_plugin.httpx, "AsyncClient", lambda: _Client())
     async def _no_sleep(*a, **k): return None

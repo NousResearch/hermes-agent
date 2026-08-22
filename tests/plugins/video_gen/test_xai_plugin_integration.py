@@ -24,9 +24,17 @@ def _reset_registry():
 
 
 class _FakeResponse:
-    def __init__(self, status: int = 200, payload: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        status: int = 200,
+        payload: Optional[Dict[str, Any]] = None,
+        body_chunks: Optional[List[bytes]] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ):
         self.status_code = status
         self._payload = payload or {}
+        self._body_chunks = body_chunks
+        self.headers = headers or {}
         self.text = json.dumps(self._payload)
 
     def raise_for_status(self):
@@ -36,6 +44,24 @@ class _FakeResponse:
 
     def json(self):
         return self._payload
+
+    async def aiter_raw(self, chunk_size=None):
+        chunks = self._body_chunks
+        if chunks is None:
+            chunks = [self.text.encode("utf-8")]
+        for chunk in chunks:
+            yield chunk
+
+
+class _FakeStream:
+    def __init__(self, response: _FakeResponse):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *args):
+        return None
 
 
 class _FakeAsyncClient:
@@ -58,6 +84,16 @@ class _FakeAsyncClient:
             "video": {"url": "https://xai-cdn/out.mp4", "duration": 8},
             "model": self.posts[-1]["json"]["model"],
         })
+
+    def stream(self, method, url, headers=None, json=None, timeout=None):
+        if method == "POST":
+            self.posts.append({"url": url, "json": json})
+            return _FakeStream(_FakeResponse(200, {"request_id": "req-123"}))
+        return _FakeStream(_FakeResponse(200, {
+            "status": "done",
+            "video": {"url": "https://xai-cdn/out.mp4", "duration": 8},
+            "model": self.posts[-1]["json"]["model"],
+        }))
 
 
 @pytest.fixture
@@ -106,6 +142,161 @@ class TestXAIEndpoint:
         assert result["success"] is True
         assert _last_post(captured)["url"].endswith("/videos/generations")
         assert result["modality"] == "image"
+
+    @pytest.mark.asyncio
+    async def test_submit_rejects_oversized_content_length(self, monkeypatch):
+        import plugins.video_gen.xai as xai_plugin
+
+        monkeypatch.setattr(xai_plugin, "_XAI_VIDEO_RESPONSE_MAX_BYTES", 8)
+
+        class _Client:
+            def stream(self, *args, **kwargs):
+                return _FakeStream(_FakeResponse(
+                    200,
+                    body_chunks=[b"{}"],
+                    headers={"content-length": "9"},
+                ))
+
+        with pytest.raises(ValueError, match="xAI video response exceeds 8 bytes"):
+            await xai_plugin._submit(
+                _Client(),  # type: ignore[arg-type]
+                {"model": "grok-imagine-video", "prompt": "dog"},
+                api_key="key",
+                base_url="https://api.x.ai/v1",
+            )
+
+    @pytest.mark.asyncio
+    async def test_poll_rejects_oversized_streamed_body(self, monkeypatch):
+        import plugins.video_gen.xai as xai_plugin
+
+        monkeypatch.setattr(xai_plugin, "_XAI_VIDEO_RESPONSE_MAX_BYTES", 8)
+
+        class _Client:
+            def stream(self, *args, **kwargs):
+                return _FakeStream(_FakeResponse(200, body_chunks=[b"x" * 9]))
+
+        with pytest.raises(ValueError, match="xAI video response exceeds 8 bytes"):
+            await xai_plugin._poll(
+                _Client(),  # type: ignore[arg-type]
+                "req-123",
+                api_key="key",
+                base_url="https://api.x.ai/v1",
+                timeout_seconds=5,
+                poll_interval=1,
+            )
+
+    @pytest.mark.asyncio
+    async def test_submit_rejects_compressed_response(self):
+        import plugins.video_gen.xai as xai_plugin
+
+        response = _FakeResponse(200, headers={"content-encoding": "gzip"})
+        assert xai_plugin._xai_headers("key")["Accept-Encoding"] == "identity"
+        with pytest.raises(ValueError, match="unsupported content encoding: gzip"):
+            await xai_plugin._read_xai_video_response_json(response)
+        assert await xai_plugin._read_xai_video_response_json(
+            _FakeResponse(200, body_chunks=[b'\xef\xbb\xbf{"request_id":"req-123"}'])
+        ) == {"request_id": "req-123"}
+        with pytest.raises(UnicodeDecodeError):
+            await xai_plugin._read_xai_video_response_json(
+                _FakeResponse(200, body_chunks=[b'{"request_id":"req-\xff"}'])
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("operation", "status", "chunks", "error_type"),
+        [
+            ("submit", 302, [b'{}'], "http"),
+            ("poll", 302, [b'{}'], "http"),
+            ("poll", 200, [b" "], "json"),
+        ],
+    )
+    async def test_response_error_semantics_remain_strict(
+        self, operation, status, chunks, error_type
+    ):
+        import json
+        import plugins.video_gen.xai as xai_plugin
+
+        class _Client:
+            def stream(self, *args, **kwargs):
+                headers = {"content-encoding": "gzip"} if error_type == "http" else None
+                return _FakeStream(_FakeResponse(status, body_chunks=chunks, headers=headers))
+
+        expected = xai_plugin._XAIVideoHTTPError if error_type == "http" else json.JSONDecodeError
+        with pytest.raises(expected):
+            if operation == "submit":
+                await xai_plugin._submit(
+                    _Client(),  # type: ignore[arg-type]
+                    {"model": "grok-imagine-video", "prompt": "dog"},
+                    api_key="key",
+                    base_url="https://api.x.ai/v1",
+                )
+            else:
+                await xai_plugin._poll(
+                    _Client(),  # type: ignore[arg-type]
+                    "req-123",
+                    api_key="key",
+                    base_url="https://api.x.ai/v1",
+                    timeout_seconds=5,
+                    poll_interval=1,
+                )
+
+    def test_generate_reports_oversized_submit_response(self, monkeypatch):
+        import plugins.video_gen.xai as xai_plugin
+
+        monkeypatch.setenv("XAI_API_KEY", "test-key")
+        monkeypatch.setattr(xai_plugin, "_XAI_VIDEO_RESPONSE_MAX_BYTES", 8)
+
+        class _Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            def stream(self, *args, **kwargs):
+                return _FakeStream(_FakeResponse(
+                    200,
+                    body_chunks=[b"{}"],
+                    headers={"content-length": "9"},
+                ))
+
+        monkeypatch.setattr(xai_plugin.httpx, "AsyncClient", lambda: _Client())
+
+        result = xai_plugin.XAIVideoGenProvider().generate("a dog on a skateboard")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "xAI submit failed: xAI video response exceeds 8 bytes" in result["error"]
+
+    def test_generate_reports_oversized_poll_response(self, monkeypatch):
+        import plugins.video_gen.xai as xai_plugin
+
+        monkeypatch.setenv("XAI_API_KEY", "test-key")
+        monkeypatch.setattr(xai_plugin, "_XAI_VIDEO_RESPONSE_MAX_BYTES", 32)
+
+        class _Client:
+            def __init__(self):
+                self._calls = 0
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            def stream(self, method, *args, **kwargs):
+                self._calls += 1
+                if method == "POST":
+                    return _FakeStream(_FakeResponse(200, {"request_id": "req-123"}))
+                return _FakeStream(_FakeResponse(200, body_chunks=[b"x" * 33]))
+
+        monkeypatch.setattr(xai_plugin.httpx, "AsyncClient", lambda: _Client())
+
+        result = xai_plugin.XAIVideoGenProvider().generate("a dog on a skateboard")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "xAI poll failed: xAI video response exceeds 32 bytes" in result["error"]
 
 
 class TestXAIPayload:

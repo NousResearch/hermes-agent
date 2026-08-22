@@ -482,6 +482,7 @@ from hermes_cli.subcommands.monitoring import build_monitoring_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
+from hermes_cli.subcommands.patches import build_patches_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
 
@@ -12392,6 +12393,12 @@ def cmd_mcp(args):
     mcp_command(args)
 
 
+def cmd_patches(args):
+    from hermes_cli.patches import patches_command
+
+    patches_command(args)
+
+
 def cmd_claw(args):
     from hermes_cli.claw import claw_command
 
@@ -13288,6 +13295,11 @@ def main():
     # mcp command  (parser built in hermes_cli/subcommands/mcp.py)
     # =========================================================================
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
+
+    # =========================================================================
+    # patches command — local patch ledger (parser built in hermes_cli/subcommands/patches.py)
+    # =========================================================================
+    build_patches_parser(subparsers, cmd_patches=cmd_patches)
 
     # =========================================================================
     # sessions command

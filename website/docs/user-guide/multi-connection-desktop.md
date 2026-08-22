@@ -147,8 +147,9 @@ The union roster is what multi-gateway surfaces (and the built-in
   bare name.
 - Enumeration is eager but sockets are lazy: the app lists agents over REST
   without dialing every gateway's WebSocket. An unreachable gateway reports
-  per-row instead of breaking the roster; SSH connections stay connect-on-demand
-  until you first open an agent on them (no surprise tunnels).
+  per-row instead of breaking the roster; SSH connections and the local
+  "This device" source stay connect-on-demand until you first open an agent
+  on them (no surprise tunnels or local runtime spawns).
 - Opening an agent dials **its own gateway** — chats, sessions, and memory
   live on the machine that owns the profile, exactly as if you were using
   that instance directly.

@@ -12,6 +12,247 @@ _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
+_EXACT_KEYS = {
+    "submission_id",
+    "connection_id",
+    "profile",
+    "stored_session_id",
+    "lineage_root_id",
+    "payload_digest",
+    "source_digest",
+    "context_digest",
+    "attachment_manifest_digest",
+    "attachment_count",
+    "source_text",
+    "context_text",
+    "attachments",
+}
+_EXACT_ATTACHMENT_KEYS = {
+    "id",
+    "occurrenceId",
+    "sourceId",
+    "kind",
+    "name",
+    "mediaType",
+    "runtimeSessionId",
+    "sha256",
+    "size",
+    "storedName",
+    "order",
+}
+_RELAY_KEYS = {
+    "stored_session_id",
+    "lineage_root_id",
+    "name",
+    "media_type",
+    "bytes",
+    "sha256",
+    "order",
+}
+_RECEIPT_LOOKUP_KEYS = {
+    "session_id",
+    "submission_id",
+    "connection_id",
+    "profile",
+    "stored_session_id",
+    "lineage_root_id",
+    "payload_digest",
+    "source_digest",
+    "context_digest",
+    "attachment_manifest_digest",
+    "attachment_count",
+}
+
+
+def _safe_relay_name(value) -> str | None:
+    import re
+
+    if not isinstance(value, str) or not value or len(value) > 255:
+        return None
+    if re.search(r"[\x00-\x1f\x7f\\/:]", value) or value in {".", ".."}:
+        return None
+    if value.endswith((".", " ")) or re.match(
+        r"^(?:aux|con|nul|prn|com[1-9]|lpt[1-9])(?:\.|$)", value, re.I
+    ):
+        return None
+    return value
+
+
+def _relay_busy_error(rid, session: dict):
+    if session.get("running") or session.get("_compute_host_active"):
+        return _err(rid, 4009, "exact attachment relay target is busy")
+    return None
+
+
+def _relay_staged_integrity(rid, session: dict, relay_result: dict, stored_path):
+    import hashlib
+
+    path = Path(stored_path)
+    try:
+        stored_name = _safe_relay_name(path.name)
+        payload = path.read_bytes() if path.is_file() else b""
+    except Exception:
+        stored_name = None
+        payload = b""
+    if (
+        stored_name is None
+        or len(payload) != relay_result.get("bytes")
+        or hashlib.sha256(payload).hexdigest() != relay_result.get("sha256")
+    ):
+        session["attached_images"] = [value for value in session.get("attached_images", []) if value != str(path)]
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None, _err(rid, 4017, "staged attachment integrity mismatch")
+    return {**relay_result, "stored_name": stored_name}, None
+
+
+def _relay_integrity(
+    rid, sid: str, session: dict, relay, payload: bytes, *, name: str, media_type: str
+):
+    import hashlib
+    import re
+
+    if relay is None:
+        return None, None
+    if busy_err := _relay_busy_error(rid, session):
+        return None, busy_err
+    if not isinstance(relay, dict) or set(relay) != _RELAY_KEYS:
+        return None, _err(rid, 4004, "invalid attachment relay fields")
+    safe_name = _safe_relay_name(name)
+    if safe_name is None or relay.get("name") != safe_name:
+        return None, _err(rid, 4004, "invalid attachment relay name")
+    if not isinstance(media_type, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*",
+        media_type,
+    ):
+        return None, _err(rid, 4004, "invalid attachment relay media type")
+    stored = str(session.get("session_key") or sid)
+    lineage = _exact_lineage(session, stored)
+    order = relay.get("order")
+    digest = hashlib.sha256(payload).hexdigest()
+    if (
+        relay.get("stored_session_id") != stored
+        or relay.get("lineage_root_id") != lineage
+        or relay.get("media_type") != media_type
+        or relay.get("bytes") != len(payload)
+        or relay.get("sha256") != digest
+        or isinstance(order, bool)
+        or not isinstance(order, int)
+        or order < 0
+        or order > 31
+    ):
+        return None, _err(rid, 4017, "attachment relay integrity or session mismatch")
+    return {
+        "attached": True,
+        "bytes": len(payload),
+        "media_type": media_type,
+        "name": safe_name,
+        "order": order,
+        "runtime_session_id": str(sid),
+        "sha256": digest,
+    }, None
+
+
+def _exact_lineage(session: dict, stored: str) -> str:
+    lineage = stored
+    try:
+        with _session_db(session) as db:
+            resolver = getattr(db, "get_conversation_root", None)
+            if callable(resolver):
+                lineage = str(resolver(stored) or stored)
+    except Exception:
+        lineage = str(session.get("lineage_root_id") or stored)
+    return lineage
+
+
+def _exact_request(rid, sid: str, session: dict, value):
+    """Validate and canonicalize a closed exact-submission envelope."""
+    import hashlib
+    import json
+
+    if not isinstance(value, dict) or set(value) != _EXACT_KEYS:
+        return None, _err(rid, 4004, "invalid exact_submission fields")
+    source = value.get("source_text")
+    context = value.get("context_text")
+    attachments = value.get("attachments")
+    if not isinstance(source, str) or not isinstance(context, str):
+        return None, _err(rid, 4004, "exact source/context must be strings")
+    if len(source) > 64000 or len(context) > 128000 or (not source and not attachments):
+        return None, _err(rid, 4004, "invalid exact source/context length")
+    if not isinstance(attachments, list) or len(attachments) > 32:
+        return None, _err(rid, 4004, "invalid exact attachment manifest")
+    for order, attachment in enumerate(attachments):
+        keys = set(attachment) if isinstance(attachment, dict) else set()
+        allowed = _EXACT_ATTACHMENT_KEYS | {"refText"}
+        if not _EXACT_ATTACHMENT_KEYS <= keys or not keys <= allowed:
+            return None, _err(rid, 4004, "invalid exact attachment fields")
+        if (
+            attachment.get("order") != order
+            or attachment.get("runtimeSessionId") != sid
+            or attachment.get("sourceId") != attachment.get("id")
+            or attachment.get("kind") not in {"file", "image"}
+            or not isinstance(attachment.get("name"), str)
+            or _safe_relay_name(attachment.get("storedName")) is None
+            or not isinstance(attachment.get("mediaType"), str)
+            or isinstance(attachment.get("size"), bool)
+            or not isinstance(attachment.get("size"), int)
+            or attachment.get("size") <= 0
+        ):
+            return None, _err(rid, 4004, "invalid exact attachment integrity")
+        digest = attachment.get("sha256")
+        if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            return None, _err(rid, 4004, "invalid exact attachment digest")
+    stored = str(session.get("session_key") or sid)
+    lineage = _exact_lineage(session, stored)
+    if value.get("stored_session_id") != stored or value.get("lineage_root_id") != lineage:
+        return None, _err(rid, 4018, "exact session target is stale")
+    if value.get("attachment_count") != len(attachments):
+        return None, _err(rid, 4017, "exact attachment count mismatch")
+    source_digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    context_digest = hashlib.sha256(context.encode("utf-8")).hexdigest()
+    manifest_digest = hashlib.sha256(
+        json.dumps(attachments, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    payload_digest = hashlib.sha256(
+        json.dumps(
+            {"text": source, "contextText": context, "attachments": attachments},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    expected = {
+        "payload_digest": payload_digest,
+        "source_digest": source_digest,
+        "context_digest": context_digest,
+        "attachment_manifest_digest": manifest_digest,
+    }
+    if any(value.get(field) != digest for field, digest in expected.items()):
+        return None, _err(rid, 4017, "exact submission digest mismatch")
+    binding = {
+        "submission_id": value.get("submission_id"),
+        "connection_id": value.get("connection_id"),
+        "profile": value.get("profile"),
+        "runtime_session_id": sid,
+        "stored_session_id": stored,
+        "lineage_root_id": lineage,
+        **expected,
+        "attachment_count": len(attachments),
+    }
+    try:
+        from tui_gateway.exact_admission import validate_binding
+
+        binding = validate_binding(binding)
+    except Exception as exc:
+        return None, _err(rid, 4004, str(exc))
+    return {
+        "binding": binding,
+        "source_text": source,
+        "context_text": context,
+        "attachments": attachments,
+    }, None
+
 
 def _history_user_indices(history: list) -> list:
     """Indices of model-visible user turns (excludes display_kind timeline markers)."""
@@ -271,7 +512,12 @@ def _(rid, params: dict) -> dict:
 
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
-    text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
+    exact_value = params.get("exact_submission")
+    text = (
+        raw_text
+        if exact_value is not None
+        else sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
+    )
     # Off-screen sends (widget intents): type the persisted user row so no
     # client renders it as a bubble. Whitelisted to "hidden" — display_kind
     # is a DB-only sidecar and this RPC must not mint arbitrary kinds.
@@ -318,6 +564,51 @@ def _(rid, params: dict) -> dict:
         return err
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         return _err(rid, 4090, limit_message)
+    exact = None
+    exact_receipt = None
+    exact_created = False
+    if exact_value is not None:
+        exact, err = _exact_request(rid, str(sid), session, exact_value)
+        if err:
+            return err
+        text = exact["context_text"]
+        if any(
+            params.get(field) is not None
+            for field in (
+                "truncate_before_user_ordinal",
+                "truncate_before_row_id",
+                "truncate_before_message_id",
+                "queued",
+                "interrupted",
+            )
+        ):
+            return _err(rid, 4004, "exact submission does not support recovery, queue, redirect, or truncation fields")
+        from tui_gateway.exact_admission import (
+            ExactAdmissionConflict,
+            get_exact_receipt,
+            record_exact_rejection,
+        )
+
+        try:
+            existing = get_exact_receipt(session.get("profile_home") or _hermes_home, exact["binding"]["submission_id"])
+        except Exception as exc:
+            return _err(rid, 5008, f"exact receipt lookup failed: {exc}")
+        if existing is not None:
+            if any(existing.get(key) != value for key, value in exact["binding"].items()):
+                return _err(rid, 4091, "submission_id conflicts with an existing exact receipt")
+            if existing.get("state") == "durably_accepted":
+                return _ok(rid, {"status": "streaming", "receipt": existing, "idempotent_replay": True})
+            return _err(rid, 4009, existing.get("reason") or "exact submission rejected", data={"receipt": existing})
+        if session.get("running") or session.get("_compute_host_active"):
+            try:
+                rejected, _ = record_exact_rejection(
+                    session.get("profile_home") or _hermes_home,
+                    binding=exact["binding"],
+                    reason="busy-target",
+                )
+            except ExactAdmissionConflict:
+                return _err(rid, 4091, "submission_id conflicts with an existing exact receipt")
+            return _err(rid, 4009, "exact session is busy", data={"receipt": rejected})
     # Which desktop window this message was typed into. Rewritten on every
     # submit, because one session can be driven from the app window and the HUD
     # in turn: a stale "hud" would tell the model the user is still floating
@@ -347,6 +638,15 @@ def _(rid, params: dict) -> dict:
         busy_transport = None
         with session["history_lock"]:
             if session.get("running"):
+                if exact is not None:
+                    from tui_gateway.exact_admission import record_exact_rejection
+
+                    rejected, _ = record_exact_rejection(
+                        session.get("profile_home") or _hermes_home,
+                        binding=exact["binding"],
+                        reason="busy-target",
+                    )
+                    return _err(rid, 4009, "exact session is busy", data={"receipt": rejected})
                 # Don't reject a mid-turn prompt — queue it (and, by default,
                 # interrupt the live turn) so it runs as the next turn. The
                 # provider interrupt itself must happen after this lock is
@@ -369,6 +669,37 @@ def _(rid, params: dict) -> dict:
     # rowId rebinding (see comment at the assignment site).
     survivor_user_row_ids = None
     with session["history_lock"]:
+        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+            return _err(rid, 4009, "subagent still running — wait for it to finish")
+        if exact is not None:
+            current_stored = str(session.get("session_key") or sid)
+            current_lineage = _exact_lineage(session, current_stored)
+            if (
+                current_stored != exact["binding"]["stored_session_id"]
+                or current_lineage != exact["binding"]["lineage_root_id"]
+                or session.get("running")
+            ):
+                return _err(rid, 4018, "exact session target changed before admission")
+            from tui_gateway.exact_admission import (
+                ExactAdmissionConflict,
+                ExactAdmissionError,
+                record_exact_admission,
+            )
+
+            try:
+                exact_receipt, exact_created = record_exact_admission(
+                    session.get("profile_home") or _hermes_home,
+                    binding=exact["binding"],
+                    prompt=exact["context_text"],
+                    persist_user_text=exact["source_text"],
+                )
+            except ExactAdmissionConflict:
+                return _err(rid, 4091, "submission_id conflicts with an existing exact receipt")
+            except ExactAdmissionError as exc:
+                return _err(rid, 5008, f"exact admission failed: {exc}")
+            if not exact_created:
+                return _ok(rid, {"status": "streaming", "receipt": exact_receipt, "idempotent_replay": True})
+            session["_exact_active_submission_id"] = exact["binding"]["submission_id"]
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
         # racing the in-flight child on the same stored session (interleaved
@@ -725,9 +1056,20 @@ def _(rid, params: dict) -> dict:
 
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind
+            rid,
+            sid,
+            session,
+            text,
+            display_kind=display_kind,
+            persist_user_text=exact["source_text"] if exact is not None else None,
+            exact_admitted=exact is not None,
+            exact_submission_id=exact["binding"]["submission_id"] if exact is not None else None,
         )
         if not isolated_response.get("error"):
+            if exact_receipt is not None:
+                isolated_response["result"].update(
+                    {"receipt": exact_receipt, "idempotent_replay": False}
+                )
             if survivor_user_row_ids is not None:
                 # The truncation already happened inline above (memory + DB),
                 # before compute-host dispatch — the rebind payload applies to
@@ -815,7 +1157,16 @@ def _(rid, params: dict) -> dict:
                     },
                 )
                 return
-        _run_prompt_submit(rid, sid, session, text, display_kind=display_kind)
+        _run_prompt_submit(
+            rid,
+            sid,
+            session,
+            text,
+            display_kind=display_kind,
+            persist_user_text=exact["source_text"] if exact is not None else None,
+            exact_admitted=exact is not None,
+            exact_submission_id=exact["binding"]["submission_id"] if exact is not None else None,
+        )
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck
@@ -827,12 +1178,64 @@ def _(rid, params: dict) -> dict:
         {
             "status": "streaming",
             **(
+                {"receipt": exact_receipt, "idempotent_replay": False}
+                if exact_receipt is not None
+                else {}
+            ),
+            **(
                 {"survivor_user_row_ids": survivor_user_row_ids}
                 if survivor_user_row_ids is not None
                 else {}
             ),
         },
     )
+
+
+@method("prompt.receipt")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_building(params, rid)
+    if err:
+        return err
+    if not isinstance(params, dict) or set(params) != _RECEIPT_LOOKUP_KEYS:
+        return _err(rid, 4004, "complete exact receipt lookup identity required")
+    sid = str(params.get("session_id") or "")
+    stored = str(session.get("session_key") or sid)
+    lineage = _exact_lineage(session, stored)
+    if params.get("stored_session_id") != stored or params.get("lineage_root_id") != lineage:
+        return _err(rid, 4018, "exact receipt target is stale")
+    binding = {
+        "submission_id": params.get("submission_id"),
+        "connection_id": params.get("connection_id"),
+        "profile": params.get("profile"),
+        "runtime_session_id": sid,
+        "stored_session_id": stored,
+        "lineage_root_id": lineage,
+        "payload_digest": params.get("payload_digest"),
+        "source_digest": params.get("source_digest"),
+        "context_digest": params.get("context_digest"),
+        "attachment_manifest_digest": params.get("attachment_manifest_digest"),
+        "attachment_count": params.get("attachment_count"),
+    }
+    try:
+        from tui_gateway.exact_admission import get_exact_receipt, validate_binding
+
+        binding = validate_binding(binding)
+        receipt = get_exact_receipt(
+            session.get("profile_home") or _hermes_home,
+            binding["submission_id"],
+        )
+    except Exception as exc:
+        return _err(rid, 4004, str(exc))
+    if receipt is not None:
+        try:
+            from tui_gateway.exact_admission import validate_exact_receipt
+
+            receipt = validate_exact_receipt(receipt, binding)
+        except Exception as exc:
+            if "binding mismatch" in str(exc):
+                return _err(rid, 4091, "exact receipt lookup identity mismatch")
+            return _err(rid, 4004, str(exc))
+    return _ok(rid, {"receipt": receipt, "state": receipt.get("state") if receipt else "unknown"})
 
 
 @method("clipboard.paste")
@@ -960,11 +1363,52 @@ def _(rid, params: dict) -> dict:
     if ext not in _allowed_image_extensions():
         return _err(rid, 4016, f"unsupported image extension: {ext}")
 
+    relay_result = None
+    relay = params.get("relay")
+    if relay is not None:
+        import re
+
+        match = re.match(r"^data:([^;,]+)", raw_b64, re.I)
+        media_type = match.group(1) if match else {
+            ".gif": "image/gif",
+            ".jpeg": "image/jpeg",
+            ".jpg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+        }.get(ext, "application/octet-stream")
+        actual_media_type = {
+            ".gif": "image/gif",
+            ".jpeg": "image/jpeg",
+            ".jpg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+        }.get(ext)
+        if actual_media_type is None or media_type.lower() != actual_media_type:
+            return _err(rid, 4017, "attachment relay media type does not match image bytes")
+        relay_result, relay_err = _relay_integrity(
+            rid,
+            str(params.get("session_id") or ""),
+            session,
+            relay,
+            img_bytes,
+            name=filename,
+            media_type=media_type,
+        )
+        if relay_err:
+            return relay_err
+
     try:
+        if relay_result is not None and (busy_err := _relay_busy_error(rid, session)):
+            return busy_err
         img_path = _queue_attached_image(session, img_bytes, ext, prefix="upload")
     except Exception as e:
         return _err(rid, 5027, f"write failed: {e}")
 
+    if relay_result is not None:
+        relay_result, relay_err = _relay_staged_integrity(rid, session, relay_result, img_path)
+        if relay_err:
+            return relay_err
+        return _ok(rid, relay_result)
     return _ok(
         rid,
         {
@@ -1132,11 +1576,45 @@ def _(rid, params: dict) -> dict:
     name = str(params.get("name", "") or "").strip()
     if not raw and not data_url:
         return _err(rid, 4015, "path or data_url required")
+    relay = params.get("relay")
+    relay_result = None
+    if relay is not None:
+        if raw or not data_url:
+            return _err(rid, 4004, "exact attachment relay requires uploaded bytes, not a path")
+        try:
+            import re
+
+            payload = _decode_attachment_data_url(data_url)
+            match = re.match(r"^data:([^;,]+)", data_url, re.I)
+            media_type = match.group(1) if match else "application/octet-stream"
+        except Exception as exc:
+            return _err(rid, 4017, str(exc))
+        relay_result, relay_err = _relay_integrity(
+            rid,
+            str(params.get("session_id") or ""),
+            session,
+            relay,
+            payload,
+            name=name,
+            media_type=media_type,
+        )
+        if relay_err:
+            return relay_err
     try:
+        if relay_result is not None and (busy_err := _relay_busy_error(rid, session)):
+            return busy_err
         stored_path, uploaded = _stage_session_file_attachment(
             session, raw_path=raw, data_url=data_url, name=name
         )
         ref_path = _attachment_ref_path(session, stored_path)
+        if relay_result is not None:
+            relay_result, relay_err = _relay_staged_integrity(rid, session, relay_result, stored_path)
+            if relay_err:
+                return relay_err
+            return _ok(
+                rid,
+                {**relay_result, "ref_text": f"@file:{_format_ref_value(ref_path)}"},
+            )
         return _ok(
             rid,
             {
@@ -1548,7 +2026,21 @@ def register(server) -> None:
     # them. Rebind onto server globals so handler bodies (and server.py call
     # sites) resolve the same free names after the split.
     g = vars(server)
+    g.update(
+        {
+            "_EXACT_KEYS": _EXACT_KEYS,
+            "_EXACT_ATTACHMENT_KEYS": _EXACT_ATTACHMENT_KEYS,
+            "_RELAY_KEYS": _RELAY_KEYS,
+            "_RECEIPT_LOOKUP_KEYS": _RECEIPT_LOOKUP_KEYS,
+        }
+    )
     for helper in (
+        _safe_relay_name,
+        _relay_busy_error,
+        _relay_staged_integrity,
+        _relay_integrity,
+        _exact_lineage,
+        _exact_request,
         _history_user_indices,
         _message_row_id,
         _mem_db_pair_agrees,

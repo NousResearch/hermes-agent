@@ -386,7 +386,151 @@ plugin is the worked example.
 `COMPOSER_AREAS` (`top`, `bottom`, `leading`, `actions`, `attachments`,
 `middleware`) let a plugin add controls around the message composer, provide an
 attachment source, or transform a draft before it is sent (`ComposerMiddleware`
-with a `handler(draft) => draft | null`).
+with a `handler(draft) => draft | null`). That legacy draft/`null` contract is
+unchanged. Newer hosts additionally accept own-property dispositions:
+
+```ts
+type ComposerDisposition =
+  | { disposition: 'pass'; draft?: ComposerDraft }
+  | { disposition: 'reject'; reason?: string }
+  | { disposition: 'consume'; receipt?: unknown }
+```
+
+`pass` continues in contribution order, optionally with a rewrite. `reject`
+stops later middleware and restores the submitted draft. `consume` stops later
+middleware and reports a successful plugin-owned send, so the ordinary composer
+clears exactly as it does after an accepted native send. A thrown handler is
+isolated as pass-through. Dispositions inherited from a prototype are ignored.
+Disposition recognition is closed: only own data-property `pass`, `reject`, or
+`consume` shapes with no extra keys are interpreted. Accessors, hostile getters,
+custom/polluted prototypes, and inherited values are not dispositions. A legacy
+draft may still inherit a property named `disposition` and remains a legacy
+draft after its own data shape is validated. Each middleware invocation receives
+a new detached draft, real dense attachment array, and detached attachment views;
+authoritative drafts, arrays, host attachment objects, and prior attempts are
+never exposed. A throw or invalid result discards the complete attempt, so
+freeze, seal, preventExtensions, non-configurable descriptors, prototype changes,
+nested freezes, replacements, and combinations require no rollback and cannot
+affect later handlers. A successful valid mutation or replacement is normalized
+into fresh host-owned data before the next attempt.
+
+An optional `pass.draft` is validated before any semantic field is read. It must
+be a closed plain/null-prototype own-data shape with own string `text`, optional
+ordinary dense array `attachments`, and no accessors, inherited semantics,
+symbols, extras, sparse/exotic arrays, or malformed attachment fields. Invalid
+nested drafts invoke no getters and leave the current authoritative draft
+unchanged.
+
+### Optional SDK capabilities, exact sessions, and attachment relay
+
+Probe every additive contract before use:
+
+```javascript
+const hasStatus = host.capabilityVersion('plugin-status') >= 1
+const hasDisposition = host.capabilityVersion('composer-disposition') >= 2
+const hasDirect = host.capabilityVersion('exact-session-submit') >= 2
+const hasRelay = host.capabilityVersion('attachment-relay') >= 1
+```
+
+The canonical capability table is exactly `plugin-status` version 1,
+`composer-disposition` version 2, `exact-session-submit` version 2, and
+`attachment-relay` version 1. `direct-draft-submit` was never a released or
+accepted capability name and returns `0`; it is not an alias. Unknown, empty,
+malformed, symbol, inherited, and prototype-collision names also return `0`
+without coercion. The public plugin-status API returns
+only `{ id, state }`, where state is `enabled`, `disabled`, `unavailable`,
+`loading`, or `failed`; paths, loader errors, settings, credentials, and toggle
+authority are never exposed. `host.onPluginStatus(id, listener)` delivers the
+current state immediately and then meaningful transitions; its disposer
+unsubscribes.
+
+`host.focusedSessionTarget()` returns the exact focused connection/profile,
+runtime session, stored session, compression-lineage root, composer scope, and
+surface target, or `null` when unresolved. `host.sessionTarget(query)` resolves
+the explicit connection/profile/runtime/stored tuple without title or same-name
+fallback. Both return non-secret targets.
+
+`host.relayAttachments(target, attachments)` accepts only the exact composer
+attachment object identities authorized for the currently awaited middleware
+handler. Private host provenance maps an unchanged attempt-local view back to
+its exact host-originated attachment without exposing that source object.
+Authority is minted once from the trusted host composer input, not from a
+middleware result: fabricated, copied, deserialized, replaced, mutated,
+prototype-derived, or arbitrary-path objects never acquire it. Exact unchanged
+views may survive a valid rewrite and removals remain valid. Authorization
+is short-lived and is checked before and after every
+read/stage boundary, including immediately after target validation and before
+the native read or gateway stage call. The target is re-probed before every
+mutation, and the gateway independently rejects both in-process and compute-host
+busy states immediately before writing. The result preserves order, source name,
+the authenticated generated target filename, media type derived from actual
+image bytes, byte size, SHA-256, exact runtime session, and non-path provenance.
+Copies, deferred use, mutation, revocation, expiry, traversal names, unsafe media
+types, oversize payloads, stale/busy targets, inherited capabilities, post-stage
+byte changes, and target-side integrity mismatches fail closed.
+
+`host.submitDraft(target, draft, { submissionId })` bypasses composer middleware
+(no recursion) but enters the normal gateway prompt/persistence pipeline. It
+preserves exact source whitespace/Unicode separately from attachment-expanded
+model context. The caller-generated id is immutably bound to runtime/stored/
+lineage identity, source/context/payload digests, and the complete ordered
+attachment-manifest digest. Both the immediate response and the one permitted
+receipt lookup must match every connection, profile, runtime, stored, lineage,
+submission/request, payload, source, context, attachment-manifest, and count
+field. Receipt state and every binding field must be a closed own data-property
+shape with exact types and no extra keys; inherited, accessor, polluted,
+partial, extra, or mistyped receipts remain acknowledgement-uncertain. It never
+redirects, queues, retargets, retries a busy session, performs stale-target
+recovery, or blindly re-sends after timeout. The receipt state is `rejected`, `durably_accepted`, or
+`acknowledgement_uncertain`; only `durably_accepted` may justify `consume`.
+
+The backend writes one crash-safe atomic admission record containing both the
+bound durable receipt and interrupted-turn marker before dispatch. Every terminal
+completion clears only its matching submission marker, even when no ordinary
+marker exists; a conflicting active admission for the same stored session is
+left intact. For isolated turns, the submission identity travels beside — never
+inside — the model-visible or cache-key prompt bytes, is echoed on the
+authenticated compute-host terminal frame, and only then retires that exact
+marker. Receipts remain for idempotent reconciliation.
+This preserves prompt-cache prefixes and strict user/assistant role alternation:
+no past context, toolset, system prompt, or synthetic mid-loop user turn is
+mutated.
+
+Generic conflict/send example:
+
+```javascript
+ctx.register({
+  id: 'exact-send',
+  area: COMPOSER_AREAS.middleware,
+  data: {
+    handler: async draft => {
+      if (host.capabilityVersion('plugin-status') < 1 ||
+          host.pluginStatus('another-sender').state === 'enabled') {
+        return { disposition: 'reject', reason: 'another sender owns this draft' }
+      }
+      if (host.capabilityVersion('exact-session-submit') < 2 ||
+          host.capabilityVersion('attachment-relay') < 1) {
+        return draft // legacy host: preserve the ordinary send unchanged
+      }
+      const target = host.focusedSessionTarget()
+      if (!target) return { disposition: 'reject', reason: 'no exact session' }
+
+      const receipt = await host.submitDraft(target, draft, {
+        submissionId: `example_${crypto.randomUUID().replaceAll('-', '')}`
+      })
+      return receipt.state === 'durably_accepted'
+        ? { disposition: 'consume', receipt }
+        : { disposition: 'reject', reason: receipt.state }
+    }
+  }
+})
+```
+
+Migration is additive: keep returning legacy drafts/`null` until the relevant
+capability version is present; never inspect private stores, `localStorage`,
+connection configuration, or loader internals. Never disable another plugin
+programmatically. Direct submission and relay are not arbitrary-path APIs: only
+the host-authorized current composer objects can be read.
 
 ### Transcript directives — inline components the model addresses
 
@@ -512,6 +656,13 @@ host.onEvent(type, fn)                     // gateway event stream ('*' = all); 
 host.logs(...)                             // tail an app log file
 host.status()                              // one-shot system status snapshot
 host.restartGateway()                      // restart the backend gateway
+host.capabilityVersion(name)               // additive own-property capability version, else 0
+host.pluginStatus(id)                      // { id, state }, credential-free
+host.onPluginStatus(id, listener)          // immediate + reactive; returns disposer
+host.focusedSessionTarget()                // exact non-secret focused target or null
+host.sessionTarget(query)                  // explicit connection/profile/runtime/stored target
+host.relayAttachments(target, attachments) // authorized exact-session relay
+host.submitDraft(target, draft, options)   // no-middleware exact submit + bound receipt
 host.profileRoutes()                       // [{ profile, targetProfile, connectionId, mode }]
 host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no foreground swap
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload

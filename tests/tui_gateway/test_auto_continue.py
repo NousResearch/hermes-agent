@@ -127,6 +127,145 @@ def test_marker_survives_corrupt_sidecar(tmp_path):
     assert read_turn_marker(tmp_path, "abc")["prompt"] == "prompt"
 
 
+def test_terminal_retirement_always_targets_the_matching_exact_submission(monkeypatch, marker_home):
+    calls = []
+    monkeypatch.setattr(
+        server,
+        "clear_turn_marker",
+        lambda home, key, submission_id=None: calls.append((home, key, submission_id)),
+    )
+    session = _session(
+        profile_home=str(marker_home),
+        _exact_active_submission_id="submit_exact_00000001",
+    )
+
+    server._retire_turn_marker(session)
+
+    assert calls == [(marker_home, "session-key", "submit_exact_00000001")]
+    assert "_exact_active_submission_id" not in session
+
+
+@pytest.mark.parametrize("terminal_type", ["turn.end", "turn.error"])
+def test_authenticated_compute_terminal_selectively_retires_matching_exact_marker(
+    monkeypatch, marker_home, terminal_type
+):
+    from tui_gateway import exact_admission
+
+    def binding(submission_id, digest):
+        return {
+            "submission_id": submission_id,
+            "connection_id": "connection-a",
+            "profile": "worker",
+            "runtime_session_id": "runtime-1",
+            "stored_session_id": "session-key",
+            "lineage_root_id": "session-key",
+            "payload_digest": digest,
+            "source_digest": "b" * 64,
+            "context_digest": "c" * 64,
+            "attachment_manifest_digest": "d" * 64,
+            "attachment_count": 0,
+        }
+
+    exact_admission.record_exact_admission(
+        marker_home,
+        binding=binding("submit_exact_00000001", "a" * 64),
+        prompt="first context",
+        persist_user_text="first source",
+    )
+    exact_admission.record_exact_admission(
+        marker_home,
+        binding=binding("submit_exact_00000002", "e" * 64),
+        prompt="second context",
+        persist_user_text="second source",
+    )
+    session = _session(
+        profile_home=str(marker_home),
+        running=True,
+        _exact_active_submission_id="submit_exact_00000002",
+    )
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+    monkeypatch.setattr(server, "_emit", lambda *_args: None)
+    monkeypatch.setattr(server, "_drain_queued_prompt", lambda *_args: None)
+
+    nonterminal = {
+        "type": "turn.started",
+        "sid": "sid",
+        "request_id": "request-1",
+        "exact_submission_id": "submit_exact_00000001",
+    }
+    server._on_compute_host_turn_done("request-1", "sid", session, nonterminal)
+    assert exact_admission._read_record(
+        exact_admission._record_path(marker_home, "submit_exact_00000001"), "submit_exact_00000001"
+    )["turn"] is not None
+
+    server._on_compute_host_turn_done(
+        "request-1",
+        "sid",
+        session,
+        {
+            "type": terminal_type,
+            "sid": "sid",
+            "request_id": "request-1",
+            "exact_submission_id": "submit_exact_00000001",
+        },
+        exact_submission_id="submit_exact_00000001",
+    )
+
+    first = exact_admission._read_record(
+        exact_admission._record_path(marker_home, "submit_exact_00000001"), "submit_exact_00000001"
+    )
+    second = exact_admission._read_record(
+        exact_admission._record_path(marker_home, "submit_exact_00000002"), "submit_exact_00000002"
+    )
+    assert first["turn"] is None
+    assert second["turn"] is not None
+    assert exact_admission.get_exact_receipt(marker_home, "submit_exact_00000001")["state"] == "durably_accepted"
+    assert exact_admission.get_exact_receipt(marker_home, "submit_exact_00000002")["state"] == "durably_accepted"
+    assert session["_exact_active_submission_id"] == "submit_exact_00000002"
+
+
+def test_compute_terminal_with_conflicting_identity_cannot_retire_exact_marker(monkeypatch, marker_home):
+    from tui_gateway import exact_admission
+
+    binding = {
+        "submission_id": "submit_exact_00000001",
+        "connection_id": "connection-a",
+        "profile": "worker",
+        "runtime_session_id": "runtime-1",
+        "stored_session_id": "session-key",
+        "lineage_root_id": "session-key",
+        "payload_digest": "a" * 64,
+        "source_digest": "b" * 64,
+        "context_digest": "c" * 64,
+        "attachment_manifest_digest": "d" * 64,
+        "attachment_count": 0,
+    }
+    exact_admission.record_exact_admission(
+        marker_home, binding=binding, prompt="context", persist_user_text="source"
+    )
+    session = _session(profile_home=str(marker_home), running=True)
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {})
+    monkeypatch.setattr(server, "_emit", lambda *_args: None)
+    monkeypatch.setattr(server, "_drain_queued_prompt", lambda *_args: None)
+
+    server._on_compute_host_turn_done(
+        "request-1",
+        "sid",
+        session,
+        {
+            "type": "turn.end",
+            "sid": "sid",
+            "request_id": "request-1",
+            "exact_submission_id": "submit_exact_conflict",
+        },
+        exact_submission_id="submit_exact_00000001",
+    )
+
+    assert exact_admission._read_record(
+        exact_admission._record_path(marker_home, "submit_exact_00000001"), "submit_exact_00000001"
+    )["turn"] is not None
+
+
 # ── Turn lifecycle owns the marker ─────────────────────────────────────
 
 
@@ -261,6 +400,39 @@ def test_fresh_marker_schedules_continuation(emits, schedule_env, marker_home):
     assert "fix the flaky test" in text
     assert kwargs["display_kind"] == "auto_continue"
     assert ("message.start", "sid", None) in [(e, s, p) for e, s, p in emits]
+
+
+def test_exact_atomic_marker_carries_original_source_into_auto_continue(
+    emits, schedule_env, marker_home
+):
+    from tui_gateway.exact_admission import record_exact_admission
+
+    binding = {
+        "submission_id": "submit_exact_00000001",
+        "connection_id": "connection-a",
+        "profile": "worker",
+        "runtime_session_id": "sid",
+        "stored_session_id": "session-key",
+        "lineage_root_id": "session-key",
+        "payload_digest": "a" * 64,
+        "source_digest": "b" * 64,
+        "context_digest": "c" * 64,
+        "attachment_manifest_digest": "d" * 64,
+        "attachment_count": 1,
+    }
+    record_exact_admission(
+        marker_home,
+        binding=binding,
+        prompt="@file:attachments/notes.txt\n\n  exact source  ",
+        persist_user_text="  exact source  ",
+    )
+    session = _session()
+
+    result = server._maybe_schedule_auto_continue("sid", session, "session-key")
+
+    assert result is not None
+    assert session["_auto_continue_persist_user_text"] == "  exact source  "
+    assert "@file:attachments/notes.txt" in schedule_env[0][0]
 
 
 def test_stale_marker_is_cleared_not_continued(schedule_env, marker_home, monkeypatch):

@@ -179,6 +179,76 @@ describe('watchRuntimePlugins dir watch (#66899)', () => {
   })
 })
 
+describe('public plugin status SDK', () => {
+  it('is own-property feature-detectable and emits credential-free transitions to a runtime plugin', async () => {
+    const target = `sdk-target-${crypto.randomUUID()}`
+    const consumer = `sdk-consumer-${crypto.randomUUID()}`
+    const seen: unknown[] = []
+
+    ;(globalThis as unknown as { __pluginStatusSeen: unknown }).__pluginStatusSeen = seen
+    publishPlugin({ id: target, name: 'Sensitive display name', kind: 'disk', status: 'disabled', file: 'C:/secret.js' })
+
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    try {
+      await loadRuntimePlugin(
+        `import { host } from '@hermes/plugin-sdk'
+         export default {
+           id: '${consumer}',
+           register() {
+             globalThis.__pluginStatusSeen.push(host.capabilityVersion('plugin-status'))
+             globalThis.__pluginStatusSeen.push(host.capabilityVersion('composer-disposition'))
+             globalThis.__pluginStatusSeen.push(host.capabilityVersion('exact-session-submit'))
+             globalThis.__pluginStatusSeen.push(host.capabilityVersion('attachment-relay'))
+             globalThis.__pluginStatusSeen.push(host.capabilityVersion('direct-draft-submit'))
+             globalThis.__pluginStatusSeen.push(host.capabilityVersion('toString'))
+             globalThis.__pluginStatusSeen.push(host.pluginStatus('${target}'))
+             globalThis.__pluginStatusSeen.push(host.onPluginStatus('${target}', value => globalThis.__pluginStatusSeen.push(value)))
+           }
+         }`,
+        consumer
+      )
+
+      publishPlugin({ id: target, name: 'Sensitive display name', kind: 'disk', status: 'loaded', file: 'C:/secret.js' })
+
+      expect(seen.slice(0, 8)).toEqual([
+        1,
+        2,
+        2,
+        1,
+        0,
+        0,
+        { id: target, state: 'disabled' },
+        { id: target, state: 'disabled' }
+      ])
+      expect(seen[8]).toEqual(expect.any(Function))
+      expect(seen.at(-1)).toEqual({ id: target, state: 'enabled' })
+      expect(JSON.stringify(seen)).not.toContain('secret')
+    } finally {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+      delete (globalThis as unknown as { __pluginStatusSeen?: unknown }).__pluginStatusSeen
+    }
+  })
+})
+
 describe('bundled-shadowed disk copies', () => {
   it('skips a disk copy of a bundled plugin but publishes a visible inventory row', async () => {
     // The bundled twin is already registered (build-time glob).

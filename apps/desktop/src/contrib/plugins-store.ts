@@ -11,7 +11,13 @@
 import { atom } from 'nanostores'
 
 export type PluginKind = 'bundled' | 'disk' | 'runtime'
-export type PluginStatus = 'disabled' | 'error' | 'loaded'
+export type PluginStatus = 'disabled' | 'error' | 'loaded' | 'loading'
+export type PublicPluginState = 'disabled' | 'enabled' | 'failed' | 'loading' | 'unavailable'
+
+export interface PublicPluginStatus {
+  id: string
+  state: PublicPluginState
+}
 
 export interface PluginRecord {
   id: string
@@ -60,7 +66,7 @@ export const $pluginDecisions = atom<Record<string, boolean>>(loadDecisions())
 export function pluginActive(id: string, defaultEnabled = true): boolean {
   const decisions = $pluginDecisions.get()
 
-  return id in decisions ? decisions[id] : defaultEnabled
+  return Object.prototype.hasOwnProperty.call(decisions, id) ? decisions[id] : defaultEnabled
 }
 
 function saveDecisions(next: Record<string, boolean>) {
@@ -75,6 +81,64 @@ function saveDecisions(next: Record<string, boolean>) {
 
 export const $pluginRecords = atom<Record<string, PluginRecord>>({})
 
+const statusListeners = new Map<string, Set<(status: PublicPluginStatus) => void>>()
+
+export function pluginStatus(id: string): PublicPluginStatus {
+  const records = $pluginRecords.get()
+  const record = Object.prototype.hasOwnProperty.call(records, id) ? records[id] : undefined
+  const state: PublicPluginState =
+    record?.status === 'loaded'
+      ? 'enabled'
+      : record?.status === 'disabled'
+        ? 'disabled'
+        : record?.status === 'loading'
+          ? 'loading'
+          : record?.status === 'error'
+            ? 'failed'
+            : 'unavailable'
+
+  return { id, state }
+}
+
+function emitPluginStatus(id: string, before: PublicPluginState): void {
+  const next = pluginStatus(id)
+
+  if (before === next.state) {
+    return
+  }
+
+  for (const listener of statusListeners.get(id) ?? []) {
+    try {
+      listener(next)
+    } catch {
+      // Public observers are isolated from loader lifecycle and one another.
+    }
+  }
+}
+
+export function subscribePluginStatus(
+  id: string,
+  listener: (status: PublicPluginStatus) => void
+): () => void {
+  const listeners = statusListeners.get(id) ?? new Set()
+  listeners.add(listener)
+  statusListeners.set(id, listeners)
+
+  try {
+    listener(pluginStatus(id))
+  } catch {
+    // Initial delivery has the same isolation guarantee as later transitions.
+  }
+
+  return () => {
+    const current = statusListeners.get(id)
+    current?.delete(listener)
+    if (!current?.size) {
+      statusListeners.delete(id)
+    }
+  }
+}
+
 /** Loader-owned lifecycle controls for a plugin (activate/deactivate). */
 interface PluginHandle {
   activate: () => Promise<void> | void
@@ -86,25 +150,31 @@ const handles = new Map<string, PluginHandle>()
 
 /** Publish/refresh a plugin's record + its activate/deactivate handles. */
 export function publishPlugin(record: PluginRecord, handle?: PluginHandle): void {
+  const before = pluginStatus(record.id).state
   $pluginRecords.set({ ...$pluginRecords.get(), [record.id]: record })
 
   if (handle) {
     handles.set(record.id, handle)
   }
+  emitPluginStatus(record.id, before)
 }
 
 export function patchPlugin(id: string, patch: Partial<PluginRecord>): void {
   const current = $pluginRecords.get()[id]
 
   if (current) {
+    const before = pluginStatus(id).state
     $pluginRecords.set({ ...$pluginRecords.get(), [id]: { ...current, ...patch } })
+    emitPluginStatus(id, before)
   }
 }
 
 export function dropPlugin(id: string): void {
+  const before = pluginStatus(id).state
   const { [id]: _dropped, ...rest } = $pluginRecords.get()
   $pluginRecords.set(rest)
   handles.delete(id)
+  emitPluginStatus(id, before)
 }
 
 /** Live toggle: deactivate + remember, or forget + reactivate. */
@@ -118,7 +188,13 @@ export async function setPluginEnabled(id: string, enabled: boolean): Promise<vo
   }
 
   if (enabled) {
-    await handle.activate()
+    patchPlugin(id, { status: 'loading' })
+    try {
+      await handle.activate()
+    } catch (error) {
+      patchPlugin(id, { status: 'error' })
+      throw error
+    }
   } else {
     handle.deactivate()
     patchPlugin(id, { status: 'disabled' })

@@ -56,6 +56,8 @@ function renderSubmitHook({
   const onSteer = vi.fn(async () => true)
   const onSubmit = vi.fn(async () => true)
   const queueCurrentDraft = vi.fn(() => true)
+  const loadIntoComposer = vi.fn()
+  const stashAt = vi.fn()
   let updatePaneVisible: Dispatch<SetStateAction<boolean>> | undefined
 
   const clearDraft = vi.fn(() => {
@@ -106,7 +108,7 @@ function renderSubmitHook({
         exitQueuedEdit: vi.fn(() => false),
         focusInput: vi.fn(),
         inputDisabled,
-        loadIntoComposer: vi.fn(),
+        loadIntoComposer,
         onCancel,
         onSteer,
         onSubmit,
@@ -115,7 +117,7 @@ function renderSubmitHook({
         queuedPrompts: [],
         sessionId: 'runtime-session',
         setComposerText: vi.fn(),
-        stashAt: vi.fn()
+        stashAt
       }),
     { wrapper: Wrapper }
   )
@@ -123,11 +125,13 @@ function renderSubmitHook({
   return {
     clearDraft,
     hook,
+    loadIntoComposer,
     onCancel,
     onSteer,
     onSubmit,
     queueCurrentDraft,
     composerSurfaceId: resolvedSurfaceId,
+    stashAt,
     setPaneVisible(nextVisible: boolean) {
       if (!updatePaneVisible) {
         throw new Error('Pane visibility setter was not initialized')
@@ -137,6 +141,37 @@ function renderSubmitHook({
     }
   }
 }
+
+describe('useComposerSubmit accepted/rejected draft parity', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('restores the exact draft and attachments when the send rejects', async () => {
+    const attachment: ComposerAttachment = { id: 'file-1', kind: 'file', label: 'notes.txt' }
+    const harness = renderSubmitHook({ attachments: [attachment], text: '  keep Ω\nline two  ' })
+    harness.onSubmit.mockResolvedValueOnce(false)
+
+    act(() => harness.hook.result.current.submitDraft())
+
+    await waitFor(() =>
+      expect(harness.loadIntoComposer).toHaveBeenCalledWith('  keep Ω\nline two  ', [attachment])
+    )
+    expect(harness.stashAt).toHaveBeenCalledWith('stored-session', '  keep Ω\nline two  ', [attachment])
+  })
+
+  it('does not restore a successfully consumed send', async () => {
+    const harness = renderSubmitHook({ text: 'consumed once' })
+    harness.onSubmit.mockResolvedValueOnce(true)
+
+    act(() => harness.hook.result.current.submitDraft())
+
+    await waitFor(() => expect(harness.onSubmit).toHaveBeenCalledTimes(1))
+    expect(harness.loadIntoComposer).not.toHaveBeenCalled()
+    expect(harness.stashAt).not.toHaveBeenCalled()
+  })
+})
 
 describe('useComposerSubmit external request routing', () => {
   afterEach(() => {

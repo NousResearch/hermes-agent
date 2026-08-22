@@ -1039,6 +1039,34 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"cwd": resolved, "branch": branch, "git_repo_root": root})
 
 
+@method("session.identity")
+def _(rid, params: dict) -> dict:
+    """Return one closed, non-secret exact-session identity snapshot."""
+    sid = params.get("session_id", "")
+    session, err = _sess_building(params, rid)
+    if err:
+        return err
+    stored = str(session.get("session_key") or sid)
+    lineage = stored
+    try:
+        with _session_db(session) as db:
+            resolver = getattr(db, "get_conversation_root", None)
+            if callable(resolver):
+                lineage = str(resolver(stored) or stored)
+    except Exception:
+        lineage = str(session.get("lineage_root_id") or stored)
+    return _ok(
+        rid,
+        {
+            "runtime_session_id": str(sid),
+            "stored_session_id": stored,
+            "lineage_root_id": lineage,
+            "busy": bool(session.get("running") or session.get("_compute_host_active")),
+            "capabilities": {"exact_submission": 1, "attachment_relay": 1},
+        },
+    )
+
+
 @method("session.active_list")
 def _(rid, params: dict) -> dict:
     """Return live TUI sessions in this gateway process.

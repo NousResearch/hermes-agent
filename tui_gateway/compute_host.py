@@ -437,6 +437,22 @@ class ComputeHost:
     def _run_real_turn(self, frame: dict[str, Any]) -> None:
         sid = str(frame.get("sid") or "")
         request_id = str(frame.get("request_id") or uuid.uuid4().hex)
+        exact_submission_id = None
+        if frame.get("exact_admitted"):
+            try:
+                from tui_gateway.exact_admission import validate_submission_id
+
+                exact_submission_id = validate_submission_id(frame.get("exact_submission_id"))
+            except Exception:
+                self.emit(
+                    {
+                        "type": "turn.error",
+                        "sid": sid,
+                        "request_id": request_id,
+                        "message": "invalid exact submission identity",
+                    }
+                )
+                return
         if not sid:
             self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "message": "sid required"})
             return
@@ -458,11 +474,20 @@ class ComputeHost:
                             "request_id": request_id,
                             "interrupted": True,
                             "ended_ns": now_ns(),
+                            **({"exact_submission_id": exact_submission_id} if exact_submission_id else {}),
                         }
                     )
                     return
                 if session.get("running"):
-                    self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "message": "session busy"})
+                    self.emit(
+                        {
+                            "type": "turn.error",
+                            "sid": sid,
+                            "request_id": request_id,
+                            "message": "session busy",
+                            **({"exact_submission_id": exact_submission_id} if exact_submission_id else {}),
+                        }
+                    )
                     return
                 session["running"] = True
                 session["_turn_cancel_requested"] = False
@@ -490,6 +515,9 @@ class ComputeHost:
                 session,
                 text,
                 display_kind=frame.get("display_kind") or None,
+                persist_user_text=frame.get("persist_user_text"),
+                exact_admitted=bool(frame.get("exact_admitted")),
+                exact_submission_id=exact_submission_id,
             )
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
@@ -513,6 +541,7 @@ class ComputeHost:
                     "ended_ns": now_ns(),
                     "session_info": session_info,
                     "session_info_emitted": True,
+                    **({"exact_submission_id": exact_submission_id} if exact_submission_id else {}),
                 }
             )
         except Exception as exc:
@@ -526,7 +555,16 @@ class ComputeHost:
                         server._clear_inflight_turn(session)
             except Exception:
                 pass
-            self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "reason": "exception", "message": str(exc)})
+            self.emit(
+                {
+                    "type": "turn.error",
+                    "sid": sid,
+                    "request_id": request_id,
+                    "reason": "exception",
+                    "message": str(exc),
+                    **({"exact_submission_id": exact_submission_id} if exact_submission_id else {}),
+                }
+            )
 
     def _ensure_server_session(self, server: Any, frame: dict[str, Any]) -> dict:
         sid = str(frame.get("sid") or "")

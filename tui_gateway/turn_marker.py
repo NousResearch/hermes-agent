@@ -121,7 +121,7 @@ def record_turn_start(
         logger.debug("failed to record turn marker for %s", session_key, exc_info=True)
 
 
-def clear_turn_marker(home: Path | str, session_key: str) -> None:
+def clear_turn_marker(home: Path | str, session_key: str, submission_id: str | None = None) -> None:
     """Remove the marker once its turn concluded (any outcome the client saw)."""
     if not session_key:
         return
@@ -129,12 +129,19 @@ def clear_turn_marker(home: Path | str, session_key: str) -> None:
         with _lock:
             path = _marker_path(home)
             entries = _load(path)
-            if session_key not in entries:
-                return
-            del entries[session_key]
-            _store(path, entries)
+            if session_key in entries:
+                del entries[session_key]
+                _store(path, entries)
     except Exception:
         logger.debug("failed to clear turn marker for %s", session_key, exc_info=True)
+    if submission_id is None:
+        return
+    try:
+        from tui_gateway.exact_admission import clear_exact_turn_marker
+
+        clear_exact_turn_marker(home, session_key, submission_id)
+    except Exception:
+        logger.debug("failed to clear exact turn marker for %s", session_key, exc_info=True)
 
 
 def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | None:
@@ -147,7 +154,12 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
     except Exception:
         return None
     if not isinstance(entry, dict):
-        return None
+        try:
+            from tui_gateway.exact_admission import read_exact_turn_marker
+
+            return read_exact_turn_marker(home, session_key)
+        except Exception:
+            return None
     prompt = str(entry.get("prompt") or "")
     if not prompt.strip():
         return None

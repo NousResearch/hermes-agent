@@ -21,6 +21,20 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
+import {
+  type RelayAttachmentTarget,
+  relayComposerAttachments,
+  type RelayedAttachment,
+  type RelayStageReceipt
+} from '@/app/chat/composer/attachment-relay'
+import {
+  createDirectDraftAdmission,
+  type DirectDraft,
+  type DirectDraftReceipt,
+  type DirectDraftSubmitOptions,
+  type DirectDraftTarget,
+  type DirectDraftTargetQuery
+} from '@/app/chat/composer/direct-draft'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'
@@ -32,6 +46,11 @@ import {
   revealTreePane
 } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
+import {
+  pluginStatus,
+  type PublicPluginStatus,
+  subscribePluginStatus
+} from '@/contrib/plugins-store'
 import { registry } from '@/contrib/registry'
 import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'
 import {
@@ -68,6 +87,8 @@ import {
   $sessions,
   rememberedSessionProfile,
   requestSessionResume,
+  resolveComposerSessionKey,
+  sessionMatchesStoredId,
   setResumeExhaustedSessionId
 } from '@/store/session'
 import {
@@ -380,7 +401,423 @@ async function awaitProfileActivation(
   // by mutation: removing it changed no test outcome.
 }
 
+export type PluginSdkCapability =
+  | 'plugin-status'
+  | 'composer-disposition'
+  | 'exact-session-submit'
+  | 'attachment-relay'
+
+export const PLUGIN_SDK_CAPABILITY_VERSIONS: Readonly<Record<PluginSdkCapability, number>> = Object.freeze({
+  'plugin-status': 1,
+  'composer-disposition': 2,
+  'exact-session-submit': 2,
+  'attachment-relay': 1
+})
+const LOCAL_CONNECTION_ID = 'local'
+const SUBMISSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/
+const RELAY_MAX_BYTES = 64 * 1024 * 1024
+
+interface ExactSessionIdentity {
+  busy: boolean
+  capabilities: Record<string, number>
+  lineage_root_id: string
+  runtime_session_id: string
+  stored_session_id: string
+}
+
+const directDraftTargetForSession = (query: DirectDraftTargetQuery): DirectDraftTarget | null => {
+  const sessions = $sessions.get()
+  const profile = normalizeProfileKey(query.profile)
+  const row = sessions.find(
+    session =>
+      sessionMatchesStoredId(session, query.storedSessionId) &&
+      normalizeProfileKey(session.profile) === profile &&
+      (session.connection_id ?? activeGatewayConnectionId() ?? LOCAL_CONNECTION_ID) === query.connectionId
+  )
+  const state = $sessionStates.get()[query.runtimeSessionId]
+
+  if (!row || !state || state.storedSessionId !== row.id) {
+    return null
+  }
+
+  const lineageRootId = row._lineage_root_id ?? row.id
+  const isFocusedMain =
+    ($focusedRuntimeId.get() ?? $activeSessionId.get()) === query.runtimeSessionId &&
+    sessionMatchesStoredId(row, $selectedStoredSessionId.get() ?? '')
+
+  return {
+    composerScope: resolveComposerSessionKey(row.id, sessions) ?? lineageRootId,
+    composerTarget: isFocusedMain ? 'main' : `tile:${row.id}`,
+    connectionId: query.connectionId,
+    lineageRootId,
+    profile,
+    runtimeSessionId: query.runtimeSessionId,
+    storedSessionId: row.id
+  }
+}
+
+const directDraftTargetForFocusedSession = (): DirectDraftTarget | null => {
+  const runtimeSessionId = $focusedRuntimeId.get() ?? $activeSessionId.get()
+  const storedSessionId = $focusedStoredSessionId.get() ?? $selectedStoredSessionId.get()
+
+  if (!runtimeSessionId || !storedSessionId) {
+    return null
+  }
+  const row = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+
+  if (!row) {
+    return null
+  }
+
+  return directDraftTargetForSession({
+    connectionId: row.connection_id ?? activeGatewayConnectionId() ?? LOCAL_CONNECTION_ID,
+    profile: normalizeProfileKey(row.profile ?? $focusedSessionProfile.get()),
+    runtimeSessionId,
+    storedSessionId
+  })
+}
+
+const directDraftTargetIsCurrent = (target: RelayAttachmentTarget): boolean => {
+  const current = directDraftTargetForSession({
+    connectionId: target.connectionId,
+    profile: target.profile,
+    runtimeSessionId: target.runtimeSessionId,
+    storedSessionId: target.storedSessionId
+  })
+
+  return Boolean(current && current.lineageRootId === target.lineageRootId)
+}
+
+const requestExactSessionIdentity = (target: RelayAttachmentTarget): Promise<ExactSessionIdentity> =>
+  requestGatewayForAgent<ExactSessionIdentity>(target.connectionId, target.profile, 'session.identity', {
+    session_id: target.runtimeSessionId
+  })
+
+const exactIdentityMatches = (identity: ExactSessionIdentity, target: RelayAttachmentTarget): boolean =>
+  identity.runtime_session_id === target.runtimeSessionId &&
+  identity.stored_session_id === target.storedSessionId &&
+  identity.lineage_root_id === target.lineageRootId
+
+const ownsCapability = (identity: ExactSessionIdentity, name: string): boolean =>
+  Object.prototype.hasOwnProperty.call(identity.capabilities, name) && identity.capabilities[name] === 1
+
+async function requireExactTarget(target: RelayAttachmentTarget, capability: string): Promise<ExactSessionIdentity> {
+  if (!directDraftTargetIsCurrent(target)) {
+    throw new Error('stale exact target')
+  }
+  const identity = await requestExactSessionIdentity(target)
+  if (!exactIdentityMatches(identity, target)) {
+    throw new Error('stale exact target')
+  }
+  if (identity.busy) {
+    throw new Error('busy exact target')
+  }
+  if (!ownsCapability(identity, capability)) {
+    throw new Error('unsupported exact target capability')
+  }
+  return identity
+}
+
+function dataUrlParts(value: string): { bytes: Uint8Array; mediaType: string } {
+  const match = /^data:([^;,]+);base64,([\s\S]*)$/i.exec(value)
+  if (!match) {
+    throw new Error('attachment reader returned an invalid data URL')
+  }
+  const binary = atob(match[2]!.replace(/\s+/g, ''))
+  return { bytes: Uint8Array.from(binary, character => character.charCodeAt(0)), mediaType: match[1]! }
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  }
+  return btoa(binary)
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(',')}]`
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value as object)
+      .sort()
+      .map(key => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+async function sha256Text(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function mapRelayReceipt(value: Record<string, unknown>): RelayStageReceipt {
+  return {
+    attached: value.attached === true,
+    bytes: Number(value.bytes),
+    mediaType: String(value.media_type ?? ''),
+    name: String(value.name ?? ''),
+    order: Number(value.order),
+    ...(value.ref_text ? { refText: String(value.ref_text) } : {}),
+    runtimeSessionId: String(value.runtime_session_id ?? ''),
+    sha256: String(value.sha256 ?? ''),
+    storedName: String(value.stored_name ?? '')
+  }
+}
+
+function closedExactReceiptState(
+  value: unknown,
+  binding: Record<string, unknown>
+): 'durably_accepted' | 'rejected' | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== null && prototype !== Object.prototype) {
+    return null
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value) as Record<string, PropertyDescriptor>
+  if (Reflect.ownKeys(descriptors).some(key => typeof key !== 'string' || !('value' in descriptors[key]!))) {
+    return null
+  }
+  const state = descriptors.state?.value
+  if (state !== 'durably_accepted' && state !== 'rejected') {
+    return null
+  }
+  const expectedKeys = new Set([
+    ...Object.keys(binding),
+    'version',
+    'state',
+    'accepted_at',
+    ...(state === 'rejected' ? ['reason'] : [])
+  ])
+  const keys = Object.keys(descriptors)
+  if (keys.length !== expectedKeys.size || keys.some(key => !expectedKeys.has(key))) {
+    return null
+  }
+  if (
+    descriptors.version?.value !== 1 ||
+    typeof descriptors.accepted_at?.value !== 'string' ||
+    !descriptors.accepted_at.value ||
+    (state === 'rejected' && (typeof descriptors.reason?.value !== 'string' || !descriptors.reason.value))
+  ) {
+    return null
+  }
+  if (Object.entries(binding).some(([key, expected]) => descriptors[key]?.value !== expected)) {
+    return null
+  }
+
+  return state
+}
+
 export const host = {
+  /** Versioned additive feature probe; inherited names never count. */
+  capabilityVersion: (capability: string): number =>
+    typeof capability === 'string' &&
+    capability.length > 0 &&
+    Object.prototype.hasOwnProperty.call(PLUGIN_SDK_CAPABILITY_VERSIONS, capability)
+      ? PLUGIN_SDK_CAPABILITY_VERSIONS[capability as PluginSdkCapability]
+      : 0,
+
+  /** Credential-free current state of one Desktop plugin. */
+  pluginStatus: (id: string): PublicPluginStatus => pluginStatus(id),
+
+  /** Immediate + reactive state subscription, isolated from loader lifecycle. */
+  onPluginStatus: (id: string, listener: (status: PublicPluginStatus) => void): (() => void) =>
+    subscribePluginStatus(id, listener),
+
+  /** Exact non-secret identity of the focused persisted session, or null. */
+  focusedSessionTarget: (): DirectDraftTarget | null => directDraftTargetForFocusedSession(),
+
+  /** Resolve an explicit connection/profile/runtime/stored binding. */
+  sessionTarget: (query: DirectDraftTargetQuery): DirectDraftTarget | null => directDraftTargetForSession(query),
+
+  /** Relay only current middleware-authorized composer attachments. */
+  relayAttachments: async (
+    target: RelayAttachmentTarget,
+    attachments: DirectDraft['attachments'] = []
+  ): Promise<RelayedAttachment[]> =>
+    relayComposerAttachments(target, attachments, {
+      maxBytes: RELAY_MAX_BYTES,
+      now: Date.now,
+      revalidate: async current => {
+        await requireExactTarget(current, 'attachment_relay')
+      },
+      read: async attachment => {
+        const bridge = window.hermesDesktop?.readFileDataUrlForAttach
+        if (!bridge || !attachment.path) {
+          throw new Error('attachment bytes are unavailable through the Desktop bridge')
+        }
+        return dataUrlParts(await bridge(attachment.path))
+      },
+      stage: async (current, attachment) => {
+        const relay = {
+          stored_session_id: current.storedSessionId,
+          lineage_root_id: current.lineageRootId,
+          name: attachment.name,
+          media_type: attachment.mediaType,
+          bytes: attachment.bytes.byteLength,
+          sha256: attachment.sha256,
+          order: attachment.order
+        }
+        const result = await requestGatewayForAgent<Record<string, unknown>>(
+          current.connectionId,
+          current.profile,
+          attachment.kind === 'image' ? 'image.attach_bytes' : 'file.attach',
+          attachment.kind === 'image'
+            ? {
+                session_id: current.runtimeSessionId,
+                content_base64: `data:${attachment.mediaType};base64,${bytesToBase64(attachment.bytes)}`,
+                filename: attachment.name,
+                relay
+              }
+            : {
+                session_id: current.runtimeSessionId,
+                data_url: `data:${attachment.mediaType};base64,${bytesToBase64(attachment.bytes)}`,
+                name: attachment.name,
+                relay
+              }
+        )
+        return mapRelayReceipt(result)
+      }
+    }),
+
+  /** Exact direct submission below composer middleware; never queues, redirects, retargets, or blindly retries. */
+  submitDraft: async (
+    target: DirectDraftTarget,
+    draft: DirectDraft,
+    options: DirectDraftSubmitOptions = {}
+  ): Promise<DirectDraftReceipt> => {
+    const submissionId = options.submissionId ?? `submit_${crypto.randomUUID().replaceAll('-', '')}`
+    const reject = (reason: Extract<DirectDraftReceipt, { state: 'rejected' }>['reason']): DirectDraftReceipt => ({
+      state: 'rejected',
+      submissionId,
+      reason
+    })
+
+    if (!SUBMISSION_ID_PATTERN.test(submissionId)) {
+      return reject('invalid-submission-id')
+    }
+    if (!draft || typeof draft.text !== 'string' || draft.text.length > 64_000 || (!draft.text && !draft.attachments?.length)) {
+      return reject('invalid-draft')
+    }
+
+    let identity: ExactSessionIdentity
+    try {
+      if (!directDraftTargetIsCurrent(target)) {
+        return reject('stale-target')
+      }
+      identity = await requestExactSessionIdentity(target)
+    } catch {
+      return reject('target-unavailable')
+    }
+    if (!exactIdentityMatches(identity, target)) {
+      return reject('stale-target')
+    }
+    if (identity.busy) {
+      return reject('busy-target')
+    }
+    if (!ownsCapability(identity, 'exact_submission') || !ownsCapability(identity, 'attachment_relay')) {
+      return reject('unsupported-capability')
+    }
+
+    let relayed: RelayedAttachment[] = []
+    try {
+      if (draft.attachments?.length) {
+        relayed = await host.relayAttachments(target, draft.attachments)
+      }
+    } catch (error) {
+      return reject(error instanceof Error && /authorized/i.test(error.message) ? 'unauthorized-attachment' : 'stale-target')
+    }
+
+    let admission
+    try {
+      admission = await createDirectDraftAdmission({ text: draft.text, attachments: relayed })
+      await requireExactTarget(target, 'exact_submission')
+    } catch (error) {
+      return reject(error instanceof Error && /invalid exact direct draft/i.test(error.message) ? 'invalid-draft' : 'stale-target')
+    }
+
+    const exactSubmission = {
+      submission_id: submissionId,
+      connection_id: target.connectionId,
+      profile: target.profile,
+      stored_session_id: target.storedSessionId,
+      lineage_root_id: target.lineageRootId,
+      payload_digest: admission.payloadDigest,
+      source_digest: await sha256Text(admission.sourceText),
+      context_digest: await sha256Text(admission.contextText),
+      attachment_manifest_digest: await sha256Text(stableJson(admission.attachmentManifest)),
+      attachment_count: admission.attachmentManifest.length,
+      source_text: admission.sourceText,
+      context_text: admission.contextText,
+      attachments: admission.attachmentManifest
+    }
+    const receiptBinding = {
+      submission_id: submissionId,
+      connection_id: target.connectionId,
+      profile: target.profile,
+      runtime_session_id: target.runtimeSessionId,
+      stored_session_id: target.storedSessionId,
+      lineage_root_id: target.lineageRootId,
+      payload_digest: admission.payloadDigest,
+      source_digest: exactSubmission.source_digest,
+      context_digest: exactSubmission.context_digest,
+      attachment_manifest_digest: exactSubmission.attachment_manifest_digest,
+      attachment_count: exactSubmission.attachment_count
+    }
+
+    try {
+      const response = await requestGatewayForAgent<{ receipt?: Record<string, unknown> }>(
+        target.connectionId,
+        target.profile,
+        'prompt.submit',
+        { session_id: target.runtimeSessionId, text: admission.contextText, exact_submission: exactSubmission }
+      )
+      const receipt = response.receipt
+      if (closedExactReceiptState(receipt, receiptBinding) === 'durably_accepted') {
+        return { state: 'durably_accepted', submissionId, payloadDigest: admission.payloadDigest }
+      }
+    } catch {
+      // Admission may have crossed the durable boundary. Reconcile exactly once;
+      // never resend prompt.submit from this path.
+    }
+
+    try {
+      const lookup = await requestGatewayForAgent<{ receipt?: Record<string, unknown> }>(
+        target.connectionId,
+        target.profile,
+        'prompt.receipt',
+        {
+          session_id: target.runtimeSessionId,
+          submission_id: submissionId,
+          connection_id: target.connectionId,
+          profile: target.profile,
+          stored_session_id: target.storedSessionId,
+          lineage_root_id: target.lineageRootId,
+          payload_digest: admission.payloadDigest,
+          source_digest: exactSubmission.source_digest,
+          context_digest: exactSubmission.context_digest,
+          attachment_manifest_digest: exactSubmission.attachment_manifest_digest,
+          attachment_count: exactSubmission.attachment_count
+        }
+      )
+      const receiptState = closedExactReceiptState(lookup.receipt, receiptBinding)
+      if (receiptState === 'durably_accepted') {
+        return { state: 'durably_accepted', submissionId, payloadDigest: admission.payloadDigest }
+      }
+      if (receiptState === 'rejected') {
+        return reject('stale-target')
+      }
+    } catch {
+      // The only honest state is uncertain; caller retains its draft.
+    }
+
+    return { state: 'acknowledgement_uncertain', submissionId, payloadDigest: admission.payloadDigest }
+  },
+
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),
@@ -875,13 +1312,27 @@ export const host = {
 // Every contribution surface, plugin-reachable: register keybinds, palette
 // commands, routes, themes, panes, composer extensions, and bar items with
 // the same area ids + payload types core uses.
+export type {
+  RelayAttachmentTarget,
+  RelayedAttachment
+} from '@/app/chat/composer/attachment-relay'
 export {
   COMPOSER_AREAS,
   type ComposerAtCompletionItem,
   type ComposerAtCompletionSource,
   type ComposerAttachmentProvider,
+  type ComposerConsumeDisposition,
+  type ComposerDisposition,
+  type ComposerDraft,
   type ComposerMiddleware
 } from '@/app/chat/composer/contrib'
+export type {
+  DirectDraft,
+  DirectDraftReceipt,
+  DirectDraftSubmitOptions,
+  DirectDraftTarget,
+  DirectDraftTargetQuery
+} from '@/app/chat/composer/direct-draft'
 
 // -- ui: the design language --------------------------------------------------
 
@@ -991,6 +1442,7 @@ export type {
   PluginRestOptions,
   PluginStorage
 } from '@/contrib/plugin'
+export type { PublicPluginState, PublicPluginStatus } from '@/contrib/plugins-store'
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —

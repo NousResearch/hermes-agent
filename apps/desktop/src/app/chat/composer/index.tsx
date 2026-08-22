@@ -34,7 +34,7 @@ import {
   slashArgStage
 } from './composer-utils'
 import { ContextMenu } from './context-menu'
-import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
+import { COMPOSER_AREAS, isComposerTerminalRunResult, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
@@ -139,6 +139,10 @@ export function ChatBar({
 
       if (!draft) {
         return false
+      }
+
+      if (isComposerTerminalRunResult(draft)) {
+        return draft.disposition === 'consume'
       }
 
       return onSubmitProp(draft.text, { ...options, attachments: draft.attachments })

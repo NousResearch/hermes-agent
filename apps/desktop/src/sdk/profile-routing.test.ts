@@ -31,7 +31,15 @@ vi.mock('@/store/session', async () => {
     $sessions: atom([]),
     rememberedSessionProfile: (_sessions: unknown, _sessionId: null | string, activeProfile: null | string) =>
       (activeProfile ?? '').trim() || 'default',
+    resolveComposerSessionKey: (
+      storedSessionId: null | string,
+      sessions: Array<{ _lineage_root_id?: null | string; id: string }> = []
+    ) =>
+      sessions.find(session => session.id === storedSessionId || session._lineage_root_id === storedSessionId)
+        ?._lineage_root_id ?? storedSessionId,
     requestSessionResume: vi.fn(),
+    sessionMatchesStoredId: (session: { _lineage_root_id?: null | string; id: string }, storedSessionId: string) =>
+      session.id === storedSessionId || session._lineage_root_id === storedSessionId,
     setResumeExhaustedSessionId: vi.fn()
   }
 })
@@ -79,6 +87,7 @@ vi.mock('@/store/gateway', async () => {
 
   return {
     $gateway: atom(null),
+    activeGatewayConnectionId: vi.fn(() => 'connection-local'),
     ensureGatewayForAgent: vi.fn(),
     openGatewayForAgent: vi.fn(),
     openGatewayForProfile: vi.fn(),
@@ -99,7 +108,12 @@ vi.mock('@/store/gateway', async () => {
   }
 })
 
-const { host } = await import('./index')
+const sdk = await import('./index')
+const { host } = sdk
+const { captureHostComposerAttachmentAuthority, createComposerAttachmentAttempt } =
+  await import('@/app/chat/composer/attachment-relay')
+const { COMPOSER_AREAS } = await import('@/app/chat/composer/contrib')
+const { registry } = await import('@/contrib/registry')
 const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile } = await import('@/hermes')
 
@@ -115,10 +129,17 @@ const {
   setShowAllProfiles
 } = await import('@/store/profile')
 
-const { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } = await import('@/store/session-states')
+const { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId, $sessionStates } =
+  await import('@/store/session-states')
 
-const { $activeSessionId, $messages, $selectedStoredSessionId, requestSessionResume, setResumeExhaustedSessionId } =
-  await import('@/store/session')
+const {
+  $activeSessionId,
+  $messages,
+  $selectedStoredSessionId,
+  $sessions,
+  requestSessionResume,
+  setResumeExhaustedSessionId
+} = await import('@/store/session')
 
 const setMockAtom = <T>(store: unknown, value: T) => (store as { set(next: T): void }).set(value)
 
@@ -134,6 +155,19 @@ const profile = (name: string): ProfileInfo => ({
 
 afterEach(() => {
   vi.clearAllMocks()
+  vi.mocked(requestGatewayForAgent).mockReset().mockImplementation(
+    async (
+      connectionId: null | string,
+      profileName: string,
+      method: string,
+      params?: Record<string, unknown>
+    ) => ({
+      connectionId,
+      method,
+      params: params ?? {},
+      profile: profileName
+    })
+  )
   $activeGatewayProfile.set('remote-worker')
   $gatewaySwapTarget.set(null)
   setMockAtom($focusedRuntimeId, null)
@@ -142,11 +176,421 @@ afterEach(() => {
   setMockAtom($activeSessionId, null)
   setMockAtom($selectedStoredSessionId, null)
   setMockAtom($messages, [])
+  setMockAtom($sessions, [])
+  setMockAtom($sessionStates, {})
   $profiles.set([profile('cached-only')])
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
 describe('connection-aware plugin host APIs', () => {
+  const exactIdentity = (overrides: Record<string, unknown> = {}) => ({
+    runtime_session_id: 'runtime-1',
+    stored_session_id: 'tip-1',
+    lineage_root_id: 'root-1',
+    busy: false,
+    capabilities: { exact_submission: 1, attachment_relay: 1 },
+    ...overrides
+  })
+
+  const exactTarget = () => {
+    setMockAtom($sessions, [
+      { id: 'tip-1', _lineage_root_id: 'root-1', profile: 'worker', connection_id: 'connection-a' }
+    ])
+    setMockAtom($sessionStates, { 'runtime-1': { storedSessionId: 'tip-1' } })
+
+    return host.sessionTarget({
+      connectionId: 'connection-a',
+      profile: 'worker',
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: 'tip-1'
+    })!
+  }
+
+  const exactReceipt = (
+    params: Record<string, unknown>,
+    state: 'durably_accepted' | 'rejected' = 'durably_accepted'
+  ) => {
+    const exact = (params.exact_submission as Record<string, unknown> | undefined) ?? params
+    return {
+      version: 1,
+      state,
+      accepted_at: '2026-08-21T00:00:00Z',
+      submission_id: exact.submission_id,
+      connection_id: exact.connection_id,
+      profile: exact.profile,
+      runtime_session_id: params.session_id,
+      stored_session_id: exact.stored_session_id,
+      lineage_root_id: exact.lineage_root_id,
+      payload_digest: exact.payload_digest,
+      source_digest: exact.source_digest,
+      context_digest: exact.context_digest,
+      attachment_manifest_digest: exact.attachment_manifest_digest,
+      attachment_count: exact.attachment_count,
+      ...(state === 'rejected' ? { reason: 'stale-target' } : {})
+    }
+  }
+
+  it('publishes the exact canonical SDK capability table and versions', () => {
+    const versions = (
+      sdk as unknown as {
+        PLUGIN_SDK_CAPABILITY_VERSIONS: Readonly<Record<string, number>>
+      }
+    ).PLUGIN_SDK_CAPABILITY_VERSIONS
+
+    expect.soft(host.capabilityVersion('composer-disposition')).toBe(2)
+    expect.soft(host.capabilityVersion('exact-session-submit')).toBe(2)
+    expect.soft(host.capabilityVersion('direct-draft-submit')).toBe(0)
+    expect(versions).toEqual({
+      'plugin-status': 1,
+      'composer-disposition': 2,
+      'exact-session-submit': 2,
+      'attachment-relay': 1
+    })
+    expect(Object.isFrozen(versions)).toBe(true)
+    expect(Reflect.ownKeys(versions)).toEqual([
+      'plugin-status',
+      'composer-disposition',
+      'exact-session-submit',
+      'attachment-relay'
+    ])
+  })
+
+  it('returns zero for unknown, malformed, empty, symbol, inherited, and prototype-collision names', () => {
+    const capabilityVersion = host.capabilityVersion as (capability: unknown) => number
+    const coercion = vi.fn()
+    const hostile = Object.defineProperty({}, Symbol.toPrimitive, {
+      get: () => {
+        coercion()
+        throw new Error('capability names must not be coerced')
+      }
+    })
+
+    for (const value of [
+      '',
+      'unknown-capability',
+      'toString',
+      '__proto__',
+      'constructor',
+      Symbol('plugin-status'),
+      null,
+      undefined,
+      1,
+      hostile,
+      Object.create({ capability: 'plugin-status' })
+    ]) {
+      expect(capabilityVersion(value)).toBe(0)
+    }
+    expect(coercion).not.toHaveBeenCalled()
+  })
+
+  it('projects exact connection, profile, runtime, stored, lineage, and focus identity', () => {
+    setMockAtom($focusedRuntimeId, 'runtime-1')
+    setMockAtom($focusedStoredSessionId, 'root-1')
+    setMockAtom($selectedStoredSessionId, 'root-1')
+
+    expect(exactTarget()).toEqual({
+      composerScope: 'root-1',
+      composerTarget: 'main',
+      connectionId: 'connection-a',
+      lineageRootId: 'root-1',
+      profile: 'worker',
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: 'tip-1'
+    })
+  })
+
+  it('submits directly without recursively running composer middleware', async () => {
+    const target = exactTarget()
+    const middleware = vi.fn((draft: { text: string }) => draft)
+    const dispose = registry.register({
+      id: 'no-recursion-guard',
+      area: COMPOSER_AREAS.middleware,
+      data: { handler: middleware }
+    })
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connection, _profile, method, params) => {
+      if (method === 'session.identity') {
+        return exactIdentity()
+      }
+      if (method === 'prompt.submit') {
+        return { receipt: exactReceipt(params ?? {}) }
+      }
+      throw new Error(`unexpected method ${method}`)
+    })
+
+    try {
+      await expect(
+        host.submitDraft(target, { text: '  Unicode Ω\nsecond line  ' }, { submissionId: 'submit_exact_00000001' })
+      ).resolves.toMatchObject({ state: 'durably_accepted', submissionId: 'submit_exact_00000001' })
+      expect(middleware).not.toHaveBeenCalled()
+      expect(vi.mocked(requestGatewayForAgent).mock.calls.filter(call => call[2] === 'prompt.submit')).toHaveLength(1)
+    } finally {
+      dispose()
+    }
+  })
+
+  it('fails closed on inherited backend capabilities', async () => {
+    const target = exactTarget()
+    const inherited = Object.create({ exact_submission: 1, attachment_relay: 1 })
+    vi.mocked(requestGatewayForAgent).mockResolvedValueOnce(exactIdentity({ capabilities: inherited }))
+
+    await expect(
+      host.submitDraft(target, { text: 'exact' }, { submissionId: 'submit_exact_00000002' })
+    ).resolves.toMatchObject({ state: 'rejected', reason: 'unsupported-capability' })
+    expect(vi.mocked(requestGatewayForAgent).mock.calls.some(call => call[2] === 'prompt.submit')).toBe(false)
+  })
+
+  it('does not retry, recover, queue, or retarget a busy exact session', async () => {
+    const target = exactTarget()
+    vi.mocked(requestGatewayForAgent).mockResolvedValueOnce(exactIdentity({ busy: true }))
+
+    await expect(
+      host.submitDraft(target, { text: 'exact' }, { submissionId: 'submit_exact_00000003' })
+    ).resolves.toMatchObject({ state: 'rejected', reason: 'busy-target' })
+    expect(requestGatewayForAgent).toHaveBeenCalledTimes(1)
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'connection-a',
+      'worker',
+      'session.identity',
+      { session_id: 'runtime-1' }
+    )
+  })
+
+  it('returns acknowledgement uncertain without blind retry when admission cannot be reconciled', async () => {
+    const target = exactTarget()
+    vi.mocked(requestGatewayForAgent)
+      .mockResolvedValueOnce(exactIdentity())
+      .mockResolvedValueOnce(exactIdentity())
+      .mockRejectedValueOnce(new Error('transport timeout'))
+      .mockRejectedValueOnce(new Error('receipt lookup timeout'))
+
+    await expect(
+      host.submitDraft(target, { text: 'exact' }, { submissionId: 'submit_exact_00000004' })
+    ).resolves.toMatchObject({ state: 'acknowledgement_uncertain', submissionId: 'submit_exact_00000004' })
+    expect(vi.mocked(requestGatewayForAgent).mock.calls.filter(call => call[2] === 'prompt.submit')).toHaveLength(1)
+    expect(vi.mocked(requestGatewayForAgent).mock.calls.filter(call => call[2] === 'prompt.receipt')).toHaveLength(1)
+  })
+
+  it('sends complete receipt lookup identity and rejects a partial accepted receipt', async () => {
+    const target = exactTarget()
+    let lookupParams: Record<string, unknown> | undefined
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connection, _profile, method, params) => {
+      if (method === 'session.identity') {
+        return exactIdentity()
+      }
+      if (method === 'prompt.submit') {
+        throw new Error('transport timeout')
+      }
+      if (method === 'prompt.receipt') {
+        lookupParams = params
+        return {
+          receipt: {
+            state: 'durably_accepted',
+            submission_id: 'submit_exact_00000006',
+            payload_digest: params?.payload_digest
+          }
+        }
+      }
+      throw new Error(`unexpected method ${method}`)
+    })
+
+    await expect(
+      host.submitDraft(target, { text: 'exact' }, { submissionId: 'submit_exact_00000006' })
+    ).resolves.toMatchObject({ state: 'acknowledgement_uncertain' })
+    expect(Object.keys(lookupParams ?? {}).sort()).toEqual(
+      [
+        'attachment_count',
+        'attachment_manifest_digest',
+        'connection_id',
+        'context_digest',
+        'lineage_root_id',
+        'payload_digest',
+        'profile',
+        'session_id',
+        'source_digest',
+        'stored_session_id',
+        'submission_id'
+      ].sort()
+    )
+  })
+
+  it('rejects an accepted prompt receipt with one mismatched bound digest', async () => {
+    const target = exactTarget()
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connection, _profile, method, params) => {
+      if (method === 'session.identity') {
+        return exactIdentity()
+      }
+      if (method === 'prompt.submit') {
+        const exact = params?.exact_submission as Record<string, unknown>
+        return {
+          receipt: {
+            version: 1,
+            state: 'durably_accepted',
+            accepted_at: '2026-08-21T00:00:00Z',
+            submission_id: exact.submission_id,
+            connection_id: exact.connection_id,
+            profile: exact.profile,
+            runtime_session_id: params?.session_id,
+            stored_session_id: exact.stored_session_id,
+            lineage_root_id: exact.lineage_root_id,
+            payload_digest: exact.payload_digest,
+            source_digest: '0'.repeat(64),
+            context_digest: exact.context_digest,
+            attachment_manifest_digest: exact.attachment_manifest_digest,
+            attachment_count: exact.attachment_count
+          }
+        }
+      }
+      if (method === 'prompt.receipt') {
+        throw new Error('receipt unavailable')
+      }
+      throw new Error(`unexpected method ${method}`)
+    })
+
+    await expect(
+      host.submitDraft(target, { text: 'exact' }, { submissionId: 'submit_exact_00000007' })
+    ).resolves.toMatchObject({ state: 'acknowledgement_uncertain' })
+  })
+
+  it.each([
+    ['inherited', 'durably_accepted'],
+    ['accessor', 'durably_accepted'],
+    ['polluted', 'durably_accepted'],
+    ['extra', 'durably_accepted'],
+    ['mistyped', 'durably_accepted'],
+    ['inherited', 'rejected'],
+    ['accessor', 'rejected'],
+    ['polluted', 'rejected'],
+    ['extra', 'rejected'],
+    ['mistyped', 'rejected']
+  ] as const)('keeps %s %s receipts acknowledgement uncertain', async (shape, state) => {
+    const target = exactTarget()
+    let getterCalls = 0
+    const hostile = (base: Record<string, unknown>): Record<string, unknown> => {
+      if (shape === 'inherited') {
+        const { state: inheritedState, ...own } = base
+        return Object.assign(Object.create({ state: inheritedState }), own)
+      }
+      if (shape === 'accessor') {
+        const { state: accessorState, ...own } = base
+        Object.defineProperty(own, 'state', {
+          enumerable: true,
+          get: () => {
+            getterCalls += 1
+            return accessorState
+          }
+        })
+        return own
+      }
+      if (shape === 'polluted') {
+        return Object.assign(Object.create({ polluted: true }), base)
+      }
+      if (shape === 'extra') {
+        return { ...base, extra: true }
+      }
+      return { ...base, version: '1' }
+    }
+
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connection, _profile, method, params) => {
+      if (method === 'session.identity') {
+        return exactIdentity()
+      }
+      if (method === 'prompt.submit') {
+        if (state === 'rejected') {
+          throw new Error('transport timeout')
+        }
+        return { receipt: hostile(exactReceipt(params ?? {}, state)) }
+      }
+      if (method === 'prompt.receipt') {
+        if (state === 'durably_accepted') {
+          throw new Error('receipt unavailable')
+        }
+        return { receipt: hostile(exactReceipt(params ?? {}, state)) }
+      }
+      throw new Error(`unexpected method ${method}`)
+    })
+
+    await expect(
+      host.submitDraft(target, { text: 'exact' }, { submissionId: `submit_${shape}_${state}` })
+    ).resolves.toMatchObject({ state: 'acknowledgement_uncertain' })
+    expect(getterCalls).toBe(0)
+  })
+
+  it('reconciles one valid closed completely bound rejected receipt', async () => {
+    const target = exactTarget()
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connection, _profile, method, params) => {
+      if (method === 'session.identity') {
+        return exactIdentity()
+      }
+      if (method === 'prompt.submit') {
+        throw new Error('transport timeout')
+      }
+      if (method === 'prompt.receipt') {
+        return { receipt: exactReceipt(params ?? {}, 'rejected') }
+      }
+      throw new Error(`unexpected method ${method}`)
+    })
+
+    await expect(
+      host.submitDraft(target, { text: 'exact' }, { submissionId: 'submit_exact_rejected_0001' })
+    ).resolves.toMatchObject({ state: 'rejected', reason: 'stale-target' })
+  })
+
+  it('rejects stale identity at the final prompt mutation boundary', async () => {
+    const target = exactTarget()
+    vi.mocked(requestGatewayForAgent)
+      .mockResolvedValueOnce(exactIdentity())
+      .mockResolvedValueOnce(exactIdentity({ lineage_root_id: 'other-root' }))
+
+    await expect(
+      host.submitDraft(target, { text: 'exact' }, { submissionId: 'submit_exact_00000005' })
+    ).resolves.toMatchObject({ state: 'rejected', reason: 'stale-target' })
+    expect(vi.mocked(requestGatewayForAgent).mock.calls.some(call => call[2] === 'prompt.submit')).toBe(false)
+  })
+
+  it('relays authorized bytes with repeated target probes and exact response integrity', async () => {
+    const target = exactTarget()
+    const item = {
+      id: 'file-1',
+      occurrenceId: 'occ-1',
+      kind: 'file' as const,
+      label: 'notes.txt',
+      path: 'C:/private/notes.txt'
+    }
+    const authority = captureHostComposerAttachmentAuthority([item])
+    const attempt = createComposerAttachmentAttempt(authority, [item], [item])
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      readFileDataUrlForAttach: async () => 'data:text/plain;base64,aGVsbG8='
+    }
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connection, _profile, method, params) => {
+      if (method === 'session.identity') {
+        return exactIdentity()
+      }
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          bytes: 5,
+          media_type: 'text/plain',
+          name: 'notes.txt',
+          order: 0,
+          ref_text: '@file:notes.txt',
+          runtime_session_id: 'runtime-1',
+          sha256: (params?.relay as { sha256?: string } | undefined)?.sha256,
+          stored_name: 'notes.txt'
+        }
+      }
+      throw new Error(`unexpected method ${method}`)
+    })
+
+    try {
+      await expect(host.relayAttachments(target, attempt.attachments)).resolves.toEqual([
+        expect.objectContaining({ name: 'notes.txt', order: 0, runtimeSessionId: 'runtime-1', size: 5 })
+      ])
+      expect(vi.mocked(requestGatewayForAgent).mock.calls.filter(call => call[2] === 'session.identity').length).toBeGreaterThanOrEqual(5)
+    } finally {
+      attempt.release()
+    }
+  })
+
   it('retires a profile gateway before deleting it', async () => {
     const order: string[] = []
 

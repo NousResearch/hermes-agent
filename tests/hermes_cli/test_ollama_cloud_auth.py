@@ -94,6 +94,63 @@ class TestDirectAliases:
         assert provider == "custom"
         assert alias == "glm"
 
+    def test_reverse_lookup_prefers_current_provider_when_model_is_shared(self, monkeypatch):
+        """Reverse lookup picks the alias whose provider matches the request.
+
+        When several aliases expose the same model ID on different providers,
+        the winner must be selected by provider match rather than by mapping
+        insertion order — otherwise the caller silently gets another provider's
+        endpoint.
+        """
+        from hermes_cli.model_switch import DirectAlias, resolve_alias
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {
+            "my-a": DirectAlias("claude-opus-4-6", "custom:provider-a", "https://api-a.example.com"),
+            "my-b": DirectAlias("claude-opus-4-6", "custom:provider-b", "https://api-b.example.com"),
+        })
+
+        result = resolve_alias("claude-opus-4-6", "custom:provider-b")
+        assert result is not None
+        provider, model, alias = result
+        assert provider == "custom:provider-b"
+        assert model == "claude-opus-4-6"
+        assert alias == "my-b"
+
+    def test_reverse_lookup_falls_back_to_first_match_for_unrelated_provider(self, monkeypatch):
+        """With no provider match, reverse lookup keeps its first-match behaviour.
+
+        Provider-preference must be a tie-breaker, not a filter: a model that no
+        alias serves on the current provider still routes through some alias
+        rather than falling through to the catalog.
+        """
+        from hermes_cli.model_switch import DirectAlias, resolve_alias
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {
+            "my-a": DirectAlias("claude-opus-4-6", "custom:provider-a", "https://api-a.example.com"),
+            "my-b": DirectAlias("claude-opus-4-6", "custom:provider-b", "https://api-b.example.com"),
+        })
+
+        result = resolve_alias("claude-opus-4-6", "custom:provider-c")
+        assert result == ("custom:provider-a", "claude-opus-4-6", "my-a")
+
+    def test_exact_alias_name_lookup_beats_provider_preference(self, monkeypatch):
+        """An exact alias-name hit still wins over reverse lookup entirely."""
+        from hermes_cli.model_switch import DirectAlias, resolve_alias
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {
+            "my-a": DirectAlias("shared-model", "custom:provider-a", "https://api-a.example.com"),
+            "my-b": DirectAlias("shared-model", "custom:provider-b", "https://api-b.example.com"),
+        })
+
+        # Asking for the alias *name* "my-a" while sitting on provider-b must
+        # still return provider-a's alias — name lookup is not provider-scoped.
+        assert resolve_alias("my-a", "custom:provider-b") == (
+            "custom:provider-a", "shared-model", "my-a",
+        )
+
 
 # ---------------------------------------------------------------------------
 # /model command persistence
@@ -420,6 +477,130 @@ class TestSwitchModelDirectAliasOverride:
         assert result.success
         assert result.api_key == "no-key-required"
         assert result.base_url == "http://localhost:11434/v1"
+
+    @staticmethod
+    def _stub_explicit_provider_b(monkeypatch, ms):
+        """Wire the collaborators an explicit `--provider custom:provider-b` switch needs.
+
+        Everything stubbed here is *outside* the unit under test: provider
+        definition lookup, runtime credential resolution, and model validation.
+        The runtime resolver deliberately reports provider B's own base_url so
+        that any surviving provider-A URL in the result can only have come from
+        the direct-alias override path.
+        """
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            ms,
+            "resolve_provider_full",
+            lambda explicit_provider, *_args, **_kwargs: SimpleNamespace(
+                id="custom:provider-b",
+                name="Provider B",
+                base_url="https://api-b.example.com",
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None, **_kwargs: {
+                "api_key": "sk-bbb",
+                "base_url": "https://api-b.example.com",
+                "api_mode": "openai_compat",
+                "provider": "custom:provider-b",
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.validate_requested_model",
+            lambda *a, **kw: {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.opencode_model_api_mode",
+            lambda *a, **kw: "openai_compat",
+        )
+        monkeypatch.setattr(ms, "get_model_capabilities", lambda *a, **kw: None)
+        monkeypatch.setattr(ms, "get_model_info", lambda *a, **kw: None)
+
+    def test_explicit_provider_prefers_matching_alias_base_url(self, monkeypatch):
+        """An explicit switch adopts the alias belonging to the *requested* provider.
+
+        Two aliases share one model ID. Asking for provider B by name must route
+        to B's endpoint and report B's alias, not whichever alias happens to be
+        first in the mapping.
+        """
+        from hermes_cli.model_switch import DirectAlias
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {
+            "my-a": DirectAlias("claude-opus-4-6", "custom:provider-a", "https://api-a.example.com"),
+            "my-b": DirectAlias("claude-opus-4-6", "custom:provider-b", "https://api-b.example.com"),
+        })
+        self._stub_explicit_provider_b(monkeypatch, ms)
+
+        result = ms.switch_model(
+            "claude-opus-4-6",
+            "custom:provider-a",
+            "old-model",
+            current_base_url="https://api-a.example.com",
+            explicit_provider="custom:provider-b",
+        )
+
+        assert result.success
+        assert result.target_provider == "custom:provider-b"
+        # The invariant: the endpoint must belong to the provider we switched to.
+        assert result.base_url == "https://api-b.example.com"
+        assert result.resolved_via_alias == "my-b"
+
+    def test_explicit_provider_discards_alias_for_other_provider(self, monkeypatch):
+        """An alias owned by a *different* provider is never adopted.
+
+        Only provider A has an alias for the model. Switching explicitly to
+        provider B must not inherit A's base_url, and must not claim to have
+        resolved via A's alias.
+        """
+        from hermes_cli.model_switch import DirectAlias
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {
+            "my-a": DirectAlias("shared-model", "custom:provider-a", "https://api-a.example.com"),
+        })
+        self._stub_explicit_provider_b(monkeypatch, ms)
+
+        result = ms.switch_model(
+            "shared-model",
+            "custom:provider-a",
+            "old-model",
+            current_base_url="https://api-a.example.com",
+            explicit_provider="custom:provider-b",
+        )
+
+        assert result.success
+        assert result.target_provider == "custom:provider-b"
+        assert result.base_url == "https://api-b.example.com"
+        assert result.resolved_via_alias == ""
+
+    def test_explicit_provider_without_any_alias_is_unchanged(self, monkeypatch):
+        """No alias for the model at all: the switch still succeeds on B's endpoint."""
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
+        self._stub_explicit_provider_b(monkeypatch, ms)
+
+        result = ms.switch_model(
+            "unaliased-model",
+            "custom:provider-a",
+            "old-model",
+            current_base_url="https://api-a.example.com",
+            explicit_provider="custom:provider-b",
+        )
+
+        assert result.success
+        assert result.target_provider == "custom:provider-b"
+        assert result.base_url == "https://api-b.example.com"
+        assert result.resolved_via_alias == ""
 
 
 # ---------------------------------------------------------------------------

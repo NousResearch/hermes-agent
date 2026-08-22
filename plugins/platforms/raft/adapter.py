@@ -462,6 +462,7 @@ class RaftAdapter(BasePlatformAdapter):
         )
         self._runner = None
         self._bridge_process: Optional[subprocess.Popen] = None
+        self._bridge_monitor_task: Optional[asyncio.Task] = None
         self._activity_queue = ActivityQueue()
 
     @property
@@ -545,14 +546,54 @@ class RaftAdapter(BasePlatformAdapter):
         ]
         env = {**os.environ, "RAFT_CHANNEL_TOKEN": self._bridge_token}
         try:
-            self._bridge_process = subprocess.Popen(
-                cmd, env=env, stdin=subprocess.DEVNULL
+            loop = asyncio.get_running_loop()
+            proc = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL)
+            self._bridge_process = proc
+            self._bridge_monitor_task = loop.create_task(
+                self._monitor_bridge_process(proc)
             )
-            logger.info("[raft] Spawned bridge pid=%d profile=%s endpoint=%s", self._bridge_process.pid, profile, endpoint)
+            logger.info("[raft] Spawned bridge pid=%d profile=%s endpoint=%s", proc.pid, profile, endpoint)
         except Exception:
+            self._bridge_process = None
             logger.exception("[raft] Failed to spawn bridge")
 
+    async def _monitor_bridge_process(self, proc: subprocess.Popen) -> None:
+        try:
+            returncode = await asyncio.to_thread(proc.wait)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if self._bridge_process is not proc:
+                return
+            self._bridge_process = None
+            message = f"Raft bridge monitor failed: {exc}"
+            logger.exception("[raft] %s", message)
+            self._set_fatal_error("raft_bridge_monitor_error", message, retryable=True)
+            await self._notify_fatal_error()
+            return
+        finally:
+            if self._bridge_monitor_task is asyncio.current_task():
+                self._bridge_monitor_task = None
+
+        if self._bridge_process is not proc:
+            return
+        self._bridge_process = None
+
+        if not self._running:
+            logger.debug("[raft] Bridge process exited during shutdown (pid=%d code=%s)", proc.pid, returncode)
+            return
+
+        message = f"Raft bridge exited unexpectedly with status {returncode}"
+        logger.error("[raft] %s (pid=%d)", message, proc.pid)
+        self._set_fatal_error("raft_bridge_exited", message, retryable=True)
+        await self._notify_fatal_error()
+
     def _stop_bridge(self) -> None:
+        monitor = self._bridge_monitor_task
+        if monitor is not None:
+            monitor.cancel()
+            self._bridge_monitor_task = None
+
         proc = self._bridge_process
         if proc is None:
             return

@@ -1,6 +1,10 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const af: Translations = {
+// Auto-synced by scripts/i18n-sync.mjs — only keys that differ from en.ts are
+// listed below; everything else inherits English automatically. After editing
+// en.ts, run `npm run i18n:sync` to propagate, and `npm run i18n:check`
+// (wired into CI) guards against drift.
+export const af = defineLocale({
   common: {
     save: "Stoor",
     saving: "Besig om te stoor...",
@@ -43,20 +47,12 @@ export const af: Translations = {
     expand: "Vou uit",
     general: "Algemeen",
     messaging: "Boodskappe",
-    pluginLoadFailed:
-      "Kon nie hierdie inprop se skrip laai nie. Kontroleer die Netwerk-oortjie (dashboard-plugins/…) en die bediener se inprop-pad.",
-    pluginNotRegistered:
-      "Die inprop se skrip het nie register() geroep nie, of die skrip het 'n fout gegee. Maak die blaaier-konsole oop vir besonderhede.",
+    pluginLoadFailed: "Kon nie hierdie inprop se skrip laai nie. Kontroleer die Netwerk-oortjie (dashboard-plugins/…) en die bediener se inprop-pad.",
+    pluginNotRegistered: "Die inprop se skrip het nie register() geroep nie, of die skrip het 'n fout gegee. Maak die blaaier-konsole oop vir besonderhede.",
   },
-
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
     closeNavigation: "Maak navigasie toe",
     closeModelTools: "Maak model en gereedskap toe",
-    footer: {
-      org: "Nous Research",
-    },
     activeSessionsLabel: "Aktiewe Sessies:",
     gatewayStatusLabel: "Gateway-status:",
     gatewayStrip: {
@@ -70,10 +66,8 @@ export const af: Translations = {
       analytics: "Analise",
       chat: "Klets",
       config: "Konfigurasie",
-      cron: "Cron",
       documentation: "Dokumentasie",
       keys: "Sleutels",
-      logs: "Logs",
       models: "Modelle",
       profiles: "profiele : multi-agente",
       plugins: "Inproppe",
@@ -81,7 +75,6 @@ export const af: Translations = {
       skills: "Vaardighede",
     },
     modelToolsSheetSubtitle: "& gereedskap",
-    modelToolsSheetTitle: "Model",
     navigation: "Navigasie",
     openDocumentation: "Maak dokumentasie in 'n nuwe oortjie oop",
     openNavigation: "Maak navigasie oop",
@@ -89,26 +82,21 @@ export const af: Translations = {
     sessionsActiveCount: "{count} aktief",
     statusOverview: "Statusoorsig",
     system: "Stelsel",
-    webUi: "Web UI",
   },
-
   status: {
     actionFailed: "Aksie het misluk",
     actionFinished: "Voltooi",
     actions: "Aksies",
-    agent: "Agent",
     activeSessions: "Aktiewe Sessies",
     connected: "Gekoppel",
     connectedPlatforms: "Gekoppelde Platforms",
     disconnected: "Ontkoppel",
     error: "Fout",
     failed: "Misluk",
-    gateway: "Gateway",
     gatewayFailedToStart: "Gateway kon nie begin nie",
     lastUpdate: "Laaste opdatering",
     noneRunning: "Geen",
     notRunning: "Loop nie",
-    pid: "PID",
     platformDisconnected: "ontkoppel",
     platformError: "fout",
     recentSessions: "Onlangse Sessies",
@@ -124,7 +112,6 @@ export const af: Translations = {
     updatingHermes: "Besig om Hermes op te werk…",
     waitingForOutput: "Wag vir uitset…",
   },
-
   sessions: {
     title: "Sessies",
     history: "Geskiedenis",
@@ -143,14 +130,12 @@ export const af: Translations = {
     untitledSession: "Sessie sonder titel",
     deleteSession: "Skrap sessie",
     confirmDeleteTitle: "Skrap sessie?",
-    confirmDeleteMessage:
-      "Dit verwyder die gesprek en al sy boodskappe permanent. Dit kan nie ongedaan gemaak word nie.",
+    confirmDeleteMessage: "Dit verwyder die gesprek en al sy boodskappe permanent. Dit kan nie ongedaan gemaak word nie.",
     sessionDeleted: "Sessie geskrap",
     failedToDelete: "Kon nie sessie skrap nie",
     deleteEmpty: "Skrap leë",
     deleteEmptyConfirmTitle: "Skrap leë sessies?",
-    deleteEmptyConfirmMessage:
-      "Dit verwyder permanent {count} sessies wat geen boodskappe het nie. Aktiewe en geargiveerde sessies word oorgeslaan. Dit kan nie ongedaan gemaak word nie.",
+    deleteEmptyConfirmMessage: "Dit verwyder permanent {count} sessies wat geen boodskappe het nie. Aktiewe en geargiveerde sessies word oorgeslaan. Dit kan nie ongedaan gemaak word nie.",
     emptySessionsDeleted: "{count} leë sessies geskrap",
     failedToDeleteEmpty: "Kon nie leë sessies skrap nie",
     selectSession: "Kies sessie",
@@ -159,8 +144,7 @@ export const af: Translations = {
     selectedCount: "{count} gekies",
     deleteSelected: "Skrap {count}",
     deleteSelectedConfirmTitle: "Skrap {count} sessies?",
-    deleteSelectedConfirmMessage:
-      "Dit verwyder {count} gekose sessies en al hul boodskappe permanent. Dit kan nie ongedaan gemaak word nie.",
+    deleteSelectedConfirmMessage: "Dit verwyder {count} gekose sessies en al hul boodskappe permanent. Dit kan nie ongedaan gemaak word nie.",
     selectedSessionsDeleted: "{count} sessies geskrap",
     failedToDeleteSelected: "Kon nie gekose sessies skrap nie",
     resumeInChat: "Hervat in Klets",
@@ -174,7 +158,6 @@ export const af: Translations = {
       tool: "Gereedskap",
     },
   },
-
   analytics: {
     period: "Tydperk:",
     totalTokens: "Totale Tokens",
@@ -194,17 +177,13 @@ export const af: Translations = {
     noUsageData: "Geen gebruiksdata vir hierdie tydperk nie",
     startSession: "Begin 'n sessie om analise hier te sien",
     date: "Datum",
-    model: "Model",
-    tokens: "Tokens",
     perDayAvg: "/dag gem.",
     acrossModels: "oor {count} modelle",
     inOut: "{input} in / {output} uit",
   },
-
   models: {
     modelsUsed: "Modelle Gebruik",
     estimatedCost: "Geskatte Koste",
-    tokens: "tokens",
     sessions: "sessies",
     avgPerSession: "gem./sessie",
     apiCalls: "API-oproepe",
@@ -212,9 +191,7 @@ export const af: Translations = {
     noModelsData: "Geen modelgebruiksdata vir hierdie tydperk nie",
     startSession: "Begin 'n sessie om modeldata hier te sien",
   },
-
   logs: {
-    title: "Logs",
     autoRefresh: "Outo-herlaai",
     file: "Lêer",
     level: "Vlak",
@@ -222,10 +199,8 @@ export const af: Translations = {
     lines: "Reëls",
     noLogLines: "Geen logreëls gevind nie",
   },
-
   cron: {
-    confirmDeleteMessage:
-      "Dit verwyder die taak van die skedule. Dit kan nie ongedaan gemaak word nie.",
+    confirmDeleteMessage: "Dit verwyder die taak van die skedule. Dit kan nie ongedaan gemaak word nie.",
     confirmDeleteTitle: "Skrap geskeduleerde taak?",
     newJob: "Nuwe Cron-taak",
     nameOptional: "Naam (opsioneel)",
@@ -233,7 +208,6 @@ export const af: Translations = {
     prompt: "Opdrag",
     promptPlaceholder: "Wat moet die agent met elke uitvoering doen?",
     schedule: "Skedule (cron-uitdrukking)",
-    schedulePlaceholder: "0 9 * * *",
     scheduleMode: "Skedule",
     scheduleModes: {
       interval: "Herhalende interval",
@@ -249,18 +223,15 @@ export const af: Translations = {
       unitDays: "dae",
       timeOfDay: "Tyd van die dag",
       weekdays: "Dae van die week",
-      weekdaysShort: ["Son", "Maa", "Din", "Woe", "Don", "Vry", "Sat"],
+      weekdaysShort: ["Son","Maa","Din","Woe","Don","Vry","Sat"],
       dayOfMonth: "Dag van die maand",
       onceAt: "Hardloop op",
       customLabel: "Cron-uitdrukking",
-      customPlaceholder: "0 9 * * *",
-      customHint:
-        "Cron-uitdrukking met vyf velde (minuut, uur, dag, maand, weekdag).",
+      customHint: "Cron-uitdrukking met vyf velde (minuut, uur, dag, maand, weekdag).",
       preview: "Word gestuur as",
       previewEmpty: "(onvolledig)",
     },
     scheduleDescribe: {
-      none: "—",
       everyMinutes: "Elke {n} min",
       everyHours: "Elke {n} u",
       everyDays: "Elke {n} d",
@@ -279,27 +250,20 @@ export const af: Translations = {
     triggerNow: "Voer nou uit",
     delivery: {
       local: "Plaaslik",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
     },
   },
-
   profiles: {
     newProfile: "Nuwe Profiel",
     name: "Naam",
     namePlaceholder: "bv. coder, writer, ens.",
     nameRequired: "Naam word vereis",
-    nameRule:
-      "Slegs kleinletters, syfers, _ en -; moet met 'n letter of syfer begin; tot 64 karakters.",
-    invalidName: "Ongeldige profielnaam",    cloneFrom: "Kloon konfigurasie vanaf profiel",
+    nameRule: "Slegs kleinletters, syfers, _ en -; moet met 'n letter of syfer begin; tot 64 karakters.",
+    invalidName: "Ongeldige profielnaam",
+    cloneFrom: "Kloon konfigurasie vanaf profiel",
     cloneFromNone: "Geen (leeg)",
     allProfiles: "Profiele",
     noProfiles: "Geen profiele gevind nie.",
     defaultBadge: "verstek",
-    hasEnv: "env",
-    model: "Model",
     skills: "Vaardighede",
     rename: "Hernoem",
     editSoul: "Wysig SOUL.md",
@@ -311,13 +275,11 @@ export const af: Translations = {
     commandCopied: "Na knipbord gekopieer",
     copyFailed: "Kon nie kopieer nie",
     confirmDeleteTitle: "Skrap profiel?",
-    confirmDeleteMessage:
-      "Dit skrap profiel '{name}' permanent — konfigurasie, sleutels, geheue, sessies, vaardighede, cron-take. Kan nie ongedaan gemaak word nie.",
+    confirmDeleteMessage: "Dit skrap profiel '{name}' permanent — konfigurasie, sleutels, geheue, sessies, vaardighede, cron-take. Kan nie ongedaan gemaak word nie.",
     created: "Geskep",
     deleted: "Geskrap",
     renamed: "Hernoem",
   },
-
   pluginsPage: {
     contextEngineLabel: "Konteks-enjin",
     dashboardSlots: "Dashboard-gleuwe",
@@ -325,8 +287,7 @@ export const af: Translations = {
     enableAfterInstall: "Aktiveer ná installasie",
     enableRuntime: "Aktiveer",
     forceReinstall: "Forseer herinstallasie (skrap eers bestaande gids)",
-    headline:
-      "Ontdek, installeer, aktiveer en werk Hermes-inproppe op (`hermes plugins` ekwivalent).",
+    headline: "Ontdek, installeer, aktiveer en werk Hermes-inproppe op (`hermes plugins` ekwivalent).",
     identifierLabel: "Git-URL of owner/repo",
     inactive: "onaktief",
     installBtn: "Installeer",
@@ -340,8 +301,7 @@ export const af: Translations = {
     pluginListHeading: "Geïnstalleerde inproppe",
     providerDefaults: "ingebou / verstek",
     providersHeading: "Looptyd-verskafferinproppe",
-    providersHint:
-      "Skryf memory.provider (leeg = ingebou) en context.engine na config.yaml. Tree volgende sessie in werking.",
+    providersHint: "Skryf memory.provider (leeg = ingebou) en context.engine na config.yaml. Tree volgende sessie in werking.",
     refreshDashboard: "Herskandeer dashboard-uitbreidings",
     removeConfirm: "Verwyder hierdie inprop uit ~/.hermes/plugins/?",
     removeHint: "Slegs gebruiker-geïnstalleerde inproppe onder ~/.hermes/plugins kan verwyder word.",
@@ -353,19 +313,16 @@ export const af: Translations = {
     sourceBadge: "Bron",
     authRequired: "Verifikasie vereis",
     authRequiredHint: "Voer hierdie opdrag uit om te verifieer:",
-    updateGit: "Git pull",
     versionBadge: "Weergawe",
     showInSidebar: "Wys in sybalk",
     hideFromSidebar: "Versteek van sybalk",
   },
-
   skills: {
     title: "Vaardighede",
     searchPlaceholder: "Soek vaardighede en gereedskapstelle...",
     enabledOf: "{enabled}/{total} geaktiveer",
     all: "Alles",
     categories: "Kategorieë",
-    filters: "Filters",
     noSkills: "Geen vaardighede gevind nie. Vaardighede word gelaai uit ~/.hermes/skills/",
     noSkillsMatch: "Geen vaardighede stem ooreen met jou soektog of filter nie.",
     skillCount: "{count} vaardighe{s}id",
@@ -378,13 +335,9 @@ export const af: Translations = {
     disabledForCli: "Gedeaktiveer vir CLI",
     more: "+{count} meer",
   },
-
   config: {
-    configPath: "~/.hermes/config.yaml",
-    filters: "Filters",
     sections: "Afdelings",
     exportConfig: "Voer konfigurasie uit as JSON",
-    importConfig: "Voer konfigurasie in vanaf JSON",
     resetDefaults: "Stel terug na verstek",
     resetScopeTooltip: "Stel {scope} terug na verstek",
     confirmResetScope: "Stel alle {scope}-instellings terug na hul verstek? Dit werk slegs die vorm op — veranderinge word nie na config.yaml geskryf voordat jy Stoor druk nie.",
@@ -392,7 +345,7 @@ export const af: Translations = {
     rawYaml: "Rou YAML-konfigurasie",
     searchResults: "Soekresultate",
     fields: "veld{s}",
-    noFieldsMatch: 'Geen velde stem ooreen met "{query}" nie',
+    noFieldsMatch: "Geen velde stem ooreen met \"{query}\" nie",
     configSaved: "Konfigurasie gestoor",
     yamlConfigSaved: "YAML-konfigurasie gestoor",
     failedToSave: "Kon nie stoor nie",
@@ -402,7 +355,6 @@ export const af: Translations = {
     invalidJson: "Ongeldige JSON-lêer",
     categories: {
       general: "Algemeen",
-      agent: "Agent",
       terminal: "Terminaal",
       display: "Vertoon",
       delegation: "Delegasie",
@@ -414,15 +366,12 @@ export const af: Translations = {
       tts: "Teks-na-Spraak",
       stt: "Spraak-na-Teks",
       logging: "Aantekening",
-      discord: "Discord",
       auxiliary: "Hulpmiddels",
     },
   },
-
   env: {
     changesNote: "Veranderinge word onmiddellik na skyf gestoor. Aktiewe sessies tel nuwe sleutels outomaties op.",
-    confirmClearMessage:
-      "Die gestoorde waarde vir hierdie veranderlike sal uit jou .env-lêer verwyder word. Dit kan nie vanaf die UI ongedaan gemaak word nie.",
+    confirmClearMessage: "Die gestoorde waarde vir hierdie veranderlike sal uit jou .env-lêer verwyder word. Dit kan nie vanaf die UI ongedaan gemaak word nie.",
     confirmClearTitle: "Vee hierdie sleutel uit?",
     description: "Bestuur API-sleutels en geheime gestoor in",
     hideAdvanced: "Versteek Gevorderd",
@@ -448,12 +397,10 @@ export const af: Translations = {
     add: "Voeg by",
     invalidKeyName: "Gebruik slegs letters, syfers en onderstrepe (moet met 'n letter of onderstreep begin).",
   },
-
   oauth: {
     title: "Verskaffer-aanmeldings (OAuth)",
     providerLogins: "Verskaffer-aanmeldings (OAuth)",
-    description:
-      "{connected} van {total} OAuth-verskaffers gekoppel. Gebruik Meld aan vir vloeie wat die kontroleskerm ondersteun; CLI-opdragte bly beskikbaar vir eksterne of terugval-opstelling.",
+    description: "{connected} van {total} OAuth-verskaffers gekoppel. Gebruik Meld aan vir vloeie wat die kontroleskerm ondersteun; CLI-opdragte bly beskikbaar vir eksterne of terugval-opstelling.",
     connected: "Gekoppel",
     expired: "Verval",
     notConnected: "Nie gekoppel nie. Gebruik Meld aan indien beskikbaar, of voer {command} uit in 'n terminaal.",
@@ -490,24 +437,17 @@ export const af: Translations = {
     },
     expiresIn: "verval oor {time}",
   },
-
   language: {
     switchTo: "Verander taal",
   },
-
   theme: {
     title: "Tema",
     switchTheme: "Wissel tema",
   },
-
   achievements: {
     hero: {
-      kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
-      subtitle:
-        "Versamelbare Hermes-kentekens wat verdien word uit werklike sessiegeskiedenis. Bekende, onvoltooide prestasies word as Ontdek vertoon; Geheime prestasies bly verborge totdat die eerste ooreenstemmende gedrag verskyn.",
-      scan_subtitle:
-        "Hermes-sessiegeskiedenis word geskandeer. Die eerste skandering kan 5–10 sekondes neem op groot geskiedenisse.",
+      subtitle: "Versamelbare Hermes-kentekens wat verdien word uit werklike sessiegeskiedenis. Bekende, onvoltooide prestasies word as Ontdek vertoon; Geheime prestasies bly verborge totdat die eerste ooreenstemmende gedrag verskyn.",
+      scan_subtitle: "Hermes-sessiegeskiedenis word geskandeer. Die eerste skandering kan 5–10 sekondes neem op groot geskiedenisse.",
     },
     actions: {
       rescan: "Herskandeer",
@@ -520,7 +460,6 @@ export const af: Translations = {
       secrets: "Geheime",
       secrets_hint: "verborge tot eerste sein",
       highest_tier: "Hoogste vlak",
-      highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "Jongste",
       latest_hint_empty: "gebruik Hermes meer",
       none_yet: "Nog geen",
@@ -541,25 +480,19 @@ export const af: Translations = {
     },
     scan: {
       building_headline: "Prestasieprofiel word gebou…",
-      building_detail:
-        "Sessies, gereedskaproepe, modelmetadata en ontsluitstatus word gelees.",
+      building_detail: "Sessies, gereedskaproepe, modelmetadata en ontsluitstatus word gelees.",
       starting_headline: "Prestasieskandering begin…",
-      progress_detail:
-        "{scanned} van {total} sessies geskandeer · {pct}%. Kentekens ontsluit soos meer geskiedenis instroom.",
-      idle_detail:
-        "Sessies, gereedskaproepe, modelmetadata en ontsluitstatus word gelees. Kentekens verskyn hier soos hulle ontsluit.",
+      progress_detail: "{scanned} van {total} sessies geskandeer · {pct}%. Kentekens ontsluit soos meer geskiedenis instroom.",
+      idle_detail: "Sessies, gereedskaproepe, modelmetadata en ontsluitstatus word gelees. Kentekens verskyn hier soos hulle ontsluit.",
     },
     guide: {
       tiers_header: "Vlakke",
       secret_header: "Geheime prestasies",
-      secret_body:
-        "Geheime hou hul presiese sneller verborge. Sodra Hermes 'n verwante sein sien, word die kaart Ontdek en wys sy vereiste.",
+      secret_body: "Geheime hou hul presiese sneller verborge. Sodra Hermes 'n verwante sein sien, word die kaart Ontdek en wys sy vereiste.",
       scan_status_header: "Skanderingstatus",
-      scan_status_body:
-        "Hermes skandeer plaaslike geskiedenis een keer, daarna verskyn kaarte outomaties. Niks is vasgevang as dit 'n paar sekondes neem nie.",
+      scan_status_body: "Hermes skandeer plaaslike geskiedenis een keer, daarna verskyn kaarte outomaties. Niks is vasgevang as dit 'n paar sekondes neem nie.",
       what_scanned_header: "Wat geskandeer word",
-      what_scanned_body:
-        "Sessies, gereedskaproepe, modelmetadata, foute, prestasies en plaaslike ontsluitstatus.",
+      what_scanned_body: "Sessies, gereedskaproepe, modelmetadata, foute, prestasies en plaaslike ontsluitstatus.",
     },
     card: {
       share_title: "Deel hierdie prestasie",
@@ -576,8 +509,7 @@ export const af: Translations = {
     },
     empty: {
       no_secrets_header: "Geen verborge geheime in hierdie skandering oor nie.",
-      no_secrets_body:
-        "Wenk: geheime begin gewoonlik by ongewone mislukkings of magsgebruikerspatrone — poortbotsings, toestemmingsmure, ontbrekende env-veranderlikes, YAML-foute, Docker-botsings, terugrol/kontrolepunt-gebruik, kasterugslae of klein regstellings na baie rooi teks.",
+      no_secrets_body: "Wenk: geheime begin gewoonlik by ongewone mislukkings of magsgebruikerspatrone — poortbotsings, toestemmingsmure, ontbrekende env-veranderlikes, YAML-foute, Docker-botsings, terugrol/kontrolepunt-gebruik, kasterugslae of klein regstellings na baie rooi teks.",
     },
     filters: {
       all_categories: "Alles",
@@ -599,31 +531,19 @@ export const af: Translations = {
       copy_button: "Kopieer beeld",
       copied: "Gekopieer ✓",
       download_button: "Laai PNG af",
-      hint:
-        "Deel op X maak 'n vooraf-ingevulde plasing in 'n nuwe oortjie oop. Klik eers op Kopieer beeld as jy die 1200×630-kenteken aangeheg wil hê — X laat jou dit direk in die tweet-skrywer plak. Laai PNG af stoor die lêer om enige plek te gebruik.",
-      clipboard_unsupported:
-        "Beeldkopiëring na knipbord word nie in hierdie blaaier ondersteun nie — gebruik eerder Aflaai.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      hint: "Deel op X maak 'n vooraf-ingevulde plasing in 'n nuwe oortjie oop. Klik eers op Kopieer beeld as jy die 1200×630-kenteken aangeheg wil hê — X laat jou dit direk in die tweet-skrywer plak. Laai PNG af stoor die lêer om enige plek te gebruik.",
+      clipboard_unsupported: "Beeldkopiëring na knipbord word nie in hierdie blaaier ondersteun nie — gebruik eerder Aflaai.",
     },
   },
   kanban: {
     loading: "Kanban-bord word gelaai…",
     loadFailed: "Kon nie Kanban-bord laai nie: ",
-    loadFailedHint:
-      "Die agterkant skep kanban.db outomaties met die eerste lees. Indien hierdie probleem aanhou, raadpleeg die paneellogboeke.",
+    loadFailedHint: "Die agterkant skep kanban.db outomaties met die eerste lees. Indien hierdie probleem aanhou, raadpleeg die paneellogboeke.",
     board: "Bord",
     newBoard: "+ Nuwe bord",
     newBoardTitle: "Nuwe bord",
-    newBoardDescription:
-      "Borde laat u toe om onverwante werkstrome te skei — een per projek, repositorium of domein. Werkers op een bord sien nooit 'n ander bord se take nie.",
-    slug: "Slug",
+    newBoardDescription: "Borde laat u toe om onverwante werkstrome te skei — een per projek, repositorium of domein. Werkers op een bord sien nooit 'n ander bord se take nie.",
     slugHint: "— kleinletters, koppeltekens, bv. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Vertoonnaam",
     displayNameHint: "(opsioneel)",
     description: "Beskrywing",
@@ -656,7 +576,6 @@ export const af: Translations = {
     loadingDetail: "Word gelaai…",
     addComment: "Voeg 'n opmerking by… (Enter om in te dien)",
     comment: "Opmerking",
-    status: "Status",
     workspace: "Werkruimte",
     skills: "Vaardighede",
     createdBy: "Geskep deur",
@@ -666,8 +585,7 @@ export const af: Translations = {
     runHistory: "Uitvoergeskiedenis",
     workerLog: "Werker-log",
     loadingLog: "Log word gelaai…",
-    noWorkerLog:
-      "— nog geen werker-log nie (taak is nog nie ontketen nie of die log is geroteer) —",
+    noWorkerLog: "— nog geen werker-log nie (taak is nog nie ontketen nie of die log is geroteer) —",
     noDescription: "— geen beskrywing —",
     noComments: "— geen opmerkings —",
     edit: "redigeer",
@@ -698,8 +616,7 @@ export const af: Translations = {
     reassign: "Hertoeken",
     renderingError: "Kanban-oortjie het 'n weergawefout teëgekom",
     reloadView: "Herlaai aansig",
-    wsAuthFailed:
-      "WebSocket-verifikasie het misluk — herlaai die bladsy om die sessietoken te verfris.",
+    wsAuthFailed: "WebSocket-verifikasie het misluk — herlaai die bladsy om die sessietoken te verfris.",
     markDone: "Merk {n} take as klaar?",
     markArchived: "Argiveer {n} take?",
     warning: "Waarskuwing",
@@ -710,8 +627,7 @@ export const af: Translations = {
     showAllAttempts: "Wys alle pogings",
     sendingUpdates: "Stuur opdaterings na",
     sendNotifications: "Stuur completed / blocked / gave_up kennisgewings na",
-    archiveBoardConfirm:
-      "Argiveer bord '{name}'? Dit sal na boards/_archived/ geskuif word sodat u dit later kan herstel. Take op hierdie bord sal nie meer in die UI verskyn nie.",
+    archiveBoardConfirm: "Argiveer bord '{name}'? Dit sal na boards/_archived/ geskuif word sodat u dit later kan herstel. Take op hierdie bord sal nie meer in die UI verskyn nie.",
     archiveBoardTitle: "Argiveer hierdie bord",
     boardSwitcherHint: "Borde laat u toe om onverwante werkstrome te skei",
     taskCreatedWarning: "Taak geskep, maar: ",
@@ -731,7 +647,6 @@ export const af: Translations = {
     clickToEditAssignee: "Klik om toegewysde te redigeer",
     emptyAssignee: "(leeg = ontbind toekenning)",
     columnLabels: {
-      triage: "Triage",
       todo: "Te doen",
       scheduled: "Geskeduleerd",
       ready: "Gereed",
@@ -750,28 +665,20 @@ export const af: Translations = {
       done: "Voltooi",
       archived: "Gearchiveer",
     },
-    confirmDone:
-      "Merk hierdie taak as klaar? Die werker se eis word vrygestel en afhanklike kinders word gereed.",
-    confirmArchive:
-      "Argiveer hierdie taak? Dit verdwyn uit die verstek-bordaansig.",
-    confirmBlocked:
-      "Merk hierdie taak as geblokkeer? Die werker se eis word vrygestel.",
-    completionSummary:
-      "Voltooiingsopsomming vir {label}. Dit word as die taak se result gestoor.",
-    completionSummaryRequired:
-      "'n Voltooiingsopsomming is verpligtend voordat 'n taak as klaar gemerk word.",
+    confirmDone: "Merk hierdie taak as klaar? Die werker se eis word vrygestel en afhanklike kinders word gereed.",
+    confirmArchive: "Argiveer hierdie taak? Dit verdwyn uit die verstek-bordaansig.",
+    confirmBlocked: "Merk hierdie taak as geblokkeer? Die werker se eis word vrygestel.",
+    completionSummary: "Voltooiingsopsomming vir {label}. Dit word as die taak se result gestoor.",
+    completionSummaryRequired: "'n Voltooiingsopsomming is verpligtend voordat 'n taak as klaar gemerk word.",
     triagePlaceholder: "Rowwe idee — KI sal dit spesifiseer…",
     taskTitlePlaceholder: "Nuwe taaktitel…",
     specifier: "spesifiseerder",
     assigneePlaceholder: "toegewysde",
     priority: "Prioriteit",
-    skillsPlaceholder:
-      "vaardighede (opsioneel, kommageskei): translation, github-code-review",
+    skillsPlaceholder: "vaardighede (opsioneel, kommageskei): translation, github-code-review",
     noParent: "— geen ouer —",
     workspacePathDir: "werkruimtepad (verpligtend, bv. ~/projects/my-app)",
-    workspacePathOptional:
-      "werkruimtepad (opsioneel, afgelei van toegewysde indien leeg)",
+    workspacePathOptional: "werkruimtepad (opsioneel, afgelei van toegewysde indien leeg)",
     logTruncated: "(toon laaste 100 KB — volledige log by ",
-    logAt: ")",
   },
-};
+});

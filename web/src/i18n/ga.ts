@@ -1,6 +1,10 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const ga: Translations = {
+// Auto-synced by scripts/i18n-sync.mjs — only keys that differ from en.ts are
+// listed below; everything else inherits English automatically. After editing
+// en.ts, run `npm run i18n:sync` to propagate, and `npm run i18n:check`
+// (wired into CI) guards against drift.
+export const ga = defineLocale({
   common: {
     save: "Sábháil",
     saving: "Á shábháil...",
@@ -43,20 +47,12 @@ export const ga: Translations = {
     expand: "Leathnaigh",
     general: "Ginearálta",
     messaging: "Teachtaireachtaí",
-    pluginLoadFailed:
-      "Níorbh fhéidir script an plugin seo a luchtú. Seiceáil an cluaisín Network (dashboard-plugins/…) agus conair plugin an fhreastalaí.",
-    pluginNotRegistered:
-      "Níor ghlaoigh script an plugin ar register(), nó tharla earráid sa script. Oscail consól an bhrabhsálaí le haghaidh sonraí.",
+    pluginLoadFailed: "Níorbh fhéidir script an plugin seo a luchtú. Seiceáil an cluaisín Network (dashboard-plugins/…) agus conair plugin an fhreastalaí.",
+    pluginNotRegistered: "Níor ghlaoigh script an plugin ar register(), nó tharla earráid sa script. Oscail consól an bhrabhsálaí le haghaidh sonraí.",
   },
-
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
     closeNavigation: "Dún an nascleanúint",
     closeModelTools: "Dún an samhail agus na huirlisí",
-    footer: {
-      org: "Nous Research",
-    },
     activeSessionsLabel: "Seisiúin gníomhacha:",
     gatewayStatusLabel: "Stádas an gateway:",
     gatewayStrip: {
@@ -70,13 +66,11 @@ export const ga: Translations = {
       analytics: "Anailís",
       chat: "Comhrá",
       config: "Cumraíocht",
-      cron: "Cron",
       documentation: "Doiciméadú",
       keys: "Eochracha",
       logs: "Logaí",
       models: "Samhlacha",
       profiles: "próifílí : il-agents",
-      plugins: "Plugins",
       sessions: "Seisiúin",
       skills: "Scileanna",
     },
@@ -85,30 +79,24 @@ export const ga: Translations = {
     navigation: "Nascleanúint",
     openDocumentation: "Oscail an doiciméadú i gcluaisín nua",
     openNavigation: "Oscail an nascleanúint",
-    pluginNavSection: "Plugins",
     sessionsActiveCount: "{count} gníomhach",
     statusOverview: "Forbhreathnú stádais",
     system: "Córas",
-    webUi: "Web UI",
   },
-
   status: {
     actionFailed: "Theip ar an ngníomh",
     actionFinished: "Críochnaithe",
     actions: "Gníomhartha",
-    agent: "Agent",
     activeSessions: "Seisiúin ghníomhacha",
     connected: "Ceangailte",
     connectedPlatforms: "Ardáin cheangailte",
     disconnected: "Dícheangailte",
     error: "Earráid",
     failed: "Theip",
-    gateway: "Gateway",
     gatewayFailedToStart: "Theip ar an gateway tosú",
     lastUpdate: "Nuashonrú deireanach",
     noneRunning: "Aon cheann",
     notRunning: "Níl ag rith",
-    pid: "PID",
     platformDisconnected: "dícheangailte",
     platformError: "earráid",
     recentSessions: "Seisiúin le déanaí",
@@ -124,7 +112,6 @@ export const ga: Translations = {
     updatingHermes: "Ag nuashonrú Hermes…",
     waitingForOutput: "Ag fanacht le haschur…",
   },
-
   sessions: {
     title: "Seisiúin",
     history: "Stair",
@@ -143,14 +130,12 @@ export const ga: Translations = {
     untitledSession: "Seisiún gan teideal",
     deleteSession: "Scrios an seisiún",
     confirmDeleteTitle: "Scrios an seisiún?",
-    confirmDeleteMessage:
-      "Baineann sé seo an comhrá agus a chuid teachtaireachtaí ar fad go buan. Ní féidir é seo a chealú.",
+    confirmDeleteMessage: "Baineann sé seo an comhrá agus a chuid teachtaireachtaí ar fad go buan. Ní féidir é seo a chealú.",
     sessionDeleted: "Seisiún scriosta",
     failedToDelete: "Theip ar scriosadh an tseisiúin",
     deleteEmpty: "Scrios folamh",
     deleteEmptyConfirmTitle: "Scrios seisiúin fholmha?",
-    deleteEmptyConfirmMessage:
-      "Baintear {count} seisiúin gan teachtaireachtaí ar bhealach buan. Ní scriostar seisiúin ghníomhacha agus seisiúin chartlainne. Ní féidir é seo a chealú.",
+    deleteEmptyConfirmMessage: "Baintear {count} seisiúin gan teachtaireachtaí ar bhealach buan. Ní scriostar seisiúin ghníomhacha agus seisiúin chartlainne. Ní féidir é seo a chealú.",
     emptySessionsDeleted: "{count} seisiúin fholmha scriosta",
     failedToDeleteEmpty: "Theip ar scriosadh na seisiún folmha",
     selectSession: "Roghnaigh seisiún",
@@ -159,8 +144,7 @@ export const ga: Translations = {
     selectedCount: "{count} roghnaithe",
     deleteSelected: "Scrios {count}",
     deleteSelectedConfirmTitle: "Scrios {count} seisiún?",
-    deleteSelectedConfirmMessage:
-      "Bainfear {count} seisiún roghnaithe agus a dteachtaireachtaí go léir go buan. Ní féidir é seo a chur ar ais.",
+    deleteSelectedConfirmMessage: "Bainfear {count} seisiún roghnaithe agus a dteachtaireachtaí go léir go buan. Ní féidir é seo a chur ar ais.",
     selectedSessionsDeleted: "Scriosadh {count} seisiún",
     failedToDeleteSelected: "Theip ar scriosadh na seisiún roghnaithe",
     resumeInChat: "Lean ar aghaidh sa chomhrá",
@@ -174,7 +158,6 @@ export const ga: Translations = {
       tool: "Uirlis",
     },
   },
-
   analytics: {
     period: "Tréimhse:",
     totalTokens: "Tokens iomlána",
@@ -195,16 +178,13 @@ export const ga: Translations = {
     startSession: "Tosaigh seisiún chun anailís a fheiceáil anseo",
     date: "Dáta",
     model: "Samhail",
-    tokens: "Tokens",
     perDayAvg: "/lá meán",
     acrossModels: "thar {count} samhail",
     inOut: "{input} isteach / {output} amach",
   },
-
   models: {
     modelsUsed: "Samhlacha úsáidte",
     estimatedCost: "Costas measta",
-    tokens: "tokens",
     sessions: "seisiúin",
     avgPerSession: "meán/seisiún",
     apiCalls: "glaonna API",
@@ -212,7 +192,6 @@ export const ga: Translations = {
     noModelsData: "Gan sonraí úsáide samhla don tréimhse seo",
     startSession: "Tosaigh seisiún chun sonraí samhla a fheiceáil anseo",
   },
-
   logs: {
     title: "Logaí",
     autoRefresh: "Athnuachan uathoibríoch",
@@ -222,18 +201,14 @@ export const ga: Translations = {
     lines: "Línte",
     noLogLines: "Níor aimsíodh línte loga",
   },
-
   cron: {
-    confirmDeleteMessage:
-      "Baineann sé seo an post ón sceideal. Ní féidir é seo a chealú.",
+    confirmDeleteMessage: "Baineann sé seo an post ón sceideal. Ní féidir é seo a chealú.",
     confirmDeleteTitle: "Scrios an post sceidealta?",
     newJob: "Post Cron Nua",
     nameOptional: "Ainm (roghnach)",
     namePlaceholder: "m.sh. Achoimre laethúil",
-    prompt: "Prompt",
     promptPlaceholder: "Cad ba chóir don agent a dhéanamh ag gach rith?",
     schedule: "Sceideal (slonn cron)",
-    schedulePlaceholder: "0 9 * * *",
     scheduleMode: "Sceideal",
     scheduleModes: {
       interval: "Eatramh athfhillteach",
@@ -249,26 +224,15 @@ export const ga: Translations = {
       unitDays: "lá",
       timeOfDay: "Am an lae",
       weekdays: "Laethanta na seachtaine",
-      weekdaysShort: [
-        "Domh",
-        "Luan",
-        "Máirt",
-        "Céad",
-        "Déar",
-        "Aoine",
-        "Sath",
-      ],
+      weekdaysShort: ["Domh","Luan","Máirt","Céad","Déar","Aoine","Sath"],
       dayOfMonth: "Lá den mhí",
       onceAt: "Rith ag",
       customLabel: "Slonn cron",
-      customPlaceholder: "0 9 * * *",
-      customHint:
-        "Slonn cron cúig réimse (nóiméad, uair, lá, mí, lá den tseachtain).",
+      customHint: "Slonn cron cúig réimse (nóiméad, uair, lá, mí, lá den tseachtain).",
       preview: "Seoltar mar",
       previewEmpty: "(neamhiomlán)",
     },
     scheduleDescribe: {
-      none: "—",
       everyMinutes: "Gach {n} nóim",
       everyHours: "Gach {n} u",
       everyDays: "Gach {n} lá",
@@ -287,26 +251,20 @@ export const ga: Translations = {
     triggerNow: "Spreag anois",
     delivery: {
       local: "Áitiúil",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
     },
   },
-
   profiles: {
     newProfile: "Próifíl Nua",
     name: "Ainm",
     namePlaceholder: "m.sh. coder, writer, srl.",
     nameRequired: "Tá ainm riachtanach",
-    nameRule:
-      "Litreacha cás íochtair, digití, _ agus - amháin; caithfidh tús a chur le litir nó digit; suas le 64 carachtar.",
-    invalidName: "Ainm próifíle neamhbhailí",    cloneFrom: "Clónáil cumraíocht ón bpróifíl",
+    nameRule: "Litreacha cás íochtair, digití, _ agus - amháin; caithfidh tús a chur le litir nó digit; suas le 64 carachtar.",
+    invalidName: "Ainm próifíle neamhbhailí",
+    cloneFrom: "Clónáil cumraíocht ón bpróifíl",
     cloneFromNone: "Dada (folamh)",
     allProfiles: "Próifílí",
     noProfiles: "Níor aimsíodh próifílí.",
     defaultBadge: "réamhshocraithe",
-    hasEnv: "env",
     model: "Samhail",
     skills: "Scileanna",
     rename: "Athainmnigh",
@@ -319,13 +277,11 @@ export const ga: Translations = {
     commandCopied: "Cóipeáilte chuig an ngearrthaisce",
     copyFailed: "Níorbh fhéidir cóipeáil",
     confirmDeleteTitle: "Scrios an phróifíl?",
-    confirmDeleteMessage:
-      "Scriosann sé seo an phróifíl '{name}' go buan — cumraíocht, eochracha, cuimhní, seisiúin, scileanna, poist cron. Ní féidir é a chealú.",
+    confirmDeleteMessage: "Scriosann sé seo an phróifíl '{name}' go buan — cumraíocht, eochracha, cuimhní, seisiúin, scileanna, poist cron. Ní féidir é a chealú.",
     created: "Cruthaithe",
     deleted: "Scriosta",
     renamed: "Athainmnithe",
   },
-
   pluginsPage: {
     contextEngineLabel: "Inneall comhthéacs",
     dashboardSlots: "Slots an dashboard",
@@ -333,8 +289,7 @@ export const ga: Translations = {
     enableAfterInstall: "Cumasaigh tar éis suiteála",
     enableRuntime: "Cumasaigh",
     forceReinstall: "Cuir iallach ar athshuiteáil (scrios an fillteán atá ann ar dtús)",
-    headline:
-      "Faigh, suiteáil, cumasaigh agus nuashonraigh plugins Hermes (paireacht le `hermes plugins`).",
+    headline: "Faigh, suiteáil, cumasaigh agus nuashonraigh plugins Hermes (paireacht le `hermes plugins`).",
     identifierLabel: "URL Git nó owner/repo",
     inactive: "neamhghníomhach",
     installBtn: "Suiteáil",
@@ -348,8 +303,7 @@ export const ga: Translations = {
     pluginListHeading: "Plugins suiteáilte",
     providerDefaults: "ionsuite / réamhshocraithe",
     providersHeading: "Plugins soláthraí runtime",
-    providersHint:
-      "Scríobhann memory.provider (folamh = ionsuite) agus context.engine chuig config.yaml. Beidh éifeacht aige sa chéad seisiún eile.",
+    providersHint: "Scríobhann memory.provider (folamh = ionsuite) agus context.engine chuig config.yaml. Beidh éifeacht aige sa chéad seisiún eile.",
     refreshDashboard: "Athscan síntí an dashboard",
     removeConfirm: "Bain an plugin seo ó ~/.hermes/plugins/?",
     removeHint: "Ní féidir ach plugins atá suiteáilte ag an úsáideoir faoi ~/.hermes/plugins a bhaint.",
@@ -361,12 +315,10 @@ export const ga: Translations = {
     sourceBadge: "Foinse",
     authRequired: "Fíordheimhniú riachtanach",
     authRequiredHint: "Rith an t-ordú seo chun fíordheimhniú a dhéanamh:",
-    updateGit: "Git pull",
     versionBadge: "Leagan",
     showInSidebar: "Taispeáin sa bharra taoibh",
     hideFromSidebar: "Folaigh ón mbarra taoibh",
   },
-
   skills: {
     title: "Scileanna",
     searchPlaceholder: "Cuardaigh scileanna agus toolsets...",
@@ -379,20 +331,16 @@ export const ga: Translations = {
     skillCount: "{count} scil{s}",
     resultCount: "{count} torad{s}",
     noDescription: "Gan cur síos ar fáil.",
-    toolsets: "Toolsets",
     toolsetLabel: "toolset {name}",
     noToolsetsMatch: "Níl toolset ar bith ag teacht leis an gcuardach.",
     setupNeeded: "Socrú ag teastáil",
     disabledForCli: "Díchumasaithe don CLI",
     more: "+{count} eile",
   },
-
   config: {
-    configPath: "~/.hermes/config.yaml",
     filters: "Scagairí",
     sections: "Ranna",
     exportConfig: "Easpórtáil cumraíocht mar JSON",
-    importConfig: "Iompórtáil cumraíocht ó JSON",
     resetDefaults: "Athshocraigh chuig réamhshocruithe",
     resetScopeTooltip: "Athshocraigh {scope} chuig réamhshocruithe",
     confirmResetScope: "Athshocraigh socruithe uile {scope} chuig a réamhshocruithe? Nuashonraíonn sé seo an fhoirm amháin — ní scríobhfar athruithe chuig config.yaml go dtí go mbrúnn tú Sábháil.",
@@ -400,7 +348,7 @@ export const ga: Translations = {
     rawYaml: "Cumraíocht YAML amh",
     searchResults: "Torthaí cuardaigh",
     fields: "réims{s}",
-    noFieldsMatch: 'Níl aon réimsí ag teacht le "{query}"',
+    noFieldsMatch: "Níl aon réimsí ag teacht le \"{query}\"",
     configSaved: "Cumraíocht sábháilte",
     yamlConfigSaved: "Cumraíocht YAML sábháilte",
     failedToSave: "Theip ar shábháil",
@@ -410,7 +358,6 @@ export const ga: Translations = {
     invalidJson: "Comhad JSON neamhbhailí",
     categories: {
       general: "Ginearálta",
-      agent: "Agent",
       terminal: "Teirminéal",
       display: "Taispeáint",
       delegation: "Tarmligean",
@@ -422,15 +369,12 @@ export const ga: Translations = {
       tts: "Téacs go Caint",
       stt: "Caint go Téacs",
       logging: "Logáil",
-      discord: "Discord",
       auxiliary: "Cúntach",
     },
   },
-
   env: {
     changesNote: "Sábháiltear athruithe chuig an diosca láithreach. Aimsíonn seisiúin ghníomhacha eochracha nua go huathoibríoch.",
-    confirmClearMessage:
-      "Bainfear an luach stóráilte don athróg seo ó do chomhad .env. Ní féidir é seo a chealú ón UI.",
+    confirmClearMessage: "Bainfear an luach stóráilte don athróg seo ó do chomhad .env. Ní féidir é seo a chealú ón UI.",
     confirmClearTitle: "Glan an eochair seo?",
     description: "Bainistigh eochracha API agus rúin atá stóráilte i",
     hideAdvanced: "Folaigh Ardroghanna",
@@ -456,12 +400,10 @@ export const ga: Translations = {
     add: "Cuir leis",
     invalidKeyName: "Úsáid litreacha, uimhreacha agus fostríoca amháin (caithfidh sé tosú le litir nó fostríoc).",
   },
-
   oauth: {
     title: "Logálacha isteach soláthraí (OAuth)",
     providerLogins: "Logálacha isteach soláthraí (OAuth)",
-    description:
-      "{connected} as {total} soláthraí OAuth ceangailte. Úsáid Logáil isteach le haghaidh sreabha a dtacaíonn an deais leo; tá orduithe CLI ar fáil i gcónaí do shocrú seachtrach nó cúltaca.",
+    description: "{connected} as {total} soláthraí OAuth ceangailte. Úsáid Logáil isteach le haghaidh sreabha a dtacaíonn an deais leo; tá orduithe CLI ar fáil i gcónaí do shocrú seachtrach nó cúltaca.",
     connected: "Ceangailte",
     expired: "As feidhm",
     notConnected: "Gan cheangal. Úsáid Logáil isteach má tá sé ar fáil, nó rith {command} i dteirminéal.",
@@ -498,24 +440,17 @@ export const ga: Translations = {
     },
     expiresIn: "as feidhm i {time}",
   },
-
   language: {
     switchTo: "Athraigh teanga",
   },
-
   theme: {
     title: "Téama",
     switchTheme: "Athraigh téama",
   },
-
   achievements: {
     hero: {
-      kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
-      subtitle:
-        "Suaitheantais Hermes inbhailithe a thuilltear ó stair fíor-session. Léirítear gnóthachtálacha aitheanta neamhchríochnaithe mar Discovered; fanann gnóthachtálacha Secret i bhfolach go dtí go bhfeictear an chéad iompar comhoiriúnach.",
-      scan_subtitle:
-        "Stair session Hermes á scanadh. Is féidir leis an gcéad scan 5–10 soicind a thógáil ar staireanna móra.",
+      subtitle: "Suaitheantais Hermes inbhailithe a thuilltear ó stair fíor-session. Léirítear gnóthachtálacha aitheanta neamhchríochnaithe mar Discovered; fanann gnóthachtálacha Secret i bhfolach go dtí go bhfeictear an chéad iompar comhoiriúnach.",
+      scan_subtitle: "Stair session Hermes á scanadh. Is féidir leis an gcéad scan 5–10 soicind a thógáil ar staireanna móra.",
     },
     actions: {
       rescan: "Athscan",
@@ -528,7 +463,6 @@ export const ga: Translations = {
       secrets: "Rúin",
       secrets_hint: "i bhfolach go dtí an chéad chomhartha",
       highest_tier: "An leibhéal is airde",
-      highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "An ceann is déanaí",
       latest_hint_empty: "rith Hermes níos mó",
       none_yet: "Aon cheann fós",
@@ -549,25 +483,19 @@ export const ga: Translations = {
     },
     scan: {
       building_headline: "Próifíl ghnóthachtála á tógáil…",
-      building_detail:
-        "Sessions, glaonna ar uirlisí, meiteashonraí samhla agus staid díghlasála á léamh.",
+      building_detail: "Sessions, glaonna ar uirlisí, meiteashonraí samhla agus staid díghlasála á léamh.",
       starting_headline: "Scan ghnóthachtála á thosú…",
-      progress_detail:
-        "{scanned} as {total} session scanta · {pct}%. Díghlasáiltear suaitheantais de réir mar a shníonn níos mó staire isteach.",
-      idle_detail:
-        "Sessions, glaonna ar uirlisí, meiteashonraí samhla agus staid díghlasála á léamh. Feicfear suaitheantais anseo de réir mar a dhíghlasáiltear iad.",
+      progress_detail: "{scanned} as {total} session scanta · {pct}%. Díghlasáiltear suaitheantais de réir mar a shníonn níos mó staire isteach.",
+      idle_detail: "Sessions, glaonna ar uirlisí, meiteashonraí samhla agus staid díghlasála á léamh. Feicfear suaitheantais anseo de réir mar a dhíghlasáiltear iad.",
     },
     guide: {
       tiers_header: "Leibhéil",
       secret_header: "Gnóthachtálacha rúnda",
-      secret_body:
-        "Coinníonn rúin a dtruicear cruinn faoi cheilt. Nuair a fheiceann Hermes comhartha gaolmhar, athraíonn an cárta go Aimsithe agus taispeánann sé a riachtanas.",
+      secret_body: "Coinníonn rúin a dtruicear cruinn faoi cheilt. Nuair a fheiceann Hermes comhartha gaolmhar, athraíonn an cárta go Aimsithe agus taispeánann sé a riachtanas.",
       scan_status_header: "Stádas an scanta",
-      scan_status_body:
-        "Scanann Hermes an stair logánta uair amháin, ansin feicfear cártaí go huathoibríoch. Níl aon rud sáinnithe má thógann sé cúpla soicind.",
+      scan_status_body: "Scanann Hermes an stair logánta uair amháin, ansin feicfear cártaí go huathoibríoch. Níl aon rud sáinnithe má thógann sé cúpla soicind.",
       what_scanned_header: "Cad a scantar",
-      what_scanned_body:
-        "Sessions, glaonna ar uirlisí, meiteashonraí samhla, earráidí, gnóthachtálacha agus staid díghlasála logánta.",
+      what_scanned_body: "Sessions, glaonna ar uirlisí, meiteashonraí samhla, earráidí, gnóthachtálacha agus staid díghlasála logánta.",
     },
     card: {
       share_title: "Comhroinn an gnóthachtáil seo",
@@ -576,7 +504,6 @@ export const ga: Translations = {
       how_to_reveal: "Conas é a nochtadh",
       what_counts: "Cad a chomhairtear",
       evidence_label: "Fianaise",
-      evidence_session_fallback: "session",
       no_evidence: "Níl fianaise ann fós",
     },
     latest: {
@@ -584,8 +511,7 @@ export const ga: Translations = {
     },
     empty: {
       no_secrets_header: "Níl aon rúin fhalaithe fágtha sa scan seo.",
-      no_secrets_body:
-        "Leid: tosaíonn rúin de ghnáth le patrúin teipe neamhghnácha nó patrúin power-user — coinbhleachtaí poirt, ballaí ceadanna, athróga env in easnamh, botúin YAML, imbhuailtí Docker, úsáid rollback/checkpoint, amais cache, nó mionchóirithe tar éis go leor téacs dheirg.",
+      no_secrets_body: "Leid: tosaíonn rúin de ghnáth le patrúin teipe neamhghnácha nó patrúin power-user — coinbhleachtaí poirt, ballaí ceadanna, athróga env in easnamh, botúin YAML, imbhuailtí Docker, úsáid rollback/checkpoint, amais cache, nó mionchóirithe tar éis go leor téacs dheirg.",
     },
     filters: {
       all_categories: "Gach rud",
@@ -607,31 +533,19 @@ export const ga: Translations = {
       copy_button: "Cóipeáil íomhá",
       copied: "Cóipeáilte ✓",
       download_button: "Íoslódáil PNG",
-      hint:
-        "Osclaíonn Comhroinn ar X post réamhlíonta i gcluaisín nua. Cliceáil Cóipeáil íomhá ar dtús más mian leat an suaitheantas 1200×630 a bheith ceangailte — ligeann X duit é a ghreamú díreach isteach i scríbhneoir an tweet. Sábhálann Íoslódáil PNG an comhad le húsáid áit ar bith.",
-      clipboard_unsupported:
-        "Ní thacaítear le cóipeáil íomhá chuig an ngearrthaisce sa bhrabhsálaí seo — úsáid Íoslódáil ina ionad sin.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      hint: "Osclaíonn Comhroinn ar X post réamhlíonta i gcluaisín nua. Cliceáil Cóipeáil íomhá ar dtús más mian leat an suaitheantas 1200×630 a bheith ceangailte — ligeann X duit é a ghreamú díreach isteach i scríbhneoir an tweet. Sábhálann Íoslódáil PNG an comhad le húsáid áit ar bith.",
+      clipboard_unsupported: "Ní thacaítear le cóipeáil íomhá chuig an ngearrthaisce sa bhrabhsálaí seo — úsáid Íoslódáil ina ionad sin.",
     },
   },
   kanban: {
     loading: "Clár Kanban á luchtú…",
     loadFailed: "Theip ar luchtú an chláir Kanban: ",
-    loadFailedHint:
-      "Cruthaíonn an cúl-inneall kanban.db go huathoibríoch ar an gcéad léamh. Má leanann sé seo, féach logaí an dashboard.",
+    loadFailedHint: "Cruthaíonn an cúl-inneall kanban.db go huathoibríoch ar an gcéad léamh. Má leanann sé seo, féach logaí an dashboard.",
     board: "Clár",
     newBoard: "+ Clár nua",
     newBoardTitle: "Clár nua",
-    newBoardDescription:
-      "Ligeann boards duit sruthanna oibre neamhghaolmhara a scaradh — ceann amháin in aghaidh an tionscadail, an repo nó an fhearainn. Ní fheiceann workers ar bhord amháin tascanna board eile riamh.",
-    slug: "Slug",
+    newBoardDescription: "Ligeann boards duit sruthanna oibre neamhghaolmhara a scaradh — ceann amháin in aghaidh an tionscadail, an repo nó an fhearainn. Ní fheiceann workers ar bhord amháin tascanna board eile riamh.",
     slugHint: "— litreacha beaga, fleiscíní, m.sh. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Ainm taispeána",
     displayNameHint: "(roghnach)",
     description: "Cur síos",
@@ -644,7 +558,6 @@ export const ga: Translations = {
     createBoard: "Cruthaigh clár",
     search: "Cuardaigh",
     filterCards: "Scag cártaí…",
-    tenant: "Tenant",
     allTenants: "Gach tenant",
     assignee: "Sannaí",
     allProfiles: "Gach profile",
@@ -665,7 +578,6 @@ export const ga: Translations = {
     addComment: "Cuir nóta tráchta… (Enter chun seoladh)",
     comment: "Nóta tráchta",
     status: "Stádas",
-    workspace: "Workspace",
     skills: "Scileanna",
     createdBy: "Cruthaithe ag",
     result: "Toradh",
@@ -674,8 +586,7 @@ export const ga: Translations = {
     runHistory: "Stair na rití",
     workerLog: "Loga an worker",
     loadingLog: "Loga á luchtú…",
-    noWorkerLog:
-      "— níl loga worker ann fós (níor sheol an tasc nó rinneadh an loga a rothlú) —",
+    noWorkerLog: "— níl loga worker ann fós (níor sheol an tasc nó rinneadh an loga a rothlú) —",
     noDescription: "— gan cur síos —",
     noComments: "— gan nótaí tráchta —",
     edit: "cuir in eagar",
@@ -706,8 +617,7 @@ export const ga: Translations = {
     reassign: "Athshann",
     renderingError: "Bhuail earráid rindreála an chluaisín Kanban",
     reloadView: "Athluchtaigh an radharc",
-    wsAuthFailed:
-      "Theip ar fhíordheimhniú WebSocket — athluchtaigh an leathanach chun an comhartha seisiúin a athnuachan.",
+    wsAuthFailed: "Theip ar fhíordheimhniú WebSocket — athluchtaigh an leathanach chun an comhartha seisiúin a athnuachan.",
     markDone: "Marcáil {n} tasc mar críochnaithe?",
     markArchived: "Cartlannaigh {n} tasc?",
     warning: "Rabhadh",
@@ -718,8 +628,7 @@ export const ga: Translations = {
     showAllAttempts: "Taispeáin gach iarracht",
     sendingUpdates: "Nuashonruithe á seoladh chuig",
     sendNotifications: "Seol fógraí completed / blocked / gave_up chuig",
-    archiveBoardConfirm:
-      "Cartlannaigh an clár '{name}'? Bogfar é go boards/_archived/ ionas gur féidir é a aisghabháil níos déanaí. Ní bheidh tascanna an chláir seo le feiceáil aon áit san UI a thuilleadh.",
+    archiveBoardConfirm: "Cartlannaigh an clár '{name}'? Bogfar é go boards/_archived/ ionas gur féidir é a aisghabháil níos déanaí. Ní bheidh tascanna an chláir seo le feiceáil aon áit san UI a thuilleadh.",
     archiveBoardTitle: "Cartlannaigh an clár seo",
     boardSwitcherHint: "Ligeann boards duit sruthanna oibre neamhghaolmhara a scaradh",
     taskCreatedWarning: "Cruthaíodh an tasc, ach: ",
@@ -758,28 +667,19 @@ export const ga: Translations = {
       done: "Críochnaithe",
       archived: "Cartlannaithe",
     },
-    confirmDone:
-      "Marcáil an tasc seo mar críochnaithe? Scaoiltear éileamh an worker agus éiríonn leanaí spleácha ready.",
-    confirmArchive:
-      "Cartlannaigh an tasc seo? Imíonn sé as an réamhradharc cláir.",
-    confirmBlocked:
-      "Marcáil an tasc seo mar bactha? Scaoiltear éileamh an worker.",
-    completionSummary:
-      "Achoimre chríochnaithe ar {label}. Stóráiltear é seo mar result an taisc.",
-    completionSummaryRequired:
-      "Tá achoimre chríochnaithe riachtanach sula marcáiltear tasc mar críochnaithe.",
+    confirmDone: "Marcáil an tasc seo mar críochnaithe? Scaoiltear éileamh an worker agus éiríonn leanaí spleácha ready.",
+    confirmArchive: "Cartlannaigh an tasc seo? Imíonn sé as an réamhradharc cláir.",
+    confirmBlocked: "Marcáil an tasc seo mar bactha? Scaoiltear éileamh an worker.",
+    completionSummary: "Achoimre chríochnaithe ar {label}. Stóráiltear é seo mar result an taisc.",
+    completionSummaryRequired: "Tá achoimre chríochnaithe riachtanach sula marcáiltear tasc mar críochnaithe.",
     triagePlaceholder: "Smaoineamh garbh — déanfaidh AI an spec…",
     taskTitlePlaceholder: "Teideal taisc nua…",
-    specifier: "specifier",
     assigneePlaceholder: "sannaí",
     priority: "Tosaíocht",
-    skillsPlaceholder:
-      "scileanna (roghnach, scartha le camóga): translation, github-code-review",
+    skillsPlaceholder: "scileanna (roghnach, scartha le camóga): translation, github-code-review",
     noParent: "— gan tuismitheoir —",
     workspacePathDir: "conair workspace (riachtanach, m.sh. ~/projects/my-app)",
-    workspacePathOptional:
-      "conair workspace (roghnach, díorthaithe ón sannaí má tá sé folamh)",
+    workspacePathOptional: "conair workspace (roghnach, díorthaithe ón sannaí má tá sé folamh)",
     logTruncated: "(taispeántar an 100 KB deireanach — loga iomlán ag ",
-    logAt: ")",
   },
-};
+});

@@ -1,6 +1,10 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const ja: Translations = {
+// Auto-synced by scripts/i18n-sync.mjs — only keys that differ from en.ts are
+// listed below; everything else inherits English automatically. After editing
+// en.ts, run `npm run i18n:sync` to propagate, and `npm run i18n:check`
+// (wired into CI) guards against drift.
+export const ja = defineLocale({
   common: {
     save: "保存",
     saving: "保存中...",
@@ -43,20 +47,12 @@ export const ja: Translations = {
     expand: "展開",
     general: "一般",
     messaging: "メッセージング",
-    pluginLoadFailed:
-      "このプラグインのスクリプトを読み込めませんでした。Network タブ（dashboard-plugins/…）とサーバーのプラグインパスをご確認ください。",
-    pluginNotRegistered:
-      "プラグインのスクリプトが register() を呼び出していないか、スクリプトでエラーが発生しました。詳細はブラウザのコンソールをご確認ください。",
+    pluginLoadFailed: "このプラグインのスクリプトを読み込めませんでした。Network タブ（dashboard-plugins/…）とサーバーのプラグインパスをご確認ください。",
+    pluginNotRegistered: "プラグインのスクリプトが register() を呼び出していないか、スクリプトでエラーが発生しました。詳細はブラウザのコンソールをご確認ください。",
   },
-
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
     closeNavigation: "ナビゲーションを閉じる",
     closeModelTools: "モデルとツールを閉じる",
-    footer: {
-      org: "Nous Research",
-    },
     activeSessionsLabel: "アクティブなセッション:",
     gatewayStatusLabel: "ゲートウェイの状態:",
     gatewayStrip: {
@@ -70,7 +66,6 @@ export const ja: Translations = {
       analytics: "分析",
       chat: "チャット",
       config: "設定",
-      cron: "Cron",
       documentation: "ドキュメント",
       keys: "キー",
       logs: "ログ",
@@ -89,9 +84,7 @@ export const ja: Translations = {
     sessionsActiveCount: "{count} 件アクティブ",
     statusOverview: "ステータス概要",
     system: "システム",
-    webUi: "Web UI",
   },
-
   status: {
     actionFailed: "アクションが失敗しました",
     actionFinished: "完了",
@@ -108,7 +101,6 @@ export const ja: Translations = {
     lastUpdate: "最終更新",
     noneRunning: "なし",
     notRunning: "実行されていません",
-    pid: "PID",
     platformDisconnected: "切断",
     platformError: "エラー",
     recentSessions: "最近のセッション",
@@ -124,7 +116,6 @@ export const ja: Translations = {
     updatingHermes: "Hermes を更新しています…",
     waitingForOutput: "出力を待機しています…",
   },
-
   sessions: {
     title: "セッション",
     history: "履歴",
@@ -143,14 +134,12 @@ export const ja: Translations = {
     untitledSession: "無題のセッション",
     deleteSession: "セッションを削除",
     confirmDeleteTitle: "セッションを削除しますか？",
-    confirmDeleteMessage:
-      "会話とそのすべてのメッセージが完全に削除されます。この操作は取り消せません。",
+    confirmDeleteMessage: "会話とそのすべてのメッセージが完全に削除されます。この操作は取り消せません。",
     sessionDeleted: "セッションを削除しました",
     failedToDelete: "セッションの削除に失敗しました",
     deleteEmpty: "空を削除",
     deleteEmptyConfirmTitle: "空のセッションを削除しますか？",
-    deleteEmptyConfirmMessage:
-      "メッセージのない {count} 件のセッションを完全に削除します。アクティブおよびアーカイブされたセッションはスキップされます。この操作は元に戻せません。",
+    deleteEmptyConfirmMessage: "メッセージのない {count} 件のセッションを完全に削除します。アクティブおよびアーカイブされたセッションはスキップされます。この操作は元に戻せません。",
     emptySessionsDeleted: "{count} 件の空のセッションを削除しました",
     failedToDeleteEmpty: "空のセッションの削除に失敗しました",
     selectSession: "セッションを選択",
@@ -159,8 +148,7 @@ export const ja: Translations = {
     selectedCount: "{count}件選択中",
     deleteSelected: "{count}件削除",
     deleteSelectedConfirmTitle: "{count}件のセッションを削除しますか？",
-    deleteSelectedConfirmMessage:
-      "選択した{count}件のセッションとそのすべてのメッセージが完全に削除されます。この操作は取り消せません。",
+    deleteSelectedConfirmMessage: "選択した{count}件のセッションとそのすべてのメッセージが完全に削除されます。この操作は取り消せません。",
     selectedSessionsDeleted: "{count}件のセッションを削除しました",
     failedToDeleteSelected: "選択したセッションの削除に失敗しました",
     resumeInChat: "チャットで再開",
@@ -174,7 +162,6 @@ export const ja: Translations = {
       tool: "ツール",
     },
   },
-
   analytics: {
     period: "期間:",
     totalTokens: "合計トークン数",
@@ -200,7 +187,6 @@ export const ja: Translations = {
     acrossModels: "{count} モデル全体",
     inOut: "{input} 入力 / {output} 出力",
   },
-
   models: {
     modelsUsed: "使用モデル",
     estimatedCost: "推定コスト",
@@ -212,7 +198,6 @@ export const ja: Translations = {
     noModelsData: "この期間のモデル使用データはありません",
     startSession: "セッションを開始するとモデルデータがここに表示されます",
   },
-
   logs: {
     title: "ログ",
     autoRefresh: "自動更新",
@@ -222,10 +207,8 @@ export const ja: Translations = {
     lines: "行数",
     noLogLines: "ログ行が見つかりません",
   },
-
   cron: {
-    confirmDeleteMessage:
-      "ジョブをスケジュールから削除します。この操作は取り消せません。",
+    confirmDeleteMessage: "ジョブをスケジュールから削除します。この操作は取り消せません。",
     confirmDeleteTitle: "スケジュールされたジョブを削除しますか？",
     newJob: "新しい Cron ジョブ",
     nameOptional: "名前 (任意)",
@@ -233,7 +216,6 @@ export const ja: Translations = {
     prompt: "プロンプト",
     promptPlaceholder: "実行ごとにエージェントが行う内容は？",
     schedule: "スケジュール (cron 式)",
-    schedulePlaceholder: "0 9 * * *",
     scheduleMode: "スケジュール",
     scheduleModes: {
       interval: "繰り返し間隔",
@@ -249,17 +231,15 @@ export const ja: Translations = {
       unitDays: "日",
       timeOfDay: "時刻",
       weekdays: "曜日",
-      weekdaysShort: ["日", "月", "火", "水", "木", "金", "土"],
+      weekdaysShort: ["日","月","火","水","木","金","土"],
       dayOfMonth: "日付",
       onceAt: "実行日時",
       customLabel: "cron式",
-      customPlaceholder: "0 9 * * *",
       customHint: "5フィールドのcron式（分、時、日、月、曜日）。",
       preview: "送信形式",
       previewEmpty: "（未入力）",
     },
     scheduleDescribe: {
-      none: "—",
       everyMinutes: "{n}分ごと",
       everyHours: "{n}時間ごと",
       everyDays: "{n}日ごと",
@@ -278,26 +258,20 @@ export const ja: Translations = {
     triggerNow: "今すぐ実行",
     delivery: {
       local: "ローカル",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
     },
   },
-
   profiles: {
     newProfile: "新しいプロファイル",
     name: "名前",
     namePlaceholder: "例: coder, writer など",
     nameRequired: "名前は必須です",
-    nameRule:
-      "小文字、数字、_ および - のみ使用可能。最初は文字または数字で始める必要があります。最大 64 文字。",
-    invalidName: "無効なプロファイル名",    cloneFrom: "プロファイルから複製",
+    nameRule: "小文字、数字、_ および - のみ使用可能。最初は文字または数字で始める必要があります。最大 64 文字。",
+    invalidName: "無効なプロファイル名",
+    cloneFrom: "プロファイルから複製",
     cloneFromNone: "なし（空）",
     allProfiles: "プロファイル",
     noProfiles: "プロファイルが見つかりません。",
     defaultBadge: "デフォルト",
-    hasEnv: "env",
     model: "モデル",
     skills: "スキル",
     rename: "名前を変更",
@@ -310,13 +284,11 @@ export const ja: Translations = {
     commandCopied: "クリップボードにコピーしました",
     copyFailed: "コピーできませんでした",
     confirmDeleteTitle: "プロファイルを削除しますか？",
-    confirmDeleteMessage:
-      "プロファイル '{name}' を完全に削除します — 設定、キー、メモリ、セッション、スキル、cron ジョブ。この操作は取り消せません。",
+    confirmDeleteMessage: "プロファイル '{name}' を完全に削除します — 設定、キー、メモリ、セッション、スキル、cron ジョブ。この操作は取り消せません。",
     created: "作成しました",
     deleted: "削除しました",
     renamed: "名前を変更しました",
   },
-
   pluginsPage: {
     contextEngineLabel: "コンテキストエンジン",
     dashboardSlots: "ダッシュボードスロット",
@@ -324,8 +296,7 @@ export const ja: Translations = {
     enableAfterInstall: "インストール後に有効化",
     enableRuntime: "有効化",
     forceReinstall: "強制再インストール (既存のフォルダを先に削除)",
-    headline:
-      "Hermes プラグインを発見、インストール、有効化、更新します (`hermes plugins` 相当)。",
+    headline: "Hermes プラグインを発見、インストール、有効化、更新します (`hermes plugins` 相当)。",
     identifierLabel: "Git URL または owner/repo",
     inactive: "非アクティブ",
     installBtn: "インストール",
@@ -339,8 +310,7 @@ export const ja: Translations = {
     pluginListHeading: "インストール済みプラグイン",
     providerDefaults: "組み込み / デフォルト",
     providersHeading: "ランタイムプロバイダープラグイン",
-    providersHint:
-      "memory.provider (空 = 組み込み) と context.engine を config.yaml に書き込みます。次のセッションで有効になります。",
+    providersHint: "memory.provider (空 = 組み込み) と context.engine を config.yaml に書き込みます。次のセッションで有効になります。",
     refreshDashboard: "ダッシュボード拡張を再スキャン",
     removeConfirm: "このプラグインを ~/.hermes/plugins/ から削除しますか？",
     removeHint: "削除できるのは ~/.hermes/plugins 配下のユーザーがインストールしたプラグインのみです。",
@@ -352,12 +322,10 @@ export const ja: Translations = {
     sourceBadge: "ソース",
     authRequired: "認証が必要",
     authRequiredHint: "認証するには次のコマンドを実行してください:",
-    updateGit: "Git pull",
     versionBadge: "バージョン",
     showInSidebar: "サイドバーに表示",
     hideFromSidebar: "サイドバーから非表示",
   },
-
   skills: {
     title: "スキル",
     searchPlaceholder: "スキルとツールセットを検索...",
@@ -377,13 +345,10 @@ export const ja: Translations = {
     disabledForCli: "CLI では無効",
     more: "+{count} 件",
   },
-
   config: {
-    configPath: "~/.hermes/config.yaml",
     filters: "フィルター",
     sections: "セクション",
     exportConfig: "設定を JSON としてエクスポート",
-    importConfig: "JSON から設定をインポート",
     resetDefaults: "デフォルトにリセット",
     resetScopeTooltip: "{scope} をデフォルトにリセット",
     confirmResetScope: "すべての {scope} 設定をデフォルトにリセットしますか？フォームのみ更新されます — 保存を押すまで config.yaml には書き込まれません。",
@@ -391,7 +356,7 @@ export const ja: Translations = {
     rawYaml: "生の YAML 設定",
     searchResults: "検索結果",
     fields: "フィールド{s}",
-    noFieldsMatch: '"{query}" に一致するフィールドはありません',
+    noFieldsMatch: "\"{query}\" に一致するフィールドはありません",
     configSaved: "設定を保存しました",
     yamlConfigSaved: "YAML 設定を保存しました",
     failedToSave: "保存に失敗しました",
@@ -413,15 +378,12 @@ export const ja: Translations = {
       tts: "音声合成",
       stt: "音声認識",
       logging: "ロギング",
-      discord: "Discord",
       auxiliary: "補助",
     },
   },
-
   env: {
     changesNote: "変更は即座にディスクへ保存されます。アクティブなセッションは新しいキーを自動的に取得します。",
-    confirmClearMessage:
-      "この変数の保存値が .env ファイルから削除されます。この操作は UI から取り消せません。",
+    confirmClearMessage: "この変数の保存値が .env ファイルから削除されます。この操作は UI から取り消せません。",
     confirmClearTitle: "このキーをクリアしますか？",
     description: "API キーとシークレットを管理します。保存先:",
     hideAdvanced: "詳細設定を隠す",
@@ -447,12 +409,10 @@ export const ja: Translations = {
     add: "追加",
     invalidKeyName: "英字・数字・アンダースコアのみ使用できます（英字またはアンダースコアで始める必要があります）。",
   },
-
   oauth: {
     title: "プロバイダーログイン (OAuth)",
     providerLogins: "プロバイダーログイン (OAuth)",
-    description:
-      "{connected} / {total} OAuth プロバイダーが接続されています。ダッシュボード対応のフローには「ログイン」を使用してください。外部またはフォールバック用のセットアップには引き続き CLI コマンドを利用できます。",
+    description: "{connected} / {total} OAuth プロバイダーが接続されています。ダッシュボード対応のフローには「ログイン」を使用してください。外部またはフォールバック用のセットアップには引き続き CLI コマンドを利用できます。",
     connected: "接続済み",
     expired: "期限切れ",
     notConnected: "未接続です。可能な場合は「ログイン」を使用するか、ターミナルで {command} を実行してください。",
@@ -489,24 +449,17 @@ export const ja: Translations = {
     },
     expiresIn: "{time} 後に期限切れ",
   },
-
   language: {
     switchTo: "言語を切り替え",
   },
-
   theme: {
     title: "テーマ",
     switchTheme: "テーマを切り替え",
   },
-
   achievements: {
     hero: {
-      kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
-      subtitle:
-        "実際のセッション履歴から獲得できる Hermes のコレクタブル バッジです。既知の未達成の実績は「Discovered」として表示され、Secret 実績は最初の該当する挙動が検出されるまで非表示のままです。",
-      scan_subtitle:
-        "Hermes のセッション履歴をスキャンしています。履歴が大きい場合、初回スキャンには 5～10 秒かかることがあります。",
+      subtitle: "実際のセッション履歴から獲得できる Hermes のコレクタブル バッジです。既知の未達成の実績は「Discovered」として表示され、Secret 実績は最初の該当する挙動が検出されるまで非表示のままです。",
+      scan_subtitle: "Hermes のセッション履歴をスキャンしています。履歴が大きい場合、初回スキャンには 5～10 秒かかることがあります。",
     },
     actions: {
       rescan: "再スキャン",
@@ -519,7 +472,6 @@ export const ja: Translations = {
       secrets: "シークレット",
       secrets_hint: "最初のシグナルまで非表示",
       highest_tier: "最高ティア",
-      highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "最新",
       latest_hint_empty: "Hermes をもっと使ってみてください",
       none_yet: "まだありません",
@@ -540,25 +492,19 @@ export const ja: Translations = {
     },
     scan: {
       building_headline: "実績プロファイルを構築中…",
-      building_detail:
-        "セッション、ツール呼び出し、モデルのメタデータ、解除状態を読み込んでいます。",
+      building_detail: "セッション、ツール呼び出し、モデルのメタデータ、解除状態を読み込んでいます。",
       starting_headline: "実績スキャンを開始しています…",
-      progress_detail:
-        "{total} 件中 {scanned} 件のセッションをスキャンしました · {pct}%。履歴が読み込まれるにつれてバッジが解除されます。",
-      idle_detail:
-        "セッション、ツール呼び出し、モデルのメタデータ、解除状態を読み込んでいます。バッジは解除され次第ここに表示されます。",
+      progress_detail: "{total} 件中 {scanned} 件のセッションをスキャンしました · {pct}%。履歴が読み込まれるにつれてバッジが解除されます。",
+      idle_detail: "セッション、ツール呼び出し、モデルのメタデータ、解除状態を読み込んでいます。バッジは解除され次第ここに表示されます。",
     },
     guide: {
       tiers_header: "ティア",
       secret_header: "シークレット実績",
-      secret_body:
-        "シークレットはトリガー条件を隠しています。Hermes が関連するシグナルを検出すると、カードは「Discovered」になり、要件が表示されます。",
+      secret_body: "シークレットはトリガー条件を隠しています。Hermes が関連するシグナルを検出すると、カードは「Discovered」になり、要件が表示されます。",
       scan_status_header: "スキャン状況",
-      scan_status_body:
-        "Hermes はローカル履歴を一度スキャンし、その後カードが自動的に表示されます。数秒かかってもスタックしているわけではありません。",
+      scan_status_body: "Hermes はローカル履歴を一度スキャンし、その後カードが自動的に表示されます。数秒かかってもスタックしているわけではありません。",
       what_scanned_header: "スキャン対象",
-      what_scanned_body:
-        "セッション、ツール呼び出し、モデルのメタデータ、エラー、実績、ローカルの解除状態。",
+      what_scanned_body: "セッション、ツール呼び出し、モデルのメタデータ、エラー、実績、ローカルの解除状態。",
     },
     card: {
       share_title: "この実績を共有",
@@ -575,8 +521,7 @@ export const ja: Translations = {
     },
     empty: {
       no_secrets_header: "このスキャンに残っている隠しシークレットはありません。",
-      no_secrets_body:
-        "ヒント: シークレットは通常、想定外の失敗やパワーユーザー的なパターンから生まれます — ポート競合、権限の壁、環境変数の不足、YAML のミス、Docker の衝突、ロールバックやチェックポイントの利用、キャッシュヒット、あるいは大量の赤いエラーの後の小さな修正など。",
+      no_secrets_body: "ヒント: シークレットは通常、想定外の失敗やパワーユーザー的なパターンから生まれます — ポート競合、権限の壁、環境変数の不足、YAML のミス、Docker の衝突、ロールバックやチェックポイントの利用、キャッシュヒット、あるいは大量の赤いエラーの後の小さな修正など。",
     },
     filters: {
       all_categories: "すべて",
@@ -598,31 +543,20 @@ export const ja: Translations = {
       copy_button: "画像をコピー",
       copied: "コピーしました ✓",
       download_button: "PNG をダウンロード",
-      hint:
-        "「X で共有」は事前入力された投稿を新しいタブで開きます。1200×630 のバッジを添付したい場合は、先に「画像をコピー」を押してください — X では投稿エディタに直接貼り付けられます。「PNG をダウンロード」はファイルとして保存し、どこでも使えるようにします。",
-      clipboard_unsupported:
-        "このブラウザではクリップボードへの画像コピーがサポートされていません — 代わりに「ダウンロード」をご利用ください。",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      hint: "「X で共有」は事前入力された投稿を新しいタブで開きます。1200×630 のバッジを添付したい場合は、先に「画像をコピー」を押してください — X では投稿エディタに直接貼り付けられます。「PNG をダウンロード」はファイルとして保存し、どこでも使えるようにします。",
+      clipboard_unsupported: "このブラウザではクリップボードへの画像コピーがサポートされていません — 代わりに「ダウンロード」をご利用ください。",
     },
   },
   kanban: {
     loading: "Kanban ボードを読み込んでいます…",
     loadFailed: "Kanban ボードの読み込みに失敗しました: ",
-    loadFailedHint:
-      "バックエンドは初回読み込み時に kanban.db を自動作成します。問題が続く場合は、ダッシュボードのログをご確認ください。",
+    loadFailedHint: "バックエンドは初回読み込み時に kanban.db を自動作成します。問題が続く場合は、ダッシュボードのログをご確認ください。",
     board: "ボード",
     newBoard: "+ 新しいボード",
     newBoardTitle: "新しいボード",
-    newBoardDescription:
-      "ボードを使うと、関連のない作業の流れを分けられます — プロジェクト、リポジトリ、ドメインごとに 1 つずつ。あるボードのワーカーは、別のボードのタスクを見ることはありません。",
+    newBoardDescription: "ボードを使うと、関連のない作業の流れを分けられます — プロジェクト、リポジトリ、ドメインごとに 1 つずつ。あるボードのワーカーは、別のボードのタスクを見ることはありません。",
     slug: "スラッグ",
     slugHint: "— 小文字とハイフン、例: atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "表示名",
     displayNameHint: "（任意）",
     description: "説明",
@@ -665,8 +599,7 @@ export const ja: Translations = {
     runHistory: "実行履歴",
     workerLog: "ワーカーログ",
     loadingLog: "ログを読み込んでいます…",
-    noWorkerLog:
-      "— ワーカーログはまだありません（タスクが起動していないか、ログがローテーションされました）—",
+    noWorkerLog: "— ワーカーログはまだありません（タスクが起動していないか、ログがローテーションされました）—",
     noDescription: "— 説明はありません —",
     noComments: "— コメントはありません —",
     edit: "編集",
@@ -697,8 +630,7 @@ export const ja: Translations = {
     reassign: "再割り当て",
     renderingError: "Kanban タブで描画エラーが発生しました",
     reloadView: "ビューを再読み込み",
-    wsAuthFailed:
-      "WebSocket 認証に失敗しました — ページを再読み込みしてセッショントークンを更新してください。",
+    wsAuthFailed: "WebSocket 認証に失敗しました — ページを再読み込みしてセッショントークンを更新してください。",
     markDone: "{n} 件のタスクを完了にしますか？",
     markArchived: "{n} 件のタスクをアーカイブしますか？",
     warning: "警告",
@@ -709,8 +641,7 @@ export const ja: Translations = {
     showAllAttempts: "すべての試行を表示",
     sendingUpdates: "更新の送信先: ",
     sendNotifications: "完了 / ブロック / 諦めの通知の送信先",
-    archiveBoardConfirm:
-      "ボード「{name}」をアーカイブしますか？ボードは boards/_archived/ に移動され、後で復元できます。このボード上のタスクは UI のどこにも表示されなくなります。",
+    archiveBoardConfirm: "ボード「{name}」をアーカイブしますか？ボードは boards/_archived/ に移動され、後で復元できます。このボード上のタスクは UI のどこにも表示されなくなります。",
     archiveBoardTitle: "このボードをアーカイブ",
     boardSwitcherHint: "ボードを使うと、関連のない作業の流れを分けられます",
     taskCreatedWarning: "タスクは作成されましたが: ",
@@ -749,28 +680,21 @@ export const ja: Translations = {
       done: "完了",
       archived: "アーカイブ済み",
     },
-    confirmDone:
-      "このタスクを完了にしますか？ワーカーの取得は解放され、依存している子タスクが ready になります。",
-    confirmArchive:
-      "このタスクをアーカイブしますか？既定のボードビューから消えます。",
-    confirmBlocked:
-      "このタスクをブロック中にしますか？ワーカーの取得は解放されます。",
-    completionSummary:
-      "{label} の完了サマリ。これはタスクの結果として保存されます。",
-    completionSummaryRequired:
-      "タスクを完了にする前に、完了サマリの入力が必要です。",
+    confirmDone: "このタスクを完了にしますか？ワーカーの取得は解放され、依存している子タスクが ready になります。",
+    confirmArchive: "このタスクをアーカイブしますか？既定のボードビューから消えます。",
+    confirmBlocked: "このタスクをブロック中にしますか？ワーカーの取得は解放されます。",
+    completionSummary: "{label} の完了サマリ。これはタスクの結果として保存されます。",
+    completionSummaryRequired: "タスクを完了にする前に、完了サマリの入力が必要です。",
     triagePlaceholder: "おおまかなアイデア — AI が仕様化します…",
     taskTitlePlaceholder: "新しいタスクのタイトル…",
     specifier: "スペシファイア",
     assigneePlaceholder: "担当者",
     priority: "優先度",
-    skillsPlaceholder:
-      "スキル（任意、カンマ区切り）: translation, github-code-review",
+    skillsPlaceholder: "スキル（任意、カンマ区切り）: translation, github-code-review",
     noParent: "— 親タスクなし —",
     workspacePathDir: "ワークスペースのパス（必須、例: ~/projects/my-app）",
-    workspacePathOptional:
-      "ワークスペースのパス（任意、空の場合は担当者から導出）",
+    workspacePathOptional: "ワークスペースのパス（任意、空の場合は担当者から導出）",
     logTruncated: "（最後の 100 KB を表示中 — 完全なログは ",
     logAt: "）",
   },
-};
+});

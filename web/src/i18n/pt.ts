@@ -1,6 +1,10 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const pt: Translations = {
+// Auto-synced by scripts/i18n-sync.mjs — only keys that differ from en.ts are
+// listed below; everything else inherits English automatically. After editing
+// en.ts, run `npm run i18n:sync` to propagate, and `npm run i18n:check`
+// (wired into CI) guards against drift.
+export const pt = defineLocale({
   common: {
     save: "Guardar",
     saving: "A guardar...",
@@ -30,7 +34,6 @@ export const pt: Translations = {
     noResults: "Sem resultados",
     of: "de",
     page: "Página",
-    msgs: "msgs",
     tools: "ferramentas",
     match: "correspondência",
     other: "Outro",
@@ -43,20 +46,12 @@ export const pt: Translations = {
     expand: "Expandir",
     general: "Geral",
     messaging: "Mensagens",
-    pluginLoadFailed:
-      "Não foi possível carregar o script deste plugin. Verifique o separador Network (dashboard-plugins/…) e o caminho do plugin no servidor.",
-    pluginNotRegistered:
-      "O script do plugin não chamou register(), ou o script falhou. Abra a consola do browser para mais detalhes.",
+    pluginLoadFailed: "Não foi possível carregar o script deste plugin. Verifique o separador Network (dashboard-plugins/…) e o caminho do plugin no servidor.",
+    pluginNotRegistered: "O script do plugin não chamou register(), ou o script falhou. Abra a consola do browser para mais detalhes.",
   },
-
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
     closeNavigation: "Fechar navegação",
     closeModelTools: "Fechar modelo e ferramentas",
-    footer: {
-      org: "Nous Research",
-    },
     activeSessionsLabel: "Sessões ativas:",
     gatewayStatusLabel: "Estado do gateway:",
     gatewayStrip: {
@@ -68,15 +63,12 @@ export const pt: Translations = {
     },
     nav: {
       analytics: "Análise",
-      chat: "Chat",
       config: "Configuração",
-      cron: "Cron",
       documentation: "Documentação",
       keys: "Chaves",
       logs: "Registos",
       models: "Modelos",
       profiles: "perfis: multiagentes",
-      plugins: "Plugins",
       sessions: "Sessões",
       skills: "Competências",
     },
@@ -85,13 +77,10 @@ export const pt: Translations = {
     navigation: "Navegação",
     openDocumentation: "Abrir documentação num novo separador",
     openNavigation: "Abrir navegação",
-    pluginNavSection: "Plugins",
     sessionsActiveCount: "{count} ativa(s)",
     statusOverview: "Visão geral do estado",
     system: "Sistema",
-    webUi: "Web UI",
   },
-
   status: {
     actionFailed: "Ação falhou",
     actionFinished: "Concluído",
@@ -103,12 +92,10 @@ export const pt: Translations = {
     disconnected: "Desligado",
     error: "Erro",
     failed: "Falhou",
-    gateway: "Gateway",
     gatewayFailedToStart: "O gateway falhou ao iniciar",
     lastUpdate: "Última atualização",
     noneRunning: "Nenhum",
     notRunning: "Não está a executar",
-    pid: "PID",
     platformDisconnected: "desligado",
     platformError: "erro",
     recentSessions: "Sessões recentes",
@@ -124,7 +111,6 @@ export const pt: Translations = {
     updatingHermes: "A atualizar Hermes…",
     waitingForOutput: "À espera de saída…",
   },
-
   sessions: {
     title: "Sessões",
     history: "Histórico",
@@ -143,14 +129,12 @@ export const pt: Translations = {
     untitledSession: "Sessão sem título",
     deleteSession: "Eliminar sessão",
     confirmDeleteTitle: "Eliminar sessão?",
-    confirmDeleteMessage:
-      "Esta ação remove permanentemente a conversa e todas as suas mensagens. Não é possível anular.",
+    confirmDeleteMessage: "Esta ação remove permanentemente a conversa e todas as suas mensagens. Não é possível anular.",
     sessionDeleted: "Sessão eliminada",
     failedToDelete: "Falha ao eliminar a sessão",
     deleteEmpty: "Eliminar vazias",
     deleteEmptyConfirmTitle: "Eliminar sessões vazias?",
-    deleteEmptyConfirmMessage:
-      "Isto remove permanentemente {count} sessões sem mensagens. As sessões ativas e arquivadas são ignoradas. Esta ação não pode ser desfeita.",
+    deleteEmptyConfirmMessage: "Isto remove permanentemente {count} sessões sem mensagens. As sessões ativas e arquivadas são ignoradas. Esta ação não pode ser desfeita.",
     emptySessionsDeleted: "{count} sessões vazias eliminadas",
     failedToDeleteEmpty: "Falha ao eliminar sessões vazias",
     selectSession: "Selecionar sessão",
@@ -159,8 +143,7 @@ export const pt: Translations = {
     selectedCount: "{count} selecionadas",
     deleteSelected: "Eliminar {count}",
     deleteSelectedConfirmTitle: "Eliminar {count} sessões?",
-    deleteSelectedConfirmMessage:
-      "Isto remove permanentemente {count} sessões selecionadas e todas as suas mensagens. Não pode ser desfeito.",
+    deleteSelectedConfirmMessage: "Isto remove permanentemente {count} sessões selecionadas e todas as suas mensagens. Não pode ser desfeito.",
     selectedSessionsDeleted: "{count} sessões eliminadas",
     failedToDeleteSelected: "Falha ao eliminar as sessões selecionadas",
     resumeInChat: "Retomar no Chat",
@@ -174,7 +157,6 @@ export const pt: Translations = {
       tool: "Ferramenta",
     },
   },
-
   analytics: {
     period: "Período:",
     totalTokens: "Tokens totais",
@@ -190,21 +172,17 @@ export const pt: Translations = {
     lastUsed: "Última utilização",
     input: "Entrada",
     output: "Saída",
-    total: "Total",
     noUsageData: "Sem dados de utilização para este período",
     startSession: "Inicie uma sessão para ver as análises aqui",
     date: "Data",
     model: "Modelo",
-    tokens: "Tokens",
     perDayAvg: "/dia (média)",
     acrossModels: "em {count} modelos",
     inOut: "{input} entrada / {output} saída",
   },
-
   models: {
     modelsUsed: "Modelos utilizados",
     estimatedCost: "Custo est.",
-    tokens: "tokens",
     sessions: "sessões",
     avgPerSession: "média/sessão",
     apiCalls: "chamadas à API",
@@ -212,7 +190,6 @@ export const pt: Translations = {
     noModelsData: "Sem dados de utilização de modelos para este período",
     startSession: "Inicie uma sessão para ver os dados de modelos aqui",
   },
-
   logs: {
     title: "Registos",
     autoRefresh: "Atualização automática",
@@ -222,18 +199,14 @@ export const pt: Translations = {
     lines: "Linhas",
     noLogLines: "Não foram encontradas linhas de registo",
   },
-
   cron: {
-    confirmDeleteMessage:
-      "Esta ação remove a tarefa do agendamento. Não é possível anular.",
+    confirmDeleteMessage: "Esta ação remove a tarefa do agendamento. Não é possível anular.",
     confirmDeleteTitle: "Eliminar tarefa agendada?",
     newJob: "Nova tarefa cron",
     nameOptional: "Nome (opcional)",
     namePlaceholder: "ex: Resumo diário",
-    prompt: "Prompt",
     promptPlaceholder: "O que deve o agente fazer em cada execução?",
     schedule: "Agendamento (expressão cron)",
-    schedulePlaceholder: "0 9 * * *",
     scheduleMode: "Agendamento",
     scheduleModes: {
       interval: "Intervalo recorrente",
@@ -249,18 +222,15 @@ export const pt: Translations = {
       unitDays: "dias",
       timeOfDay: "Hora do dia",
       weekdays: "Dias da semana",
-      weekdaysShort: ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"],
+      weekdaysShort: ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"],
       dayOfMonth: "Dia do mês",
       onceAt: "Executar em",
       customLabel: "Expressão cron",
-      customPlaceholder: "0 9 * * *",
-      customHint:
-        "Expressão cron de cinco campos (minuto, hora, dia, mês, dia da semana).",
+      customHint: "Expressão cron de cinco campos (minuto, hora, dia, mês, dia da semana).",
       preview: "Enviado como",
       previewEmpty: "(incompleta)",
     },
     scheduleDescribe: {
-      none: "—",
       everyMinutes: "A cada {n} min",
       everyHours: "A cada {n} h",
       everyDays: "A cada {n} d",
@@ -277,29 +247,19 @@ export const pt: Translations = {
     pause: "Pausar",
     resume: "Retomar",
     triggerNow: "Acionar agora",
-    delivery: {
-      local: "Local",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
-    },
   },
-
   profiles: {
     newProfile: "Novo perfil",
     name: "Nome",
     namePlaceholder: "ex: coder, writer, etc.",
     nameRequired: "O nome é obrigatório",
-    nameRule:
-      "Apenas letras minúsculas, dígitos, _ e -; deve começar com letra ou dígito; até 64 caracteres.",
+    nameRule: "Apenas letras minúsculas, dígitos, _ e -; deve começar com letra ou dígito; até 64 caracteres.",
     invalidName: "Nome de perfil inválido",
     cloneFrom: "Clonar a partir do perfil",
     cloneFromNone: "Nenhum (vazio)",
     allProfiles: "Perfis",
     noProfiles: "Não foram encontrados perfis.",
     defaultBadge: "predefinido",
-    hasEnv: "env",
     model: "Modelo",
     skills: "Competências",
     rename: "Renomear",
@@ -312,13 +272,11 @@ export const pt: Translations = {
     commandCopied: "Copiado para a área de transferência",
     copyFailed: "Não foi possível copiar",
     confirmDeleteTitle: "Eliminar perfil?",
-    confirmDeleteMessage:
-      "Esta ação elimina permanentemente o perfil '{name}' — configuração, chaves, memórias, sessões, competências, tarefas cron. Não é possível anular.",
+    confirmDeleteMessage: "Esta ação elimina permanentemente o perfil '{name}' — configuração, chaves, memórias, sessões, competências, tarefas cron. Não é possível anular.",
     created: "Criado",
     deleted: "Eliminado",
     renamed: "Renomeado",
   },
-
   pluginsPage: {
     contextEngineLabel: "Motor de contexto",
     dashboardSlots: "Slots do dashboard",
@@ -326,8 +284,7 @@ export const pt: Translations = {
     enableAfterInstall: "Ativar após instalação",
     enableRuntime: "Ativar",
     forceReinstall: "Forçar reinstalação (eliminar pasta existente primeiro)",
-    headline:
-      "Descobrir, instalar, ativar e atualizar plugins Hermes (paridade com `hermes plugins`).",
+    headline: "Descobrir, instalar, ativar e atualizar plugins Hermes (paridade com `hermes plugins`).",
     identifierLabel: "URL Git ou owner/repo",
     inactive: "inativo",
     installBtn: "Instalar",
@@ -341,8 +298,7 @@ export const pt: Translations = {
     pluginListHeading: "Plugins instalados",
     providerDefaults: "incorporado / predefinido",
     providersHeading: "Plugins de fornecedor em runtime",
-    providersHint:
-      "Escreve memory.provider (vazio = incorporado) e context.engine no config.yaml. Aplicado na próxima sessão.",
+    providersHint: "Escreve memory.provider (vazio = incorporado) e context.engine no config.yaml. Aplicado na próxima sessão.",
     refreshDashboard: "Re-analisar extensões do dashboard",
     removeConfirm: "Remover este plugin de ~/.hermes/plugins/?",
     removeHint: "Apenas plugins instalados pelo utilizador em ~/.hermes/plugins podem ser removidos.",
@@ -354,12 +310,10 @@ export const pt: Translations = {
     sourceBadge: "Fonte",
     authRequired: "Autenticação necessária",
     authRequiredHint: "Execute este comando para autenticar:",
-    updateGit: "Git pull",
     versionBadge: "Versão",
     showInSidebar: "Mostrar na barra lateral",
     hideFromSidebar: "Ocultar da barra lateral",
   },
-
   skills: {
     title: "Competências",
     searchPlaceholder: "Pesquisar competências e conjuntos de ferramentas...",
@@ -379,13 +333,10 @@ export const pt: Translations = {
     disabledForCli: "Desativado para CLI",
     more: "+{count} mais",
   },
-
   config: {
-    configPath: "~/.hermes/config.yaml",
     filters: "Filtros",
     sections: "Secções",
     exportConfig: "Exportar configuração como JSON",
-    importConfig: "Importar configuração de JSON",
     resetDefaults: "Repor predefinições",
     resetScopeTooltip: "Repor {scope} para predefinições",
     confirmResetScope: "Repor todas as definições de {scope} para os valores predefinidos? Isto apenas atualiza o formulário — as alterações só são escritas em config.yaml quando premir Guardar.",
@@ -393,7 +344,7 @@ export const pt: Translations = {
     rawYaml: "Configuração YAML em bruto",
     searchResults: "Resultados da pesquisa",
     fields: "campo{s}",
-    noFieldsMatch: 'Nenhum campo corresponde a "{query}"',
+    noFieldsMatch: "Nenhum campo corresponde a \"{query}\"",
     configSaved: "Configuração guardada",
     yamlConfigSaved: "Configuração YAML guardada",
     failedToSave: "Falha ao guardar",
@@ -404,26 +355,21 @@ export const pt: Translations = {
     categories: {
       general: "Geral",
       agent: "Agente",
-      terminal: "Terminal",
       display: "Visualização",
       delegation: "Delegação",
       memory: "Memória",
       compression: "Compressão",
       security: "Segurança",
-      browser: "Browser",
       voice: "Voz",
       tts: "Texto para fala",
       stt: "Fala para texto",
       logging: "Registo",
-      discord: "Discord",
       auxiliary: "Auxiliar",
     },
   },
-
   env: {
     changesNote: "As alterações são guardadas em disco imediatamente. As sessões ativas detetam novas chaves automaticamente.",
-    confirmClearMessage:
-      "O valor armazenado para esta variável será removido do seu ficheiro .env. Esta ação não pode ser anulada a partir da UI.",
+    confirmClearMessage: "O valor armazenado para esta variável será removido do seu ficheiro .env. Esta ação não pode ser anulada a partir da UI.",
     confirmClearTitle: "Limpar esta chave?",
     description: "Gerir chaves de API e segredos armazenados em",
     hideAdvanced: "Ocultar avançadas",
@@ -449,12 +395,10 @@ export const pt: Translations = {
     add: "Adicionar",
     invalidKeyName: "Use apenas letras, números e sublinhados (deve começar com uma letra ou sublinhado).",
   },
-
   oauth: {
     title: "Inícios de sessão de fornecedor (OAuth)",
     providerLogins: "Inícios de sessão de fornecedor (OAuth)",
-    description:
-      "{connected} de {total} fornecedores OAuth ligados. Use Iniciar sessão para fluxos suportados pelo painel; os comandos CLI continuam disponíveis para configuração externa ou de recurso.",
+    description: "{connected} de {total} fornecedores OAuth ligados. Use Iniciar sessão para fluxos suportados pelo painel; os comandos CLI continuam disponíveis para configuração externa ou de recurso.",
     connected: "Ligado",
     expired: "Expirado",
     notConnected: "Não ligado. Use Iniciar sessão quando disponível, ou execute {command} num terminal.",
@@ -491,24 +435,17 @@ export const pt: Translations = {
     },
     expiresIn: "expira em {time}",
   },
-
   language: {
     switchTo: "Mudar idioma",
   },
-
   theme: {
     title: "Tema",
     switchTheme: "Mudar tema",
   },
-
   achievements: {
     hero: {
-      kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
-      subtitle:
-        "Distintivos colecionáveis do Hermes obtidos a partir do histórico real de sessões. Conquistas conhecidas mas ainda não obtidas aparecem como Descobertas; conquistas Secretas permanecem ocultas até surgir o primeiro comportamento correspondente.",
-      scan_subtitle:
-        "A analisar o histórico de sessões do Hermes. A primeira análise pode demorar 5–10 segundos em históricos extensos.",
+      subtitle: "Distintivos colecionáveis do Hermes obtidos a partir do histórico real de sessões. Conquistas conhecidas mas ainda não obtidas aparecem como Descobertas; conquistas Secretas permanecem ocultas até surgir o primeiro comportamento correspondente.",
+      scan_subtitle: "A analisar o histórico de sessões do Hermes. A primeira análise pode demorar 5–10 segundos em históricos extensos.",
     },
     actions: {
       rescan: "Voltar a analisar",
@@ -521,7 +458,6 @@ export const pt: Translations = {
       secrets: "Secretas",
       secrets_hint: "ocultas até ao primeiro sinal",
       highest_tier: "Nível mais alto",
-      highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "Mais recente",
       latest_hint_empty: "execute mais o Hermes",
       none_yet: "Ainda nenhuma",
@@ -542,25 +478,19 @@ export const pt: Translations = {
     },
     scan: {
       building_headline: "A construir perfil de conquistas…",
-      building_detail:
-        "A ler sessões, chamadas de ferramentas, metadados de modelos e estado de desbloqueio.",
+      building_detail: "A ler sessões, chamadas de ferramentas, metadados de modelos e estado de desbloqueio.",
       starting_headline: "A iniciar análise de conquistas…",
-      progress_detail:
-        "Analisadas {scanned} de {total} sessões · {pct}%. Os distintivos são desbloqueados à medida que mais histórico é processado.",
-      idle_detail:
-        "A ler sessões, chamadas de ferramentas, metadados de modelos e estado de desbloqueio. Os distintivos aparecem aqui à medida que são desbloqueados.",
+      progress_detail: "Analisadas {scanned} de {total} sessões · {pct}%. Os distintivos são desbloqueados à medida que mais histórico é processado.",
+      idle_detail: "A ler sessões, chamadas de ferramentas, metadados de modelos e estado de desbloqueio. Os distintivos aparecem aqui à medida que são desbloqueados.",
     },
     guide: {
       tiers_header: "Níveis",
       secret_header: "Conquistas secretas",
-      secret_body:
-        "As secretas escondem o seu acionador exato. Assim que o Hermes detetar um sinal relacionado, o cartão passa a Descoberta e mostra o requisito.",
+      secret_body: "As secretas escondem o seu acionador exato. Assim que o Hermes detetar um sinal relacionado, o cartão passa a Descoberta e mostra o requisito.",
       scan_status_header: "Estado da análise",
-      scan_status_body:
-        "O Hermes analisa o histórico local uma vez e depois os cartões aparecem automaticamente. Nada está bloqueado se isto demorar alguns segundos.",
+      scan_status_body: "O Hermes analisa o histórico local uma vez e depois os cartões aparecem automaticamente. Nada está bloqueado se isto demorar alguns segundos.",
       what_scanned_header: "O que é analisado",
-      what_scanned_body:
-        "Sessões, chamadas de ferramentas, metadados de modelos, erros, conquistas e estado de desbloqueio local.",
+      what_scanned_body: "Sessões, chamadas de ferramentas, metadados de modelos, erros, conquistas e estado de desbloqueio local.",
     },
     card: {
       share_title: "Partilhar esta conquista",
@@ -577,8 +507,7 @@ export const pt: Translations = {
     },
     empty: {
       no_secrets_header: "Não restam segredos ocultos nesta análise.",
-      no_secrets_body:
-        "Pista: as secretas começam normalmente em padrões pouco comuns de falha ou de utilizador avançado — conflitos de portas, barreiras de permissões, variáveis de ambiente em falta, erros de YAML, colisões de Docker, uso de rollback/checkpoint, acertos de cache ou pequenas correções após muito texto a vermelho.",
+      no_secrets_body: "Pista: as secretas começam normalmente em padrões pouco comuns de falha ou de utilizador avançado — conflitos de portas, barreiras de permissões, variáveis de ambiente em falta, erros de YAML, colisões de Docker, uso de rollback/checkpoint, acertos de cache ou pequenas correções após muito texto a vermelho.",
     },
     filters: {
       all_categories: "Todas",
@@ -600,31 +529,19 @@ export const pt: Translations = {
       copy_button: "Copiar imagem",
       copied: "Copiado ✓",
       download_button: "Transferir PNG",
-      hint:
-        "Partilhar no X abre uma publicação pré-preenchida num novo separador. Clique primeiro em Copiar imagem se quiser anexar o distintivo 1200×630 — o X permite colá-lo diretamente no compositor da publicação. Transferir PNG guarda o ficheiro para utilização em qualquer lado.",
-      clipboard_unsupported:
-        "A cópia de imagens para a área de transferência não é suportada neste navegador — utilize Transferir.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      hint: "Partilhar no X abre uma publicação pré-preenchida num novo separador. Clique primeiro em Copiar imagem se quiser anexar o distintivo 1200×630 — o X permite colá-lo diretamente no compositor da publicação. Transferir PNG guarda o ficheiro para utilização em qualquer lado.",
+      clipboard_unsupported: "A cópia de imagens para a área de transferência não é suportada neste navegador — utilize Transferir.",
     },
   },
   kanban: {
     loading: "A carregar o quadro Kanban…",
     loadFailed: "Falha ao carregar o quadro Kanban: ",
-    loadFailedHint:
-      "O backend cria automaticamente kanban.db na primeira leitura. Se persistir, consulte os registos do dashboard.",
+    loadFailedHint: "O backend cria automaticamente kanban.db na primeira leitura. Se persistir, consulte os registos do dashboard.",
     board: "Quadro",
     newBoard: "+ Novo quadro",
     newBoardTitle: "Novo quadro",
-    newBoardDescription:
-      "Os quadros permitem-lhe separar fluxos de trabalho não relacionados — um por projeto, repositório ou domínio. Os workers de um quadro nunca veem as tarefas de outro quadro.",
-    slug: "Slug",
+    newBoardDescription: "Os quadros permitem-lhe separar fluxos de trabalho não relacionados — um por projeto, repositório ou domínio. Os workers de um quadro nunca veem as tarefas de outro quadro.",
     slugHint: "— minúsculas, hífenes, p. ex. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nome a apresentar",
     displayNameHint: "(opcional)",
     description: "Descrição",
@@ -637,7 +554,6 @@ export const pt: Translations = {
     createBoard: "Criar quadro",
     search: "Pesquisar",
     filterCards: "Filtrar cartões…",
-    tenant: "Tenant",
     allTenants: "Todos os tenants",
     assignee: "Responsável",
     allProfiles: "Todos os perfis",
@@ -667,8 +583,7 @@ export const pt: Translations = {
     runHistory: "Histórico de execuções",
     workerLog: "Registo do worker",
     loadingLog: "A carregar registo…",
-    noWorkerLog:
-      "— ainda não há registo do worker (a tarefa não foi iniciada ou o registo foi rotacionado) —",
+    noWorkerLog: "— ainda não há registo do worker (a tarefa não foi iniciada ou o registo foi rotacionado) —",
     noDescription: "— sem descrição —",
     noComments: "— sem comentários —",
     edit: "editar",
@@ -699,8 +614,7 @@ export const pt: Translations = {
     reassign: "Reatribuir",
     renderingError: "O separador Kanban encontrou um erro de renderização",
     reloadView: "Recarregar vista",
-    wsAuthFailed:
-      "Falha de autenticação WebSocket — recarregue a página para atualizar o token de sessão.",
+    wsAuthFailed: "Falha de autenticação WebSocket — recarregue a página para atualizar o token de sessão.",
     markDone: "Marcar {n} tarefa(s) como concluídas?",
     markArchived: "Arquivar {n} tarefa(s)?",
     warning: "Aviso",
@@ -711,8 +625,7 @@ export const pt: Translations = {
     showAllAttempts: "Mostrar todas as tentativas",
     sendingUpdates: "A enviar atualizações para",
     sendNotifications: "Enviar notificações de completed / blocked / gave_up para",
-    archiveBoardConfirm:
-      "Arquivar o quadro '{name}'? Será movido para boards/_archived/ para que possa recuperá-lo mais tarde. As tarefas deste quadro deixarão de aparecer em qualquer parte da interface.",
+    archiveBoardConfirm: "Arquivar o quadro '{name}'? Será movido para boards/_archived/ para que possa recuperá-lo mais tarde. As tarefas deste quadro deixarão de aparecer em qualquer parte da interface.",
     archiveBoardTitle: "Arquivar este quadro",
     boardSwitcherHint: "Os quadros permitem-lhe separar fluxos de trabalho não relacionados",
     taskCreatedWarning: "Tarefa criada, mas: ",
@@ -751,28 +664,19 @@ export const pt: Translations = {
       done: "Concluído",
       archived: "Arquivado",
     },
-    confirmDone:
-      "Marcar esta tarefa como concluída? A reivindicação do worker é libertada e os filhos dependentes ficam prontos.",
-    confirmArchive:
-      "Arquivar esta tarefa? Desaparece da vista padrão do quadro.",
-    confirmBlocked:
-      "Marcar esta tarefa como bloqueada? A reivindicação do worker é libertada.",
-    completionSummary:
-      "Resumo de conclusão para {label}. Será guardado como o resultado da tarefa.",
-    completionSummaryRequired:
-      "É necessário um resumo de conclusão antes de marcar uma tarefa como concluída.",
+    confirmDone: "Marcar esta tarefa como concluída? A reivindicação do worker é libertada e os filhos dependentes ficam prontos.",
+    confirmArchive: "Arquivar esta tarefa? Desaparece da vista padrão do quadro.",
+    confirmBlocked: "Marcar esta tarefa como bloqueada? A reivindicação do worker é libertada.",
+    completionSummary: "Resumo de conclusão para {label}. Será guardado como o resultado da tarefa.",
+    completionSummaryRequired: "É necessário um resumo de conclusão antes de marcar uma tarefa como concluída.",
     triagePlaceholder: "Ideia aproximada — a IA irá especificá-la…",
     taskTitlePlaceholder: "Título da nova tarefa…",
-    specifier: "specifier",
     assigneePlaceholder: "responsável",
     priority: "Prioridade",
-    skillsPlaceholder:
-      "competências (opcional, separadas por vírgulas): translation, github-code-review",
+    skillsPlaceholder: "competências (opcional, separadas por vírgulas): translation, github-code-review",
     noParent: "— sem pai —",
     workspacePathDir: "caminho do espaço de trabalho (obrigatório, p. ex. ~/projects/my-app)",
-    workspacePathOptional:
-      "caminho do espaço de trabalho (opcional, derivado do responsável se vazio)",
+    workspacePathOptional: "caminho do espaço de trabalho (opcional, derivado do responsável se vazio)",
     logTruncated: "(a mostrar os últimos 100 KB — registo completo em ",
-    logAt: ")",
   },
-};
+});

@@ -1,6 +1,10 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const it: Translations = {
+// Auto-synced by scripts/i18n-sync.mjs — only keys that differ from en.ts are
+// listed below; everything else inherits English automatically. After editing
+// en.ts, run `npm run i18n:sync` to propagate, and `npm run i18n:check`
+// (wired into CI) guards against drift.
+export const it = defineLocale({
   common: {
     save: "Salva",
     saving: "Salvataggio...",
@@ -43,20 +47,12 @@ export const it: Translations = {
     expand: "Espandi",
     general: "Generale",
     messaging: "Messaggistica",
-    pluginLoadFailed:
-      "Impossibile caricare lo script di questo plugin. Controlla la scheda Network (dashboard-plugins/…) e il percorso dei plugin del server.",
-    pluginNotRegistered:
-      "Lo script del plugin non ha chiamato register(), oppure ha generato un errore. Apri la console del browser per i dettagli.",
+    pluginLoadFailed: "Impossibile caricare lo script di questo plugin. Controlla la scheda Network (dashboard-plugins/…) e il percorso dei plugin del server.",
+    pluginNotRegistered: "Lo script del plugin non ha chiamato register(), oppure ha generato un errore. Apri la console del browser per i dettagli.",
   },
-
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
     closeNavigation: "Chiudi navigazione",
     closeModelTools: "Chiudi modello e strumenti",
-    footer: {
-      org: "Nous Research",
-    },
     activeSessionsLabel: "Sessioni attive:",
     gatewayStatusLabel: "Stato gateway:",
     gatewayStrip: {
@@ -68,9 +64,7 @@ export const it: Translations = {
     },
     nav: {
       analytics: "Analisi",
-      chat: "Chat",
       config: "Configurazione",
-      cron: "Cron",
       documentation: "Documentazione",
       keys: "Chiavi",
       logs: "Log",
@@ -89,9 +83,7 @@ export const it: Translations = {
     sessionsActiveCount: "{count} attive",
     statusOverview: "Panoramica dello stato",
     system: "Sistema",
-    webUi: "Web UI",
   },
-
   status: {
     actionFailed: "Azione non riuscita",
     actionFinished: "Completata",
@@ -103,12 +95,10 @@ export const it: Translations = {
     disconnected: "Disconnesso",
     error: "Errore",
     failed: "Non riuscito",
-    gateway: "Gateway",
     gatewayFailedToStart: "Avvio del gateway non riuscito",
     lastUpdate: "Ultimo aggiornamento",
     noneRunning: "Nessuno",
     notRunning: "Non in esecuzione",
-    pid: "PID",
     platformDisconnected: "disconnesso",
     platformError: "errore",
     recentSessions: "Sessioni recenti",
@@ -124,7 +114,6 @@ export const it: Translations = {
     updatingHermes: "Aggiornamento di Hermes…",
     waitingForOutput: "In attesa di output…",
   },
-
   sessions: {
     title: "Sessioni",
     history: "Cronologia",
@@ -143,14 +132,12 @@ export const it: Translations = {
     untitledSession: "Sessione senza titolo",
     deleteSession: "Elimina sessione",
     confirmDeleteTitle: "Eliminare la sessione?",
-    confirmDeleteMessage:
-      "Questa operazione rimuove definitivamente la conversazione e tutti i suoi messaggi. Non può essere annullata.",
+    confirmDeleteMessage: "Questa operazione rimuove definitivamente la conversazione e tutti i suoi messaggi. Non può essere annullata.",
     sessionDeleted: "Sessione eliminata",
     failedToDelete: "Eliminazione della sessione non riuscita",
     deleteEmpty: "Elimina vuote",
     deleteEmptyConfirmTitle: "Eliminare le sessioni vuote?",
-    deleteEmptyConfirmMessage:
-      "Questa azione rimuove in modo permanente {count} sessioni senza messaggi. Le sessioni attive e archiviate vengono ignorate. L'azione non può essere annullata.",
+    deleteEmptyConfirmMessage: "Questa azione rimuove in modo permanente {count} sessioni senza messaggi. Le sessioni attive e archiviate vengono ignorate. L'azione non può essere annullata.",
     emptySessionsDeleted: "{count} sessioni vuote eliminate",
     failedToDeleteEmpty: "Impossibile eliminare le sessioni vuote",
     selectSession: "Seleziona sessione",
@@ -159,8 +146,7 @@ export const it: Translations = {
     selectedCount: "{count} selezionate",
     deleteSelected: "Elimina {count}",
     deleteSelectedConfirmTitle: "Eliminare {count} sessioni?",
-    deleteSelectedConfirmMessage:
-      "Verranno eliminate definitivamente {count} sessioni selezionate e tutti i loro messaggi. L'operazione non può essere annullata.",
+    deleteSelectedConfirmMessage: "Verranno eliminate definitivamente {count} sessioni selezionate e tutti i loro messaggi. L'operazione non può essere annullata.",
     selectedSessionsDeleted: "{count} sessioni eliminate",
     failedToDeleteSelected: "Impossibile eliminare le sessioni selezionate",
     resumeInChat: "Riprendi nella chat",
@@ -174,7 +160,6 @@ export const it: Translations = {
       tool: "Strumento",
     },
   },
-
   analytics: {
     period: "Periodo:",
     totalTokens: "Token totali",
@@ -188,8 +173,6 @@ export const it: Translations = {
     loads: "Caricato dall'agente",
     edits: "Gestito dall'agente",
     lastUsed: "Ultimo uso",
-    input: "Input",
-    output: "Output",
     total: "Totale",
     noUsageData: "Nessun dato di utilizzo per questo periodo",
     startSession: "Avvia una sessione per vedere le analisi qui",
@@ -198,9 +181,7 @@ export const it: Translations = {
     tokens: "Token",
     perDayAvg: "/giorno medio",
     acrossModels: "su {count} modelli",
-    inOut: "{input} in / {output} out",
   },
-
   models: {
     modelsUsed: "Modelli utilizzati",
     estimatedCost: "Costo stim.",
@@ -212,28 +193,22 @@ export const it: Translations = {
     noModelsData: "Nessun dato sull'uso dei modelli per questo periodo",
     startSession: "Avvia una sessione per vedere i dati dei modelli qui",
   },
-
   logs: {
     title: "Log",
     autoRefresh: "Aggiornamento automatico",
-    file: "File",
     level: "Livello",
     component: "Componente",
     lines: "Righe",
     noLogLines: "Nessuna riga di log trovata",
   },
-
   cron: {
-    confirmDeleteMessage:
-      "Questa operazione rimuove l'attività dalla pianificazione. Non può essere annullata.",
+    confirmDeleteMessage: "Questa operazione rimuove l'attività dalla pianificazione. Non può essere annullata.",
     confirmDeleteTitle: "Eliminare l'attività pianificata?",
     newJob: "Nuova attività cron",
     nameOptional: "Nome (facoltativo)",
     namePlaceholder: "es. Riepilogo giornaliero",
-    prompt: "Prompt",
     promptPlaceholder: "Cosa deve fare l'agente a ogni esecuzione?",
     schedule: "Pianificazione (espressione cron)",
-    schedulePlaceholder: "0 9 * * *",
     scheduleMode: "Pianificazione",
     scheduleModes: {
       interval: "Intervallo ricorrente",
@@ -249,18 +224,15 @@ export const it: Translations = {
       unitDays: "giorni",
       timeOfDay: "Ora del giorno",
       weekdays: "Giorni della settimana",
-      weekdaysShort: ["Dom", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab"],
+      weekdaysShort: ["Dom","Lun","Mar","Mer","Gio","Ven","Sab"],
       dayOfMonth: "Giorno del mese",
       onceAt: "Esegui il",
       customLabel: "Espressione cron",
-      customPlaceholder: "0 9 * * *",
-      customHint:
-        "Espressione cron a cinque campi (minuto, ora, giorno, mese, giorno della settimana).",
+      customHint: "Espressione cron a cinque campi (minuto, ora, giorno, mese, giorno della settimana).",
       preview: "Inviato come",
       previewEmpty: "(incompleta)",
     },
     scheduleDescribe: {
-      none: "—",
       everyMinutes: "Ogni {n} min",
       everyHours: "Ogni {n} h",
       everyDays: "Ogni {n} g",
@@ -279,26 +251,20 @@ export const it: Translations = {
     triggerNow: "Esegui ora",
     delivery: {
       local: "Locale",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
     },
   },
-
   profiles: {
     newProfile: "Nuovo profilo",
     name: "Nome",
     namePlaceholder: "es. coder, writer, ecc.",
     nameRequired: "Il nome è obbligatorio",
-    nameRule:
-      "Solo lettere minuscole, cifre, _ e -; deve iniziare con una lettera o cifra; fino a 64 caratteri.",
-    invalidName: "Nome del profilo non valido",    cloneFrom: "Clona configurazione dal profilo",
+    nameRule: "Solo lettere minuscole, cifre, _ e -; deve iniziare con una lettera o cifra; fino a 64 caratteri.",
+    invalidName: "Nome del profilo non valido",
+    cloneFrom: "Clona configurazione dal profilo",
     cloneFromNone: "Nessuno (vuoto)",
     allProfiles: "Profili",
     noProfiles: "Nessun profilo trovato.",
     defaultBadge: "predefinito",
-    hasEnv: "env",
     model: "Modello",
     skills: "Competenze",
     rename: "Rinomina",
@@ -311,13 +277,11 @@ export const it: Translations = {
     commandCopied: "Copiato negli appunti",
     copyFailed: "Impossibile copiare",
     confirmDeleteTitle: "Eliminare il profilo?",
-    confirmDeleteMessage:
-      "Questa operazione elimina definitivamente il profilo '{name}' — configurazione, chiavi, memorie, sessioni, competenze, attività cron. Non può essere annullata.",
+    confirmDeleteMessage: "Questa operazione elimina definitivamente il profilo '{name}' — configurazione, chiavi, memorie, sessioni, competenze, attività cron. Non può essere annullata.",
     created: "Creato",
     deleted: "Eliminato",
     renamed: "Rinominato",
   },
-
   pluginsPage: {
     contextEngineLabel: "Motore di contesto",
     dashboardSlots: "Slot del dashboard",
@@ -325,8 +289,7 @@ export const it: Translations = {
     enableAfterInstall: "Abilita dopo l'installazione",
     enableRuntime: "Abilita",
     forceReinstall: "Forza reinstallazione (elimina prima la cartella esistente)",
-    headline:
-      "Scopri, installa, abilita e aggiorna i plugin Hermes (parità con `hermes plugins`).",
+    headline: "Scopri, installa, abilita e aggiorna i plugin Hermes (parità con `hermes plugins`).",
     identifierLabel: "URL Git o owner/repo",
     inactive: "inattivo",
     installBtn: "Installa",
@@ -340,8 +303,7 @@ export const it: Translations = {
     pluginListHeading: "Plugin installati",
     providerDefaults: "integrato / predefinito",
     providersHeading: "Plugin provider runtime",
-    providersHint:
-      "Scrive memory.provider (vuoto = integrato) e context.engine in config.yaml. Effetto dalla prossima sessione.",
+    providersHint: "Scrive memory.provider (vuoto = integrato) e context.engine in config.yaml. Effetto dalla prossima sessione.",
     refreshDashboard: "Riscansiona estensioni dashboard",
     removeConfirm: "Rimuovere questo plugin da ~/.hermes/plugins/?",
     removeHint: "Solo i plugin installati dall'utente in ~/.hermes/plugins possono essere rimossi.",
@@ -353,12 +315,10 @@ export const it: Translations = {
     sourceBadge: "Origine",
     authRequired: "Autenticazione richiesta",
     authRequiredHint: "Esegui questo comando per autenticarti:",
-    updateGit: "Git pull",
     versionBadge: "Versione",
     showInSidebar: "Mostra nella barra laterale",
     hideFromSidebar: "Nascondi dalla barra laterale",
   },
-
   skills: {
     title: "Competenze",
     searchPlaceholder: "Cerca competenze e toolset...",
@@ -378,13 +338,10 @@ export const it: Translations = {
     disabledForCli: "Disabilitato per CLI",
     more: "+{count} in più",
   },
-
   config: {
-    configPath: "~/.hermes/config.yaml",
     filters: "Filtri",
     sections: "Sezioni",
     exportConfig: "Esporta configurazione come JSON",
-    importConfig: "Importa configurazione da JSON",
     resetDefaults: "Ripristina predefiniti",
     resetScopeTooltip: "Ripristina {scope} ai valori predefiniti",
     confirmResetScope: "Ripristinare tutte le impostazioni di {scope} ai valori predefiniti? Questa operazione aggiorna solo il modulo — le modifiche non vengono scritte in config.yaml finché non premi Salva.",
@@ -392,7 +349,7 @@ export const it: Translations = {
     rawYaml: "Configurazione YAML grezza",
     searchResults: "Risultati della ricerca",
     fields: "camp{s}",
-    noFieldsMatch: 'Nessun campo corrisponde a "{query}"',
+    noFieldsMatch: "Nessun campo corrisponde a \"{query}\"",
     configSaved: "Configurazione salvata",
     yamlConfigSaved: "Configurazione YAML salvata",
     failedToSave: "Salvataggio non riuscito",
@@ -409,20 +366,16 @@ export const it: Translations = {
       memory: "Memoria",
       compression: "Compressione",
       security: "Sicurezza",
-      browser: "Browser",
       voice: "Voce",
       tts: "Sintesi vocale",
       stt: "Riconoscimento vocale",
       logging: "Log",
-      discord: "Discord",
       auxiliary: "Ausiliario",
     },
   },
-
   env: {
     changesNote: "Le modifiche vengono salvate immediatamente su disco. Le sessioni attive rilevano automaticamente le nuove chiavi.",
-    confirmClearMessage:
-      "Il valore memorizzato per questa variabile sarà rimosso dal tuo file .env. Non può essere annullato dall'interfaccia.",
+    confirmClearMessage: "Il valore memorizzato per questa variabile sarà rimosso dal tuo file .env. Non può essere annullato dall'interfaccia.",
     confirmClearTitle: "Cancellare questa chiave?",
     description: "Gestisci chiavi API e segreti memorizzati in",
     hideAdvanced: "Nascondi avanzate",
@@ -448,12 +401,10 @@ export const it: Translations = {
     add: "Aggiungi",
     invalidKeyName: "Usa solo lettere, numeri e trattini bassi (deve iniziare con una lettera o un trattino basso).",
   },
-
   oauth: {
     title: "Accessi provider (OAuth)",
     providerLogins: "Accessi provider (OAuth)",
-    description:
-      "{connected} di {total} provider OAuth connessi. Usa Accedi per i flussi supportati dalla dashboard; i comandi CLI restano disponibili per configurazioni esterne o di riserva.",
+    description: "{connected} di {total} provider OAuth connessi. Usa Accedi per i flussi supportati dalla dashboard; i comandi CLI restano disponibili per configurazioni esterne o di riserva.",
     connected: "Connesso",
     expired: "Scaduto",
     notConnected: "Non connesso. Usa Accedi se disponibile, oppure esegui {command} in un terminale.",
@@ -490,23 +441,17 @@ export const it: Translations = {
     },
     expiresIn: "scade tra {time}",
   },
-
   language: {
     switchTo: "Cambia lingua",
   },
-
   theme: {
     title: "Tema",
     switchTheme: "Cambia tema",
   },
   achievements: {
     hero: {
-      kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
-      subtitle:
-        "Badge Hermes da collezione, ottenuti dalla cronologia reale delle sessioni. Gli achievement noti non completati vengono mostrati come Scoperti; gli achievement segreti restano nascosti finché non compare il primo comportamento corrispondente.",
-      scan_subtitle:
-        "Scansione della cronologia delle sessioni Hermes in corso. La prima scansione può richiedere 5–10 secondi su cronologie ampie.",
+      subtitle: "Badge Hermes da collezione, ottenuti dalla cronologia reale delle sessioni. Gli achievement noti non completati vengono mostrati come Scoperti; gli achievement segreti restano nascosti finché non compare il primo comportamento corrispondente.",
+      scan_subtitle: "Scansione della cronologia delle sessioni Hermes in corso. La prima scansione può richiedere 5–10 secondi su cronologie ampie.",
     },
     actions: {
       rescan: "Riscansiona",
@@ -519,7 +464,6 @@ export const it: Translations = {
       secrets: "Segreti",
       secrets_hint: "nascosti fino al primo segnale",
       highest_tier: "Livello più alto",
-      highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "Più recente",
       latest_hint_empty: "usa Hermes di più",
       none_yet: "Nessuno ancora",
@@ -540,25 +484,19 @@ export const it: Translations = {
     },
     scan: {
       building_headline: "Costruzione del profilo achievement…",
-      building_detail:
-        "Lettura di sessioni, chiamate agli strumenti, metadati del modello e stato di sblocco.",
+      building_detail: "Lettura di sessioni, chiamate agli strumenti, metadati del modello e stato di sblocco.",
       starting_headline: "Avvio della scansione achievement…",
-      progress_detail:
-        "Scansionate {scanned} di {total} sessioni · {pct}%. I badge si sbloccano man mano che viene elaborata altra cronologia.",
-      idle_detail:
-        "Lettura di sessioni, chiamate agli strumenti, metadati del modello e stato di sblocco. I badge appaiono qui non appena vengono sbloccati.",
+      progress_detail: "Scansionate {scanned} di {total} sessioni · {pct}%. I badge si sbloccano man mano che viene elaborata altra cronologia.",
+      idle_detail: "Lettura di sessioni, chiamate agli strumenti, metadati del modello e stato di sblocco. I badge appaiono qui non appena vengono sbloccati.",
     },
     guide: {
       tiers_header: "Livelli",
       secret_header: "Achievement segreti",
-      secret_body:
-        "I segreti nascondono il loro trigger esatto. Quando Hermes rileva un segnale correlato, la carta passa a Scoperto e mostra il requisito.",
+      secret_body: "I segreti nascondono il loro trigger esatto. Quando Hermes rileva un segnale correlato, la carta passa a Scoperto e mostra il requisito.",
       scan_status_header: "Stato della scansione",
-      scan_status_body:
-        "Hermes sta scansionando la cronologia locale una sola volta, poi le carte appariranno automaticamente. Non è bloccato nulla se richiede qualche secondo.",
+      scan_status_body: "Hermes sta scansionando la cronologia locale una sola volta, poi le carte appariranno automaticamente. Non è bloccato nulla se richiede qualche secondo.",
       what_scanned_header: "Cosa viene scansionato",
-      what_scanned_body:
-        "Sessioni, chiamate agli strumenti, metadati del modello, errori, achievement e stato di sblocco locale.",
+      what_scanned_body: "Sessioni, chiamate agli strumenti, metadati del modello, errori, achievement e stato di sblocco locale.",
     },
     card: {
       share_title: "Condividi questo achievement",
@@ -575,8 +513,7 @@ export const it: Translations = {
     },
     empty: {
       no_secrets_header: "Nessun segreto nascosto rimasto in questa scansione.",
-      no_secrets_body:
-        "Indizio: i segreti di solito partono da fallimenti inusuali o pattern da utente esperto — conflitti di porte, muri di permessi, variabili d'ambiente mancanti, errori YAML, collisioni Docker, uso di rollback/checkpoint, cache hit o piccole correzioni dopo molto testo rosso.",
+      no_secrets_body: "Indizio: i segreti di solito partono da fallimenti inusuali o pattern da utente esperto — conflitti di porte, muri di permessi, variabili d'ambiente mancanti, errori YAML, collisioni Docker, uso di rollback/checkpoint, cache hit o piccole correzioni dopo molto testo rosso.",
     },
     filters: {
       all_categories: "Tutti",
@@ -589,7 +526,6 @@ export const it: Translations = {
       dialog_label: "Condividi achievement",
       header: "Condividi: {name}",
       close: "Chiudi",
-      rendering: "Rendering…",
       card_alt: "Carta di condivisione {name}",
       error_generic: "Qualcosa è andato storto.",
       x_title: "Apre X con un post precompilato",
@@ -598,31 +534,19 @@ export const it: Translations = {
       copy_button: "Copia immagine",
       copied: "Copiato ✓",
       download_button: "Scarica PNG",
-      hint:
-        "Condividi su X apre un post precompilato in una nuova scheda. Clicca prima su Copia immagine se vuoi allegare il badge 1200×630 — X ti permette di incollarlo direttamente nell'editor del tweet. Scarica PNG salva il file per l'uso ovunque.",
-      clipboard_unsupported:
-        "La copia delle immagini negli appunti non è supportata in questo browser — usa Scarica invece.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      hint: "Condividi su X apre un post precompilato in una nuova scheda. Clicca prima su Copia immagine se vuoi allegare il badge 1200×630 — X ti permette di incollarlo direttamente nell'editor del tweet. Scarica PNG salva il file per l'uso ovunque.",
+      clipboard_unsupported: "La copia delle immagini negli appunti non è supportata in questo browser — usa Scarica invece.",
     },
   },
   kanban: {
     loading: "Caricamento bacheca Kanban…",
     loadFailed: "Caricamento della bacheca Kanban non riuscito: ",
-    loadFailedHint:
-      "Il backend crea automaticamente kanban.db alla prima lettura. Se il problema persiste, controlla i log del dashboard.",
+    loadFailedHint: "Il backend crea automaticamente kanban.db alla prima lettura. Se il problema persiste, controlla i log del dashboard.",
     board: "Bacheca",
     newBoard: "+ Nuova bacheca",
     newBoardTitle: "Nuova bacheca",
-    newBoardDescription:
-      "Le bacheche ti permettono di separare flussi di lavoro non correlati — una per progetto, repository o dominio. I worker su una bacheca non vedono mai le attività di un'altra.",
-    slug: "Slug",
+    newBoardDescription: "Le bacheche ti permettono di separare flussi di lavoro non correlati — una per progetto, repository o dominio. I worker su una bacheca non vedono mai le attività di un'altra.",
     slugHint: "— minuscolo, trattini, ad es. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nome visualizzato",
     displayNameHint: "(facoltativo)",
     description: "Descrizione",
@@ -635,7 +559,6 @@ export const it: Translations = {
     createBoard: "Crea bacheca",
     search: "Cerca",
     filterCards: "Filtra schede…",
-    tenant: "Tenant",
     allTenants: "Tutti i tenant",
     assignee: "Assegnatario",
     allProfiles: "Tutti i profili",
@@ -656,17 +579,14 @@ export const it: Translations = {
     addComment: "Aggiungi un commento… (Enter per inviare)",
     comment: "Commento",
     status: "Stato",
-    workspace: "Workspace",
     skills: "Competenze",
     createdBy: "Creato da",
-    result: "Result",
     comments: "Commenti",
     events: "Eventi",
     runHistory: "Cronologia esecuzioni",
     workerLog: "Log del worker",
     loadingLog: "Caricamento log…",
-    noWorkerLog:
-      "— nessun log del worker ancora (l'attività non è stata avviata o il log è stato ruotato) —",
+    noWorkerLog: "— nessun log del worker ancora (l'attività non è stata avviata o il log è stato ruotato) —",
     noDescription: "— nessuna descrizione —",
     noComments: "— nessun commento —",
     edit: "modifica",
@@ -697,8 +617,7 @@ export const it: Translations = {
     reassign: "Riassegna",
     renderingError: "La scheda Kanban ha avuto un errore di rendering",
     reloadView: "Ricarica vista",
-    wsAuthFailed:
-      "Autenticazione WebSocket non riuscita — ricarica la pagina per aggiornare il token di sessione.",
+    wsAuthFailed: "Autenticazione WebSocket non riuscita — ricarica la pagina per aggiornare il token di sessione.",
     markDone: "Contrassegnare {n} attività come completate?",
     markArchived: "Archiviare {n} attività?",
     warning: "Avviso",
@@ -709,8 +628,7 @@ export const it: Translations = {
     showAllAttempts: "Mostra tutti i tentativi",
     sendingUpdates: "Invio aggiornamenti a",
     sendNotifications: "Invia notifiche di completed / blocked / gave_up a",
-    archiveBoardConfirm:
-      "Archiviare la bacheca '{name}'? Verrà spostata in boards/_archived/ in modo da poterla recuperare in seguito. Le attività di questa bacheca non appariranno più da nessuna parte nell'UI.",
+    archiveBoardConfirm: "Archiviare la bacheca '{name}'? Verrà spostata in boards/_archived/ in modo da poterla recuperare in seguito. Le attività di questa bacheca non appariranno più da nessuna parte nell'UI.",
     archiveBoardTitle: "Archivia questa bacheca",
     boardSwitcherHint: "Le bacheche ti permettono di separare flussi di lavoro non correlati",
     taskCreatedWarning: "Attività creata, ma: ",
@@ -730,7 +648,6 @@ export const it: Translations = {
     clickToEditAssignee: "Clicca per modificare l'assegnatario",
     emptyAssignee: "(vuoto = rimuovi assegnazione)",
     columnLabels: {
-      triage: "Triage",
       todo: "Da fare",
       scheduled: "Pianificato",
       ready: "Pronto",
@@ -749,28 +666,19 @@ export const it: Translations = {
       done: "Completato",
       archived: "Archiviato",
     },
-    confirmDone:
-      "Contrassegnare questa attività come completata? La presa in carico del worker viene rilasciata e i figli dipendenti diventano pronti.",
-    confirmArchive:
-      "Archiviare questa attività? Sparirà dalla vista predefinita della bacheca.",
-    confirmBlocked:
-      "Contrassegnare questa attività come bloccata? La presa in carico del worker viene rilasciata.",
-    completionSummary:
-      "Riepilogo di completamento per {label}. Memorizzato come result dell'attività.",
-    completionSummaryRequired:
-      "Il riepilogo di completamento è obbligatorio prima di contrassegnare un'attività come completata.",
+    confirmDone: "Contrassegnare questa attività come completata? La presa in carico del worker viene rilasciata e i figli dipendenti diventano pronti.",
+    confirmArchive: "Archiviare questa attività? Sparirà dalla vista predefinita della bacheca.",
+    confirmBlocked: "Contrassegnare questa attività come bloccata? La presa in carico del worker viene rilasciata.",
+    completionSummary: "Riepilogo di completamento per {label}. Memorizzato come result dell'attività.",
+    completionSummaryRequired: "Il riepilogo di completamento è obbligatorio prima di contrassegnare un'attività come completata.",
     triagePlaceholder: "Idea approssimativa — l'IA la specificherà…",
     taskTitlePlaceholder: "Titolo della nuova attività…",
-    specifier: "specifier",
     assigneePlaceholder: "assegnatario",
     priority: "Priorità",
-    skillsPlaceholder:
-      "competenze (facoltative, separate da virgole): translation, github-code-review",
+    skillsPlaceholder: "competenze (facoltative, separate da virgole): translation, github-code-review",
     noParent: "— nessun padre —",
     workspacePathDir: "percorso del workspace (richiesto, ad es. ~/projects/my-app)",
-    workspacePathOptional:
-      "percorso del workspace (facoltativo, derivato dall'assegnatario se vuoto)",
+    workspacePathOptional: "percorso del workspace (facoltativo, derivato dall'assegnatario se vuoto)",
     logTruncated: "(mostrando ultimi 100 KB — log completo in ",
-    logAt: ")",
   },
-};
+});

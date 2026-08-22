@@ -1,6 +1,10 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const ru: Translations = {
+// Auto-synced by scripts/i18n-sync.mjs — only keys that differ from en.ts are
+// listed below; everything else inherits English automatically. After editing
+// en.ts, run `npm run i18n:sync` to propagate, and `npm run i18n:check`
+// (wired into CI) guards against drift.
+export const ru = defineLocale({
   common: {
     save: "Сохранить",
     saving: "Сохранение...",
@@ -43,20 +47,12 @@ export const ru: Translations = {
     expand: "Развернуть",
     general: "Общие",
     messaging: "Мессенджеры",
-    pluginLoadFailed:
-      "Не удалось загрузить скрипт этого плагина. Проверьте вкладку «Сеть» (dashboard-plugins/…) и путь к плагинам на сервере.",
-    pluginNotRegistered:
-      "Скрипт плагина не вызвал register() или завершился с ошибкой. Откройте консоль браузера для подробностей.",
+    pluginLoadFailed: "Не удалось загрузить скрипт этого плагина. Проверьте вкладку «Сеть» (dashboard-plugins/…) и путь к плагинам на сервере.",
+    pluginNotRegistered: "Скрипт плагина не вызвал register() или завершился с ошибкой. Откройте консоль браузера для подробностей.",
   },
-
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
     closeNavigation: "Закрыть навигацию",
     closeModelTools: "Закрыть модель и инструменты",
-    footer: {
-      org: "Nous Research",
-    },
     activeSessionsLabel: "Активные сессии:",
     gatewayStatusLabel: "Статус шлюза:",
     gatewayStrip: {
@@ -70,7 +66,6 @@ export const ru: Translations = {
       analytics: "Аналитика",
       chat: "Чат",
       config: "Конфигурация",
-      cron: "Cron",
       documentation: "Документация",
       keys: "Ключи",
       logs: "Журналы",
@@ -89,9 +84,7 @@ export const ru: Translations = {
     sessionsActiveCount: "{count} активн.",
     statusOverview: "Обзор статуса",
     system: "Система",
-    webUi: "Web UI",
   },
-
   status: {
     actionFailed: "Ошибка действия",
     actionFinished: "Завершено",
@@ -108,7 +101,6 @@ export const ru: Translations = {
     lastUpdate: "Последнее обновление",
     noneRunning: "Нет",
     notRunning: "Не запущено",
-    pid: "PID",
     platformDisconnected: "отключено",
     platformError: "ошибка",
     recentSessions: "Недавние сессии",
@@ -124,7 +116,6 @@ export const ru: Translations = {
     updatingHermes: "Обновление Hermes…",
     waitingForOutput: "Ожидание вывода…",
   },
-
   sessions: {
     title: "Сессии",
     history: "История",
@@ -143,14 +134,12 @@ export const ru: Translations = {
     untitledSession: "Сессия без названия",
     deleteSession: "Удалить сессию",
     confirmDeleteTitle: "Удалить сессию?",
-    confirmDeleteMessage:
-      "Это безвозвратно удалит разговор и все его сообщения. Действие нельзя отменить.",
+    confirmDeleteMessage: "Это безвозвратно удалит разговор и все его сообщения. Действие нельзя отменить.",
     sessionDeleted: "Сессия удалена",
     failedToDelete: "Не удалось удалить сессию",
     deleteEmpty: "Удалить пустые",
     deleteEmptyConfirmTitle: "Удалить пустые сессии?",
-    deleteEmptyConfirmMessage:
-      "Это безвозвратно удалит {count} сессий без сообщений. Активные и архивные сессии будут пропущены. Это действие нельзя отменить.",
+    deleteEmptyConfirmMessage: "Это безвозвратно удалит {count} сессий без сообщений. Активные и архивные сессии будут пропущены. Это действие нельзя отменить.",
     emptySessionsDeleted: "Удалено пустых сессий: {count}",
     failedToDeleteEmpty: "Не удалось удалить пустые сессии",
     selectSession: "Выбрать сессию",
@@ -159,8 +148,7 @@ export const ru: Translations = {
     selectedCount: "Выбрано: {count}",
     deleteSelected: "Удалить {count}",
     deleteSelectedConfirmTitle: "Удалить {count} сессий?",
-    deleteSelectedConfirmMessage:
-      "Это безвозвратно удалит {count} выбранных сессий и все их сообщения. Это действие нельзя отменить.",
+    deleteSelectedConfirmMessage: "Это безвозвратно удалит {count} выбранных сессий и все их сообщения. Это действие нельзя отменить.",
     selectedSessionsDeleted: "Удалено сессий: {count}",
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
@@ -174,7 +162,6 @@ export const ru: Translations = {
       tool: "Инструмент",
     },
   },
-
   analytics: {
     period: "Период:",
     totalTokens: "Всего токенов",
@@ -200,7 +187,6 @@ export const ru: Translations = {
     acrossModels: "по {count} моделям",
     inOut: "{input} вход / {output} выход",
   },
-
   models: {
     modelsUsed: "Использовано моделей",
     estimatedCost: "Оценка стоимости",
@@ -212,7 +198,6 @@ export const ru: Translations = {
     noModelsData: "Нет данных по моделям за этот период",
     startSession: "Начните сессию, чтобы увидеть данные по моделям",
   },
-
   logs: {
     title: "Журналы",
     autoRefresh: "Автообновление",
@@ -222,10 +207,8 @@ export const ru: Translations = {
     lines: "Строк",
     noLogLines: "Записи журнала не найдены",
   },
-
   cron: {
-    confirmDeleteMessage:
-      "Это удалит задачу из расписания. Действие нельзя отменить.",
+    confirmDeleteMessage: "Это удалит задачу из расписания. Действие нельзя отменить.",
     confirmDeleteTitle: "Удалить запланированную задачу?",
     newJob: "Новая Cron-задача",
     nameOptional: "Имя (необязательно)",
@@ -233,7 +216,6 @@ export const ru: Translations = {
     prompt: "Запрос",
     promptPlaceholder: "Что должен делать агент при каждом запуске?",
     schedule: "Расписание (cron-выражение)",
-    schedulePlaceholder: "0 9 * * *",
     scheduleMode: "Расписание",
     scheduleModes: {
       interval: "Повторяющийся интервал",
@@ -249,18 +231,15 @@ export const ru: Translations = {
       unitDays: "дней",
       timeOfDay: "Время суток",
       weekdays: "Дни недели",
-      weekdaysShort: ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"],
+      weekdaysShort: ["Вс","Пн","Вт","Ср","Чт","Пт","Сб"],
       dayOfMonth: "День месяца",
       onceAt: "Выполнить в",
       customLabel: "Cron-выражение",
-      customPlaceholder: "0 9 * * *",
-      customHint:
-        "Cron-выражение из пяти полей (минута, час, день, месяц, день недели).",
+      customHint: "Cron-выражение из пяти полей (минута, час, день, месяц, день недели).",
       preview: "Отправляется как",
       previewEmpty: "(не заполнено)",
     },
     scheduleDescribe: {
-      none: "—",
       everyMinutes: "Каждые {n} мин",
       everyHours: "Каждые {n} ч",
       everyDays: "Каждые {n} дн",
@@ -279,26 +258,20 @@ export const ru: Translations = {
     triggerNow: "Запустить сейчас",
     delivery: {
       local: "Локально",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
     },
   },
-
   profiles: {
     newProfile: "Новый профиль",
     name: "Имя",
     namePlaceholder: "напр. coder, writer и т.п.",
     nameRequired: "Имя обязательно",
-    nameRule:
-      "Только строчные буквы, цифры, _ и -; должно начинаться с буквы или цифры; до 64 символов.",
-    invalidName: "Недопустимое имя профиля",    cloneFrom: "Клонировать конфигурацию из профиля",
+    nameRule: "Только строчные буквы, цифры, _ и -; должно начинаться с буквы или цифры; до 64 символов.",
+    invalidName: "Недопустимое имя профиля",
+    cloneFrom: "Клонировать конфигурацию из профиля",
     cloneFromNone: "Нет (пусто)",
     allProfiles: "Профили",
     noProfiles: "Профили не найдены.",
     defaultBadge: "по умолчанию",
-    hasEnv: "env",
     model: "Модель",
     skills: "Навыки",
     rename: "Переименовать",
@@ -311,13 +284,11 @@ export const ru: Translations = {
     commandCopied: "Скопировано в буфер обмена",
     copyFailed: "Не удалось скопировать",
     confirmDeleteTitle: "Удалить профиль?",
-    confirmDeleteMessage:
-      "Это безвозвратно удалит профиль '{name}' — конфигурацию, ключи, память, сессии, навыки, cron-задачи. Отменить нельзя.",
+    confirmDeleteMessage: "Это безвозвратно удалит профиль '{name}' — конфигурацию, ключи, память, сессии, навыки, cron-задачи. Отменить нельзя.",
     created: "Создан",
     deleted: "Удалён",
     renamed: "Переименован",
   },
-
   pluginsPage: {
     contextEngineLabel: "Движок контекста",
     dashboardSlots: "Слоты панели",
@@ -325,8 +296,7 @@ export const ru: Translations = {
     enableAfterInstall: "Включить после установки",
     enableRuntime: "Включить",
     forceReinstall: "Принудительная переустановка (сначала удалить существующую папку)",
-    headline:
-      "Поиск, установка, включение и обновление плагинов Hermes (аналог `hermes plugins`).",
+    headline: "Поиск, установка, включение и обновление плагинов Hermes (аналог `hermes plugins`).",
     identifierLabel: "Git URL или owner/repo",
     inactive: "неактивно",
     installBtn: "Установить",
@@ -340,8 +310,7 @@ export const ru: Translations = {
     pluginListHeading: "Установленные плагины",
     providerDefaults: "встроенный / по умолчанию",
     providersHeading: "Плагины-провайдеры рантайма",
-    providersHint:
-      "Записывает memory.provider (пусто = встроенный) и context.engine в config.yaml. Применяется со следующей сессии.",
+    providersHint: "Записывает memory.provider (пусто = встроенный) и context.engine в config.yaml. Применяется со следующей сессии.",
     refreshDashboard: "Пересканировать расширения панели",
     removeConfirm: "Удалить этот плагин из ~/.hermes/plugins/?",
     removeHint: "Удалять можно только плагины, установленные пользователем в ~/.hermes/plugins.",
@@ -353,12 +322,10 @@ export const ru: Translations = {
     sourceBadge: "Источник",
     authRequired: "Требуется аутентификация",
     authRequiredHint: "Выполните эту команду для аутентификации:",
-    updateGit: "Git pull",
     versionBadge: "Версия",
     showInSidebar: "Показывать в боковой панели",
     hideFromSidebar: "Скрыть из боковой панели",
   },
-
   skills: {
     title: "Навыки",
     searchPlaceholder: "Поиск навыков и наборов инструментов...",
@@ -378,13 +345,10 @@ export const ru: Translations = {
     disabledForCli: "Отключено для CLI",
     more: "+{count} ещё",
   },
-
   config: {
-    configPath: "~/.hermes/config.yaml",
     filters: "Фильтры",
     sections: "Разделы",
     exportConfig: "Экспортировать конфигурацию в JSON",
-    importConfig: "Импортировать конфигурацию из JSON",
     resetDefaults: "Сбросить к значениям по умолчанию",
     resetScopeTooltip: "Сбросить {scope} к значениям по умолчанию",
     confirmResetScope: "Сбросить все настройки {scope} к значениям по умолчанию? Это обновит только форму — изменения не будут записаны в config.yaml, пока вы не нажмёте «Сохранить».",
@@ -392,7 +356,7 @@ export const ru: Translations = {
     rawYaml: "Исходная YAML-конфигурация",
     searchResults: "Результаты поиска",
     fields: "пол{s}",
-    noFieldsMatch: 'Нет полей, соответствующих "{query}"',
+    noFieldsMatch: "Нет полей, соответствующих \"{query}\"",
     configSaved: "Конфигурация сохранена",
     yamlConfigSaved: "YAML-конфигурация сохранена",
     failedToSave: "Не удалось сохранить",
@@ -414,15 +378,12 @@ export const ru: Translations = {
       tts: "Синтез речи",
       stt: "Распознавание речи",
       logging: "Журналирование",
-      discord: "Discord",
       auxiliary: "Вспомогательные",
     },
   },
-
   env: {
     changesNote: "Изменения сохраняются на диск немедленно. Активные сессии автоматически подхватывают новые ключи.",
-    confirmClearMessage:
-      "Сохранённое значение этой переменной будет удалено из вашего файла .env. Это нельзя отменить из интерфейса.",
+    confirmClearMessage: "Сохранённое значение этой переменной будет удалено из вашего файла .env. Это нельзя отменить из интерфейса.",
     confirmClearTitle: "Очистить этот ключ?",
     description: "Управление API-ключами и секретами, хранящимися в",
     hideAdvanced: "Скрыть расширенные",
@@ -448,12 +409,10 @@ export const ru: Translations = {
     add: "Добавить",
     invalidKeyName: "Используйте только буквы, цифры и подчёркивания (должно начинаться с буквы или подчёркивания).",
   },
-
   oauth: {
     title: "Входы провайдеров (OAuth)",
     providerLogins: "Входы провайдеров (OAuth)",
-    description:
-      "Подключено {connected} из {total} OAuth-провайдеров. Используйте «Войти» для процессов, поддерживаемых панелью; команды CLI остаются доступными для внешней или резервной настройки.",
+    description: "Подключено {connected} из {total} OAuth-провайдеров. Используйте «Войти» для процессов, поддерживаемых панелью; команды CLI остаются доступными для внешней или резервной настройки.",
     connected: "Подключено",
     expired: "Срок истёк",
     notConnected: "Не подключено. Используйте «Войти», если доступно, или выполните {command} в терминале.",
@@ -490,24 +449,17 @@ export const ru: Translations = {
     },
     expiresIn: "истекает через {time}",
   },
-
   language: {
     switchTo: "Сменить язык",
   },
-
   theme: {
     title: "Тема",
     switchTheme: "Сменить тему",
   },
-
   achievements: {
     hero: {
-      kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
-      subtitle:
-        "Коллекционные значки Hermes, полученные на основе реальной истории сессий. Известные, но ещё не полученные достижения отображаются как «Обнаруженные»; «Секретные» достижения остаются скрытыми до появления первого подходящего поведения.",
-      scan_subtitle:
-        "Анализ истории сессий Hermes. Первое сканирование может занять 5–10 секунд при большой истории.",
+      subtitle: "Коллекционные значки Hermes, полученные на основе реальной истории сессий. Известные, но ещё не полученные достижения отображаются как «Обнаруженные»; «Секретные» достижения остаются скрытыми до появления первого подходящего поведения.",
+      scan_subtitle: "Анализ истории сессий Hermes. Первое сканирование может занять 5–10 секунд при большой истории.",
     },
     actions: {
       rescan: "Пересканировать",
@@ -520,7 +472,6 @@ export const ru: Translations = {
       secrets: "Секреты",
       secrets_hint: "скрыты до первого сигнала",
       highest_tier: "Высший уровень",
-      highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "Последнее",
       latest_hint_empty: "запускайте Hermes чаще",
       none_yet: "Пока нет",
@@ -541,25 +492,19 @@ export const ru: Translations = {
     },
     scan: {
       building_headline: "Создание профиля достижений…",
-      building_detail:
-        "Чтение сессий, вызовов инструментов, метаданных моделей и состояния разблокировки.",
+      building_detail: "Чтение сессий, вызовов инструментов, метаданных моделей и состояния разблокировки.",
       starting_headline: "Запуск сканирования достижений…",
-      progress_detail:
-        "Просканировано {scanned} из {total} сессий · {pct}%. Значки разблокируются по мере поступления истории.",
-      idle_detail:
-        "Чтение сессий, вызовов инструментов, метаданных моделей и состояния разблокировки. Значки появляются здесь по мере разблокировки.",
+      progress_detail: "Просканировано {scanned} из {total} сессий · {pct}%. Значки разблокируются по мере поступления истории.",
+      idle_detail: "Чтение сессий, вызовов инструментов, метаданных моделей и состояния разблокировки. Значки появляются здесь по мере разблокировки.",
     },
     guide: {
       tiers_header: "Уровни",
       secret_header: "Секретные достижения",
-      secret_body:
-        "Секретные достижения скрывают свой точный триггер. Как только Hermes обнаруживает связанный сигнал, карточка становится «Обнаруженной» и показывает требование.",
+      secret_body: "Секретные достижения скрывают свой точный триггер. Как только Hermes обнаруживает связанный сигнал, карточка становится «Обнаруженной» и показывает требование.",
       scan_status_header: "Статус сканирования",
-      scan_status_body:
-        "Hermes сканирует локальную историю один раз, затем карточки появятся автоматически. Если это занимает несколько секунд — ничего не зависло.",
+      scan_status_body: "Hermes сканирует локальную историю один раз, затем карточки появятся автоматически. Если это занимает несколько секунд — ничего не зависло.",
       what_scanned_header: "Что сканируется",
-      what_scanned_body:
-        "Сессии, вызовы инструментов, метаданные моделей, ошибки, достижения и локальное состояние разблокировки.",
+      what_scanned_body: "Сессии, вызовы инструментов, метаданные моделей, ошибки, достижения и локальное состояние разблокировки.",
     },
     card: {
       share_title: "Поделиться этим достижением",
@@ -576,8 +521,7 @@ export const ru: Translations = {
     },
     empty: {
       no_secrets_header: "В этом сканировании больше не осталось скрытых секретов.",
-      no_secrets_body:
-        "Подсказка: секреты обычно начинаются с необычных ошибок или паттернов опытных пользователей — конфликты портов, ограничения прав, отсутствующие переменные окружения, ошибки YAML, коллизии Docker, использование rollback/checkpoint, попадания в кеш или мелкие исправления после большого количества красного текста.",
+      no_secrets_body: "Подсказка: секреты обычно начинаются с необычных ошибок или паттернов опытных пользователей — конфликты портов, ограничения прав, отсутствующие переменные окружения, ошибки YAML, коллизии Docker, использование rollback/checkpoint, попадания в кеш или мелкие исправления после большого количества красного текста.",
     },
     filters: {
       all_categories: "Все",
@@ -599,31 +543,19 @@ export const ru: Translations = {
       copy_button: "Скопировать изображение",
       copied: "Скопировано ✓",
       download_button: "Скачать PNG",
-      hint:
-        "«Поделиться в X» открывает пост с заранее заполненным текстом в новой вкладке. Сначала нажмите «Скопировать изображение», если хотите прикрепить значок 1200×630 — X позволяет вставить его прямо в редактор твита. «Скачать PNG» сохраняет файл для использования где угодно.",
-      clipboard_unsupported:
-        "Копирование изображений в буфер обмена не поддерживается в этом браузере — используйте «Скачать».",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      hint: "«Поделиться в X» открывает пост с заранее заполненным текстом в новой вкладке. Сначала нажмите «Скопировать изображение», если хотите прикрепить значок 1200×630 — X позволяет вставить его прямо в редактор твита. «Скачать PNG» сохраняет файл для использования где угодно.",
+      clipboard_unsupported: "Копирование изображений в буфер обмена не поддерживается в этом браузере — используйте «Скачать».",
     },
   },
   kanban: {
     loading: "Загрузка доски Kanban…",
     loadFailed: "Не удалось загрузить доску Kanban: ",
-    loadFailedHint:
-      "Бэкенд автоматически создаёт kanban.db при первом чтении. Если ошибка повторяется, проверьте логи панели.",
+    loadFailedHint: "Бэкенд автоматически создаёт kanban.db при первом чтении. Если ошибка повторяется, проверьте логи панели.",
     board: "Доска",
     newBoard: "+ Новая доска",
     newBoardTitle: "Новая доска",
-    newBoardDescription:
-      "Доски позволяют разделять не связанные между собой потоки работы — по одной на проект, репозиторий или область. Воркеры одной доски никогда не видят задачи другой.",
-    slug: "Slug",
+    newBoardDescription: "Доски позволяют разделять не связанные между собой потоки работы — по одной на проект, репозиторий или область. Воркеры одной доски никогда не видят задачи другой.",
     slugHint: "— строчные буквы, дефисы, например atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Отображаемое имя",
     displayNameHint: "(необязательно)",
     description: "Описание",
@@ -636,7 +568,6 @@ export const ru: Translations = {
     createBoard: "Создать доску",
     search: "Поиск",
     filterCards: "Фильтр карточек…",
-    tenant: "Tenant",
     allTenants: "Все tenant'ы",
     assignee: "Исполнитель",
     allProfiles: "Все профили",
@@ -666,8 +597,7 @@ export const ru: Translations = {
     runHistory: "История запусков",
     workerLog: "Журнал воркера",
     loadingLog: "Загрузка журнала…",
-    noWorkerLog:
-      "— журнала воркера ещё нет (задача не запускалась или журнал был ротирован) —",
+    noWorkerLog: "— журнала воркера ещё нет (задача не запускалась или журнал был ротирован) —",
     noDescription: "— нет описания —",
     noComments: "— нет комментариев —",
     edit: "изменить",
@@ -698,8 +628,7 @@ export const ru: Translations = {
     reassign: "Переназначить",
     renderingError: "Во вкладке Kanban произошла ошибка отрисовки",
     reloadView: "Перезагрузить вид",
-    wsAuthFailed:
-      "Сбой аутентификации WebSocket — перезагрузите страницу, чтобы обновить токен сессии.",
+    wsAuthFailed: "Сбой аутентификации WebSocket — перезагрузите страницу, чтобы обновить токен сессии.",
     markDone: "Отметить {n} задач(и) как выполненные?",
     markArchived: "Архивировать {n} задач(и)?",
     warning: "Предупреждение",
@@ -710,8 +639,7 @@ export const ru: Translations = {
     showAllAttempts: "Показать все попытки",
     sendingUpdates: "Отправка обновлений в",
     sendNotifications: "Отправлять уведомления completed / blocked / gave_up в",
-    archiveBoardConfirm:
-      "Архивировать доску '{name}'? Она будет перемещена в boards/_archived/, чтобы её можно было восстановить позже. Задачи этой доски больше не будут отображаться нигде в интерфейсе.",
+    archiveBoardConfirm: "Архивировать доску '{name}'? Она будет перемещена в boards/_archived/, чтобы её можно было восстановить позже. Задачи этой доски больше не будут отображаться нигде в интерфейсе.",
     archiveBoardTitle: "Архивировать эту доску",
     boardSwitcherHint: "Доски позволяют разделять не связанные между собой потоки работы",
     taskCreatedWarning: "Задача создана, но: ",
@@ -750,28 +678,19 @@ export const ru: Translations = {
       done: "Завершено",
       archived: "В архиве",
     },
-    confirmDone:
-      "Отметить эту задачу как выполненную? Захват воркера будет освобождён, а зависимые потомки станут готовыми.",
-    confirmArchive:
-      "Архивировать эту задачу? Она исчезнет из стандартного вида доски.",
-    confirmBlocked:
-      "Отметить эту задачу как заблокированную? Захват воркера будет освобождён.",
-    completionSummary:
-      "Сводка завершения для {label}. Сохраняется как результат задачи.",
-    completionSummaryRequired:
-      "Перед отметкой задачи как выполненной требуется сводка завершения.",
+    confirmDone: "Отметить эту задачу как выполненную? Захват воркера будет освобождён, а зависимые потомки станут готовыми.",
+    confirmArchive: "Архивировать эту задачу? Она исчезнет из стандартного вида доски.",
+    confirmBlocked: "Отметить эту задачу как заблокированную? Захват воркера будет освобождён.",
+    completionSummary: "Сводка завершения для {label}. Сохраняется как результат задачи.",
+    completionSummaryRequired: "Перед отметкой задачи как выполненной требуется сводка завершения.",
     triagePlaceholder: "Черновая идея — ИИ её проспецифицирует…",
     taskTitlePlaceholder: "Название новой задачи…",
-    specifier: "specifier",
     assigneePlaceholder: "исполнитель",
     priority: "Приоритет",
-    skillsPlaceholder:
-      "навыки (необязательно, через запятую): translation, github-code-review",
+    skillsPlaceholder: "навыки (необязательно, через запятую): translation, github-code-review",
     noParent: "— без родителя —",
     workspacePathDir: "путь к рабочей области (обязательно, например ~/projects/my-app)",
-    workspacePathOptional:
-      "путь к рабочей области (необязательно, выводится из исполнителя, если не указан)",
+    workspacePathOptional: "путь к рабочей области (необязательно, выводится из исполнителя, если не указан)",
     logTruncated: "(показаны последние 100 KB — полный журнал в ",
-    logAt: ")",
   },
-};
+});

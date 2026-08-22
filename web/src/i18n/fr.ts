@@ -1,6 +1,10 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const fr: Translations = {
+// Auto-synced by scripts/i18n-sync.mjs — only keys that differ from en.ts are
+// listed below; everything else inherits English automatically. After editing
+// en.ts, run `npm run i18n:sync` to propagate, and `npm run i18n:check`
+// (wired into CI) guards against drift.
+export const fr = defineLocale({
   common: {
     save: "Enregistrer",
     saving: "Enregistrement...",
@@ -29,8 +33,6 @@ export const fr: Translations = {
     form: "Formulaire",
     noResults: "Aucun résultat",
     of: "sur",
-    page: "Page",
-    msgs: "msgs",
     tools: "outils",
     match: "correspondance",
     other: "Autre",
@@ -43,20 +45,12 @@ export const fr: Translations = {
     expand: "Développer",
     general: "Général",
     messaging: "Messagerie",
-    pluginLoadFailed:
-      "Impossible de charger le script de ce plugin. Vérifiez l'onglet Réseau (dashboard-plugins/…) et le chemin des plugins du serveur.",
-    pluginNotRegistered:
-      "Le script du plugin n'a pas appelé register(), ou le script a échoué. Ouvrez la console du navigateur pour plus de détails.",
+    pluginLoadFailed: "Impossible de charger le script de ce plugin. Vérifiez l'onglet Réseau (dashboard-plugins/…) et le chemin des plugins du serveur.",
+    pluginNotRegistered: "Le script du plugin n'a pas appelé register(), ou le script a échoué. Ouvrez la console du navigateur pour plus de détails.",
   },
-
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
     closeNavigation: "Fermer la navigation",
     closeModelTools: "Fermer modèle et outils",
-    footer: {
-      org: "Nous Research",
-    },
     activeSessionsLabel: "Sessions actives:",
     gatewayStatusLabel: "État de la passerelle:",
     gatewayStrip: {
@@ -68,35 +62,24 @@ export const fr: Translations = {
     },
     nav: {
       analytics: "Analyses",
-      chat: "Chat",
       config: "Configuration",
-      cron: "Cron",
-      documentation: "Documentation",
       keys: "Clés",
       logs: "Journaux",
       models: "Modèles",
       profiles: "profils : multi agents",
-      plugins: "Plugins",
-      sessions: "Sessions",
       skills: "Compétences",
     },
     modelToolsSheetSubtitle: "& outils",
     modelToolsSheetTitle: "Modèle",
-    navigation: "Navigation",
     openDocumentation: "Ouvrir la documentation dans un nouvel onglet",
     openNavigation: "Ouvrir la navigation",
-    pluginNavSection: "Plugins",
     sessionsActiveCount: "{count} actives",
     statusOverview: "Aperçu de l'état",
     system: "Système",
-    webUi: "Web UI",
   },
-
   status: {
     actionFailed: "Action échouée",
     actionFinished: "Terminé",
-    actions: "Actions",
-    agent: "Agent",
     activeSessions: "Sessions actives",
     connected: "Connecté",
     connectedPlatforms: "Plateformes connectées",
@@ -108,7 +91,6 @@ export const fr: Translations = {
     lastUpdate: "Dernière mise à jour",
     noneRunning: "Aucun",
     notRunning: "Non lancé",
-    pid: "PID",
     platformDisconnected: "déconnecté",
     platformError: "erreur",
     recentSessions: "Sessions récentes",
@@ -124,9 +106,7 @@ export const fr: Translations = {
     updatingHermes: "Mise à jour de Hermes…",
     waitingForOutput: "En attente de la sortie…",
   },
-
   sessions: {
-    title: "Sessions",
     history: "Historique",
     overview: "Aperçu",
     filterChats: "Discussions",
@@ -143,14 +123,12 @@ export const fr: Translations = {
     untitledSession: "Session sans titre",
     deleteSession: "Supprimer la session",
     confirmDeleteTitle: "Supprimer la session ?",
-    confirmDeleteMessage:
-      "Cela supprime définitivement la conversation et tous ses messages. Cette action est irréversible.",
+    confirmDeleteMessage: "Cela supprime définitivement la conversation et tous ses messages. Cette action est irréversible.",
     sessionDeleted: "Session supprimée",
     failedToDelete: "Échec de la suppression de la session",
     deleteEmpty: "Supprimer les vides",
     deleteEmptyConfirmTitle: "Supprimer les sessions vides ?",
-    deleteEmptyConfirmMessage:
-      "Cela supprime définitivement {count} sessions sans messages. Les sessions actives et archivées sont ignorées. Cette action est irréversible.",
+    deleteEmptyConfirmMessage: "Cela supprime définitivement {count} sessions sans messages. Les sessions actives et archivées sont ignorées. Cette action est irréversible.",
     emptySessionsDeleted: "{count} sessions vides supprimées",
     failedToDeleteEmpty: "Échec de la suppression des sessions vides",
     selectSession: "Sélectionner la session",
@@ -159,8 +137,7 @@ export const fr: Translations = {
     selectedCount: "{count} sélectionnée(s)",
     deleteSelected: "Supprimer {count}",
     deleteSelectedConfirmTitle: "Supprimer {count} sessions ?",
-    deleteSelectedConfirmMessage:
-      "Cela supprime définitivement {count} sessions sélectionnées et tous leurs messages. Cette action est irréversible.",
+    deleteSelectedConfirmMessage: "Cela supprime définitivement {count} sessions sélectionnées et tous leurs messages. Cette action est irréversible.",
     selectedSessionsDeleted: "{count} sessions supprimées",
     failedToDeleteSelected: "Échec de la suppression des sessions sélectionnées",
     resumeInChat: "Reprendre dans le chat",
@@ -169,12 +146,10 @@ export const fr: Translations = {
     nextPage: "Page suivante",
     roles: {
       user: "Utilisateur",
-      assistant: "Assistant",
       system: "Système",
       tool: "Outil",
     },
   },
-
   analytics: {
     period: "Période:",
     totalTokens: "Tokens totaux",
@@ -190,29 +165,22 @@ export const fr: Translations = {
     lastUsed: "Dernière utilisation",
     input: "Entrée",
     output: "Sortie",
-    total: "Total",
     noUsageData: "Aucune donnée d'utilisation pour cette période",
     startSession: "Démarrez une session pour voir les analyses ici",
-    date: "Date",
     model: "Modèle",
-    tokens: "Tokens",
     perDayAvg: "/jour moy",
     acrossModels: "sur {count} modèles",
     inOut: "{input} entrée / {output} sortie",
   },
-
   models: {
     modelsUsed: "Modèles utilisés",
     estimatedCost: "Coût est.",
-    tokens: "tokens",
-    sessions: "sessions",
     avgPerSession: "moy/session",
     apiCalls: "appels API",
     toolCalls: "appels d'outil",
     noModelsData: "Aucune donnée de modèle pour cette période",
     startSession: "Démarrez une session pour voir les données de modèle ici",
   },
-
   logs: {
     title: "Journaux",
     autoRefresh: "Actualisation auto",
@@ -222,10 +190,8 @@ export const fr: Translations = {
     lines: "Lignes",
     noLogLines: "Aucune ligne de journal trouvée",
   },
-
   cron: {
-    confirmDeleteMessage:
-      "Cela supprime la tâche du planning. Cette action est irréversible.",
+    confirmDeleteMessage: "Cela supprime la tâche du planning. Cette action est irréversible.",
     confirmDeleteTitle: "Supprimer la tâche planifiée ?",
     newJob: "Nouvelle tâche cron",
     nameOptional: "Nom (facultatif)",
@@ -233,7 +199,6 @@ export const fr: Translations = {
     prompt: "Invite",
     promptPlaceholder: "Que doit faire l'agent à chaque exécution ?",
     schedule: "Planning (expression cron)",
-    schedulePlaceholder: "0 9 * * *",
     scheduleMode: "Planification",
     scheduleModes: {
       interval: "Intervalle récurrent",
@@ -244,23 +209,19 @@ export const fr: Translations = {
       custom: "Personnalisé (expression cron)",
       intervalEvery: "Toutes les",
       intervalUnit: "Unité",
-      unitMinutes: "minutes",
       unitHours: "heures",
       unitDays: "jours",
       timeOfDay: "Heure de la journée",
       weekdays: "Jours de la semaine",
-      weekdaysShort: ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"],
+      weekdaysShort: ["Dim","Lun","Mar","Mer","Jeu","Ven","Sam"],
       dayOfMonth: "Jour du mois",
       onceAt: "Exécuter le",
       customLabel: "Expression cron",
-      customPlaceholder: "0 9 * * *",
-      customHint:
-        "Expression cron à cinq champs (minute, heure, jour, mois, jour de la semaine).",
+      customHint: "Expression cron à cinq champs (minute, heure, jour, mois, jour de la semaine).",
       preview: "Envoyé sous la forme",
       previewEmpty: "(incomplet)",
     },
     scheduleDescribe: {
-      none: "—",
       everyMinutes: "Toutes les {n} min",
       everyHours: "Toutes les {n} h",
       everyDays: "Tous les {n} j",
@@ -274,32 +235,21 @@ export const fr: Translations = {
     noJobs: "Aucune tâche cron configurée. Créez-en une ci-dessus.",
     last: "Dernière",
     next: "Prochaine",
-    pause: "Pause",
     resume: "Reprendre",
     triggerNow: "Déclencher maintenant",
-    delivery: {
-      local: "Local",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
-    },
   },
-
   profiles: {
     newProfile: "Nouveau profil",
     name: "Nom",
     namePlaceholder: "ex. coder, writer, etc.",
     nameRequired: "Le nom est requis",
-    nameRule:
-      "Lettres minuscules, chiffres, _ et - uniquement ; doit commencer par une lettre ou un chiffre ; jusqu'à 64 caractères.",
+    nameRule: "Lettres minuscules, chiffres, _ et - uniquement ; doit commencer par une lettre ou un chiffre ; jusqu'à 64 caractères.",
     invalidName: "Nom de profil invalide",
     cloneFrom: "Cloner depuis le profil",
     cloneFromNone: "Aucun (vide)",
     allProfiles: "Profils",
     noProfiles: "Aucun profil trouvé.",
     defaultBadge: "défaut",
-    hasEnv: "env",
     model: "Modèle",
     skills: "Compétences",
     rename: "Renommer",
@@ -312,13 +262,11 @@ export const fr: Translations = {
     commandCopied: "Copié dans le presse-papiers",
     copyFailed: "Impossible de copier",
     confirmDeleteTitle: "Supprimer le profil ?",
-    confirmDeleteMessage:
-      "Cela supprime définitivement le profil '{name}' — configuration, clés, mémoires, sessions, compétences, tâches cron. Action irréversible.",
+    confirmDeleteMessage: "Cela supprime définitivement le profil '{name}' — configuration, clés, mémoires, sessions, compétences, tâches cron. Action irréversible.",
     created: "Créé",
     deleted: "Supprimé",
     renamed: "Renommé",
   },
-
   pluginsPage: {
     contextEngineLabel: "Moteur de contexte",
     dashboardSlots: "Emplacements du tableau de bord",
@@ -326,8 +274,7 @@ export const fr: Translations = {
     enableAfterInstall: "Activer après l'installation",
     enableRuntime: "Activer",
     forceReinstall: "Forcer la réinstallation (supprimer d'abord le dossier existant)",
-    headline:
-      "Découvrez, installez, activez et mettez à jour les plugins Hermes (parité avec `hermes plugins`).",
+    headline: "Découvrez, installez, activez et mettez à jour les plugins Hermes (parité avec `hermes plugins`).",
     identifierLabel: "URL Git ou owner/repo",
     inactive: "inactif",
     installBtn: "Installer",
@@ -341,8 +288,7 @@ export const fr: Translations = {
     pluginListHeading: "Plugins installés",
     providerDefaults: "intégré / par défaut",
     providersHeading: "Plugins fournisseurs d'exécution",
-    providersHint:
-      "Écrit memory.provider (vide = intégré) et context.engine dans config.yaml. Prend effet à la prochaine session.",
+    providersHint: "Écrit memory.provider (vide = intégré) et context.engine dans config.yaml. Prend effet à la prochaine session.",
     refreshDashboard: "Re-scanner les extensions du tableau de bord",
     removeConfirm: "Retirer ce plugin de ~/.hermes/plugins/ ?",
     removeHint: "Seuls les plugins installés par l'utilisateur sous ~/.hermes/plugins peuvent être supprimés.",
@@ -351,15 +297,11 @@ export const fr: Translations = {
     runtimeHeading: "Exécution de la passerelle (plugins YAML)",
     saveProviders: "Enregistrer les paramètres de fournisseur",
     savedProviders: "Paramètres de fournisseur enregistrés.",
-    sourceBadge: "Source",
     authRequired: "Authentification requise",
     authRequiredHint: "Exécutez cette commande pour vous authentifier:",
-    updateGit: "Git pull",
-    versionBadge: "Version",
     showInSidebar: "Afficher dans la barre latérale",
     hideFromSidebar: "Masquer de la barre latérale",
   },
-
   skills: {
     title: "Compétences",
     searchPlaceholder: "Rechercher des compétences et des outils...",
@@ -379,13 +321,9 @@ export const fr: Translations = {
     disabledForCli: "Désactivé pour CLI",
     more: "+{count} de plus",
   },
-
   config: {
-    configPath: "~/.hermes/config.yaml",
     filters: "Filtres",
-    sections: "Sections",
     exportConfig: "Exporter la configuration en JSON",
-    importConfig: "Importer la configuration depuis JSON",
     resetDefaults: "Réinitialiser aux valeurs par défaut",
     resetScopeTooltip: "Réinitialiser {scope} aux valeurs par défaut",
     confirmResetScope: "Réinitialiser tous les paramètres de {scope} aux valeurs par défaut ? Cela ne met à jour que le formulaire — les modifications ne sont écrites dans config.yaml qu'après avoir appuyé sur Enregistrer.",
@@ -393,7 +331,7 @@ export const fr: Translations = {
     rawYaml: "Configuration YAML brute",
     searchResults: "Résultats de recherche",
     fields: "champ{s}",
-    noFieldsMatch: 'Aucun champ ne correspond à "{query}"',
+    noFieldsMatch: "Aucun champ ne correspond à \"{query}\"",
     configSaved: "Configuration enregistrée",
     yamlConfigSaved: "Configuration YAML enregistrée",
     failedToSave: "Échec de l'enregistrement",
@@ -403,27 +341,21 @@ export const fr: Translations = {
     invalidJson: "Fichier JSON invalide",
     categories: {
       general: "Général",
-      agent: "Agent",
-      terminal: "Terminal",
       display: "Affichage",
       delegation: "Délégation",
       memory: "Mémoire",
-      compression: "Compression",
       security: "Sécurité",
       browser: "Navigateur",
       voice: "Voix",
       tts: "Synthèse vocale",
       stt: "Reconnaissance vocale",
       logging: "Journalisation",
-      discord: "Discord",
       auxiliary: "Auxiliaire",
     },
   },
-
   env: {
     changesNote: "Les modifications sont enregistrées sur le disque immédiatement. Les sessions actives récupèrent les nouvelles clés automatiquement.",
-    confirmClearMessage:
-      "La valeur stockée pour cette variable sera supprimée de votre fichier .env. Cette action ne peut pas être annulée depuis l'interface.",
+    confirmClearMessage: "La valeur stockée pour cette variable sera supprimée de votre fichier .env. Cette action ne peut pas être annulée depuis l'interface.",
     confirmClearTitle: "Effacer cette clé ?",
     description: "Gérer les clés API et les secrets stockés dans",
     hideAdvanced: "Masquer les options avancées",
@@ -449,12 +381,10 @@ export const fr: Translations = {
     add: "Ajouter",
     invalidKeyName: "Utilisez uniquement des lettres, des chiffres et des traits de soulignement (doit commencer par une lettre ou un trait de soulignement).",
   },
-
   oauth: {
     title: "Connexions fournisseurs (OAuth)",
     providerLogins: "Connexions fournisseurs (OAuth)",
-    description:
-      "{connected} sur {total} fournisseurs OAuth connectés. Utilisez Connexion pour les flux pris en charge par le tableau de bord ; les commandes CLI restent disponibles pour une configuration externe ou de secours.",
+    description: "{connected} sur {total} fournisseurs OAuth connectés. Utilisez Connexion pour les flux pris en charge par le tableau de bord ; les commandes CLI restent disponibles pour une configuration externe ou de secours.",
     connected: "Connecté",
     expired: "Expiré",
     notConnected: "Non connecté. Utilisez Connexion si disponible, ou exécutez {command} dans un terminal.",
@@ -491,23 +421,17 @@ export const fr: Translations = {
     },
     expiresIn: "expire dans {time}",
   },
-
   language: {
     switchTo: "Changer de langue",
   },
-
   theme: {
     title: "Thème",
     switchTheme: "Changer de thème",
   },
   achievements: {
     hero: {
-      kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
-      subtitle:
-        "Badges Hermes à collectionner, gagnés à partir de l'historique réel des sessions. Les succès connus non terminés sont affichés comme Découverts ; les succès secrets restent cachés jusqu'à l'apparition du premier comportement correspondant.",
-      scan_subtitle:
-        "Analyse de l'historique des sessions Hermes en cours. Le premier scan peut prendre 5 à 10 secondes sur les historiques volumineux.",
+      subtitle: "Badges Hermes à collectionner, gagnés à partir de l'historique réel des sessions. Les succès connus non terminés sont affichés comme Découverts ; les succès secrets restent cachés jusqu'à l'apparition du premier comportement correspondant.",
+      scan_subtitle: "Analyse de l'historique des sessions Hermes en cours. Le premier scan peut prendre 5 à 10 secondes sur les historiques volumineux.",
     },
     actions: {
       rescan: "Relancer le scan",
@@ -517,10 +441,8 @@ export const fr: Translations = {
       unlocked_hint: "badges obtenus",
       discovered: "Découverts",
       discovered_hint: "connus, pas encore obtenus",
-      secrets: "Secrets",
       secrets_hint: "cachés jusqu'au premier signal",
       highest_tier: "Niveau le plus élevé",
-      highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "Dernier",
       latest_hint_empty: "utilisez Hermes davantage",
       none_yet: "Aucun pour l'instant",
@@ -528,7 +450,6 @@ export const fr: Translations = {
     state: {
       unlocked: "Débloqué",
       discovered: "Découvert",
-      secret: "Secret",
     },
     tier: {
       target: "Cible {tier}",
@@ -541,25 +462,19 @@ export const fr: Translations = {
     },
     scan: {
       building_headline: "Création du profil de succès…",
-      building_detail:
-        "Lecture des sessions, des appels d'outils, des métadonnées du modèle et de l'état de déblocage.",
+      building_detail: "Lecture des sessions, des appels d'outils, des métadonnées du modèle et de l'état de déblocage.",
       starting_headline: "Démarrage du scan des succès…",
-      progress_detail:
-        "{scanned} sessions analysées sur {total} · {pct}%. Les badges se débloquent à mesure que l'historique est traité.",
-      idle_detail:
-        "Lecture des sessions, des appels d'outils, des métadonnées du modèle et de l'état de déblocage. Les badges apparaissent ici à mesure qu'ils se débloquent.",
+      progress_detail: "{scanned} sessions analysées sur {total} · {pct}%. Les badges se débloquent à mesure que l'historique est traité.",
+      idle_detail: "Lecture des sessions, des appels d'outils, des métadonnées du modèle et de l'état de déblocage. Les badges apparaissent ici à mesure qu'ils se débloquent.",
     },
     guide: {
       tiers_header: "Niveaux",
       secret_header: "Succès secrets",
-      secret_body:
-        "Les secrets cachent leur déclencheur exact. Dès qu'Hermes détecte un signal lié, la carte passe à Découvert et affiche son exigence.",
+      secret_body: "Les secrets cachent leur déclencheur exact. Dès qu'Hermes détecte un signal lié, la carte passe à Découvert et affiche son exigence.",
       scan_status_header: "État du scan",
-      scan_status_body:
-        "Hermes analyse l'historique local une seule fois, puis les cartes apparaîtront automatiquement. Rien n'est bloqué si cela prend quelques secondes.",
+      scan_status_body: "Hermes analyse l'historique local une seule fois, puis les cartes apparaîtront automatiquement. Rien n'est bloqué si cela prend quelques secondes.",
       what_scanned_header: "Ce qui est analysé",
-      what_scanned_body:
-        "Sessions, appels d'outils, métadonnées du modèle, erreurs, succès et état de déblocage local.",
+      what_scanned_body: "Sessions, appels d'outils, métadonnées du modèle, erreurs, succès et état de déblocage local.",
     },
     card: {
       share_title: "Partager ce succès",
@@ -568,7 +483,6 @@ export const fr: Translations = {
       how_to_reveal: "Comment le révéler",
       what_counts: "Ce qui compte",
       evidence_label: "Preuve",
-      evidence_session_fallback: "session",
       no_evidence: "Pas encore de preuve",
     },
     latest: {
@@ -576,8 +490,7 @@ export const fr: Translations = {
     },
     empty: {
       no_secrets_header: "Plus aucun secret caché dans ce scan.",
-      no_secrets_body:
-        "Indice: les secrets démarrent généralement à partir d'échecs inhabituels ou de schémas d'utilisateurs avancés — conflits de ports, murs de permissions, variables d'environnement manquantes, erreurs YAML, collisions Docker, utilisation de rollback/checkpoint, succès de cache ou petits correctifs après beaucoup de texte rouge.",
+      no_secrets_body: "Indice: les secrets démarrent généralement à partir d'échecs inhabituels ou de schémas d'utilisateurs avancés — conflits de ports, murs de permissions, variables d'environnement manquantes, erreurs YAML, collisions Docker, utilisation de rollback/checkpoint, succès de cache ou petits correctifs après beaucoup de texte rouge.",
     },
     filters: {
       all_categories: "Tous",
@@ -599,34 +512,21 @@ export const fr: Translations = {
       copy_button: "Copier l'image",
       copied: "Copié ✓",
       download_button: "Télécharger le PNG",
-      hint:
-        "Partager sur X ouvre une publication préremplie dans un nouvel onglet. Cliquez d'abord sur Copier l'image si vous voulez joindre le badge 1200×630 — X vous laisse le coller directement dans l'éditeur de tweet. Télécharger le PNG enregistre le fichier pour l'utiliser n'importe où.",
-      clipboard_unsupported:
-        "La copie d'image dans le presse-papiers n'est pas prise en charge par ce navigateur — utilisez Télécharger à la place.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      hint: "Partager sur X ouvre une publication préremplie dans un nouvel onglet. Cliquez d'abord sur Copier l'image si vous voulez joindre le badge 1200×630 — X vous laisse le coller directement dans l'éditeur de tweet. Télécharger le PNG enregistre le fichier pour l'utiliser n'importe où.",
+      clipboard_unsupported: "La copie d'image dans le presse-papiers n'est pas prise en charge par ce navigateur — utilisez Télécharger à la place.",
     },
   },
   kanban: {
     loading: "Chargement du tableau Kanban…",
     loadFailed: "Échec du chargement du tableau Kanban: ",
-    loadFailedHint:
-      "Le backend crée automatiquement kanban.db à la première lecture. Si le problème persiste, consultez les logs du dashboard.",
+    loadFailedHint: "Le backend crée automatiquement kanban.db à la première lecture. Si le problème persiste, consultez les logs du dashboard.",
     board: "Tableau",
     newBoard: "+ Nouveau tableau",
     newBoardTitle: "Nouveau tableau",
-    newBoardDescription:
-      "Les tableaux vous permettent de séparer des flux de travail indépendants — un par projet, dépôt ou domaine. Les workers d'un tableau ne voient jamais les tâches d'un autre.",
-    slug: "Slug",
+    newBoardDescription: "Les tableaux vous permettent de séparer des flux de travail indépendants — un par projet, dépôt ou domaine. Les workers d'un tableau ne voient jamais les tâches d'un autre.",
     slugHint: "— minuscules, tirets, par ex. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nom affiché",
     displayNameHint: "(facultatif)",
-    description: "Description",
     descriptionHint: "(facultatif)",
     icon: "Icône",
     iconHint: "(un seul caractère ou emoji)",
@@ -636,7 +536,6 @@ export const fr: Translations = {
     createBoard: "Créer le tableau",
     search: "Rechercher",
     filterCards: "Filtrer les cartes…",
-    tenant: "Tenant",
     allTenants: "Tous les tenants",
     assignee: "Assigné à",
     allProfiles: "Tous les profils",
@@ -657,23 +556,19 @@ export const fr: Translations = {
     addComment: "Ajouter un commentaire… (Enter pour envoyer)",
     comment: "Commentaire",
     status: "Statut",
-    workspace: "Workspace",
     skills: "Compétences",
     createdBy: "Créé par",
-    result: "Result",
     comments: "Commentaires",
     events: "Événements",
     runHistory: "Historique d'exécution",
     workerLog: "Log du worker",
     loadingLog: "Chargement du log…",
-    noWorkerLog:
-      "— pas encore de log du worker (la tâche n'a pas démarré ou le log a été effacé par rotation) —",
+    noWorkerLog: "— pas encore de log du worker (la tâche n'a pas démarré ou le log a été effacé par rotation) —",
     noDescription: "— aucune description —",
     noComments: "— aucun commentaire —",
     edit: "modifier",
     save: "Enregistrer",
     dependencies: "Dépendances",
-    parents: "Parents:",
     children: "Enfants:",
     none: "aucun",
     addParent: "— ajouter un parent —",
@@ -682,13 +577,10 @@ export const fr: Translations = {
     block: "Bloquer",
     unblock: "Débloquer",
     notifyHomeChannels: "Notifier les canaux home",
-    diagnostics: "Diagnostics",
     hide: "Masquer",
     show: "Afficher",
-    attention: "Attention",
     tasksNeedAttention: "tâches nécessitent une attention",
     taskNeedsAttention: "1 tâche nécessite une attention",
-    diagnostic: "diagnostic",
     open: "Ouvrir",
     close: "Fermer (Esc)",
     reassignTo: "Réassigner à:",
@@ -698,8 +590,7 @@ export const fr: Translations = {
     reassign: "Réassigner",
     renderingError: "L'onglet Kanban a rencontré une erreur de rendu",
     reloadView: "Recharger la vue",
-    wsAuthFailed:
-      "Échec d'authentification WebSocket — rechargez la page pour rafraîchir le jeton de session.",
+    wsAuthFailed: "Échec d'authentification WebSocket — rechargez la page pour rafraîchir le jeton de session.",
     markDone: "Marquer {n} tâche(s) comme terminée(s) ?",
     markArchived: "Archiver {n} tâche(s) ?",
     warning: "Avertissement",
@@ -710,8 +601,7 @@ export const fr: Translations = {
     showAllAttempts: "Afficher toutes les tentatives",
     sendingUpdates: "Envoi des mises à jour à",
     sendNotifications: "Envoyer les notifications completed / blocked / gave_up à",
-    archiveBoardConfirm:
-      "Archiver le tableau '{name}' ? Il sera déplacé vers boards/_archived/ pour pouvoir être récupéré plus tard. Les tâches de ce tableau n'apparaîtront plus nulle part dans l'UI.",
+    archiveBoardConfirm: "Archiver le tableau '{name}' ? Il sera déplacé vers boards/_archived/ pour pouvoir être récupéré plus tard. Les tâches de ce tableau n'apparaîtront plus nulle part dans l'UI.",
     archiveBoardTitle: "Archiver ce tableau",
     boardSwitcherHint: "Les tableaux vous permettent de séparer des flux de travail indépendants",
     taskCreatedWarning: "Tâche créée, mais: ",
@@ -731,7 +621,6 @@ export const fr: Translations = {
     clickToEditAssignee: "Cliquez pour modifier l'assigné",
     emptyAssignee: "(vide = désassigner)",
     columnLabels: {
-      triage: "Triage",
       todo: "À faire",
       scheduled: "Planifié",
       ready: "Prêt",
@@ -750,28 +639,19 @@ export const fr: Translations = {
       done: "Terminé",
       archived: "Archivé",
     },
-    confirmDone:
-      "Marquer cette tâche comme terminée ? La revendication du worker est libérée et les enfants dépendants deviennent prêts.",
-    confirmArchive:
-      "Archiver cette tâche ? Elle disparaîtra de la vue par défaut du tableau.",
-    confirmBlocked:
-      "Marquer cette tâche comme bloquée ? La revendication du worker est libérée.",
-    completionSummary:
-      "Résumé d'achèvement pour {label}. Stocké comme result de la tâche.",
-    completionSummaryRequired:
-      "Un résumé d'achèvement est requis avant de marquer une tâche comme terminée.",
+    confirmDone: "Marquer cette tâche comme terminée ? La revendication du worker est libérée et les enfants dépendants deviennent prêts.",
+    confirmArchive: "Archiver cette tâche ? Elle disparaîtra de la vue par défaut du tableau.",
+    confirmBlocked: "Marquer cette tâche comme bloquée ? La revendication du worker est libérée.",
+    completionSummary: "Résumé d'achèvement pour {label}. Stocké comme result de la tâche.",
+    completionSummaryRequired: "Un résumé d'achèvement est requis avant de marquer une tâche comme terminée.",
     triagePlaceholder: "Idée approximative — l'IA la spécifiera…",
     taskTitlePlaceholder: "Titre de la nouvelle tâche…",
-    specifier: "specifier",
     assigneePlaceholder: "assigné",
     priority: "Priorité",
-    skillsPlaceholder:
-      "compétences (facultatif, séparées par virgules): translation, github-code-review",
+    skillsPlaceholder: "compétences (facultatif, séparées par virgules): translation, github-code-review",
     noParent: "— aucun parent —",
     workspacePathDir: "chemin du workspace (requis, par ex. ~/projects/my-app)",
-    workspacePathOptional:
-      "chemin du workspace (facultatif, dérivé de l'assigné si vide)",
+    workspacePathOptional: "chemin du workspace (facultatif, dérivé de l'assigné si vide)",
     logTruncated: "(affichage des derniers 100 KB — log complet à ",
-    logAt: ")",
   },
-};
+});

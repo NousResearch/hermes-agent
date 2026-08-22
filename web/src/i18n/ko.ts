@@ -1,6 +1,10 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const ko: Translations = {
+// Auto-synced by scripts/i18n-sync.mjs — only keys that differ from en.ts are
+// listed below; everything else inherits English automatically. After editing
+// en.ts, run `npm run i18n:sync` to propagate, and `npm run i18n:check`
+// (wired into CI) guards against drift.
+export const ko = defineLocale({
   common: {
     save: "저장",
     saving: "저장 중...",
@@ -43,20 +47,12 @@ export const ko: Translations = {
     expand: "펼치기",
     general: "일반",
     messaging: "메시징",
-    pluginLoadFailed:
-      "이 플러그인의 스크립트를 로드할 수 없습니다. Network 탭(dashboard-plugins/…)과 서버의 플러그인 경로를 확인하세요.",
-    pluginNotRegistered:
-      "플러그인 스크립트가 register()를 호출하지 않았거나 스크립트에 오류가 발생했습니다. 자세한 내용은 브라우저 콘솔을 열어 확인하세요.",
+    pluginLoadFailed: "이 플러그인의 스크립트를 로드할 수 없습니다. Network 탭(dashboard-plugins/…)과 서버의 플러그인 경로를 확인하세요.",
+    pluginNotRegistered: "플러그인 스크립트가 register()를 호출하지 않았거나 스크립트에 오류가 발생했습니다. 자세한 내용은 브라우저 콘솔을 열어 확인하세요.",
   },
-
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
     closeNavigation: "내비게이션 닫기",
     closeModelTools: "모델 및 도구 닫기",
-    footer: {
-      org: "Nous Research",
-    },
     activeSessionsLabel: "활성 세션:",
     gatewayStatusLabel: "게이트웨이 상태:",
     gatewayStrip: {
@@ -70,7 +66,6 @@ export const ko: Translations = {
       analytics: "분석",
       chat: "채팅",
       config: "설정",
-      cron: "Cron",
       documentation: "문서",
       keys: "키",
       logs: "로그",
@@ -89,9 +84,7 @@ export const ko: Translations = {
     sessionsActiveCount: "{count}개 활성",
     statusOverview: "상태 개요",
     system: "시스템",
-    webUi: "Web UI",
   },
-
   status: {
     actionFailed: "작업 실패",
     actionFinished: "완료됨",
@@ -108,7 +101,6 @@ export const ko: Translations = {
     lastUpdate: "마지막 업데이트",
     noneRunning: "없음",
     notRunning: "실행 중이 아님",
-    pid: "PID",
     platformDisconnected: "연결 끊김",
     platformError: "오류",
     recentSessions: "최근 세션",
@@ -124,7 +116,6 @@ export const ko: Translations = {
     updatingHermes: "Hermes 업데이트 중…",
     waitingForOutput: "출력 대기 중…",
   },
-
   sessions: {
     title: "세션",
     history: "기록",
@@ -143,14 +134,12 @@ export const ko: Translations = {
     untitledSession: "제목 없는 세션",
     deleteSession: "세션 삭제",
     confirmDeleteTitle: "세션을 삭제하시겠습니까?",
-    confirmDeleteMessage:
-      "이 작업은 대화와 모든 메시지를 영구적으로 제거합니다. 되돌릴 수 없습니다.",
+    confirmDeleteMessage: "이 작업은 대화와 모든 메시지를 영구적으로 제거합니다. 되돌릴 수 없습니다.",
     sessionDeleted: "세션이 삭제되었습니다",
     failedToDelete: "세션 삭제에 실패했습니다",
     deleteEmpty: "빈 세션 삭제",
     deleteEmptyConfirmTitle: "빈 세션을 삭제하시겠습니까?",
-    deleteEmptyConfirmMessage:
-      "메시지가 없는 {count}개의 세션을 영구적으로 삭제합니다. 활성 및 보관된 세션은 건너뜁니다. 이 작업은 되돌릴 수 없습니다.",
+    deleteEmptyConfirmMessage: "메시지가 없는 {count}개의 세션을 영구적으로 삭제합니다. 활성 및 보관된 세션은 건너뜁니다. 이 작업은 되돌릴 수 없습니다.",
     emptySessionsDeleted: "빈 세션 {count}개 삭제됨",
     failedToDeleteEmpty: "빈 세션 삭제에 실패했습니다",
     selectSession: "세션 선택",
@@ -159,8 +148,7 @@ export const ko: Translations = {
     selectedCount: "{count}개 선택됨",
     deleteSelected: "{count}개 삭제",
     deleteSelectedConfirmTitle: "{count}개 세션을 삭제하시겠습니까?",
-    deleteSelectedConfirmMessage:
-      "선택한 {count}개 세션과 모든 메시지가 영구적으로 제거됩니다. 이 작업은 취소할 수 없습니다.",
+    deleteSelectedConfirmMessage: "선택한 {count}개 세션과 모든 메시지가 영구적으로 제거됩니다. 이 작업은 취소할 수 없습니다.",
     selectedSessionsDeleted: "{count}개 세션이 삭제되었습니다",
     failedToDeleteSelected: "선택한 세션 삭제에 실패했습니다",
     resumeInChat: "채팅에서 다시 시작",
@@ -174,7 +162,6 @@ export const ko: Translations = {
       tool: "도구",
     },
   },
-
   analytics: {
     period: "기간:",
     totalTokens: "총 토큰",
@@ -200,7 +187,6 @@ export const ko: Translations = {
     acrossModels: "{count}개 모델 전반",
     inOut: "입력 {input} / 출력 {output}",
   },
-
   models: {
     modelsUsed: "사용된 모델",
     estimatedCost: "예상 비용",
@@ -212,7 +198,6 @@ export const ko: Translations = {
     noModelsData: "이 기간에 대한 모델 사용 데이터가 없습니다",
     startSession: "세션을 시작하면 여기에 모델 데이터가 표시됩니다",
   },
-
   logs: {
     title: "로그",
     autoRefresh: "자동 새로고침",
@@ -222,10 +207,8 @@ export const ko: Translations = {
     lines: "줄 수",
     noLogLines: "로그 줄을 찾을 수 없습니다",
   },
-
   cron: {
-    confirmDeleteMessage:
-      "이 작업은 일정에서 작업을 제거합니다. 되돌릴 수 없습니다.",
+    confirmDeleteMessage: "이 작업은 일정에서 작업을 제거합니다. 되돌릴 수 없습니다.",
     confirmDeleteTitle: "예약된 작업을 삭제하시겠습니까?",
     newJob: "새 Cron 작업",
     nameOptional: "이름 (선택 사항)",
@@ -233,7 +216,6 @@ export const ko: Translations = {
     prompt: "프롬프트",
     promptPlaceholder: "에이전트가 매 실행 시 무엇을 해야 합니까?",
     schedule: "스케줄 (cron 표현식)",
-    schedulePlaceholder: "0 9 * * *",
     scheduleMode: "일정",
     scheduleModes: {
       interval: "반복 간격",
@@ -249,17 +231,15 @@ export const ko: Translations = {
       unitDays: "일",
       timeOfDay: "시각",
       weekdays: "요일",
-      weekdaysShort: ["일", "월", "화", "수", "목", "금", "토"],
+      weekdaysShort: ["일","월","화","수","목","금","토"],
       dayOfMonth: "날짜",
       onceAt: "실행 시각",
       customLabel: "cron 표현식",
-      customPlaceholder: "0 9 * * *",
       customHint: "5개 필드의 cron 표현식 (분, 시, 일, 월, 요일).",
       preview: "전송 형식",
       previewEmpty: "(미완성)",
     },
     scheduleDescribe: {
-      none: "—",
       everyMinutes: "{n}분마다",
       everyHours: "{n}시간마다",
       everyDays: "{n}일마다",
@@ -278,26 +258,20 @@ export const ko: Translations = {
     triggerNow: "지금 실행",
     delivery: {
       local: "로컬",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
     },
   },
-
   profiles: {
     newProfile: "새 프로필",
     name: "이름",
     namePlaceholder: "예: coder, writer 등.",
     nameRequired: "이름은 필수입니다",
-    nameRule:
-      "소문자, 숫자, _ 및 - 만 사용 가능합니다. 문자나 숫자로 시작해야 하며 최대 64자입니다.",
-    invalidName: "잘못된 프로필 이름입니다",    cloneFrom: "프로필에서 복제",
+    nameRule: "소문자, 숫자, _ 및 - 만 사용 가능합니다. 문자나 숫자로 시작해야 하며 최대 64자입니다.",
+    invalidName: "잘못된 프로필 이름입니다",
+    cloneFrom: "프로필에서 복제",
     cloneFromNone: "없음 (빈 상태)",
     allProfiles: "프로필",
     noProfiles: "프로필을 찾을 수 없습니다.",
     defaultBadge: "기본",
-    hasEnv: "env",
     model: "모델",
     skills: "스킬",
     rename: "이름 변경",
@@ -310,13 +284,11 @@ export const ko: Translations = {
     commandCopied: "클립보드에 복사되었습니다",
     copyFailed: "복사할 수 없습니다",
     confirmDeleteTitle: "프로필을 삭제하시겠습니까?",
-    confirmDeleteMessage:
-      "이 작업은 '{name}' 프로필 — 설정, 키, 메모리, 세션, 스킬, cron 작업 — 을 영구적으로 삭제합니다. 되돌릴 수 없습니다.",
+    confirmDeleteMessage: "이 작업은 '{name}' 프로필 — 설정, 키, 메모리, 세션, 스킬, cron 작업 — 을 영구적으로 삭제합니다. 되돌릴 수 없습니다.",
     created: "생성됨",
     deleted: "삭제됨",
     renamed: "이름 변경됨",
   },
-
   pluginsPage: {
     contextEngineLabel: "컨텍스트 엔진",
     dashboardSlots: "대시보드 슬롯",
@@ -324,8 +296,7 @@ export const ko: Translations = {
     enableAfterInstall: "설치 후 활성화",
     enableRuntime: "활성화",
     forceReinstall: "강제 재설치 (기존 폴더를 먼저 삭제)",
-    headline:
-      "Hermes 플러그인을 검색, 설치, 활성화 및 업데이트합니다 (`hermes plugins` 동등).",
+    headline: "Hermes 플러그인을 검색, 설치, 활성화 및 업데이트합니다 (`hermes plugins` 동등).",
     identifierLabel: "Git URL 또는 owner/repo",
     inactive: "비활성",
     installBtn: "설치",
@@ -339,8 +310,7 @@ export const ko: Translations = {
     pluginListHeading: "설치된 플러그인",
     providerDefaults: "내장 / 기본",
     providersHeading: "런타임 제공자 플러그인",
-    providersHint:
-      "memory.provider (비어 있으면 = 내장)와 context.engine을 config.yaml에 기록합니다. 다음 세션부터 적용됩니다.",
+    providersHint: "memory.provider (비어 있으면 = 내장)와 context.engine을 config.yaml에 기록합니다. 다음 세션부터 적용됩니다.",
     refreshDashboard: "대시보드 확장 재스캔",
     removeConfirm: "~/.hermes/plugins/에서 이 플러그인을 제거하시겠습니까?",
     removeHint: "~/.hermes/plugins 아래에 사용자가 설치한 플러그인만 제거할 수 있습니다.",
@@ -352,12 +322,10 @@ export const ko: Translations = {
     sourceBadge: "소스",
     authRequired: "인증 필요",
     authRequiredHint: "이 명령을 실행하여 인증하세요:",
-    updateGit: "Git pull",
     versionBadge: "버전",
     showInSidebar: "사이드바에 표시",
     hideFromSidebar: "사이드바에서 숨기기",
   },
-
   skills: {
     title: "스킬",
     searchPlaceholder: "스킬 및 도구 세트 검색...",
@@ -377,13 +345,10 @@ export const ko: Translations = {
     disabledForCli: "CLI에서 비활성화됨",
     more: "+{count}개 더",
   },
-
   config: {
-    configPath: "~/.hermes/config.yaml",
     filters: "필터",
     sections: "섹션",
     exportConfig: "설정을 JSON으로 내보내기",
-    importConfig: "JSON에서 설정 가져오기",
     resetDefaults: "기본값으로 재설정",
     resetScopeTooltip: "{scope}을(를) 기본값으로 재설정",
     confirmResetScope: "모든 {scope} 설정을 기본값으로 재설정하시겠습니까? 이 작업은 양식만 업데이트하며, 저장을 누르기 전까지는 변경 사항이 config.yaml에 기록되지 않습니다.",
@@ -391,7 +356,7 @@ export const ko: Translations = {
     rawYaml: "원본 YAML 설정",
     searchResults: "검색 결과",
     fields: "개 필드",
-    noFieldsMatch: '"{query}"와(과) 일치하는 필드가 없습니다',
+    noFieldsMatch: "\"{query}\"와(과) 일치하는 필드가 없습니다",
     configSaved: "설정이 저장되었습니다",
     yamlConfigSaved: "YAML 설정이 저장되었습니다",
     failedToSave: "저장에 실패했습니다",
@@ -413,15 +378,12 @@ export const ko: Translations = {
       tts: "텍스트 음성 변환",
       stt: "음성 텍스트 변환",
       logging: "로깅",
-      discord: "Discord",
       auxiliary: "보조",
     },
   },
-
   env: {
     changesNote: "변경 사항은 즉시 디스크에 저장됩니다. 활성 세션은 자동으로 새 키를 가져옵니다.",
-    confirmClearMessage:
-      "이 변수에 대해 저장된 값이 .env 파일에서 제거됩니다. UI에서는 이 작업을 되돌릴 수 없습니다.",
+    confirmClearMessage: "이 변수에 대해 저장된 값이 .env 파일에서 제거됩니다. UI에서는 이 작업을 되돌릴 수 없습니다.",
     confirmClearTitle: "이 키를 지우시겠습니까?",
     description: "다음 위치에 저장된 API 키와 비밀을 관리합니다",
     hideAdvanced: "고급 숨기기",
@@ -447,12 +409,10 @@ export const ko: Translations = {
     add: "추가",
     invalidKeyName: "문자, 숫자, 밑줄만 사용하세요(문자 또는 밑줄로 시작해야 합니다).",
   },
-
   oauth: {
     title: "제공자 로그인 (OAuth)",
     providerLogins: "제공자 로그인 (OAuth)",
-    description:
-      "{connected}/{total} OAuth 제공자가 연결되었습니다. 대시보드에서 지원되는 흐름에는 로그인을 사용하세요. 외부 또는 대체 설정에는 CLI 명령을 계속 사용할 수 있습니다.",
+    description: "{connected}/{total} OAuth 제공자가 연결되었습니다. 대시보드에서 지원되는 흐름에는 로그인을 사용하세요. 외부 또는 대체 설정에는 CLI 명령을 계속 사용할 수 있습니다.",
     connected: "연결됨",
     expired: "만료됨",
     notConnected: "연결되지 않음. 가능하면 로그인을 사용하거나 터미널에서 {command}을(를) 실행하세요.",
@@ -489,24 +449,17 @@ export const ko: Translations = {
     },
     expiresIn: "{time} 후 만료",
   },
-
   language: {
     switchTo: "언어 변경",
   },
-
   theme: {
     title: "테마",
     switchTheme: "테마 전환",
   },
-
   achievements: {
     hero: {
-      kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
-      subtitle:
-        "실제 세션 기록에서 획득하는 Hermes 컬렉터블 배지입니다. 알려져 있지만 아직 달성되지 않은 업적은 Discovered로 표시되며, Secret 업적은 일치하는 동작이 처음 나타날 때까지 숨겨집니다.",
-      scan_subtitle:
-        "Hermes 세션 기록을 스캔하고 있습니다. 기록이 많으면 첫 스캔에 5~10초가 걸릴 수 있습니다.",
+      subtitle: "실제 세션 기록에서 획득하는 Hermes 컬렉터블 배지입니다. 알려져 있지만 아직 달성되지 않은 업적은 Discovered로 표시되며, Secret 업적은 일치하는 동작이 처음 나타날 때까지 숨겨집니다.",
+      scan_subtitle: "Hermes 세션 기록을 스캔하고 있습니다. 기록이 많으면 첫 스캔에 5~10초가 걸릴 수 있습니다.",
     },
     actions: {
       rescan: "다시 스캔",
@@ -519,7 +472,6 @@ export const ko: Translations = {
       secrets: "시크릿",
       secrets_hint: "첫 신호가 있을 때까지 숨겨짐",
       highest_tier: "최고 등급",
-      highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "최근",
       latest_hint_empty: "Hermes를 더 사용해 보세요",
       none_yet: "아직 없음",
@@ -540,25 +492,19 @@ export const ko: Translations = {
     },
     scan: {
       building_headline: "업적 프로필을 구성하고 있습니다…",
-      building_detail:
-        "세션, 도구 호출, 모델 메타데이터, 해제 상태를 읽고 있습니다.",
+      building_detail: "세션, 도구 호출, 모델 메타데이터, 해제 상태를 읽고 있습니다.",
       starting_headline: "업적 스캔을 시작합니다…",
-      progress_detail:
-        "{total}개 중 {scanned}개의 세션을 스캔했습니다 · {pct}%. 더 많은 기록이 들어오면 배지가 해제됩니다.",
-      idle_detail:
-        "세션, 도구 호출, 모델 메타데이터, 해제 상태를 읽고 있습니다. 배지가 해제되면 여기에 표시됩니다.",
+      progress_detail: "{total}개 중 {scanned}개의 세션을 스캔했습니다 · {pct}%. 더 많은 기록이 들어오면 배지가 해제됩니다.",
+      idle_detail: "세션, 도구 호출, 모델 메타데이터, 해제 상태를 읽고 있습니다. 배지가 해제되면 여기에 표시됩니다.",
     },
     guide: {
       tiers_header: "등급",
       secret_header: "시크릿 업적",
-      secret_body:
-        "시크릿은 정확한 트리거 조건을 숨깁니다. Hermes가 관련 신호를 감지하면 카드가 Discovered로 바뀌고 요건이 표시됩니다.",
+      secret_body: "시크릿은 정확한 트리거 조건을 숨깁니다. Hermes가 관련 신호를 감지하면 카드가 Discovered로 바뀌고 요건이 표시됩니다.",
       scan_status_header: "스캔 상태",
-      scan_status_body:
-        "Hermes는 로컬 기록을 한 번 스캔한 뒤 카드를 자동으로 표시합니다. 몇 초 걸리더라도 멈춘 것이 아닙니다.",
+      scan_status_body: "Hermes는 로컬 기록을 한 번 스캔한 뒤 카드를 자동으로 표시합니다. 몇 초 걸리더라도 멈춘 것이 아닙니다.",
       what_scanned_header: "스캔 대상",
-      what_scanned_body:
-        "세션, 도구 호출, 모델 메타데이터, 오류, 업적 및 로컬 해제 상태입니다.",
+      what_scanned_body: "세션, 도구 호출, 모델 메타데이터, 오류, 업적 및 로컬 해제 상태입니다.",
     },
     card: {
       share_title: "이 업적 공유",
@@ -575,8 +521,7 @@ export const ko: Translations = {
     },
     empty: {
       no_secrets_header: "이번 스캔에 남은 숨겨진 시크릿이 없습니다.",
-      no_secrets_body:
-        "힌트: 시크릿은 보통 비정상적인 실패나 파워 유저 패턴에서 시작됩니다 — 포트 충돌, 권한 차단, 누락된 환경 변수, YAML 실수, Docker 충돌, 롤백/체크포인트 사용, 캐시 적중, 또는 많은 오류 메시지 뒤의 작은 수정 등입니다.",
+      no_secrets_body: "힌트: 시크릿은 보통 비정상적인 실패나 파워 유저 패턴에서 시작됩니다 — 포트 충돌, 권한 차단, 누락된 환경 변수, YAML 실수, Docker 충돌, 롤백/체크포인트 사용, 캐시 적중, 또는 많은 오류 메시지 뒤의 작은 수정 등입니다.",
     },
     filters: {
       all_categories: "전체",
@@ -598,31 +543,20 @@ export const ko: Translations = {
       copy_button: "이미지 복사",
       copied: "복사됨 ✓",
       download_button: "PNG 다운로드",
-      hint:
-        "X에 공유를 누르면 새 탭에서 미리 작성된 게시물이 열립니다. 1200×630 배지를 첨부하려면 먼저 이미지 복사를 누르세요 — X 작성기에서 바로 붙여넣을 수 있습니다. PNG 다운로드는 파일을 저장하여 어디서나 사용할 수 있게 합니다.",
-      clipboard_unsupported:
-        "이 브라우저에서는 클립보드 이미지 복사를 지원하지 않습니다 — 대신 다운로드를 이용하세요.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      hint: "X에 공유를 누르면 새 탭에서 미리 작성된 게시물이 열립니다. 1200×630 배지를 첨부하려면 먼저 이미지 복사를 누르세요 — X 작성기에서 바로 붙여넣을 수 있습니다. PNG 다운로드는 파일을 저장하여 어디서나 사용할 수 있게 합니다.",
+      clipboard_unsupported: "이 브라우저에서는 클립보드 이미지 복사를 지원하지 않습니다 — 대신 다운로드를 이용하세요.",
     },
   },
   kanban: {
     loading: "Kanban 보드를 불러오는 중입니다…",
     loadFailed: "Kanban 보드를 불러오지 못했습니다: ",
-    loadFailedHint:
-      "백엔드는 처음 읽을 때 kanban.db를 자동으로 생성합니다. 문제가 계속되면 대시보드 로그를 확인하십시오.",
+    loadFailedHint: "백엔드는 처음 읽을 때 kanban.db를 자동으로 생성합니다. 문제가 계속되면 대시보드 로그를 확인하십시오.",
     board: "보드",
     newBoard: "+ 새 보드",
     newBoardTitle: "새 보드",
-    newBoardDescription:
-      "보드를 사용하면 관련 없는 작업 흐름을 분리할 수 있습니다 — 프로젝트, 저장소, 도메인마다 하나씩. 한 보드의 워커는 다른 보드의 작업을 절대 보지 않습니다.",
+    newBoardDescription: "보드를 사용하면 관련 없는 작업 흐름을 분리할 수 있습니다 — 프로젝트, 저장소, 도메인마다 하나씩. 한 보드의 워커는 다른 보드의 작업을 절대 보지 않습니다.",
     slug: "슬러그",
     slugHint: "— 소문자, 하이픈, 예: atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "표시 이름",
     displayNameHint: "(선택)",
     description: "설명",
@@ -665,8 +599,7 @@ export const ko: Translations = {
     runHistory: "실행 기록",
     workerLog: "워커 로그",
     loadingLog: "로그를 불러오는 중…",
-    noWorkerLog:
-      "— 아직 워커 로그가 없습니다 (작업이 시작되지 않았거나 로그가 순환되었습니다) —",
+    noWorkerLog: "— 아직 워커 로그가 없습니다 (작업이 시작되지 않았거나 로그가 순환되었습니다) —",
     noDescription: "— 설명 없음 —",
     noComments: "— 댓글 없음 —",
     edit: "편집",
@@ -697,8 +630,7 @@ export const ko: Translations = {
     reassign: "재지정",
     renderingError: "Kanban 탭에서 렌더링 오류가 발생했습니다",
     reloadView: "뷰 다시 불러오기",
-    wsAuthFailed:
-      "WebSocket 인증 실패 — 페이지를 다시 불러와 세션 토큰을 갱신하십시오.",
+    wsAuthFailed: "WebSocket 인증 실패 — 페이지를 다시 불러와 세션 토큰을 갱신하십시오.",
     markDone: "{n}개의 작업을 완료로 표시하시겠습니까?",
     markArchived: "{n}개의 작업을 보관하시겠습니까?",
     warning: "경고",
@@ -709,8 +641,7 @@ export const ko: Translations = {
     showAllAttempts: "모든 시도 표시",
     sendingUpdates: "업데이트 전송 대상: ",
     sendNotifications: "완료 / 차단됨 / 포기 알림 전송 대상",
-    archiveBoardConfirm:
-      "보드 '{name}'을(를) 보관하시겠습니까? 보드는 boards/_archived/로 이동되어 나중에 복구할 수 있습니다. 이 보드의 작업은 더 이상 UI 어디에도 나타나지 않습니다.",
+    archiveBoardConfirm: "보드 '{name}'을(를) 보관하시겠습니까? 보드는 boards/_archived/로 이동되어 나중에 복구할 수 있습니다. 이 보드의 작업은 더 이상 UI 어디에도 나타나지 않습니다.",
     archiveBoardTitle: "이 보드 보관",
     boardSwitcherHint: "보드를 사용하면 관련 없는 작업 흐름을 분리할 수 있습니다",
     taskCreatedWarning: "작업이 생성되었지만: ",
@@ -749,28 +680,20 @@ export const ko: Translations = {
       done: "완료됨",
       archived: "보관됨",
     },
-    confirmDone:
-      "이 작업을 완료로 표시하시겠습니까? 워커의 점유가 해제되고 종속된 하위 작업이 ready 상태가 됩니다.",
-    confirmArchive:
-      "이 작업을 보관하시겠습니까? 기본 보드 보기에서 사라집니다.",
-    confirmBlocked:
-      "이 작업을 차단됨으로 표시하시겠습니까? 워커의 점유가 해제됩니다.",
-    completionSummary:
-      "{label}의 완료 요약입니다. 이는 작업 결과로 저장됩니다.",
-    completionSummaryRequired:
-      "작업을 완료로 표시하기 전에 완료 요약이 필요합니다.",
+    confirmDone: "이 작업을 완료로 표시하시겠습니까? 워커의 점유가 해제되고 종속된 하위 작업이 ready 상태가 됩니다.",
+    confirmArchive: "이 작업을 보관하시겠습니까? 기본 보드 보기에서 사라집니다.",
+    confirmBlocked: "이 작업을 차단됨으로 표시하시겠습니까? 워커의 점유가 해제됩니다.",
+    completionSummary: "{label}의 완료 요약입니다. 이는 작업 결과로 저장됩니다.",
+    completionSummaryRequired: "작업을 완료로 표시하기 전에 완료 요약이 필요합니다.",
     triagePlaceholder: "대략적인 아이디어 — AI가 사양을 작성합니다…",
     taskTitlePlaceholder: "새 작업 제목…",
     specifier: "스페시파이어",
     assigneePlaceholder: "담당자",
     priority: "우선순위",
-    skillsPlaceholder:
-      "스킬 (선택, 쉼표로 구분): translation, github-code-review",
+    skillsPlaceholder: "스킬 (선택, 쉼표로 구분): translation, github-code-review",
     noParent: "— 상위 작업 없음 —",
     workspacePathDir: "작업 공간 경로 (필수, 예: ~/projects/my-app)",
-    workspacePathOptional:
-      "작업 공간 경로 (선택, 비어 있으면 담당자에서 파생됨)",
+    workspacePathOptional: "작업 공간 경로 (선택, 비어 있으면 담당자에서 파생됨)",
     logTruncated: "(마지막 100 KB 표시 중 — 전체 로그 위치: ",
-    logAt: ")",
   },
-};
+});

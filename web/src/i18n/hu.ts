@@ -1,6 +1,10 @@
-import type { Translations } from "./types";
+import { defineLocale } from "./define-locale";
 
-export const hu: Translations = {
+// Auto-synced by scripts/i18n-sync.mjs — only keys that differ from en.ts are
+// listed below; everything else inherits English automatically. After editing
+// en.ts, run `npm run i18n:sync` to propagate, and `npm run i18n:check`
+// (wired into CI) guards against drift.
+export const hu = defineLocale({
   common: {
     save: "Mentés",
     saving: "Mentés...",
@@ -43,20 +47,12 @@ export const hu: Translations = {
     expand: "Kibontás",
     general: "Általános",
     messaging: "Üzenetküldés",
-    pluginLoadFailed:
-      "Nem sikerült betölteni a bővítmény szkriptjét. Ellenőrizze a Network fület (dashboard-plugins/…) és a kiszolgáló bővítmény-elérési útját.",
-    pluginNotRegistered:
-      "A bővítmény szkriptje nem hívta meg a register() függvényt, vagy hibára futott. A részletekért nyissa meg a böngésző konzolját.",
+    pluginLoadFailed: "Nem sikerült betölteni a bővítmény szkriptjét. Ellenőrizze a Network fület (dashboard-plugins/…) és a kiszolgáló bővítmény-elérési útját.",
+    pluginNotRegistered: "A bővítmény szkriptje nem hívta meg a register() függvényt, vagy hibára futott. A részletekért nyissa meg a böngésző konzolját.",
   },
-
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
     closeNavigation: "Navigáció bezárása",
     closeModelTools: "Modell és eszközök bezárása",
-    footer: {
-      org: "Nous Research",
-    },
     activeSessionsLabel: "Aktív munkamenetek:",
     gatewayStatusLabel: "Átjáró állapota:",
     gatewayStrip: {
@@ -70,7 +66,6 @@ export const hu: Translations = {
       analytics: "Analitika",
       chat: "Csevegés",
       config: "Beállítások",
-      cron: "Cron",
       documentation: "Dokumentáció",
       keys: "Kulcsok",
       logs: "Naplók",
@@ -89,9 +84,7 @@ export const hu: Translations = {
     sessionsActiveCount: "{count} aktív",
     statusOverview: "Állapot áttekintése",
     system: "Rendszer",
-    webUi: "Web UI",
   },
-
   status: {
     actionFailed: "Művelet sikertelen",
     actionFinished: "Befejezve",
@@ -108,7 +101,6 @@ export const hu: Translations = {
     lastUpdate: "Utolsó frissítés",
     noneRunning: "Nincs",
     notRunning: "Nem fut",
-    pid: "PID",
     platformDisconnected: "lekapcsolva",
     platformError: "hiba",
     recentSessions: "Legutóbbi munkamenetek",
@@ -124,7 +116,6 @@ export const hu: Translations = {
     updatingHermes: "Hermes frissítése…",
     waitingForOutput: "Várakozás a kimenetre…",
   },
-
   sessions: {
     title: "Munkamenetek",
     history: "Előzmények",
@@ -143,14 +134,12 @@ export const hu: Translations = {
     untitledSession: "Névtelen munkamenet",
     deleteSession: "Munkamenet törlése",
     confirmDeleteTitle: "Törli a munkamenetet?",
-    confirmDeleteMessage:
-      "Ez véglegesen eltávolítja a beszélgetést és minden üzenetét. A művelet nem vonható vissza.",
+    confirmDeleteMessage: "Ez véglegesen eltávolítja a beszélgetést és minden üzenetét. A művelet nem vonható vissza.",
     sessionDeleted: "Munkamenet törölve",
     failedToDelete: "Nem sikerült törölni a munkamenetet",
     deleteEmpty: "Üresek törlése",
     deleteEmptyConfirmTitle: "Üres munkamenetek törlése?",
-    deleteEmptyConfirmMessage:
-      "Ez véglegesen eltávolít {count} olyan munkamenetet, amely nem tartalmaz üzenetet. Az aktív és archivált munkameneteket kihagyja. Ez nem vonható vissza.",
+    deleteEmptyConfirmMessage: "Ez véglegesen eltávolít {count} olyan munkamenetet, amely nem tartalmaz üzenetet. Az aktív és archivált munkameneteket kihagyja. Ez nem vonható vissza.",
     emptySessionsDeleted: "{count} üres munkamenet törölve",
     failedToDeleteEmpty: "Nem sikerült törölni az üres munkameneteket",
     selectSession: "Munkamenet kijelölése",
@@ -159,8 +148,7 @@ export const hu: Translations = {
     selectedCount: "{count} kijelölve",
     deleteSelected: "{count} törlése",
     deleteSelectedConfirmTitle: "{count} munkamenet törlése?",
-    deleteSelectedConfirmMessage:
-      "Ez véglegesen eltávolítja a kijelölt {count} munkamenetet és minden üzenetüket. A művelet nem vonható vissza.",
+    deleteSelectedConfirmMessage: "Ez véglegesen eltávolítja a kijelölt {count} munkamenetet és minden üzenetüket. A művelet nem vonható vissza.",
     selectedSessionsDeleted: "{count} munkamenet törölve",
     failedToDeleteSelected: "Nem sikerült törölni a kijelölt munkameneteket",
     resumeInChat: "Folytatás a csevegésben",
@@ -174,7 +162,6 @@ export const hu: Translations = {
       tool: "Eszköz",
     },
   },
-
   analytics: {
     period: "Időszak:",
     totalTokens: "Összes token",
@@ -200,7 +187,6 @@ export const hu: Translations = {
     acrossModels: "{count} modellen át",
     inOut: "{input} be / {output} ki",
   },
-
   models: {
     modelsUsed: "Használt modellek",
     estimatedCost: "Becsült költség",
@@ -212,7 +198,6 @@ export const hu: Translations = {
     noModelsData: "Nincs modellhasználati adat erre az időszakra",
     startSession: "Indítson munkamenetet a modelladatok megtekintéséhez",
   },
-
   logs: {
     title: "Naplók",
     autoRefresh: "Automatikus frissítés",
@@ -222,18 +207,14 @@ export const hu: Translations = {
     lines: "Sorok",
     noLogLines: "Nem található naplóbejegyzés",
   },
-
   cron: {
-    confirmDeleteMessage:
-      "Ez eltávolítja a feladatot az ütemezésből. A művelet nem vonható vissza.",
+    confirmDeleteMessage: "Ez eltávolítja a feladatot az ütemezésből. A művelet nem vonható vissza.",
     confirmDeleteTitle: "Törli az ütemezett feladatot?",
     newJob: "Új Cron-feladat",
     nameOptional: "Név (opcionális)",
     namePlaceholder: "pl. Napi összegzés",
-    prompt: "Prompt",
     promptPlaceholder: "Mit tegyen az ügynök minden futtatáskor?",
     schedule: "Ütemezés (cron-kifejezés)",
-    schedulePlaceholder: "0 9 * * *",
     scheduleMode: "Ütemezés",
     scheduleModes: {
       interval: "Ismétlődő intervallum",
@@ -249,18 +230,15 @@ export const hu: Translations = {
       unitDays: "nap",
       timeOfDay: "Napszak",
       weekdays: "Hét napjai",
-      weekdaysShort: ["V", "H", "K", "Sze", "Cs", "P", "Szo"],
+      weekdaysShort: ["V","H","K","Sze","Cs","P","Szo"],
       dayOfMonth: "Hónap napja",
       onceAt: "Futtatás ekkor",
       customLabel: "Cron kifejezés",
-      customPlaceholder: "0 9 * * *",
-      customHint:
-        "Öt mezős cron kifejezés (perc, óra, nap, hónap, hét napja).",
+      customHint: "Öt mezős cron kifejezés (perc, óra, nap, hónap, hét napja).",
       preview: "Elküldve mint",
       previewEmpty: "(hiányos)",
     },
     scheduleDescribe: {
-      none: "—",
       everyMinutes: "{n} percenként",
       everyHours: "{n} óránként",
       everyDays: "{n} naponta",
@@ -279,26 +257,20 @@ export const hu: Translations = {
     triggerNow: "Indítás most",
     delivery: {
       local: "Helyi",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
     },
   },
-
   profiles: {
     newProfile: "Új profil",
     name: "Név",
     namePlaceholder: "pl. coder, writer stb.",
     nameRequired: "A név kötelező",
-    nameRule:
-      "Csak kisbetűk, számjegyek, _ és - karakterek; betűvel vagy számjeggyel kell kezdődnie; legfeljebb 64 karakter.",
-    invalidName: "Érvénytelen profilnév",    cloneFrom: "Konfiguráció klónozása ebből a profilból",
+    nameRule: "Csak kisbetűk, számjegyek, _ és - karakterek; betűvel vagy számjeggyel kell kezdődnie; legfeljebb 64 karakter.",
+    invalidName: "Érvénytelen profilnév",
+    cloneFrom: "Konfiguráció klónozása ebből a profilból",
     cloneFromNone: "Nincs (üres)",
     allProfiles: "Profilok",
     noProfiles: "Nem található profil.",
     defaultBadge: "alapértelmezett",
-    hasEnv: "env",
     model: "Modell",
     skills: "Készségek",
     rename: "Átnevezés",
@@ -311,13 +283,11 @@ export const hu: Translations = {
     commandCopied: "Vágólapra másolva",
     copyFailed: "Nem sikerült másolni",
     confirmDeleteTitle: "Törli a profilt?",
-    confirmDeleteMessage:
-      "Ez véglegesen törli a(z) '{name}' profilt — konfigurációt, kulcsokat, emlékeket, munkameneteket, készségeket, cron-feladatokat. A művelet nem vonható vissza.",
+    confirmDeleteMessage: "Ez véglegesen törli a(z) '{name}' profilt — konfigurációt, kulcsokat, emlékeket, munkameneteket, készségeket, cron-feladatokat. A művelet nem vonható vissza.",
     created: "Létrehozva",
     deleted: "Törölve",
     renamed: "Átnevezve",
   },
-
   pluginsPage: {
     contextEngineLabel: "Kontextusmotor",
     dashboardSlots: "Vezérlőpult-slotok",
@@ -325,8 +295,7 @@ export const hu: Translations = {
     enableAfterInstall: "Engedélyezés a telepítés után",
     enableRuntime: "Engedélyezés",
     forceReinstall: "Kényszerített újratelepítés (a meglévő mappa előbb törlődik)",
-    headline:
-      "Hermes-bővítmények felfedezése, telepítése, engedélyezése és frissítése (a `hermes plugins` paritás).",
+    headline: "Hermes-bővítmények felfedezése, telepítése, engedélyezése és frissítése (a `hermes plugins` paritás).",
     identifierLabel: "Git URL vagy owner/repo",
     inactive: "inaktív",
     installBtn: "Telepítés",
@@ -340,8 +309,7 @@ export const hu: Translations = {
     pluginListHeading: "Telepített bővítmények",
     providerDefaults: "beépített / alapértelmezett",
     providersHeading: "Futási idejű szolgáltató-bővítmények",
-    providersHint:
-      "A memory.provider (üres = beépített) és a context.engine értékét írja a config.yaml fájlba. A következő munkamenetben lép életbe.",
+    providersHint: "A memory.provider (üres = beépített) és a context.engine értékét írja a config.yaml fájlba. A következő munkamenetben lép életbe.",
     refreshDashboard: "Vezérlőpult-bővítmények újraolvasása",
     removeConfirm: "Eltávolítja ezt a bővítményt a ~/.hermes/plugins/ mappából?",
     removeHint: "Csak a felhasználó által a ~/.hermes/plugins alá telepített bővítmények távolíthatók el.",
@@ -353,12 +321,10 @@ export const hu: Translations = {
     sourceBadge: "Forrás",
     authRequired: "Hitelesítés szükséges",
     authRequiredHint: "Futtassa ezt a parancsot a hitelesítéshez:",
-    updateGit: "Git pull",
     versionBadge: "Verzió",
     showInSidebar: "Megjelenítés az oldalsávon",
     hideFromSidebar: "Elrejtés az oldalsávról",
   },
-
   skills: {
     title: "Készségek",
     searchPlaceholder: "Készségek és eszközkészletek keresése...",
@@ -378,13 +344,10 @@ export const hu: Translations = {
     disabledForCli: "CLI-hez letiltva",
     more: "+{count} további",
   },
-
   config: {
-    configPath: "~/.hermes/config.yaml",
     filters: "Szűrők",
     sections: "Szakaszok",
     exportConfig: "Konfiguráció exportálása JSON-ba",
-    importConfig: "Konfiguráció importálása JSON-ból",
     resetDefaults: "Visszaállítás alapértelmezettre",
     resetScopeTooltip: "{scope} visszaállítása alapértelmezettre",
     confirmResetScope: "Visszaállítja az összes {scope} beállítást alapértelmezettre? Ez csak az űrlapot frissíti — a változások nem íródnak be a config.yaml fájlba, amíg meg nem nyomja a Mentés gombot.",
@@ -392,7 +355,7 @@ export const hu: Translations = {
     rawYaml: "Nyers YAML-konfiguráció",
     searchResults: "Keresési eredmények",
     fields: "mező{s}",
-    noFieldsMatch: 'Nincs a(z) "{query}" keresésnek megfelelő mező',
+    noFieldsMatch: "Nincs a(z) \"{query}\" keresésnek megfelelő mező",
     configSaved: "Konfiguráció mentve",
     yamlConfigSaved: "YAML-konfiguráció mentve",
     failedToSave: "Mentés sikertelen",
@@ -414,15 +377,12 @@ export const hu: Translations = {
       tts: "Szövegfelolvasás",
       stt: "Beszédfelismerés",
       logging: "Naplózás",
-      discord: "Discord",
       auxiliary: "Kiegészítő",
     },
   },
-
   env: {
     changesNote: "A változások azonnal mentésre kerülnek a lemezre. Az aktív munkamenetek automatikusan átveszik az új kulcsokat.",
-    confirmClearMessage:
-      "A változó tárolt értéke törlődik a .env fájlból. Ez a felületről nem vonható vissza.",
+    confirmClearMessage: "A változó tárolt értéke törlődik a .env fájlból. Ez a felületről nem vonható vissza.",
     confirmClearTitle: "Törli ezt a kulcsot?",
     description: "API-kulcsok és titkok kezelése a következő helyen:",
     hideAdvanced: "Speciális elrejtése",
@@ -448,12 +408,10 @@ export const hu: Translations = {
     add: "Hozzáadás",
     invalidKeyName: "Csak betűket, számokat és aláhúzásokat használj (betűvel vagy aláhúzással kell kezdődnie).",
   },
-
   oauth: {
     title: "Szolgáltatói bejelentkezések (OAuth)",
     providerLogins: "Szolgáltatói bejelentkezések (OAuth)",
-    description:
-      "{connected} / {total} OAuth-szolgáltató csatlakoztatva. Használja a Bejelentkezés gombot az irányítópult által támogatott folyamatokhoz; a CLI-parancsok továbbra is elérhetők külső vagy tartalék beállításhoz.",
+    description: "{connected} / {total} OAuth-szolgáltató csatlakoztatva. Használja a Bejelentkezés gombot az irányítópult által támogatott folyamatokhoz; a CLI-parancsok továbbra is elérhetők külső vagy tartalék beállításhoz.",
     connected: "Csatlakoztatva",
     expired: "Lejárt",
     notConnected: "Nincs csatlakoztatva. Használja a Bejelentkezés gombot, ha elérhető, vagy futtassa a {command} parancsot egy terminálban.",
@@ -490,24 +448,17 @@ export const hu: Translations = {
     },
     expiresIn: "lejár {time} múlva",
   },
-
   language: {
     switchTo: "Nyelv váltása",
   },
-
   theme: {
     title: "Téma",
     switchTheme: "Téma váltása",
   },
-
   achievements: {
     hero: {
-      kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
-      subtitle:
-        "Gyűjthető Hermes-jelvények, valós munkamenet-előzmények alapján szerezve. Az ismert, de még nem szerzett teljesítmények Felfedezettként jelennek meg; a Titkos teljesítmények rejtve maradnak az első egyező viselkedésig.",
-      scan_subtitle:
-        "Hermes munkamenet-előzmények vizsgálata. Az első vizsgálat 5–10 másodpercig is eltarthat nagy előzmények esetén.",
+      subtitle: "Gyűjthető Hermes-jelvények, valós munkamenet-előzmények alapján szerezve. Az ismert, de még nem szerzett teljesítmények Felfedezettként jelennek meg; a Titkos teljesítmények rejtve maradnak az első egyező viselkedésig.",
+      scan_subtitle: "Hermes munkamenet-előzmények vizsgálata. Az első vizsgálat 5–10 másodpercig is eltarthat nagy előzmények esetén.",
     },
     actions: {
       rescan: "Újravizsgálat",
@@ -520,7 +471,6 @@ export const hu: Translations = {
       secrets: "Titkok",
       secrets_hint: "rejtve az első jelzésig",
       highest_tier: "Legmagasabb szint",
-      highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "Legutóbbi",
       latest_hint_empty: "futtasd többet a Hermest",
       none_yet: "Még semmi",
@@ -541,25 +491,19 @@ export const hu: Translations = {
     },
     scan: {
       building_headline: "Teljesítményprofil építése…",
-      building_detail:
-        "Munkamenetek, eszközhívások, modell-metaadatok és feloldási állapot olvasása.",
+      building_detail: "Munkamenetek, eszközhívások, modell-metaadatok és feloldási állapot olvasása.",
       starting_headline: "Teljesítmény-vizsgálat indítása…",
-      progress_detail:
-        "{scanned} / {total} munkamenet vizsgálva · {pct}%. A jelvények a további előzmények beolvasásával oldódnak fel.",
-      idle_detail:
-        "Munkamenetek, eszközhívások, modell-metaadatok és feloldási állapot olvasása. A jelvények itt jelennek meg, ahogy feloldódnak.",
+      progress_detail: "{scanned} / {total} munkamenet vizsgálva · {pct}%. A jelvények a további előzmények beolvasásával oldódnak fel.",
+      idle_detail: "Munkamenetek, eszközhívások, modell-metaadatok és feloldási állapot olvasása. A jelvények itt jelennek meg, ahogy feloldódnak.",
     },
     guide: {
       tiers_header: "Szintek",
       secret_header: "Titkos teljesítmények",
-      secret_body:
-        "A titkos teljesítmények elrejtik a pontos kiváltó eseményt. Amint a Hermes kapcsolódó jelet észlel, a kártya Felfedezettre vált, és megjeleníti a követelményt.",
+      secret_body: "A titkos teljesítmények elrejtik a pontos kiváltó eseményt. Amint a Hermes kapcsolódó jelet észlel, a kártya Felfedezettre vált, és megjeleníti a követelményt.",
       scan_status_header: "Vizsgálat állapota",
-      scan_status_body:
-        "A Hermes egyszer átvizsgálja a helyi előzményeket, majd a kártyák automatikusan megjelennek. Semmi sem akadt el, ha ez néhány másodpercig tart.",
+      scan_status_body: "A Hermes egyszer átvizsgálja a helyi előzményeket, majd a kártyák automatikusan megjelennek. Semmi sem akadt el, ha ez néhány másodpercig tart.",
       what_scanned_header: "Mit vizsgálunk",
-      what_scanned_body:
-        "Munkamenetek, eszközhívások, modell-metaadatok, hibák, teljesítmények és helyi feloldási állapot.",
+      what_scanned_body: "Munkamenetek, eszközhívások, modell-metaadatok, hibák, teljesítmények és helyi feloldási állapot.",
     },
     card: {
       share_title: "Teljesítmény megosztása",
@@ -576,8 +520,7 @@ export const hu: Translations = {
     },
     empty: {
       no_secrets_header: "Ebben a vizsgálatban nem maradt rejtett titok.",
-      no_secrets_body:
-        "Tipp: a titkok általában szokatlan hibákból vagy haladó felhasználói mintákból indulnak — portütközések, jogosultsági falak, hiányzó környezeti változók, YAML-hibák, Docker-ütközések, rollback/checkpoint használata, gyorsítótár-találatok vagy apró javítások sok piros szöveg után.",
+      no_secrets_body: "Tipp: a titkok általában szokatlan hibákból vagy haladó felhasználói mintákból indulnak — portütközések, jogosultsági falak, hiányzó környezeti változók, YAML-hibák, Docker-ütközések, rollback/checkpoint használata, gyorsítótár-találatok vagy apró javítások sok piros szöveg után.",
     },
     filters: {
       all_categories: "Összes",
@@ -599,31 +542,19 @@ export const hu: Translations = {
       copy_button: "Kép másolása",
       copied: "Másolva ✓",
       download_button: "PNG letöltése",
-      hint:
-        "A „Megosztás az X-en” új lapon nyit meg egy előre kitöltött bejegyzést. Először kattints a „Kép másolása” gombra, ha az 1200×630-as jelvényt is csatolnád — az X engedi, hogy közvetlenül beillesszd a bejegyzésszerkesztőbe. A „PNG letöltése” bárhol felhasználható fájlként menti.",
-      clipboard_unsupported:
-        "A kép vágólapra másolása nem támogatott ebben a böngészőben — használd inkább a Letöltést.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      hint: "A „Megosztás az X-en” új lapon nyit meg egy előre kitöltött bejegyzést. Először kattints a „Kép másolása” gombra, ha az 1200×630-as jelvényt is csatolnád — az X engedi, hogy közvetlenül beillesszd a bejegyzésszerkesztőbe. A „PNG letöltése” bárhol felhasználható fájlként menti.",
+      clipboard_unsupported: "A kép vágólapra másolása nem támogatott ebben a böngészőben — használd inkább a Letöltést.",
     },
   },
   kanban: {
     loading: "Kanban tábla betöltése…",
     loadFailed: "Nem sikerült betölteni a Kanban táblát: ",
-    loadFailedHint:
-      "A backend első olvasáskor automatikusan létrehozza a kanban.db fájlt. Ha továbbra is fennáll, ellenőrizd a dashboard naplóit.",
+    loadFailedHint: "A backend első olvasáskor automatikusan létrehozza a kanban.db fájlt. Ha továbbra is fennáll, ellenőrizd a dashboard naplóit.",
     board: "Tábla",
     newBoard: "+ Új tábla",
     newBoardTitle: "Új tábla",
-    newBoardDescription:
-      "A táblákkal külön tudod választani az egymással nem összefüggő munkafolyamokat — egyet projektenként, repónként vagy területenként. Az egyik tábla workerei sosem látják a másik tábla feladatait.",
-    slug: "Slug",
+    newBoardDescription: "A táblákkal külön tudod választani az egymással nem összefüggő munkafolyamokat — egyet projektenként, repónként vagy területenként. Az egyik tábla workerei sosem látják a másik tábla feladatait.",
     slugHint: "— kisbetűk, kötőjelek, pl. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Megjelenítendő név",
     displayNameHint: "(opcionális)",
     description: "Leírás",
@@ -636,7 +567,6 @@ export const hu: Translations = {
     createBoard: "Tábla létrehozása",
     search: "Keresés",
     filterCards: "Kártyák szűrése…",
-    tenant: "Tenant",
     allTenants: "Összes tenant",
     assignee: "Felelős",
     allProfiles: "Összes profil",
@@ -666,8 +596,7 @@ export const hu: Translations = {
     runHistory: "Futási előzmények",
     workerLog: "Worker napló",
     loadingLog: "Napló betöltése…",
-    noWorkerLog:
-      "— még nincs worker napló (a feladat nem indult el, vagy a napló rotálódott) —",
+    noWorkerLog: "— még nincs worker napló (a feladat nem indult el, vagy a napló rotálódott) —",
     noDescription: "— nincs leírás —",
     noComments: "— nincsenek hozzászólások —",
     edit: "szerkesztés",
@@ -698,8 +627,7 @@ export const hu: Translations = {
     reassign: "Újrakiosztás",
     renderingError: "A Kanban fülön renderelési hiba lépett fel",
     reloadView: "Nézet újratöltése",
-    wsAuthFailed:
-      "WebSocket-hitelesítés sikertelen — töltsd újra az oldalt a munkamenet-token frissítéséhez.",
+    wsAuthFailed: "WebSocket-hitelesítés sikertelen — töltsd újra az oldalt a munkamenet-token frissítéséhez.",
     markDone: "Megjelölöd {n} feladatot késznek?",
     markArchived: "Archiválsz {n} feladatot?",
     warning: "Figyelmeztetés",
@@ -710,8 +638,7 @@ export const hu: Translations = {
     showAllAttempts: "Összes próbálkozás megjelenítése",
     sendingUpdates: "Frissítések küldése ide:",
     sendNotifications: "completed / blocked / gave_up értesítések küldése ide:",
-    archiveBoardConfirm:
-      "Archiválod a(z) '{name}' táblát? Áthelyezzük a boards/_archived/ mappába, hogy később visszaállíthasd. A táblán lévő feladatok többé nem jelennek meg sehol az UI-ban.",
+    archiveBoardConfirm: "Archiválod a(z) '{name}' táblát? Áthelyezzük a boards/_archived/ mappába, hogy később visszaállíthasd. A táblán lévő feladatok többé nem jelennek meg sehol az UI-ban.",
     archiveBoardTitle: "Tábla archiválása",
     boardSwitcherHint: "A táblákkal külön tudod választani az egymással nem összefüggő munkafolyamokat",
     taskCreatedWarning: "Feladat létrehozva, de: ",
@@ -750,28 +677,19 @@ export const hu: Translations = {
       done: "Befejezve",
       archived: "Archiválva",
     },
-    confirmDone:
-      "Megjelölöd ezt a feladatot késznek? A worker foglalása felszabadul, és a függő gyermekek ready állapotba kerülnek.",
-    confirmArchive:
-      "Archiválod ezt a feladatot? Eltűnik az alapértelmezett tábla nézetből.",
-    confirmBlocked:
-      "Megjelölöd ezt a feladatot blokkoltként? A worker foglalása felszabadul.",
-    completionSummary:
-      "Befejezési összefoglaló a következőhöz: {label}. Ez a feladat eredményeként kerül tárolásra.",
-    completionSummaryRequired:
-      "A feladat késznek jelölése előtt kötelező megadni a befejezési összefoglalót.",
+    confirmDone: "Megjelölöd ezt a feladatot késznek? A worker foglalása felszabadul, és a függő gyermekek ready állapotba kerülnek.",
+    confirmArchive: "Archiválod ezt a feladatot? Eltűnik az alapértelmezett tábla nézetből.",
+    confirmBlocked: "Megjelölöd ezt a feladatot blokkoltként? A worker foglalása felszabadul.",
+    completionSummary: "Befejezési összefoglaló a következőhöz: {label}. Ez a feladat eredményeként kerül tárolásra.",
+    completionSummaryRequired: "A feladat késznek jelölése előtt kötelező megadni a befejezési összefoglalót.",
     triagePlaceholder: "Nyers ötlet — az AI specifikálja…",
     taskTitlePlaceholder: "Új feladat címe…",
-    specifier: "specifier",
     assigneePlaceholder: "felelős",
     priority: "Prioritás",
-    skillsPlaceholder:
-      "készségek (opcionális, vesszővel elválasztva): translation, github-code-review",
+    skillsPlaceholder: "készségek (opcionális, vesszővel elválasztva): translation, github-code-review",
     noParent: "— nincs szülő —",
     workspacePathDir: "munkaterület útvonala (kötelező, pl. ~/projects/my-app)",
-    workspacePathOptional:
-      "munkaterület útvonala (opcionális, üresen a felelősből származtatva)",
+    workspacePathOptional: "munkaterület útvonala (opcionális, üresen a felelősből származtatva)",
     logTruncated: "(az utolsó 100 KB látható — teljes napló: ",
-    logAt: ")",
   },
-};
+});

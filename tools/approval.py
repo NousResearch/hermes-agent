@@ -2717,6 +2717,32 @@ def submit_pending(session_key: str, approval: dict):
         _pending[session_key] = approval
 
 
+def _approval_metadata(
+    pattern_key: str,
+    pattern_keys: Optional[list[str]] = None,
+    *,
+    allow_permanent: Optional[bool] = None,
+) -> dict:
+    """Build shared approval metadata for gateway/desktop renderers.
+
+    ``allowlist_key`` intentionally aliases the primary ``pattern_key``: the
+    former names the exact key persisted by Session/Always decisions, while
+    ``pattern_keys`` preserves every match that contributed to the prompt.
+    Keeping the storage field explicit lets clients display what an approval
+    would persist without reconstructing that contract from the match list.
+    """
+    keys = list(pattern_keys or [pattern_key])
+    metadata = {
+        "allowlist_key": pattern_key,
+        "pattern_keys": keys,
+    }
+    if allow_permanent is not None:
+        metadata["allow_permanent"] = allow_permanent
+    if pattern_key.startswith("plugin_rule:"):
+        metadata["rule_key"] = pattern_key[len("plugin_rule:"):]
+    return metadata
+
+
 def approve_session(session_key: str, pattern_key: str):
     """Approve a pattern for this session only."""
     with _lock:
@@ -3557,16 +3583,16 @@ def _run_approval_gate(
         with _lock:
             notify_cb = _gateway_notify_cbs.get(session_key)
 
+        from agent.redact import redact_sensitive_text
+        approval_data = {
+            "command": redact_sensitive_text(display_target),
+            "pattern_key": pattern_key,
+            **_approval_metadata(pattern_key, allow_permanent=True),
+            "description": redact_sensitive_text(description),
+            "allow_session": True,
+        }
+
         if notify_cb is not None:
-            from agent.redact import redact_sensitive_text
-            approval_data = {
-                "command": redact_sensitive_text(display_target),
-                "pattern_key": pattern_key,
-                "pattern_keys": [pattern_key],
-                "description": redact_sensitive_text(description),
-                "allow_permanent": True,
-                "allow_session": True,
-            }
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )
@@ -3622,17 +3648,14 @@ def _run_approval_gate(
         ):
             # No notify callback (e.g. API server without an attached chat):
             # queue for /approve /deny review, agent sees approval_required.
-            submit_pending(session_key, {
-                "command": display_target,
-                "pattern_key": pattern_key,
-                "description": description,
-            })
+            submit_pending(session_key, approval_data)
             return {
                 "approved": False,
                 "pattern_key": pattern_key,
+                **_approval_metadata(pattern_key, allow_permanent=True),
                 "status": "approval_required",
-                "command": display_target,
-                "description": description,
+                "command": approval_data["command"],
+                "description": approval_data["description"],
                 "message": (
                     f"⚠️ This action is potentially dangerous ({description}). "
                     f"Asking the user for approval.\n\n**Target:**\n```\n{display_target}\n```"
@@ -4772,7 +4795,7 @@ def check_all_command_guards(command: str, env_type: str,
             approval_data = {
                 "command": redact_sensitive_text(command),
                 "pattern_key": primary_key,
-                "pattern_keys": all_keys,
+                **_approval_metadata(primary_key, all_keys),
                 "description": redact_sensitive_text(combined_desc),
                 # Smart DENY overrides are one-operation decisions, so the UI
                 # must not offer a permanent scope.  Otherwise offer Always
@@ -4877,7 +4900,13 @@ def check_all_command_guards(command: str, env_type: str,
             pending_data = {
                 "command": _disp_command,
                 "pattern_key": primary_key,
-                "pattern_keys": all_keys,
+                **_approval_metadata(
+                    primary_key,
+                    all_keys,
+                    allow_permanent=(
+                        has_permanent_capable and not smart_denied_for_owner
+                    ),
+                ),
                 "description": _disp_combined_desc,
             }
             if smart_denied_for_owner:
@@ -4886,6 +4915,13 @@ def check_all_command_guards(command: str, env_type: str,
             result = {
                 "approved": False,
                 "pattern_key": primary_key,
+                **_approval_metadata(
+                    primary_key,
+                    all_keys,
+                    allow_permanent=(
+                        has_permanent_capable and not smart_denied_for_owner
+                    ),
+                ),
                 "status": "pending_approval",
                 "approval_pending": True,
                 "command": _disp_command,
@@ -5309,7 +5345,7 @@ def check_execute_code_guard(code: str, env_type: str,
         pending_data = {
             "command": display_command,
             "pattern_key": pattern_key,
-            "pattern_keys": [pattern_key],
+            **_approval_metadata(pattern_key, allow_permanent=True),
             "description": display_description,
         }
         if smart_denied_for_owner:
@@ -5318,6 +5354,7 @@ def check_execute_code_guard(code: str, env_type: str,
         result = {
             "approved": False,
             "pattern_key": pattern_key,
+            **_approval_metadata(pattern_key, allow_permanent=True),
             "status": "pending_approval",
             "approval_pending": True,
             "command": display_command,
@@ -5338,7 +5375,7 @@ def check_execute_code_guard(code: str, env_type: str,
     approval_data = {
         "command": display_command,
         "pattern_key": pattern_key,
-        "pattern_keys": [pattern_key],
+        **_approval_metadata(pattern_key, allow_permanent=True),
         "description": display_description,
         "allow_permanent": not smart_denied_for_owner,
         "allow_session": not smart_denied_for_owner,

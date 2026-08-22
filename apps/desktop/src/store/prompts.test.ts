@@ -111,7 +111,14 @@ describe('approval prompt store', () => {
         if (method === 'approval.pending') {
           return {
             approvals: [
-              { command: 'first', description: 'd1', request_id: 'r1' },
+              {
+                allowlist_key: 'plugin_rule:ext-nav',
+                command: 'first',
+                description: 'd1',
+                pattern_key: 'plugin_rule:ext-nav',
+                request_id: 'r1',
+                rule_key: 'ext-nav'
+              },
               { command: 'second', description: 'd2', request_id: 'r2' }
             ]
           }
@@ -124,10 +131,32 @@ describe('approval prompt store', () => {
     await replayPendingApproval(gateway, 's1')
 
     expect($approvalRequest.get()?.requestId).toBe('r1')
+    expect($approvalRequest.get()).toMatchObject({
+      allowlistKey: 'plugin_rule:ext-nav',
+      patternKey: 'plugin_rule:ext-nav',
+      ruleKey: 'ext-nav'
+    })
     expect(calls).toEqual([
       ['approval.pending', { session_id: 's1' }],
       ['approval.received', { request_id: 'r1', session_id: 's1' }]
     ])
+  })
+
+  it('carries approval rule metadata for desktop prompts', () => {
+    setApprovalRequest({
+      allowlistKey: 'plugin_rule:ext-nav',
+      command: '<browser_navigate> (plugin approval rule)',
+      description: 'external navigation',
+      patternKey: 'plugin_rule:ext-nav',
+      ruleKey: 'ext-nav',
+      sessionId: 's1'
+    })
+
+    expect($approvalRequest.get()).toMatchObject({
+      allowlistKey: 'plugin_rule:ext-nav',
+      patternKey: 'plugin_rule:ext-nav',
+      ruleKey: 'ext-nav'
+    })
   })
 })
 

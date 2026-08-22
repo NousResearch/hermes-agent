@@ -341,6 +341,37 @@ _SUMMARY_END_MARKER = (
     "respond to the message below, not the summary above ---"
 )
 
+# Epistemic-stance preservation rule appended to the summarizer preamble, plus
+# the summary section it feeds. Compression is built to shed words, and hedges
+# ("probably", "I suspect", "unconfirmed") are the first words shed — which
+# either hardens an unverified hypothesis into a fact the resumed agent then
+# acts on, or drops the hypothesis entirely and loses the investigative
+# thread. arXiv:2608.06953 found that writing stance as an explicit labelled
+# field (rather than an inline aside) raises stance retention through
+# compression by ~15 points across models; an A/B on real Hermes transcripts
+# (weak generator, judge-classified, 64 claims/arm) reproduced the direction:
+# uncertain-claim survival 53% -> 86% with this rule + section, with zero
+# hardening in either arm. These are prompt-template constants for the
+# summarizer call — the system prompt and cached prefix are untouched.
+_EPISTEMIC_STANCE_RULE = (
+    "EPISTEMIC STATUS PRESERVATION: The source turns may contain claims whose "
+    "truth status is uncertain — suspicions, working hypotheses, unverified "
+    "inferences. NEVER restate an uncertain claim as an established fact. "
+    "Record each one as an explicit labelled entry of the form "
+    '"UNVERIFIED: <claim> — <basis>" under the '
+    "'## Unverified / Working Hypotheses' section. A qualifier like "
+    "'probably', 'I suspect', or 'unconfirmed' in the source is load-bearing "
+    "information: preserving the claim while dropping its qualifier is a "
+    "summarization ERROR."
+)
+
+_UNVERIFIED_HYPOTHESES_SECTION = """
+
+## Unverified / Working Hypotheses
+[Every claim from the source whose truth status was uncertain, each written as
+"UNVERIFIED: <claim> — <basis/evidence so far>". Do not promote these to facts.
+If none, write "None."]"""
+
 # When the summary must be merged into the first tail message (the alternation
 # corner case where a standalone summary role would collide with both head and
 # tail), the tail message's own prior content is preserved BEFORE the summary,
@@ -4674,7 +4705,8 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
             "NEVER include API keys, tokens, passwords, secrets, credentials, "
             "or connection strings in the summary — replace any that appear "
             "with [REDACTED]. Note that credentials were present, but do not "
-            "preserve their values."
+            "preserve their values. "
+            + _EPISTEMIC_STANCE_RULE
         )
 
         # Temporal anchoring directive. Rewrites relative / still-pending-sounding
@@ -4741,6 +4773,7 @@ the user's correction and record what changed as a result.]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
+{_UNVERIFIED_HYPOTHESES_SECTION}
 
 {_PRUNED_SKILLS_SECTION_HEADING}
 [If any [SKILL_PRUNED: ...reload with skill_view(...)] markers appear in the input,

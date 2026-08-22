@@ -10,10 +10,12 @@ Covers the three Phase 0 deliverables:
 """
 import pytest
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 import yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_state import SessionDB
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore, build_session_key
 
@@ -172,3 +174,171 @@ class TestSessionStoreUnmultiplexedRecovery:
         assert recovered.session_id == "sess-coder"
         assert recovered.session_key == "agent:main:telegram:dm:99"
         assert store._db.reopened == ["sess-coder"]
+
+
+class TestSessionStoreMultiplexedRecovery:
+    """With multiplex_profiles on, peer fallback must not alias profiles."""
+
+    def _store_with_row(self, tmp_path, row):
+        config = GatewayConfig(multiplex_profiles=True)
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = _RecoveringDB(row)
+        store._loaded = True
+        return store
+
+    def test_different_profile_session_key_is_not_recovered(self, tmp_path):
+        """A row stored for agent:percy must not be reused under agent:claude."""
+        row = {
+            "id": "sess-percy",
+            "started_at": 1700000000,
+            "session_key": "agent:percy:mattermost:channel:ch1:user1",
+        }
+        store = self._store_with_row(tmp_path, row)
+        source = _src(
+            platform=Platform.MATTERMOST,
+            chat_id="ch1",
+            chat_type="channel",
+            user_id="user1",
+            profile="claude",
+        )
+
+        recovered = store._recover_session_from_db(
+            session_key="agent:claude:mattermost:channel:ch1:user1",
+            source=source,
+            now=datetime.fromtimestamp(1700000001),
+        )
+
+        assert recovered is None
+        assert store._db.reopened == []
+
+    def test_matching_profile_session_key_is_recovered(self, tmp_path):
+        row = {
+            "id": "sess-claude",
+            "started_at": 1700000000,
+            "session_key": "agent:claude:mattermost:channel:ch1:user1",
+        }
+        store = self._store_with_row(tmp_path, row)
+        source = _src(
+            platform=Platform.MATTERMOST,
+            chat_id="ch1",
+            chat_type="channel",
+            user_id="user1",
+            profile="claude",
+        )
+
+        recovered = store._recover_session_from_db(
+            session_key="agent:claude:mattermost:channel:ch1:user1",
+            source=source,
+            now=datetime.fromtimestamp(1700000001),
+        )
+
+        assert recovered is not None
+        assert recovered.session_id == "sess-claude"
+        assert recovered.session_key == "agent:claude:mattermost:channel:ch1:user1"
+        assert store._db.reopened == ["sess-claude"]
+
+    def test_null_session_key_legacy_row_still_recovers(self, tmp_path):
+        """Pre-session-key rows with no key survive the multiplex guard."""
+        row = {
+            "id": "sess-legacy",
+            "started_at": 1700000000,
+            "session_key": None,
+        }
+        store = self._store_with_row(tmp_path, row)
+        source = _src(
+            platform=Platform.MATTERMOST,
+            chat_id="ch1",
+            chat_type="channel",
+            user_id="user1",
+            profile="claude",
+        )
+
+        recovered = store._recover_session_from_db(
+            session_key="agent:claude:mattermost:channel:ch1:user1",
+            source=source,
+            now=datetime.fromtimestamp(1700000001),
+        )
+
+        assert recovered is not None
+        assert recovered.session_id == "sess-legacy"
+        assert recovered.session_key == "agent:claude:mattermost:channel:ch1:user1"
+        assert store._db.reopened == ["sess-legacy"]
+
+    def test_query_recoverable_session_also_rejects_cross_profile(self, tmp_path):
+        """The no-lock helper used by get_or_create_session must apply the same guard."""
+        row = {
+            "id": "sess-percy",
+            "started_at": 1700000000,
+            "session_key": "agent:percy:mattermost:channel:ch1:user1",
+        }
+        store = self._store_with_row(tmp_path, row)
+        source = _src(
+            platform=Platform.MATTERMOST,
+            chat_id="ch1",
+            chat_type="channel",
+            user_id="user1",
+            profile="claude",
+        )
+
+        recovered = store._query_recoverable_session(
+            session_key="agent:claude:mattermost:channel:ch1:user1",
+            source=source,
+            now=datetime.fromtimestamp(1700000001),
+        )
+
+        assert recovered is None
+        assert store._db.reopened == []
+
+
+class TestSessionStoreMultiplexedIsolation:
+    """Real DB integration: per-profile session keys stay distinct end-to-end."""
+
+    def _store(self, tmp_path):
+        config = GatewayConfig(multiplex_profiles=True)
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = SessionDB(Path(tmp_path) / "state.db")
+        store._ensure_loaded()
+        return store
+
+    def test_two_profiles_same_channel_get_distinct_sessions(self, tmp_path):
+        """The bug #64934 multiplex variant: same chat/user must not collapse."""
+        store = self._store(tmp_path)
+        s_percy = SessionSource(
+            platform=Platform.MATTERMOST,
+            chat_id="ch1",
+            chat_type="channel",
+            user_id="user1",
+            profile="percy",
+        )
+        s_claude = SessionSource(
+            platform=Platform.MATTERMOST,
+            chat_id="ch1",
+            chat_type="channel",
+            user_id="user1",
+            profile="claude",
+        )
+
+        e_percy = store.get_or_create_session(s_percy)
+        e_claude = store.get_or_create_session(s_claude)
+
+        assert e_percy.session_key == "agent:percy:mattermost:channel:ch1:user1"
+        assert e_claude.session_key == "agent:claude:mattermost:channel:ch1:user1"
+        assert e_percy.session_id != e_claude.session_id
+
+        # Restart: new store loads the same durable index.
+        store2 = self._store(tmp_path)
+        e2_percy = store2.get_or_create_session(s_percy)
+        e2_claude = store2.get_or_create_session(s_claude)
+        assert e2_percy.session_id == e_percy.session_id
+        assert e2_claude.session_id == e_claude.session_id
+
+        # DB rows themselves are keyed distinctly.
+        rows = [
+            store._db.get_session(e_percy.session_id),
+            store._db.get_session(e_claude.session_id),
+        ]
+        assert {r["session_key"] for r in rows} == {
+            e_percy.session_key,
+            e_claude.session_key,
+        }

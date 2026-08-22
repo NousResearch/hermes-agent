@@ -1912,13 +1912,32 @@ class SessionStore:
         requested_session_key: str,
         recovered: Dict[str, Any],
     ) -> bool:
-        """Prevent non-multiplexed gateways from reviving another profile's row."""
-        if getattr(self.config, "multiplex_profiles", False):
+        """Prevent gateways from reviving a row that belongs to another routing key.
+
+        When ``multiplex_profiles`` is enabled, each profile's namespace is
+        encoded in the session key (``agent:<profile>:<platform>:...``). The
+        durable DB peer fallback matches on platform/chat/user/thread, so a row
+        created by one profile can be incorrectly resurrected under another
+        profile's session key, aliasing two routing keys to one session_id.
+        In multiplex mode we therefore require the recovered row's stored key
+        to either match exactly or be absent (legacy pre-key row).
+
+        When multiplexing is off, the legacy guard remains: a non-multiplexed
+        gateway may only revive rows whose profile namespace matches the active
+        profile, so a named-profile gateway does not accidentally reuse a row
+        from a different profile's history.
+        """
+        recovered_key = str(recovered.get("session_key") or "")
+        if not recovered_key:
+            # Pre-session-key legacy row; no key to conflict on.
+            return True
+        if recovered_key == requested_session_key:
             return True
 
-        recovered_key = str(recovered.get("session_key") or "")
-        if not recovered_key or recovered_key == requested_session_key:
-            return True
+        if getattr(self.config, "multiplex_profiles", False):
+            # Different session_key in multiplex mode = different profile or
+            # different routing peer; never alias across keys.
+            return False
 
         recovered_profile = self._profile_from_session_key(recovered_key)
         if recovered_profile is None:
@@ -2129,9 +2148,8 @@ class SessionStore:
             recovered=recovered,
         ):
             logger.warning(
-                "Gateway session DB recovery ignored %s for %s because "
-                "multiplex_profiles is disabled and the row belongs to a "
-                "different profile",
+                "Gateway session DB recovery ignored %s for %s: recovered "
+                "session_key does not belong to this routing key",
                 recovered.get("session_key"),
                 session_key,
             )
@@ -2206,9 +2224,8 @@ class SessionStore:
             recovered=recovered,
         ):
             logger.warning(
-                "Gateway session DB recovery ignored %s for %s because "
-                "multiplex_profiles is disabled and the row belongs to a "
-                "different profile",
+                "Gateway session DB recovery ignored %s for %s: recovered "
+                "session_key does not belong to this routing key",
                 recovered.get("session_key"),
                 session_key,
             )

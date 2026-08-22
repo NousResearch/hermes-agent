@@ -530,6 +530,10 @@ export const zh: Translations = {
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+      effectsTitle: '动态与特效',
+      effectsDesc: '精简模式会保留状态指示，同时停止持续的闪烁、渐变和活动动画，以节省 GPU 资源。',
+      effectsFull: '完整',
+      effectsReduced: '精简',
       sessionDensityTitle: '会话列表密度',
       sessionDensityDesc: '选择侧边栏会话标题下方显示的信息量。',
       sessionDensityCompact: '紧凑',

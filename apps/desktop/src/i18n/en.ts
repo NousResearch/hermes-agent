@@ -543,6 +543,11 @@ export const en: Translations = {
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
+      effectsTitle: 'Motion and Effects',
+      effectsDesc:
+        'Reduced keeps status indicators visible but stops continuous shimmer, gradient, and activity animations to preserve GPU capacity.',
+      effectsFull: 'Full',
+      effectsReduced: 'Reduced',
       sessionDensityTitle: 'Session List Density',
       sessionDensityDesc: 'Choose how much context appears beneath session titles in the sidebar.',
       sessionDensityCompact: 'Compact',

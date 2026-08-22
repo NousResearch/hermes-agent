@@ -439,6 +439,11 @@ export const ar = defineLocale({
       colorModeDesc: 'اختر الوضع الفاتح أو الداكن أو اتبع النظام.',
       toolViewTitle: 'عرض الأدوات',
       toolViewDesc: 'تحكم في كيفية عرض نشاط الأدوات داخل المحادثة.',
+      effectsTitle: 'الحركة والتأثيرات',
+      effectsDesc:
+        'يبقي الوضع المخفّض مؤشرات الحالة ظاهرة ويوقف تأثيرات اللمعان والتدرج والحركة المستمرة للحفاظ على موارد وحدة معالجة الرسومات.',
+      effectsFull: 'كاملة',
+      effectsReduced: 'مخفّضة',
       reasoningCollapsedTitle: 'طي التفكير افتراضيًا',
       reasoningCollapsedDesc: 'أبقِ التفكير المتدفق متاحًا دون توسيعه حتى تفتحه.',
       translucencyTitle: 'شفافية النافذة',

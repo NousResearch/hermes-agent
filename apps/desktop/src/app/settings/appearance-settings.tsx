@@ -20,6 +20,7 @@ import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+import { $reducedEffects, setReducedEffects } from '@/store/reduced-effects'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
@@ -354,6 +355,7 @@ export function AppearanceSettings() {
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const reactionsEnabled = useStore($reactionsEnabled)
+  const reducedEffects = useStore($reducedEffects)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
   const installs = useStore($marketplaceInstalls)
@@ -575,6 +577,24 @@ export function AppearanceSettings() {
           />
 
           <TerminalFontSetting />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setReducedEffects(id === 'reduced')
+                }}
+                options={[
+                  { id: 'full', label: a.effectsFull },
+                  { id: 'reduced', label: a.effectsReduced }
+                ]}
+                value={reducedEffects ? 'reduced' : 'full'}
+              />
+            }
+            description={a.effectsDesc}
+            title={a.effectsTitle}
+          />
 
           <ListRow
             action={

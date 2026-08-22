@@ -356,6 +356,10 @@ export const zhHant = defineLocale({
       uiScaleTitle: '介面縮放',
       uiScaleDesc: (percent: number) =>
         `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
+      effectsTitle: '動態與特效',
+      effectsDesc: '精簡模式會保留狀態指示，同時停止持續的閃爍、漸層與活動動畫，以節省 GPU 資源。',
+      effectsFull: '完整',
+      effectsReduced: '精簡',
       sessionDensityTitle: '工作階段列表密度',
       sessionDensityDesc: '選擇側邊欄工作階段標題下方顯示的資訊量。',
       sessionDensityCompact: '緊湊',

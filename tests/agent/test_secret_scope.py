@@ -347,3 +347,45 @@ class TestRelayRoutingStampGlobals:
             ss.set_multiplex_active(False)
         for name in self.AUTH_VARS:
             assert not ss._is_global_env(name), name
+
+
+class TestUnscopedLazyDotenvOverlay:
+    """Startup race (#92124): an unscoped miss lazily reads <home>/.env.
+
+    The first auxiliary call can run before any scope is installed; keys that
+    live only in <home>/.env must still resolve so that call succeeds instead
+    of failing closed. Multiplex never reaches this path (it raises earlier).
+    """
+
+    def test_unscoped_miss_reads_home_dotenv(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / ".env").write_text("HERMES_LAZY_TEST_KEY=from-dotenv\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("HERMES_LAZY_TEST_KEY", raising=False)
+        assert ss.get_secret("HERMES_LAZY_TEST_KEY") == "from-dotenv"
+
+    def test_environ_wins_over_lazy_dotenv(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / ".env").write_text("HERMES_LAZY_PREC_KEY=from-dotenv\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_LAZY_PREC_KEY", "from-environ")
+        assert ss.get_secret("HERMES_LAZY_PREC_KEY") == "from-environ"
+
+    def test_missing_everywhere_still_returns_default(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("HERMES_LAZY_ABSENT_KEY", raising=False)
+        assert ss.get_secret("HERMES_LAZY_ABSENT_KEY") is None
+
+    def test_multiplex_unscoped_never_touches_dotenv(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / ".env").write_text("HERMES_LAZY_MP_KEY=from-dotenv\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("HERMES_LAZY_MP_KEY", raising=False)
+        ss.set_multiplex_active(True)
+        with pytest.raises(ss.UnscopedSecretError):
+            ss.get_secret("HERMES_LAZY_MP_KEY")

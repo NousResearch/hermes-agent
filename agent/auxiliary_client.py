@@ -6645,6 +6645,19 @@ def resolve_provider_client(
                 custom_key = build_command_token_provider(
                     custom_key_cmd, custom_entry.get("name") or provider
                 ) or custom_key
+            if not custom_key and custom_key_env:
+                # Fail closed (#92124): the provider entry explicitly declares a
+                # key_env, so an unauthenticated request is never acceptable.
+                # During startup/resume the profile secret scope's .env overlay
+                # may not be installed yet and resolution can transiently miss;
+                # sending the placeholder credential then 401s far from the
+                # cause (or silently degrades via a fallback chain).
+                raise ValueError(
+                    f"custom provider {custom_entry.get('name') or provider!r} "
+                    f"declares key_env {custom_key_env!r} but no value could be "
+                    f"resolved (the profile secret scope is not installed yet "
+                    f"and it is absent from the process environment)"
+                )
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(

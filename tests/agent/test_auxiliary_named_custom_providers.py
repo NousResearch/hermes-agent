@@ -408,3 +408,60 @@ class TestResolveProviderClientMainRuntimeCustom:
         assert model == "explicit-model"
         assert "explicit.example.com" in str(client.base_url)
         assert client.api_key == "sk-explicit"
+
+
+class TestNamedCustomKeyEnvFailClosed:
+    """A provider that declares key_env must never fire unauthenticated (#92124).
+
+    During startup/resume the profile secret scope's .env overlay may not be
+    installed yet; resolution then misses and the old code silently sent the
+    ``no-key-required`` placeholder — an unauthenticated request that 401s far
+    from the cause. Declared key_env + empty resolution now raises instead.
+    """
+
+    def test_declared_key_env_unresolvable_raises(self, tmp_path, monkeypatch):
+        _write_config(tmp_path, {
+            "model": {"default": "test"},
+            "custom_providers": [
+                {
+                    "name": "gateway",
+                    "base_url": "http://gateway.local/v1",
+                    "key_env": "HERMES_GATEWAY_TEST_KEY",
+                },
+            ],
+        })
+        monkeypatch.delenv("HERMES_GATEWAY_TEST_KEY", raising=False)
+        from agent.auxiliary_client import resolve_provider_client
+        with pytest.raises(ValueError, match="HERMES_GATEWAY_TEST_KEY"):
+            resolve_provider_client("gateway", "test")
+
+    def test_declared_key_env_resolvable_from_env(self, tmp_path, monkeypatch):
+        _write_config(tmp_path, {
+            "model": {"default": "test"},
+            "custom_providers": [
+                {
+                    "name": "gateway",
+                    "base_url": "http://gateway.local/v1",
+                    "key_env": "HERMES_GATEWAY_OK_KEY",
+                },
+            ],
+        })
+        resolved_value = "resolved-" + "auxiliary-test-key"
+        monkeypatch.setenv("HERMES_GATEWAY_OK_KEY", resolved_value)
+        from agent.auxiliary_client import resolve_provider_client
+        client, model = resolve_provider_client("gateway", "test")
+        assert client is not None
+        assert client.api_key == resolved_value
+
+    def test_keyless_provider_keeps_placeholder(self, tmp_path):
+        """No key declaration at all (local server) keeps the placeholder path."""
+        _write_config(tmp_path, {
+            "model": {"default": "test"},
+            "custom_providers": [
+                {"name": "local", "base_url": "http://localhost:8080/v1"},
+            ],
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        client, model = resolve_provider_client("local", "test")
+        assert client is not None
+        assert client.api_key == "no-key-required"

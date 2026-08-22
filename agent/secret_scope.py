@@ -200,6 +200,22 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
         )
 
     val = os.environ.get(name)
+    if val is not None:
+        return val
+    # Startup race (#92124): the first auxiliary call can run before any
+    # secret scope is installed. Non-multiplex deployments often keep keys
+    # ONLY in <hermes home>/.env (e.g. ~/.hermes/.env — NOT $HOME/.env) —
+    # check the file lazily (one read per miss, never mutating os.environ)
+    # so that first call succeeds. Multiplex never reaches here: it raised
+    # above. Env wins over the file, matching the overlay precedence
+    # everywhere else.
+    try:
+        from hermes_constants import get_hermes_home
+
+        overlay = load_env_file(get_hermes_home() / ".env")
+    except Exception:
+        overlay = {}
+    val = overlay.get(name)
     return val if val is not None else default
 
 

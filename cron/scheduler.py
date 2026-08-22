@@ -4993,6 +4993,11 @@ def run_job(
                 "new_hash": _mon.new_hash,
                 "output": _mon.output,
             }
+            # The defer list is the only channel that crosses the process
+            # boundary; the job-dict key is a same-process fallback for
+            # callers that don't pass `defer_monitor_commit`, popped by the
+            # decision point (run_one_job) in the same execution. Never
+            # persist this key - it is scratch state for one run.
             job["_monitor_pending_commit"] = pending_commit
             if defer_monitor_commit is not None:
                 defer_monitor_commit.append(pending_commit)
@@ -6693,7 +6698,7 @@ def _run_one_job_body(
                 and job.get("monitor_commit_policy") == "after_delivery"
                 and bool(pending_monitor_payload)
                 and (
-                    deliver_content.strip().upper() == MONITOR_RETRY_MARKER
+                    deliver_content.strip() == MONITOR_RETRY_MARKER
                     or (
                         pending_requires_delivery
                         and (

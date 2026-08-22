@@ -260,6 +260,11 @@ def commit_monitor_state(job_id: str, new_hash: str, output: str) -> None:
             snapshot_path.unlink(missing_ok=True)
 
     try:
+        # update_job rewrites the job dict and persists jobs.json in one
+        # step; hash and last_changed_at are therefore applied together or
+        # not at all (a failed update_job raises before any partial state
+        # survives). The rollback below only has to cover the snapshot
+        # file, which is why it does not restore a timestamp.
         updated = update_job(
             job_id,
             {

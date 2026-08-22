@@ -810,7 +810,10 @@ class TestSendEmailStandalone(unittest.TestCase):
         """_send_email should use verified STARTTLS when sending."""
         import asyncio
         import ssl
-        from plugins.platforms.email.adapter import _standalone_send as _email_send
+        from plugins.platforms.email.adapter import (
+            SMTP_CONNECT_TIMEOUT,
+            _standalone_send as _email_send,
+        )
         from types import SimpleNamespace
         async def _send_email(extra, chat_id, message):
             return await _email_send(SimpleNamespace(token=None, api_key=None, extra=extra or {}), chat_id, message)
@@ -825,6 +828,11 @@ class TestSendEmailStandalone(unittest.TestCase):
 
             self.assertTrue(result["success"])
             self.assertEqual(result["platform"], "email")
+            mock_smtp.assert_called_once_with(
+                "smtp.test.com",
+                587,
+                timeout=SMTP_CONNECT_TIMEOUT,
+            )
             _, kwargs = mock_server.starttls.call_args
             self.assertIsInstance(kwargs["context"], ssl.SSLContext)
             send_call = mock_server.send_message.call_args[0][0]
@@ -832,6 +840,47 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertIn("Date", send_call)
             self.assertEqual(send_call["To"], "user@test.com")
             self.assertEqual(send_call["From"], "hermes@test.com")
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    })
+    def test_send_email_tool_timeout(self):
+        """SMTP timeout should return a specific endpoint-aware error."""
+        import asyncio
+        from plugins.platforms.email.adapter import (
+            SMTP_CONNECT_TIMEOUT,
+            _standalone_send as _email_send,
+        )
+        from types import SimpleNamespace
+
+        with patch("smtplib.SMTP", side_effect=TimeoutError("timed out")):
+            result = asyncio.run(
+                _email_send(
+                    SimpleNamespace(
+                        token=None,
+                        api_key=None,
+                        extra={
+                            "address": "hermes@test.com",
+                            "smtp_host": "smtp.test.com",
+                        },
+                    ),
+                    "user@test.com",
+                    "Hello",
+                )
+            )
+
+        self.assertEqual(
+            result,
+            {
+                "error": (
+                    f"Email send timed out after {SMTP_CONNECT_TIMEOUT}s: "
+                    "smtp.test.com:587"
+                )
+            },
+        )
 
 
 class TestSmtpConnectionCleanup(unittest.TestCase):

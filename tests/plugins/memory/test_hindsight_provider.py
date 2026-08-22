@@ -463,6 +463,30 @@ class TestToolHandlers:
         assert "Memory 2" in result["result"]
 
 
+    def test_recall_applies_optional_decay_filter(self, provider):
+        visible = SimpleNamespace(text="visible memory")
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[visible, SimpleNamespace(text="decayed memory")]
+        )
+        provider._decay_store = MagicMock()
+        provider._decay_store.filter_results.return_value = [visible]
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "memory"}
+        ))
+
+        assert result["result"] == "1. visible memory"
+        provider._decay_store.filter_results.assert_called_once()
+
+
+    def test_decay_store_is_profile_scoped(self, provider_with_config, tmp_path):
+        provider = provider_with_config(decay_enabled=True)
+
+        assert provider._decay_store is not None
+        assert provider._decay_store.path == tmp_path / "hindsight" / "decay.sqlite3"
+        assert provider._decay_store.bank_id == "test-bank"
+
+
     def test_reflect_success(self, provider):
         result = json.loads(provider.handle_tool_call(
             "hindsight_reflect", {"query": "summarize"}
@@ -1244,6 +1268,9 @@ class TestConfigSchema:
             "retain_every_n_turns", "retain_async", "retain_context",
             "recall_max_tokens", "recall_max_input_chars",
             "recall_prompt_preamble",
+            "decay_enabled", "decay_rate_per_day", "decay_access_window_days",
+            "decay_initial_importance", "decay_min_importance",
+            "decay_cleanup_age_days", "decay_exempt_tags",
         }
         assert expected_keys.issubset(keys), f"Missing: {expected_keys - keys}"
 

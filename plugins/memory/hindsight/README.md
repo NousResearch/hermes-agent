@@ -113,6 +113,34 @@ Config file: `~/.hermes/hindsight/config.json`
 - `context` — automatic injection only, no tools exposed
 - `tools` — tools only, no automatic injection
 
+### Optional LivingMemory-style decay
+
+Hindsight can optionally use a small, profile-scoped SQLite ledger to add
+importance decay and access-based preservation to recall. This is a soft
+recall layer: it filters sufficiently old, low-importance results from Hermes'
+recall context, but never edits or deletes the durable Hindsight memories.
+
+Enable it in `hindsight/config.json`:
+
+```json
+{
+  "decay_enabled": true,
+  "decay_rate_per_day": 0.01,
+  "decay_access_window_days": 30,
+  "decay_initial_importance": 0.5,
+  "decay_min_importance": 0.2,
+  "decay_cleanup_age_days": 60,
+  "decay_exempt_tags": "permanent,memory:permanent,hindsight:permanent"
+}
+```
+
+The ledger is stored at `<HERMES_HOME>/hindsight/decay.sqlite3`, so Hermes
+profiles remain isolated. Results tagged with an exempt tag, or with metadata
+`source=permanent`, bypass decay. The policy applies to automatic recall and
+the `hindsight_recall` tool; `hindsight_reflect` remains Hindsight-native
+because its synthesized response does not expose item-level candidates to
+Hermes. The feature is disabled by default for backward compatibility.
+
 ### Local Embedded LLM
 
 | Key | Default | Description |

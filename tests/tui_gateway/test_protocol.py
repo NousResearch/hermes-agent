@@ -1,5 +1,6 @@
 """Tests for tui_gateway JSON-RPC protocol plumbing."""
 
+import inspect
 import io
 import json
 import sys
@@ -1214,3 +1215,115 @@ def test_unregister_live_transport_stops_delivery(capture):
     assert a.frames == []
     # No live transports left → fell back to stdio.
     assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
+
+
+def _blocking_session():
+    return {
+        "agent": types.SimpleNamespace(),
+        "cols": 80,
+        "created_at": 1.0,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": True,
+        "session_key": "stored-session",
+    }
+
+
+@pytest.mark.parametrize(
+    ("event", "key", "prompt_payload"),
+    [
+        (
+            "sudo.request",
+            "pending_sudo",
+            {"request_id": "rid-sudo"},
+        ),
+        (
+            "secret.request",
+            "pending_secret",
+            {
+                "env_var": "OPENAI_API_KEY",
+                "prompt": "Paste your key",
+                "request_id": "rid-secret",
+            },
+        ),
+    ],
+)
+def test_live_session_payload_replays_sudo_and_secret(server, event, key, prompt_payload):
+    """sudo and secret park the agent thread exactly as clarify does.
+
+    Only clarify and approval were replayed, so a client that reattached after
+    `sudo.request` / `secret.request` was emitted had nothing to render and the
+    run stalled until the prompt timed out.
+    """
+    session = _blocking_session()
+    rid = prompt_payload["request_id"]
+    with server._prompt_lock:
+        server._pending[rid] = ("runtime-session", threading.Event())
+        server._pending_prompt_payloads[rid] = (event, dict(prompt_payload))
+
+    try:
+        payload = server._live_session_payload("runtime-session", session)
+        other = server._live_session_payload("other-session", session)
+    finally:
+        with server._prompt_lock:
+            server._pending.pop(rid, None)
+            server._pending_prompt_payloads.pop(rid, None)
+
+    assert payload[key] == prompt_payload
+    # Snapshot, not a live reference into the registry.
+    assert payload[key] is not prompt_payload
+    # Scoped to the owning runtime session only.
+    assert key not in other
+
+
+def test_terminal_read_is_not_replayed(server):
+    """`terminal.read` rides the same registry but the Ink TUI cannot answer it.
+
+    Replaying it would put a dead overlay in front of the user, so only the
+    three prompt types with an Ink input surface are returned.
+    """
+    session = _blocking_session()
+    with server._prompt_lock:
+        server._pending["rid-term"] = ("runtime-session", threading.Event())
+        server._pending_prompt_payloads["rid-term"] = (
+            "terminal.read.request",
+            {"request_id": "rid-term", "start": 0},
+        )
+
+    try:
+        payload = server._live_session_payload("runtime-session", session)
+    finally:
+        with server._prompt_lock:
+            server._pending.pop("rid-term", None)
+            server._pending_prompt_payloads.pop("rid-term", None)
+
+    assert "pending_clarify" not in payload
+    assert "pending_sudo" not in payload
+    assert "pending_secret" not in payload
+    # It still counts as blocking: the session really is waiting on input.
+    assert payload["status"] == "waiting"
+
+
+def test_session_pending_kind_reads_both_maps_under_the_lock(server):
+    """The kind lookup must not observe a half-popped prompt.
+
+    `_block` writes `_pending` and `_pending_prompt_payloads` together under
+    `_prompt_lock` and pops them together the same way. Reading them without
+    the lock can catch `_pending` still holding a rid whose payload is already
+    gone, which fell through to the `input.request` default and reported a
+    bogus `waiting` status for an answered prompt.
+    """
+    source = inspect.getsource(server._session_pending_kind)
+    assert "_prompt_lock" in source, source
+
+    # And it still reports the real kind while a prompt is genuinely pending.
+    with server._prompt_lock:
+        server._pending["rid-kind"] = ("runtime-session", threading.Event())
+        server._pending_prompt_payloads["rid-kind"] = ("secret.request", {})
+    try:
+        assert server._session_pending_kind("runtime-session") == "secret"
+        assert server._session_pending_kind("other-session") == ""
+    finally:
+        with server._prompt_lock:
+            server._pending.pop("rid-kind", None)
+            server._pending_prompt_payloads.pop("rid-kind", None)

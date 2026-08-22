@@ -181,11 +181,36 @@ export interface SessionCreateResponse {
   session_id: string
 }
 
+/**
+ * Prompts still blocking a live session, replayed on resume/activate so a
+ * client that reattached after the `*.request` event was emitted can still
+ * answer them. Field names and shapes match the live events exactly — the
+ * gateway sends the same payload it sent the first time.
+ */
+export interface SessionPendingClarify {
+  choices?: null | string[]
+  question?: string
+  request_id: string
+}
+
+export interface SessionPendingSudo {
+  request_id: string
+}
+
+export interface SessionPendingSecret {
+  env_var?: string
+  prompt?: string
+  request_id: string
+}
+
 export interface SessionResumeResponse {
   inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
   messages: GatewayTranscriptMessage[]
+  pending_clarify?: null | SessionPendingClarify
+  pending_secret?: null | SessionPendingSecret
+  pending_sudo?: null | SessionPendingSudo
   resumed?: string
   running?: boolean
   session_id: string
@@ -223,6 +248,9 @@ export interface SessionActivateResponse {
   info?: SessionInfo
   message_count?: number
   messages: GatewayTranscriptMessage[]
+  pending_clarify?: null | SessionPendingClarify
+  pending_secret?: null | SessionPendingSecret
+  pending_sudo?: null | SessionPendingSudo
   running?: boolean
   session_id: string
   session_key?: string

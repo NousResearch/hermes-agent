@@ -1956,6 +1956,27 @@ def _approval_request_payload(data: dict | None) -> dict:
     return payload
 
 
+def _pending_block_request_payload(sid: str, event: str) -> dict | None:
+    """Read the `_block()`-registered prompt of *event* blocking a session.
+
+    `_pending` and `_pending_prompt_payloads` are written and popped together
+    under `_prompt_lock` (see `_block`), so both reads happen inside the lock:
+    a prompt answered between them would otherwise yield a payload for a
+    request that no longer exists.
+
+    Read-only snapshot. The registry stays authoritative and the matching
+    `*.respond` with the embedded request_id is what actually resolves it.
+    """
+    with _prompt_lock:
+        for rid, (owner_sid, _ev) in _pending.items():
+            if owner_sid != sid:
+                continue
+            found, prompt_payload = _pending_prompt_payloads.get(rid, ("", {}))
+            if found == event:
+                return dict(prompt_payload)
+    return None
+
+
 def _pending_clarify_request_payload(sid: str) -> dict | None:
     """Read the clarify prompt still blocking a session, if there is one.
 
@@ -1981,6 +2002,27 @@ def _pending_clarify_request_payload(sid: str) -> dict | None:
                     snapshot["answers"] = dict(batch["answers"])
                 return snapshot
     return None
+
+
+def _pending_sudo_request_payload(sid: str) -> dict | None:
+    """Read the sudo-password prompt still blocking a session, if any.
+
+    Same `_block()` registry and the same reconnect hole as clarify: the agent
+    thread parks on the Event, so a client that reattaches after
+    `sudo.request` was emitted has nothing to render and the run stalls until
+    the 120s timeout. `sudo.respond` with the request_id resolves it.
+    """
+    return _pending_block_request_payload(sid, "sudo.request")
+
+
+def _pending_secret_request_payload(sid: str) -> dict | None:
+    """Read the secret prompt still blocking a session, if any.
+
+    As with clarify and sudo, this rides `_block()`'s registry, so the payload
+    (env_var / prompt) has to be replayed for a reattaching client to answer
+    via `secret.respond`.
+    """
+    return _pending_block_request_payload(sid, "secret.request")
 
 
 def _pending_approval_request_payload(session_key: str) -> dict | None:
@@ -8785,11 +8827,16 @@ def _schedule_resume_hydration(
 
 
 def _session_pending_kind(sid: str) -> str:
-    for rid, (owner_sid, _ev) in list(_pending.items()):
-        if owner_sid != sid:
-            continue
-        event, _payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
-        return str(event).removesuffix(".request")
+    # Both maps are written and popped together under _prompt_lock (see
+    # _block), so reading them unlocked can observe _pending still holding a
+    # rid whose payload has already been popped — reporting a bogus "input"
+    # kind, and with it a bogus "waiting" status, for an answered prompt.
+    with _prompt_lock:
+        for rid, (owner_sid, _ev) in _pending.items():
+            if owner_sid != sid:
+                continue
+            event, _payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
+            return str(event).removesuffix(".request")
     return ""
 
 
@@ -9034,6 +9081,10 @@ def _live_session_payload(
         payload["pending_approval"] = approval
     if clarify := _pending_clarify_request_payload(sid):
         payload["pending_clarify"] = clarify
+    if sudo := _pending_sudo_request_payload(sid):
+        payload["pending_sudo"] = sudo
+    if secret := _pending_secret_request_payload(sid):
+        payload["pending_secret"] = secret
     return payload
 
 

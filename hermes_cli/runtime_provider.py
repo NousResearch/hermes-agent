@@ -513,6 +513,34 @@ def _resolve_runtime_from_pool_entry(
                 cfg_base_url = ""
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
     elif provider == "openrouter":
+        # An explicitly configured regional endpoint (e.g.
+        # eu.openrouter.ai) must survive credential-pool resolution: the
+        # pool supplies AUTHENTICATION, not routing. Only apply the
+        # config override when the pool entry itself carries no
+        # endpoint-specific base_url (i.e. it fell back to the default
+        # openrouter.ai), and only when the configured URL stays on
+        # OpenRouter's own domain — the pooled OpenRouter credential
+        # must not follow the user to an unrelated host (#91591).
+        cfg_provider_or = str(model_cfg.get("provider") or "").strip().lower()
+        if cfg_provider_or == "openrouter":
+            cfg_base_url_or = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            entry_url_is_default = (
+                not base_url or base_url.rstrip("/") == OPENROUTER_BASE_URL.rstrip("/")
+            )
+            # https-only: the pooled OpenRouter credential rides this URL,
+            # so an explicit plaintext-http override is never honored.
+            # Bare hosts (no scheme) stay honored — every client treats a
+            # scheme-less base_url as https.
+            cfg_scheme_or = (
+                urlparse(cfg_base_url_or).scheme.lower() if "://" in cfg_base_url_or else ""
+            )
+            if (
+                cfg_base_url_or
+                and cfg_scheme_or in {"", "https"}
+                and entry_url_is_default
+                and base_url_host_matches(cfg_base_url_or, "openrouter.ai")
+            ):
+                base_url = cfg_base_url_or
         base_url = base_url or OPENROUTER_BASE_URL
     elif provider == "xai":
         api_mode = "codex_responses"

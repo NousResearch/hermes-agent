@@ -439,6 +439,194 @@ def test_resolve_runtime_provider_auto_uses_openrouter_pool(monkeypatch):
     assert resolved.get("credential_pool") is not None
 
 
+def test_resolve_runtime_provider_openrouter_pool_keeps_regional_config_base_url(monkeypatch):
+    """Regression #91591: the OpenRouter credential pool supplies
+    AUTHENTICATION, not routing. With `provider: openrouter` and an
+    explicit regional base_url (eu.openrouter.ai) in config, pool
+    resolution used to silently replace it with the default
+    openrouter.ai endpoint."""
+    _fake_pool_key = "k" + "-" * 10  # placeholder-shaped, not a usable secret
+
+    class _Entry:
+        access_token = _fake_pool_key
+        source = "manual"
+        base_url = "https://openrouter.ai/api/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "https://eu.openrouter.ai/api/v1",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["base_url"] == "https://eu.openrouter.ai/api/v1"
+    # The pool still authenticates — only the endpoint routing is honored.
+    assert resolved["api_key"] == _fake_pool_key
+    assert resolved["source"] == "manual"
+
+
+def test_resolve_runtime_provider_openrouter_pool_rejects_off_domain_config_url(monkeypatch):
+    """FAIL-CLOSED: a config base_url NOT on openrouter.ai must not receive
+    the pooled OpenRouter credential — the regional override is only honored
+    while it stays on OpenRouter's own domain."""
+    class _Entry:
+        access_token = "k" + "-" * 10
+        source = "manual"
+        base_url = "https://openrouter.ai/api/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "https://evil.example/api/v1",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["base_url"] == rp.OPENROUTER_BASE_URL
+
+
+def test_resolve_runtime_provider_openrouter_pool_rejects_plaintext_http_override(monkeypatch):
+    """FAIL-CLOSED: an on-domain but plaintext-http override is not honored —
+    the pooled OpenRouter credential must never ride a cleartext URL
+    (review finding on this fix)."""
+    class _Entry:
+        access_token = "k" + "-" * 10
+        source = "manual"
+        base_url = "https://openrouter.ai/api/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "http://eu.openrouter.ai/api/v1",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["base_url"] == rp.OPENROUTER_BASE_URL
+
+
+def test_resolve_runtime_provider_openrouter_pool_host_match_is_case_insensitive(monkeypatch):
+    """Pins the helper's case-insensitivity: URL hostnames are case-insensitive
+    per RFC 3986 and ``base_url_hostname`` lowercases them, so an
+    upper-cased regional host still gets its override honored."""
+    class _Entry:
+        access_token = "k" + "-" * 10
+        source = "manual"
+        base_url = "https://openrouter.ai/api/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "https://EU.OpenRouter.AI/api/v1",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["base_url"] == "https://EU.OpenRouter.AI/api/v1"
+
+
+def test_resolve_runtime_provider_openrouter_pool_entry_url_wins_over_config(monkeypatch):
+    """A pool entry that carries its own endpoint-specific base_url (e.g. a
+    configured mirror) outranks the config default — the override only
+    applies when the entry fell back to the plain default endpoint."""
+    class _Entry:
+        access_token = "k" + "-" * 10
+        source = "manual"
+        base_url = "https://mirror.openrouter.ai/api/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "https://eu.openrouter.ai/api/v1",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["base_url"] == "https://mirror.openrouter.ai/api/v1"
+
+
 def test_resolve_runtime_provider_openrouter_explicit_api_key_skips_pool(monkeypatch):
     class _Entry:
         access_token = "pool-key"

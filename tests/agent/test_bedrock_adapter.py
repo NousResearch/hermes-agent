@@ -750,6 +750,16 @@ class TestBedrockContextLength:
         from agent.bedrock_adapter import get_bedrock_context_length, BEDROCK_DEFAULT_CONTEXT_LENGTH
         assert get_bedrock_context_length("unknown.model-v1:0") == BEDROCK_DEFAULT_CONTEXT_LENGTH
 
+    def test_claude_opus_5_resolves_1m(self):
+        # Regression: claude-opus-5 was missing from the table and fell
+        # through to the 128K default, halving the compression threshold
+        # for Opus 5 Bedrock users. Regional inference-profile prefixes
+        # must resolve via substring matching too.
+        from agent.bedrock_adapter import get_bedrock_context_length
+        assert get_bedrock_context_length("anthropic.claude-opus-5") == 1_000_000
+        assert get_bedrock_context_length("eu.anthropic.claude-opus-5") == 1_000_000
+        assert get_bedrock_context_length("us.anthropic.claude-opus-5-v1:0") == 1_000_000
+
 
 
     def test_no_region_skips_probe_uses_table(self):

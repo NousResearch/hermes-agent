@@ -15,15 +15,17 @@ they run on any host (same approach as test_update_concurrent_quarantine).
 
 from __future__ import annotations
 
+import ctypes
 import subprocess
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from hermes_cli import main as cli_main
+from hermes_cli import update_cmd as update_module
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +59,9 @@ def _proc(pid: int, exe: str, name: str, cmdline: list[str] | None = None, cwd: 
         "cmdline": cmdline or [],
         "cwd": cwd,
     }
+    proc.exe.return_value = exe
+    proc.cmdline.return_value = cmdline or []
+    proc.cwd.return_value = cwd
     return proc
 
 
@@ -80,10 +85,261 @@ def test_detect_venv_python_excludes_self_and_ancestors(_winp, tmp_path):
         ),
         Process=lambda *a, **k: me,
     )
-    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
-        sys.modules, {"psutil": fake_psutil}
-    ):
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        update_module, "_windows_process_image_rows", return_value=None
+    ), patch.dict(sys.modules, {"psutil": fake_psutil}):
         assert cli_main._detect_venv_python_processes() == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_fallback_preserves_full_process_contract(_winp, tmp_path):
+    unrelated = _proc(101, r"C:\Program Files\nodejs\node.exe", "node.exe")
+    trampoline = _proc(
+        102,
+        r"C:\Users\test\AppData\Roaming\uv\python\python.exe",
+        "python.exe",
+        ["python.exe", "-m", "hermes_cli.main", "serve"],
+        str(tmp_path),
+    )
+    attrs_seen = []
+    me = MagicMock()
+    me.parents.return_value = []
+    fake_psutil = types.SimpleNamespace(
+        process_iter=lambda attrs: attrs_seen.extend(attrs) or iter([unrelated, trampoline]),
+        Process=lambda *a, **k: me,
+    )
+
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        update_module, "_windows_process_image_rows", return_value=None
+    ), patch.dict(sys.modules, {"psutil": fake_psutil}):
+        assert cli_main._detect_venv_python_processes() == [
+            (102, "python.exe", "python.exe -m hermes_cli.main serve")
+        ]
+
+    assert attrs_seen == ["pid", "exe", "name", "cmdline", "cwd"]
+    unrelated.exe.assert_not_called()
+    unrelated.cmdline.assert_not_called()
+    unrelated.cwd.assert_not_called()
+    trampoline.exe.assert_not_called()
+    trampoline.cmdline.assert_not_called()
+    trampoline.cwd.assert_not_called()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_native_path_catches_arbitrary_venv_executable(_winp, tmp_path):
+    venv_exe = str(tmp_path / "venv" / "Scripts" / "custom-runner.exe")
+    holder = _proc(303, venv_exe, "custom-runner.exe", [venv_exe, "worker.py"])
+    me = MagicMock()
+    me.parents.return_value = []
+    constructed_pids = []
+
+    def process(pid=None):
+        if pid is None:
+            return me
+        constructed_pids.append(pid)
+        return holder
+
+    fake_psutil = types.SimpleNamespace(
+        process_iter=MagicMock(side_effect=AssertionError("fallback must not run")),
+        Process=process,
+    )
+
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        update_module,
+        "_windows_process_image_rows",
+        return_value=[
+            (303, "custom-runner.exe", venv_exe),
+            (404, "node.exe", r"C:\Program Files\nodejs\node.exe"),
+        ],
+    ), patch.dict(sys.modules, {"psutil": fake_psutil}):
+        assert cli_main._detect_venv_python_processes() == [
+            (303, "custom-runner.exe", f"{venv_exe} worker.py")
+        ]
+
+    fake_psutil.process_iter.assert_not_called()
+    assert constructed_pids == [303]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_fallback_mid_iteration_error_never_raises(_winp, tmp_path):
+    holder = _proc(
+        707,
+        str(tmp_path / "venv" / "Scripts" / "python.exe"),
+        "python.exe",
+    )
+    me = MagicMock()
+    me.parents.return_value = []
+
+    def broken_process_iter(_attrs):
+        yield holder
+        raise OSError("process table changed")
+
+    fake_psutil = types.SimpleNamespace(
+        process_iter=broken_process_iter,
+        Process=lambda *a, **k: me,
+    )
+
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        update_module, "_windows_process_image_rows", return_value=None
+    ), patch.dict(sys.modules, {"psutil": fake_psutil}):
+        assert cli_main._detect_venv_python_processes() == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_native_supports_versioned_external_python(_winp, tmp_path):
+    external = r"C:\Python311\python3.11.exe"
+    venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
+    holder = _proc(505, external, "python3.11.exe", [external, venv_py, "worker.py"])
+    me = MagicMock()
+    me.parents.return_value = []
+    fake_psutil = types.SimpleNamespace(
+        process_iter=MagicMock(side_effect=AssertionError("fallback must not run")),
+        Process=lambda pid=None: me if pid is None else holder,
+    )
+
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        update_module,
+        "_windows_process_image_rows",
+        return_value=[(505, "python3.11.exe", external)],
+    ), patch.dict(sys.modules, {"psutil": fake_psutil}):
+        assert cli_main._detect_venv_python_processes() == [
+            (505, "python3.11.exe", f"{external} {venv_py} worker.py")
+        ]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_revalidates_native_pid_identity(_winp, tmp_path):
+    snapshot_exe = str(tmp_path / "venv" / "Scripts" / "custom-runner.exe")
+    reused = _proc(606, r"C:\Windows\System32\notepad.exe", "notepad.exe")
+    me = MagicMock()
+    me.parents.return_value = []
+    fake_psutil = types.SimpleNamespace(
+        process_iter=MagicMock(side_effect=AssertionError("fallback must not run")),
+        Process=lambda pid=None: me if pid is None else reused,
+    )
+
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        update_module,
+        "_windows_process_image_rows",
+        return_value=[(606, "custom-runner.exe", snapshot_exe)],
+    ), patch.dict(sys.modules, {"psutil": fake_psutil}):
+        assert cli_main._detect_venv_python_processes() == []
+
+    reused.exe.assert_called_once_with()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_reclassifies_reused_pid_from_live_executable(_winp, tmp_path):
+    snapshot_exe = str(tmp_path / "venv" / "Scripts" / "custom-runner.exe")
+    live_exe = r"C:\Python311\python3.11.exe"
+    venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
+    reused = _proc(
+        616,
+        live_exe,
+        "python3.11.exe",
+        [live_exe, venv_py, "worker.py"],
+    )
+    me = MagicMock()
+    me.parents.return_value = []
+    fake_psutil = types.SimpleNamespace(
+        process_iter=MagicMock(side_effect=AssertionError("fallback must not run")),
+        Process=lambda pid=None: me if pid is None else reused,
+    )
+
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        update_module,
+        "_windows_process_image_rows",
+        return_value=[(616, "custom-runner.exe", snapshot_exe)],
+    ), patch.dict(sys.modules, {"psutil": fake_psutil}):
+        assert cli_main._detect_venv_python_processes() == [
+            (616, "python3.11.exe", f"{live_exe} {venv_py} worker.py")
+        ]
+
+    reused.exe.assert_called_once_with()
+    reused.cmdline.assert_called_once_with()
+
+
+def _fake_kernel32(*, next_error: int = 18, invalid_snapshot: bool = False):
+    from ctypes import wintypes
+
+    kernel = types.SimpleNamespace(
+        CreateToolhelp32Snapshot=MagicMock(),
+        Process32FirstW=MagicMock(),
+        Process32NextW=MagicMock(),
+        OpenProcess=MagicMock(),
+        QueryFullProcessImageNameW=MagicMock(),
+        CloseHandle=MagicMock(return_value=True),
+    )
+    kernel.CreateToolhelp32Snapshot.return_value = (
+        wintypes.HANDLE(-1).value if invalid_snapshot else 100
+    )
+
+    def first(_snapshot, entry_pointer):
+        entry = entry_pointer._obj
+        entry.th32ProcessID = 707
+        entry.szExeFile = "custom-runner.exe"
+        return True
+
+    def query(_process, _flags, buffer, _size_pointer):
+        buffer.value = r"C:\Hermes\venv\Scripts\custom-runner.exe"
+        return True
+
+    kernel.Process32FirstW.side_effect = first
+    kernel.Process32NextW.return_value = False
+    kernel.OpenProcess.return_value = 200
+    kernel.QueryFullProcessImageNameW.side_effect = query
+    return kernel, next_error
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_windows_process_image_rows_closes_snapshot_and_process_handles(_winp):
+    kernel, last_error = _fake_kernel32()
+    with (
+        patch.object(ctypes, "WinDLL", create=True, return_value=kernel),
+        patch.object(ctypes, "get_last_error", return_value=last_error),
+    ):
+        rows = update_module._windows_process_image_rows()
+
+    assert rows == [
+        (707, "custom-runner.exe", r"C:\Hermes\venv\Scripts\custom-runner.exe")
+    ]
+    assert kernel.CloseHandle.call_args_list == [call(200), call(100)]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_windows_process_image_rows_invalid_snapshot_fails_to_fallback(_winp):
+    kernel, last_error = _fake_kernel32(invalid_snapshot=True)
+    with (
+        patch.object(ctypes, "WinDLL", create=True, return_value=kernel),
+        patch.object(ctypes, "get_last_error", return_value=last_error),
+    ):
+        assert update_module._windows_process_image_rows() is None
+
+    kernel.CloseHandle.assert_not_called()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_windows_process_image_rows_abnormal_next_error_fails_to_fallback(_winp):
+    kernel, last_error = _fake_kernel32(next_error=5)
+    with (
+        patch.object(ctypes, "WinDLL", create=True, return_value=kernel),
+        patch.object(ctypes, "get_last_error", return_value=last_error),
+    ):
+        assert update_module._windows_process_image_rows() is None
+
+    assert kernel.CloseHandle.call_args_list == [call(200), call(100)]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_windows_process_image_rows_zero_next_error_fails_to_fallback(_winp):
+    kernel, last_error = _fake_kernel32(next_error=0)
+    with (
+        patch.object(ctypes, "WinDLL", create=True, return_value=kernel),
+        patch.object(ctypes, "get_last_error", return_value=last_error),
+    ):
+        assert update_module._windows_process_image_rows() is None
+
+    assert kernel.CloseHandle.call_args_list == [call(200), call(100)]
 
 
 

@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -3839,6 +3840,103 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
         return False, "; ".join(missing[:4])
     return True, ""
 
+def _windows_process_image_rows() -> list[tuple[int, str, str | None]] | None:
+    """Return Toolhelp PIDs/names plus exact Win32 executable paths.
+
+    ``QueryFullProcessImageNameW`` avoids psutil's pathological bulk metadata
+    path while preserving the old contract: *any* executable beneath the venv
+    is a candidate holder, regardless of its filename. Inaccessible process
+    images remain ``None`` just as the previous psutil scan skipped them.
+    ``None`` for the whole result requests the full psutil fallback.
+    """
+    if not _m()._is_windows():
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Process32FirstW.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(_PROCESSENTRY32W),
+        ]
+        kernel32.Process32FirstW.restype = wintypes.BOOL
+        kernel32.Process32NextW.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(_PROCESSENTRY32W),
+        ]
+        kernel32.Process32NextW.restype = wintypes.BOOL
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        def _query_image(pid: int) -> str | None:
+            process = kernel32.OpenProcess(0x1000, False, pid)
+            if not process:
+                return None
+            try:
+                size = wintypes.DWORD(32768)
+                buffer = ctypes.create_unicode_buffer(size.value)
+                if not kernel32.QueryFullProcessImageNameW(
+                    process,
+                    0,
+                    buffer,
+                    ctypes.byref(size),
+                ):
+                    return None
+                return buffer.value
+            finally:
+                kernel32.CloseHandle(process)
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+        if snapshot == wintypes.HANDLE(-1).value:
+            return None
+        rows: list[tuple[int, str, str | None]] = []
+        try:
+            entry = _PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(entry)
+            if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                return None
+            while True:
+                pid = int(entry.th32ProcessID)
+                rows.append((pid, str(entry.szExeFile), _query_image(pid)))
+                entry.dwSize = ctypes.sizeof(entry)
+                if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    error = ctypes.get_last_error()
+                    if error != 18:  # ERROR_NO_MORE_FILES
+                        return None
+                    break
+        finally:
+            kernel32.CloseHandle(snapshot)
+        return rows
+    except Exception:
+        return None
+
+
 def _detect_venv_python_processes(
     *, exclude_pids: set[int] | None = None
 ) -> list[tuple[int, str, str]]:
@@ -3904,42 +4002,126 @@ def _detect_venv_python_processes(
         pass
 
     matches: list[tuple[int, str, str]] = []
-    try:
-        proc_iter = psutil.process_iter(["pid", "exe", "name", "cmdline", "cwd"])
-    except Exception:
-        return []
-    for proc in proc_iter:
+
+    def _looks_like_python_image(value: str) -> bool:
+        return re.fullmatch(
+            r"python(?:w|[0-9.]*w?)?(?:\.exe)?",
+            value.lower(),
+        ) is not None
+
+    native_rows = _windows_process_image_rows()
+    if native_rows is None:
         try:
-            info = proc.info
+            # Fail-safe compatibility path for non-Windows tests or an
+            # unavailable Toolhelp API. Keep the base implementation's broad
+            # metadata contract here so a native-enumeration failure cannot
+            # weaken holder detection.
+            proc_rows = []
+            for proc in psutil.process_iter(["pid", "exe", "name", "cmdline", "cwd"]):
+                try:
+                    info = {**(proc.info or {}), "_native": False}
+                except Exception:
+                    continue
+                proc_rows.append((proc, info))
         except Exception:
-            continue
+            return []
+    else:
+
+        def _native_proc_rows():
+            for candidate_pid, candidate_name, candidate_exe in native_rows:
+                if candidate_pid in skip or not candidate_exe:
+                    continue
+                candidate_exe_norm = str(candidate_exe).lower()
+                if not (
+                    candidate_exe_norm.startswith(venv_prefix)
+                    or _looks_like_python_image(candidate_name)
+                    or _looks_like_python_image(Path(str(candidate_exe)).name)
+                ):
+                    continue
+                try:
+                    yield psutil.Process(candidate_pid), {
+                        "pid": candidate_pid,
+                        "name": candidate_name,
+                        "exe": candidate_exe,
+                        "_native": True,
+                    }
+                except Exception:
+                    continue
+
+        proc_rows = _native_proc_rows()
+
+    for proc, info in proc_rows:
         pid = info.get("pid")
-        exe = info.get("exe")
-        if not exe or pid is None or int(pid) in skip:
+        process_name = str(info.get("name") or "").lower()
+        if pid is None or int(pid) in skip:
             continue
+        native = bool(info.get("_native"))
+        exe = info.get("exe")
+        if not exe:
+            continue
+        snapshot_exe_norm = str(exe).lower()
+        process_is_python = _looks_like_python_image(process_name)
+        executable_is_python = _looks_like_python_image(Path(str(exe)).name)
+        # Revalidate native rows that can matter. This closes the
+        # Toolhelp-snapshot → psutil PID-reuse window without routing every
+        # process back through psutil's slow executable lookup.
+        if native and (
+            snapshot_exe_norm.startswith(venv_prefix)
+            or process_is_python
+            or executable_is_python
+        ):
+            try:
+                exe = proc.exe()
+            except Exception:
+                continue
+            if not exe:
+                continue
+            live_executable_name = Path(str(exe)).name
+            process_name = live_executable_name.lower()
+            process_is_python = _looks_like_python_image(process_name)
+            executable_is_python = process_is_python
+            info["name"] = live_executable_name
         try:
             exe_norm = str(Path(exe).resolve()).lower()
         except (OSError, ValueError):
             exe_norm = str(exe).lower()
-        cmdline_raw = " ".join(info.get("cmdline") or [])
-        cmdline_low = cmdline_raw.lower()
-        cwd_low = str(info.get("cwd") or "").lower().rstrip(os.sep) + os.sep
-
         # Primary match: the executable itself lives under this venv
         # (venv\Scripts\python(w).exe — the desktop backend / gateway case).
         is_holder = exe_norm.startswith(venv_prefix)
+        cmdline_raw = "" if native else " ".join(info.get("cmdline") or [])
+
         # Fallback: uv/base-interpreter trampolines run a python whose exe is
         # OUTSIDE the venv but which still imports from it and holds its .pyd
         # files. Catch those by what they're running: a cmdline that references
         # this venv's path, or a `-m hermes_cli.main ...` invocation tied to
         # this install (install root in the cmdline or as the working dir).
-        if not is_holder and venv_prefix in cmdline_low:
-            is_holder = True
-        if not is_holder and "hermes_cli.main" in cmdline_low:
-            if root_prefix in cmdline_low or cwd_low.startswith(root_prefix):
+        if not is_holder:
+            if native and not (process_is_python or executable_is_python):
+                continue
+            if native:
+                try:
+                    cmdline_raw = " ".join(proc.cmdline() or [])
+                except Exception:
+                    cmdline_raw = ""
+            cmdline_low = cmdline_raw.lower()
+            if venv_prefix in cmdline_low:
                 is_holder = True
+            elif "hermes_cli.main" in cmdline_low:
+                cwd_low = str(info.get("cwd") or "").lower().rstrip(os.sep) + os.sep
+                if native:
+                    try:
+                        cwd_low = str(proc.cwd() or "").lower().rstrip(os.sep) + os.sep
+                    except Exception:
+                        cwd_low = ""
+                if root_prefix in cmdline_low or cwd_low.startswith(root_prefix):
+                    is_holder = True
         if not is_holder:
             continue
+        if not cmdline_raw:
+            try:
+                cmdline_raw = " ".join(proc.cmdline() or [])
+            except Exception:
+                cmdline_raw = ""
         name = info.get("name") or Path(exe).name
         # Return the FULL cmdline: callers match against it (the Desktop
         # preflight's pausable-gateway exemption parses for `gateway run`).

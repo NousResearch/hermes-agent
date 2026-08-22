@@ -17,9 +17,25 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 | `tts` | `provider` (edge/elevenlabs/openai/minimax/mistral/neutts/gemini/piper/kittentts/deepinfra/xai) |
 | `memory` | `memory_enabled`, `user_profile_enabled`, `provider`, `write_approval` |
 | `security` | `redact_secrets`, `tirith_enabled`, `website_blocklist` |
-| `delegation` | `model`, `provider`, `max_concurrent_children`, `max_iterations` (50), `max_spawn_depth` |
+| `delegation` | `model`, `provider`, `max_concurrent_children`, `max_iterations` (50), `max_spawn_depth`, `worktree_isolation` |
 | `checkpoints` | `enabled`, `max_snapshots` (50) |
 | `curator` | `enabled`, `consolidate` (false, opt-in aux-model consolidation), `interval_hours`, `stale_after_days` |
+
+**`delegation.worktree_isolation`** (default `false`) — give each delegated child its own
+git worktree, branched from the parent repo's `HEAD` under `<repo>/.worktrees/subagent-<id>`
+on branch `hermes-subagent/<id>`. The parent reviews or merges each branch; a worktree with
+no new commits and a clean tree is pruned automatically.
+
+> Requires **all** of: a git repository, `terminal.backend: local`, **and a resolvable parent
+> working directory**. Resolution reads `$TERMINAL_CWD` first, so launch from inside the repo,
+> set `terminal.cwd` to an **absolute** path, or use `-w`. **Passing `--in <dir>` does NOT
+> satisfy this** — it does not change the process working directory.
+>
+> A parent on an **orphan branch with no commit** also fails: `git rev-parse HEAD` does not
+> resolve, so the child worktree cannot be branched from it.
+>
+> When the parent directory cannot be resolved the setting is ignored and children share the
+> parent checkout, committing to its branch.
 
 `hermes config check` reports sections missing from an older config.
 

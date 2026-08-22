@@ -2726,12 +2726,25 @@ def _run_single_child(
                         _parent_cwd or _resolve_workspace_hint(parent_agent),
                         subagent_id=_subagent_id,
                     )
+                    if _worktree_info is None:
+                        logger.warning(
+                            "worktree isolation is enabled but produced no worktree "
+                            "for %s: could not resolve a usable parent repo from cwd "
+                            "%r. Children will SHARE the parent checkout.",
+                            _subagent_id,
+                            _parent_cwd or _resolve_workspace_hint(parent_agent),
+                        )
                 else:
-                    logger.debug(
+                    logger.warning(
                         "worktree isolation skipped: non-local terminal backend"
                     )
             except Exception as e:
-                logger.debug("worktree isolation setup failed: %s", e)
+                logger.warning(
+                    "worktree isolation setup failed: %s. Usual causes: the process "
+                    "working directory is not inside the target repo (--in does not "
+                    "change it; set terminal.cwd to an absolute path or use -w), or "
+                    "the parent HEAD is unborn (orphan branch with no commit).", e
+                )
             if _worktree_info is not None:
                 try:
                     from tools.terminal_tool import record_session_cwd as _rsc

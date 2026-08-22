@@ -2181,13 +2181,40 @@ class _AnthropicCompletionsAdapter:
 
         usage = None
         if hasattr(response, "usage") and response.usage:
-            prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
-            completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
-            total_tokens = getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+            # Dual-shape usage contract (#71242 / sweeper on #71394):
+            # - Native Anthropic fields for provider="anthropic" normalizers
+            #   (input_tokens, output_tokens, cache_*_input_tokens).
+            # - Inclusive OpenAI-compatible shape for chat_completions
+            #   normalizers: prompt_tokens is the FULL prompt (fresh + cache
+            #   buckets), with prompt_tokens_details.cached_tokens broken out.
+            #   Fresh-only prompt_tokens would clamp to zero after the
+            #   OpenAI normalizer subtracts cache buckets.
+            input_tokens = getattr(response.usage, "input_tokens", 0) or 0
+            output_tokens = getattr(response.usage, "output_tokens", 0) or 0
+            cache_read_input_tokens = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+            cache_creation_input_tokens = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            inclusive_prompt = (
+                int(input_tokens)
+                + int(cache_read_input_tokens)
+                + int(cache_creation_input_tokens)
+            )
+            total_tokens = getattr(response.usage, "total_tokens", 0) or (
+                inclusive_prompt + int(output_tokens)
+            )
             usage = SimpleNamespace(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
+                # OpenAI-compatible inclusive shape
+                prompt_tokens=inclusive_prompt,
+                completion_tokens=output_tokens,
                 total_tokens=total_tokens,
+                prompt_tokens_details=SimpleNamespace(
+                    cached_tokens=cache_read_input_tokens,
+                    cache_write_tokens=cache_creation_input_tokens,
+                ),
+                # Native Anthropic fields (also used as top-level fallbacks)
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
             )
 
         choice = SimpleNamespace(

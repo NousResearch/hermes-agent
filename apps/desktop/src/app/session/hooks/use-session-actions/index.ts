@@ -6,11 +6,26 @@ import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { deleteSession, getAllSessionMessages, getLatestSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import {
+  type ChatMessage,
+  type GatewayEventPayload,
+  preserveLocalAssistantErrors,
+  restorePendingClarifyToolCall,
+  settlePendingClarifyToolCall,
+  stripPendingClarifyProjectionForCache,
+  toChatMessages
+} from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { setSessionYolo } from '@/lib/yolo-session'
-import { normalizeChoices, setClarifyRequest } from '@/store/clarify'
+import {
+  $clarifyRequests,
+  type ClarifyRequest,
+  clearClarifyRequest,
+  normalizeChoices,
+  normalizeQuestions,
+  setClarifyRequest
+} from '@/store/clarify'
 import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
@@ -245,27 +260,91 @@ function restorePendingApproval(response: SessionResumeResponse, sessionId: stri
   return true
 }
 
-function restorePendingClarify(response: SessionResumeResponse, sessionId: string): boolean {
+interface PendingClarifyResumeState {
+  authoritativeAbsent: boolean
+  cleared: ClarifyRequest | null
+  request: ClarifyRequest | null
+}
+
+function restorePendingClarify(
+  response: SessionResumeResponse,
+  sessionId: string,
+  resumeStartedAt: number,
+  requestIdAtStart?: string
+): PendingClarifyResumeState {
   // Same replay class as pending_approval: the clarify.request event was
   // emitted while this client's transport was detached, so without the resume
   // snapshot the question stays invisible until it times out server-side.
   const pending = response.pending_clarify
 
-  if (!pending || typeof pending.request_id !== 'string' || typeof pending.question !== 'string') {
-    return false
+  if (!pending || typeof pending.request_id !== 'string') {
+    const current = $clarifyRequests.get()[sessionId]
+
+    // session.activate/resume is authoritative only for requests that already
+    // existed when the RPC began. A newer clarify.request may arrive while the
+    // response is in flight; request-correlated cleanup must leave it alone.
+    const existedAtStart = Boolean(current && requestIdAtStart && current.requestId === requestIdAtStart)
+    const definitelyOlder = Boolean(current?.receivedAt !== undefined && current.receivedAt < resumeStartedAt)
+    const legacyWithoutTime = Boolean(current && current.receivedAt === undefined && !requestIdAtStart)
+
+    if (current && (existedAtStart || definitelyOlder || legacyWithoutTime)) {
+      clearClarifyRequest(current.requestId, sessionId)
+
+      return { authoritativeAbsent: true, cleared: current, request: null }
+    }
+
+    return { authoritativeAbsent: true, cleared: null, request: null }
+  }
+
+  const questions = normalizeQuestions(pending.questions)
+  const question = typeof pending.question === 'string' ? pending.question : ''
+
+  if (!question && questions.length === 0) {
+    return { authoritativeAbsent: false, cleared: null, request: null }
   }
 
   const choices = normalizeChoices(pending.choices)
 
-  setClarifyRequest({
-    choices: choices.length > 0 ? choices : null,
-    multiSelect: pending.multi_select === true,
-    question: pending.question,
-    requestId: pending.request_id,
-    sessionId
-  })
+  const lockedAnswers =
+    typeof pending.answers === 'object' && pending.answers !== null
+      ? Object.fromEntries(
+          Object.entries(pending.answers).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+        )
+      : undefined
 
-  return true
+  const request: ClarifyRequest = {
+    choices: choices.length > 0 ? choices : null,
+    lockedAnswers,
+    multiSelect: pending.multi_select === true,
+    question,
+    receivedAt: Date.now() / 1000,
+    requestId: pending.request_id,
+    sessionId,
+    ...(questions.length > 0 ? { questions } : {})
+  }
+
+  setClarifyRequest(request)
+
+  return { authoritativeAbsent: false, cleared: null, request }
+}
+
+function pendingClarifyToolPayload(request: ClarifyRequest): GatewayEventPayload {
+  return {
+    args: request.questions?.length
+      ? {
+          questions: request.questions.map(question => ({
+            choices: question.choices ?? undefined,
+            multi_select: question.multiSelect || undefined,
+            question: question.question
+          }))
+        }
+      : {
+          choices: request.choices ?? [],
+          ...(request.multiSelect ? { multi_select: true } : {}),
+          question: request.question
+        },
+    tool_id: request.requestId
+  }
 }
 
 function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewChatWorkspaceTarget {
@@ -840,6 +919,9 @@ export function useSessionActions({
 
           try {
             let activated: SessionResumeResponse | null = null
+            const activateStartedAt = Date.now() / 1000
+            const activateBaselineState = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId) ?? cachedViewState
+            const clarifyRequestIdAtActivateStart = $clarifyRequests.get()[cachedRuntimeId]?.requestId
 
             try {
               activated = await requestForSession<SessionResumeResponse>('session.activate', {
@@ -878,7 +960,23 @@ export function useSessionActions({
               dropSessionState(cachedRuntimeId)
             } else {
               const pendingApproval = restorePendingApproval(activated, cachedRuntimeId)
-              const pendingClarify = restorePendingClarify(activated, cachedRuntimeId)
+
+              const pendingClarifyState = restorePendingClarify(
+                activated,
+                cachedRuntimeId,
+                activateStartedAt,
+                clarifyRequestIdAtActivateStart
+              )
+
+              const pendingClarify = pendingClarifyState.request
+
+              const clarifyAuthoritativelyAbsent =
+                pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[cachedRuntimeId]
+
+              const staleClarifyAtActivateStart = clarifyAuthoritativelyAbsent
+                ? Boolean(settlePendingClarifyToolCall(cachedViewState.messages, {}, false).streamId)
+                : false
+
               const runtimeInfo = applyRuntimeInfo(activated.info)
 
               // `omit_messages` means the response carries NO transcript, not
@@ -898,10 +996,20 @@ export function useSessionActions({
               // #70449: never let the activate snapshot's stale running:false
               // rewind a turn that started while the RPC was in flight — read
               // the freshest cache entry, not the pre-await cachedViewState.
-              const running = resolveResumedBusy(
-                activated.running ?? cachedViewState.busy,
-                Boolean(sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.busy)
+              const latestCachedState = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
+
+              const busyChangedWhileActivating = Boolean(
+                latestCachedState?.busy &&
+                (latestCachedState.turnStartedAt !== activateBaselineState.turnStartedAt ||
+                  (latestCachedState.turnLive && !activateBaselineState.turnLive))
               )
+
+              const running =
+                (pendingClarifyState.cleared || staleClarifyAtActivateStart) &&
+                activated.running === false &&
+                !busyChangedWhileActivating
+                  ? false
+                  : resolveResumedBusy(activated.running ?? cachedViewState.busy, Boolean(latestCachedState?.busy))
 
               const activatedTurnStartedAt =
                 typeof activated.turn_started_at === 'number' && activated.turn_started_at > 0
@@ -973,34 +1081,73 @@ export function useSessionActions({
                 )
               }
 
+              const pendingClarifyProjection = pendingClarify
+                ? restorePendingClarifyToolCall(activatedMessages, pendingClarifyToolPayload(pendingClarify))
+                : null
+
+              const clearedClarifyProjection = clarifyAuthoritativelyAbsent
+                ? settlePendingClarifyToolCall(
+                    activatedMessages,
+                    pendingClarifyState.cleared ? pendingClarifyToolPayload(pendingClarifyState.cleared) : {},
+                    running
+                  )
+                : null
+
+              const visibleActivatedMessages =
+                pendingClarifyProjection?.messages ?? clearedClarifyProjection?.messages ?? activatedMessages
+
               const activatedState = updateSessionState(
                 cachedRuntimeId,
                 state => ({
                   ...state,
                   ...(runtimeInfo ?? {}),
-                  messages: activatedMessages,
+                  messages: visibleActivatedMessages,
                   busy: running,
                   awaitingResponse: running,
                   // Resumed onto an already-running turn — that IS backend
                   // proof the turn is live (no message.start will replay).
                   turnLive: state.turnLive || running,
-                  needsInput: pendingApproval || pendingClarify || state.needsInput,
+                  needsInput:
+                    pendingApproval ||
+                    Boolean(pendingClarify) ||
+                    (clarifyAuthoritativelyAbsent ? false : state.needsInput),
                   // Adopting someone else's turn: we'll stream its reply
                   // without ever having received its prompt, so the settle
                   // path must not take the "I saw it all" shortcut.
                   adoptedRunningTurn: state.adoptedRunningTurn || running,
-                  turnStartedAt: running ? (activatedTurnStartedAt ?? state.turnStartedAt ?? Date.now()) : null
+                  turnStartedAt: running ? (activatedTurnStartedAt ?? state.turnStartedAt ?? Date.now()) : null,
+                  ...(pendingClarifyProjection
+                    ? {
+                        awaitingResponse: false,
+                        sawAssistantPayload: true,
+                        streamId: pendingClarifyProjection.streamId
+                      }
+                    : {}),
+                  ...(clearedClarifyProjection
+                    ? {
+                        streamId: running ? (clearedClarifyProjection.streamId ?? state.streamId) : null
+                      }
+                    : {})
                 }),
                 storedSessionId
               )
 
               busyRef.current = running
               setBusy(running)
-              setAwaitingResponse(running)
+              setAwaitingResponse(running && !pendingClarify)
               syncSessionStateToView(cachedRuntimeId, activatedState)
-              // Durable tail refresh — same post-reconcile contract as the
-              // cold path's save below.
-              saveTranscriptTail(storedSessionId, activatedState.messages)
+              // Cache backend transcript truth only. The pending/running bit and
+              // any synthetic clarify row are a live resume projection and must
+              // not survive after the server-side request expires.
+              saveTranscriptTail(
+                storedSessionId,
+                stripPendingClarifyProjectionForCache(
+                  activatedMessages,
+                  pendingClarify?.requestId ??
+                    pendingClarifyState.cleared?.requestId ??
+                    $clarifyRequests.get()[cachedRuntimeId]?.requestId
+                )
+              )
 
               return
             }
@@ -1115,6 +1262,7 @@ export function useSessionActions({
         const prefetchPromise = watchWindow ? null : getLatestSessionMessages(storedSessionId, sessionProfile)
 
         let resumeRuntimeBaselineMessages: ChatMessage[] = []
+        const resumeStartedAt = Date.now() / 1000
 
         const resumePromise = requestForSession<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
@@ -1302,7 +1450,12 @@ export function useSessionActions({
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id
         const pendingApproval = restorePendingApproval(resumed, resumed.session_id)
-        const pendingClarify = restorePendingClarify(resumed, resumed.session_id)
+        const pendingClarifyState = restorePendingClarify(resumed, resumed.session_id, resumeStartedAt)
+        const pendingClarify = pendingClarifyState.request
+
+        const clarifyAuthoritativelyAbsent =
+          pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[resumed.session_id]
+
         const runtimeInfo = applyRuntimeInfo(resumed.info)
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
@@ -1315,17 +1468,33 @@ export function useSessionActions({
             ? resumed.turn_started_at * 1000
             : null
 
+        const pendingClarifyProjection = pendingClarify
+          ? restorePendingClarifyToolCall(messagesForView, pendingClarifyToolPayload(pendingClarify))
+          : null
+
+        const clearedClarifyProjection = clarifyAuthoritativelyAbsent
+          ? settlePendingClarifyToolCall(
+              messagesForView,
+              pendingClarifyState.cleared ? pendingClarifyToolPayload(pendingClarifyState.cleared) : {},
+              resumedRunning
+            )
+          : null
+
+        const visibleMessagesForView =
+          pendingClarifyProjection?.messages ?? clearedClarifyProjection?.messages ?? messagesForView
+
         updateSessionState(
           resumed.session_id,
           state => ({
             ...state,
             ...(runtimeInfo ?? {}),
-            messages: messagesForView,
+            messages: visibleMessagesForView,
             busy: resumedRunning,
             awaitingResponse: resumedRunning && !recoveredInFlightTail,
             // Backend reported this turn running at resume time — live proof.
             turnLive: state.turnLive || resumedRunning,
-            needsInput: pendingApproval || pendingClarify || state.needsInput,
+            needsInput:
+              pendingApproval || Boolean(pendingClarify) || (clarifyAuthoritativelyAbsent ? false : state.needsInput),
             adoptedRunningTurn: state.adoptedRunningTurn || resumedRunning,
             ...(inFlightRecovery.applied
               ? {
@@ -1337,7 +1506,19 @@ export function useSessionActions({
                 }
               : {
                   turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
-                })
+                }),
+            ...(pendingClarifyProjection
+              ? {
+                  awaitingResponse: false,
+                  sawAssistantPayload: true,
+                  streamId: pendingClarifyProjection.streamId
+                }
+              : {}),
+            ...(clearedClarifyProjection
+              ? {
+                  streamId: resumedRunning ? (clearedClarifyProjection.streamId ?? state.streamId) : null
+                }
+              : {})
           }),
           storedSessionId
         )
@@ -1346,15 +1527,21 @@ export function useSessionActions({
         // Commit the final, already-reconciled transcript now so resume has one
         // additive DOM build instead of an eager prefetch build plus a later
         // runtime projection build.
-        if (!chatMessageArraysEquivalent($messages.get(), messagesForView)) {
-          setMessages(messagesForView)
+        if (!chatMessageArraysEquivalent($messages.get(), visibleMessagesForView)) {
+          setMessages(visibleMessagesForView)
         }
 
-        // Refresh the durable tail cache with the authoritative transcript so
-        // the NEXT wake of this session paints instantly (fresh launch,
-        // reaped backend). Post-reconcile only — never persist an optimistic
-        // or in-flight-recovered projection ahead of backend truth.
-        saveTranscriptTail(storedSessionId, messagesForView)
+        // Refresh the durable tail cache with backend transcript truth only;
+        // the live pending clarify projection expires with the server request.
+        saveTranscriptTail(
+          storedSessionId,
+          stripPendingClarifyProjectionForCache(
+            messagesForView,
+            pendingClarify?.requestId ??
+              pendingClarifyState.cleared?.requestId ??
+              $clarifyRequests.get()[resumed.session_id]?.requestId
+          )
+        )
       } catch (err) {
         if (!isCurrentResume()) {
           return

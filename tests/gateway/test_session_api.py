@@ -83,6 +83,34 @@ async def test_capabilities_advertises_session_control_surface(adapter):
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_include_hidden_is_authenticated_opt_in(
+    auth_adapter, session_db
+):
+    visible_id = session_db.create_session("visible-session", "api_server")
+    hidden_id = session_db.create_session("hidden-bot-chat", "desktop")
+    assert session_db.set_session_hidden(hidden_id, True) is True
+
+    app = _create_session_app(auth_adapter)
+    headers = {"Authorization": "Bearer sk-test"}
+    async with TestClient(TestServer(app)) as cli:
+        default_resp = await cli.get("/api/sessions?limit=200", headers=headers)
+        assert default_resp.status == 200
+        default_payload = await default_resp.json()
+
+        hidden_resp = await cli.get(
+            "/api/sessions?limit=200&include_hidden=true", headers=headers
+        )
+        assert hidden_resp.status == 200
+        hidden_payload = await hidden_resp.json()
+
+    default_ids = {row["id"] for row in default_payload["data"]}
+    hidden_ids = {row["id"] for row in hidden_payload["data"]}
+    assert visible_id in default_ids
+    assert hidden_id not in default_ids
+    assert {visible_id, hidden_id} <= hidden_ids
+
+
+@pytest.mark.asyncio
 async def test_session_messages_default_to_latest_bounded_page(adapter, session_db):
     session_id = session_db.create_session("bounded-messages", "api_server")
     session_db.replace_messages(

@@ -109,7 +109,7 @@ def _base_url(peer: dict, profile: str | None) -> str:
 
 def _find_bot_chat(base: str, key: str) -> str | None:
     """The remote canonical Bot Chat's session id, or None."""
-    listing = _request(f"{base}/api/sessions?limit=200", key)
+    listing = _request(f"{base}/api/sessions?limit=200&include_hidden=true", key)
     for session in listing.get("data") or []:
         if isinstance(session, dict) and (session.get("title") or "").strip() == BOT_CHAT_TITLE:
             return str(session.get("id") or "") or None

@@ -40,6 +40,31 @@ def test_base_url_bare_and_profile():
     assert peer_cmd._base_url(peer, "researcher") == "http://spark.lan:8377/p/researcher"
 
 
+def test_find_bot_chat_requests_hidden_and_reuses_canonical_session(monkeypatch):
+    requests = []
+
+    def fake_request(url, key, *, method="GET", body=None, timeout=peer_cmd.LIST_TIMEOUT_S):
+        requests.append((url, key, method, body, timeout))
+        assert url == "http://sp08/api/sessions?limit=200&include_hidden=true"
+        assert key == "peer-key"
+        assert method == "GET"
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "id": "20260822_085223_35c294",
+                    "title": "Bot Chat",
+                    "hidden": True,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(peer_cmd, "_request", fake_request)
+
+    assert peer_cmd._ensure_bot_chat("http://sp08", "peer-key") == "20260822_085223_35c294"
+    assert len(requests) == 1
+
+
 # ── registry round-trip (isolated config) ────────────────────────────────────
 
 

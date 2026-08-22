@@ -1277,6 +1277,39 @@ def _build_mention_hint(mentions: Sequence[FeishuMentionRef]) -> str:
     return f"[Mentioned: {', '.join(parts)}]" if parts else ""
 
 
+def _strip_edge_all_mentions_for_command(
+    text: str,
+    mentions: Sequence[FeishuMentionRef],
+) -> str:
+    # Feishu @_all normalizes to @all. Keep this aligned with
+    # _strip_edge_self_mentions: strip leading all-mentions only when
+    # token-bounded, and strip trailing all-mentions only at terminal edges.
+    # Mid-sentence references ("don't @all again") stay intact.
+    if not text or not any(ref.is_all for ref in mentions):
+        return text
+
+    all_name = "@all"
+    remaining = text.lstrip()
+    while True:
+        if not remaining.startswith(all_name):
+            break
+        after = remaining[len(all_name):]
+        if after and after[0] not in _MENTION_BOUNDARY_CHARS:
+            break
+        remaining = after.lstrip()
+
+    while True:
+        i = len(remaining)
+        while i > 0 and remaining[i - 1] in _TRAILING_TERMINAL_PUNCT:
+            i -= 1
+        body = remaining[:i]
+        tail = remaining[i:]
+        if body.endswith(all_name):
+            remaining = body[: -len(all_name)].rstrip() + tail
+        else:
+            return remaining
+
+
 def _strip_edge_self_mentions(
     text: str,
     mentions: Sequence[FeishuMentionRef],
@@ -3333,6 +3366,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         if inbound_type == MessageType.TEXT:
             text = _strip_edge_self_mentions(text, mentions)
+            text = _strip_edge_all_mentions_for_command(text, mentions)
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
 

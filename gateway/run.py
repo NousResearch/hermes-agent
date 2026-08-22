@@ -1227,19 +1227,6 @@ def _float_env(name: str, default: float) -> float:
         return float(default)
 
 
-def _stamp_hygiene_compression_provenance(
-    agent: Any,
-    desc: str,
-    provenance: "ActivityProvenance",
-    debug_label: str,
-) -> None:
-    """Best-effort activity provenance stamp for hygiene compression transitions."""
-    try:
-        agent._touch_activity(desc, provenance=provenance)
-    except Exception:
-        logger.debug(debug_label, exc_info=True)
-
-
 def _is_fresh_gateway_interruption(
     value: Any,
     *,
@@ -2713,6 +2700,7 @@ from gateway.whatsapp_identity import (
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
+from gateway.interrupt_helpers import _stamp_hygiene_compression_provenance
 
 
 logger = logging.getLogger(__name__)

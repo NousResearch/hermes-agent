@@ -3246,7 +3246,7 @@ class AIAgent:
                 logging.warning(f"Failed to save session log: {e}")
 
 
-    def interrupt(self, message: Optional[str] = None, *, hard_cancel: bool = False) -> None:
+    def interrupt(self, message: Optional[str] = None, *, hard_cancel: bool = False, stop_kind: Optional[str] = None) -> None:
         """
         Request the agent to interrupt its current tool-calling loop.
         
@@ -3262,6 +3262,11 @@ class AIAgent:
             hard_cancel: Mark this as an explicit stop rather than a redirect or
                          incoming-message interrupt. Compression may honor this
                          atomic signal even while ordinary interrupts are masked.
+            stop_kind: Optional structured provenance for the interrupt —
+                         "user_stop" for a deliberate stop/redirect, or
+                         "client_disconnect" when the transport dropped
+                         mid-turn. Recorded on ``_interrupt_stop_kind`` for
+                         user-facing wording; leaves ``message`` untouched.
         
         Example (CLI):
             # In a separate input thread:
@@ -3302,12 +3307,14 @@ class AIAgent:
             with _redirect_lock:
                 self._interrupt_requested = True
                 self._interrupt_message = message
+                self._interrupt_stop_kind = stop_kind
                 if hard_cancel:
                     _admit_hard_cancel()
                 self._pending_redirect = None
         else:
             self._interrupt_requested = True
             self._interrupt_message = message
+            self._interrupt_stop_kind = stop_kind
             if hard_cancel:
                 _admit_hard_cancel()
             self._pending_redirect = None
@@ -3375,22 +3382,32 @@ class AIAgent:
                 if hard_cancel:
                     request_hard_interrupt(child, message)
                 else:
+                    child.interrupt(message, stop_kind=stop_kind)
+            except TypeError:
+                # Legacy-ABI third-party agents override interrupt(message=None)
+                # without the keyword-only stop_kind argument (#84207).
+                try:
                     child.interrupt(message)
+                except Exception as e:
+                    logger.debug("Failed to propagate interrupt to child agent: %s", e)
             except Exception as e:
                 logger.debug("Failed to propagate interrupt to child agent: %s", e)
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
 
-    def hard_interrupt(self, message: Optional[str] = None) -> None:
+    def hard_interrupt(self, message: Optional[str] = None, *, stop_kind: Optional[str] = None) -> None:
         """Request an explicit stop while preserving ``interrupt()`` ABI.
 
         Frontends can feature-detect this method and fall back to the legacy
         ``interrupt()`` signature for synthetic or third-party agents.
+        ``stop_kind`` carries the structured interrupt provenance (#84207);
+        ``request_hard_interrupt`` also stamps it directly for legacy agents
+        whose ``hard_interrupt`` predates the parameter.
         """
         # Deliberately bypass dynamic dispatch: subclasses written against the
         # legacy interrupt(message=None) ABI may override interrupt without the
         # newer keyword-only hard_cancel argument.
-        AIAgent.interrupt(self, message, hard_cancel=True)
+        AIAgent.interrupt(self, message, hard_cancel=True, stop_kind=stop_kind)
 
     def clear_interrupt(self, *, preserve_redirect: bool = False) -> bool:
         """Clear the interrupt request and per-thread tool signal.

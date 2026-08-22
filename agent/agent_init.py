@@ -868,6 +868,12 @@ def init_agent(
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
     agent._interrupt_message = None  # Optional message that triggered interrupt
+    # Structured interrupt provenance for user-facing wording (#84207):
+    # None (no interrupt) | "user_stop" (deliberate stop/redirect) |
+    # "client_disconnect" (transport dropped mid-turn). Distinct from
+    # _interrupt_message, which is free-text (and often the next user
+    # message, not a reason).
+    agent._interrupt_stop_kind = None
     # Explicit hard cancellation is separate from redirect/message state. A
     # thread-safe Event makes the cause atomic for auxiliary stream pollers.
     agent._hard_interrupt_requested = threading.Event()

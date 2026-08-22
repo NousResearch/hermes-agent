@@ -10324,10 +10324,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
             cur = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, stop_kind, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -10336,6 +10336,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     tool_calls_json,
                     _scrub_surrogates(msg.get("tool_name")),
                     msg.get("effect_disposition"),
+                    _scrub_surrogates(msg.get("stop_kind")) if isinstance(msg.get("stop_kind"), str) else None,
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
@@ -11063,7 +11064,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # SELECT can feed both the model-fed and display views.
     _CONVERSATION_ROW_COLUMNS = (
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
-        "finish_reason, reasoning, reasoning_content, reasoning_details, "
+        "stop_kind, finish_reason, reasoning, reasoning_content, reasoning_details, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
         "api_content, display_kind, display_metadata"
     )
@@ -11120,6 +11121,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 msg["tool_name"] = row["tool_name"]
             if row["effect_disposition"]:
                 msg["effect_disposition"] = row["effect_disposition"]
+            # Structured interrupt provenance (#84207): stamped by
+            # tool_executor on an interrupted tool result so resume-time
+            # orphan recovery can phrase the note precisely even though the
+            # agent's interrupt flag is long cleared. Must survive the
+            # SessionDB round-trip, so it is a real column (not a custom
+            # message key that projection drops).
+            if row["stop_kind"]:
+                msg["stop_kind"] = row["stop_kind"]
             if row["tool_calls"]:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])

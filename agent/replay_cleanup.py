@@ -91,12 +91,33 @@ def strip_interrupted_tool_tails(
                         recovered["effect_disposition"] = (
                             "unknown" if tool_may_have_side_effect(name) else "none"
                         )
-                        recovered["content"] = (
-                            "[Orphan recovery: interrupted side-effecting tool may have "
-                            "executed; its effect is UNKNOWN. Inspect state before retrying.]"
-                            if recovered["effect_disposition"] == "unknown"
-                            else "[Orphan recovery: interrupted read-only tool did not complete.]"
-                        )
+                        # Interrupt provenance (#84207): when the tool result
+                        # carries a structured stop_kind, phrase the note after
+                        # the actual cause — a deliberate stop is the user's
+                        # own action, not an unexpected failure.
+                        _stop_kind = tool_result.get("stop_kind")
+                        if recovered["effect_disposition"] == "unknown":
+                            if _stop_kind == "user_stop":
+                                recovered["content"] = (
+                                    "[Orphan recovery: you stopped this tool; "
+                                    "interrupted side-effecting tool may have executed — "
+                                    "its effect is UNKNOWN. Inspect state before retrying.]"
+                                )
+                            elif _stop_kind == "client_disconnect":
+                                recovered["content"] = (
+                                    "[Orphan recovery: the client connection dropped; "
+                                    "interrupted side-effecting tool may have executed — "
+                                    "its effect is UNKNOWN. Inspect state before retrying.]"
+                                )
+                            else:
+                                recovered["content"] = (
+                                    "[Orphan recovery: interrupted side-effecting tool may have "
+                                    "executed; its effect is UNKNOWN. Inspect state before retrying.]"
+                                )
+                        else:
+                            recovered["content"] = (
+                                "[Orphan recovery: interrupted read-only tool did not complete.]"
+                            )
                         cleaned.append(recovered)
                     i = j
                     continue

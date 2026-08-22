@@ -159,7 +159,16 @@ def test_pending_response_does_not_mask_later_terminal_exit(
         _pending_verification_response="stale premature report",
     )
 
-    assert result["final_response"] is None
+    if interrupted:
+        # #84207: an interrupted terminal exit now surfaces a visible closing
+        # message instead of leaking response_len=0 to the gateway.  The key
+        # assertion is unchanged: the stale pending verification response was
+        # NOT reused to mask the terminal exit.
+        assert isinstance(result["final_response"], str)
+        assert result["final_response"] != "stale premature report"
+        assert "interrupt" in result["final_response"].lower()
+    else:
+        assert result["final_response"] is None
     assert result["turn_exit_reason"] == exit_reason
     assert result["completed"] is False
     assert agent._handle_max_iterations_called is False

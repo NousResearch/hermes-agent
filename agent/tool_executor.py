@@ -1813,6 +1813,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tc.id,
             effect_disposition=effect_disposition,
         )
+        # Structured interrupt provenance (#84207): stamp the turn's
+        # stop_kind on the tool result so resume-time orphan recovery can
+        # phrase the note precisely ("You stopped this" vs "the connection
+        # dropped") even though the agent's interrupt flag is long cleared.
+        if agent._interrupt_requested:
+            _stop_kind = getattr(agent, "_interrupt_stop_kind", None)
+            if _stop_kind:
+                tool_message["stop_kind"] = _stop_kind
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(

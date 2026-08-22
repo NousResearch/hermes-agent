@@ -1325,7 +1325,7 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
         return
 
     try:
-        agent.interrupt(reason.replace("_", " "))
+        agent.interrupt(reason.replace("_", " "), stop_kind="user_stop")
     except Exception:
         pass
 

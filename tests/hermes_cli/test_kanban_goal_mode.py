@@ -153,6 +153,10 @@ class TestCLIJudgeGate:
 
         fake_task = types.SimpleNamespace(
             goal_mode=goal_mode,
+            # _cmd_complete re-reads the task after completion to report
+            # where it landed (#29457 park reporting); real Tasks carry
+            # status.
+            status="done",
             title="Finish report",
             body="acceptance: criteria",
         )

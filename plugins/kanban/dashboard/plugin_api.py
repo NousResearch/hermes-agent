@@ -851,6 +851,14 @@ class UpdateTaskBody(BaseModel):
     # override doesn't silently reset the depth the operator chose.
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Per-task approval policy (#29457). ``approval_required=None`` means
+    # "not sent" (keep current). ``approver_profile``/``approver_skill``
+    # follow the same not-sent semantics; ``clear_approver=True`` nulls both
+    # together (parked tasks then wait for human review).
+    approval_required: Optional[bool] = None
+    approver_profile: Optional[str] = None
+    approver_skill: Optional[str] = None
+    clear_approver: bool = False
 
 
 def _reopen_if_review(conn, task_id: str, current) -> Optional[bool]:
@@ -889,6 +897,47 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 )
             except RuntimeError as e:
                 raise HTTPException(status_code=409, detail=str(e))
+            if not ok:
+                raise HTTPException(status_code=404, detail="task not found")
+
+        # --- approval policy (#29457) --------------------------------------
+        # Runs BEFORE the status block so a combined patch can disable the
+        # policy and complete in one request. Omitted fields keep their
+        # stored values; clear_approver nulls both approver fields.
+        if (
+            payload.approval_required is not None
+            or payload.approver_profile is not None
+            or payload.approver_skill is not None
+            or payload.clear_approver
+        ):
+            current = task  # fetched above; pre-status state
+            new_required = (
+                bool(payload.approval_required)
+                if payload.approval_required is not None
+                else bool(current.approval_required)
+            )
+            new_profile = None
+            new_skill = None
+            if not payload.clear_approver:
+                new_profile = (
+                    payload.approver_profile
+                    if payload.approver_profile is not None
+                    else current.approver_profile
+                )
+                new_skill = (
+                    payload.approver_skill
+                    if payload.approver_skill is not None
+                    else current.approver_skill
+                )
+            try:
+                ok = kanban_db.set_approval_policy(
+                    conn, task_id,
+                    approval_required=new_required,
+                    approver_profile=new_profile or None,
+                    approver_skill=new_skill or None,
+                )
+            except (ValueError, RuntimeError) as e:
+                raise HTTPException(status_code=400, detail=str(e))
             if not ok:
                 raise HTTPException(status_code=404, detail="task not found")
 

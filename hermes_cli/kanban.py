@@ -78,6 +78,9 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "max_retries": t.max_retries,
         "model_override": t.model_override,
         "provider_override": t.provider_override,
+        "approval_required": bool(t.approval_required),
+        "approver_profile": t.approver_profile,
+        "approver_skill": t.approver_skill,
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
@@ -393,6 +396,23 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           metavar="N", dest="goal_max_turns",
                           help="Turn budget for --goal workers (default 20). "
                                "Ignored without --goal.")
+    p_create.add_argument("--approval-required", action="store_true",
+                          dest="approval_required",
+                          help="Require sign-off before this task can become "
+                               "done: when the worker finishes, the task parks "
+                               "in review instead. Sign-off by --approver's "
+                               "profile if given, otherwise by a human.")
+    p_create.add_argument("--approver", default=None, dest="approver_profile",
+                          help="Profile that signs off an "
+                               "--approval-required task (it is reassigned to "
+                               "this profile while parked in review). Omit for "
+                               "human-only review. May be set without the flag "
+                               "to pre-stage it.")
+    p_create.add_argument("--approver-skill", default=None,
+                          dest="approver_skill",
+                          help="Skill auto-loaded into the approver's review "
+                               "session (requires --approval-required to have "
+                               "any effect).")
     p_create.add_argument("--initial-status",
                           choices=sorted(kb.VALID_INITIAL_STATUSES),
                           default="running",
@@ -493,6 +513,31 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--provider", default=None,
         help="Provider the model belongs to (worker is spawned with "
              "--provider <name>). Cleared together with the model.",
+    )
+
+    # --- set-approval (per-task approval policy, issue #29457) ---
+    p_set_approval = sub.add_parser(
+        "set-approval",
+        help="Set or clear a task's approval policy "
+             "(checked when the task completes)",
+    )
+    p_set_approval.add_argument("task_id")
+    p_set_approval.add_argument(
+        "state",
+        choices=["on", "off"],
+        help="'on' requires sign-off before the task can become done "
+             "(completion parks it in review); 'off' lets completion "
+             "mark it done directly",
+    )
+    p_set_approval.add_argument(
+        "--approver", default=None, dest="approver_profile",
+        help="Approver profile to record. Omit to keep the current one; "
+             "'none' clears it (parked tasks then wait for a human).",
+    )
+    p_set_approval.add_argument(
+        "--skill", default=None, dest="approver_skill",
+        help="Skill auto-loaded into the approver's review session. Omit "
+             "to keep the current one; 'none' clears it.",
     )
 
     # --- reclaim / reassign (recovery) ---
@@ -1114,6 +1159,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "show":     _cmd_show,
             "assign":   _cmd_assign,
             "set-model": _cmd_set_model,
+            "set-approval": _cmd_set_approval,
             "reclaim":  _cmd_reclaim,
             "reassign": _cmd_reassign,
             "diagnostics": _cmd_diagnostics,
@@ -1585,6 +1631,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
+            approval_required=bool(getattr(args, "approval_required", False)),
+            approver_profile=getattr(args, "approver_profile", None),
+            approver_skill=getattr(args, "approver_skill", None),
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
@@ -1866,6 +1915,60 @@ def _cmd_assign(args: argparse.Namespace) -> int:
         print(f"no such task: {args.task_id}", file=sys.stderr)
         return 1
     print(f"Assigned {args.task_id} to {profile or '(unassigned)'}")
+    return 0
+
+
+def _cmd_set_approval(args: argparse.Namespace) -> int:
+    """Set or clear a task's approval policy (#29457).
+
+    Omitted flags keep the stored approver fields, so flipping the flag
+    alone never silently rewrites the rest of the policy; ``none`` clears
+    a field explicitly.
+    """
+    enable = args.state == "on"
+
+    def _flag(value: Optional[str]) -> tuple[Optional[str], bool]:
+        """Return (resolved value, was-provided)."""
+        if value is None:
+            return None, False
+        v = value.strip()
+        if v.lower() in {"none", "-", "null", ""}:
+            return None, True
+        return v, True
+
+    approver, approver_given = _flag(getattr(args, "approver_profile", None))
+    skill, skill_given = _flag(getattr(args, "approver_skill", None))
+    with kb.connect_closing() as conn:
+        current = kb.get_task(conn, args.task_id)
+        if current is None:
+            print(f"no such task: {args.task_id}", file=sys.stderr)
+            return 1
+        try:
+            ok = kb.set_approval_policy(
+                conn,
+                args.task_id,
+                approval_required=enable,
+                approver_profile=(
+                    approver if approver_given else current.approver_profile
+                ),
+                approver_skill=skill if skill_given else current.approver_skill,
+            )
+        except (ValueError, RuntimeError) as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 2
+        if not ok:
+            print(f"no such task: {args.task_id}", file=sys.stderr)
+            return 1
+        updated = kb.get_task(conn, args.task_id)
+    who = updated.approver_profile or "(human review)"
+    extra = f", skill={updated.approver_skill}" if updated.approver_skill else ""
+    if enable:
+        print(
+            f"Approval required on {args.task_id} — completion parks it "
+            f"in review for sign-off by {who}{extra}"
+        )
+    else:
+        print(f"Approval policy cleared on {args.task_id} (completion marks it done)")
     return 0
 
 
@@ -2298,11 +2401,26 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 summary=summary,
                 metadata=metadata,
                 expected_run_id=_worker_run_id_for(tid),
+                # CLI completions are human/anonymous actions; a spawned
+                # profile completing its own task resolves to the same
+                # identity either way (HERMES_PROFILE == assignee).
+                actor=os.environ.get("HERMES_PROFILE") or "user",
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
             else:
-                print(f"Completed {tid}")
+                # The approval policy (#29457) may have parked the task in
+                # review instead of letting it become done — report where
+                # it actually landed (mirrors _cmd_block's landing report).
+                landed = kb.get_task(conn, tid)
+                if landed is not None and landed.status == "review":
+                    approver = landed.approver_profile or "a human reviewer"
+                    print(
+                        f"{tid} → review (approval required — awaiting "
+                        f"sign-off by {approver})"
+                    )
+                else:
+                    print(f"Completed {tid}")
     return 0 if not failed else 1
 
 

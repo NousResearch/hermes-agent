@@ -803,8 +803,28 @@ def _handle_complete(args: dict, **kw) -> str:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
+            # The approval policy (#29457) may have parked the task in
+            # review instead of letting it become done. Tell the worker
+            # plainly — from its perspective the work is finished and
+            # handed off, but "done" would be a false report.
+            landed = kb.get_task(conn, tid)
+            parked = landed is not None and landed.status == "review"
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=landed.status if landed else None,
+                **(
+                    {
+                        "approval": (
+                            f"parked for sign-off by "
+                            f"{landed.approver_profile or 'a human reviewer'}"
+                        )
+                    }
+                    if parked
+                    else {}
+                ),
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -1408,6 +1428,11 @@ def _handle_create(args: dict, **kw) -> str:
     goal_mode, goal_bool_error = _parse_bool_arg(args, "goal_mode")
     if goal_bool_error:
         return tool_error(goal_bool_error)
+    approval_required, approval_bool_error = _parse_bool_arg(args, "approval_required")
+    if approval_bool_error:
+        return tool_error(approval_bool_error)
+    approver_profile = args.get("approver_profile")
+    approver_skill = args.get("approver_skill")
     goal_max_turns = args.get("goal_max_turns")
     model_override = args.get("model")
     provider_override = args.get("provider")
@@ -1458,6 +1483,9 @@ def _handle_create(args: dict, **kw) -> str:
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
                 ),
+                approval_required=approval_required,
+                approver_profile=approver_profile,
+                approver_skill=approver_skill,
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
@@ -2245,6 +2273,33 @@ KANBAN_CREATE_SCHEMA = {
                     "require immediate human ops (R3 gate) to skip the "
                     "brief running-to-blocked transition. Defaults to "
                     "'running', which preserves the usual dispatch path."
+                ),
+            },
+            "approval_required": {
+                "type": "boolean",
+                "description": (
+                    "Per-task approval policy (#29457). When true, "
+                    "kanban_complete on this task will NOT mark it done — "
+                    "the work parks in review for sign-off by the approver "
+                    "(or a human when no approver is named). Checked at "
+                    "completion time, so it can be flipped mid-flight."
+                ),
+            },
+            "approver_profile": {
+                "type": "string",
+                "description": (
+                    "Profile that must sign off when approval_required is "
+                    "set; the task is reassigned to it while parked in "
+                    "review and the dispatcher spawns it as the reviewer. "
+                    "Omit for human-only sign-off."
+                ),
+            },
+            "approver_skill": {
+                "type": "string",
+                "description": (
+                    "Skill auto-loaded into the approver's review session "
+                    "(alongside the standard review lifecycle skill). "
+                    "Requires an installed skill name."
                 ),
             },
             "skills": {

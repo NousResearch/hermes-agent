@@ -1141,6 +1141,17 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Per-task approval policy (#29457), owned by the creator/orchestrator.
+    # When True, complete_task routes the task into the review lane for
+    # sign-off instead of marking it done. Consulted at completion time,
+    # so it may be flipped mid-flight via set_approval_policy.
+    approval_required: bool = False
+    # Profile that must sign off. None = human review (no reviewer agent
+    # is spawned for the parked task).
+    approver_profile: Optional[str] = None
+    # Skill force-loaded into the approver's review session on top of the
+    # mandatory sdlc-review lifecycle skill.
+    approver_skill: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1234,6 +1245,21 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            approval_required=(
+                bool(row["approval_required"])
+                if "approval_required" in keys and row["approval_required"]
+                else False
+            ),
+            approver_profile=(
+                row["approver_profile"]
+                if "approver_profile" in keys and row["approver_profile"]
+                else None
+            ),
+            approver_skill=(
+                row["approver_skill"]
+                if "approver_skill" in keys and row["approver_skill"]
+                else None
             ),
         )
 
@@ -1422,7 +1448,23 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Per-task approval policy (#29457), owned by the task creator /
+    -- orchestrator. When 1, :func:`complete_task` does NOT mark the task
+    -- done — it routes through the first-class review lane
+    -- (:func:`request_review`) so the work parks in ``review`` for sign-off.
+    -- Checked at completion time, so the flag may be flipped mid-flight.
+    approval_required    INTEGER NOT NULL DEFAULT 0,
+    -- Profile that must sign off before the task becomes done. NULL =
+    -- human review: the parked task sits in ``review`` and no reviewer
+    -- agent is spawned for it. Validated against existing profiles at
+    -- creation/edit time; if the profile disappears later the parked task
+    -- degrades gracefully to human review (dispatcher skips unknown
+    -- profiles), never to auto-approval.
+    approver_profile     TEXT,
+    -- Skill force-loaded into the approver's review session (on top of the
+    -- mandatory ``sdlc-review`` lifecycle skill). NULL = lifecycle only.
+    approver_skill       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2679,6 +2721,26 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "approval_required" not in cols:
+        # Per-task approval policy (#29457). 0 (the default) preserves the
+        # behaviour existing rows had: complete_task marks them done.
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "approval_required",
+            "approval_required INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "approver_profile" not in cols:
+        # Designated approver profile. NULL = human review when the flag
+        # is set; inert while it isn't.
+        _add_column_if_missing(conn, "tasks", "approver_profile", "approver_profile TEXT")
+
+    if "approver_skill" not in cols:
+        # Skill force-loaded into the approver's review session. NULL =
+        # the mandatory sdlc-review lifecycle skill only.
+        _add_column_if_missing(conn, "tasks", "approver_skill", "approver_skill TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -3155,6 +3217,60 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _skill_dir_exists(name: str) -> bool:
+    """Best-effort check that a skill of this name exists on disk.
+
+    Mirrors how the skills index resolves names: any ``<name>/SKILL.md``
+    under the profile's skills dir (bundled skills are synced there at
+    startup, so repo-shipped and user-installed skills are both covered).
+    Fails OPEN when the skills root can't be resolved — validation is
+    early feedback, not a security boundary.
+    """
+    try:
+        from hermes_constants import get_skills_dir
+
+        skills_dir = get_skills_dir()
+    except Exception:
+        return True
+    if not skills_dir.is_dir():
+        return False
+    for skill_md in skills_dir.rglob("SKILL.md"):
+        if skill_md.parent.name == name:
+            return True
+    return False
+
+
+def _validate_approval_refs(
+    approver_profile: Optional[str],
+    approver_skill: Optional[str],
+) -> None:
+    """Reject approval-policy references that can never resolve (#29457).
+
+    An approver that doesn't exist would silently downgrade the policy to
+    human review (or strand the parked task), and an approver skill that
+    isn't installed would silently no-op at review spawn time. Both are
+    creator mistakes best surfaced at write time. Best-effort by design:
+    when the introspection helpers can't be imported, validation is
+    skipped rather than blocking task creation.
+    """
+    if approver_profile:
+        try:
+            from hermes_cli.profiles import profile_exists
+        except Exception:
+            profile_exists = None  # type: ignore[assignment]
+        if profile_exists is not None and not profile_exists(approver_profile):
+            raise ValueError(
+                f"approver_profile {approver_profile!r} is not an existing "
+                "profile — create it first (`hermes -p "
+                f"{approver_profile} setup`) or omit it for human-only review"
+            )
+    if approver_skill and not _skill_dir_exists(approver_skill):
+        raise ValueError(
+            f"approver_skill {approver_skill!r} does not match any installed "
+            "skill (no <skills>/<name>/SKILL.md found)"
+        )
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -3178,6 +3294,9 @@ def create_task(
     reasoning_effort: Optional[str] = None,
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
+    approval_required: bool = False,
+    approver_profile: Optional[str] = None,
+    approver_skill: Optional[str] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
@@ -3217,6 +3336,16 @@ def create_task(
     ``--reasoning <level>``. It is independent of ``model_override``: a task
     can run the profile's own model at a different depth.
 
+    ``approval_required`` / ``approver_profile`` / ``approver_skill`` attach
+    the per-task approval policy (#29457): when the flag is set,
+    :func:`complete_task` parks finished work in the review lane for
+    sign-off instead of marking it done. ``approver_profile`` names the
+    profile that signs off (None = human review); ``approver_skill`` is
+    force-loaded into that profile's review session. Both references are
+    validated when provided — a policy pointing at a missing profile or an
+    uninstalled skill would silently downgrade to something the creator
+    did not ask for.
+
     ``project_source_task_id`` is an internal cross-profile fallback for a
     worker-created child. When the active profile cannot resolve ``project_id``
     in its own projects.db, a matching canonical project-linked task in this
@@ -3228,6 +3357,12 @@ def create_task(
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
+    approver_profile = (approver_profile or "").strip() or None
+    approver_skill = (approver_skill or "").strip() or None
+    if approval_required or approver_profile or approver_skill:
+        # Validate the references even when only the approver fields are
+        # pre-staged while the flag is still off — same fail-loud contract.
+        _validate_approval_refs(approver_profile, approver_skill)
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -3497,8 +3632,10 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns,
+                        approval_required, approver_profile, approver_skill,
+                        session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3523,6 +3660,9 @@ def create_task(
                         reasoning_effort,
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
+                        1 if approval_required else 0,
+                        approver_profile,
+                        approver_skill,
                         session_id,
                     ),
                 )
@@ -3552,6 +3692,9 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "approval_required": bool(approval_required) or None,
+                        "approver_profile": approver_profile,
+                        "approver_skill": approver_skill,
                     },
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
@@ -3819,6 +3962,71 @@ def set_reasoning_effort(
         )
     # Task-mutation observer (RFC #58548), fired AFTER the txn commits.
     notify_task_updated(conn, task_id, ("reasoning_effort",))
+    return True
+
+
+def set_approval_policy(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    approval_required: bool,
+    approver_profile: Optional[str] = None,
+    approver_skill: Optional[str] = None,
+) -> bool:
+    """Set (or clear) a task's per-task approval policy (#29457).
+
+    Writes exactly the values given: ``approver_profile=None`` clears the
+    designated approver (parked tasks will wait for human review),
+    ``approval_required=False`` disables the gate entirely. The approver
+    fields may be pre-staged while the flag is off so enabling later is a
+    single flip.
+
+    The policy is consulted when :func:`complete_task` runs, so — like the
+    model override — it may be changed mid-flight on a running task and
+    takes effect at completion time. Refused on done/archived tasks: past
+    that point there is no future completion for the policy to govern.
+    Returns True on success.
+    """
+    approver_profile = (approver_profile or "").strip() or None
+    approver_skill = (approver_skill or "").strip() or None
+    if approval_required or approver_profile or approver_skill:
+        _validate_approval_refs(approver_profile, approver_skill)
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if row["status"] in ("done", "archived"):
+            raise RuntimeError(
+                f"cannot set approval policy on {row['status']} task {task_id} "
+                "(the policy only governs a future completion)"
+            )
+        conn.execute(
+            "UPDATE tasks SET approval_required = ?, approver_profile = ?, "
+            "approver_skill = ? WHERE id = ?",
+            (
+                1 if approval_required else 0,
+                approver_profile,
+                approver_skill,
+                task_id,
+            ),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "approval_policy_set",
+            {
+                "approval_required": bool(approval_required),
+                "approver_profile": approver_profile,
+                "approver_skill": approver_skill,
+            },
+        )
+    # Task-mutation observer (RFC #58548), fired AFTER the txn commits.
+    notify_task_updated(
+        conn, task_id,
+        ("approval_required", "approver_profile", "approver_skill"),
+    )
     return True
 
 
@@ -5358,6 +5566,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    actor: Optional[str] = None,
     fire_lifecycle_hook: bool = True,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
@@ -5391,6 +5600,28 @@ def complete_task(
     Any suspected phantom references are recorded as a
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
+
+    Approval policy gate (#29457): when the task carries
+    ``approval_required`` and the completer is not the designated
+    approver, the completion request is instead routed through
+    :func:`request_review` — the work parks in the existing review lane
+    (reassigned to ``approver_profile``, or left for human review when
+    none is set) rather than becoming done. The worker's handoff
+    summary/metadata ride along on the ``review_requested`` run so the
+    approver sees exactly what would have been recorded. Completing a
+    task already IN ``review`` is the approval act itself and is never
+    re-gated, so the human/agent approval verbs are unchanged.
+
+    ``actor`` names whoever asserts completion (the worker's profile, or
+    ``"user"`` from an anonymous CLI). ``None`` falls back to the task's
+    current assignee: before parking that is always the implementer, and
+    once parked in review the assignee IS the approver
+    (:func:`request_review` reassigned it), so the fallback implements
+    the same rule without every caller having to pass an identity.
+
+    Returns True when the task ended up done OR was successfully parked
+    for approval; callers that need to distinguish should re-read the
+    task's status afterwards (both tool and CLI surfaces do).
     """
     now = int(time.time())
     # Fail before validating cards or staging artifacts; re-check inside the
@@ -5424,6 +5655,48 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    # Approval-policy gate (#29457). Scoped to running/ready — exactly the
+    # states :func:`request_review` accepts — so the park rides the shared
+    # machinery unchanged. A completion arriving FROM ``review`` skips the
+    # gate: that call IS the sign-off (human or claimed reviewer).
+    gate_row = conn.execute(
+        "SELECT status, assignee, approval_required, "
+        "approver_profile, approver_skill FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if (
+        gate_row is not None
+        and gate_row["approval_required"]
+        and gate_row["status"] in ("running", "ready")
+    ):
+        approver = _canonical_assignee(gate_row["approver_profile"])
+        completer = (
+            _canonical_assignee(actor) if actor is not None
+            else gate_row["assignee"]
+        )
+        if approver is None or completer != approver:
+            park_metadata: dict = dict(metadata) if isinstance(metadata, dict) else {}
+            park_metadata["approval_policy"] = {
+                "approver_profile": approver,
+                "approver_skill": (
+                    (gate_row["approver_skill"] or "").strip() or None
+                ),
+            }
+            ok, reason = request_review(
+                conn, task_id,
+                summary=summary if summary is not None else result,
+                metadata=park_metadata,
+                reviewer=approver,
+                expected_run_id=expected_run_id,
+                # Workers prove ownership with expected_run_id; a caller
+                # without one is an explicit operator action (CLI /
+                # dashboard) and may override a live claim — mirroring how
+                # the dashboard PATCH already passes force=True.
+                force=expected_run_id is None,
+                with_reason=True,
+            )
+            return bool(ok)
 
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
@@ -10381,8 +10654,17 @@ def _dispatch_once_locked(
         # kanban lifecycle is already injected into every worker's system
         # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
         # review agent needs.
+        #
+        # Tasks parked by the per-task approval policy (#29457) may also
+        # name an ``approver_skill`` to auto-load into this review session
+        # (e.g. a domain checklist the sign-off must walk). It rides ON TOP
+        # of the lifecycle skill so the reviewer still knows the approve /
+        # request-changes verbs.
+        _review_skills = ["sdlc-review"]
+        if claimed.approver_skill:
+            _review_skills.append(claimed.approver_skill)
         claimed.skills = list(
-            dict.fromkeys([*(claimed.skills or []), "sdlc-review"])
+            dict.fromkeys([*(claimed.skills or []), *_review_skills])
         )
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:

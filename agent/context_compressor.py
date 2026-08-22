@@ -7030,14 +7030,33 @@ This compaction should PRIORITISE preserving all information related to the focu
             ):
                 prev_content = prev["content"]
                 new_content = msg["content"]
-                prev["content"] = (
+                merged_content = (
                     (prev_content + "\n\n" + new_content)
                     if prev_content and new_content
                     else (prev_content or new_content)
                 )
-                # Merged content invalidates the api_content sidecar (exact
-                # bytes previously sent for the pre-merge message).
-                drop_stale_api_content(prev)
+                if prev.get("display_kind") and not msg.get("display_kind"):
+                    # A timeline marker can be the surviving first row after a
+                    # marker supersede. Keep its bytes in the model-facing
+                    # sidecar, but let the absorbed human turn own transcript
+                    # presentation; otherwise frontends hide the whole carrier
+                    # (including the real prompt) as the marker event.
+                    msg_api_content = msg.get("api_content")
+                    if not isinstance(msg_api_content, str):
+                        msg_api_content = new_content
+                    prev["api_content"] = (
+                        (prev_content + "\n\n" + msg_api_content)
+                        if prev_content and msg_api_content
+                        else (prev_content or msg_api_content)
+                    )
+                    prev["content"] = new_content
+                    prev.pop("display_kind", None)
+                    prev.pop("display_metadata", None)
+                else:
+                    prev["content"] = merged_content
+                    # Merged content invalidates the api_content sidecar (exact
+                    # bytes previously sent for the pre-merge message).
+                    drop_stale_api_content(prev)
                 continue
             merged.append(msg)
         return merged

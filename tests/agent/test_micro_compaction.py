@@ -200,6 +200,32 @@ class TestMicroCompaction:
                 f"user text {original!r} must survive verbatim"
             )
 
+    def test_timeline_marker_absorbing_user_keeps_prompt_displayable(self):
+        marker = (
+            "[System: The active model for this chat has changed to k3. "
+            "From this point forward, use this runtime metadata.]"
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": marker,
+                "display_kind": "model_switch",
+                "display_metadata": {"provider": "openrouter"},
+            },
+            {
+                "role": "user",
+                "content": "the newest real prompt",
+                "api_content": "the newest real prompt\n\nplugin context",
+            },
+        ]
+
+        [merged] = ContextCompressor._merge_adjacent_user_turns(messages)
+
+        assert merged["content"] == "the newest real prompt"
+        assert merged["api_content"] == f"{marker}\n\nthe newest real prompt\n\nplugin context"
+        assert "display_kind" not in merged
+        assert "display_metadata" not in merged
+
     def test_cursor_is_derived_from_the_spliced_list(self):
         """The cursor must never carry over a pre-splice index.
 

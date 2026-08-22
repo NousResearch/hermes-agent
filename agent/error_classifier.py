@@ -1578,18 +1578,30 @@ def _classify_400(
             should_fallback=True,
         )
 
-    # Malformed message array (empty-content assistant stub, etc.). Must be
-    # checked BEFORE context_overflow: the input can be tiny, so the generic
-    # "400 + large session" heuristic would otherwise mis-route it into the
-    # compression loop and thrash until "Cannot compress further" on every
-    # retry (the request is unchanged, so compression cannot fix it). This is
-    # a deterministic request-shape rejection — fail fast as a non-retryable
-    # format_error and fall back. Checked against the message text AND the
-    # structured error code, since proxies (litellm/Bedrock) surface the
-    # signal in errorCode=INVALID_REQUEST_BODY.
+    # Malformed message array (empty-content assistant stub, etc.). Explicit
+    # transcript-shape wording is more specific than context overflow and must
+    # still fail fast. The generic ``invalid_request_body`` code is not: Copilot
+    # also stamps it on genuine context-window overflow responses. Let explicit
+    # overflow wording win over that generic code, otherwise a recoverable long
+    # session is permanently routed away from compression.
+    _has_context_overflow_signal = any(
+        p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS
+    )
+    _has_explicit_malformed_message_signal = any(
+        p in error_msg
+        for p in _INVALID_MESSAGE_BODY_PATTERNS
+        if p != "invalid_request_body"
+    )
+    _has_generic_invalid_body_signal = (
+        error_code_lower == "invalid_request_body"
+        or "invalid_request_body" in error_msg
+    )
     if (
-        any(p in error_msg for p in _INVALID_MESSAGE_BODY_PATTERNS)
-        or error_code_lower == "invalid_request_body"
+        _has_explicit_malformed_message_signal
+        or (
+            _has_generic_invalid_body_signal
+            and not _has_context_overflow_signal
+        )
     ):
         logger.warning(
             "Malformed message array 400 (invalid request body) classified as "
@@ -1617,7 +1629,7 @@ def _classify_400(
         )
 
     # Context overflow from 400
-    if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
+    if _has_context_overflow_signal:
         return result_fn(
             FailoverReason.context_overflow,
             retryable=True,

@@ -1261,6 +1261,36 @@ class TestThrottleVsOverflowDisambiguation:
 class TestExpandedOverflowPatterns:
     """New provider overflow wordings route into compression recovery."""
 
+    def test_copilot_invalid_request_body_with_explicit_overflow_compresses(self):
+        """A generic error code must not override explicit overflow wording."""
+        message = (
+            "Your input exceeds the context window of this model. "
+            "Please adjust your input and try again."
+        )
+        e = MockAPIError(
+            message,
+            status_code=400,
+            body={
+                "error": {
+                    "message": message,
+                    "code": "invalid_request_body",
+                }
+            },
+        )
+
+        result = classify_api_error(
+            e,
+            provider="copilot",
+            model="gpt-5.6-sol",
+            approx_tokens=805_000,
+            context_length=922_000,
+            num_messages=1_414,
+        )
+
+        assert result.reason == FailoverReason.context_overflow
+        assert result.retryable is True
+        assert result.should_compress is True
+
     def test_maximum_allowed_input_length_is_overflow(self):
         # Together/Fireworks-style wording — matched no pattern before.
         e = Exception(

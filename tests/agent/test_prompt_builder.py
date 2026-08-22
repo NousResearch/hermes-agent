@@ -674,6 +674,49 @@ class TestFindGitRoot:
         if result is not None:
             assert (result / ".git").exists()
 
+    def test_skips_permission_error_on_exists(self, tmp_path):
+        """_find_git_root must not raise when exists() raises PermissionError (#85758)."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        start = tmp_path / "work"
+        start.mkdir()
+        with patch.object(Path, "exists", side_effect=PermissionError("Permission denied")):
+            assert _find_git_root(start) is None
+
+    def test_permission_error_on_resolve_returns_none(self, tmp_path):
+        """Unreadable start.resolve() must not crash prompt build (#85758)."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        start = tmp_path / "work"
+        start.mkdir()
+        with patch.object(Path, "resolve", side_effect=PermissionError("Permission denied")):
+            assert _find_git_root(start) is None
+
+    def test_permission_error_continues_to_accessible_git(self, tmp_path):
+        """Skip inaccessible parents and still find a higher accessible .git (#85758)."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        root_git = tmp_path / "root_git"
+        denied = root_git / "denied"
+        work = denied / "work"
+        work.mkdir(parents=True)
+        (root_git / ".git").mkdir()
+
+        original_exists = Path.exists
+
+        def patched_exists(self):
+            # Walk order: work → denied → root_git → ...
+            # Simulate denied/.git being unreadable while root_git/.git works.
+            if self == denied / ".git":
+                raise PermissionError("Permission denied")
+            return original_exists(self)
+
+        with patch.object(Path, "exists", patched_exists):
+            assert _find_git_root(work) == root_git
+
 
 class TestStripYamlFrontmatter:
     def test_strips_frontmatter(self):

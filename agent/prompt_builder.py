@@ -90,11 +90,23 @@ def _find_git_root(start: Path) -> Optional[Path]:
 
     Returns the directory containing ``.git``, or ``None`` if we hit the
     filesystem root without finding one.
+
+    Inaccessible parents (PermissionError/OSError from ``exists()``) are
+    skipped so gateway profiles with an unreadable ``terminal.cwd`` still
+    build a system prompt (#85758).
     """
-    current = start.resolve()
+    try:
+        current = start.resolve()
+    except OSError:
+        # Unreadable start path — treat as no git root rather than crash prompt build.
+        return None
     for parent in [current, *current.parents]:
-        if (parent / ".git").exists():
-            return parent
+        try:
+            if (parent / ".git").exists():
+                return parent
+        except OSError:
+            # PermissionError is an OSError; also catch other stat failures.
+            continue
     return None
 
 
@@ -109,7 +121,10 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     ``None`` if nothing is found.
     """
     stop_at = _find_git_root(cwd)
-    current = cwd.resolve()
+    try:
+        current = cwd.resolve()
+    except OSError:
+        return None
 
     # When there is no git root, only check cwd itself – walking parents
     # could pick up a .hermes.md planted in /tmp, /home, etc.
@@ -118,8 +133,12 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     for directory in search_dirs:
         for name in _HERMES_MD_NAMES:
             candidate = directory / name
-            if candidate.is_file():
-                return candidate
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                # PermissionError is an OSError; skip inaccessible candidates.
+                continue
         if stop_at and directory == stop_at:
             break
     return None

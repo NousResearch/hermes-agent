@@ -465,6 +465,7 @@ from hermes_cli.subcommands.debug import build_debug_parser
 from hermes_cli.subcommands.backup import build_backup_parser
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
 from hermes_cli.subcommands.import_agent import build_import_agent_parser
+from hermes_cli.subcommands.cloud import build_cloud_parser
 from hermes_cli.subcommands.config import build_config_parser
 from hermes_cli.subcommands.skin import build_skin_parser
 from hermes_cli.subcommands.console import build_console_parser
@@ -5702,6 +5703,22 @@ def cmd_import(args):
     from hermes_cli.backup import run_import
 
     run_import(args)
+
+
+def cmd_cloud(args):
+    """Hermes Cloud migration commands."""
+    sub = getattr(args, "cloud_command", None)
+    if sub != "export":
+        print(
+            "usage: hermes cloud export [-o FILE] [--force] "
+            "[--include-secrets] [--include-history]",
+            file=sys.stderr,
+        )
+        return 1
+
+    from hermes_cli.cloud_migrate import run_cloud_export
+
+    return run_cloud_export(args)
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
@@ -12861,6 +12878,7 @@ def main():
     # backup command  (parser built in hermes_cli/subcommands/backup.py)
     # =========================================================================
     build_backup_parser(subparsers, cmd_backup=cmd_backup)
+    build_cloud_parser(subparsers, cmd_cloud=cmd_cloud)
 
     # =========================================================================
     # checkpoints command

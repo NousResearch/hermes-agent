@@ -71,6 +71,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes backup` | Back up Hermes home directory to a zip file. |
 | `hermes checkpoints` | Inspect / prune / clear `~/.hermes/checkpoints/` (the shadow store used by `/rollback`). Run with no args for a status overview. |
 | `hermes import` | Restore a Hermes backup from a zip file. |
+| `hermes cloud export` | Package this Hermes setup as a migration bundle for Hermes Cloud. |
 | `hermes logs` | View, tail, and filter agent/gateway/error log files. |
 | `hermes config` | Show, edit, migrate, and query configuration files. |
 | `hermes skin` | List, switch, and tweak display skins. |
@@ -923,6 +924,23 @@ hermes debug share --expire 30  # Keep paste for 30 days
 hermes debug share --nous       # Upload a private diagnostics bundle for Nous support
 hermes debug share --local      # Print report to terminal (no upload)
 ```
+
+## `hermes cloud`
+
+```bash
+hermes cloud export [options]
+```
+
+Create a migration bundle for Hermes Cloud: a zip of your configuration, custom skills, memory, SOUL, and cron jobs, ready to import into a newly provisioned cloud instance. The archive uses the same walker and SQLite snapshot discipline as `hermes backup` and is also a valid `hermes import` archive.
+
+| Option | Description |
+|--------|-------------|
+| `-o`, `--output <path>` | Output path for the zip (default: `./hermes_cloud_migration_<host>_<timestamp>.zip`). |
+| `-f`, `--force` | Overwrite an existing bundle at the output path. |
+| `--include-history` | Include chat history (`state.db`) in the bundle. Excluded by default. |
+| `--include-secrets` | Include `.env` and `auth.json` in the bundle. Excluded by default; the cloud importer discards secret files regardless. |
+
+Every bundle carries a `migration-manifest.json` at its root recording the exporting tool version, config schema version, and what the archive contains; the importing side uses it to refuse bundles it cannot safely restore before touching the home directory.
 
 ## `hermes backup`
 

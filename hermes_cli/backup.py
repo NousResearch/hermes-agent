@@ -22,7 +22,7 @@ import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import AbstractSet, Any, Dict, List, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
 from utils import (
@@ -320,8 +320,14 @@ def _iter_external_files(base: Path) -> List[Path]:
     return files
 
 
-def _should_exclude(rel_path: Path) -> bool:
-    """Return True if *rel_path* (relative to hermes root) should be skipped."""
+def _should_exclude(
+    rel_path: Path, extra_names: Optional[AbstractSet[str]] = None
+) -> bool:
+    """Return True if *rel_path* (relative to hermes root) should be skipped.
+
+    ``extra_names`` adds basename-level exclusions on top of the built-in
+    sets (used by ``hermes cloud export`` to drop secret files).
+    """
     parts = rel_path.parts
 
     for part in parts:
@@ -339,15 +345,23 @@ def _should_exclude(rel_path: Path) -> bool:
     if name in _EXCLUDED_NAMES:
         return True
 
+    if extra_names and name in extra_names:
+        return True
+
     if name.endswith(_EXCLUDED_SUFFIXES):
         return True
 
     return False
 
 
-def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> bool:
+def _should_skip_backup_file(
+    abs_path: Path,
+    rel_path: Path,
+    out_path: Path,
+    extra_exclude_names: Optional[AbstractSet[str]] = None,
+) -> bool:
     """Return True when a candidate file should not be written to a backup zip."""
-    if _should_exclude(rel_path):
+    if _should_exclude(rel_path, extra_names=extra_exclude_names):
         return True
 
     # zipfile.write() follows file symlinks, so skip links before any archive
@@ -655,8 +669,16 @@ def run_backup(args) -> None:
         raise SystemExit(2) from exc
 
 
-def _run_backup_locked(args, hermes_root: Path) -> None:
-    """Write a full backup while the cross-process backup slot is held."""
+def _run_backup_locked(
+    args,
+    hermes_root: Path,
+    extra_exclude_names: Optional[AbstractSet[str]] = None,
+) -> None:
+    """Write a full backup while the cross-process backup slot is held.
+
+    ``extra_exclude_names`` adds basename-level exclusions on top of the
+    built-in sets (used by ``hermes cloud export`` to drop secret files).
+    """
 
     # Determine output path
     out_path = None
@@ -711,7 +733,9 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
             fpath = dp / fname
             rel = fpath.relative_to(hermes_root)
 
-            if _should_skip_backup_file(fpath, rel, out_path):
+            if _should_skip_backup_file(
+                fpath, rel, out_path, extra_exclude_names=extra_exclude_names
+            ):
                 continue
 
             files_to_add.append((fpath, rel))

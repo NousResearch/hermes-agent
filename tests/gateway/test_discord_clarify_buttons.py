@@ -224,11 +224,12 @@ class TestDiscordSendClarify:
 
         assert result.success is True
         assert result.message_id == "123456"
-        # Verify channel.send was called with embed + view kwargs
+        # Verify channel.send uses one self-contained text prompt plus the view.
         channel.send.assert_called_once()
         kwargs = channel.send.call_args.kwargs
-        assert "embed" in kwargs
         assert "view" in kwargs
+        assert "content" in kwargs
+        assert "embed" not in kwargs
         assert isinstance(kwargs["view"], ClarifyChoiceView)
         # 3 choice buttons + 1 Other
         assert len(kwargs["view"].children) == 4
@@ -253,9 +254,10 @@ class TestDiscordSendClarify:
         assert result.success is True
         channel.send.assert_called_once()
         kwargs = channel.send.call_args.kwargs
-        # Open-ended path renders embed but no view (text-capture handles reply)
-        assert "embed" in kwargs
+        # Open-ended path renders text but no view (text-capture handles reply)
+        assert "content" in kwargs
         assert "view" not in kwargs
+        assert "embed" not in kwargs
 
 
     @pytest.mark.asyncio

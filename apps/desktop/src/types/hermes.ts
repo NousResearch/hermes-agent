@@ -721,19 +721,45 @@ export interface StarmapNode {
   id: string
   label: string
   kind: 'memory' | 'skill'
-  memorySource?: 'memory' | 'profile'
+  /** 'memory' (MEMORY.md) | 'profile' (USER.md) | a memory-provider name
+   *  ('honcho', …) for nodes contributed by an external provider's
+   *  journey_cards(). Provider nodes are read-only in the journey. */
+  memorySource?: string
+  /** Honcho conclusion taxonomy for provider memory nodes: 'explicit' (a
+   *  directly-stated fact — a true memory), 'inductive' / 'deductive' (a
+   *  derived inference — a conclusion). Absent for file memories, skills, and
+   *  older backends that don't emit it — treated as a plain memory. This is
+   *  the signal that separates true memories from conclusions in the map. */
+  memoryLevel?: string
+  /** Where the knowledge originally came from: 'hermes' (born in a Hermes
+   *  conversation / file memory / skill) or an import source ('chatgpt', …).
+   *  Backend stamps provider nodes; absent (older backend) means 'hermes'. */
+  origin?: string
   timestamp?: null | number
   category: string
   useCount: number
   state: string
   createdBy: null | string
   pinned: boolean
+  /** Provider-side session this entry was derived from (e.g. a Honcho
+   *  conclusion's session). For Hermes-born sessions this doubles as the
+   *  Hermes session id; for imported history it only resolves in the
+   *  provider backend. Absent on skills and file-based memory chunks. */
+  sessionId?: string
+  /** Multi-profile mode: which profile this node belongs to. Absent in
+   *  single-profile mode (backwards compatible). */
+  profile?: string
+  /** Multi-profile mode: the original node id without the profile prefix,
+   *  used for mutations/edits. */
+  _originalId?: string
 }
 
 /** A declared `related_skills` link; both endpoints are guaranteed to be nodes. */
 export interface StarmapEdge {
   source: string
   target: string
+  /** Multi-profile mode: which profile this edge belongs to. */
+  profile?: string
 }
 
 export interface StarmapCluster {
@@ -743,10 +769,13 @@ export interface StarmapCluster {
 
 /** Freeform memory rendered as a card — never a graph node. */
 export interface StarmapMemoryCard {
-  source: 'memory' | 'profile'
+  /** 'memory' | 'profile' | a memory-provider name (see StarmapNode.memorySource). */
+  source: string
   timestamp?: null | number
   title: string
   body: string
+  /** Multi-profile mode: which profile this card belongs to. */
+  profile?: string
 }
 
 export interface StarmapGraph {
@@ -755,6 +784,15 @@ export interface StarmapGraph {
   clusters: StarmapCluster[]
   memory: StarmapMemoryCard[]
   stats: Record<string, unknown>
+  /** Active external memory provider ('honcho', …) or null/absent (file-based
+   *  memory only). Gates provider-specific journey UI — notably the conclusion
+   *  node kind, which is only meaningful when Honcho is the active provider.
+   *  Absent from an un-upgraded backend, so treat missing as null. */
+  memoryProvider?: null | string
+  /** Multi-profile mode: true when the graph merges multiple profiles. */
+  multiProfile?: boolean
+  /** Multi-profile mode: the list of profiles included in this graph. */
+  profiles?: string[]
 }
 
 export interface ContextUsageCategory {

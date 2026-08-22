@@ -402,3 +402,78 @@ class MemoryProvider(ABC):
         from config/env only. Default returns an empty list (nothing external).
         """
         return []
+
+    def journey_cards(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Return durable memory entries for the learning-journey graph.
+
+        The journey surfaces (``hermes journey``, the TUI ``/journey``
+        overlay, and the desktop Star Map) render what the agent has learned
+        over time. By default that graph only sees built-in memory
+        (``MEMORY.md`` / ``USER.md``); implementing this hook lets an external
+        provider's durable facts appear alongside them as first-class
+        memory nodes.
+
+        Each card is a dict with:
+
+        - ``body`` (str, required): the fact/entry text.
+        - ``title`` (str, optional): short label; defaults to the body's
+          first line.
+        - ``timestamp`` (optional): unix seconds, ISO-8601 string, or a
+          ``datetime`` — when the entry was learned. ``None`` is allowed
+          (the node renders without a date bucket).
+        - ``session_id`` (str, optional): the provider-side session this
+          entry was derived from, when known. Journey surfaces use it two
+          ways: resolving the originating Hermes conversation (when the
+          provider's session naming maps onto Hermes session ids) and
+          fetching the source corpus via ``journey_session_messages``.
+
+        Contract:
+
+        - MUST be callable without ``initialize()`` — journey views run
+          outside any chat session. Resolve config/credentials yourself.
+        - MUST be best-effort and non-fatal: backend down, not configured,
+          or any error → return ``[]`` (never raise). Journey rendering
+          must never break because a memory backend is unreachable.
+        - SHOULD be fast: called from interactive UI paths. Cap work at
+          ``limit`` entries and use short network timeouts.
+        - Cards are READ-ONLY in the journey: edit/delete for provider
+          nodes is refused and points users at the provider's own tools.
+
+        Default returns an empty list (provider contributes nothing).
+        """
+        return []
+
+    def journey_session_messages(
+        self, session_id: str, limit: int = 500
+    ) -> List[Dict[str, Any]]:
+        """Return the raw source messages of one provider-side session.
+
+        Journey surfaces call this when the user asks to read the original
+        corpus a ``journey_cards`` entry was derived from (the card's
+        ``session_id``). This covers provider-only history — e.g. imported
+        conversations that never existed as Hermes sessions — where the
+        provider backend is the only place the source data lives.
+
+        Each message is a dict with:
+
+        - ``content`` (str, required): the message text.
+        - ``peer`` (str, optional): who authored it (provider peer id).
+        - ``role`` (str, optional): ``"user"`` or ``"assistant"`` when the
+          provider can tell which peer is the human. Used when the corpus is
+          materialized back into a Hermes session; consumers fall back to a
+          first-peer-is-user heuristic when absent.
+        - ``timestamp`` (optional): unix seconds, ISO-8601 string, or a
+          ``datetime`` — when the message was created.
+
+        Contract mirrors ``journey_cards``:
+
+        - MUST be callable without ``initialize()`` — resolve config and
+          credentials yourself.
+        - MUST be best-effort and non-fatal: unknown session, backend down,
+          or any error → return ``[]`` (never raise).
+        - SHOULD be fast and bounded: return at most ``limit`` messages in
+          chronological order and use short network timeouts.
+
+        Default returns an empty list (no corpus available).
+        """
+        return []

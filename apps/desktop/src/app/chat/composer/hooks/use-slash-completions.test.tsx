@@ -154,4 +154,42 @@ describe('useSlashCompletions', () => {
 
     expect(commandsOf(await completions(api, 'research'))).toEqual(['/research', '/research-paper-writing'])
   })
+
+  // /recall is a desktop-only command with no backend twin, so the backend
+  // completion source (commands.catalog / complete.slash) never returns it.
+  // The fetcher must seed it locally or it "runs on Enter but never appears in
+  // autocomplete" — the exact bug reported.
+  it('surfaces desktop-only /recall on a bare slash even though the backend omits it', async () => {
+    const request = vi.fn().mockResolvedValue(CATALOG)
+    const api = harness({ request } as unknown as HermesGateway)
+
+    expect(commandsOf(await completions(api, ''))).toContain('/recall')
+  })
+
+  it('surfaces desktop-only /recall for a typed query the backend has no match for', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(method === 'commands.catalog' ? CATALOG : { items: [] })
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    await completions(api, '')
+
+    expect(commandsOf(await completions(api, 'recall'))).toContain('/recall')
+  })
+
+  it('does not duplicate a command the backend already returns', async () => {
+    // /journey HAS a backend twin; the local seed must dedupe by canonical name.
+    const catalogWithJourney = {
+      categories: [{ name: 'Session', pairs: [['/journey', 'Open the memory graph']] }],
+      pairs: [['/journey', 'Open the memory graph']]
+    }
+
+    const request = vi.fn().mockResolvedValue(catalogWithJourney)
+    const api = harness({ request } as unknown as HermesGateway)
+
+    const journeys = commandsOf(await completions(api, '')).filter(command => command === '/journey')
+
+    expect(journeys).toEqual(['/journey'])
+  })
 })

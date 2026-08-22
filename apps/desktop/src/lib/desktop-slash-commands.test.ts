@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  desktopBuiltinSlashCompletions,
   desktopSkinSlashCompletions,
   desktopSlashCommandArgumentMode,
   desktopSlashDescription,
@@ -173,6 +174,39 @@ describe('desktop slash command curation', () => {
     // Aliases execute but stay out of the popover.
     expect(isDesktopSlashSuggestion('/memory-graph')).toBe(false)
     expect(desktopSlashUnavailableMessage('/journey')).toBeNull()
+  })
+
+  it('routes /recall to the memory graph recall action and surfaces it', () => {
+    // /recall is DESKTOP-ONLY (no backend twin), so it must be both executable
+    // and discoverable purely from the local table — the backend completion
+    // source never emits it. Regression guard for autocomplete showing
+    // "No matches" while Enter still ran the command.
+    expect(resolveDesktopCommand('/recall')?.surface).toEqual({ kind: 'action', action: 'recall' })
+    expect(isDesktopSlashCommand('/recall')).toBe(true)
+    expect(isDesktopSlashSuggestion('/recall')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/recall')).toBeNull()
+  })
+
+  it('completes desktop-only built-ins the backend never emits (e.g. /recall)', () => {
+    // The popover sources candidates from the backend and only filters them; a
+    // desktop-only command like /recall must be seeded from this list so
+    // discovery matches local dispatch.
+    const all = desktopBuiltinSlashCompletions('')
+    const recall = all.find(item => item.text === '/recall')
+
+    expect(recall).toBeDefined()
+    expect(recall?.meta).toContain('Search the memory graph')
+
+    // Prefix match, canonical names only.
+    expect(desktopBuiltinSlashCompletions('/rec').map(item => item.text)).toContain('/recall')
+    expect(desktopBuiltinSlashCompletions('/journey').map(item => item.text)).toEqual(['/journey'])
+
+    // Excludes hidden (picker chrome), unavailable, and alias entries.
+    const names = new Set(all.map(item => item.text))
+    expect(names.has('/model')).toBe(false) // hidden
+    expect(names.has('/clear')).toBe(false) // unavailable (terminal-only)
+    expect(names.has('/memory-graph')).toBe(false) // alias of /journey
+    expect(names.has('/journey')).toBe(true)
   })
 
   it('allows aliases to execute without cluttering the popover', () => {

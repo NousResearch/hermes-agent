@@ -27,9 +27,19 @@ import type {
 export interface Scene {
   adjacency: Map<string, Set<string>>
   byId: Map<string, SimNode>
+  // Node ids that are Honcho conclusions — drawn with a distinct glyph + the
+  // palette's conclusionInk so durable derived facts stand out. Empty when the
+  // active provider isn't Honcho. Kept as a caller-computed set so the paint
+  // loop never re-runs the provider classification.
+  conclusionIds?: null | Set<string>
   ctx: CanvasRenderingContext2D
   dpr: number
   fades: FadeBuckets
+  // Filter-only exploration: when non-null, ONLY these node ids (and links
+  // between two of them) are painted — the rest of the map is hidden so the
+  // user explores just the filtered subset. Null (the default) paints
+  // everything. Distinct from the search pulse, which highlights-in-place.
+  filterMatches?: null | Set<string>
   focusId: null | string
   hoverId: null | string
   hoverLink: null | string
@@ -166,9 +176,11 @@ export function drawScene(scene: Scene): DrawResult {
   const {
     adjacency,
     byId,
+    conclusionIds = null,
     ctx,
     dpr,
     fades,
+    filterMatches = null,
     focusId,
     hoverId,
     hoverLink,
@@ -201,7 +213,7 @@ export function drawScene(scene: Scene): DrawResult {
 
   const erec = (rec: number) => (frontier > 0 ? clamp(rec / frontier, 0, 1) : 1)
   const { h, w } = size
-  const { bandInk, base, bg, c, chipBg, darkTheme, inkInv, memoryInk, skillInk } = palette
+  const { bandInk, base, bg, c, chipBg, conclusionInk, darkTheme, inkInv, memoryInk, skillInk } = palette
   const { bandAlpha, lightSize, ringAlpha, sheen } = RING_PARAMS[darkTheme ? 'dark' : 'light']
 
   let animating = false
@@ -405,6 +417,12 @@ export function drawScene(scene: Scene): DrawResult {
       continue
     }
 
+    // Filter-only mode: an edge shows only when BOTH endpoints survived the
+    // filter — a dangling edge into a hidden node would read as a broken line.
+    if (filterMatches && !(filterMatches.has(s.id) && filterMatches.has(t.id))) {
+      continue
+    }
+
     // A jump route only exists once both of its endpoints have ignited.
     const revealed = seen(s.rec) && seen(t.rec)
 
@@ -467,6 +485,14 @@ export function drawScene(scene: Scene): DrawResult {
   const revealedRings = new Set<number>()
 
   for (const n of nodes) {
+    // Filter-only mode: hide every node that didn't survive the filter so the
+    // user explores only the filtered subset. The node also drops out of the
+    // fade buckets naturally (never drawn → no ease), so re-showing it later
+    // births it back in cleanly.
+    if (filterMatches && !filterMatches.has(n.id)) {
+      continue
+    }
+
     // The land comes first: a node waits for the ring that CAPS its region (its
     // outer date gridline) to grow in before it ignites — so the ring is always
     // drawn before any star inside it, not after.
@@ -508,8 +534,13 @@ export function drawScene(scene: Scene): DrawResult {
     const sy = projY(n.y * posScale)
 
     ctx.globalAlpha = vis
-    const nodeInk = nodeHigh ? base : n.kind === 'memory' ? memoryInk : skillInk
-    const shape = NODE_SHAPE[n.kind]
+    // Conclusions (Honcho durable facts) get their own vivid ink + a hexagon
+    // glyph so they read as the map's standout nodes — distinct from a memory
+    // diamond and a skill orb. Highlighted nodes still flip to `base` like the
+    // rest so focus/neighbor emphasis stays consistent.
+    const isConcl = !!conclusionIds && conclusionIds.has(n.id)
+    const nodeInk = nodeHigh ? base : isConcl ? conclusionInk : n.kind === 'memory' ? memoryInk : skillInk
+    const shape = isConcl ? 'hexagon' : NODE_SHAPE[n.kind]
 
     if (shape === 'circle') {
       // Highlighted orbs pop full bright; others darken so the sheen reads. The
@@ -860,5 +891,72 @@ export function drawScramble({
   }
 
   ctx.restore()
+  ctx.globalAlpha = 1
+}
+
+// Search-match pulse: a breathing halo around every matched node, drawn live
+// each frame (same layer discipline as the scramble — it's animation, so it
+// stays out of the cached static scene). Reads the node's CURRENT world
+// position, so pulses track drags/zooms for free.
+export function drawSearchPulse({
+  conclusionIds = null,
+  ctx,
+  dpr,
+  matches,
+  nodes,
+  now,
+  palette,
+  vp
+}: {
+  conclusionIds?: null | Set<string>
+  ctx: CanvasRenderingContext2D
+  dpr: number
+  matches: Set<string>
+  nodes: SimNode[]
+  now: number
+  palette: Palette
+  vp: Viewport
+}): void {
+  if (matches.size === 0) {
+    return
+  }
+
+  const { conclusionInk, memoryInk, skillInk } = palette
+  const projX = (wx: number) => wx * vp.k + vp.x
+  const projY = (wy: number) => wy * vp.k * TILT + vp.y
+
+  // One shared phase (~1.6s cycle) keeps a large result set reading as a
+  // single coordinated "these are your matches" signal instead of noise.
+  const phase = (now % 1600) / 1600
+  const swell = 0.5 - 0.5 * Math.cos(phase * Math.PI * 2) // 0→1→0, eased
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+  for (const n of nodes) {
+    if (!matches.has(n.id)) {
+      continue
+    }
+
+    const isConcl = !!conclusionIds && conclusionIds.has(n.id)
+    const sx = projX(n.x)
+    const sy = projY(n.y)
+    const r = nodeRadius(n) + 3 + swell * 7
+    const ink = isConcl ? conclusionInk : n.kind === 'memory' ? memoryInk : skillInk
+    const shape = isConcl ? 'hexagon' : NODE_SHAPE[n.kind]
+
+    // Outer breathing ring…
+    ctx.globalAlpha = 0.55 * (1 - swell) + 0.15
+    ctx.strokeStyle = rgba(ink, 1)
+    ctx.lineWidth = 1.6
+    shapePath(ctx, shape, sx, sy, r)
+    ctx.stroke()
+
+    // …and a steady inner glow so matches stay findable at the dim end.
+    ctx.globalAlpha = 0.35
+    ctx.lineWidth = 1
+    shapePath(ctx, shape, sx, sy, nodeRadius(n) + 2.5)
+    ctx.stroke()
+  }
+
   ctx.globalAlpha = 1
 }

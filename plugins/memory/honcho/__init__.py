@@ -275,6 +275,141 @@ class HonchoMemoryProvider(MemoryProvider):
             pass
         return paths
 
+    def journey_cards(self, limit: int = 10000) -> List[Dict[str, Any]]:
+        """Conclusions about the user peer, for the learning-journey graph.
+
+        Conclusions are Honcho's durable derived facts — the closest analog
+        to a MEMORY.md entry — each carrying a server ``created_at``, which
+        is exactly what the journey timeline buckets on.
+
+        Session-independent by contract: resolves config and builds the SDK
+        client directly (``get_honcho_client`` handles OAuth refresh, local
+        placeholder keys, and the configured request timeout), never touching
+        the session manager. Both observer scopes are read — the user's
+        self-conclusions and the AI peer's conclusions about the user — since
+        ``observation_mode`` routing (see ``_conclusions_scope``) means either
+        may hold the facts. Any failure → ``[]``, per the ABC contract.
+        """
+        try:
+            from .client import HonchoClientConfig, get_honcho_client
+
+            cfg = HonchoClientConfig.from_global_config()
+            if not cfg.enabled or not cfg.peer_name:
+                return []
+            client = get_honcho_client(cfg)
+            user_id = cfg.peer_name
+            cards: List[Dict[str, Any]] = []
+            seen: set = set()
+            for observer_id in dict.fromkeys((user_id, cfg.ai_peer)):
+                if len(cards) >= limit:
+                    break
+                try:
+                    scope = client.peer(observer_id).conclusions_of(user_id)
+                    # Iterating the page object auto-paginates (SyncPage) —
+                    # .items alone would silently cap the scope at one page
+                    # and hide older conclusions (e.g. a bulk history import)
+                    # from the timeline. The early break stops lazy fetches.
+                    page_iter = scope.list(size=100)
+                except Exception:
+                    continue  # one scope failing must not hide the other
+                try:
+                    for c in page_iter:
+                        content = str(getattr(c, "content", "") or "").strip()
+                        cid = getattr(c, "id", None)
+                        if not content or (cid and cid in seen):
+                            continue
+                        if cid:
+                            seen.add(cid)
+                        cards.append({
+                            "body": content,
+                            "timestamp": getattr(c, "created_at", None),
+                            "session_id": getattr(c, "session_id", None),
+                            # Honcho's own taxonomy: 'explicit' = a directly
+                            # stated fact (a true memory); 'inductive' /
+                            # 'deductive' = a derived inference (a conclusion).
+                            # The journey graph separates memories from
+                            # conclusions on this. Missing on older servers.
+                            "level": (str(getattr(c, "level", "") or "").strip().lower() or None),
+                        })
+                        if len(cards) >= limit:
+                            break
+                except Exception:
+                    continue  # mid-pagination failure keeps what we have
+            return cards
+        except Exception:
+            return []
+
+    def journey_session_messages(
+        self, session_id: str, limit: int = 500
+    ) -> List[Dict[str, Any]]:
+        """Raw messages of one Honcho session — the corpus behind a conclusion.
+
+        Session-independent by contract (same as ``journey_cards``): builds
+        the SDK client directly and never touches the session manager. The
+        SDK's ``client.session(id)`` is get-or-create, so an unknown id would
+        CREATE an empty session server-side — guard by probing the workspace
+        session list for the id first. Any failure → ``[]``.
+        """
+        sid = str(session_id or "").strip()
+        if not sid:
+            return []
+        try:
+            from .client import HonchoClientConfig, get_honcho_client
+
+            cfg = HonchoClientConfig.from_global_config()
+            if not cfg.enabled:
+                return []
+            client = get_honcho_client(cfg)
+
+            # Existence probe: sessions() lists without creating. filters use
+            # the public API's id key; fall back to a bounded scan when the
+            # filtered call errors (older server without id filters).
+            exists = False
+            try:
+                for s in client.sessions({"id": sid}, size=1):
+                    if str(getattr(s, "id", "")) == sid:
+                        exists = True
+                    break
+            except Exception:
+                try:
+                    scanned = 0
+                    for s in client.sessions(size=100):
+                        if str(getattr(s, "id", "")) == sid:
+                            exists = True
+                            break
+                        scanned += 1
+                        if scanned >= 2000:
+                            break
+                except Exception:
+                    return []
+            if not exists:
+                return []
+
+            session = client.session(sid)
+            out: List[Dict[str, Any]] = []
+            user_peer = str(cfg.peer_name or "")
+            for m in session.messages(size=min(100, max(1, limit))):
+                content = str(getattr(m, "content", "") or "")
+                if not content.strip():
+                    continue
+                peer = str(getattr(m, "peer_id", "") or "")
+                out.append({
+                    "content": content,
+                    "peer": peer,
+                    # Honcho knows which peer is the human: the configured
+                    # user peer. Everything else (hermes, chatgpt, any other
+                    # AI peer) speaks as the assistant. Downstream consumers
+                    # (session materialization) rely on this instead of
+                    # guessing from peer names.
+                    "role": "user" if user_peer and peer == user_peer else "assistant",
+                    "timestamp": getattr(m, "created_at", None),
+                })
+                if len(out) >= limit:
+                    break
+            return out
+        except Exception:
+            return []
+
     def __init__(self, query_rewriter: Optional[Callable[[str], str]] = None):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig

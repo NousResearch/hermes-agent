@@ -1,16 +1,25 @@
+import { useStore } from '@nanostores/react'
 import { type Simulation } from 'd3-force'
 import { atom, type WritableAtom } from 'nanostores'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useThemeEpoch } from '@/hooks/use-theme-epoch'
+import { useI18n } from '@/i18n'
+import { Search, SlidersHorizontal } from '@/lib/icons'
 import { createDoubleTapDetector, isSmartZoomWheel } from '@/lib/trackpad-gestures'
+import { $activeProfile } from '@/store/profile'
 import type { StarmapGraph } from '@/types/hermes'
 
-import { computePalette, memoryInkFor, resolveRgb, rgba } from './color'
+import { computePalette, conclusionInkFor, memoryInkFor, resolveRgb, rgba } from './color'
 import { RING_OUTER, TILT, ZOOM_MAX, ZOOM_MIN } from './constants'
 import { clamp, distToSegmentSq, fitScale, fitViewport, nodeRadius } from './geometry'
 import { NodeContextMenu, type NodeMenuTarget } from './node-context-menu'
-import { drawScene, drawScramble } from './render'
+import { NodeSessionsDialog } from './node-sessions-dialog'
+import { ProfileSelector } from './profile-selector'
+import type { RecallNodeRef } from './recall'
+import { drawScene, drawScramble, drawSearchPulse } from './render'
+import { conclusionsEnabled, isConclusion } from './search'
+import { SearchSidebar } from './search-sidebar'
 import { decodeShareCode, encodeShareCode, ShareCodeError } from './share-code'
 import { ShareControls } from './share-controls'
 import { buildSimulation } from './simulation'
@@ -95,19 +104,44 @@ function RevealLabel({ axis, revealStore }: { axis: TimeAxis; revealStore: Writa
 // A tilted, top-down star map of what Hermes has learned. Time is RADIAL: oldest
 // at the core, newest on the outer rings. This component owns the refs, effects
 // and pointer wiring; layout lives in simulation.ts and painting in render.ts.
+
 export function StarMap({
   graph,
   imported = false,
+  initialSearchFocus = false,
+  onAddToSession,
   onImport,
-  onResetMap
+  onInsertIntoProfile,
+  onOpenSession,
+  onRecallIntoChat,
+  onResetMap,
+  onStartConversation,
+  recentSessions
 }: {
   graph: StarmapGraph
   imported?: boolean
+  /** Open with the search sidebar already focused (the /recall entry point). */
+  initialSearchFocus?: boolean
   onImport?: (graph: StarmapGraph) => void
+  /** Cross-profile insert: copy a node's content into another profile's memory. */
+  onInsertIntoProfile?: (node: { id: string; kind: 'memory' | 'skill'; label: string; profile?: string; _originalId?: string }, targetProfile: string) => void
+  onOpenSession?: (storedSessionId: string) => void
   onResetMap?: () => void
+  /** Conclusion nodes only: seed a NEW chat about this conclusion's text (for
+   *  review, never auto-sent). Wired by the host to the composer. */
+  onStartConversation?: (conclusion: { id: string; label: string }) => void
+  /** Feature A — stash a node's knowledge into an existing session's composer
+   *  (injection-hardened, provenance-tagged). Given node id + kind + session key. */
+  onAddToSession?: (node: RecallNodeRef, sessionKey: string) => void
+  /** Feature B — insert a node's knowledge into the CURRENT chat's composer. */
+  onRecallIntoChat?: (node: RecallNodeRef) => void
+  /** Recent sessions offered in the "Add to a session" submenu (host-provided). */
+  recentSessions?: { key: string; title: string }[]
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
+  const { t } = useI18n()
+  const activeProfile = useStore($activeProfile)
 
   const simRef = useRef<null | Simulation<SimNode, SimLink>>(null)
   const nodesRef = useRef<SimNode[]>([])
@@ -155,6 +189,24 @@ export function StarMap({
 
   const [selectedId, setSelectedId] = useState<null | string>(null)
   const [menuTarget, setMenuTarget] = useState<NodeMenuTarget | null>(null)
+  // Double-click drill-down: the node whose originating session(s) are shown.
+  const [sessionsTarget, setSessionsTarget] = useState<null | SimNode>(null)
+  // Search sidebar (toggled by the search icon). matchesRef feeds the canvas
+  // pulse layer without re-rendering the paint loop; the state mirror only
+  // drives the sidebar mount.
+  const [searchOpen, setSearchOpen] = useState(initialSearchFocus)
+  // Which section the sidebar opens focused on: the search icon lands on the
+  // query box, the filter icon lands on (and scrolls to) the filters. Both open
+  // the SAME shared sidebar — Option 1.
+  const [searchTab, setSearchTab] = useState<'filter' | 'search'>('search')
+  const matchesRef = useRef<null | Set<string>>(null)
+  // Filter-only exploration: when the sidebar narrows the graph, this holds the
+  // surviving id set so the canvas hides everything else. Mirrors matchesRef but
+  // as state, because the "showing N of M" chip needs to re-render on change.
+  const [filterMatches, setFilterMatches] = useState<null | Set<string>>(null)
+  // Stable "clear the sidebar's filters" callback, provided by the sidebar
+  // (which owns the query+filter state). Lets the canvas chip reset the filter.
+  const clearFiltersRef = useRef<(() => void) | null>(null)
   const [size, setSize] = useState({ h: 0, w: 0 })
   // Increments on every theme repaint (shared hook) so the legend swatch and the
   // canvas palette re-resolve against the freshly-painted CSS custom properties.
@@ -162,6 +214,9 @@ export function StarMap({
   // Memory's swatch color — the same complementary-of-primary the canvas uses,
   // so the legend matches the rendered diamonds exactly.
   const [memoryColor, setMemoryColor] = useState('var(--theme-secondary)')
+  // Conclusion's swatch color — the vivid conclusionInk the canvas uses for
+  // Honcho conclusion hexagons, so the legend + sidebar rows match.
+  const [conclusionColor, setConclusionColor] = useState('var(--theme-primary)')
 
   // Time scrubber: reveal 1 = the whole map (idle default); lower values hide
   // not-yet-reached nodes so playing/scrubbing "builds it up". revealRef feeds
@@ -225,6 +280,68 @@ export function StarMap({
     }
   }, [])
 
+  // Search-sidebar plumbing. Matches feed the canvas pulse via ref (paint loop
+  // reads it directly); focus centers the viewport on the node; the row menu
+  // reuses the exact context menu canvas nodes get.
+  const onMatchesChange = useCallback(
+    (ids: null | Set<string>) => {
+      matchesRef.current = ids
+      // Mirror into state too: the canvas hides non-matches (filter-only
+      // exploration) and the "showing N of M" chip needs a re-render on change.
+      setFilterMatches(ids)
+      invalidate()
+    },
+    [invalidate]
+  )
+
+  // The sidebar hands up a stable "reset my query + filters" callback so the
+  // canvas chip's Clear button can restore the full map.
+  const registerClearFilters = useCallback((fn: () => void) => {
+    clearFiltersRef.current = fn
+  }, [])
+
+  const focusNode = useCallback(
+    (id: string) => {
+      const node = byIdRef.current.get(id)
+
+      if (!node) {
+        return
+      }
+
+      setSelectedId(id)
+      const { h, w } = sizeRef.current
+      const k = viewportRef.current.k
+      viewportRef.current = { k, x: w / 2 - node.x * k, y: h / 2 - node.y * k * TILT }
+      invalidate()
+    },
+    [invalidate]
+  )
+
+  const openNodeMenuAt = useCallback((id: string, x: number, y: number) => {
+    const node = byIdRef.current.get(id)
+
+    if (!node) {
+      return
+    }
+
+    setSelectedId(id)
+    setMenuTarget({
+      id: node.id,
+      isConclusion: !!conclusionIdsRef.current?.has(node.id),
+      kind: node.kind === 'memory' ? 'memory' : 'skill',
+      label: node.label,
+      memorySource: node.memorySource,
+      // Multi-profile mode: pass the profile and original id so recall /
+      // cross-profile ops resolve against the node's OWN profile — the canvas
+      // path already does this; dropping it here made sidebar-opened menus
+      // fail with "Could not load that memory" on prefixed ids.
+      profile: node.profile,
+      _originalId: node._originalId,
+      x,
+      y
+    })
+  }, [])
+
   const memById = useMemo(() => {
     const m = new Map<string, MemoryCard>()
     graph.memory.forEach((card, i) => m.set(`memory:${card.source}:${i}`, card))
@@ -246,6 +363,36 @@ export function StarMap({
 
     return m
   }, [graph.edges, graph.nodes])
+
+  // Whether Honcho conclusions are surfaced at all (provider gate) and the set
+  // of node ids that ARE conclusions — computed once per graph so the paint
+  // loop and the sidebar/legend never re-run the provider classification.
+  const showConclusions = useMemo(() => conclusionsEnabled(graph), [graph])
+
+  const conclusionIds = useMemo(() => {
+    if (!showConclusions) {
+      return null
+    }
+
+    const s = new Set<string>()
+
+    for (const n of graph.nodes) {
+      if (isConclusion(n, graph.memoryProvider)) {
+        s.add(n.id)
+      }
+    }
+
+    return s
+  }, [graph.memoryProvider, graph.nodes, showConclusions])
+
+  // Ref mirror so the (ref-driven) paint loop reads conclusions without being
+  // re-created; repaint when it changes.
+  const conclusionIdsRef = useRef<null | Set<string>>(null)
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (mirrors a memo for the paint loop)
+  useEffect(() => {
+    conclusionIdsRef.current = conclusionIds
+    invalidate()
+  }, [conclusionIds, invalidate])
 
   // Track the wrapper size.
   useEffect(() => {
@@ -483,7 +630,9 @@ export function StarMap({
       const bgVal =
         style.getPropertyValue('--background').trim() || style.getPropertyValue('--dt-background').trim() || '#000'
 
-      setMemoryColor(rgba(memoryInkFor(resolveRgb(val), resolveRgb(bgVal)), 0.9))
+      const primaryRgb = resolveRgb(val)
+      setMemoryColor(rgba(memoryInkFor(primaryRgb, resolveRgb(bgVal)), 0.9))
+      setConclusionColor(rgba(conclusionInkFor(primaryRgb), 0.95))
     }
   }, [size, themeEpoch])
 
@@ -574,9 +723,13 @@ export function StarMap({
         const { animating, ringLabelRects } = drawScene({
           adjacency: adjacencyRef.current,
           byId: byIdRef.current,
+          conclusionIds: conclusionIdsRef.current,
           ctx: offCtx,
           dpr: dprRef.current,
           fades: fadeRef.current,
+          // Filter-only exploration: when the sidebar narrows, paint just the
+          // surviving subset so the map shows only the filtered results.
+          filterMatches: matchesRef.current,
           focusId: selectedIdRef.current ?? hoverRef.current,
           hoverId: hoverRef.current,
           hoverLink: hoveredLinkRef.current,
@@ -615,6 +768,22 @@ export function StarMap({
       } else {
         ctx.drawImage(staticCanvas, 0, 0)
         drawScramble({ ctx, dpr: dprRef.current, palette, rings: ringsRef.current, vp: viewportRef.current })
+      }
+
+      // Search matches breathe on top of everything — they must stay visible
+      // over both composite orders. Animated, so it rides the live layer with
+      // the scramble (never the cached scene).
+      if (matchesRef.current && matchesRef.current.size > 0) {
+        drawSearchPulse({
+          conclusionIds: conclusionIdsRef.current,
+          ctx,
+          dpr: dprRef.current,
+          matches: matchesRef.current,
+          nodes: nodesRef.current,
+          now: performance.now(),
+          palette,
+          vp: viewportRef.current
+        })
       }
     }
 
@@ -706,6 +875,12 @@ export function StarMap({
     let bestD = Infinity
 
     for (const n of nodesRef.current) {
+      // Filter-only mode: hidden (filtered-out) nodes aren't pickable — a click
+      // or hover over the empty space they'd occupy must not select them.
+      if (matchesRef.current && !matchesRef.current.has(n.id)) {
+        continue
+      }
+
       const r = nodeRadius(n) * nodeK + 6
       const sx = n.x * vp.k + vp.x
       const sy = n.y * vp.k * TILT + vp.y
@@ -845,9 +1020,18 @@ export function StarMap({
 
     // A click (press without movement) toggles a ring date, a node, or clears.
     if (drag.mode === 'pan' && !drag.moved) {
-      // Double tap (trackpad tap-to-click may never emit a dblclick) resets view.
+      // Double tap (trackpad tap-to-click may never emit a dblclick): on a
+      // node it drills into the sessions that produced it; on empty space it
+      // resets the view.
       if (doubleTapRef.current()) {
-        resetView()
+        if (drag.id) {
+          const node = byIdRef.current.get(drag.id) ?? null
+          setSelectedId(drag.id)
+          setSessionsTarget(node)
+        } else {
+          resetView()
+        }
+
         dragRef.current = { id: null, mode: 'none', moved: false, ring: null, sx: 0, sy: 0, vp: viewportRef.current }
 
         return
@@ -877,6 +1061,22 @@ export function StarMap({
     endDrag()
   }
 
+  // Native dblclick (real mice): mirror the double-tap path — a node opens
+  // the sessions drill-down, empty space resets. Without the node guard this
+  // would resetView right after endDrag's double-tap already opened the
+  // dialog, stomping the selection it just made.
+  const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const { x, y } = localXY(e)
+    const node = pickNode(x, y)
+
+    if (node) {
+      setSelectedId(node.id)
+      setSessionsTarget(node)
+    } else {
+      resetView()
+    }
+  }
+
   const onContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
     e.preventDefault()
     const { x, y } = localXY(e)
@@ -889,8 +1089,16 @@ export function StarMap({
     setSelectedId(node.id)
     setMenuTarget({
       id: node.id,
+      isConclusion: !!conclusionIdsRef.current?.has(node.id),
       kind: node.kind === 'memory' ? 'memory' : 'skill',
       label: node.label,
+      // Pass the node's source so provider-backed nodes (Honcho conclusions,
+      // profile memory) correctly show the read-only hint + conclusion action —
+      // the canvas path previously dropped this, unlike the sidebar path.
+      memorySource: node.memorySource,
+      // Multi-profile mode: pass the profile and original id for cross-profile ops
+      profile: node.profile,
+      _originalId: node._originalId,
       x: e.clientX,
       y: e.clientY
     })
@@ -925,8 +1133,9 @@ export function StarMap({
     <div className="relative min-h-0 flex-1 overflow-hidden" ref={wrapRef}>
       <canvas
         className="block touch-none select-none text-foreground"
+        data-hermes-context-menu-trigger=""
         onContextMenu={onContextMenu}
-        onDoubleClick={resetView}
+        onDoubleClick={onDoubleClick}
         onMouseDown={onMouseDown}
         onMouseLeave={onMouseLeave}
         onMouseMove={onMouseMove}
@@ -936,13 +1145,130 @@ export function StarMap({
       />
 
       <NodeContextMenu
+        onAddToSession={
+          onAddToSession
+            ? (tgt, sessionKey) =>
+                onAddToSession(
+                  { _originalId: tgt._originalId, id: tgt.id, kind: tgt.kind, label: tgt.label, profile: tgt.profile },
+                  sessionKey
+                )
+            : undefined
+        }
         onClose={() => setMenuTarget(null)}
+        onInsertIntoProfile={
+          onInsertIntoProfile
+            ? (tgt, targetProfile) => onInsertIntoProfile({
+                id: tgt.id,
+                kind: tgt.kind,
+                label: tgt.label,
+                profile: tgt.profile,
+                _originalId: tgt._originalId
+              }, targetProfile)
+            : undefined
+        }
         onNodeRemoved={() => {
           setMenuTarget(null)
           setSelectedId(null)
         }}
+        onRecallIntoChat={
+          onRecallIntoChat
+            ? tgt => onRecallIntoChat({ _originalId: tgt._originalId, id: tgt.id, kind: tgt.kind, label: tgt.label, profile: tgt.profile })
+            : undefined
+        }
+        onShowProvenance={id => {
+          // Same drill-down as double-click, reachable from the right-click
+          // menu so every node action lives in one place.
+          const node = byIdRef.current.get(id) ?? null
+          setSelectedId(id)
+          setSessionsTarget(node)
+        }}
+        onStartConversation={
+          onStartConversation
+            ? tgt => onStartConversation({ id: tgt.id, label: tgt.label })
+            : undefined
+        }
+        recentSessions={recentSessions}
         target={menuTarget}
       />
+
+      <NodeSessionsDialog
+        onClose={() => setSessionsTarget(null)}
+        onOpenSession={id => {
+          setSessionsTarget(null)
+          onOpenSession?.(id)
+        }}
+        target={sessionsTarget}
+      />
+
+      {/* Filter + Search toggles — top-right, stacked under the panel close
+          button. Both open the SAME shared sidebar (Option 1); the icon just
+          chooses which section it opens focused on. */}
+      <button
+        aria-label={t.starmap.filterTitle}
+        className={`absolute right-2 top-14 z-20 cursor-pointer rounded-md border p-1.5 backdrop-blur-md transition-colors [-webkit-app-region:no-drag] ${
+          searchOpen && searchTab === 'filter'
+            ? 'border-(--ui-stroke-secondary) bg-(--ui-control-active-background) text-foreground'
+            : 'border-transparent text-muted-foreground hover:border-(--ui-stroke-secondary) hover:text-foreground'
+        }`}
+        onClick={() => {
+          // Toggle closed only if it's already open on the filter tab; otherwise
+          // open (or switch) to filters.
+          setSearchOpen(open => !(open && searchTab === 'filter'))
+          setSearchTab('filter')
+        }}
+        type="button"
+      >
+        <SlidersHorizontal className="size-4" />
+      </button>
+
+      <button
+        aria-label={t.starmap.searchTitle}
+        className={`absolute right-2 top-[6.25rem] z-20 cursor-pointer rounded-md border p-1.5 backdrop-blur-md transition-colors [-webkit-app-region:no-drag] ${
+          searchOpen && searchTab === 'search'
+            ? 'border-(--ui-stroke-secondary) bg-(--ui-control-active-background) text-foreground'
+            : 'border-transparent text-muted-foreground hover:border-(--ui-stroke-secondary) hover:text-foreground'
+        }`}
+        onClick={() => {
+          setSearchOpen(open => !(open && searchTab === 'search'))
+          setSearchTab('search')
+        }}
+        type="button"
+      >
+        <Search className="size-4" />
+      </button>
+
+      {/* Filtered-subset chip — when the map is showing only filtered results,
+          tell the user how many of how many, with a one-click Clear. */}
+      {filterMatches ? (
+        <div className="absolute left-1/2 top-16 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_92%,transparent)] px-3 py-1 text-[0.66rem] text-muted-foreground backdrop-blur-md [-webkit-app-region:no-drag]">
+          <span>{t.starmap.filterShowing(filterMatches.size, graph.nodes.length)}</span>
+          <button
+            className="cursor-pointer font-medium text-foreground hover:underline"
+            onClick={() => clearFiltersRef.current?.()}
+            type="button"
+          >
+            {t.starmap.filterClear}
+          </button>
+        </div>
+      ) : null}
+
+      {/* Search sidebar — overlays the right edge, only when toggled on. */}
+      {searchOpen ? (
+        <div className="absolute inset-y-0 right-0 z-30">
+          <SearchSidebar
+            conclusionColor={conclusionColor}
+            focusSection={searchTab}
+            graph={graph}
+            memoryColor={memoryColor}
+            onClose={() => setSearchOpen(false)}
+            onFocusNode={focusNode}
+            onMatchesChange={onMatchesChange}
+            onNodeMenu={openNodeMenuAt}
+            onRegisterClear={registerClearFilters}
+            showConclusions={showConclusions}
+          />
+        </div>
+      ) : null}
 
       {/* Timeline scrubber — centered along the top, clear of the close button.
           z-20 lifts it above the titlebar's app-region drag layer (z-10) so the
@@ -964,6 +1290,11 @@ export function StarMap({
         <ShareControls imported={imported} onImport={importCode} onResetMap={onResetMap} shareCode={shareCode} />
       </div>
 
+      {/* Profile selector — top-left, for multi-bot memory consolidation. */}
+      <div className="pointer-events-auto absolute left-2 top-14 z-20 [-webkit-app-region:no-drag]">
+        <ProfileSelector activeProfile={activeProfile} />
+      </div>
+
       {/* Legend — bottom-left, one entry per line like a conventional key. */}
       <div className="pointer-events-none absolute bottom-2 left-2 flex flex-col gap-1 text-[0.62rem] text-muted-foreground">
         <span className="flex items-center gap-1.5">
@@ -972,6 +1303,16 @@ export function StarMap({
         <span className="flex items-center gap-1.5">
           <span className="inline-block size-2 rotate-45" style={{ backgroundColor: memoryColor }} /> memory
         </span>
+        {showConclusions ? (
+          <span className="flex items-center gap-1.5">
+            {/* Hexagon glyph mirrors the canvas conclusion node. */}
+            <span
+              className="inline-block size-2 shrink-0"
+              style={{ backgroundColor: conclusionColor, clipPath: 'polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%)' }}
+            />{' '}
+            {t.starmap.conclusion}
+          </span>
+        ) : null}
         <span className="text-[0.58rem] text-muted-foreground/65">core = oldest · outer = newer</span>
         <RevealLabel axis={timeAxis} revealStore={revealStore} />
       </div>

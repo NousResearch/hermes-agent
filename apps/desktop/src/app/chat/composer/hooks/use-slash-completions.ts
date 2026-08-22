@@ -5,7 +5,9 @@ import { useCallback } from 'react'
 import type { HermesGateway } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
+  canonicalDesktopSlashCommand,
   type CommandsCatalogLike,
+  desktopBuiltinSlashCompletions,
   desktopSkinSlashCompletions,
   desktopSlashDescription,
   type DesktopThemeCommandOption,
@@ -53,6 +55,24 @@ function textValue(value: unknown, fallback = ''): string {
 
 function commandText(value: string): string {
   return value.startsWith('/') ? value : `/${value}`
+}
+
+/**
+ * Append desktop-only built-in commands (e.g. `/recall`) that the backend
+ * completion source never emits, so autocomplete discovery matches local
+ * dispatch. Deduped by canonical name against whatever the backend already
+ * returned — a command with a backend twin (`/journey`) is untouched. New rows
+ * join the `Commands` group so the popover renders them under that header (and
+ * they read as commands, not skills, mid-message).
+ */
+function withDesktopOnlyBuiltins(items: CompletionEntry[], query: string): CompletionEntry[] {
+  const present = new Set(items.map(item => canonicalDesktopSlashCommand(item.text)))
+
+  const missing: CompletionEntry[] = desktopBuiltinSlashCompletions(query)
+    .filter(entry => !present.has(canonicalDesktopSlashCommand(entry.text)))
+    .map(entry => ({ text: entry.text, display: entry.display, group: 'Commands', meta: entry.meta }))
+
+  return missing.length ? [...items, ...missing] : items
 }
 
 /** How many recent sessions to surface inline before the "Browse all…" entry. */
@@ -180,7 +200,7 @@ export function useSlashCompletions(options: {
           // query takes the other branch, where nothing is hidden.
           items.push(...rankSkillCommands(skillRows, catalog.skills, { pruneUnusedBuiltins: true }))
 
-          return { items, query }
+          return { items: withDesktopOnlyBuiltins(items, query), query }
         }
 
         const result = await cachedSlashCompletion(`slash:${text.toLowerCase()}`, () =>
@@ -242,7 +262,9 @@ export function useSlashCompletions(options: {
           )
         ]
 
-        const items = [...ranked].sort((a, b) => groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group))
+        const items = [...withDesktopOnlyBuiltins(ranked, query)].sort(
+          (a, b) => groupOrder.indexOf(a.group ?? '') - groupOrder.indexOf(b.group ?? '')
+        )
 
         return { items, query }
       } catch {

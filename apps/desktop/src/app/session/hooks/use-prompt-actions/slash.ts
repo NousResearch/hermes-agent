@@ -37,6 +37,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import { openStarmapRecall } from '@/store/starmap'
 import {
   applyWakeStartResult,
   applyWakeStatus,
@@ -883,6 +884,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // timeline — instead of printing a text rendering into the transcript.
         // Args are ignored, matching the TUI overlay behavior.
         journey: async () => {
+          openMemoryGraph()
+        },
+        // /recall opens the SAME memory-graph overlay as /journey, but in
+        // "recall mode": the search sidebar opens focused so the user can find a
+        // memory/skill/conclusion and insert its knowledge (as reviewed
+        // reference context) straight into THIS chat's composer. The map is an
+        // overlay on the active session, so the insert lands in the current
+        // composer — no session id to thread.
+        recall: async () => {
+          openStarmapRecall()
           openMemoryGraph()
         },
         // /hatch opens the pet generator overlay (the desktop's rich, multi-step

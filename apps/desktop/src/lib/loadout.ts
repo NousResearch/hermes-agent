@@ -199,6 +199,10 @@ export interface LoadoutSpec<T> {
   write: (w: BitWriter, value: T) => void
   /** Read the domain body back. May throw — it's wrapped as a LoadoutError. */
   read: (r: BitReader) => T
+  /** Optional readers for OLDER body-schema versions this build still accepts,
+   *  keyed by version byte. Lets a codec bump `version` for new fields while
+   *  previously shared codes keep decoding. */
+  legacyReads?: Record<number, (r: BitReader) => T>
   /** Noun for user-facing error messages, e.g. 'map code'. Default: 'code'. */
   noun?: string
   /** Error subclass to throw, so callers can `instanceof` their own type. */
@@ -258,7 +262,9 @@ export function createLoadout<T>(spec: LoadoutSpec<T>): Loadout<T> {
     const version = head.uint(8)
     const storedSum = head.uint(16)
 
-    if (version !== spec.version) {
+    const read = version === spec.version ? spec.read : spec.legacyReads?.[version]
+
+    if (!read) {
       throw new Err(`${Noun} is version ${version}; this build reads version ${spec.version}.`)
     }
 
@@ -269,7 +275,7 @@ export function createLoadout<T>(spec: LoadoutSpec<T>): Loadout<T> {
     }
 
     try {
-      return spec.read(new BitReader(inflateSync(payload)))
+      return read(new BitReader(inflateSync(payload)))
     } catch (err) {
       throw new Err(err instanceof Error ? `${Noun} is malformed: ${err.message}` : `${Noun} is malformed.`)
     }

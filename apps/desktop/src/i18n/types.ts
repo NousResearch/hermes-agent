@@ -1191,6 +1191,70 @@ export interface Translations {
     importSuccess: (nodes: number) => string
     importedBadge: string
     resetToMine: string
+    sessionsTitle: string
+    sessionsLoading: string
+    sessionsEmpty: string
+    sessionsProviderOnly: string
+    sessionsSearchNote: string
+    openSession: string
+    viewSource: string
+    sourceTitle: string
+    sourceLoading: string
+    sourceEmpty: string
+    backToSessions: string
+    provenanceMenu: string
+    providerReadOnly: (provider: string) => string
+    recreate: string
+    recreating: string
+    recreateFailed: string
+    searchTitle: string
+    searchPlaceholder: string
+    searchRecent: string
+    searchSaved: string
+    searchSave: string
+    searchDeleteSaved: string
+    searchFiltersOnly: string
+    searchKind: string
+    searchKindAll: string
+    searchKindSkills: string
+    searchSource: string
+    searchSourceAll: string
+    searchSourceHermes: string
+    searchSourceImported: (source: string) => string
+    searchFrom: string
+    searchTo: string
+    searchCount: (n: number) => string
+    searchEmpty: string
+    filterTitle: string
+    filterShowing: (shown: number, total: number) => string
+    filterClear: string
+    dateModeLabel: string
+    dateModeRange: string
+    dateModeYear: string
+    dateModeYearMonth: string
+    dateYearAny: string
+    dateMonthLabel: string
+    dateMonthAny: string
+    conclusion: string
+    conclusions: string
+    conclusionStartConversation: string
+    conclusionSeedPrompt: (text: string) => string
+    recallIntoChat: string
+    addToSession: string
+    addToSessionDone: (title: string) => string
+    recallFailed: string
+    // Multi-profile mode (bot memory consolidation)
+    profileSelector: string
+    profileSelectorHint: string
+    profileAll: string
+    profileNone: string
+    profileCount: (n: number) => string
+    profileBadge: (name: string) => string
+    insertIntoProfile: (name: string) => string
+    insertIntoAllSelected: string
+    insertIntoProfileDone: (name: string) => string
+    insertIntoAllDone: (n: number) => string
+    crossProfileInsertFailed: string
   }
   agents: {
     close: string

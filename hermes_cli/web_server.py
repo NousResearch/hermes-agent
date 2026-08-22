@@ -1527,6 +1527,7 @@ from hermes_cli.web_models import (  # noqa: F401
     CuratorPause,
     LearningNodeRef,
     LearningNodeEdit,
+    ProviderSessionMaterialize,
     DebugShareRequest,
     TTSSpeakRequest,
     OAuthSubmitBody,
@@ -4139,12 +4140,24 @@ async def run_curator():
 
 
 @app.get("/api/learning/graph")
-async def get_learning_graph(profile: Optional[str] = None):
+async def get_learning_graph(profile: Optional[str] = None, profiles: Optional[str] = None):
     """Learning graph payload for the desktop panel.
 
     Profile-scoped view of learned, non-base skills plus memory chunks, with
     graph links derived from skill relations and memory-skill overlap.
+
+    Multi-profile mode: pass `profiles` as a comma-separated list of profile
+    names to merge graphs from multiple profiles. Each node gains a `profile`
+    field indicating which profile it came from. Node ids are prefixed with
+    `<profile>:` to disambiguate across profiles.
     """
+    # Multi-profile mode: merge graphs from multiple profiles
+    if profiles:
+        profile_list = [p.strip() for p in profiles.split(",") if p.strip()]
+        if profile_list:
+            return await _get_multi_profile_learning_graph(profile_list)
+
+    # Single-profile mode (original behavior)
     def _run():
         from agent.learning_graph import build_learning_graph
 
@@ -4158,6 +4171,118 @@ async def get_learning_graph(profile: Optional[str] = None):
     except Exception:
         _log.exception("GET /api/learning/graph failed")
         raise HTTPException(status_code=500, detail="Failed to build learning graph")
+
+
+async def _get_multi_profile_learning_graph(profile_names: list[str]):
+    """Build a merged learning graph from multiple profiles.
+
+    Each node/edge/memory card is tagged with its source profile, and ids are
+    prefixed to avoid collisions. The first profile in the list is considered
+    the "primary" profile.
+    """
+    from agent.learning_graph import build_learning_graph
+
+    def _build_for_profile(profile_name: str):
+        with _profile_scope(profile_name):
+            return build_learning_graph()
+
+    merged_nodes = []
+    merged_edges = []
+    merged_clusters = {}
+    merged_memory = []
+    merged_stats = {
+        "profiles": [],
+        "nodes": 0,
+        "related_edges": 0,
+        "memory_nodes": 0,
+        "learned_skills": 0,
+    }
+
+    try:
+        # Track which memory providers are in use across profiles
+        memory_providers = set()
+
+        for profile_name in profile_names:
+            try:
+                graph = await asyncio.to_thread(lambda pn=profile_name: _build_for_profile(pn))
+            except HTTPException:
+                # Profile doesn't exist or inaccessible — skip it
+                continue
+            except Exception:
+                _log.warning(f"Failed to build graph for profile '{profile_name}', skipping")
+                continue
+
+            merged_stats["profiles"].append(profile_name)
+
+            # Track memory provider (for conclusion support)
+            provider = graph.get("memoryProvider")
+            if provider:
+                memory_providers.add(provider)
+
+            # Prefix node ids with profile name for disambiguation
+            id_prefix = f"{profile_name}:"
+
+            # Add nodes with profile attribution
+            for node in graph.get("nodes", []):
+                prefixed_id = f"{id_prefix}{node['id']}"
+                merged_nodes.append({
+                    **node,
+                    "id": prefixed_id,
+                    "profile": profile_name,
+                    "_originalId": node["id"],  # Keep original for mutations
+                })
+
+            # Add edges with prefixed endpoints
+            for edge in graph.get("edges", []):
+                merged_edges.append({
+                    "source": f"{id_prefix}{edge['source']}",
+                    "target": f"{id_prefix}{edge['target']}",
+                    "profile": profile_name,
+                })
+
+            # Merge clusters (sum counts by category)
+            for cluster in graph.get("clusters", []):
+                cat = cluster["category"]
+                merged_clusters[cat] = merged_clusters.get(cat, 0) + cluster["count"]
+
+            # Add memory cards with profile attribution
+            for card in graph.get("memory", []):
+                merged_memory.append({
+                    **card,
+                    "profile": profile_name,
+                })
+
+            # Aggregate stats
+            stats = graph.get("stats", {})
+            merged_stats["nodes"] += stats.get("nodes", 0)
+            merged_stats["related_edges"] += stats.get("related_edges", 0)
+            merged_stats["memory_nodes"] += stats.get("memory_nodes", 0)
+            merged_stats["learned_skills"] += stats.get("learned_skills", 0)
+
+        # If any profile uses honcho, expose it so conclusions are visible
+        # (multiple providers → pick honcho if present, else first)
+        merged_provider = None
+        if "honcho" in memory_providers:
+            merged_provider = "honcho"
+        elif memory_providers:
+            merged_provider = next(iter(memory_providers))
+
+        return {
+            "nodes": merged_nodes,
+            "edges": merged_edges,
+            "clusters": [
+                {"category": c, "count": n}
+                for c, n in sorted(merged_clusters.items(), key=lambda kv: -kv[1])
+            ],
+            "memory": merged_memory,
+            "memoryProvider": merged_provider,
+            "stats": merged_stats,
+            "multiProfile": True,  # Flag for the frontend
+            "profiles": merged_stats["profiles"],
+        }
+    except Exception:
+        _log.exception("GET /api/learning/graph (multi-profile) failed")
+        raise HTTPException(status_code=500, detail="Failed to build multi-profile learning graph")
 
 
 @app.get("/api/learning/node")
@@ -4202,6 +4327,218 @@ async def update_learning_node(body: LearningNodeEdit):
     res = await asyncio.to_thread(_run)
     if not res.get("ok"):
         raise HTTPException(status_code=400, detail=res.get("message", "edit failed"))
+    return res
+
+
+class LearningNodeCrossInsert(BaseModel):
+    """Body for POST /api/learning/node/cross-insert — copy a node's content
+    from one profile into another profile's memory."""
+    id: str
+    source_profile: str
+    target_profile: str
+
+
+@app.post("/api/learning/node/cross-insert")
+async def cross_insert_learning_node(body: LearningNodeCrossInsert):
+    """Copy a learning node's content from one profile into another profile's
+    memory. Only memory nodes can be cross-inserted; skills are not supported
+    (they have complex directory structures).
+
+    For Honcho conclusions (memory:honcho:<id>), we fetch the conclusion text
+    from Honcho and insert it into the target profile's MEMORY.md.
+    """
+    from agent.learning_mutations import node_detail
+
+    def _run():
+        node_id = body.id
+        content = None
+
+        # Check if this is a Honcho conclusion (memory:honcho:<index>)
+        if node_id.startswith("memory:honcho:"):
+            # Fetch from Honcho provider
+            with _profile_scope(body.source_profile):
+                try:
+                    from agent.learning_graph import _provider_memory_cards
+
+                    # The index is the last part of the id
+                    try:
+                        idx = int(node_id.split(":")[-1])
+                    except ValueError:
+                        return {"ok": False, "message": f"Invalid Honcho node id: {node_id}"}
+
+                    cards = _provider_memory_cards()
+                    if not cards or idx >= len(cards):
+                        return {"ok": False, "message": f"Honcho conclusion not found (index {idx})"}
+
+                    card = cards[idx]
+                    # Use the full body from the card
+                    content = card.get("body", "").strip()
+                    if not content:
+                        content = card.get("title", "").strip()
+
+                    if not content:
+                        return {"ok": False, "message": "Conclusion has no content to insert"}
+
+                except Exception as e:
+                    _log.exception("Failed to fetch Honcho conclusion")
+                    return {"ok": False, "message": f"Failed to fetch Honcho conclusion: {e}"}
+        else:
+            # Standard file-based memory
+            with _profile_scope(body.source_profile):
+                detail = node_detail(node_id)
+                if not detail.get("ok"):
+                    return {"ok": False, "message": f"Node not found in {body.source_profile}"}
+
+                content = detail.get("content", "").strip()
+                if not content:
+                    return {"ok": False, "message": "Node has no content to insert"}
+
+                kind = detail.get("kind")
+                if kind == "skill":
+                    return {"ok": False, "message": "Cross-profile skill insertion is not supported"}
+
+        # Now insert into the target profile's memory
+        with _profile_scope(body.target_profile):
+            from hermes_constants import get_hermes_home
+
+            memory_path = get_hermes_home() / "memories" / "MEMORY.md"
+            memory_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Read existing memory
+            existing = ""
+            if memory_path.exists():
+                existing = memory_path.read_text(encoding="utf-8")
+
+            # Append the new content as a new section
+            separator = "\n§\n" if existing.strip() else ""
+            provenance_note = f"[Imported from profile: {body.source_profile}]"
+            new_content = f"{existing.rstrip()}{separator}{provenance_note}\n{content}\n"
+
+            memory_path.write_text(new_content, encoding="utf-8")
+
+            return {"ok": True, "message": f"Inserted into {body.target_profile}"}
+
+    try:
+        return await asyncio.to_thread(_run)
+    except Exception as e:
+        _log.exception("POST /api/learning/node/cross-insert failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/learning/recall-draft")
+async def get_learning_recall_draft(id: str, profile: Optional[str] = None):
+    """Safe, provenance-tagged draft text for recalling a journey node's
+    knowledge into a session as reference context ("Add to recent session" /
+    "/recall").
+
+    The recalled body is treated as UNTRUSTED (defends against a tampered
+    memory database): it is scanned with the shared threat detector, its
+    delimiter is defanged, and it is wrapped in an ``untrusted_memory_recall``
+    block telling the model to treat the contents as data, not instructions.
+    The caller stashes the returned ``text`` as the target session's composer
+    draft — the user still reviews and sends it.
+    """
+    from agent.learning_mutations import build_recall_draft
+
+    def _run():
+        with _profile_scope(profile):
+            return build_recall_draft(id)
+
+    res = await asyncio.to_thread(_run)
+    if not res.get("ok"):
+        raise HTTPException(status_code=404, detail=res.get("message", "not found"))
+    return res
+
+
+@app.get("/api/learning/provider-session")
+async def get_learning_provider_session(
+    session_id: str, limit: int = 500, profile: Optional[str] = None
+):
+    """Source corpus behind a provider-contributed journey node.
+
+    Proxies the active memory provider's ``journey_session_messages`` hook —
+    the raw provider-side conversation a derived fact (e.g. a Honcho
+    conclusion) came from. Best-effort by the hook's contract: no provider,
+    unknown session, or backend down → empty message list, not an error.
+    """
+    def _read():
+        from plugins.memory import _get_active_memory_provider, load_memory_provider
+
+        name = _get_active_memory_provider()
+        if not name:
+            return None, []
+        provider = load_memory_provider(name)
+        if provider is None or not hasattr(provider, "journey_session_messages"):
+            return name, []
+        safe_limit = max(1, min(int(limit or 500), 2000))
+        raw = provider.journey_session_messages(session_id, limit=safe_limit) or []
+        from agent.learning_graph import _to_int_ts
+
+        messages = []
+        for m in raw:
+            if not isinstance(m, dict):
+                continue
+            content = str(m.get("content") or "")
+            if not content.strip():
+                continue
+            messages.append({
+                "content": content,
+                "peer": str(m.get("peer") or ""),
+                "timestamp": _to_int_ts(m.get("timestamp")),
+            })
+        return name, messages
+
+    try:
+        with _profile_scope(profile):
+            name, messages = await asyncio.to_thread(_read)
+    except Exception:
+        _log.exception("GET /api/learning/provider-session failed")
+        raise HTTPException(status_code=500, detail="Failed to load provider session")
+    return {"provider": name, "session_id": session_id, "messages": messages}
+
+
+@app.post("/api/learning/provider-session/materialize")
+async def materialize_learning_provider_session(body: ProviderSessionMaterialize):
+    """Recreate a provider-side conversation as a real Hermes session.
+
+    Journey drill-down action: the source corpus behind a provider node
+    (e.g. imported ChatGPT history in Honcho, or a Hermes conversation whose
+    row was deleted but whose sync copy survives in the provider) is shaped
+    by ``build_provider_session_import`` and written through the standard
+    session-import path. Import skips existing ids, so this is idempotent:
+    recreating an already-materialized conversation just returns its id with
+    ``created: false`` and the UI opens the existing session.
+    """
+    def _materialize():
+        from agent.learning_mutations import build_provider_session_import
+
+        with _profile_scope(body.profile):
+            built = build_provider_session_import(body.session_id)
+        if not built.get("ok"):
+            return built
+        result = _import_sessions_for_profile(body.profile, [built["session"]])
+        errors = result.get("errors") or []
+        if errors:
+            return {
+                "ok": False,
+                "message": str(errors[0].get("error", "import failed")),
+            }
+        return {
+            "ok": True,
+            "provider": built.get("provider"),
+            "session_id": built["session"]["id"],
+            "title": built["session"].get("title") or "",
+            "message_count": built.get("message_count", 0),
+            "created": bool(result.get("imported")),
+        }
+
+    try:
+        res = await asyncio.to_thread(_materialize)
+    except Exception:
+        _log.exception("POST /api/learning/provider-session/materialize failed")
+        raise HTTPException(status_code=500, detail="Failed to materialize provider session")
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("message", "materialize failed"))
     return res
 
 

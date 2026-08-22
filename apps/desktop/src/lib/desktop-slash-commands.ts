@@ -54,6 +54,7 @@ export type DesktopActionId =
   | 'new'
   | 'pet'
   | 'profile'
+  | 'recall'
   | 'skin'
   | 'title'
   | 'wake'
@@ -201,6 +202,11 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     description: 'Open the memory graph — skills + memories over time',
     aliases: ['/learning', '/memory-graph'],
     surface: action('journey')
+  },
+  {
+    name: '/recall',
+    description: 'Search the memory graph and insert a memory, skill, or conclusion into this chat',
+    surface: action('recall')
   },
 
   // Overlay pickers
@@ -513,6 +519,39 @@ export function desktopSlashDescription(command: string, fallback = ''): string 
 
 export function desktopSlashCommandArgumentMode(command: string): DesktopSlashArgumentMode | null {
   return resolveDesktopCommand(command)?.argumentMode ?? null
+}
+
+/**
+ * Suggestible desktop BUILT-IN command completions matching `query` as a name
+ * prefix (empty query = all of them).
+ *
+ * The `/` popover's candidate rows are sourced from the BACKEND
+ * (`commands.catalog` for a bare slash, `complete.slash` for a typed query);
+ * the desktop table above only *filters and relabels* what the backend emits.
+ * A command registered ONLY here — with no backend twin, because it drives a
+ * desktop overlay rather than a gateway command (e.g. `/recall`) — is therefore
+ * never returned by the backend and silently vanishes from autocomplete even
+ * though the dispatcher resolves and runs it locally. Callers merge this list
+ * into the backend rows (deduped by canonical name) so discovery matches
+ * execution for the whole desktop-only class, not just one command.
+ *
+ * Applies the same visibility gate as `isDesktopSlashSuggestion`: hidden,
+ * unavailable, and alias entries are excluded; canonical names only.
+ */
+export function desktopBuiltinSlashCompletions(query: string): DesktopSlashCompletion[] {
+  const needle = normalizeCommand(query).slice(1)
+
+  return DESKTOP_COMMAND_SPECS.filter(spec => {
+    if (spec.hidden || spec.surface.kind === 'unavailable') {
+      return false
+    }
+
+    return needle ? spec.name.slice(1).toLowerCase().startsWith(needle) : true
+  }).map(spec => ({
+    text: spec.name,
+    display: spec.name,
+    meta: spec.description ?? ''
+  }))
 }
 
 export function desktopSkinSlashCompletions(

@@ -105,6 +105,17 @@ export function memoryInkFor(primary: Rgb, bg: Rgb): Rgb {
   return mixRgb(complementaryInk(primary), bg, 0.45)
 }
 
+// Conclusion ink: a bright, high-saturation accent so durable derived facts
+// (Honcho conclusions) POP as the map's most important nodes. Rotated off the
+// theme primary by a third-turn (distinct from both the primary/skill hue and
+// memory's complementary hue) and kept vivid — NOT muted toward the bg like
+// memory — so a conclusion star reads as a highlight in any theme.
+export function conclusionInkFor(primary: Rgb): Rgb {
+  const [h, s, l] = rgbToHsl(primary)
+
+  return hslToRgb(h + 55, Math.max(s, 0.7), clamp(l, 0.55, 0.72))
+}
+
 // Resolve the theme-derived palette once per theme change — the resolveRgb probe
 // does a getImageData readback, so this stays out of the per-frame path. Node
 // groups borrow restrained tint from the theme; structure stays foreground ink.
@@ -131,6 +142,7 @@ export function computePalette(canvas: HTMLCanvasElement): Palette {
     chipBg: darkTheme ? 'rgba(0,0,0,0.72)' : 'rgba(255,255,255,0.85)',
     darkTheme,
     inkInv: darkTheme ? 'rgba(0,0,0,1)' : 'rgba(255,255,255,1)',
+    conclusionInk: conclusionInkFor(primary),
     memoryInk: memoryInkFor(primary, bg),
     primary,
     skillInk: mixRgb(primary, base, darkTheme ? 0.12 : 0.18)

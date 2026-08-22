@@ -4445,11 +4445,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if not self._backing_file_was_replaced():
             return False
         logger.error(
-            "state.db was REPLACED underneath this process (opened %s, now "
-            "%s at the same path). In-file repair cannot help and will not be "
-            "attempted; the original error was: %s. A new SessionDB will pick "
-            "up the current file -- restart the process that owns this "
-            "connection.",
+            "state.db at %s was REPLACED underneath this process (opened %s, "
+            "now %s at the same path). In-file repair cannot help and will "
+            "not be attempted; the original error was: %s. A new SessionDB "
+            "will pick up the current file -- restart the process that owns "
+            "this connection.",
+            self.db_path,
             self._file_identity,
             _stat_file_identity(self.db_path),
             exc,

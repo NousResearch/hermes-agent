@@ -176,6 +176,10 @@ class TestTheGuardFires:
             "the original error must survive into the log -- #89332's whole "
             "complaint is that the cause was never named"
         )
+        assert str(db.db_path) in blob, (
+            "a host running several profiles has several state.db files; "
+            "without the path the operator cannot tell which store refused"
+        )
 
     def test_a_healthy_database_is_not_refused(self, db):
         """Behaviour preservation: ordinary corruption still gets the ladder."""

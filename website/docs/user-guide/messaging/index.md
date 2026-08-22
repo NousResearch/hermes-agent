@@ -758,7 +758,7 @@ display:
 
 ### Progress bubble cleanup (opt-in)
 
-Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can also be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:
+Tool-progress messages, the "still working…" heartbeat, status-callback bubbles, and mid-turn assistant commentary (`interim_assistant_messages`) can also be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:
 
 ```yaml
 display:
@@ -767,9 +767,12 @@ display:
       cleanup_progress: true
     discord:
       cleanup_progress: true
+    slack:
+      interim_assistant_messages: true
+      cleanup_progress: true
 ```
 
-Defaults to `false`. Only platforms whose adapter implements `delete_message` honor the setting (currently Telegram and Discord). Failed runs **skip** cleanup so the bubbles remain as breadcrumbs.
+Defaults to `false`. Only platforms whose adapter implements `delete_message` honor the setting (Telegram, Discord, Slack, and others with a real `delete_message`). Failed runs **skip** cleanup so the bubbles remain as breadcrumbs.
 
 ## Next Steps
 

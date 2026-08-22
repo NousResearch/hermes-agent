@@ -295,3 +295,121 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     # deletes at least one progress bubble.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+
+
+class CommentaryAgent:
+    """Emits one mid-turn assistant commentary message, then a final answer."""
+
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.interim_assistant_callback
+        if cb is not None:
+            cb("I'll inspect the repo first.")
+            time.sleep(0.2)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class FailingCommentaryAgent(CommentaryAgent):
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.interim_assistant_callback
+        if cb is not None:
+            cb("I'll inspect the repo first.")
+            time.sleep(0.2)
+        return {
+            "final_response": "",
+            "messages": [],
+            "api_calls": 1,
+            "failed": True,
+            "error": "simulated provider failure",
+        }
+
+
+async def _fire_cleanup(adapter, session_key):
+    cb = adapter.pop_post_delivery_callback(session_key)
+    if not callable(cb):
+        return
+    await _fire_post_delivery_cb(cb)
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter.deleted:
+            break
+
+
+def _commentary_ids(adapter):
+    return [
+        str(item["message_id"])
+        for item in adapter.sent
+        if item.get("content") == "I'll inspect the repo first."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_deletes_interim_commentary_after_success(monkeypatch, tmp_path):
+    """cleanup_progress also removes mid-turn assistant commentary."""
+    adapter = CleanupCaptureAdapter(platform=Platform.SLACK)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        CommentaryAgent,
+        cleanup_on=True,
+        cleanup_platform=Platform.SLACK,
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.SLACK, chat_id="D123", chat_type="dm")
+    session_key = "agent:main:slack:dm:D123"
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-commentary",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done"
+    commentary_ids = _commentary_ids(adapter)
+    assert commentary_ids, f"expected commentary send, got {adapter.sent!r}"
+    final_ids = [
+        str(item["message_id"])
+        for item in adapter.sent
+        if item.get("content") == "done"
+    ]
+
+    await _fire_cleanup(adapter, session_key)
+    deleted = {item["message_id"] for item in adapter.deleted}
+    assert set(commentary_ids) <= deleted
+    assert not (set(final_ids) & deleted)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_keeps_interim_commentary_on_failed_run(monkeypatch, tmp_path):
+    """Failed runs leave commentary in place as breadcrumbs."""
+    adapter = CleanupCaptureAdapter(platform=Platform.SLACK)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        FailingCommentaryAgent,
+        cleanup_on=True,
+        cleanup_platform=Platform.SLACK,
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.SLACK, chat_id="D123", chat_type="dm")
+    session_key = "agent:main:slack:dm:D123"
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-commentary-fail",
+        session_key=session_key,
+    )
+
+    assert result.get("failed") is True
+    assert _commentary_ids(adapter)
+    await _fire_cleanup(adapter, session_key)
+    assert adapter.deleted == []

@@ -218,6 +218,7 @@ class GatewayStreamConsumer:
         metadata: Optional[dict] = None,
         on_new_message: Optional[callable] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
+        on_temporary_message: Optional[Callable[[str], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
         run_still_current: Optional[Callable[[], bool]] = None,
     ):
@@ -237,6 +238,10 @@ class GatewayStreamConsumer:
         # Gateway callers use this to pause typing refreshes before a slow
         # final rich-text edit (Telegram MarkdownV2 finalize, etc.).
         self._on_before_finalize = on_before_finalize
+        # Fired with a platform message_id after a successful interim
+        # commentary send. Gateway cleanup_progress uses this to delete
+        # those bubbles after a successful final response.
+        self._on_temporary_message = on_temporary_message
         self._initial_reply_to_id = initial_reply_to_id
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
@@ -591,6 +596,16 @@ class GatewayStreamConsumer:
             cb()
         except Exception:
             logger.debug("on_new_message callback error", exc_info=True)
+
+    def _notify_temporary_message(self, message_id: str) -> None:
+        """Fire on_temporary_message with a delivered interim message id."""
+        cb = self._on_temporary_message
+        if cb is None or not message_id:
+            return
+        try:
+            cb(str(message_id))
+        except Exception:
+            logger.debug("on_temporary_message callback error", exc_info=True)
 
     @staticmethod
     def _signal_flush(flush_event) -> None:
@@ -2092,6 +2107,9 @@ class GatewayStreamConsumer:
                 # stale tool bubble above it so the next tool starts a
                 # new bubble below.
                 self._notify_new_message()
+                mid = getattr(result, "message_id", None)
+                if mid:
+                    self._notify_temporary_message(str(mid))
                 # Record the exact delivered text so run.py can confirm whether
                 # an interim "preview" actually carried the final response, vs.
                 # unrelated commentary delivered during a session split (#14238).

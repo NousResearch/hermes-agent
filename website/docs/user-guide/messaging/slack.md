@@ -82,7 +82,7 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 
 | Scope | Purpose |
 |-------|---------|
-| `chat:write` | Send messages as the bot |
+| `chat:write` | Send messages as the bot. Also enough for the bot to `chat.delete` its own progress/commentary bubbles when `cleanup_progress` is on |
 | `app_mentions:read` | Detect when @mentioned in channels |
 | `channels:history` | Read messages in public channels the bot is in |
 | `channels:read` | List and get info about public channels |

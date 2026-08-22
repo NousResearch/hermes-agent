@@ -5474,6 +5474,11 @@ class TurnRunner:
                             else None
                         ),
                         on_before_finalize=_pause_typing_before_finalize,
+                        on_temporary_message=(
+                            (lambda mid: ctx._cleanup_msg_ids.append(str(mid)))
+                            if ctx._cleanup_progress
+                            else None
+                        ),
                         initial_reply_to_id=ctx.event_message_id,
                         run_still_current=ctx._run_still_current,
                     )
@@ -28511,8 +28516,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
         # that implements ``delete_message``). When enabled via
         # ``display.platforms.<platform>.cleanup_progress: true``, message IDs
-        # from the tool-progress / "⏳ Working — N min" / status-callback bubbles
-        # are collected here and deleted after the final response lands.
+        # from the tool-progress / "⏳ Working — N min" / status-callback
+        # bubbles and mid-turn assistant commentary are collected here and
+        # deleted after the final response lands.
         # Failed runs skip cleanup so the bubbles remain as breadcrumbs.
         _cleanup_progress = bool(
             resolve_display_setting(user_config, platform_key, "cleanup_progress")

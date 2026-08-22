@@ -124,7 +124,9 @@ class TestSlackSendClarify:
         assert elements[0]["value"] == "cid1|0"
         assert elements[1]["action_id"] == "hermes_clarify_choice_1"
         assert elements[1]["value"] == "cid1|1"
-        assert elements[0]["text"]["text"] == "staging"
+        assert elements[0]["text"]["text"] == "1"
+        assert "1. staging" in blocks[0]["text"]["text"]
+        assert "2. production" in blocks[0]["text"]["text"]
         # Final button is the free-text "Other"
         assert elements[2]["action_id"] == "hermes_clarify_other"
         assert elements[2]["value"] == "cid1|other"
@@ -133,6 +135,34 @@ class TestSlackSendClarify:
                 action_ids = [element["action_id"] for element in block["elements"]]
                 assert len(action_ids) == len(set(action_ids))
 
+    @pytest.mark.asyncio
+    async def test_long_choices_render_in_full_with_numbered_buttons(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1234.5679"})
+        choices = [
+            "Run a complete keyword audit and rebuild the organic recommendation list",
+            "Only tag competitor brands and leave the remaining keywords unchanged",
+            "Export the full audit trail with every exclusion reason for review",
+        ]
+
+        result = await adapter.send_clarify(
+            chat_id="C1",
+            question="Which action should I take?",
+            choices=choices,
+            clarify_id="cid-long",
+            session_key="sk-long",
+        )
+
+        assert result.success is True
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        body = kwargs["blocks"][0]["text"]["text"]
+        for idx, choice in enumerate(choices, start=1):
+            assert f"{idx}. {choice}" in body
+
+        buttons = kwargs["blocks"][1]["elements"]
+        assert [button["text"]["text"] for button in buttons[:-1]] == ["1", "2", "3"]
+        assert buttons[-1]["text"]["text"] == "✏️ Other…"
 
     @pytest.mark.asyncio
     async def test_mrkdwn_escapes_question(self):

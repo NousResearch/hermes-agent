@@ -3595,6 +3595,12 @@ DEFAULT_CONFIG = {
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
         "repo_scan_exclude_paths": [],
+        # Where a normal click on a web link opens:
+        #   True  — in-app preview pane (default; ⌘/Ctrl-click escapes to the
+        #           system browser).
+        #   False — system browser (⌘/Ctrl-click opens in the preview pane
+        #           instead, inverting the default gesture).
+        "open_links_in_preview": True,
         # Extra Electron command-line flags appended to every desktop launch,
         # e.g. ["--ozone-platform=x11"] on headless/VM X11 hosts that need an
         # explicit ozone backend, or GPU workaround flags. A list of strings;

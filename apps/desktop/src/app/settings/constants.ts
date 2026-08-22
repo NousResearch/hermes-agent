@@ -385,7 +385,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   desktop: {
     repoScanEnabled: 'Automatic Repository Discovery',
     repoScanRoots: 'Repository Discovery Roots',
-    repoScanExcludePaths: 'Excluded Repository Paths'
+    repoScanExcludePaths: 'Excluded Repository Paths',
+    openLinksInPreview: 'Open Links In Preview Pane'
   },
   agent: {
     maxTurns: 'Max Agent Steps',
@@ -551,7 +552,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   desktop: {
     repoScanEnabled: 'Scan local folders for Git repositories to show in Projects.',
     repoScanRoots: 'Folders to scan. Leave empty to scan your home directory.',
-    repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.'
+    repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.',
+    openLinksInPreview: 'When on, a normal click opens links in the in-app preview pane and ⌘/Ctrl-click opens in the system browser. When off, the gestures are inverted.'
   },
   timezone: 'IANA timezone identifier. Blank uses the system timezone.',
   agent: {
@@ -633,7 +635,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'chat',
     label: 'Chat',
     icon: MessageCircle,
-    keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
+    keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode', 'desktop.open_links_in_preview']
   },
   {
     id: 'appearance',

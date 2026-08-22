@@ -1114,6 +1114,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "CLI visual theme",
         "options": ["default", "ares", "mono", "slate"],
     },
+    "desktop.open_links_in_preview": {
+        "type": "boolean",
+        "description": "Open web links in the in-app preview pane (Cmd/Ctrl-click opens in system browser). When off, the gestures are inverted.",
+    },
     "dashboard.theme": {
         "type": "select",
         "description": "Web dashboard visual theme",

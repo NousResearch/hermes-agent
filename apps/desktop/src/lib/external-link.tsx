@@ -221,6 +221,10 @@ export function wantsNativeBrowser(event: Pick<MouseEvent, 'button' | 'ctrlKey' 
  *
  * Everything that ISN'T a web page — `mailto:`, `file:`, a custom scheme — has
  * no business in the webview and always hands off to the OS.
+ *
+ * The `desktop.open_links_in_preview` config key inverts the default gesture:
+ * when false, a bare click opens in the system browser and ⌘/Ctrl-click opens
+ * in the preview pane.
  */
 export function openLink(href: string, options: { native?: boolean } = {}): void {
   const target = normalizeExternalUrl(href)
@@ -229,19 +233,47 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
     return
   }
 
-  if (options.native || !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')) {
+  if (!/^https?:$/i.test(parseUrl(target)?.protocol ?? '')) {
     openExternalLink(target)
 
     return
   }
 
-  // Lazy: this module is a leaf every surface imports, and the preview store
-  // pulls the layout/session graph behind it. A static edge would make one
-  // link helper drag that whole tree into anything that renders a link. The
-  // tab lands a microtask later, which is invisible.
-  void import('@/store/preview').then(({ openPreview }) =>
-    openPreview({ kind: 'url', label: hostPathLabel(target), source: target, url: target }, 'explicit-link')
-  )
+  // Read the user's link-target preference from the config cache. The cache
+  // is populated by the settings overlay on mount; if it hasn't loaded yet
+  // the default (true = preview pane) applies.
+  let openInPreview = true
+
+  try {
+    // Lazy: query-client pulls the React Query tree; this module is a leaf
+    // imported by every surface that renders a link.
+    const queryMod = require('@/lib/query-client') as { queryClient: { getQueryData: (key: readonly unknown[]) => Record<string, unknown> | undefined } }
+    const configMod = require('@/app/hooks/use-config-record') as { HERMES_CONFIG_KEY: readonly unknown[] }
+    const config = queryMod.queryClient.getQueryData(configMod.HERMES_CONFIG_KEY)
+
+    if (config && typeof config === 'object' && 'desktop' in config) {
+      const desktop = config.desktop as Record<string, unknown> | undefined
+
+      if (desktop && typeof desktop.open_links_in_preview === 'boolean') {
+        openInPreview = desktop.open_links_in_preview
+      }
+    }
+  } catch {
+    // Config not loaded yet — fall through to default (preview pane).
+  }
+
+  // When the config says "preview", native gesture (⌘/Ctrl/middle) escapes
+  // to the system browser. When the config says "system browser", the native
+  // gesture opens the preview pane instead — the gestures are inverted.
+  const usePreview = options.native ? !openInPreview : openInPreview
+
+  if (usePreview) {
+    void import('@/store/preview').then(({ openPreview }) =>
+      openPreview({ kind: 'url', label: hostPathLabel(target), source: target, url: target }, 'explicit-link')
+    )
+  } else {
+    openExternalLink(target)
+  }
 }
 
 interface ExternalLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'> {
@@ -300,7 +332,7 @@ export function ExternalLink({
 
         event.preventDefault()
         event.stopPropagation()
-        openExternalLink(target)
+        openLink(target, { native: true })
       }}
       onClick={event => {
         event.stopPropagation()

@@ -184,6 +184,7 @@ def test_cli_and_cron_share_plugin_target_normalization(plugin_platform, monkeyp
         "platform": name,
         "chat_id": "@alice@example.com",
         "thread_id": None,
+        "agent_id": None,
     }
 
 

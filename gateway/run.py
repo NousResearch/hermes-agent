@@ -6914,7 +6914,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Sync helpers keep using ``session_store`` directly; async gateway
         # handlers call this facade and await every operation.
         self._async_session_store = AsyncSessionStore(self.session_store)
-        self.delivery_router = DeliveryRouter(self.config)
+        # Build the AgentProfile registry from config.agents.  Always returns
+        # at least {"main": AgentProfile()}, so single-agent installs see
+        # zero behavior change.
+        from agent.profile import load_agent_registry
+        self._agent_registry = load_agent_registry(self.config)
+        self.delivery_router = DeliveryRouter(self.config, registry=self._agent_registry)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
         self._shutdown_event = asyncio.Event()
@@ -8156,6 +8161,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
+        # Per-agent profile overrides: if the active profile pins a model /
+        # provider / base_url / api_key_env, those win over the gateway-wide
+        # defaults but still lose to an explicit session /model override
+        # (which already returned above when complete).  Applied before the
+        # empty-model safety net so a profile-pinned model is what gets cached.
+        model, runtime_kwargs = self._apply_profile_runtime_overrides(model, runtime_kwargs)
+
         # Final safety net (#35314): if resolution still produced an empty
         # model — e.g. a transient config-cache miss during a post-interrupt
         # recovery turn returned an empty user_config — reuse the last model we
@@ -8192,6 +8204,100 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._session_state("*").conversation.last_resolved_model = model
 
         return model, runtime_kwargs
+
+    def _apply_profile_runtime_overrides(
+        self, model: str, runtime_kwargs: dict
+    ) -> tuple[str, dict]:
+        """Layer the active AgentProfile's model/provider on top of gateway defaults.
+
+        The default ("main") profile carries None for these fields and is a
+        no-op.  Non-default profiles with explicit values re-resolve the
+        provider via ``resolve_runtime_provider`` so api_mode / base_url /
+        api_key fields stay consistent with the chosen provider.
+        """
+        try:
+            from agent.profile import get_active_profile, DEFAULT_AGENT_ID
+        except Exception:
+            return model, runtime_kwargs
+
+        profile = get_active_profile()
+        if profile is None or profile.id == DEFAULT_AGENT_ID:
+            return model, runtime_kwargs
+
+        # Model: profile wins over gateway default.
+        if profile.model:
+            model = profile.model
+
+        # Provider / base_url / api_key_env: only re-resolve if the profile
+        # actually pins one.  Skip when all are None to preserve the gateway's
+        # resolved runtime (env-derived credentials).
+        if not (profile.provider or profile.base_url or profile.api_key_env):
+            return model, runtime_kwargs
+
+        # Resolve the pinned key through the secret scope, not os.environ:
+        # under gateway.multiplex_profiles the process environment may hold
+        # another profile's credential, and an unscoped read must fail closed
+        # (UnscopedSecretError) rather than leak it. Single-profile installs
+        # keep the legacy os.getenv behavior.
+        explicit_api_key = None
+        if profile.api_key_env:
+            from agent.secret_scope import get_secret
+            explicit_api_key = get_secret(profile.api_key_env)
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            new_runtime = resolve_runtime_provider(
+                requested=profile.provider,
+                explicit_api_key=explicit_api_key,
+                explicit_base_url=profile.base_url,
+                target_model=model,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Profile %s provider resolution failed (%s); falling back to gateway runtime",
+                profile.id, exc,
+            )
+            return model, runtime_kwargs
+
+        runtime_kwargs = {
+            "api_key": new_runtime.get("api_key") or runtime_kwargs.get("api_key"),
+            "base_url": new_runtime.get("base_url") or runtime_kwargs.get("base_url"),
+            "provider": new_runtime.get("provider") or runtime_kwargs.get("provider"),
+            "api_mode": new_runtime.get("api_mode") or runtime_kwargs.get("api_mode"),
+            "command": new_runtime.get("command") or runtime_kwargs.get("command"),
+            "args": list(new_runtime.get("args") or runtime_kwargs.get("args") or []),
+            "credential_pool": new_runtime.get("credential_pool") or runtime_kwargs.get("credential_pool"),
+        }
+        logger.debug(
+            "Profile %s runtime override: model=%s provider=%s base_url=%s",
+            profile.id, model, runtime_kwargs.get("provider"), runtime_kwargs.get("base_url"),
+        )
+        return model, runtime_kwargs
+
+    def _apply_profile_toolsets(
+        self,
+        enabled_toolsets: Optional[list],
+        disabled_toolsets: Optional[list],
+    ) -> tuple[Optional[list], Optional[list]]:
+        """Override gateway-default toolsets with the active profile's.
+
+        Returns the inputs unchanged when no profile is active or when the
+        profile carries None for the relevant field — preserving the legacy
+        single-agent path.
+        """
+        try:
+            from agent.profile import get_active_profile, DEFAULT_AGENT_ID
+        except Exception:
+            return enabled_toolsets, disabled_toolsets
+
+        profile = get_active_profile()
+        if profile is None or profile.id == DEFAULT_AGENT_ID:
+            return enabled_toolsets, disabled_toolsets
+
+        if profile.enabled_toolsets is not None:
+            enabled_toolsets = sorted(profile.enabled_toolsets)
+        if profile.disabled_toolsets is not None:
+            disabled_toolsets = list(profile.disabled_toolsets)
+        return enabled_toolsets, disabled_toolsets
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
@@ -11067,10 +11173,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # multi-day 4.7G session — heartbeats froze and the process was
             # SIGKILLed mid-export. Same class as the memory-provider hang
             # below (#53175).
+            _profile = getattr(agent, "_profile", None)
+            _agent_id = _profile.id if _profile else None
             await self._finalize_session_off_loop(
                 session_id=getattr(agent, "session_id", None),
                 platform="gateway",
                 reason="shutdown",
+                agent_id=_agent_id,
             )
             # Off-loop + bounded: a wedged memory provider here used to hang
             # the whole shutdown so SIGTERM never completed (#53175).
@@ -12926,6 +13035,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
             adapter.set_platform_event_handler(self._primary_platform_event_handler())
             adapter._busy_text_mode = self._busy_text_mode
+            adapter.set_routing_context(
+                routes=self.config.routes,
+                default_agent=self.config.default_agent,
+                gateway=self,
+            )
             _pending_connects.append((platform, platform_config, adapter))
 
         if await self._abort_startup_if_shutdown_requested():
@@ -13888,10 +14002,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # Off-loop + bounded: plugin finalize hooks can
                             # block arbitrarily (see _finalize_session_off_loop)
                             # and this watcher runs on the gateway event loop.
+                            _agent_id = _parts[1] if len(_parts) > 1 else None
                             await self._finalize_session_off_loop(
                                 session_id=entry.session_id,
                                 platform=_platform,
                                 reason="session_expired",
+                                agent_id=_agent_id,
                             )
                         except Exception:
                             pass
@@ -14543,6 +14659,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
                     adapter.set_platform_event_handler(self._primary_platform_event_handler())
                     adapter._busy_text_mode = self._busy_text_mode
+                    adapter.set_routing_context(
+                        routes=self.config.routes,
+                        default_agent=self.config.default_agent,
+                        gateway=self,
+                    )
 
                     # Reconnect after an outage: preserve the platform's
                     # server-side update queue so messages sent while the bot
@@ -16670,7 +16791,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
-        
+
         This is the core message processing pipeline:
         1. Check user authorization
         2. Check for commands (/new, /reset, etc.)
@@ -16702,7 +16823,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Most adapters resolve profile routes in build_source(), before they
         # hand us the event. A few internal/voice paths construct SessionSource
         # directly, so resolve those here as the shared fail-closed ingress gate
-        # before authorization, hooks, or session side effects.
+        # before authorization, hooks, or session side effects — including the
+        # AgentProfile ContextVar binding just below, which a rejected route
+        # has no business acquiring.
         if (
             getattr(getattr(self, "config", None), "multiplex_profiles", False)
             and not getattr(source, "profile", None)
@@ -16724,6 +16847,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "targets an unserved profile"
             )
             return None
+
+        # Bind the per-message AgentProfile into the ContextVar so every
+        # downstream path-getter (SOUL.md, memory dir, skills dir, sessions
+        # dir) honors the routed agent.  Falls back to "main" when the
+        # adapter didn't stamp an agent_id (legacy code path).  Uses
+        # ``getattr`` for the registry so tests that build a stripped-down
+        # GatewayRunner without going through ``__init__`` still work.
+        from agent.profile import _current_agent_profile as _hermes_agent_cv
+        _hermes_agent_id = getattr(event.source, "agent_id", None) or "main"
+        _hermes_registry = getattr(self, "_agent_registry", None) or {}
+        _hermes_profile = _hermes_registry.get(_hermes_agent_id) or _hermes_registry.get("main")
+        _hermes_profile_token = _hermes_agent_cv.set(_hermes_profile) if _hermes_profile else None
+        try:
+            return await self._handle_message_inner(event)
+        finally:
+            if _hermes_profile_token is not None:
+                _hermes_agent_cv.reset(_hermes_profile_token)
+
+    async def _handle_message_inner(self, event: MessageEvent) -> Optional[str]:
+        # Body of the legacy _handle_message — wrapped by _handle_message
+        # above so the AgentProfile ContextVar is bound for the duration
+        # of the call, and so the cross-session leak guard + profile-route
+        # rejection gate run before that binding (and before any other
+        # side effects). The "update" command and the rest of the
+        # _known_commands set live here.
+        source = event.source
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
@@ -16774,6 +16923,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not is_internal:
             try:
                 from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+                _agent_id = getattr(getattr(event, "source", None), "agent_id", None)
                 _hook_results = _invoke_hook(
                     "pre_gateway_dispatch",
                     event=event,
@@ -16782,6 +16932,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # object.__new__ without __init__ (pitfall #17), and the
                     # hook must not fail dispatch over a missing attribute.
                     session_store=getattr(self, "session_store", None),
+                    agent_id=_agent_id,
                 )
             except Exception as _hook_exc:
                 logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
@@ -18200,9 +18351,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         try:
             try:
-                _agent_result = await self._handle_message_with_agent(
-                    event, source, _quick_key, _run_generation
-                )
+                # Set the active agent profile for this message so all
+                # downstream path getters (SOUL.md, memory, skills, cron
+                # jobs) resolve to the correct per-agent directory.  The
+                # profile is looked up from the registry by source.agent_id
+                # (set by adapter _attach_agent_id).
+                _agent_id = getattr(source, "agent_id", None) or "main"
+                _registry = getattr(self, "_agent_registry", None)
+                _profile = _registry.get(_agent_id) if _registry is not None else None
+                if _profile is not None:
+                    from agent.profile import use_profile
+                    with use_profile(_profile):
+                        _agent_result = await self._handle_message_with_agent(
+                            event, source, _quick_key, _run_generation
+                        )
+                else:
+                    _agent_result = await self._handle_message_with_agent(
+                        event, source, _quick_key, _run_generation
+                    )
             except TurnLeaseTimeoutError as exc:
                 # This is a rejected message, not a completed agent turn. Return
                 # before the /goal judge below so it cannot consume the resend
@@ -21186,8 +21352,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return "\n".join(lines)
 
 
-
-
     def _check_slash_access(
         self, source: SessionSource, canonical_cmd: str
     ) -> Optional[str]:
@@ -22683,6 +22847,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from agent.skill_utils import parse_config_string_list
 
             disabled_toolsets = parse_config_string_list(agent_cfg.get("disabled_toolsets")) or None
+            enabled_toolsets, disabled_toolsets = self._apply_profile_toolsets(
+                enabled_toolsets, disabled_toolsets
+            )
 
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
@@ -28314,6 +28481,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from agent.skill_utils import parse_config_string_list
 
         disabled_toolsets = parse_config_string_list(agent_cfg_local.get("disabled_toolsets")) or None
+        enabled_toolsets, disabled_toolsets = self._apply_profile_toolsets(
+            enabled_toolsets, disabled_toolsets
+        )
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
@@ -30980,7 +31150,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         resolve_cron_scheduler(),
         multiplex_profiles=multiplex_cron,
     )
-    cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
+    cron_start_kwargs: Dict[str, Any] = {
+        "adapters": runner.adapters,
+        "loop": asyncio.get_running_loop(),
+        "registry": getattr(runner, "_agent_registry", None),
+    }
 
     # Multiplex profiles: tell the built-in ticker which profile homes to
     # tick so secondary-profile cron jobs actually fire (#69377).

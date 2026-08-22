@@ -130,7 +130,15 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
         _session_id = _approval_session_id.get()
         if _session_id:
             kwargs.setdefault("session_id", _session_id)
-        invoke_hook(hook_name, **kwargs)
+        _agent_id = None
+        try:
+            from agent.profile import get_active_profile
+            _p = get_active_profile()
+            if _p:
+                _agent_id = _p.id
+        except Exception:
+            pass
+        invoke_hook(hook_name, agent_id=_agent_id, **kwargs)
     except Exception as exc:
         # invoke_hook() already swallows per-callback errors, so reaching here
         # means the dispatch layer itself failed. Log and move on -- approval

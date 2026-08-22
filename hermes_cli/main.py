@@ -11648,7 +11648,7 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "agent", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
@@ -12777,6 +12777,43 @@ def main():
     # pause / resume commands  (parser built in hermes_cli/subcommands/pause.py)
     # =========================================================================
     build_pause_parser(subparsers)
+
+    # =========================================================================
+    # agent command
+    # =========================================================================
+    from hermes_cli.agent import cmd_agent_list, cmd_agent_show, cmd_agent_add, cmd_agent_remove
+
+    agent_parser = subparsers.add_parser(
+        "agent",
+        help="Manage multi-agent profiles and routing",
+        description="List, inspect, add, and remove agent profiles.",
+    )
+    agent_subparsers = agent_parser.add_subparsers(dest="agent_command")
+
+    # agent list
+    agent_list = agent_subparsers.add_parser("list", help="List all agents")
+    agent_list.set_defaults(func=cmd_agent_list)
+
+    # agent show
+    agent_show = agent_subparsers.add_parser("show", help="Show agent details")
+    agent_show.add_argument("agent_id", help="Agent ID")
+    agent_show.set_defaults(func=cmd_agent_show)
+
+    # agent add
+    agent_add = agent_subparsers.add_parser("add", help="Add a new agent")
+    agent_add.add_argument("agent_id", help="Unique agent identifier")
+    agent_add.add_argument("--from-profile", help="Clone an existing profile directory")
+    agent_add.add_argument("--model", help="Default model for this agent")
+    agent_add.add_argument("--provider", help="Provider override")
+    agent_add.add_argument("--home-dir", help="Custom home directory")
+    agent_add.add_argument("--enabled-toolsets", help="Comma-separated toolset names")
+    agent_add.set_defaults(func=cmd_agent_add)
+
+    # agent remove
+    agent_remove = agent_subparsers.add_parser("remove", help="Remove an agent")
+    agent_remove.add_argument("agent_id", help="Agent ID to remove")
+    agent_remove.add_argument("--yes", action="store_true", help="Skip confirmation")
+    agent_remove.set_defaults(func=cmd_agent_remove)
 
     # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)

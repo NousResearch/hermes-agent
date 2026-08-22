@@ -444,6 +444,17 @@ def attempt_text_response_for_session(session_key: str, response: str) -> str:
     if coerced is None:
         if reason == "invalid_selection":
             return TEXT_REJECTED_SELECTION
+        # Response rejected. For a native interactive multi-choice clarify the
+        # agent thread is already blocked in ``wait_for_response()``, so
+        # "continue as a normal turn" can only happen if we first unblock that
+        # wait. Cancel the clarify with the empty sentinel (same as
+        # ``clear_session``) so the blocked agent returns promptly and the
+        # caller can then dispatch the message as a normal turn, instead of
+        # leaving the wait parked for the full clarify_timeout (default 3600s)
+        # (#84608). The gateway also releases the wait explicitly on
+        # TEXT_REJECTED_PROSE; resolving an already-set entry is a no-op.
+        if not entry.awaiting_text:
+            resolve_gateway_clarify(entry.clarify_id, "")
         return TEXT_REJECTED_PROSE
 
     if resolve_gateway_clarify(entry.clarify_id, coerced):

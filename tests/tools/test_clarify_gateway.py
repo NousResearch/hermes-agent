@@ -369,6 +369,31 @@ class TestMultiSelectTextFallback:
         t.join(timeout=5)
         assert json.loads(result_box["r"]) == ["A", "B"]
 
+    def test_prose_reply_against_native_multi_choice_unblocks_wait(self):
+        """A prose reply to a native interactive multi-choice clarify is
+        rejected as a clarify response, but must still unblock the blocked
+        agent thread (sentinel ""), so it doesn't park for the full
+        clarify_timeout (#84608)."""
+        from tools import clarify_gateway as cm
+        cm.register("p1", "sk-prose", "Pick one", ["A", "B"])
+        result_box = {}
+
+        def waiter():
+            result_box["r"] = cm.wait_for_response("p1", timeout=5)
+
+        t = threading.Thread(target=waiter)
+        t.start()
+        time.sleep(0.05)
+
+        # Prose that matches no choice and isn't "Other": resolve_text_response
+        # returns False (message continues as a normal turn) but the wait is
+        # resolved with the empty sentinel so the agent unblocks promptly.
+        assert cm.resolve_text_response_for_session("sk-prose", "what do those mean?") is False
+        t.join(timeout=5)
+        assert result_box.get("r") == ""
+        # The clarify entry is consumed from the pending index.
+        assert cm.get_pending_for_session("sk-prose", include_choice_prompts=True) is None
+
     def test_single_select_regression_numeric(self):
         """Single-select coercion unchanged: '2' maps to the choice label string."""
         from tools import clarify_gateway as cm

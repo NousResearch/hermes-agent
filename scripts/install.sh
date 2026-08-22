@@ -823,6 +823,43 @@ npm_supports_npmrc() {
     return 0
 }
 
+# Debian/Ubuntu doesn't ship libatomic.so.1 by default, which the managed
+# Node binary needs to run (#88529).
+ensure_libatomic() {
+    [ "$OS" = "linux" ] || return 0
+    command -v ldconfig >/dev/null 2>&1 && ldconfig -p 2>/dev/null | grep -q 'libatomic\.so\.1' && return 0
+
+    local pkg=""
+    case "$DISTRO" in
+        ubuntu|debian) pkg="libatomic1" ;;
+        fedora)        pkg="libatomic"  ;;
+        arch)          pkg="gcc-libs"   ;;
+        *) return 0 ;;
+    esac
+
+    local install_cmd=""
+    case "$DISTRO" in
+        ubuntu|debian) install_cmd="env DEBIAN_FRONTEND=noninteractive apt-get install -y $pkg" ;;
+        fedora)        install_cmd="dnf install -y $pkg" ;;
+        arch)          install_cmd="pacman -S --noconfirm $pkg" ;;
+    esac
+
+    if [ "$(id -u)" -eq 0 ]; then
+        log_info "Installing $pkg (required by Node.js)..."
+        $install_cmd
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        log_info "Installing $pkg (required by Node.js)..."
+        sudo $install_cmd
+    elif command -v sudo >/dev/null 2>&1; then
+        if [ "$IS_INTERACTIVE" = true ] && prompt_yes_no "Install $pkg via sudo? (required by Node.js)" "yes"; then
+            sudo $install_cmd
+        elif [ "$IS_INTERACTIVE" != true ] && (: </dev/tty) 2>/dev/null \
+            && prompt_yes_no "Install $pkg via sudo? (required by Node.js)" "yes"; then
+            sudo $install_cmd < /dev/tty
+        fi
+    fi
+}
+
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
@@ -854,6 +891,10 @@ check_node() {
         install_node
         return
     fi
+
+    # Only needed once we're actually about to touch a Hermes-managed Node
+    # binary (reuse-from-previous-run below, or a fresh install further down).
+    ensure_libatomic
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
     if [ -x "$HERMES_HOME/node/bin/node" ] && [ -x "$HERMES_HOME/node/bin/npm" ] \
@@ -985,8 +1026,14 @@ install_node() {
 
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
-    local installed_ver
-    installed_ver=$("$HERMES_HOME/node/bin/node" --version 2>/dev/null)
+    local installed_ver installed_rc=0
+    installed_ver="$("$HERMES_HOME/node/bin/node" --version 2>&1)" || installed_rc=$?
+    if [ "$installed_rc" -ne 0 ]; then
+        log_warn "Downloaded Node.js binary failed to run:"
+        log_warn "  $installed_ver"
+        HAS_NODE=false
+        return 0
+    fi
     log_success "Node.js $installed_ver installed to ~/.hermes/node/"
     HAS_NODE=true
 }

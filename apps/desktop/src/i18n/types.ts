@@ -1221,6 +1221,9 @@ export interface Translations {
     durationSeconds: (seconds: string) => string
     durationMinutes: (minutes: number, seconds: number) => string
     tokens: (value: number | string) => string
+    kill: string
+    killing: string
+    killFailed: string
   }
 
   commandCenter: {

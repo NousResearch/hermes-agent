@@ -2996,6 +2996,7 @@ class ContextCompressor(ContextEngine):
         proactive_prune_min_reclaim_tokens: int = 4096,
         min_tail_user_messages: int = 1,
         tail_mode: str = "legacy",
+        summary_instructions: str = "",
     ):
         self.model = model
         self.base_url = base_url
@@ -3006,6 +3007,10 @@ class ContextCompressor(ContextEngine):
         # tail + verbatim-user-message summary section + recovery pointers;
         # "legacy" = 0.20*window tail (shipping behavior).
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "legacy"
+        # Optional extra summarizer guidance (compression.summary_instructions).
+        # Empty / whitespace / non-string = unset. Read at prompt-build time
+        # via getattr so plugin engines can receive a post-init assign.
+        self.summary_instructions = summary_instructions
         # Per-model threshold overrides (longest substring match wins).
         # Stored as a plain dict; resolved in _resolve_threshold(), then the
         # small-context floor is applied on top.
@@ -4490,6 +4495,18 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
+    def _effective_summary_instructions(self) -> str:
+        """Return configured summarizer guidance, or "" when unset.
+
+        Empty string, whitespace-only, None, and non-string values all mean
+        unset so the default Be CONCRETE sentence stays in place. The value
+        is returned verbatim (no interpolation) when set.
+        """
+        raw = getattr(self, "summary_instructions", "")
+        if not isinstance(raw, str) or not raw.strip():
+            return ""
+        return raw
+
     def _generate_summary(
         self,
         turns_to_summarize: List[Dict[str, Any]],
@@ -4748,9 +4765,26 @@ repeat each one verbatim here — copy the exact text, do NOT paraphrase, summar
 or describe them. These markers tell the agent which skills must be reloaded before
 use. If none appear, omit this section entirely.]
 
-Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
+Target ~{summary_budget} tokens. """
+        # Concatenate guidance so a configured string is never interpolated
+        # (.format / f-string would expand braces in the user value).
+        _custom_instructions = self._effective_summary_instructions()
+        _concrete_sentence = (
+            _custom_instructions
+            if _custom_instructions
+            else (
+                "Be CONCRETE — include file paths, command outputs, error messages, "
+                "line numbers, and specific values. Avoid vague descriptions like "
+                '"made some changes" — say exactly what changed.'
+            )
+        )
+        _template_sections = (
+            _template_sections
+            + _concrete_sentence
+            + f"""
 {_temporal_anchoring_rule}
 Write only the summary body. Do not include any preamble or prefix."""
+        )
 
         if self._previous_summary:
             # Iterative update: preserve existing info, add new progress.
@@ -6463,7 +6497,14 @@ This compaction should PRIORITISE preserving all information related to the focu
             "open questions.\n\n"
             "NEVER include API keys, tokens, passwords, secrets, credentials, "
             "or connection strings in the summary \u2014 replace any that appear "
-            f"with [REDACTED].\n\n"
+            "with [REDACTED].\n\n"
+        )
+        # Append configured guidance after NEVER/[REDACTED]. Concatenate so
+        # braces in the user string are never interpolated.
+        _custom_instructions = self._effective_summary_instructions()
+        if _custom_instructions:
+            user_prompt = user_prompt + _custom_instructions + "\n\n"
+        user_prompt = user_prompt + (
             f"## Current Running Summary\n{summary_block}\n\n"
             f"## Next Exchange to Merge\n{exchange_text}\n\n"
             "Return ONLY the updated summary text, no preamble or explanation. "

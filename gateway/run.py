@@ -12156,7 +12156,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self._claim_pending_obligations()
         )
 
-    def _schedule_resume_pending_sessions(self, platform=None) -> int:
+    async def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
         ``resume_pending`` already preserves the transcript AND the existing
@@ -12179,11 +12179,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         agent is already running are skipped regardless, so a session
         scheduled at startup is never resumed a second time.
         """
-        window = _auto_continue_freshness_window()
-        try:
+        def _snapshot_candidates():
+            """Snapshot resume-pending candidates under the store lock.
+
+            Runs as a nested sync helper (off-loop) so the async method only
+            awaits the async persistence boundary.
+            """
             with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
                 self.session_store._ensure_loaded_locked()  # noqa: SLF001
-                candidates = [
+                return [
                     entry for entry in self.session_store._entries.values()  # noqa: SLF001
                     if entry.resume_pending
                     and not entry.suspended
@@ -12191,6 +12195,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and entry.resume_reason in self._AUTO_RESUME_REASONS
                     and (platform is None or entry.origin.platform == platform)
                 ]
+
+        window = _auto_continue_freshness_window()
+        try:
+            candidates = _snapshot_candidates()
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
             return 0
@@ -12222,6 +12230,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for entry in candidates:
             marker = entry.last_resume_marked_at or entry.updated_at
             if marker is not None and (now - marker).total_seconds() > window:
+                # Stale marker: clear it so resume_pending flags don't
+                # accumulate across restarts. The next user message will
+                # still trigger normal reset-policy evaluation in
+                # get_or_create_session().
+                try:
+                    await self.async_session_store.clear_resume_pending(entry.session_key)
+                except Exception:
+                    pass
                 continue
 
             # Already being resumed (e.g. scheduled at startup and still
@@ -13270,9 +13286,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # a session whose final response was generated but never
         # confirmed-delivered has its answer in the ledger — redelivering it
         # is strictly cheaper and more correct than re-running the whole turn.
-        self._schedule_resume_pending_sessions()
+        await self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
-
         # Surface state.db init failures to the user's messaging platforms
         # so they know persistence is broken before losing data (#88235).
         await self._send_session_db_warning_notifications()
@@ -14556,7 +14571,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # auto-resume scoped to this platform so recovery
                         # doesn't silently wait for a manual user message.
                         try:
-                            self._schedule_resume_pending_sessions(platform=platform)
+                            await self._schedule_resume_pending_sessions(platform=platform)
                         except Exception:
                             logger.debug(
                                 "resume-pending reschedule after %s reconnect failed",

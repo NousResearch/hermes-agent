@@ -772,6 +772,67 @@ describe('resumeSession failure recovery', () => {
     expect($messages.get().length).toBeGreaterThan(0)
   })
 
+  it('paints the REST transcript while a cold runtime resume is still pending', async () => {
+    const runtimeResume = deferred<SessionResumeResponse>()
+
+    const requestGateway = vi.fn((method: string) => {
+      if (method === 'session.resume') {
+        return runtimeResume.promise
+      }
+
+      return Promise.resolve({})
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'older question', role: 'user', timestamp: 1 },
+        { content: 'older answer', role: 'assistant', timestamp: 2 },
+        { content: 'history visible before runtime', role: 'user', timestamp: 3 }
+      ],
+      session_id: 'stored-1'
+    } as never)
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={requestGateway as never} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    let settled = false
+
+    const pending = resume!('stored-1', true).then(() => {
+      settled = true
+    })
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.anything()))
+    await waitFor(() => expect(JSON.stringify($messages.get())).toContain('history visible before runtime'))
+    expect(settled).toBe(false)
+
+    await act(async () => {
+      runtimeResume.resolve({
+        session_id: 'runtime-1',
+        session_key: 'stored-1',
+        resumed: 'stored-1',
+        message_count: 3,
+        messages: [],
+        messages_omitted: true,
+        running: true,
+        inflight: {
+          user: 'history visible before runtime',
+          assistant: 'partial runtime tail',
+          streaming: true
+        },
+        info: {}
+      } as never)
+      await pending
+    })
+
+    const promptRows = $messages
+      .get()
+      .filter(message => JSON.stringify(message).includes('history visible before runtime'))
+
+    expect(promptRows).toHaveLength(1)
+    expect(JSON.stringify($messages.get())).toContain('partial runtime tail')
+  })
+
   it('preserves an optimistic user message during a same-session reconnect', async () => {
     setMessages([
       {
@@ -1744,7 +1805,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(sessionStateByRuntimeIdRef.current.has('rt-recycled')).toBe(false)
   })
 
-  it('paints the bounded latest transcript after the deferred resume acknowledgement', async () => {
+  it('paints the bounded latest transcript before the deferred resume acknowledgement without rebuilding it', async () => {
     const latestPage = Array.from({ length: 500 }, (_, index) => ({
       content: `message-${index}`,
       role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
@@ -1779,7 +1840,8 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
     await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledTimes(1))
     expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
-    expect($messages.get()).toHaveLength(0)
+    await waitFor(() => expect($messages.get()).toHaveLength(500))
+    const paintedTranscript = $messages.get()
     expect(requestGatewayMock).toHaveBeenCalledWith(
       'session.resume',
       expect.objectContaining({
@@ -1797,7 +1859,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       info: {}
     })
     await resumePromise
-    expect($messages.get()).toHaveLength(500)
+    expect($messages.get()).toBe(paintedTranscript)
   })
 
   it('honours a warm cache entry whose stored id matches and refreshes its persisted transcript', async () => {

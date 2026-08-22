@@ -1141,9 +1141,9 @@ export function useSessionActions({
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)
 
-        // Keep both requests concurrent, but do not paint the REST result until
-        // the runtime resume has also settled. An eager prefetch paint followed
-        // by the runtime projection rebuilds large transcripts during resume.
+        // Capture the REST result independently from the runtime acknowledgement.
+        // It is painted below as soon as it resolves; the later runtime response
+        // contributes only live state/projection that is not in persisted history.
         let prefetchedResult: { messages: SessionMessage[]; session_id?: string } | null = null
 
         try {
@@ -1154,13 +1154,15 @@ export function useSessionActions({
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
-        const resumed = await resumePromise
-
-        if (!isCurrentResume()) {
-          return
-        }
-
-        if (prefetchedResult) {
+        // Paint the persisted transcript as soon as REST returns. Runtime
+        // resume can legitimately stay pending while a cold profile builds its
+        // agent (skills, MCP, memory); holding this result until that build
+        // settles strands Bot Chats behind the hydration timeout even though
+        // their complete history is already available. Reconcile against the
+        // current view once here, then the runtime path below grafts only its
+        // live projection onto this same snapshot — no second authoritative
+        // transcript rebuild and no duplicate in-flight user row.
+        if (prefetchedResult && isCurrentResume()) {
           const previousMessages = resumedSameSelectedSession
             ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
             : viewMessagesForReconcile()
@@ -1175,6 +1177,16 @@ export function useSessionActions({
           localSnapshot = reconcileAuthoritativeChatMessages(graftedPrefetch, previousMessages)
           prefetchApplied = true
           prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
+
+          if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
+            setMessages(localSnapshot)
+          }
+        }
+
+        const resumed = await resumePromise
+
+        if (!isCurrentResume()) {
+          return
         }
 
         const currentMessages = viewMessagesForReconcile()
@@ -1343,9 +1355,9 @@ export function useSessionActions({
         )
 
         // updateSessionState stages its view sync through requestAnimationFrame.
-        // Commit the final, already-reconciled transcript now so resume has one
-        // additive DOM build instead of an eager prefetch build plus a later
-        // runtime projection build.
+        // Commit only when runtime reconciliation changed the eagerly-painted
+        // transcript; an unchanged acknowledgement preserves reference identity
+        // and avoids a second large DOM build.
         if (!chatMessageArraysEquivalent($messages.get(), messagesForView)) {
           setMessages(messagesForView)
         }

@@ -84,6 +84,9 @@ _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # at or below this limit at registration time.
 _DISCORD_MAX_APP_COMMANDS = 100
 _DISCORD_SELECT_FIELD_LIMIT = 100
+# Discord caps a single select menu at 25 options; a View holds at most 5 rows.
+_DISCORD_SELECT_MAX_OPTIONS = 25
+_DISCORD_SELECT_MAX_ROWS = 5
 _DISCORD_BUTTON_LABEL_LIMIT = 80
 _DISCORD_ELLIPSIS = "\u2026"
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
@@ -9211,7 +9214,7 @@ def _define_discord_view_classes() -> None:
 
             select = discord.ui.Select(
                 placeholder="Choose a provider...",
-                options=options[:25],
+                options=options[:_DISCORD_SELECT_MAX_OPTIONS],
                 custom_id="model_provider_select",
             )
             select.callback = self._on_provider_selected
@@ -9245,15 +9248,18 @@ def _define_discord_view_classes() -> None:
             if not models:
                 return
 
-            # Slice the model list into chunks of <= 25 across (up to) 3 select
-            # rows. Stash the full partitioned list so the count message in
-            # _on_provider_selected can report how many are actually shown.
+            # Slice the model list into <= 25-option chunks across (up to) 3
+            # select rows: 3 selects + Back/Cancel = 5 rows, Discord's View cap.
+            # Providers past that would still clip, but none currently do.
             chunks = [
-                models[i : i + 25] for i in range(0, len(models), 25)
-            ][:3]
-            self._model_chunks = chunks
+                models[
+                    i : i + _DISCORD_SELECT_MAX_OPTIONS
+                ]
+                for i in range(0, len(models), _DISCORD_SELECT_MAX_OPTIONS)
+            ][
+                : _DISCORD_SELECT_MAX_ROWS - 2
+            ]  # keep 2 rows for Back/Cancel
 
-            total_rows = len(chunks) + 2  # + Back/Cancel buttons
             placeholder_base = f"Choose a model from {provider.get('name', provider_slug)}"
             for idx, chunk in enumerate(chunks):
                 options = []
@@ -9346,14 +9352,10 @@ def _define_discord_view_classes() -> None:
             self._build_model_select(provider_slug)
 
             # `shown` counts models actually rendered across the partitioned
-            # select menus (up to 3×25 = 75); older code hard-capped at 25 and
-            # silently dropped the tail (e.g. Nous `:free` Portal picks).
+            # select menus (up to 3×25 = 75); the old code hard-capped at 25
+            # and silently dropped the tail (e.g. Nous `:free` Portal picks).
             total = provider.get("total_models", 0) if provider else 0
-            chunks = getattr(self, "_model_chunks", None)
-            if chunks is not None:
-                shown = sum(len(c) for c in chunks)
-            else:
-                shown = min(len(provider.get("models", [])), 25) if provider else 0
+            shown = min(len(provider.get("models", [])), 75) if provider else 0
             extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
 
             await interaction.response.edit_message(

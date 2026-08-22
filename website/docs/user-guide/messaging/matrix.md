@@ -455,6 +455,18 @@ MATRIX_RECOVERY_KEY=EsT... your recovery key here
 
 On each startup, if `MATRIX_RECOVERY_KEY` is set, Hermes imports cross-signing keys from the homeserver's secure secret storage and signs the current device. This is idempotent and safe to leave enabled permanently.
 
+:::warning[Stale cross-signing signatures]
+Signing the device on startup succeeds locally but is **not** always enough. If the homeserver already holds a cross-signing signature for this device — typically left over from an earlier device-key change — it silently keeps the old one, and `/keys/signatures/upload` reports no error. The bot then keeps starting cleanly while other clients show it as unverified and withhold room keys.
+
+Hermes now checks what the server actually serves after signing and logs an error when the served signature does not verify:
+
+```
+Matrix: the homeserver has a stale cross-signing signature for device ABCD1234 ...
+```
+
+A stale signature cannot be replaced in place. To recover, sign the bot out of that session, create a **new access token** (which yields a fresh device ID), update `MATRIX_ACCESS_TOKEN`, and restart. The local crypto store resets automatically on device change. Re-running startup signing with the same device will not clear it.
+:::
+
 If Hermes bootstraps a new Matrix recovery key, it never logs the raw key. Set
 `MATRIX_RECOVERY_KEY_OUTPUT_FILE=/secure/path/matrix-recovery-key.txt` before
 startup to write a generated key once with file mode `0600`; the file is not

@@ -3342,3 +3342,299 @@ class TestCryptoPickleKeyMigration:
         # start still sees a legacy-key account and retries the migration.
         store.put_account.assert_not_awaited()
         assert "retried on the next start" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Stale cross-signing signature detection
+# ---------------------------------------------------------------------------
+
+def _make_xsign_client(device_sigs, ssk_pubkey="sskpubkey"):
+    """Client whose query_keys returns a device signed with the given sigs."""
+    client = MagicMock()
+    client.mxid = "@bot:example.org"
+    client.device_id = "DEVICE1"
+
+    device_keys = MagicMock()
+    device_keys.serialize.return_value = {
+        "algorithms": ["m.megolm.v1.aes-sha2"],
+        "device_id": "DEVICE1",
+        "keys": {"ed25519:DEVICE1": "devpubkey"},
+        "user_id": "@bot:example.org",
+        "signatures": {"@bot:example.org": device_sigs},
+    }
+    ssk_obj = MagicMock()
+    ssk_obj.keys = {f"ed25519:{ssk_pubkey}": ssk_pubkey}
+    client.query_keys = AsyncMock(return_value=MagicMock(
+        device_keys={"@bot:example.org": {"DEVICE1": device_keys}},
+        self_signing_keys={"@bot:example.org": ssk_obj},
+    ))
+    return client
+
+
+class TestStaleCrossSigningSignatureWarning:
+    @staticmethod
+    def _fake_signature_module(verifies: bool):
+        """Fake mautrix.crypto.signature.
+
+        The helper imports it lazily; patching the real attribute would
+        require libolm, which is not needed to exercise this logic.
+        """
+        mod = types.ModuleType("mautrix.crypto.signature")
+        mod.verify_signature_json = lambda *a, **kw: verifies
+        return {"mautrix.crypto.signature": mod}
+
+    @pytest.mark.asyncio
+    async def test_invalid_signature_logs_actionable_error(self, caplog):
+        import logging
+        adapter = _make_adapter()
+        client = _make_xsign_client({"ed25519:sskpubkey": "bogus-signature"})
+
+        with patch.dict(
+            sys.modules, self._fake_signature_module(False)
+        ), caplog.at_level(logging.ERROR):
+            result = await adapter._warn_if_cross_signing_signature_stale(client)
+
+        assert result is False
+        assert "stale cross-signing signature" in caplog.text
+        assert "new access token" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_valid_signature_is_quiet(self, caplog):
+        import logging
+        adapter = _make_adapter()
+        client = _make_xsign_client({"ed25519:sskpubkey": "good-signature"})
+
+        with patch.dict(
+            sys.modules, self._fake_signature_module(True)
+        ), caplog.at_level(logging.WARNING):
+            result = await adapter._warn_if_cross_signing_signature_stale(client)
+
+        assert result is True
+        assert caplog.text == ""
+
+    @pytest.mark.asyncio
+    async def test_missing_signature_warns(self, caplog):
+        import logging
+        adapter = _make_adapter()
+        client = _make_xsign_client({"ed25519:DEVICE1": "self-sig-only"})
+
+        with patch.dict(
+            sys.modules, self._fake_signature_module(True)
+        ), caplog.at_level(logging.WARNING):
+            result = await adapter._warn_if_cross_signing_signature_stale(client)
+
+        assert result is False
+        assert "no cross-signing signature" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_query_failure_returns_none(self, caplog):
+        import logging
+        adapter = _make_adapter()
+        client = MagicMock()
+        client.mxid = "@bot:example.org"
+        client.device_id = "DEVICE1"
+        client.query_keys = AsyncMock(side_effect=RuntimeError("network down"))
+
+        with caplog.at_level(logging.WARNING):
+            result = await adapter._warn_if_cross_signing_signature_stale(client)
+
+        assert result is None
+        assert "could not check cross-signing signature state" in caplog.text
+
+    def _connect_mocks(self):
+        """Client/olm mocks for a successful encrypted connect()."""
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = "DEV1"
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(
+            return_value=MagicMock(user_id="@bot:example.org", device_id="DEV1")
+        )
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={"device_keys": {}})
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+        return mock_client, mock_olm
+
+    async def _run_connect(self, adapter, mock_client, mock_olm, stale_check):
+        fake_mautrix_mods = _make_fake_mautrix()
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(
+            return_value=mock_client
+        )
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(
+            return_value=mock_olm
+        )
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        with patch.object(
+            matrix_mod, "_check_e2ee_deps", return_value=True
+        ), patch.dict("sys.modules", fake_mautrix_mods), patch.object(
+            adapter, "_refresh_dm_cache", AsyncMock()
+        ), patch.object(
+            adapter, "_sync_loop", AsyncMock(return_value=None)
+        ), patch.object(
+            adapter, "_verify_device_keys_on_server", AsyncMock(return_value=True)
+        ), patch.object(
+            adapter, "_warn_if_cross_signing_signature_stale", stale_check
+        ):
+            return await adapter.connect()
+
+    def _encrypted_adapter(self):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        return MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="syt_test_access_token",
+                extra={
+                    "homeserver": "https://matrix.example.org",
+                    "user_id": "@bot:example.org",
+                    "encryption": True,
+                    "device_id": "DEV1",
+                },
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_connect_checks_signature_after_recovery_key_verify(
+        self, monkeypatch
+    ):
+        """The server-side check must run at the call site, not just in tests.
+
+        A green helper proves nothing if connect() never awaits it.
+        """
+        monkeypatch.setenv("MATRIX_RECOVERY_KEY", "EsTfakerecoverykey")
+        adapter = self._encrypted_adapter()
+        mock_client, mock_olm = self._connect_mocks()
+        mock_olm.verify_with_recovery_key = AsyncMock()
+        stale_check = AsyncMock(return_value=True)
+
+        assert await self._run_connect(
+            adapter, mock_client, mock_olm, stale_check
+        ) is True
+
+        mock_olm.verify_with_recovery_key.assert_awaited_once()
+        stale_check.assert_awaited_once_with(mock_client)
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_connect_skips_signature_check_when_verify_fails(
+        self, monkeypatch
+    ):
+        """If recovery-key verification itself failed there is no new
+        signature to inspect, so the check must not run."""
+        monkeypatch.setenv("MATRIX_RECOVERY_KEY", "EsTfakerecoverykey")
+        adapter = self._encrypted_adapter()
+        mock_client, mock_olm = self._connect_mocks()
+        mock_olm.verify_with_recovery_key = AsyncMock(
+            side_effect=RuntimeError("bad recovery key")
+        )
+        stale_check = AsyncMock(return_value=True)
+
+        assert await self._run_connect(
+            adapter, mock_client, mock_olm, stale_check
+        ) is True
+
+        stale_check.assert_not_awaited()
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_connect_skips_signature_check_without_recovery_key(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv("MATRIX_RECOVERY_KEY", raising=False)
+        adapter = self._encrypted_adapter()
+        mock_client, mock_olm = self._connect_mocks()
+        mock_olm.verify_with_recovery_key = AsyncMock()
+        mock_olm.get_own_cross_signing_public_keys = AsyncMock(
+            return_value=MagicMock()
+        )
+        stale_check = AsyncMock(return_value=True)
+
+        assert await self._run_connect(
+            adapter, mock_client, mock_olm, stale_check
+        ) is True
+
+        mock_olm.verify_with_recovery_key.assert_not_awaited()
+        stale_check.assert_not_awaited()
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_connect_suppresses_verified_log_when_signature_stale(
+        self, monkeypatch, caplog
+    ):
+        """A stale server signature must not be reported as 'verified'.
+
+        The old code logged ``INFO cross-signing verified via recovery key``
+        unconditionally after ``verify_with_recovery_key()``, then logged the
+        stale-signature error afterwards — a self-contradicting log sequence
+        that misled operators into thinking the device was trusted when it
+        was not. When the server-side check returns False, no 'verified'
+        INFO line may be emitted; the actionable stale-signature error is
+        already logged by the helper.
+        """
+        import logging
+
+        monkeypatch.setenv("MATRIX_RECOVERY_KEY", "EsTfakerecoverykey")
+        adapter = self._encrypted_adapter()
+        mock_client, mock_olm = self._connect_mocks()
+        mock_olm.verify_with_recovery_key = AsyncMock()
+        stale_check = AsyncMock(return_value=False)
+
+        with caplog.at_level(logging.INFO):
+            assert await self._run_connect(
+                adapter, mock_client, mock_olm, stale_check
+            ) is True
+
+        mock_olm.verify_with_recovery_key.assert_awaited_once()
+        stale_check.assert_awaited_once_with(mock_client)
+        assert "cross-signing verified via recovery key" not in caplog.text
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_connect_does_not_overclaim_verified_when_check_unavailable(
+        self, monkeypatch, caplog
+    ):
+        """When the server-side check cannot run (None), do not claim 'verified'.
+
+        The local recovery-key signing succeeded, but the server state was
+        never confirmed, so logging 'verified' would overstate what we know.
+        The log must say the check could not run instead.
+        """
+        import logging
+
+        monkeypatch.setenv("MATRIX_RECOVERY_KEY", "EsTfakerecoverykey")
+        adapter = self._encrypted_adapter()
+        mock_client, mock_olm = self._connect_mocks()
+        mock_olm.verify_with_recovery_key = AsyncMock()
+        stale_check = AsyncMock(return_value=None)
+
+        with caplog.at_level(logging.INFO):
+            assert await self._run_connect(
+                adapter, mock_client, mock_olm, stale_check
+            ) is True
+
+        mock_olm.verify_with_recovery_key.assert_awaited_once()
+        stale_check.assert_awaited_once_with(mock_client)
+        assert "cross-signing verified via recovery key" not in caplog.text
+        assert "signature check could not run" in caplog.text
+
+        await adapter.disconnect()

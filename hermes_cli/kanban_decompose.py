@@ -142,6 +142,14 @@ def _truncate(text: str, limit: int) -> str:
     return text[: limit - 1] + "…"
 
 
+_NORMALIZE_TITLE_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _normalize_title(text: str) -> str:
+    """Cheap normalized form of a title for exact-match dedup (#88656)."""
+    return _NORMALIZE_TITLE_RE.sub(" ", text.lower()).strip()
+
+
 def _extract_json_blob(raw: str) -> Optional[dict]:
     if not raw:
         return None
@@ -429,6 +437,55 @@ def decompose_task(
             "parents": clean_parents,
         })
 
+    # Cross-graph dedup (#88656): a child that exact-normalized-title
+    # matches a card already open elsewhere on the board is the same unit
+    # of work as that card, even though it came from a different
+    # decomposition. Skip creating a twin and link the existing card
+    # under this root instead. Only applies when at least one child
+    # survives — if every proposed child turns out to be a duplicate we
+    # fall back to the old create-everything behavior rather than teach
+    # this path to promote a root with zero new children.
+    with kb.connect_closing() as conn:
+        board_tasks = kb.list_tasks(conn, tenant=task.tenant)
+    # Sorted oldest-first so that when several open cards share a
+    # normalized title, the longest-standing one wins deterministically
+    # instead of whichever happened to sort last.
+    existing_by_title: dict[str, str] = {}
+    for t in sorted(board_tasks, key=lambda t: t.created_at):
+        if t.id == task_id or t.status in ("done", "archived") or not t.title:
+            continue
+        existing_by_title.setdefault(_normalize_title(t.title), t.id)
+    duplicates: dict[int, str] = {
+        idx: existing_by_title[_normalize_title(child["title"])]
+        for idx, child in enumerate(children)
+        if _normalize_title(child["title"]) in existing_by_title
+    }
+    # A duplicate that a surviving sibling depends on can't be dropped:
+    # decompose_triage_task's children schema has no way to express
+    # "depend on an existing task id" (parents are indices into this same
+    # list), so the edge would either be silently dropped or need to be
+    # redirected onto the existing card after the fact — which conflicts
+    # with the existing card already being linked as a dependent of this
+    # root below. Rather than lose the dependency or fight that conflict,
+    # refuse to dedup a duplicate with dependents and let it be created as
+    # a twin — the same "don't lose data" principle as the all-duplicates
+    # fallback below.
+    depended_on = {p for child in children for p in child["parents"]}
+    duplicates = {idx: eid for idx, eid in duplicates.items() if idx not in depended_on}
+    if duplicates and len(duplicates) < len(children):
+        index_map: dict[int, int] = {}
+        deduped_children: list[dict] = []
+        for idx, child in enumerate(children):
+            if idx in duplicates:
+                continue
+            index_map[idx] = len(deduped_children)
+            deduped_children.append(child)
+        for child in deduped_children:
+            child["parents"] = [index_map[p] for p in child["parents"] if p in index_map]
+        children = deduped_children
+    else:
+        duplicates = {}
+
     try:
         with kb.connect_closing() as conn:
             child_ids = kb.decompose_triage_task(
@@ -449,6 +506,17 @@ def decompose_task(
         return DecomposeOutcome(
             task_id, False, "task moved out of triage before decomposition",
         )
+
+    if duplicates:
+        with kb.connect_closing() as conn:
+            for existing_id in duplicates.values():
+                try:
+                    kb.link_tasks(conn, task_id, existing_id)
+                except ValueError as exc:
+                    logger.info(
+                        "decompose: could not link existing card %s under %s: %s",
+                        existing_id, task_id, exc,
+                    )
 
     return DecomposeOutcome(
         task_id, True, f"decomposed into {len(child_ids)} children",

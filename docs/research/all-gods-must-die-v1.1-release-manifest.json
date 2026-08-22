@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "manifest_version": "1.0.0",
+  "release_id": "all-gods-must-die-v1.1-task-completion-verification",
+  "title": "All Gods Must Die: Adversarially Verified Transformation - v1.1",
+  "author": "Axl Ibiza, MBA",
+  "created_at": "2026-08-21T01:23:00Z",
+  "status_at_packaging": {
+    "materialization": "local_only",
+    "integrity": "locally_verified",
+    "governance": "unreviewed",
+    "integration": "not_submitted",
+    "operation": "hermetic_verified",
+    "lineage": "active",
+    "note": "This field records packaging-time truth. Repository state must be read from the exact GitHub object after mutation; this manifest cannot certify its own submission."
+  },
+  "target": {
+    "repository": "NousResearch/hermes-agent",
+    "pull_request": 80551,
+    "url": "https://github.com/NousResearch/hermes-agent/pull/80551",
+    "branch": "docs/long-document-production-interlock"
+  },
+  "lineage": [
+    {
+      "type": "derives_from",
+      "artifact": "docs/research/all-gods-must-die-adversarially-verified-transformation.pdf",
+      "repository_blob_sha": "78db53c8d1d1c8b322b403788fcf759bedb23204",
+      "sha256": "76310ddf1d1f56745a105ca9ff32b72ea809ebdbb89fe1a385196e3050a1e056",
+      "pages": 68,
+      "note": "Immutable August 2026 v1.0 component."
+    },
+    {
+      "type": "derives_from",
+      "artifact": "Task Completion Verification.txt",
+      "sha256": "9e9987fb5290435eb1d1b03ce876b0bf4b5040128493eeea2b4dd295fa7b5d32",
+      "note": "Supplied execution record establishing prepared/local verification versus blocked target mutation."
+    },
+    {
+      "type": "refines",
+      "artifact": "All Gods Must Die v1.0",
+      "detail": "Adds the sixth law and exact-object, state-typed task completion semantics without silently rewriting v1.0."
+    },
+    {
+      "type": "about",
+      "artifact": "https://github.com/NousResearch/hermes-agent/pull/85002",
+      "detail": "Task 7 current canonical object at observed exact head 355b50a30c184f1c70df172e018dedd240bd7400."
+    },
+    {
+      "type": "supersedes",
+      "artifact": "https://github.com/NousResearch/hermes-agent/pull/85523",
+      "by": "https://github.com/NousResearch/hermes-agent/pull/90236",
+      "detail": "Task 10 historical lineage preserved; #90236 is canonical at observed exact head 416c5e48aefcccfe945f7d4118415a3b992e017a."
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "docs/research/task-completion-verification-amendment.md",
+      "role": "amendment_source_markdown",
+      "bytes": 23357,
+      "sha256": "18e1a9ca24cbbcd3f80ea02e4db20fbea07a71e85c6e3038a4b64bc92737dd62"
+    },
+    {
+      "path": "docs/research/all-gods-must-die-adversarially-verified-transformation-v1.1.tex",
+      "role": "composed_release_source",
+      "bytes": 1994,
+      "sha256": "dc0f2c616ce98dfdffdff7a6e5fc69ff9ecef2fb4c96b6663e18a78e8e7dbc1a"
+    },
+    {
+      "path": "docs/research/task-completion-record.schema.json",
+      "role": "completion_schema",
+      "bytes": 9147,
+      "sha256": "73e2d8fe8100a5bba2f501322853fd33917abfd73b62fc7b769ce36f6e751842"
+    },
+    {
+      "path": "docs/research/task-completion-verification-ledger.json",
+      "role": "case_study_ledger",
+      "bytes": 10463,
+      "sha256": "a8fd9121cedc355873156d561a120f0db103644f0a3a46cf34eea630f2b4b8a3"
+    },
+    {
+      "path": "website/docs/guides/task-completion-verification.md",
+      "role": "architecture_guide",
+      "bytes": 6437,
+      "sha256": "9aac538bfa9c31604dbe609e94cc2b4362016353b9a4439b872beff7f0ea40bb"
+    },
+    {
+      "path": "docs/research/all-gods-must-die-interlock.md",
+      "role": "interlock_manifest",
+      "bytes": 7139,
+      "sha256": "b789d08b6881046f4dc99fcd96dbf4825b43a5af950e174dc89f4b29e74dec16"
+    }
+  ],
+  "verification": {
+    "amendment_pdf_pages": 14,
+    "composed_pdf_pages": 83,
+    "pdf_preflight": "openable; unencrypted; text-based; no XFA",
+    "render_qa": "all amendment pages rendered; composed cover, original boundary, amendment boundary, declaration, and final page inspected",
+    "schema_validation": "all five ledger records validate against task-completion-record.schema.json",
+    "original_component": "68-page source PDF retained as an independent immutable repository artifact and included by the v1.1 wrapper",
+    "binary_repository_state": "not asserted by this manifest; inspect exact GitHub tree after publication"
+  },
+  "doctrine": {
+    "sixth_law": "No task is complete until the requested state exists at the authoritative target and is verified on the exact object.",
+    "no_state_borrowing": "No receipt may be inherited from a local draft, previous head, adjacent commit, parent object, superseded artifact, or intended write."
+  },
+  "generated_outputs": [
+    {
+      "intended_path": "docs/research/task-completion-verification-amendment.pdf",
+      "role": "amendment_release",
+      "bytes": 86791,
+      "sha256": "1a8f46528faf10339e7d0cdeb3cf0b8035b341a23ffbde2b0b7aa19e361505f5",
+      "pages": 14,
+      "state": "locally_verified",
+      "note": "Rendered and inspected locally. Binary repository publication requires its own exact-object receipt."
+    },
+    {
+      "intended_path": "docs/research/all-gods-must-die-adversarially-verified-transformation-v1.1.pdf",
+      "role": "composed_release",
+      "bytes": 748245,
+      "sha256": "be5f9c912025eb2fbbcbcef2a497eb76f041db7ecfa6637550fe7bbae1fb805b",
+      "pages": 83,
+      "state": "locally_verified",
+      "note": "Release cover plus immutable v1.0 pages plus Amendment I. This manifest does not claim the binary exists on GitHub."
+    }
+  ]
+}

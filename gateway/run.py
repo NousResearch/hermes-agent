@@ -151,6 +151,20 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_GATEWAY_PROVIDER_RETRY_STATUS_RE = re.compile(
+    r"^\s*(?:\W+\s*)?(?:"
+    r"no\s+response\s+from\s+provider\s+for\s+\d+s\b"
+    r"|no\s+first\s+byte\s+from\s+provider\s+in\s+\d+s\b"
+    r"|api\s+call\s+failed\s+\(attempt\s+\d+/\d+\)"
+    r"|provider:\s+.+\bmodel:"
+    r"|endpoint:\s+https?://"
+    r"|error:\s+.+(?:timed\s+out|timeout|ttfb|no\s+response|no\s+bytes)"
+    r"|elapsed:\s+\d"
+    r"|final\s+error:\s+.+(?:timed\s+out|timeout|ttfb|no\s+response|no\s+bytes)"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 _HYGIENE_COOLDOWN_LADDER_MULTIPLIERS = (1, 3, 9)
 # Absolute ceiling on an escalated hygiene cooldown, mirroring
@@ -851,6 +865,8 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
+    if _GATEWAY_PROVIDER_RETRY_STATUS_RE.search(text):
+        return None
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
         # compression progress statuses through to chat platforms. The
@@ -5451,39 +5467,40 @@ class TurnRunner:
         _want_interim_consumer = _want_interim_messages
         if _want_stream_deltas or _want_interim_consumer:
             try:
-                from gateway.stream_consumer import GatewayStreamConsumer
                 _adapter = self._runner._adapter_for_source(ctx.source)
                 if _adapter:
-                    _consumer_cfg, _pause_typing_before_finalize = (
-                        self._runner._build_stream_consumer_config(
-                            ctx.source, _scfg, _adapter,
-                            on_missing_cursor="raise",
+                    _stream_consumer, _stream_delta_inner = (
+                        self._runner._build_platform_stream_consumer(
+                            source=ctx.source,
+                            adapter=_adapter,
+                            scfg=_scfg,
+                            metadata=ctx._status_thread_metadata,
+                            want_stream_deltas=_want_stream_deltas,
+                            on_new_message=(
+                                (lambda: ctx.progress_queue.put(("__reset__",)))
+                                if ctx.progress_queue is not None
+                                else None
+                            ),
+                            initial_reply_to_id=ctx.event_message_id,
+                            run_still_current=ctx._run_still_current,
                         )
                     )
-                    _stream_consumer = GatewayStreamConsumer(
-                        adapter=_adapter,
-                        chat_id=ctx.source.chat_id,
-                        config=_consumer_cfg,
-                        metadata=ctx._status_thread_metadata,
-                        on_new_message=(
-                            (lambda: ctx.progress_queue.put(("__reset__",)))
-                            if ctx.progress_queue is not None
-                            else None
-                        ),
-                        on_before_finalize=_pause_typing_before_finalize,
-                        initial_reply_to_id=ctx.event_message_id,
-                        run_still_current=ctx._run_still_current,
-                    )
-                    if _want_stream_deltas:
+                    if _stream_consumer is not None:
+                        ctx.stream_consumer_holder[0] = _stream_consumer
+                    if _want_stream_deltas and _stream_delta_inner is not None:
                         def _stream_delta_cb(text: str) -> None:
                             if ctx._run_still_current():
-                                _stream_consumer.on_delta(text)
+                                _stream_delta_inner(text)
                                 # Tee to the streaming-TTS consumer (#60671).
                                 if _stts_consumer_ref is not None:
                                     _stts_consumer_ref.on_delta(text)
-                    ctx.stream_consumer_holder[0] = _stream_consumer
             except Exception as _sc_err:
                 logger.debug("Could not set up stream consumer: %s", _sc_err)
+
+        _wecom_reasoning_cb = self._runner._resolve_reasoning_stream_callback(
+            source=ctx.source,
+            stream_consumer=_stream_consumer,
+        )
 
         # When text streaming is off but streaming TTS is active,
         # install a TTS-only delta callback so the consumer still
@@ -5500,6 +5517,8 @@ class TurnRunner:
             if _stream_consumer is not None:
                 if already_streamed:
                     _stream_consumer.on_segment_break()
+                elif ctx.source.platform == Platform.WECOM and _wecom_reasoning_cb is not None:
+                    _wecom_reasoning_cb(display_text)
                 else:
                     _stream_consumer.on_commentary(display_text)
                 return
@@ -5840,6 +5859,7 @@ class TurnRunner:
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = _stream_delta_cb
         agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
+        agent.reasoning_callback = _wecom_reasoning_cb
         agent.status_callback = ctx._status_callback_sync
         # Credits / out-of-band notices (usage bands, depletion, restored).
         # Messaging has no persistent status bar, so each notice is a
@@ -20336,7 +20356,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if source.platform == Platform.MATTERMOST
                     else getattr(self, "_show_reasoning", False)
                 )
-            if _show_reasoning_effective and response and not _intentional_silence:
+            if (
+                _show_reasoning_effective
+                and source.platform != Platform.WECOM
+                and response
+                and not _intentional_silence
+            ):
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
                     from gateway.stream_consumer import escape_code_fences_for_display
@@ -23898,8 +23923,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             last_stream_time = loop.time()
             if not clean:
                 return
-            # Split into chunks if too long
-            max_chunk = 3500
+            # Split into chunks if too long. Reserve room for the code-fence
+            # wrapper added below so the final message stays under the
+            # platform's configured limit.
+            try:
+                max_message_length = adapter.max_message_length_for_chat(chat_id)
+            except Exception:
+                max_message_length = int(getattr(adapter, "MAX_MESSAGE_LENGTH", 4096) or 4096)
+            max_chunk = max(1, max_message_length - len("```\n\n```"))
             chunks = [clean[i:i + max_chunk] for i in range(0, len(clean), max_chunk)]
             for chunk in chunks:
                 try:
@@ -24135,12 +24166,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from tools.ansi_strip import strip_ansi
                 output = strip_ansi(output).strip()
                 if output:
-                    if len(output) > 3500:
-                        output = "…" + output[-3500:]
                     if exit_code == 0:
-                        msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
+                        prefix = "✅ Hermes update finished.\n\n```\n"
                     else:
-                        msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
+                        prefix = "❌ Hermes update failed.\n\n```\n"
+                    suffix = "\n```"
+                    try:
+                        max_message_length = adapter.max_message_length_for_chat(chat_id)
+                    except Exception:
+                        max_message_length = int(getattr(adapter, "MAX_MESSAGE_LENGTH", 4096) or 4096)
+                    output_limit = max(1, max_message_length - len(prefix) - len(suffix))
+                    if len(output) > output_limit:
+                        output = "…" + output[-output_limit:]
+                    if exit_code == 0:
+                        msg = f"{prefix}{output}{suffix}"
+                    else:
+                        msg = f"{prefix}{output}{suffix}"
                 elif exit_code == 0:
                     msg = "✅ Hermes update finished successfully."
                 else:
@@ -27584,6 +27625,97 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         return _consumer_cfg, _pause_typing_before_finalize
 
+    def _build_platform_stream_consumer(
+        self,
+        *,
+        source: "SessionSource",
+        adapter: Any,
+        scfg: Any,
+        metadata: Optional[Dict[str, Any]],
+        want_stream_deltas: bool,
+        on_new_message: Optional[Callable[[], Any]] = None,
+        on_before_finalize: Optional[Callable[[], Any]] = None,
+        initial_reply_to_id: Optional[str] = None,
+        run_still_current: Optional[Callable[[], bool]] = None,
+    ) -> "tuple[Optional[Any], Optional[Any]]":
+        """Build a stream consumer that respects platform-specific metadata.
+
+        WeCom needs reply-scoped metadata to route draft/final chunks onto its
+        native stream API. When that metadata is unavailable we return
+        ``(None, None)`` so callers fall back to the non-streaming path.
+        """
+        from gateway.config import Platform
+        from gateway.stream_consumer import GatewayStreamConsumer
+
+        adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+        if not adapter_supports_edit and source.platform != Platform.WECOM:
+            return None, None
+
+        consumer_metadata = metadata
+        if source.platform == Platform.WECOM:
+            metadata_fn = getattr(adapter, "stream_metadata_for_reply_to", None)
+            if metadata_fn is None:
+                return None, None
+            consumer_metadata = metadata_fn(initial_reply_to_id, metadata)
+            if not consumer_metadata:
+                return None, None
+
+        _consumer_cfg, _pause_typing_before_finalize = (
+            self._build_stream_consumer_config(
+                source,
+                scfg,
+                adapter,
+                on_missing_cursor=(
+                    "fallback"
+                    if source.platform == Platform.WECOM or not want_stream_deltas
+                    else "raise"
+                ),
+            )
+        )
+        if on_before_finalize is None:
+            on_before_finalize = _pause_typing_before_finalize
+
+        stream_consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id=source.chat_id,
+            config=_consumer_cfg,
+            metadata=consumer_metadata,
+            on_new_message=on_new_message,
+            on_before_finalize=on_before_finalize,
+            initial_reply_to_id=initial_reply_to_id,
+            run_still_current=run_still_current,
+        )
+        stream_delta_cb = stream_consumer.on_delta if want_stream_deltas else None
+        return stream_consumer, stream_delta_cb
+
+    def _resolve_reasoning_stream_callback(
+        self,
+        *,
+        source: "SessionSource",
+        stream_consumer: Optional[Any],
+    ) -> Optional[Callable[[str], None]]:
+        """Route live reasoning deltas to platform-native reasoning display."""
+        from gateway.config import Platform
+
+        if source.platform != Platform.WECOM or stream_consumer is None:
+            return None
+        metadata = getattr(stream_consumer, "metadata", None)
+        if not isinstance(metadata, dict):
+            return None
+        reply_req_id = str(metadata.get("wecom_reply_req_id") or "").strip()
+        stream_id = str(metadata.get("wecom_stream_id") or "").strip()
+        if not reply_req_id or not stream_id:
+            return None
+        adapter = getattr(stream_consumer, "adapter", None)
+        record = getattr(adapter, "record_stream_reasoning", None)
+        if not callable(record):
+            return None
+
+        def _record_wecom_reasoning(text: str) -> None:
+            record(reply_req_id, stream_id, text)
+
+        return _record_wecom_reasoning
+
     async def _run_agent_via_proxy(
         self,
         message: str,
@@ -27704,21 +27836,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if _streaming_enabled:
             try:
-                from gateway.stream_consumer import GatewayStreamConsumer
                 _adapter = self._adapter_for_source(source)
                 if _adapter:
-                    _consumer_cfg, _pause_typing_before_finalize = (
-                        self._build_stream_consumer_config(
-                            source, _scfg, _adapter,
-                            on_missing_cursor="fallback",
-                        )
-                    )
-                    _stream_consumer = GatewayStreamConsumer(
+                    _stream_consumer, _ = self._build_platform_stream_consumer(
+                        source=source,
                         adapter=_adapter,
-                        chat_id=source.chat_id,
-                        config=_consumer_cfg,
+                        scfg=_scfg,
                         metadata=_thread_metadata,
-                        on_before_finalize=_pause_typing_before_finalize,
+                        want_stream_deltas=False,
                         initial_reply_to_id=event_message_id,
                         run_still_current=_run_still_current,
                     )
@@ -29729,6 +29854,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _stale_finalized = _matcher(_final) is False
                     except Exception:
                         _stale_finalized = False
+                _sc_adapter = getattr(_sc, "adapter", None)
+                if (
+                    _stale_finalized
+                    and getattr(_sc_adapter, "SUPPORTS_MESSAGE_EDITING", True) is False
+                ):
+                    # Non-editable streaming surfaces (WeCom draft + final send)
+                    # have no durable mid-stream preview to reconcile. If they
+                    # set final_content_delivered, the real final send already
+                    # reached the user; treating a payload mismatch as stale
+                    # makes the gateway send the same final answer again.
+                    _stale_finalized = False
                 if _stale_finalized:
                     _content_delivered = False
             # Plugin hooks (e.g. transform_llm_output) may have appended content

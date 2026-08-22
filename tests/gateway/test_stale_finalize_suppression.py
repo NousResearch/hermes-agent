@@ -85,6 +85,28 @@ class FinalizeCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class NonEditableFinalizeCaptureAdapter(FinalizeCaptureAdapter):
+    """Adapter shape used by WeCom: draft streaming + final send, no edits."""
+
+    SUPPORTS_MESSAGE_EDITING = False
+
+    def stream_metadata_for_reply_to(self, reply_to, metadata=None):
+        return {"reply_req_id": "req-1"}
+
+    async def edit_message(
+        self, chat_id, message_id, content, *, finalize: bool = False, metadata=None
+    ) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "finalize": finalize,
+            }
+        )
+        return SendResult(success=False, error="Not supported")
+
+
 STREAMED_PREFIX = "The photo shows a dog on a beach"
 MISSING_TAIL = " with a red frisbee in its mouth, mid-leap over the surf."
 FULL_RESPONSE = STREAMED_PREFIX + MISSING_TAIL
@@ -207,6 +229,56 @@ async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
     return adapter, result
 
 
+async def _run_streaming_turn_with_adapter(
+    monkeypatch, tmp_path, agent_cls, session_id, adapter
+):
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump(
+            {
+                "display": {"tool_progress": "off", "interim_assistant_messages": False},
+                "streaming": {
+                    "enabled": True,
+                    "edit_interval": 0.01,
+                    "buffer_threshold": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = agent_cls
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    source = SessionSource(
+        platform=adapter.platform,
+        chat_id="-1001",
+        chat_type="group",
+    )
+    result = await runner._run_agent(
+        message="describe this photo",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id=session_id,
+        session_key=f"agent:main:{adapter.platform.value}:group:-1001",
+    )
+    return adapter, result
+
+
 # ---------------------------------------------------------------------------
 # Gateway-boundary regression (#71643)
 # ---------------------------------------------------------------------------
@@ -284,6 +356,17 @@ class _PayloadLessSplitConsumer(GatewayStreamConsumer):
         self._stream_ledger = ""
 
 
+class _NonEditableDeliveredButPayloadMismatchConsumer(GatewayStreamConsumer):
+    """Force the WeCom duplicate shape after a non-editable final send."""
+
+    async def run(self):
+        await super().run()
+        self._final_response_sent = False
+        self._final_content_delivered = True
+        self._delivered_final_text = STREAMED_PREFIX
+        self._message_id = "m-wecom-final"
+
+
 @pytest.mark.asyncio
 async def test_payload_less_split_does_not_suppress_complete_response(
     monkeypatch, tmp_path
@@ -358,6 +441,32 @@ async def test_payload_less_split_does_not_suppress_complete_response(
         "complete response was neither delivered nor left to the normal final "
         f"send; already_sent={result.get('already_sent')!r} payloads={all_payloads!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_non_editable_final_delivery_suppresses_duplicate_send(
+    monkeypatch, tmp_path
+):
+    """WeCom-style non-editable final send must not fall back to a duplicate."""
+    stream_consumer_mod = importlib.import_module("gateway.stream_consumer")
+    monkeypatch.setattr(
+        stream_consumer_mod,
+        "GatewayStreamConsumer",
+        _NonEditableDeliveredButPayloadMismatchConsumer,
+    )
+    adapter = NonEditableFinalizeCaptureAdapter(platform=Platform.WECOM)
+
+    _, result = await _run_streaming_turn_with_adapter(
+        monkeypatch,
+        tmp_path,
+        StalePrefixAgent,
+        "sess-wecom-non-editable-final-delivered",
+        adapter,
+    )
+
+    assert result["final_response"] == FULL_RESPONSE
+    assert result.get("already_sent") is True
+    assert adapter.edits == []
 
 
 # ---------------------------------------------------------------------------

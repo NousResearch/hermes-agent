@@ -234,6 +234,14 @@ def resolve_display_setting(
         if val is not None:
             return _normalise(setting, val)
 
+    # For streaming on WeCom: no explicit per-platform override means we
+    # should follow the top-level streaming config, not fall through to
+    # platform defaults which have False for low-tier platforms.
+    # WeCom uses native stream API and needs this to work.
+    # Other low-tier platforms keep their default False behavior.
+    if setting == "streaming" and platform_key == "wecom":
+        return None
+
     # 3. Built-in platform default
     plat_defaults = _PLATFORM_DEFAULTS.get(platform_key)
     if plat_defaults:

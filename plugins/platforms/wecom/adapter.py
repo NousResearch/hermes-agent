@@ -97,6 +97,7 @@ def _get_scoped_secret(name, default=None):
 logger = logging.getLogger(__name__)
 
 DEFAULT_WS_URL = "wss://openws.work.weixin.qq.com"
+WAITING_MODEL_TEXT = "等待模型响应"
 
 APP_CMD_SUBSCRIBE = "aibot_subscribe"
 APP_CMD_CALLBACK = "aibot_msg_callback"
@@ -168,6 +169,8 @@ class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    # WeCom doesn't support editing sent messages — stream consumer must
+    # use native stream API instead of the edit-based GatewayStreamConsumer.
     SUPPORTS_MESSAGE_EDITING = False
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
@@ -208,6 +211,24 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
+        self._reply_stream_ids: Dict[str, str] = {}
+        self._closed_stream_ids: set[str] = set()
+        self._stream_reasoning: Dict[Tuple[str, str], str] = {}
+        self._stream_has_real_reasoning: set[Tuple[str, str]] = set()
+        self._thinking_task: Optional[asyncio.Task] = None
+        self._thinking_cancelled: bool = False
+        self._thinking_start_time: float = 0.0
+        self._thinking_reply_req_id: Optional[str] = None
+        self._thinking_draft_content: str = ""
+        self._thinking_update_event: Optional[asyncio.Event] = None
+        self._thinking_event_loop: Optional[asyncio.AbstractEventLoop] = None
+        try:
+            self._thinking_max_seconds = max(
+                1,
+                int(extra.get("thinking_max_seconds") or extra.get("thinkingMaxSeconds") or 1800),
+            )
+        except (TypeError, ValueError):
+            self._thinking_max_seconds = 1800
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
@@ -493,6 +514,9 @@ class WeComAdapter(BasePlatformAdapter):
             )
             response = await asyncio.wait_for(future, timeout=timeout)
             return response
+        except asyncio.TimeoutError:
+            logger.warning(f"[{self.name}] _send_reply_request timeout for req_id={normalized_req_id[:20]}... cmd={cmd}")
+            raise
         finally:
             self._pending_responses.pop(normalized_req_id, None)
 
@@ -530,7 +554,8 @@ class WeComAdapter(BasePlatformAdapter):
         if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s ignored", self.name, msg_id)
             return
-        self._remember_reply_req_id(msg_id, self._payload_req_id(payload))
+        req_id = self._payload_req_id(payload)
+        self._remember_reply_req_id(msg_id, req_id)
 
         sender = body.get("from") if isinstance(body.get("from"), dict) else {}
         sender_id = str(sender.get("userid") or "").strip()
@@ -569,6 +594,11 @@ class WeComAdapter(BasePlatformAdapter):
         if not text and not media_urls:
             logger.debug("[%s] Empty WeCom message skipped", self.name)
             return
+
+        is_slash_command = bool(text and text.lstrip().startswith("/"))
+        if not is_slash_command:
+            stream_id = self._stream_id_for_reply_req_id(req_id)
+            self._start_thinking_indicator(req_id, stream_id)
 
         source = self.build_source(
             chat_id=chat_id,
@@ -955,6 +985,85 @@ class WeComAdapter(BasePlatformAdapter):
         while len(self._reply_req_ids) > DEDUP_MAX_SIZE:
             self._reply_req_ids.pop(next(iter(self._reply_req_ids)))
 
+    def _remember_reply_stream_id(self, req_id: str, stream_id: str) -> None:
+        normalized_req_id = str(req_id or "").strip()
+        normalized_stream_id = str(stream_id or "").strip()
+        if not normalized_req_id or not normalized_stream_id:
+            return
+        self._reply_stream_ids[normalized_req_id] = normalized_stream_id
+        while len(self._reply_stream_ids) > DEDUP_MAX_SIZE:
+            self._reply_stream_ids.pop(next(iter(self._reply_stream_ids)))
+
+    def _stream_id_for_reply_req_id(self, req_id: str) -> str:
+        normalized_req_id = str(req_id or "").strip()
+        stream_id = self._reply_stream_ids.get(normalized_req_id)
+        if stream_id and stream_id not in self._closed_stream_ids:
+            return stream_id
+        stream_id = self._new_req_id("stream")
+        self._remember_reply_stream_id(normalized_req_id, stream_id)
+        return stream_id
+
+    def stream_metadata_for_reply_to(
+        self,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return metadata for shared draft streaming, if this reply can stream."""
+        reply_req_id = self._reply_req_id_for_message(reply_to)
+        stream_id = ""
+        if reply_req_id:
+            stream_id = self._stream_id_for_reply_req_id(reply_req_id)
+        else:
+            reply_req_id = str(getattr(self, "_thinking_reply_req_id", "") or "").strip()
+            stream_id = str(getattr(self, "_thinking_stream_id", "") or "").strip()
+        if not reply_req_id or not stream_id:
+            return None
+        merged = dict(metadata or {})
+        merged["wecom_reply_req_id"] = reply_req_id
+        merged["wecom_stream_id"] = stream_id
+        return merged
+
+    def record_stream_reasoning(
+        self,
+        reply_req_id: str,
+        stream_id: str,
+        text: str,
+    ) -> None:
+        """Accumulate model reasoning for the matching WeCom reply stream."""
+        normalized_req_id = str(reply_req_id or "").strip()
+        normalized_stream_id = str(stream_id or "").strip()
+        reasoning_delta = str(text or "")
+        if not normalized_req_id or not normalized_stream_id or not reasoning_delta:
+            return
+
+        key = (normalized_req_id, normalized_stream_id)
+        self._stream_has_real_reasoning.add(key)
+        accumulated = getattr(self, "_thinking_accumulated_lines", None)
+        if (
+            isinstance(accumulated, list)
+            and str(getattr(self, "_thinking_reply_req_id", "") or "").strip() == normalized_req_id
+            and str(getattr(self, "_thinking_stream_id", "") or "").strip() == normalized_stream_id
+        ):
+            accumulated[:] = [
+                line for line in accumulated
+                if WAITING_MODEL_TEXT not in str(line)
+            ]
+        combined = self._stream_reasoning.get(key, "") + reasoning_delta
+        max_buffer = self.MAX_MESSAGE_LENGTH * 4
+        if len(combined) > max_buffer:
+            combined = combined[:max_buffer]
+        self._stream_reasoning[key] = combined
+        while len(self._stream_reasoning) > DEDUP_MAX_SIZE:
+            self._stream_reasoning.pop(next(iter(self._stream_reasoning)))
+
+        update_event = self._thinking_update_event
+        event_loop = self._thinking_event_loop
+        if update_event is not None and event_loop is not None and not event_loop.is_closed():
+            try:
+                event_loop.call_soon_threadsafe(update_event.set)
+            except RuntimeError:
+                pass
+
     def _remember_chat_req_id(self, chat_id: str, req_id: str) -> None:
         """Cache the most recent inbound req_id per chat.
 
@@ -1307,6 +1416,389 @@ class WeComAdapter(BasePlatformAdapter):
         self._raise_for_wecom_error(response, "send reply markdown")
         return response
 
+    async def _send_reply_markdown_chunks(
+        self,
+        reply_req_id: str,
+        content: str,
+    ) -> Dict[str, Any]:
+        response: Dict[str, Any] = {}
+        for chunk in self.truncate_message(content, self.MAX_MESSAGE_LENGTH):
+            response = await self._send_reply_markdown(reply_req_id, chunk)
+        return response
+
+    async def _send_final_reply(self, reply_req_id: str, content: str) -> Dict[str, Any]:
+        logger.debug(f"[{self.name}] _send_final_reply called with reply_req_id={reply_req_id}")
+        if getattr(self, "_thinking_task", None):
+            logger.debug(f"[{self.name}] Cancelling existing thinking task")
+            self._thinking_cancelled = True
+            self._thinking_task.cancel()
+            try:
+                await self._thinking_task
+            except (asyncio.CancelledError, Exception) as e:
+                logger.debug(f"[{self.name}] Thinking task cancelled with exception: {e}")
+            self._thinking_task = None
+            await asyncio.sleep(0.3)
+
+        stream_id = getattr(self, "_thinking_stream_id", None) or self._new_req_id("stream")
+
+        # Only include thinking block if we actually received reasoning content
+        # (not just the waiting indicator lines from the thinking loop)
+        accumulated = getattr(self, "_thinking_accumulated_lines", None)
+        # Check if accumulated contains actual reasoning (not just waiting indicators)
+        has_actual_reasoning = accumulated and any(
+            WAITING_MODEL_TEXT not in line for line in accumulated
+        )
+
+        if has_actual_reasoning:
+            # Filter out waiting indicator lines, keep only actual reasoning
+            reasoning_lines = [line for line in accumulated if WAITING_MODEL_TEXT not in line]
+            think_content = "\n".join(reasoning_lines)
+            full_content = f"<think>{think_content}</think>\n{content}"
+        else:
+            full_content = content
+
+        response = await self._send_final_stream_reply(
+            reply_req_id,
+            full_content,
+            stream_id=stream_id,
+        )
+        logger.info(f"[{self.name}] Sent final reply with stream_id={stream_id}")
+        self._thinking_stream_id = None
+        return response
+
+    def _start_thinking_indicator(self, reply_req_id: str, stream_id: str) -> None:
+        """Start the WeCom waiting indicator after message admission."""
+        if not reply_req_id or not stream_id:
+            return
+        if getattr(self, "_thinking_task", None) and not self._thinking_task.done():
+            self._thinking_cancelled = True
+            self._thinking_task.cancel()
+        self._thinking_stream_id = stream_id
+        self._thinking_reply_req_id = reply_req_id
+        self._thinking_draft_content = ""
+        self._thinking_start_time = time.time()
+        self._thinking_cancelled = False
+        self._thinking_event_loop = asyncio.get_running_loop()
+        self._thinking_update_event = asyncio.Event()
+        self._thinking_task = asyncio.create_task(
+            self._thinking_loop(reply_req_id, stream_id)
+        )
+        logger.info("[%s] Thinking indicator loop started", self.name)
+
+    def _thinking_close_content(self) -> str:
+        accumulated = getattr(self, "_thinking_accumulated_lines", None)
+        if accumulated:
+            content = "<think>" + "\n".join(str(line) for line in accumulated) + "</think>"
+            if len(content) <= self.MAX_MESSAGE_LENGTH:
+                return content
+            return f"<think>{accumulated[-1]}</think>"
+        return f"<think>{WAITING_MODEL_TEXT}</think>"
+
+    def _combine_thinking_with_final(
+        self,
+        content: str,
+        reasoning_text: Optional[str] = None,
+    ) -> str:
+        """Build one final stream frame containing thinking and visible text."""
+        reasoning = str(reasoning_text or "").strip()
+        if reasoning:
+            wrapper_size = len("<think></think>\n")
+            reasoning_budget = self.MAX_MESSAGE_LENGTH - len(content) - wrapper_size
+            if reasoning_budget <= 0:
+                return content
+            if len(reasoning) > reasoning_budget:
+                marker = "\n..."
+                if reasoning_budget > len(marker):
+                    reasoning = reasoning[:reasoning_budget - len(marker)].rstrip() + marker
+                else:
+                    reasoning = reasoning[:reasoning_budget]
+            return f"<think>{reasoning}</think>\n{content}"
+
+        thinking = self._thinking_close_content()
+        combined = f"{thinking}\n{content}"
+        if len(combined) <= self.MAX_MESSAGE_LENGTH:
+            return combined
+
+        accumulated = getattr(self, "_thinking_accumulated_lines", None)
+        if accumulated:
+            compact_thinking = f"<think>{accumulated[-1]}</think>"
+            combined = f"{compact_thinking}\n{content}"
+            if len(combined) <= self.MAX_MESSAGE_LENGTH:
+                return combined
+
+        return content
+
+    def _thinking_prefix_for_final(self, reasoning_text: Optional[str] = None) -> str:
+        """Return a closed WeCom thinking block suitable for prefixing final text."""
+        reasoning = str(reasoning_text or "").strip()
+        if reasoning:
+            prefix = f"<think>{reasoning}</think>\n"
+            if len(prefix) <= self.MAX_MESSAGE_LENGTH:
+                return prefix
+            budget = self.MAX_MESSAGE_LENGTH - len("<think></think>\n")
+            if budget <= 0:
+                return ""
+            marker = "\n..."
+            if budget > len(marker):
+                reasoning = reasoning[:budget - len(marker)].rstrip() + marker
+            else:
+                reasoning = reasoning[:budget]
+            return f"<think>{reasoning}</think>\n"
+
+        thinking = self._thinking_close_content()
+        if len(thinking) + 1 <= self.MAX_MESSAGE_LENGTH:
+            return f"{thinking}\n"
+        return ""
+
+    async def _cancel_thinking_indicator(
+        self,
+        *,
+        close_stream: bool = False,
+        close_text: Optional[str] = None,
+    ) -> None:
+        task = getattr(self, "_thinking_task", None)
+        if task:
+            self._thinking_cancelled = True
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception) as exc:
+                logger.debug("[%s] Thinking task cancelled: %s", self.name, exc)
+            self._thinking_task = None
+        self._thinking_draft_content = ""
+        self._thinking_update_event = None
+        self._thinking_event_loop = None
+
+        if not close_stream:
+            return
+
+        reply_req_id = str(getattr(self, "_thinking_reply_req_id", None) or "").strip()
+        stream_id = str(getattr(self, "_thinking_stream_id", None) or "").strip()
+        if not reply_req_id or not stream_id or stream_id in self._closed_stream_ids:
+            return
+        try:
+            await self._send_reply_stream(
+                reply_req_id,
+                close_text or self._thinking_close_content(),
+                stream_id=stream_id,
+                finish=True,
+                timeout=3.0,
+            )
+        except Exception as exc:
+            logger.debug("[%s] Best-effort thinking close failed: %s", self.name, exc)
+
+    async def _thinking_loop(self, reply_req_id: str, stream_id: str) -> None:
+        """Loop sending thinking indicator every second.
+
+        Each tick appends a new line inside think tags so WeCom re-renders.
+        """
+        loop = asyncio.get_running_loop()
+        next_tick = loop.time() + 1.0
+        tick_count = 0
+        accumulated_lines: list[str] = []
+        update_event = self._thinking_update_event
+        self._thinking_accumulated_lines = accumulated_lines
+        try:
+            while not self._thinking_cancelled:
+                if update_event is not None:
+                    update_event.clear()
+                tick_count += 1
+                elapsed = tick_count - 1  # 0, 1, 2, 3... regardless of actual timing
+                if elapsed >= self._thinking_max_seconds:
+                    logger.warning(
+                        f"[{self.name}] Thinking loop hit max {elapsed}s limit, stopping updates"
+                    )
+                    break
+                reasoning = self._stream_reasoning.get((reply_req_id, stream_id), "").strip()
+                draft_content = str(getattr(self, "_thinking_draft_content", "") or "")
+                reasoning_key = (reply_req_id, stream_id)
+                has_real_reasoning = reasoning_key in self._stream_has_real_reasoning
+                if not reasoning and not has_real_reasoning:
+                    accumulated_lines.append(f"{WAITING_MODEL_TEXT} {elapsed}s")
+                if draft_content:
+                    content = self._combine_thinking_with_final(draft_content, reasoning)
+                elif reasoning:
+                    reasoning_limit = self.MAX_MESSAGE_LENGTH - len("<think>")
+                    content = "<think>" + reasoning[:reasoning_limit]
+                elif has_real_reasoning:
+                    content = self._combine_thinking_with_final(draft_content)
+                else:
+                    content = "<think>" + "\n".join(accumulated_lines)
+                if len(content) > self.MAX_MESSAGE_LENGTH:
+                    logger.warning("[%s] Thinking loop hit message length limit", self.name)
+                    break
+                send_start = loop.time()
+                try:
+                    await self._send_json({
+                        "cmd": APP_CMD_RESPONSE,
+                        "headers": {"req_id": reply_req_id},
+                        "body": {
+                            "msgtype": "stream",
+                            "stream": {
+                                "id": stream_id,
+                                "finish": False,
+                                "content": content[:self.MAX_MESSAGE_LENGTH],
+                            },
+                        },
+                    })
+                    send_dur = loop.time() - send_start
+                    if tick_count <= 3 or tick_count % 10 == 0:
+                        logger.info(
+                            f"[{self.name}] Thinking tick #{tick_count}: "
+                            f"elapsed={elapsed}s, send_dur={send_dur:.2f}s, "
+                            f"loop_t={loop.time():.3f}"
+                        )
+                except Exception as e:
+                    logger.warning(f"[{self.name}] Thinking loop update failed at tick #{tick_count}: {e}")
+                    return
+                try:
+                    if update_event is None:
+                        await asyncio.sleep(1.0)
+                    else:
+                        await asyncio.wait_for(update_event.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    pass
+        except asyncio.CancelledError:
+            logger.info(f"[{self.name}] Thinking loop cancelled properly at {time.time()}")
+        finally:
+            self._thinking_cancelled = True
+
+    async def _send_reply_stream(
+        self,
+        reply_req_id: str,
+        content: str,
+        stream_id: Optional[str] = None,
+        finish: bool = True,
+        timeout: float = REQUEST_TIMEOUT_SECONDS,
+    ) -> Dict[str, Any]:
+        sid = stream_id or self._new_req_id("stream")
+        if len(content) > self.MAX_MESSAGE_LENGTH:
+            raise ValueError(
+                f"WeCom stream frame exceeds {self.MAX_MESSAGE_LENGTH} characters"
+            )
+        payload = {
+            "msgtype": "stream",
+            "stream": {
+                "id": sid,
+                "finish": finish,
+                "content": content,
+            },
+        }
+        for attempt in range(3):
+            response = await self._send_reply_request(
+                reply_req_id,
+                payload,
+                timeout=timeout,
+            )
+            if response.get("errcode") == 6000 and attempt < 2:
+                await asyncio.sleep(0.2 * (attempt + 1))
+                continue
+            self._raise_for_wecom_error(response, "send reply stream")
+            break
+        if finish:
+            self._closed_stream_ids.add(sid)
+            if self._reply_stream_ids.get(reply_req_id) == sid:
+                self._reply_stream_ids.pop(reply_req_id, None)
+            if getattr(self, "_thinking_stream_id", None) == sid:
+                self._thinking_stream_id = None
+        return response
+
+    async def _send_final_stream_reply(
+        self,
+        reply_req_id: str,
+        content: str,
+        *,
+        stream_id: Optional[str] = None,
+        reasoning_text: Optional[str] = None,
+        include_thinking: bool = False,
+    ) -> Dict[str, Any]:
+        thinking_prefix = ""
+        if include_thinking:
+            thinking_prefix = self._thinking_prefix_for_final(reasoning_text)
+
+        first_chunk_limit = self.MAX_MESSAGE_LENGTH
+        if thinking_prefix:
+            first_chunk_limit = max(1, self.MAX_MESSAGE_LENGTH - len(thinking_prefix))
+        chunks = self.truncate_message(content, first_chunk_limit)
+        if thinking_prefix and chunks:
+            chunks[0] = thinking_prefix + chunks[0]
+        response = await self._send_reply_stream(
+            reply_req_id,
+            chunks[0],
+            stream_id=stream_id,
+            finish=True,
+        )
+        for chunk in chunks[1:]:
+            response = await self._send_reply_stream(
+                reply_req_id,
+                chunk,
+                stream_id=self._new_req_id("stream"),
+                finish=True,
+            )
+        return response
+
+    def supports_draft_streaming(
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """WeCom streams drafts only for admitted reply-mode callbacks."""
+        del chat_type
+        if not isinstance(metadata, dict):
+            return False
+        return bool(metadata.get("wecom_reply_req_id") and metadata.get("wecom_stream_id"))
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a shared stream-consumer draft frame via WeCom's stream API."""
+        del chat_id, draft_id
+        metadata = metadata if isinstance(metadata, dict) else {}
+        reply_req_id = str(metadata.get("wecom_reply_req_id") or "").strip()
+        stream_id = str(metadata.get("wecom_stream_id") or "").strip()
+        if not reply_req_id or not stream_id:
+            return SendResult(success=False, error="WeCom draft stream metadata missing")
+        reasoning = self._stream_reasoning.get((reply_req_id, stream_id), "")
+        thinking_stream_matches = (
+            str(getattr(self, "_thinking_reply_req_id", None) or "").strip()
+            == reply_req_id
+            and str(getattr(self, "_thinking_stream_id", None) or "").strip()
+            == stream_id
+            and stream_id not in self._closed_stream_ids
+        )
+        if thinking_stream_matches:
+            self._thinking_draft_content = content
+        if reasoning:
+            content = self._combine_thinking_with_final(content, reasoning)
+        elif thinking_stream_matches:
+            content = self._combine_thinking_with_final(content)
+        if len(content) > self.MAX_MESSAGE_LENGTH:
+            return SendResult(
+                success=False,
+                error=f"WeCom draft frame exceeds {self.MAX_MESSAGE_LENGTH} characters",
+            )
+        try:
+            response = await self._send_reply_stream(
+                reply_req_id,
+                content,
+                stream_id=stream_id,
+                finish=False,
+            )
+        except asyncio.TimeoutError:
+            return SendResult(success=False, error="Timeout sending WeCom draft stream")
+        except Exception as exc:
+            logger.warning("[%s] Draft stream send failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+        return SendResult(
+            success=True,
+            message_id=None,
+            raw_response=response,
+        )
+
     async def _send_reply_media_message(
         self,
         reply_req_id: str,
@@ -1427,20 +1919,60 @@ class WeComAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
-        del metadata
-
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
 
+        metadata = metadata if isinstance(metadata, dict) else {}
+
         try:
-            reply_req_id = self._reply_req_id_for_message(reply_to)
+            stream_reply_req_id = str(metadata.get("wecom_reply_req_id") or "").strip()
+            stream_id = str(metadata.get("wecom_stream_id") or "").strip()
+            expect_edits = bool(metadata.get("expect_edits"))
+            is_stream_final = bool(metadata.get("notify") and stream_reply_req_id and stream_id)
+
+            if expect_edits and not is_stream_final:
+                return SendResult(
+                    success=False,
+                    error="WeCom does not support non-final edit fallback",
+                )
+
+            reply_req_id = stream_reply_req_id or self._reply_req_id_for_message(reply_to)
 
             if not reply_req_id and chat_id in self._last_chat_req_ids:
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
-            if reply_req_id:
-                response = await self._send_reply_markdown(reply_req_id, content)
+            if is_stream_final:
+                reasoning_key = (stream_reply_req_id, stream_id)
+                reasoning = self._stream_reasoning.get(reasoning_key, "")
+                thinking_stream_matches = (
+                    str(getattr(self, "_thinking_reply_req_id", None) or "").strip()
+                    == stream_reply_req_id
+                    and str(getattr(self, "_thinking_stream_id", None) or "").strip()
+                    == stream_id
+                    and stream_id not in self._closed_stream_ids
+                )
+                if thinking_stream_matches:
+                    await self._cancel_thinking_indicator(close_stream=False)
+                if stream_id in self._closed_stream_ids:
+                    stream_id = self._new_req_id("stream")
+                response = await self._send_final_stream_reply(
+                    stream_reply_req_id,
+                    content,
+                    stream_id=stream_id,
+                    reasoning_text=reasoning,
+                    include_thinking=bool(reasoning or thinking_stream_matches),
+                )
+                self._stream_reasoning.pop(reasoning_key, None)
+                self._stream_has_real_reasoning.discard(reasoning_key)
+            elif reply_req_id:
+                await self._cancel_thinking_indicator(close_stream=True)
+                response = await self._send_reply_markdown_chunks(reply_req_id, content)
             else:
+                await self._cancel_thinking_indicator(close_stream=True)
+                logger.info(
+                    "[%s] No reply_req_id for reply_to=%s, using regular markdown send",
+                    self.name, reply_to,
+                )
                 response = await self._send_request(
                     APP_CMD_SEND,
                     {
@@ -1555,7 +2087,7 @@ class WeComAdapter(BasePlatformAdapter):
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """WeCom does not expose typing indicators in this adapter."""
+        """WeCom thinking indicator is sent from _on_message before processing."""
         del chat_id, metadata
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

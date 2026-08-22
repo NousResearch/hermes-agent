@@ -8,7 +8,15 @@ source or to another configured platform.
 Configuration lives in config.yaml under platforms.webhook.extra.routes.
 Each route defines:
   - events: which event types to accept (header-based filtering)
-  - secret: HMAC secret for signature validation (REQUIRED)
+  - secret: HMAC secret for signature validation (REQUIRED). A value of the
+    form ``${VAR}`` or ``${env:VAR}`` is read from the environment (or the
+    active profile's secret scope) at load time, so a tracked config.yaml
+    never has to carry the credential itself. Any whole-string ``${...}``
+    that cannot be resolved — unset variable, unparseable name, non-env
+    SecretRef source — becomes empty, which the "route without a secret is
+    refused" guards then reject. The literal placeholder is never used as a
+    signing key: it is written in the tracked config, so treating it as one
+    would publish the key.
   - prompt: template string formatted with the webhook payload
   - skills: optional list of skills to load for the agent
   - deliver: where to send the response (github_comment, telegram, etc.)
@@ -155,6 +163,117 @@ def _is_loopback_host(host: Optional[str]) -> bool:
     return host.strip().lower() in _LOOPBACK_HOSTS
 
 
+# A whole-string reference of ANY shape: ``${VAR}``, ``${env:VAR}``,
+# ``${bitwarden:FOO}``, ``${VAR:-default}``.  Deliberately permissive so that
+# every reference-shaped secret reaches _resolve_secret and is either resolved
+# or refused — a shape this module does not understand must never survive as
+# an HMAC key.  Only the whole-string form is claimed; a literal secret that
+# merely contains braces still passes through verbatim.
+_SECRET_REF_RE = re.compile(r"^\$\{([^}]*)\}$")
+# A plain environment variable name, once any ``env:`` prefix is stripped.
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# A SecretRef source prefix (``bitwarden:``, ``vault:``, ``file:``, ...),
+# matching hermes_cli.config._env_expand_match's detection.
+_SECRET_REF_SOURCE_RE = re.compile(r"^[a-z][a-z0-9_-]*:")
+# Sources safe to name in a log line. An unrecognised prefix is NOT echoed:
+# a value that merely looks like a ref may be a real secret, and this warning
+# must not become the leak the feature exists to prevent.
+_KNOWN_SECRET_SOURCES = frozenset(
+    {"bitwarden", "bws", "vault", "file", "op", "keychain", "aws", "gcp", "azure"}
+)
+
+
+def _resolve_secret(value: Any, label: str = "") -> Any:
+    """Expand a whole-string ``${VAR}`` route secret from the environment.
+
+    ``config.yaml`` is often version-controlled or shared between machines, so
+    a literal ``secret:`` means committing an HMAC credential.
+    ``secret: "${MY_SECRET}"`` reads the value at load time instead.
+
+    Both reference spellings the rest of the tree accepts are understood, so a
+    config author never has to remember which one this field takes:
+
+    * ``${VAR}`` — bare name (``hermes_cli.config._expand_env_vars``).
+    * ``${env:VAR}`` — Cursor-style SecretRef (``tools/mcp_tool._env_ref_name``,
+      and config.yaml's expander since #69267).
+
+    Resolution goes through ``gateway.config._getenv`` so a profile-scoped
+    secret store wins over the process environment when one is installed —
+    the same precedence every other gateway credential read follows.
+
+    FAIL CLOSED. Every whole-string ``${...}`` value resolves to either the
+    referenced value or ``""``; the literal text is never handed back as a key.
+    An unset variable, an unparseable name (``${VAR:-default}``) and a non-env
+    SecretRef source (``${bitwarden:FOO}``, whose backend injects into the
+    environment via the ``secrets:`` block instead) all resolve to ``""``,
+    which the existing "route without a secret is refused" guards then reject.
+    Passing the text through would be fail-OPEN: the placeholder is written in
+    the very config.yaml this feature exists to let you commit, so anyone who
+    can read the repo would know the HMAC key.
+
+    Only a value that is ENTIRELY one reference is claimed; a literal secret
+    that merely contains a brace (``prefix-${VAR}``) is returned untouched.
+    """
+    if not isinstance(value, str):
+        return value
+    match = _SECRET_REF_RE.match(value.strip())
+    if match is None:
+        return value
+    where = f" for {label}" if label else ""
+    inner = match.group(1).strip()
+    if inner.startswith("env:"):
+        inner = inner[len("env:"):].strip()
+    elif _SECRET_REF_SOURCE_RE.match(inner):
+        source = inner.split(":", 1)[0]
+        logger.warning(
+            "[webhook] Secret reference%s uses source '%s', which is not "
+            "resolvable here — external secret backends inject env vars at "
+            "startup, so reference the variable as ${env:NAME}. Treating the "
+            "secret as unset; the route will be refused.",
+            where,
+            source if source in _KNOWN_SECRET_SOURCES else "<unrecognised>",
+        )
+        return ""
+    if not _ENV_VAR_NAME_RE.match(inner):
+        logger.warning(
+            "[webhook] Secret reference%s is not a usable ${VAR} / ${env:VAR} "
+            "environment reference. Treating the secret as unset; the route "
+            "will be refused rather than signed against the literal text.",
+            where,
+        )
+        return ""
+    from gateway.config import _getenv
+
+    return _getenv(inner, "") or ""
+
+
+def _normalize_routes(routes: Any) -> Dict[str, dict]:
+    """Return a copy of ``routes`` with every route secret env-resolved.
+
+    Applied once at load for both the static (config.yaml) and dynamic
+    (subscriptions file) route maps, so the startup validation and the
+    per-request signature check both read an already-resolved secret. Copies
+    rather than mutates: ``config.extra["routes"]`` is shared state that other
+    readers (``hermes webhook list``, config round-trips) must still see as
+    the author wrote it.
+    """
+    if not isinstance(routes, dict):
+        return {}
+    normalized: Dict[str, dict] = {}
+    for name, route in routes.items():
+        if not isinstance(route, dict):
+            normalized[name] = route
+            continue
+        if "secret" in route:
+            normalized[name] = {
+                **route,
+                "secret": _resolve_secret(route["secret"], f"route '{name}'"),
+            }
+        else:
+            normalized[name] = route
+    return normalized
+
+
 def _hmac_str_equal(provided: str, expected: str) -> bool:
     """Timing-safe equality for two ``str`` values, tolerant of non-ASCII input.
 
@@ -191,8 +310,12 @@ class WebhookAdapter(BasePlatformAdapter):
         _cfg_host = config.extra.get("host", DEFAULT_HOST)
         self._host: Optional[str] = _cfg_host or None
         self._port: int = int(config.extra.get("port", DEFAULT_PORT))
-        self._global_secret: str = config.extra.get("secret", "")
-        self._static_routes: Dict[str, dict] = config.extra.get("routes", {})
+        self._global_secret: str = _resolve_secret(
+            config.extra.get("secret", ""), "the global webhook secret"
+        )
+        self._static_routes: Dict[str, dict] = _normalize_routes(
+            config.extra.get("routes", {})
+        )
         self._dynamic_routes: Dict[str, dict] = {}
         self._dynamic_routes_mtime: float = 0.0
         self._routes: Dict[str, dict] = dict(self._static_routes)
@@ -519,6 +642,11 @@ class WebhookAdapter(BasePlatformAdapter):
             data = json.loads(subs_path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 return
+            # Same ``${VAR}`` expansion the static routes get, so the empty-secret
+            # rejection below sees the RESOLVED value: an unset variable must be
+            # refused like any other missing secret, not accepted as the literal
+            # string "${VAR}" and used as an HMAC key.
+            data = _normalize_routes(data)
             # Merge: static routes take precedence over dynamic ones.
             # Reject any dynamic route whose effective secret is empty —
             # an empty secret would cause _handle_webhook to skip HMAC

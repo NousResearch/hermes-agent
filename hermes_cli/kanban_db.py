@@ -5428,6 +5428,15 @@ def complete_task(
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
+
+    # ``tasks.result`` is the user-visible deliverable.  When a worker
+    # completes a task with only ``summary=`` (the common path), the
+    # ``result`` column would stay NULL, making the card unreadable in
+    # the board UI and the notifier.  Fall back to ``summary`` so the
+    # field is always populated.
+    if result is None and summary is not None:
+        result = summary
+
     with write_txn(conn):
         # Parent completion is a hard invariant even for direct human review
         # approval. A parent may have been reopened after this task entered

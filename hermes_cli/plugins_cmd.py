@@ -1233,6 +1233,98 @@ def _remove_plugin_core(target: Path) -> None:
     shutil.rmtree(staging)
 
 
+def _plugin_removal_identities(target: Path) -> set:
+    """Return the ``plugins.*`` config keys demonstrably owned by *target*.
+
+    Uninstall has to strip the removed plugin out of ``plugins.enabled`` /
+    ``plugins.disabled`` / ``plugins.entries``, and ``plugins.entries.<key>``
+    can hold the privileged ``allow_tool_override`` grant — a record left
+    behind here is re-applied to whatever is installed at that key next.
+
+    Ownership is established by the directory being deleted, not by the name
+    the user typed: the discovered entry whose directory *is* *target* supplies
+    the canonical key and manifest name. A bare directory leaf is not an
+    identity on its own, because path-derived keys mean a namespaced
+    ``image_gen/openai`` shares its leaf with a separate flat ``openai``. A
+    leaf or manifest alias is collected only when ``_resolve_plugin_key`` maps
+    it back to this same plugin and it is not another installed plugin's
+    canonical key or manifest name.
+
+    MUST be called before the tree is deleted; discovery scans the plugins
+    directory. Returns an empty set when discovery cannot establish ownership,
+    which leaves config untouched.
+    """
+    try:
+        target_dir = target.resolve()
+        entries = _discover_all_plugins()
+        # Entry-point plugins carry a "pkg.mod:register" string in the
+        # dir_path slot; only real Path entries can identify *target*.
+        owned = [
+            entry
+            for entry in entries
+            if isinstance(entry[4], Path) and entry[4].resolve() == target_dir
+        ]
+        if len(owned) != 1:
+            return set()
+        manifest_name, canonical = owned[0][0], owned[0][5]
+        identities = {canonical}
+        foreign_identities = {
+            identity
+            for entry in entries
+            if entry[5] != canonical
+            for identity in (entry[5], entry[0])
+        }
+        for alias in (manifest_name, target.name):
+            if not alias or alias in identities or alias in foreign_identities:
+                continue
+            if _resolve_plugin_key(alias) == canonical:
+                identities.add(alias)
+        return identities
+    except Exception:
+        logger.debug("Plugin discovery failed; leaving config untouched", exc_info=True)
+        return set()
+
+
+def _remove_plugin_config_state(identities: set) -> None:
+    """Drop *identities* from ``plugins.enabled`` / ``disabled`` / ``entries``.
+
+    One load/save pair so a removal cannot half-apply. Managed installs
+    cannot persist user config, so they retain the previous silent uninstall
+    behavior instead of attempting a managed write.
+    """
+    if not identities:
+        return
+    from hermes_cli.config import is_managed, load_config, save_config
+
+    if is_managed():
+        return
+
+    config = load_config()
+    plugins_cfg = config.get("plugins")
+    if not isinstance(plugins_cfg, dict):
+        return
+
+    changed = False
+    for list_key in ("enabled", "disabled"):
+        current = plugins_cfg.get(list_key)
+        if not isinstance(current, list):
+            continue
+        kept = [item for item in current if item not in identities]
+        if len(kept) != len(current):
+            plugins_cfg[list_key] = kept
+            changed = True
+
+    entries = plugins_cfg.get("entries")
+    if isinstance(entries, dict):
+        for identity in identities:
+            if identity in entries:
+                del entries[identity]
+                changed = True
+
+    if changed:
+        save_config(config)
+
+
 def cmd_remove(name: str) -> None:
     """Remove an installed plugin by name."""
     from rich.console import Console
@@ -1246,7 +1338,11 @@ def cmd_remove(name: str) -> None:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
+    # Strip config state before the tree goes away: identity resolution needs
+    # the plugin on disk, and a failed config write must leave the plugin
+    # installed rather than strand a deleted plugin in plugins.enabled.
     try:
+        _remove_plugin_config_state(_plugin_removal_identities(target))
         _remove_plugin_core(target)
     except (OSError, PluginOperationError) as exc:
         console.print(f"[red]Error:[/red] Could not remove plugin '{name}': {exc}")
@@ -3028,7 +3124,7 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
 
 
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
-    """Delete a plugin tree under ``~/.hermes/plugins/`` only."""
+    """Delete a plugin tree under ``~/.hermes/plugins/`` and its config state."""
     plugins_dir = _plugins_dir()
     for n, _ver, _d, src, _path, _key in _discover_all_plugins():
         if n == name and src == "bundled":
@@ -3041,7 +3137,10 @@ def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
             "error": f"Plugin '{name}' was not found under {plugins_dir}.",
         }
 
+    # Same ordering as the CLI path: resolve identities and clean config while
+    # the plugin is still on disk.
     try:
+        _remove_plugin_config_state(_plugin_removal_identities(target))
         _remove_plugin_core(target)
     except (OSError, PluginOperationError) as exc:
         return {"ok": False, "error": f"Could not remove plugin '{name}': {exc}"}

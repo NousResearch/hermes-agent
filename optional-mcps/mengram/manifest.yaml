@@ -1,0 +1,46 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: mengram
+description: Remember across sessions — facts, what happened, and the workflows the agent has learned.
+source: https://docs.mengram.io
+
+# Mengram ships a remote MCP server with native OAuth 2.1 + PKCE and Dynamic
+# Client Registration over Streamable HTTP. Discovery is advertised at
+# /.well-known/oauth-authorization-server, and the endpoint itself at
+# /.well-known/oauth-protected-resource, so Hermes's MCP client +
+# mcp_oauth_manager handle the flow — nothing to install locally.
+transport:
+  type: http
+  url: https://mengram.io/mcp/connector
+
+auth:
+  type: oauth
+  # No `provider:` — this is native MCP OAuth (case 1), not a third-party
+  # provider. The MCP client triggers the browser flow on the first probe.
+
+# Tool selection at install time:
+# /mcp/connector is a deliberately small surface — remember, recall,
+# context_for, list_procedures — so `default_enabled` is left unset and the
+# install-time checklist starts with all four pre-checked. The full 30-tool
+# surface lives at /mcp for callers that want it.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - mengram
+    - memory
+  hosts:
+    - mengram.io
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with
+  Mengram. A free account is enough to start.
+
+  After auth, restart your Hermes session so the memory tools are loaded.
+  The agent can then save what matters from a conversation and recall it in
+  later sessions, from any machine.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure mengram

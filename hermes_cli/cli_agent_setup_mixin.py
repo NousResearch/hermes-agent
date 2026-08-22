@@ -330,7 +330,7 @@ class CLIAgentSetupMixin:
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            overrides = resolve_fast_mode_overrides(route["model"], tier=service_tier)
         except Exception:
             overrides = None
         route["request_overrides"] = overrides

@@ -170,3 +170,35 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
 
 
+
+
+def test_load_service_tier_accepts_flex(monkeypatch):
+    """agent.service_tier: flex must survive config load, not be dropped as unknown."""
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_runtime_config",
+        lambda: {"agent": {"service_tier": "flex"}},
+    )
+
+    assert gateway_run.GatewayRunner._load_service_tier() == "flex"
+
+
+def test_turn_route_injects_flex_without_changing_runtime():
+    runner = _make_runner()
+    runner._service_tier = "flex"
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://openrouter.ai/api/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "hi", "openrouter/openai/gpt-4.1", runtime_kwargs
+    )
+
+    assert route["runtime"]["provider"] == "openrouter"
+    assert route["request_overrides"] == {"service_tier": "flex"}

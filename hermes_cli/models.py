@@ -3593,6 +3593,13 @@ _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = (
 def _is_openai_fast_model(model_id: Optional[str]) -> bool:
     """Return True if the model is an OpenAI flagship eligible for Priority Processing."""
     raw = _strip_vendor_prefix(str(model_id or ""))
+    # After stripping one vendor prefix (e.g. 'openrouter/'), the model may
+    # still carry an 'openai/' sub-prefix — 'openrouter/openai/gpt-4.1'
+    # reduces to 'openai/gpt-4.1', which matches no prefix below. Strip that
+    # second level only when it is explicitly 'openai/', so this stays a
+    # targeted fix rather than widening the match for other vendors.
+    if raw.startswith("openai/"):
+        raw = raw[len("openai/"):]
     base = raw.split(":")[0]
     if not base:
         return False
@@ -3620,6 +3627,35 @@ def _strip_vendor_prefix(model_id: str) -> str:
     return raw
 
 
+def _is_google_service_tier_model(model_id: Optional[str]) -> bool:
+    """Return True if the model accepts Gemini's ``service_tier`` request field.
+
+    Gemini exposes both tiers on ``generateContent`` as a top-level body field:
+    ``flex`` (https://ai.google.dev/gemini-api/docs/flex-inference) and
+    ``priority``
+    (https://ai.google.dev/gemini-api/docs/generate-content/priority-inference).
+    Both docs list the same ``gemini-2.5+`` family, so match ``gemini-*`` by
+    pattern rather than pinning a version list that goes stale each release.
+    """
+    raw = _strip_vendor_prefix(str(model_id or ""))
+    # Same two-level handling as the OpenAI check: 'openrouter/google/gemini-x'
+    # reduces to 'google/gemini-x'. Gemma/Lyria are deliberately not matched —
+    # service tiers apply to Gemini only.
+    if raw.startswith("google/"):
+        raw = raw[len("google/"):]
+    base = raw.split(":")[0]
+    match = re.match(r"gemini-(\d+)(?:\.(\d+))?", base)
+    if not match:
+        return False
+    # Both tier docs list gemini-2.5 and newer. Gemini's native REST rejects
+    # the entire request on an unexpected body field, so sending service_tier
+    # to 1.5/2.0 would hard-fail every call for a globally-configured tier —
+    # gate on version rather than matching gemini-* broadly.
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    return (major, minor) >= (2, 5)
+
+
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
     """Return whether Hermes should expose the /fast toggle for this model."""
     from agent.model_metadata import is_grok_46_family
@@ -3628,6 +3664,7 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
         _is_anthropic_fast_model(model_id)
         or _is_openai_fast_model(model_id)
         or is_grok_46_family(str(model_id or ""))
+        or _is_google_service_tier_model(model_id)
     )
 
 
@@ -3650,23 +3687,53 @@ def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     return "opus-4-6" in base or "opus-4.6" in base
 
 
-def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
-    """Return request_overrides for fast/priority mode, or None if unsupported.
+# Tier values Hermes will send. "priority" is OpenAI Priority Processing /
+# Gemini priority / xAI priority / Anthropic speed=fast; "flex" is the
+# discounted latency-tolerant tier (OpenAI + Gemini only).
+_SUPPORTED_SERVICE_TIERS: frozenset[str] = frozenset({"priority", "flex"})
+
+
+def resolve_fast_mode_overrides(
+    model_id: Optional[str], tier: str = "priority"
+) -> dict[str, Any] | None:
+    """Return request_overrides for the requested service tier, or None.
+
+    ``tier`` is the resolved config value — ``"priority"`` (the ``/fast``
+    toggle and ``agent.service_tier: fast``) or ``"flex"``.
 
     Returns provider-appropriate overrides:
-    - OpenAI models: ``{"service_tier": "priority"}`` (Priority Processing)
-    - Anthropic models: ``{"speed": "fast"}`` (Anthropic Fast Mode beta)
-    - Grok 4.6: ``{"service_tier": "priority"}`` (xAI Priority Processing)
+    - OpenAI models: ``{"service_tier": tier}`` (Priority Processing / Flex)
+    - Gemini models: ``{"service_tier": tier}`` (both tiers are top-level
+      ``generateContent`` fields)
+    - Anthropic models: ``{"speed": "fast"}`` for priority only. Anthropic has
+      no flex equivalent — ``speed`` is a go-faster knob, so mapping flex onto
+      it would silently bill *more* for a setting chosen to cost less. Return
+      None and let the request go out at the standard tier.
+    - Grok 4.6: ``{"service_tier": "priority"}`` (xAI Priority Processing) for
+      priority only. xAI has no published flex tier, and its Responses API
+      rejects ``service_tier`` outright (see the strip in
+      ``agent/transports/codex.py``), so flex returns None rather than sending
+      an unverified value.
 
     The overrides are injected into the API request kwargs by
     ``_build_api_kwargs`` in run_agent.py — each API path handles its own
-    keys (service_tier for OpenAI/Codex, speed for Anthropic Messages).
+    keys (service_tier for OpenAI/Gemini, speed for Anthropic Messages).
     """
     if not model_supports_fast_mode(model_id):
         return None
+    from agent.model_metadata import is_grok_46_family
+
+    normalized = str(tier or "priority").strip().lower() or "priority"
+    # Only documented values go on the wire. Callers normalize today, but that
+    # invariant is spread across four parsers — a stray "fast"/"scale" here
+    # would become an invalid service_tier the provider 400s on.
+    if normalized not in _SUPPORTED_SERVICE_TIERS:
+        return None
     if _is_anthropic_fast_model(model_id):
-        return {"speed": "fast"}
-    return {"service_tier": "priority"}
+        return {"speed": "fast"} if normalized == "priority" else None
+    if is_grok_46_family(str(model_id or "")) and normalized != "priority":
+        return None
+    return {"service_tier": normalized}
 
 
 def _resolve_copilot_catalog_api_key() -> str:

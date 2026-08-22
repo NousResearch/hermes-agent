@@ -117,6 +117,38 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
     ]
 
 
+def _requested_service_tier(agent) -> str | None:
+    """Return the service tier this turn asked for, or None.
+
+    Two different config paths write the tier into ``request_overrides``:
+
+    - ``resolve_fast_mode_overrides()`` (the ``/fast`` toggle and
+      ``agent.service_tier``) writes it **top-level** — this is the shape the
+      transports actually send (``agent/transports/chat_completions.py``).
+    - a ``custom_providers`` entry writes it nested under ``extra_body``
+      (``agent/agent_init.py``).
+
+    This field is a billing audit (``hermes_cli/oneshot.py``: pipelines use it
+    to confirm the tier they believe they are paying for went out on the
+    wire), so it must see both. Reading only ``extra_body`` reported None for
+    every fast-mode turn. Top-level wins when both are set, because that is
+    what the transport puts on the request.
+
+    ``speed: fast`` (Anthropic Fast Mode) is deliberately not reported — it is
+    a different parameter, not a service tier.
+    """
+    overrides = getattr(agent, "request_overrides", None) or {}
+    if not isinstance(overrides, dict):
+        return None
+    tier = overrides.get("service_tier")
+    if tier:
+        return tier
+    extra_body = overrides.get("extra_body")
+    if isinstance(extra_body, dict):
+        return extra_body.get("service_tier")
+    return None
+
+
 def finalize_turn(
     agent,
     *,
@@ -719,11 +751,10 @@ def finalize_turn(
         "estimated_cost_usd": agent.session_estimated_cost_usd,
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
-        # Requested service tier (from request_overrides.extra_body), for
-        # billing audits by callers like `hermes -z --usage-file`.
-        "service_tier": (
-            (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}
-        ).get("service_tier"),
+        # Requested service tier, for billing audits by callers like
+        # `hermes -z --usage-file`. See _requested_service_tier for why both
+        # override shapes must be read.
+        "service_tier": _requested_service_tier(agent),
         "session_id": agent.session_id,
     }
     if agent._tool_guardrail_halt_decision is not None:

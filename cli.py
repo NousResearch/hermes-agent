@@ -405,6 +405,8 @@ def _parse_service_tier_config(raw: str) -> str | None:
         return None
     if value in {"fast", "priority", "on"}:
         return "priority"
+    if value == "flex":
+        return "flex"
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 

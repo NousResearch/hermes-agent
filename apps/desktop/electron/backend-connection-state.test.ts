@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 
 import { test } from 'vitest'
 
+import { BackendStopError, forceStopBackendChild, STOP_TIMED_OUT } from './backend-child'
 import { createBackendConnectionState } from './backend-connection-state'
 
 type FakeProcess = { id: string }
@@ -104,4 +106,28 @@ test('an invalidated attempt cannot attach a late-spawned process', () => {
 
   assert.equal(state.attachProcess(staleAttempt, { id: 'late' }), null)
   assert.equal(state.getProcess(), null)
+})
+
+test('a forced stop without terminal proof blocks minting the next generation', () => {
+  const state = createBackendConnectionState<FakeProcess, string>()
+  const events = new EventEmitter()
+  const stopping = {
+    exitCode: null as number | null,
+    kill: () => true,
+    killed: false,
+    pid: 5050,
+    signalCode: null as string | null,
+    once: events.once.bind(events),
+    removeListener: events.removeListener.bind(events)
+  }
+
+  assert.equal(forceStopBackendChild(stopping, 'linux').kind, 'StopRequested')
+  assert.throws(
+    () => state.startAttempt(),
+    error => error instanceof BackendStopError && error.result.kind === STOP_TIMED_OUT
+  )
+
+  stopping.signalCode = 'SIGUSR2'
+  events.emit('exit', null, 'SIGUSR2')
+  assert.doesNotThrow(() => state.startAttempt())
 })

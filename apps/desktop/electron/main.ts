@@ -31,7 +31,11 @@ import {
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
-import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
+import {
+  forceStopBackendChild as forceStopBackendChildImpl,
+  stopBackendChild as stopBackendChildImpl,
+  stopBackendTreesForUpdate
+} from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
@@ -3072,31 +3076,6 @@ function isShimLocked(shimPath) {
   }
 }
 
-// Force-kill the entire process TREE rooted at each PID. Node's child.kill()
-// only signals the direct child, so on Windows a backend `hermes.exe` that
-// spawned its own grandchildren (a `hermes` REPL, a pty terminal session, the
-// gateway) would survive and keep the venv shim locked. taskkill /T /F reaps
-// the whole tree synchronously. Windows-only: this is called solely from the
-// Windows shim-unlock path, and the backend is NOT spawned detached (so it's
-// not a process-group leader — a POSIX negative-pgid kill would be meaningless
-// here anyway). POSIX teardown stays with the existing before-quit SIGTERM.
-function forceKillProcessTree(pid) {
-  if (!IS_WINDOWS) {
-    return
-  }
-
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return
-  }
-
-  try {
-    execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], hiddenWindowsChildOptions({ stdio: 'ignore' }))
-  } catch {
-    // Already gone, or no permission — best effort; the unlock wait below is
-    // the real gate.
-  }
-}
-
 function writeBackendOwnership(contents) {
   fs.mkdirSync(path.dirname(DESKTOP_BACKEND_OWNERSHIP_PATH), { recursive: true })
   const tempPath = `${DESKTOP_BACKEND_OWNERSHIP_PATH}.${process.pid}.tmp`
@@ -3238,46 +3217,14 @@ async function stopOwnedBackend(identity) {
     return
   }
 
-  if (IS_WINDOWS) {
-    forceKillProcessTree(identity.pid)
-  } else {
-    try {
-      process.kill(-identity.pid, 'SIGTERM')
-    } catch {
-      try {
-        process.kill(identity.pid, 'SIGTERM')
-      } catch {
-        return
-      }
-    }
-
-    const deadline = Date.now() + 1500
-
-    while (Date.now() < deadline) {
-      if ((await processIdentityMatches(identity)) !== true) {
-        return
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 50))
-    }
-
-    // Revalidate immediately before escalation so PID reuse cannot target a
-    // replacement process.
-    if ((await processIdentityMatches(identity)) === true) {
-      try {
-        process.kill(-identity.pid, 'SIGKILL')
-      } catch {
-        process.kill(identity.pid, 'SIGKILL')
-      }
-    }
-  }
-
-  await new Promise(resolve => setTimeout(resolve, 50))
-  const remaining = await processIdentityMatches(identity)
-
-  if (remaining !== false) {
-    throw new Error(`Backend PID ${identity.pid} did not stop cleanly.`)
-  }
+  // Persisted identity is evidence that the process still looks like Hermes;
+  // it is not the retained capability that created/adopted that process. Keep
+  // the ownership record so a later authority-aware recovery can report it,
+  // but never turn the PID back into kill authority (#89614).
+  throw Object.assign(
+    new Error(`Refusing to stop backend PID ${identity.pid}: no retained process authority.`),
+    { code: 'NO_PROCESS_AUTHORITY' }
+  )
 }
 
 const backendOwnership = createBackendOwnership({
@@ -3414,10 +3361,8 @@ async function releaseBackendLock(updateRoot, tag) {
 
   const hermesProcess = backendConnectionState.getProcess()
 
-  stopBackendTreesForUpdate(hermesProcess, {
-    forceKillProcessTree,
-    stopAllPoolBackends
-  })
+  await stopBackendTreesForUpdate(hermesProcess, { stopAllPoolBackends })
+  await waitForBackendExit(hermesProcess)
 
   const shim = venvHermesShimPath(updateRoot)
   const deadlineMs = Date.now() + 15000
@@ -3429,27 +3374,9 @@ async function releaseBackendLock(updateRoot, tag) {
       return { unlocked: true }
     }
 
-    // A supervised backend can respawn between kill and check (grandchildren,
-    // pool entries registered mid-teardown). Re-collect and re-kill each pass
-    // instead of trusting the initial sweep.
-    const stragglers = []
-
-    const currentHermesProcess = backendConnectionState.getProcess()
-
-    if (currentHermesProcess && Number.isInteger(currentHermesProcess.pid)) {
-      stragglers.push(currentHermesProcess.pid)
-    }
-
-    for (const entry of backendPool.values()) {
-      if (entry.process && Number.isInteger(entry.process.pid)) {
-        stragglers.push(entry.process.pid)
-      }
-    }
-
-    for (const pid of stragglers) {
-      forceKillProcessTree(pid)
-    }
-
+    // The lock is observation only. Descendants or foreign processes may
+    // remain after retained-child shutdown; never rediscover authority from
+    // their PIDs. The timeout below aborts before replacement (#89614).
     await new Promise(r => setTimeout(r, 300))
   }
 
@@ -9749,7 +9676,7 @@ function resetBootProgressForReconnect() {
 }
 
 function stopBackendChild(child) {
-  stopBackendChildImpl(child, { forceKillProcessTree, isWindows: IS_WINDOWS })
+  stopBackendChildImpl(child)
 }
 
 // Soft gateway-mode apply: tear down the primary without resetting boot UI or
@@ -9848,19 +9775,7 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
     return
   }
 
-  try {
-    if (IS_WINDOWS && Number.isInteger(child.pid)) {
-      forceKillProcessTree(child.pid)
-    } else if (Number.isInteger(child.pid)) {
-      try {
-        process.kill(-child.pid, 'SIGKILL')
-      } catch {
-        child.kill('SIGKILL')
-      }
-    } else {
-      child.kill('SIGKILL')
-    }
-  } catch {
+  if (!forceStopBackendChildImpl(child)) {
     return
   }
 

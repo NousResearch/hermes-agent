@@ -31,12 +31,19 @@ instead, which:
   4. the instant the original parent is gone, terminates the real child's
      process group (SIGTERM, grace period, then SIGKILL) and exits.
 
+When this watchdog itself runs inside Desktop retained POSIX authority, the
+global descendant guard upgrades the private-session request into a retained
+nested-owned scope. In that case the returned ``Popen`` is the nested owner,
+not a numeric handle to rediscover with ``getpgid``; teardown therefore routes
+through that retained owner instead of widening a child-local kill onto the
+Desktop root process group.
+
 This is intentionally a thin, standard-library-only script so it starts fast
 and can't itself become a resource leak.
 
 Usage (see ``tools/mcp_tool.py::_run_stdio``)::
 
-    python3 -m tools.mcp_stdio_watchdog \\
+    python3 -m tools.mcp_stdio_watchdog \
         --ppid <original_parent_pid> -- <real_command> <arg1> <arg2> ...
 """
 
@@ -60,13 +67,28 @@ def _is_orphaned(original_ppid: int, getppid=os.getppid) -> bool:
 
 
 def _terminate_process_group(proc: subprocess.Popen) -> None:
-    """Best-effort SIGTERM-then-SIGKILL of the child's process group.
+    """Best-effort termination of exactly the child scope owned by ``proc``.
 
-    This module only ever runs on POSIX (the wrap site in tools/mcp_tool.py
-    gates on ``os.name == "posix"``), but guard the POSIX-only primitives
-    anyway so an accidental Windows import/execute degrades to a plain
-    child kill instead of AttributeError.
+    Under Desktop retained authority, a private-session request is represented
+    by a retained nested owner. Signals must go through that object; deriving a
+    PGID from its PID would recover the *outer* Desktop group and widen local
+    authority. Outside that regime, preserve the historical process-group
+    teardown for the real direct child.
     """
+    if getattr(proc, "__hermes_nested_owned__", False):
+        try:
+            proc.terminate()
+            proc.wait(timeout=_TERM_GRACE_S)
+            return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        try:
+            proc.kill()
+            proc.wait(timeout=_TERM_GRACE_S)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return
+
     killpg = getattr(os, "killpg", None)
     if killpg is None:  # windows-footgun: ok — non-POSIX fallback
         try:
@@ -115,9 +137,9 @@ def main(argv: list[str] | None = None) -> int:
         print("mcp_stdio_watchdog: no command given after '--'", file=sys.stderr)
         return 2
 
-    # New process group so we can killpg() the whole tree the real command
-    # may spawn (e.g. mcp-remote's own child `node` process), without
-    # touching our own group or the (already-gone) original parent's.
+    # New process group so we can kill the exact real-command subtree without
+    # touching the watchdog or its parent. Under Desktop authority the global
+    # guard retains this as a nested-owned scope instead of flattening it.
     proc = subprocess.Popen(
         real_argv,
         stdin=sys.stdin,
@@ -127,11 +149,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # Because the real server lives in its OWN process group (above), the
-    # parent's graceful-shutdown killpg of *our* group no longer reaches it.
-    # Forward SIGTERM/SIGINT to the child's group so graceful teardown
-    # (`_kill_orphaned_mcp_children`, shutdown sweeps) still kills a wedged
-    # server that ignores stdin EOF — otherwise the watchdog wrap would
-    # invert the bug it fixes.
+    # parent's graceful-shutdown signal of *our* group no longer reaches it.
+    # Forward SIGTERM/SIGINT through the child authority so graceful teardown
+    # still kills a wedged server that ignores stdin EOF.
     def _forward_shutdown(signum, frame):  # noqa: ARG001
         _terminate_process_group(proc)
         sys.exit(128 + signum)

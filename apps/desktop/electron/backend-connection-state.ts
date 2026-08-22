@@ -1,3 +1,5 @@
+import { assertNoPendingForcedBackendStops } from './backend-child'
+
 export type BackendConnectionAttempt<TConnection> = {
   generation: number
   promise: Promise<TConnection> | null
@@ -15,6 +17,11 @@ export function createBackendConnectionState<TProcess, TConnection>() {
 
   return {
     startAttempt(): BackendConnectionAttempt<TConnection> {
+      // A timed-out force request is not permission to overlap generations.
+      // The exact retained owner must produce terminal proof before a new
+      // backend attempt can be minted.
+      assertNoPendingForcedBackendStops()
+
       return { generation, promise: null }
     },
 

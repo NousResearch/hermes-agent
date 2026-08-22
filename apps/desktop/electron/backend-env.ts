@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 
 // Match the POSIX fallback surface used by the Python terminal environment.
@@ -13,6 +14,18 @@ const POSIX_SANE_PATH_ENTRIES = Object.freeze([
   '/sbin',
   '/bin'
 ])
+
+export const WINDOWS_PROCESS_AUTHORITY_MODE = 'windows-job-v1'
+export const POSIX_PROCESS_AUTHORITY_MODE = 'posix-session-v1'
+export const DESKTOP_PROCESS_AUTHORITY_ENV = 'HERMES_DESKTOP_PROCESS_AUTHORITY'
+export const DESKTOP_PROCESS_GENERATION_ENV = 'HERMES_DESKTOP_PROCESS_GENERATION'
+export const DESKTOP_PARENT_PID_ENV = 'HERMES_DESKTOP_PARENT_PID'
+export const DESKTOP_PARENT_STARTED_AT_ENV = 'HERMES_DESKTOP_PARENT_STARTED_AT_MS'
+
+// Capture this once for the Electron generation. Re-deriving Date.now() -
+// process.uptime() at every backend spawn makes an NTP jump look like a parent
+// generation change and fail-closes every subsequent launch until app restart.
+const DESKTOP_PARENT_STARTED_AT_MS = Math.round(Date.now() - process.uptime() * 1000)
 
 function delimiterForPlatform(platform = process.platform) {
   return platform === 'win32' ? ';' : ':'
@@ -64,15 +77,10 @@ function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
  * Hermes-managed Node.js directories, in preferred lookup order.
  *
  * There are two on-disk layouts. `scripts/install.ps1` unpacks portable Node
- * straight into `%LOCALAPPDATA%\hermes\node` (node.exe at the root, no `bin\`);
+ * straight into `%LOCALAPPDATA%\\hermes\\node` (node.exe at the root, no `bin\\`);
  * `scripts/install.sh` and the node-bootstrap helper use the POSIX
  * `$HERMES_HOME/node/bin`. Emit BOTH on every platform so mixed and migrated
  * installs resolve, leading with the layout native to the current platform.
- *
- * This is the single source of truth for the ordering rule on the Node side —
- * `main.ts` imports it rather than keeping its own copy. Mirrors
- * `iter_hermes_node_dirs()` in hermes_constants.py, which the Electron main
- * process cannot import.
  */
 function hermesManagedNodePathEntries(
   hermesHome,
@@ -118,26 +126,51 @@ function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatfor
   return resolved
 }
 
+/**
+ * Python imports `sitecustomize` before `hermes_cli.main`. Desktop prepends
+ * this scoped directory on every native platform so the process authority is
+ * armed before Hermes imports any code capable of spawning descendants.
+ */
+function desktopProcessAuthorityBootstrapDirs(
+  pythonPathEntries,
+  { pathModule = pathModuleForPlatform(process.platform) }: any = {}
+) {
+  return pythonPathEntries
+    .filter(Boolean)
+    .map(root => pathModule.join(root, 'hermes_cli', 'desktop_bootstrap'))
+}
+
 function buildDesktopBackendEnv({
   hermesHome,
   pythonPathEntries = [],
   venvRoot,
   currentEnv = process.env,
   platform = process.platform,
-  pathModule = pathModuleForPlatform(platform)
+  pathModule = pathModuleForPlatform(platform),
+  authorityGeneration = randomUUID(),
+  parentPid = process.pid,
+  parentStartedAtMs = DESKTOP_PARENT_STARTED_AT_MS
 }: any = {}) {
   const delimiter = delimiterForPlatform(platform)
   const currentPythonPath = currentEnv?.PYTHONPATH || ''
   const key = pathEnvKey(currentEnv, platform)
+  const authorityBootstrapDirs = desktopProcessAuthorityBootstrapDirs(pythonPathEntries, {
+    pathModule
+  })
+  const authorityMode =
+    platform === 'win32' ? WINDOWS_PROCESS_AUTHORITY_MODE : POSIX_PROCESS_AUTHORITY_MODE
 
   return {
-    PYTHONPATH: appendUniquePathEntries([...pythonPathEntries, currentPythonPath], { delimiter }),
+    [DESKTOP_PARENT_PID_ENV]: String(parentPid),
+    [DESKTOP_PARENT_STARTED_AT_ENV]: String(parentStartedAtMs),
+    [DESKTOP_PROCESS_AUTHORITY_ENV]: authorityMode,
+    [DESKTOP_PROCESS_GENERATION_ENV]: String(authorityGeneration),
+    PYTHONPATH: appendUniquePathEntries(
+      [authorityBootstrapDirs, pythonPathEntries, currentPythonPath],
+      { delimiter }
+    ),
     // Force PEP 540 UTF-8 mode in the spawned Python backend so its stdio and
-    // subprocess defaults are UTF-8 even on non-UTF-8 Windows locales (GBK,
-    // cp1252, ...). hermes_bootstrap sets this inside the child too, but only
-    // after import — anything emitted earlier (interpreter startup errors,
-    // pre-bootstrap tracebacks) still decodes with the locale default without
-    // this. User's explicit setting wins. Re-port of PR #56499 (echoriver89).
+    // subprocess defaults are UTF-8 even on non-UTF-8 Windows locales.
     PYTHONUTF8: currentEnv?.PYTHONUTF8 ?? '1',
     [key]: buildDesktopBackendPath({
       hermesHome,
@@ -154,6 +187,8 @@ export {
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
   delimiterForPlatform,
+  DESKTOP_PARENT_STARTED_AT_MS,
+  desktopProcessAuthorityBootstrapDirs,
   hermesManagedNodePathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,

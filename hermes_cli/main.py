@@ -9463,7 +9463,11 @@ def _install_python_dependencies_with_optional_fallback(
             "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
         )
 
-    _install(["install", "-e", "."])
+    try:
+        _install(["install", "-e", "."])
+    except (subprocess.CalledProcessError, OSError):
+        _warn_if_hermes_launcher_broken()
+        raise
 
     failed_extras: list[str] = []
     installed_extras: list[str] = []
@@ -9585,6 +9589,48 @@ def _verify_console_scripts_installed(
         )
     else:
         print("  ✓ All console entry points restored")
+
+
+def _warn_if_hermes_launcher_broken() -> None:
+    """Surface a broken ``hermes`` launcher the moment an install fails.
+
+    ``_verify_console_scripts_installed`` only runs after a successful (or
+    warned-but-continuing) install, and only on Windows. On POSIX, ``uv``/pip
+    can still remove the old ``venv/bin/hermes`` shim before failing to write
+    its replacement — most commonly because the venv is not fully writable by
+    the current user (e.g. an earlier ``sudo hermes update``). The generic
+    "Update failed: Command ... exit status N" message that follows gives no
+    hint that the CLI itself is now unusable, so check on every platform
+    right after a failed base install and, if a shim is gone, say so (#83529).
+    """
+    scripts_dir = _venv_scripts_dir()
+    if scripts_dir is None:
+        return
+    missing = [
+        name
+        for name in _load_console_script_names()
+        if not (scripts_dir / name).is_file() and not (scripts_dir / f"{name}.exe").is_file()
+    ]
+    if not missing:
+        return
+    print()
+    print(f"  ✗ The `hermes` command is now broken: missing {', '.join(missing)} in {scripts_dir}")
+    print(
+        "    This usually means files under the venv are not writable by the "
+        "current user (for example, a previous update or install ran under sudo)."
+    )
+    if _is_windows():
+        print(f"    Check permissions with: icacls {scripts_dir}")
+        print(
+            "    If it's not writable by the current user, take ownership with: "
+            f"takeown /r /d y /f {scripts_dir.parent}"
+        )
+    else:
+        print(f"    Check ownership with: ls -la {scripts_dir}")
+        print(
+            f"    If it's owned by another user, fix it with: sudo chown -R \"$(id -un)\" {scripts_dir.parent}"
+        )
+    print("    Then re-run `hermes update` (or the setup script) to reinstall.")
 
 
 def _verify_core_dependencies_installed(

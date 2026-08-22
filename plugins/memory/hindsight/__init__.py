@@ -44,6 +44,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from agent.secret_scope import get_secret
 
@@ -111,6 +112,108 @@ def _parse_int_setting(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
         return default
+
+
+def _normalize_api_url(url: Any, mode: str) -> str | None:
+    """Validate/normalize a Hindsight ``api_url`` so it is a usable request target.
+
+    The hindsight client builds request URLs by string concatenation
+    (``f"{base_url}/v1/..."``), so a schemeless value like ``host:8888``
+    produces an invalid URL and fails at call time with a cryptic error
+    ("Failed to search memory: host:8888/v1/..."). Normalizing here moves the
+    failure earlier and fixes the common misconfiguration automatically:
+
+    * missing scheme  -> prepend ``http://`` (local modes) or ``https://`` (cloud)
+    * invalid scheme  -> raise ``ValueError`` with an actionable message
+    * empty/None/whitespace-only -> return ``None`` so callers fall back to
+      their configured default URL (a blank value is "unset", not "broken")
+
+    Returns the normalized URL string, or None when no usable value is given.
+    """
+    if url is None:
+        return None
+    raw = str(url).strip()
+    if not raw:
+        logger.warning(
+            "Hindsight api_url is blank/whitespace-only; falling back to the "
+            "default URL. Remove 'api_url' from "
+            "%s to silence this warning.",
+            get_hermes_home() / "hindsight" / "config.json",
+        )
+        return None
+    if "://" not in raw:
+        assumed = "http" if mode in {"local_embedded", "local_external"} else "https"
+        logger.warning(
+            "Hindsight api_url %r has no scheme; assuming %s://. "
+            "Set 'api_url' to include the scheme explicitly to silence this warning.",
+            raw, assumed,
+        )
+        return f"{assumed}://{raw}"
+    scheme = urlsplit(raw).scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError(
+            f"Invalid Hindsight api_url {raw!r}: scheme must be http:// or https:// "
+            f"(got {scheme or '<none>'}://). Fix 'api_url' in "
+            f"{get_hermes_home() / 'hindsight' / 'config.json'}."
+        )
+    return raw
+
+
+def _diagnose_scheme_mismatch(api_url: str | None, api_key: str | None = None,
+                              timeout: float = 2.0) -> str | None:
+    """Return a fix hint when *api_url* uses the wrong http/https scheme.
+
+    Normalization only catches a *missing* or *invalid* scheme; a wrong but
+    valid one (e.g. ``https://`` pointed at a plain-HTTP daemon) passes
+    through and fails at call time with an opaque SSL error. This probes the
+    configured URL and, when it is unreachable, retries with the opposite
+    scheme — a successful swapped-scheme probe is a definitive diagnosis the
+    user can act on.
+
+    The swapped-scheme probe runs WITHOUT the API key: the configured URL is
+    the intended target (the key is safe there), but the swapped host never
+    saw the key, and downgrading https->http must never send credentials over
+    plaintext. Hindsight's ``/version`` endpoint answers unauthenticated, so
+    the diagnosis still works.
+
+    Results are cached per URL per process: the answer cannot change within a
+    process lifetime, and re-probing on every session ``initialize()`` adds
+    latency and a network dependency to session startup.
+
+    Returns None when the configured URL works, when both schemes fail (the
+    server is simply down), or when the URL is not http(s).
+    """
+    if not api_url:
+        return None
+    with _scheme_diagnosis_lock:
+        if api_url in _scheme_diagnosis_cache:
+            return _scheme_diagnosis_cache[api_url]
+    parsed = urlsplit(api_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        hint = None
+    elif _fetch_hindsight_api_version(api_url, api_key, timeout=timeout) is not None:
+        hint = None
+    else:
+        other = "http" if parsed.scheme == "https" else "https"
+        swapped = api_url.replace(f"{parsed.scheme}://", f"{other}://", 1)
+        # No api_key on purpose: the swapped host is not the configured
+        # target and must never receive credentials (see docstring).
+        if _fetch_hindsight_api_version(swapped, timeout=timeout) is None:
+            hint = None
+        else:
+            hint = (
+                f"api_url {api_url!r} uses {parsed.scheme}:// but the Hindsight "
+                f"server answers on {other}:// — set 'api_url' to {swapped!r} "
+                f"in {get_hermes_home() / 'hindsight' / 'config.json'}."
+            )
+    with _scheme_diagnosis_lock:
+        # Re-check after acquiring the lock in case a concurrent probe filled it.
+        cached = _scheme_diagnosis_cache.get(api_url)
+        if cached is None:
+            _scheme_diagnosis_cache[api_url] = hint
+        else:
+            hint = cached
+    return hint
 
 
 # Env var the embedded daemon manager reads (at import time, as a module-level
@@ -220,6 +323,12 @@ def _ensure_cloud_client_dependency() -> None:
 # gets the same answer without re-hitting /version on each initialize().
 _append_capability_cache: Dict[str, bool] = {}
 _append_capability_lock = threading.Lock()
+
+# Scheme-mismatch diagnosis results, keyed by api_url. The probe result can't
+# change within a process lifetime, so diagnosing once per URL avoids a 2s
+# network probe on every session initialize() for local_external+https.
+_scheme_diagnosis_cache: Dict[str, str | None] = {}
+_scheme_diagnosis_lock = threading.Lock()
 
 
 def _meets_minimum_version(actual: str | None, required: str) -> bool:
@@ -874,6 +983,21 @@ class HindsightMemoryProvider(MemoryProvider):
             if mode in {"local", "local_embedded"}:
                 available, _ = _check_local_runtime()
                 return available
+            # Validate the effective api_url up front so a broken URL hides
+            # the provider (with a logged reason) instead of registering
+            # tools that fail with a cryptic error on first use.
+            default_url = _DEFAULT_LOCAL_URL if mode == "local_external" else _DEFAULT_API_URL
+            api_url = cfg.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
+            try:
+                # Normalize ONCE and check the normalized value, matching what
+                # initialize() will actually use: a whitespace-only api_url is
+                # blank after normalization and must not register the provider
+                # as "available with a URL" while initialize() falls back to
+                # the default (or worse, holds an empty URL).
+                api_url = _normalize_api_url(api_url, mode) or default_url
+            except ValueError as exc:
+                logger.error("Hindsight provider unavailable: %s", exc)
+                return False
             if mode == "local_external":
                 return True
             has_key = bool(
@@ -881,7 +1005,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 or cfg.get("api_key")
                 or get_secret("HINDSIGHT_API_KEY", "")
             )
-            has_url = bool(cfg.get("api_url") or os.environ.get("HINDSIGHT_API_URL", ""))
+            has_url = bool(api_url)
             return has_key or has_url
         except Exception:
             return False
@@ -1166,10 +1290,10 @@ class HindsightMemoryProvider(MemoryProvider):
         return [
             {"key": "mode", "description": "Connection mode", "default": "cloud", "choices": ["cloud", "local_embedded", "local_external"]},
             # Cloud mode
-            {"key": "api_url", "description": "Hindsight Cloud API URL", "default": _DEFAULT_API_URL, "when": {"mode": "cloud"}},
+            {"key": "api_url", "description": "Hindsight Cloud API URL (scheme auto-added if missing)", "default": _DEFAULT_API_URL, "when": {"mode": "cloud"}},
             {"key": "api_key", "description": "Hindsight Cloud API key", "secret": True, "env_var": "HINDSIGHT_API_KEY", "url": "https://ui.hindsight.vectorize.io", "when": {"mode": "cloud"}},
             # Local external mode
-            {"key": "api_url", "description": "Hindsight API URL", "default": _DEFAULT_LOCAL_URL, "when": {"mode": "local_external"}},
+            {"key": "api_url", "description": "Hindsight API URL (scheme auto-added if missing)", "default": _DEFAULT_LOCAL_URL, "when": {"mode": "local_external"}},
             {"key": "api_key", "description": "API key (optional)", "secret": True, "env_var": "HINDSIGHT_API_KEY", "when": {"mode": "local_external"}},
             # Local embedded mode
             {"key": "llm_provider", "description": "LLM provider", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "openrouter", "minimax", "ollama", "lmstudio", "openai_compatible"], "when": {"mode": "local_embedded"}},
@@ -1644,6 +1768,28 @@ class HindsightMemoryProvider(MemoryProvider):
         self._api_key = self._config.get("apiKey") or self._config.get("api_key") or get_secret("HINDSIGHT_API_KEY", "")
         default_url = _DEFAULT_LOCAL_URL if self._mode in {"local_embedded", "local_external"} else _DEFAULT_API_URL
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
+        try:
+            # ``or default_url``: normalization returns None for blank values,
+            # which means "unset" — fall back to the mode default so a
+            # whitespace-only config can never leave an empty/broken URL.
+            self._api_url = _normalize_api_url(self._api_url, self._mode) or default_url
+        except ValueError as exc:
+            logger.error(
+                "Hindsight misconfiguration: %s Disabling the provider — fix "
+                "'api_url' and start a new session to enable it.",
+                exc,
+            )
+            self._mode = "disabled"
+            return
+        if self._mode == "local_external" and urlsplit(self._api_url).scheme.lower() == "https":
+            # https:// pointed at a plain-HTTP daemon passes validation but
+            # fails at call time with an opaque SSL error. Probe once per
+            # session (only for https in local_external — the realistic
+            # mistake — so http/cloud configs never touch the network here)
+            # and surface the exact fix instead of a cryptic failure.
+            hint = _diagnose_scheme_mismatch(self._api_url, self._api_key, timeout=2.0)
+            if hint:
+                logger.error("Hindsight misconfiguration: %s", hint)
         self._llm_base_url = self._config.get("llm_base_url", "")
 
         banks = cfg_get(self._config, "banks", "hermes", default={})
@@ -2173,6 +2319,12 @@ class HindsightMemoryProvider(MemoryProvider):
         return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
+        if self._mode == "disabled":
+            return tool_error(
+                "Hindsight provider is disabled: its configuration is invalid "
+                "(see Hermes logs for details). Fix 'api_url' in "
+                f"{get_hermes_home() / 'hindsight' / 'config.json'} and start a new session."
+            )
         if tool_name == "hindsight_retain":
             content = args.get("content", "")
             if not content:
@@ -2196,7 +2348,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 return json.dumps({"result": "Memory stored successfully."})
             except Exception as e:
                 logger.warning("hindsight_retain failed: %s", e, exc_info=True)
-                return tool_error(f"Failed to store memory: {e}")
+                return tool_error(f"Failed to store memory: {type(e).__name__}: {e}")
 
         elif tool_name == "hindsight_recall":
             query = args.get("query", "")
@@ -2223,7 +2375,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 return json.dumps({"result": "\n".join(lines)})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)
-                return tool_error(f"Failed to search memory: {e}")
+                return tool_error(f"Failed to search memory: {type(e).__name__}: {e}")
 
         elif tool_name == "hindsight_reflect":
             query = args.get("query", "")
@@ -2241,7 +2393,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 return json.dumps({"result": resp.text or "No relevant memories found."})
             except Exception as e:
                 logger.warning("hindsight_reflect failed: %s", e, exc_info=True)
-                return tool_error(f"Failed to reflect: {e}")
+                return tool_error(f"Failed to reflect: {type(e).__name__}: {e}")
 
         return tool_error(f"Unknown tool: {tool_name}")
 

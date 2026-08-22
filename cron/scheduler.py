@@ -5090,9 +5090,11 @@ def run_job(
         # "no delivery target resolved". load_hermes_dotenv does not override
         # already-set vars, so the gateway's in-process tick is unaffected.
         try:
+            from agent.secret_scope import is_multiplex_active
             from hermes_cli.env_loader import load_hermes_dotenv
 
-            load_hermes_dotenv(hermes_home=_get_hermes_home())
+            if not is_multiplex_active():
+                load_hermes_dotenv(hermes_home=_get_hermes_home())
         except Exception:
             logger.debug(
                 "Job '%s': no_agent .env reload failed", job_id, exc_info=True
@@ -5293,7 +5295,8 @@ def run_job(
 
         if _session_db_timeout > 0:
             _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            _session_db_future = _session_db_pool.submit(SessionDB)
+            _ctx = contextvars.copy_context()
+            _session_db_future = _session_db_pool.submit(_ctx.run, SessionDB)
             try:
                 _session_db = _session_db_future.result(timeout=_session_db_timeout)
             except concurrent.futures.TimeoutError:
@@ -5550,12 +5553,14 @@ def run_job(
         # is set (mirrors startup), and the Bitwarden value-cache keeps the
         # forced re-pull off the network. load_hermes_dotenv also handles the
         # utf-8/latin-1 encoding fallback internally.
+        from agent.secret_scope import is_multiplex_active
         from hermes_cli.env_loader import (
             load_hermes_dotenv,
             reset_secret_source_cache,
         )
         reset_secret_source_cache()
-        load_hermes_dotenv(hermes_home=_get_hermes_home())
+        if not is_multiplex_active():
+            load_hermes_dotenv(hermes_home=_get_hermes_home())
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
@@ -6728,22 +6733,15 @@ def _run_one_job_body(
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
 
-        # Run the job under the profile's secret scope. get_secret() fails
-        # closed outside a scope once profile isolation is in play (multiple
-        # gateway profiles / room→profile multiplexing), and cron fires from
-        # the ticker thread where no per-turn scope is installed — so
-        # resolve_runtime_provider() raised UnscopedSecretError before model
-        # selection, breaking every cron job. Mirrors the per-turn pattern in
-        # gateway/run.py (_profile_runtime_scope).
-        from agent.secret_scope import (
-            build_profile_secret_scope,
-            reset_secret_scope,
-            set_secret_scope,
-        )
+        # Run the job under the profile's runtime scope (HERMES_HOME override
+        # + secret scope). get_secret() fails closed outside a scope once
+        # profile isolation is in play (multiple gateway profiles / multiplexing),
+        # and cron fires from the ticker thread where no per-turn scope is
+        # installed — so resolve_runtime_provider() raised UnscopedSecretError
+        # before model selection, breaking every cron job. Mirrors the per-turn
+        # pattern in gateway/run.py (_profile_runtime_scope).
+        from agent.secret_scope import profile_runtime_scope
 
-        _scope_token = set_secret_scope(
-            build_profile_secret_scope(_get_hermes_home())
-        )
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in
         # its finally block; doing that before _deliver_result runs means the
@@ -6753,19 +6751,20 @@ def _run_one_job_body(
         # interpreter-shutdown guard in _deliver_result.
         _deferred_agents: list = []
         try:
-            if fire_claim_lost is None:
-                success, output, final_response, error = run_job(
-                    job,
-                    defer_agent_teardown=_deferred_agents,
-                    extra_prompt=extra_prompt,
-                )
-            else:
-                success, output, final_response, error = run_job(
-                    job,
-                    defer_agent_teardown=_deferred_agents,
-                    extra_prompt=extra_prompt,
-                    cancel_event=fire_claim_lost,
-                )
+            with profile_runtime_scope(_get_hermes_home()):
+                if fire_claim_lost is None:
+                    success, output, final_response, error = run_job(
+                        job,
+                        defer_agent_teardown=_deferred_agents,
+                        extra_prompt=extra_prompt,
+                    )
+                else:
+                    success, output, final_response, error = run_job(
+                        job,
+                        defer_agent_teardown=_deferred_agents,
+                        extra_prompt=extra_prompt,
+                        cancel_event=fire_claim_lost,
+                    )
         except BaseException:
             # run_job's finally still hands back the agent when it raises; tear
             # it down here so a failed run never leaks its async resources
@@ -6775,9 +6774,6 @@ def _run_one_job_body(
             for _deferred_agent in _deferred_agents:
                 _teardown_cron_agent(_deferred_agent, job["id"])
             raise
-        finally:
-            reset_secret_scope(_scope_token)
-
         if _fire_claim_ownership_lost():
             for _deferred_agent in _deferred_agents:
                 _teardown_cron_agent(_deferred_agent, job["id"])

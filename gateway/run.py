@@ -2214,42 +2214,7 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     )
 
 
-@_contextmanager
-def _profile_runtime_scope(profile_home: "Path"):
-    """Scope config/skills/memory AND credentials to a profile for one turn.
-
-    Combines the two seams the multiplexer needs:
-      1. ``set_hermes_home_override`` — redirects ``get_hermes_home()`` (config,
-         skills, memory, SOUL, sessions) to the profile's home. Contextvar, so
-         it propagates into the agent worker thread via ``copy_context()``.
-      2. ``set_secret_scope`` — installs the profile's ``.env`` secrets as the
-         authoritative credential source, so ``get_secret`` reads this profile's
-         keys and never the process-global ``os.environ`` (which in a
-         multiplexer may hold another profile's values).
-
-    Only used on the multiplexed inbound path. Single-profile gateways never
-    enter this scope, so their behavior is unchanged. Loading the profile's
-    ``.env`` here does NOT mutate ``os.environ`` — ``build_profile_secret_scope``
-    returns an isolated dict — which is what keeps subprocesses (MCP, kanban)
-    from inheriting cross-profile secrets.
-    """
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from agent.secret_scope import (
-        build_profile_secret_scope,
-        set_secret_scope,
-        reset_secret_scope,
-    )
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
-
-    home_token = set_hermes_home_override(str(profile_home))
-    hydrate_profile_secret_sources(Path(profile_home))
-    secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
-    try:
-        yield
-    finally:
-        reset_secret_scope(secret_token)
-        reset_hermes_home_override(home_token)
-
+from agent.secret_scope import profile_runtime_scope as _profile_runtime_scope
 
 def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner.

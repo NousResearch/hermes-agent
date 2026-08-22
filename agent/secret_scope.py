@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import os
 import re
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Dict, Mapping, Optional
+from typing import Dict, Iterator, Mapping, Optional
 
 
 # ── multiplex-active flag ────────────────────────────────────────────────
@@ -308,3 +309,34 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
         secrets[key] = value
 
     return secrets
+
+
+@contextmanager
+def profile_runtime_scope(profile_home: str | Path) -> Iterator[None]:
+    """Scope config/skills/memory AND credentials to a profile for one turn / execution.
+
+    Combines the two seams the multiplexer needs:
+      1. ``set_hermes_home_override`` — redirects ``get_hermes_home()`` (config,
+         skills, memory, SOUL, sessions) to the profile's home. Contextvar, so
+         it propagates into worker threads via ``copy_context()``.
+      2. ``set_secret_scope`` — installs the profile's ``.env`` secrets as the
+         authoritative credential source, so ``get_secret`` reads this profile's
+         keys and never the process-global ``os.environ``.
+
+    Only used on multiplexed execution paths (inbound message turns and cron jobs).
+    Single-profile gateways never enter this scope, so their behavior is unchanged.
+    Loading the profile's ``.env`` here does NOT mutate ``os.environ`` —
+    ``build_profile_secret_scope`` returns an isolated dict.
+    """
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+
+    home_path = Path(profile_home)
+    home_token = set_hermes_home_override(str(home_path))
+    hydrate_profile_secret_sources(home_path)
+    secret_token = set_secret_scope(build_profile_secret_scope(home_path))
+    try:
+        yield
+    finally:
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)

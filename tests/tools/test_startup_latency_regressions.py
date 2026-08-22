@@ -11,7 +11,7 @@ These pin the CLI cold-start contract established in the sub-400ms pass:
 import sys
 import threading
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -174,16 +174,14 @@ class TestBannerUpdateCheckNonBlocking:
         import hermes_cli.banner as banner
 
         printed = []
-
-        class _Console:
-            def print(self, msg, *a, **k):
-                printed.append(msg)
+        console = MagicMock()
 
         done = threading.Event()
         with patch.object(banner, "_update_check_done", done), \
              patch.object(banner, "_update_result", None), \
-             patch.object(banner, "_deferred_update_notice_started", False):
-            banner._defer_update_notice(_Console(), max_wait=5.0)
+             patch.object(banner, "_deferred_update_notice_started", False), \
+             patch("builtins.print", side_effect=printed.append):
+            banner._defer_update_notice(console, max_wait=5.0)
             banner._update_result = 3
             done.set()
             deadline = time.time() + 5
@@ -191,6 +189,38 @@ class TestBannerUpdateCheckNonBlocking:
                 time.sleep(0.02)
         assert printed, "deferred update notice never printed"
         assert "3 commits behind" in printed[0]
+
+    def test_deferred_notice_uses_prompt_toolkit_safe_printer(self):
+        """Late Rich output must not write ANSI into patch_stdout's proxy."""
+        import hermes_cli.banner as banner
+
+        printed = []
+
+        unsafe_console = MagicMock()
+        unsafe_console.print.side_effect = AssertionError(
+            "raw Rich console must not handle late notice"
+        )
+
+        done = threading.Event()
+        with patch.object(banner, "_update_check_done", done), \
+             patch.object(banner, "_update_result", None), \
+             patch.object(banner, "_deferred_update_notice_started", False), \
+             patch("builtins.print", side_effect=printed.append):
+            banner._defer_update_notice(
+                unsafe_console,
+                max_wait=5.0,
+            )
+            banner._update_result = 922
+            done.set()
+            deadline = time.time() + 5
+            while not printed and time.time() < deadline:
+                time.sleep(0.02)
+
+        assert printed, "safe deferred printer was never called"
+        assert "922 commits behind" in printed[0]
+        assert "?[" not in printed[0]
+        assert "\x1b[" not in printed[0]
+        assert "[bold" not in printed[0]
 
     def test_deferred_notice_silent_when_up_to_date(self):
         import hermes_cli.banner as banner

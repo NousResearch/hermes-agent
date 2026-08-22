@@ -731,7 +731,15 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
             behind = _update_result
             if behind is None or behind == 0:
                 return
-            console.print(_format_update_notice(behind))
+            # A normal Rich Console writes rendered ANSI bytes to sys.stdout.
+            # Once the interactive CLI enters patch_stdout(), sys.stdout is a
+            # prompt_toolkit StdoutProxy(raw=False), which sanitizes ESC into
+            # a literal "?" and turns colors into text such as ``?[1;33m``.
+            # Deferred output therefore stays deliberately plain; the same
+            # notice remains colorized when it is ready in time for the banner.
+            from rich.text import Text
+
+            print(Text.from_markup(_format_update_notice(behind)).plain)
         except Exception:
             pass  # never break the session over an update notice
 

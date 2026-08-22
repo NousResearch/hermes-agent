@@ -1369,6 +1369,21 @@ def build_turn_context(
             except Exception:
                 pass
 
+    # Proactive feature suggestion (PR-B): advisory text appended to the same
+    # API-only sidecar as prefetch context. Never touches stored content or
+    # the system prompt; non-fatal; off by default (proactive_features.enabled).
+    if getattr(agent, "_feature_router", None) is not None:
+        try:
+            _fq = original_user_message if isinstance(original_user_message, str) else ""
+            _fs = agent._feature_router.on_turn_start(_fq)
+            if _fs:
+                ext_prefetch_cache = (
+                    ext_prefetch_cache + "\n\n" + _fs
+                    if ext_prefetch_cache else _fs
+                )
+        except Exception:
+            pass
+
     # ── api_content sidecar: persist what you send ──
     # The prefetch/plugin context above is injected into the API copy of this
     # turn's user message, never into the stored content — so on the next

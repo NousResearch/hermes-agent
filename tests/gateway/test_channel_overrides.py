@@ -105,6 +105,83 @@ class TestGetSystemPromptForChannel:
         prompt = runner._get_system_prompt_for_channel(Platform.DISCORD, "chan_1")
         assert prompt == "You are a coding assistant."
 
+    def test_uses_secondary_profile_personality(self):
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._ephemeral_system_prompt = "Default personality"
+        runner._ephemeral_system_prompts_by_profile = {}
+        runner._snapshot_profile_ephemeral_system_prompt(
+            "reviewer",
+            {
+                "display": {"personality": "reviewer"},
+                "agent": {
+                    "personalities": {"reviewer": "Secondary personality"}
+                },
+            },
+        )
+
+        prompt = runner._get_system_prompt_for_channel(
+            Platform.DISCORD,
+            "chan_1",
+            profile_name="reviewer",
+        )
+
+        assert prompt == "Secondary personality"
+
+    def test_empty_secondary_prompt_does_not_leak_default_profile_prompt(self):
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._ephemeral_system_prompt = "Default personality"
+        runner._ephemeral_system_prompts_by_profile = {"reviewer": ""}
+
+        prompt = runner._get_system_prompt_for_channel(
+            Platform.DISCORD,
+            "chan_1",
+            profile_name="reviewer",
+        )
+
+        assert prompt == ""
+
+    def test_missing_profile_snapshot_fails_closed(self):
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._ephemeral_system_prompt = "Default personality"
+        runner._ephemeral_system_prompts_by_profile = {}
+
+        prompt = runner._get_system_prompt_for_channel(
+            Platform.DISCORD,
+            "chan_1",
+            profile_name="reviewer",
+        )
+
+        assert prompt == ""
+
+    def test_channel_override_wins_for_secondary_profile(self):
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "chan_1": ChannelOverride(system_prompt="Channel prompt"),
+                    },
+                ),
+            },
+        )
+        runner._ephemeral_system_prompt = "Default personality"
+        runner._ephemeral_system_prompts_by_profile = {
+            "reviewer": "Secondary personality"
+        }
+
+        prompt = runner._get_system_prompt_for_channel(
+            Platform.DISCORD,
+            "chan_1",
+            profile_name="reviewer",
+        )
+
+        assert prompt == "Channel prompt"
+
 
 class TestResolveSessionAgentRuntimePriority:
     """Model/runtime priority: session /model → channel_overrides → global."""
@@ -152,5 +229,3 @@ class TestResolveSessionAgentRuntimePriority:
             )
         assert model == "channel/model"
         assert runtime["provider"] == "openrouter"
-
-

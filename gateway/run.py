@@ -5387,6 +5387,7 @@ class TurnRunner:
             ctx.source.chat_id or "",
             thread_id=getattr(ctx.source, "thread_id", None),
             parent_id=getattr(ctx.source, "parent_chat_id", None),
+            profile_name=getattr(ctx.source, "profile", None),
         )
         if cfg_channel_prompt:
             combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
@@ -6873,6 +6874,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Both are injected at API-call time only and never persisted.
         self._prefill_messages = self._load_prefill_messages()
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
+        # Secondary multiplex profiles resolve their own personality/system
+        # prompt during startup. The process-level value above belongs only
+        # to the default profile.
+        self._ephemeral_system_prompts_by_profile: Dict[str, str] = {}
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
@@ -9404,6 +9409,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         *,
         thread_id: Optional[str] = None,
         parent_id: Optional[str] = None,
+        profile_name: Optional[str] = None,
     ) -> str:
         """Ephemeral system prompt for this channel/thread.
 
@@ -9423,6 +9429,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             if override and override.system_prompt:
                 return (override.system_prompt or "").strip()
+        if profile_name and getattr(
+            getattr(self, "config", None), "multiplex_profiles", False
+        ):
+            profile_prompts = getattr(
+                self, "_ephemeral_system_prompts_by_profile", None
+            )
+            if isinstance(profile_prompts, dict):
+                # An explicitly routed profile must never inherit another
+                # profile's prompt when its startup snapshot is unavailable.
+                return profile_prompts.get(profile_name, "")
         return getattr(self, "_ephemeral_system_prompt", None) or ""
 
     @staticmethod
@@ -9665,6 +9681,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         text_modes = self.__dict__.setdefault("_busy_text_modes_by_profile", {})
         input_modes[profile_name] = input_mode
         text_modes[profile_name] = text_mode
+
+    def _snapshot_profile_ephemeral_system_prompt(
+        self, profile_name: str, config: dict
+    ) -> None:
+        """Cache one secondary profile's personality/system-prompt overlay."""
+        from hermes_cli.config import resolve_ephemeral_system_prompt_from_config
+
+        prompts = self.__dict__.setdefault(
+            "_ephemeral_system_prompts_by_profile", {}
+        )
+        prompts[profile_name] = resolve_ephemeral_system_prompt_from_config(config)
 
     def _busy_profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Return the routed profile whose busy policy applies, if any."""
@@ -15338,6 +15365,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return 0
 
         active = get_active_profile_name() or "default"
+        profile_prompts = self.__dict__.setdefault(
+            "_ephemeral_system_prompts_by_profile", {}
+        )
+        profile_prompts[active] = getattr(self, "_ephemeral_system_prompt", "")
         connected = 0
         # Resource claim -> profile that owns it. Credential claims prevent two
         # profiles polling the same account; listener claims prevent sidecars
@@ -15422,6 +15453,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile_cfg = load_gateway_config()
             violation = _own_policy_open_startup_violation(profile_cfg)
         self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
+        self._snapshot_profile_ephemeral_system_prompt(
+            profile_name, profile_runtime_cfg
+        )
         if violation:
             raise MultiplexConfigError(
                 f"Profile '{profile_name}' enables {violation}. "

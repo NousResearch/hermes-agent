@@ -122,6 +122,39 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         # no-key-required should be used
 
+    def test_bare_custom_uses_saved_provider_and_scoped_key(self, tmp_path, monkeypatch):
+        """A picker-persisted bare ``custom`` assignment must retain the saved
+        endpoint identity and resolve its key from the active profile scope."""
+        _write_config(tmp_path, {
+            "model": {"default": "main-model", "provider": "nous"},
+            "custom_providers": [
+                {
+                    "name": "agnes-ai",
+                    "base_url": "https://apihub.agnes-ai.test/v1",
+                    "key_env": "HERMES_CUSTOM_CUSTOM_API_KEY",
+                },
+            ],
+        })
+        monkeypatch.delenv("HERMES_CUSTOM_CUSTOM_API_KEY", raising=False)
+
+        from agent import secret_scope
+        from agent.auxiliary_client import resolve_provider_client
+
+        token = secret_scope.set_secret_scope({
+            "HERMES_CUSTOM_CUSTOM_API_KEY": "scoped-custom-key",
+        })
+        try:
+            client, model = resolve_provider_client(
+                "custom", model="agnes-2.5-flash"
+            )
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        assert client is not None
+        assert model == "agnes-2.5-flash"
+        assert "apihub.agnes-ai.test" in str(client.base_url)
+        assert client.api_key == "scoped-custom-key"
+
 
 
 class TestResolveProviderClientModelNormalization:

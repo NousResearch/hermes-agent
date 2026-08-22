@@ -709,6 +709,14 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     if not requested_norm:
         return None
 
+    bare_custom_fallback = requested_norm == "custom"
+    first_custom_alias = ""
+
+    def _bare_custom_result() -> Optional[Dict[str, Any]]:
+        if bare_custom_fallback and first_custom_alias:
+            return _get_named_custom_provider(first_custom_alias)
+        return None
+
     # Bare "custom" is normally an incomplete spec — the canonical form is
     # "custom:<name>" — and is otherwise owned by the model.base_url "bare
     # custom" trust path. BUT a user may literally name a ``providers:`` (or
@@ -717,8 +725,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     # config, so such an entry was never matched and resolution fell through to
     # the global default (Codex) — the cause of cron jobs with
     # ``provider: "custom"`` failing with ``auth_unavailable: providers=codex``.
-    # Fall through to the config scan instead; if no entry is literally named
-    # "custom" it still returns None at the end, preserving the trust path.
+    # Fall through to the config scan instead. If no entry is literally named
+    # "custom", recover the first configured endpoint as the same compatibility
+    # fallback used by ``resolve_custom_provider`` for older picker state.
 
     # Raw names should only map to custom providers when they are not already
     # valid built-in providers or aliases. Explicit menu keys like
@@ -768,12 +777,19 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 resolved_api_key = str(entry.get("api_key", "") or "").strip()
 
             display_name = entry.get("name", "")
+            candidate_base_url = (
+                entry.get("api") or entry.get("url") or entry.get("base_url") or ""
+            )
+            if candidate_base_url and not first_custom_alias:
+                first_custom_alias = custom_provider_slug(
+                    str(display_name or ep_name), str(ep_name)
+                )
             if requested_norm in custom_provider_aliases(
                 str(display_name or ep_name),
                 str(ep_name),
             ):
                 # Found match by provider key
-                base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
+                base_url = candidate_base_url
                 if base_url:
                     result = {
                         "name": entry.get("name", ep_name),
@@ -813,11 +829,11 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             "Each entry must be prefixed with '-' in YAML. "
             "Run 'hermes doctor' for details."
         )
-        return None
+        return _bare_custom_result()
 
     custom_providers = get_compatible_custom_providers(config)
     if not custom_providers:
-        return None
+        return _bare_custom_result()
 
     for entry in custom_providers:
         if not isinstance(entry, dict):
@@ -827,6 +843,8 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         if not isinstance(name, str) or not isinstance(base_url, str):
             continue
         provider_key = str(entry.get("provider_key", "") or "").strip()
+        if name.strip() and base_url.strip() and not first_custom_alias:
+            first_custom_alias = custom_provider_slug(name, provider_key)
         if requested_norm not in custom_provider_aliases(name, provider_key):
             continue
         result = {
@@ -852,7 +870,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         _lift_max_output_tokens(entry, result)
         return result
 
-    return None
+    return _bare_custom_result()
 
 
 def has_named_custom_provider(requested_provider: str) -> bool:

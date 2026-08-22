@@ -376,49 +376,162 @@ def test_default_run_conversation_warns_without_guardrail_halt():
 
 
 
-def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
-    """Regression for #30770: when the guardrail halts the loop, the
-    synthesized halt message must be pushed through ``stream_delta_callback``
-    so SSE/TUI clients see why the agent stopped instead of a silent stream
-    close.  Without this the chat-completions SSE writer drains an empty
-    queue and emits a finish chunk with zero content (indistinguishable
-    from a crash for Open WebUI and similar clients).
-    """
-    agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
-    same_args = {"query": "same"}
-    responses = [
-        _mock_response(
-            content="",
-            finish_reason="tool_calls",
-            tool_calls=[_mock_tool_call("web_search", json.dumps(same_args), f"c{i}")],
-        )
-        for i in range(1, 10)
-    ]
-    agent.client.chat.completions.create.side_effect = responses
-
-    deltas: list = []
-    agent.stream_delta_callback = lambda d: deltas.append(d)
-    # The mocked client returns SimpleNamespace responses which aren't
-    # iterable as streaming chunks; force the non-streaming code path so
-    # the guardrail-halt branch is reached without engaging the real
-    # streaming machinery.
-    agent._disable_streaming = True
-
+def _run_with_tool_handler(agent: AIAgent, handler):
     with (
-        patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})),
+        patch("run_agent.handle_function_call", side_effect=handler) as dispatch,
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):
         result = agent.run_conversation("search repeatedly")
+    return result, dispatch
+
+
+def _query_result(_name, args, _task_id, **_kwargs):
+    if str(args.get("query", "")).startswith("same"):
+        return json.dumps({"error": "boom"})
+    return json.dumps({"ok": args.get("query")})
+
+
+def test_first_guardrail_block_rebounds_to_changed_strategy():
+    agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
+    same = json.dumps({"query": "same"})
+    changed = json.dumps({"query": "changed"})
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", same, "c1")]),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", same, "c2")]),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", same, "c3")]),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", changed, "c4")]),
+        _mock_response(content="recovered", finish_reason="stop", tool_calls=None),
+    ]
+
+    result, dispatch = _run_with_tool_handler(agent, _query_result)
+
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert result["final_response"] == "recovered"
+    assert dispatch.call_count == 3  # c3 was blocked, changed strategy ran.
+    assert agent.client.chat.completions.create.call_count == 5
+    assert "guardrail" not in result
+    assert agent._tool_guardrails.halt_decision is None
+
+
+def test_concurrent_blocked_batch_consumes_one_rebound():
+    config = _hard_stop_config(
+        hard_stop_after={
+            "exact_failure": 1,
+            "same_tool_failure": 8,
+            "idempotent_no_progress": 5,
+        }
+    )
+    agent = _make_agent("web_search", max_iterations=10, config=config)
+    same_a = json.dumps({"query": "same-a"})
+    same_b = json.dumps({"query": "same-b"})
+    changed = json.dumps({"query": "changed"})
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", same_a, "c1"),
+                _mock_tool_call("web_search", same_b, "c2"),
+            ],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("web_search", same_a, "c3"),
+                _mock_tool_call("web_search", same_b, "c4"),
+            ],
+        ),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", changed, "c5")]),
+        _mock_response(content="recovered", finish_reason="stop", tool_calls=None),
+    ]
+
+    result, dispatch = _run_with_tool_handler(agent, _query_result)
+
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert result["final_response"] == "recovered"
+    assert dispatch.call_count == 3  # Initial pair + changed strategy; blocked pair refused.
+    assert agent.client.chat.completions.create.call_count == 4
+    blocked_results = [
+        message
+        for message in result["messages"]
+        if message.get("role") == "tool"
+        and "repeated_exact_failure_block" in message.get("content", "")
+    ]
+    assert {message["tool_call_id"] for message in blocked_results} == {"c3", "c4"}
+
+
+def test_rebound_budget_remains_spent_after_an_unblocked_batch():
+    agent = _make_agent("web_search", max_iterations=12, config=_hard_stop_config())
+    same = json.dumps({"query": "same"})
+    changed_one = json.dumps({"query": "changed-one"})
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", same, "c1")]),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", same, "c2")]),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", same, "c3")]),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", changed_one, "c4")]),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", same, "c5")]),
+    ]
+
+    result, dispatch = _run_with_tool_handler(agent, _query_result)
 
     assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["code"] == "repeated_exact_failure_block"
+    assert dispatch.call_count == 3  # c3 and c5 were blocked; c4 changed strategy.
+    assert agent.client.chat.completions.create.call_count == 5
+
+
+def test_terminal_same_tool_halt_does_not_get_a_rebound():
+    config = _hard_stop_config(
+        hard_stop_after={
+            "exact_failure": 99,
+            "same_tool_failure": 2,
+            "idempotent_no_progress": 99,
+        }
+    )
+    agent = _make_agent("web_search", max_iterations=10, config=config)
+    first = json.dumps({"query": "same-a"})
+    second = json.dumps({"query": "same-b"})
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", first, "c1")]),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", second, "c2")]),
+    ]
+
+    result, dispatch = _run_with_tool_handler(agent, _query_result)
+
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["code"] == "same_tool_failure_halt"
+    assert dispatch.call_count == 2
+    assert agent.client.chat.completions.create.call_count == 2
+
+
+def test_second_consecutive_guardrail_block_halts_and_streams_explanation():
+    """Preserve #30770 after one model rebound opportunity is exhausted."""
+    agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
+    same = json.dumps({"query": "same"})
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", same, "c1")]),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", same, "c2")]),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", same, "c3")]),
+        _mock_response(content="", finish_reason="tool_calls", tool_calls=[_mock_tool_call("web_search", same, "c4")]),
+    ]
+
+    deltas: list = []
+    agent.stream_delta_callback = lambda d: deltas.append(d)
+    agent._disable_streaming = True
+
+    result, dispatch = _run_with_tool_handler(agent, _query_result)
+
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert dispatch.call_count == 2  # c3 and c4 were both blocked before dispatch.
+    assert agent.client.chat.completions.create.call_count == 4
     halt_text = result["final_response"]
     assert "stopped retrying" in halt_text
+    assert result["guardrail"]["code"] == "repeated_exact_failure_block"
 
-    # The halt message must have been pushed through the callback at least
-    # once.  Empty-queue SSE writers were the bug — clients saw no content
-    # delta before the finish chunk.
+    # Empty-queue SSE writers must still receive the terminal explanation.
     text_deltas = [d for d in deltas if isinstance(d, str)]
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"

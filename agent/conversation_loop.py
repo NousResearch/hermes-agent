@@ -7343,6 +7343,27 @@ def run_conversation(
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
+                    if (
+                        decision.action == "block"
+                        and not agent._tool_guardrail_rebound_used
+                    ):
+                        # ``block`` rejects this tool call, not the user's
+                        # task.  The synthetic tool result is already in the
+                        # transcript, so let the model see it and choose a
+                        # different strategy.  This branch runs once after the
+                        # WHOLE tool batch, which makes concurrent blocks one
+                        # rebound event rather than one strike per callback.
+                        agent._tool_guardrail_rebound_used = True
+                        agent._tool_guardrail_halt_decision = None
+                        agent._tool_guardrails.clear_halt_decision()
+                        truncated_tool_call_retries = 0
+                        agent._stream_needs_break = True
+                        agent._emit_status(
+                            f"⚠️ Tool guardrail blocked {decision.tool_name}; "
+                            "requesting a different strategy"
+                        )
+                        continue
+
                     _turn_exit_reason = "guardrail_halt"
                     final_response = agent._toolguard_controlled_halt_response(decision)
                     agent._emit_status(

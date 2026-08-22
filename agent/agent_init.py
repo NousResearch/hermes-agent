@@ -864,6 +864,10 @@ def init_agent(
     agent._executing_tools = False
     agent._tool_guardrails = ToolCallGuardrailController()
     agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
+    # A recoverable ``block`` gets one model rebound per consecutive blocked
+    # batch.  Count at the conversation-loop batch boundary, never in
+    # per-call callbacks, so concurrent blocks consume one chance (#64322).
+    agent._tool_guardrail_rebound_used = False
 
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False

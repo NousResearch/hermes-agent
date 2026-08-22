@@ -373,6 +373,10 @@ class ToolCallGuardrailController:
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
 
+    def clear_halt_decision(self) -> None:
+        """Clear a recoverable decision after the runtime grants a rebound."""
+        self._halt_decision = None
+
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
 

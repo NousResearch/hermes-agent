@@ -3838,7 +3838,7 @@ class TestListCronJobRuns:
     """
 
     def _seed_run(self, db, job_id: str, idx: int, started_at: float):
-        sid = f"cron_{job_id}_{idx:08d}"
+        sid = f"cron_{job_id}_20240101_{idx:06d}"
         db.create_session(session_id=sid, source="cron")
         db.append_message(sid, role="user", content=f"run {idx} for {job_id}")
         db.append_message(sid, role="assistant", content="done")
@@ -3868,6 +3868,16 @@ class TestListCronJobRuns:
         # Enriched like list_sessions_rich.
         assert runs[0]["preview"].startswith("run 4 for alpha")
         assert runs[0]["last_active"] >= runs[0]["started_at"]
+
+    def test_underscore_extended_job_id_does_not_leak_into_parent_history(self, db):
+        base = 1_700_000_000.0
+        own_run = self._seed_run(db, "backup", 1, base)
+        self._seed_run(db, "backup_weekly", 2, base + 60)
+
+        # The colliding job is newer, so filtering must happen before LIMIT.
+        runs = db.list_cron_job_runs("backup", limit=1)
+
+        assert [run["id"] for run in runs] == [own_run]
 
 
 

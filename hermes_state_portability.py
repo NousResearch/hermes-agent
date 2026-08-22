@@ -87,9 +87,10 @@ class SessionPortabilityMixin:
         endpoint time out before it eventually populates).
 
         Instead this binds to one job with a ``[prefix, prefix_hi)`` range over
-        the id (an index range scan, not a ``%...%`` substring), filters
-        ``source='cron'``, and orders by ``started_at DESC``. Work scales with
-        the requested window, not the total cron history.
+        the id (an index range scan, not a ``%...%`` substring), then requires
+        the remainder to match the scheduler's exact timestamp shape. The
+        latter prevents an underscore-extended job id from sharing the range.
+        Work scales with the requested window, not the total cron history.
 
         Returns the same enriched row shape as ``list_sessions_rich`` (adds
         ``preview`` + ``last_active``) so callers can reuse it.
@@ -100,6 +101,7 @@ class SessionPortabilityMixin:
         # with ``prefix`` and nothing else. ``prefix`` always ends in '_', but
         # compute it generically rather than hardcoding the successor char.
         prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        timestamp_glob = "[0-9]" * 8 + "_" + "[0-9]" * 6
 
         query = f"""
             SELECT s.*,
@@ -116,11 +118,14 @@ class SessionPortabilityMixin:
             FROM sessions s
             LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
             WHERE s.source = 'cron' AND s.id >= ? AND s.id < ?
+              AND substr(s.id, length(?) + 1) GLOB ?
             ORDER BY s.started_at DESC, s.id DESC
             LIMIT ? OFFSET ?
         """
         with self._lock:
-            cursor = self._conn.execute(query, (prefix, prefix_hi, limit, offset))
+            cursor = self._conn.execute(
+                query, (prefix, prefix_hi, prefix, timestamp_glob, limit, offset)
+            )
             rows = cursor.fetchall()
 
         runs: List[Dict[str, Any]] = []

@@ -107,11 +107,21 @@ except Exception:
 # init, contended import lock) is exactly the "wedged before the event loop,
 # no logs, live PID" class this watchdog exists for. ``hermes_startup_watchdog``
 # is stdlib-only, so importing it here cannot itself wedge on application
-# code. argv sniffing is deliberately crude: over-arming is harmless (any
-# non-gateway command either exits well inside the deadline or... should be
-# covered anyway if it wedges), while under-arming recreates OOF-298.
-# GatewayRunner disarms once the event loop is confirmed live.
-if "gateway" in sys.argv[1:] and "run" in sys.argv[1:]:
+# code. The match requires the ADJACENT token pair ``gateway run`` (the
+# subcommand shape, wherever global flags like ``-p <profile>`` put it) so
+# unrelated commands that merely mention both words in different arguments
+# never arm a 300s hard-exit timer, while flag-carrying invocations still
+# do — under-arming recreates OOF-298. Foreground `hermes gateway run`
+# still arms — a pre-loop wedge is just as dead without a supervisor, and
+# the stack dump plus exit beats a silent hang; GatewayRunner disarms once
+# the event loop is confirmed live.
+def _argv_is_gateway_run(argv: list) -> bool:
+    return any(
+        a == "gateway" and b == "run" for a, b in zip(argv, argv[1:])
+    )
+
+
+if _argv_is_gateway_run(sys.argv[1:]):
     try:
         from hermes_startup_watchdog import arm_startup_watchdog as _arm_sw
 

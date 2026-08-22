@@ -3223,6 +3223,16 @@ DEFAULT_CONFIG = {
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
 
+        # Startup-liveness watchdog (OOF-298): plain daemon thread armed at
+        # process entry for gateway runs, hard-exits 75 if the event loop is
+        # not confirmed live within the deadline. The watchdog module itself
+        # is stdlib-only and armed before config can load, so these keys are
+        # BRIDGED to the internal HERMES_STARTUP_WATCHDOG /
+        # HERMES_STARTUP_WATCHDOG_TIMEOUT_S env vars by the gateway
+        # launchers — config.yaml is the user-facing surface.
+        "startup_watchdog": True,
+        "startup_watchdog_timeout_seconds": 300,
+
         # Whether the gateway keeps writing the legacy sessions.json mirror of
         # its routing index. The primary copy lives in state.db (the
         # gateway_routing table). Default True for backward compatibility with

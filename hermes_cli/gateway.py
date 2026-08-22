@@ -6448,8 +6448,32 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     # process-conflict guards: a --replace loser exiting above must not have
     # armed a watchdog first. Disarmed by GatewayRunner once the event loop
     # is confirmed live.
+    #
+    # config.yaml is the user-facing surface (gateway.startup_watchdog /
+    # gateway.startup_watchdog_timeout_seconds); the env vars are the
+    # internal bridge, needed because the argv fast-path arms before config
+    # can load. Explicit env values (operator override) are respected.
     try:
-        from hermes_startup_watchdog import arm_startup_watchdog
+        from hermes_startup_watchdog import (
+            ENV_STARTUP_WATCHDOG,
+            ENV_STARTUP_WATCHDOG_TIMEOUT_S,
+            arm_startup_watchdog,
+        )
+        try:
+            from hermes_cli.config import load_config as _sw_load_config
+            _gw_cfg = (_sw_load_config() or {}).get("gateway", {}) or {}
+            if ENV_STARTUP_WATCHDOG not in os.environ and not _gw_cfg.get(
+                "startup_watchdog", True
+            ):
+                os.environ[ENV_STARTUP_WATCHDOG] = "0"
+            _sw_timeout = _gw_cfg.get("startup_watchdog_timeout_seconds")
+            if (
+                ENV_STARTUP_WATCHDOG_TIMEOUT_S not in os.environ
+                and _sw_timeout is not None
+            ):
+                os.environ[ENV_STARTUP_WATCHDOG_TIMEOUT_S] = str(_sw_timeout)
+        except Exception:
+            pass
         arm_startup_watchdog()
     except Exception:
         pass

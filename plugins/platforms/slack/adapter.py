@@ -2562,9 +2562,13 @@ class SlackAdapter(BasePlatformAdapter):
         title: str = "Hermes is working",
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        fallback_text: Optional[str] = None,
     ) -> SendResult:
-        """Start or update a Slack-native plan/task progress stream."""
+        """Start or update a Slack-native plan/task progress stream.
+
+        This path sends structured plan/task chunks only. Slack rejects
+        ``markdown_text`` alongside ``chunks``; the gateway owns a separate
+        editable-text fallback rail for native stream failures.
+        """
         if not self._app:
             return SendResult(success=False, error="Not connected")
         if not tasks:
@@ -2640,8 +2644,6 @@ class SlackAdapter(BasePlatformAdapter):
                     "ts": stream.stream_ts,
                     "chunks": chunks,
                 }
-                if fallback_text:
-                    append_payload["markdown_text"] = fallback_text
                 await client.api_call("chat.appendStream", json=append_payload)
                 return SendResult(success=True, message_id=stream.stream_ts)
             except Exception as exc:  # pragma: no cover - defensive logging

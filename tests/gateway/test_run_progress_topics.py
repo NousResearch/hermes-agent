@@ -246,14 +246,12 @@ class NativeTaskCardAdapter(ProgressCaptureAdapter):
         title,
         reply_to=None,
         metadata=None,
-        fallback_text=None,
     ) -> SendResult:
         self.native_updates.append(
             {
                 "chat_id": chat_id,
                 "tasks": [dict(task) for task in tasks],
                 "metadata": dict(metadata or {}),
-                "fallback_text": fallback_text,
             }
         )
         return SendResult(success=True, message_id="native-stream-1")

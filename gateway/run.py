@@ -4690,7 +4690,6 @@ class TurnRunner:
                     title="Hermes is working",
                     reply_to=ctx._progress_reply_to,
                     metadata=ctx._progress_metadata,
-                    fallback_text=_fallback_text(),
                 )
                 if getattr(result, "success", False):
                     return

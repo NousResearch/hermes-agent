@@ -15,6 +15,7 @@ The routes:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -202,7 +203,9 @@ async def auth_login(request: Request, provider: str, next: str = ""):
         return RedirectResponse(url=login_url, status_code=302)
 
     try:
-        ls = p.start_login(redirect_uri=_redirect_uri(request))
+        ls = await asyncio.to_thread(
+            p.start_login, redirect_uri=_redirect_uri(request)
+        )
     except ProviderError as e:
         audit_log(
             AuditEvent.LOGIN_FAILURE,
@@ -397,7 +400,9 @@ async def auth_native_authorize(
         return resp
 
     try:
-        ls = p.start_login(redirect_uri=_redirect_uri(request))
+        ls = await asyncio.to_thread(
+            p.start_login, redirect_uri=_redirect_uri(request)
+        )
     except ProviderError as e:
         raise HTTPException(status_code=503, detail=f"Provider unreachable: {e}")
 
@@ -497,7 +502,8 @@ async def auth_callback(
         )
 
     try:
-        session = p.complete_login(
+        session = await asyncio.to_thread(
+            p.complete_login,
             code=code,
             state=state,
             code_verifier=verifier,
@@ -781,8 +787,10 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         )
 
     try:
-        session = p.complete_password_login(
-            username=body.username, password=body.password
+        session = await asyncio.to_thread(
+            p.complete_password_login,
+            username=body.username,
+            password=body.password,
         )
     except InvalidCredentialsError:
         audit_log(
@@ -881,7 +889,7 @@ async def auth_logout(request: Request):
         # logged but never raised.
         for provider in list_providers():
             try:
-                provider.revoke_session(refresh_token=rt)
+                await asyncio.to_thread(provider.revoke_session, refresh_token=rt)
             except Exception as e:  # noqa: BLE001 — best-effort
                 _log.warning(
                     "dashboard-auth: revoke on %r failed: %s",
@@ -1052,7 +1060,9 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
     unreachable: str | None = None
     for provider in providers:
         try:
-            session = provider.refresh_session(refresh_token=body.refresh_token)
+            session = await asyncio.to_thread(
+                provider.refresh_session, refresh_token=body.refresh_token
+            )
         except RefreshExpiredError:
             continue
         except ProviderError as e:

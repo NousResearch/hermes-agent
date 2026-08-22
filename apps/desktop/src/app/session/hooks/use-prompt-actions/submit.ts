@@ -527,7 +527,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         scope.setMessages(current => [...current, buildUserMessage()])
       }
 
-      if (!sessionId && routedStoredSessionId && routedSessionNeedsResume) {
+      if (!options?.storedSessionId && !sessionId && routedStoredSessionId && routedSessionNeedsResume) {
         // The URL still names a durable conversation, but a profile
         // swap/reconnect left its volatile session binding incomplete or
         // cross-wired. Run the full profile-aware resume path. Creating here

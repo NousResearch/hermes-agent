@@ -157,6 +157,10 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     if not AIOHTTP_AVAILABLE:
         return None
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    # WeChat CDN (novac2c.cdn.weixin.qq.com) only offers legacy TLS 1.2
+    # ciphers (AES256-GCM-SHA384) that OpenSSL 3.x rejects at SECLEVEL=2.
+    # Drop to SECLEVEL=1 to allow them — cert verification stays on.
+    ssl_ctx.set_ciphers('DEFAULT:@SECLEVEL=1')
     return aiohttp.TCPConnector(
         ssl=ssl_ctx,
         # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451, #69089).

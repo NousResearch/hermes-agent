@@ -423,7 +423,7 @@ def cmd_sessions(args, sessions_parser=None):
                 filters = build_prune_filters(args)
             except ValueError as e:
                 print(f"Error: {e}")
-                return
+                return 1
             # Unlike prune/archive, export includes archived sessions.
             filters["archived"] = None
 
@@ -434,14 +434,22 @@ def cmd_sessions(args, sessions_parser=None):
 
             return redact_session_data(data)
 
+        # Set by _collect_sessions() when its None return means "nothing was
+        # exported because of a genuine error" (not found / bad --dry-run
+        # usage), as opposed to a --dry-run preview that printed and returned
+        # None by design. Callers use it to pick the exit code (SES-04/SES-10).
+        _collect_error = [False]
+
         def _collect_sessions():
             """Resolve --session-id / filters / bare export into a list
-            of redacted session dicts, or None after printing an error."""
+            of redacted session dicts, or None after printing an error or a
+            --dry-run preview (see _collect_error for which one)."""
             if args.session_id:
                 resolved = db.resolve_session_id(args.session_id)
                 data = _redact(db.export_session(resolved)) if resolved else None
                 if not data:
                     print(f"Session '{args.session_id}' not found.")
+                    _collect_error[0] = True
                     return None
                 return [data]
             if filters:
@@ -465,6 +473,7 @@ def cmd_sessions(args, sessions_parser=None):
                 ]
             if args.dry_run:
                 print("--dry-run requires at least one filter.")
+                _collect_error[0] = True
                 return None
             return [_redact(s) for s in db.export_all(source=None)]
 
@@ -474,7 +483,7 @@ def cmd_sessions(args, sessions_parser=None):
         if getattr(args, "only", None):
             if args.format not in ("jsonl", "md"):
                 print("--only user-prompts supports --format jsonl or md.")
-                return
+                return 1
             from hermes_cli.session_export import (
                 export_record_count,
                 render_sessions_export,
@@ -483,7 +492,7 @@ def cmd_sessions(args, sessions_parser=None):
             sessions = _collect_sessions()
             if sessions is None:
                 db.close()
-                return
+                return 1 if _collect_error[0] else None
             rendered = render_sessions_export(
                 sessions,
                 fmt="markdown" if args.format == "md" else "jsonl",
@@ -506,7 +515,7 @@ def cmd_sessions(args, sessions_parser=None):
         if args.format == "html":
             if not args.output or args.output == "-":
                 print("HTML export requires an output file path.")
-                return
+                return 1
             from hermes_cli.session_export_html import (
                 generate_html_export,
                 generate_multi_session_html_export,
@@ -515,7 +524,7 @@ def cmd_sessions(args, sessions_parser=None):
             sessions = _collect_sessions()
             if sessions is None:
                 db.close()
-                return
+                return 1 if _collect_error[0] else None
             if len(sessions) == 1:
                 content = generate_html_export(sessions[0])
             else:
@@ -534,7 +543,7 @@ def cmd_sessions(args, sessions_parser=None):
             if getattr(args, "only", None):
                 print("--only user-prompts supports --format jsonl or md.")
                 db.close()
-                return
+                return 1
             session_id = args.session_id
             if not session_id and not filters:
                 # Match the shell's common intent: "the last thing I did".
@@ -543,11 +552,11 @@ def cmd_sessions(args, sessions_parser=None):
                 if not session_id:
                     print("No session found to export. Pass --session-id.")
                     db.close()
-                    return
+                    return 1
             if session_id and not db.resolve_session_id(session_id):
                 print(f"Session '{session_id}' not found.")
                 db.close()
-                return
+                return 1
 
             from agent.trace_upload import (
                 TraceRedactionError,
@@ -561,7 +570,7 @@ def cmd_sessions(args, sessions_parser=None):
                 if not session_id:
                     print("--upload exports one session: pass --session-id (or drop filters to use the most recent).")
                     db.close()
-                    return
+                    return 1
                 resolved = db.resolve_session_id(session_id)
                 db.close()
                 status = upload_session_trace(
@@ -614,7 +623,7 @@ def cmd_sessions(args, sessions_parser=None):
                     if not jsonl:
                         print(f"No transcript to export for session '{ids[0]}'.")
                         db.close()
-                        return
+                        return 1
                     if not args.output or args.output == "-":
                         sys.stdout.write(jsonl)
                     else:
@@ -640,22 +649,24 @@ def cmd_sessions(args, sessions_parser=None):
                     print(f"Exported {exported} session trace(s) to {out_dir}")
             except TraceRedactionError:
                 print("Redaction failed; refusing to export unredacted trace content.")
+                db.close()
+                return 1
             db.close()
             return
 
         if args.format == "jsonl":
             if not args.output:
                 print("JSONL export requires an output path (use - for stdout).")
-                return
+                return 1
             if args.session_id:
                 resolved_session_id = db.resolve_session_id(args.session_id)
                 if not resolved_session_id:
                     print(f"Session '{args.session_id}' not found.")
-                    return
+                    return 1
                 data = _redact(db.export_session(resolved_session_id))
                 if not data:
                     print(f"Session '{args.session_id}' not found.")
-                    return
+                    return 1
                 line = _json.dumps(data, ensure_ascii=False) + "\n"
                 if args.output == "-":
 
@@ -687,7 +698,7 @@ def cmd_sessions(args, sessions_parser=None):
                 else:
                     if args.dry_run:
                         print("--dry-run requires at least one filter.")
-                        return
+                        return 1
                     sessions = db.export_all(source=None)
                 if args.output == "-":
 
@@ -714,7 +725,7 @@ def cmd_sessions(args, sessions_parser=None):
         if args.output == "-":
             print("Markdown/QMD export writes files; stdout (-) is only supported with --format jsonl.")
             db.close()
-            return
+            return 1
         output_dir = Path(args.output).expanduser() if args.output else get_hermes_home() / "session-exports"
 
         def _export_one(session_id: str, *, include_lineage: bool = False):
@@ -738,11 +749,11 @@ def cmd_sessions(args, sessions_parser=None):
         if args.delete_after_verified and not args.yes:
             print("--delete-after-verified requires --yes.")
             db.close()
-            return
+            return 1
         if args.delete_after_verified and not args.session_id:
             print("--delete-after-verified is only supported with --session-id.")
             db.close()
-            return
+            return 1
 
         lineage_is_logical = getattr(args, "lineage", "single") == "logical"
 
@@ -751,7 +762,7 @@ def cmd_sessions(args, sessions_parser=None):
             if not resolved_session_id:
                 print(f"Session '{args.session_id}' not found.")
                 db.close()
-                return
+                return 1
             delete_target_ids = [resolved_session_id]
             if args.delete_after_verified:
                 delete_target_ids = db.get_session_delete_targets(
@@ -774,14 +785,14 @@ def cmd_sessions(args, sessions_parser=None):
                         "Pass --force to overwrite."
                     )
                     db.close()
-                    return
+                    return 1
                 if not data or not exported_path:
                     print(
                         f"Session '{target_id}' disappeared during export; "
                         "nothing was deleted."
                     )
                     db.close()
-                    return
+                    return 1
                 exported_items.append((data, exported_path))
 
             message_count = sum(
@@ -808,7 +819,7 @@ def cmd_sessions(args, sessions_parser=None):
                             f"session '{data.get('id')}': {reason}"
                         )
                         db.close()
-                        return
+                        return 1
                 sessions_dir = get_hermes_home() / "sessions"
                 if db.delete_session(
                     resolved_session_id,
@@ -840,7 +851,7 @@ def cmd_sessions(args, sessions_parser=None):
                 "at least one filter (e.g. --older-than 90, --source telegram)."
             )
             db.close()
-            return
+            return 1
         candidates = db.list_prune_candidates(**filters)
         if args.dry_run:
             print(

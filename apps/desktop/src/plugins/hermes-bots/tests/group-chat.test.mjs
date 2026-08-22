@@ -1397,25 +1397,26 @@ test('stranded + still busy: the round loop never re-submits into a member whose
   // interrupt), destroying the very turn the stranded marker exists to wait
   // out.
   gc.updateGroupChat('Grind', r => {
-    r.stranded = { research: 0 }
+    r.epoch = 1
+    r.activityRunId = 'stranded-test'
+    r.stranded = { research: { before: 0, thread: 'legacy' } }
     r.sessions = { research: 'sid-research' }
     r.log = [{ from: { kind: 'user', name: 'You' }, text: '@research @builder status?', at: 1 }]
     r.watermarks = { 'legacy::research': 0, 'legacy::builder': 0 }
     return r
   })
 
-  await gc.runGroupChatRounds('Grind', [{ name: 'research', title: '' }, { name: 'builder', title: '' }], 'legacy')
+  await gc.runGroupChatRounds('Grind', [{ name: 'research', title: '' }, { name: 'builder', title: '' }], 'legacy', 'stranded-test')
 
   assert.equal(
     gc.calls.filter(c => c.profile === 'research').length,
     0,
     'research (still busy) must never receive a new prompt.submit'
   )
-  assert.equal(
-    gc.$groupChats.get().Grind.stranded.research,
-    0,
-    'marker survives untouched — harvest confirmed research is still running'
-  )
+  const marker = gc.$groupChats.get().Grind.stranded.research
+  assert.equal(marker.before, 0, 'marker keeps the original message baseline')
+  assert.equal(marker.thread, 'legacy', 'marker keeps the original thread')
+  assert.equal(marker.stillBusy, true, 'marker is retained and explicitly marked busy after harvest')
   assert.equal(gc.calls.filter(c => c.profile === 'builder').length, 1, 'builder (not stranded) still gets its turn')
 })
 

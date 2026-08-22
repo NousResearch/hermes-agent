@@ -230,7 +230,377 @@ const $groupClarify = atom({})
 // away), and a rename re-keys the room (the feed starts clean under the new
 // name — stale events under the old key simply have no room to attach to).
 const GROUP_ACTIVITY_LIMIT = 50
+const GROUP_LIVE_RECENT_LIMIT = 8
+const GROUP_LIVE_ACTIVE_STATUSES = new Set([
+  'preparing',
+  'waiting',
+  'thinking',
+  'tool',
+  'delegating',
+  'writing',
+  'finalizing',
+  'working',
+  'reconnecting'
+])
 const $groupActivity = atom({})
+
+// The activity feed above is a bounded transition trail kept for compatibility
+// and for the optional "recent transitions" footer. The live projection below
+// is the primary UI model: one stable row per member, updated in place from the
+// gateway event stream. It is intentionally runtime-only and never persisted.
+const $groupLiveActivity = atom({})
+const groupActivityBindings = new Map()
+const groupLiveCoalescedPatches = new Map()
+const groupLiveCoalesceTimers = new Map()
+const GROUP_LIVE_COALESCE_MS = 120
+let groupActivityRunSequence = 0
+
+function groupMemberActivityKey(member) {
+  return groupMemberKey(member) || member?.name || ''
+}
+
+function groupActivityConnectionId(member) {
+  if (member?.remoteSource) {
+    return String(member.connectionId || member.connectionLabel || '').trim()
+  }
+
+  try {
+    return String(host.activeConnectionId?.() || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+function groupActivityToolName(payload) {
+  const raw = payload?.name || payload?.tool_name || payload?.tool || ''
+  return String(raw).trim()
+}
+
+function groupActivityToolPreview(payload) {
+  const raw = payload?.preview || payload?.tool_preview || payload?.text || ''
+  if (typeof raw !== 'string') {
+    return ''
+  }
+
+  return raw
+    .replace(/(token|api[_ -]?key|secret|password|authorization|credential)\s*[:=]\s*("[^"]*"|'[^']*'|\S+)/gi, '$1=[redacted]')
+    // Label-less credential shapes: bearer-style JWTs and other long
+    // high-entropy token runs (base64url/hex) pasted without a key name.
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/g, '[redacted]')
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, match => (/[0-9]/.test(match) && /[A-Za-z]/.test(match) ? '[redacted]' : match))
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 96)
+}
+
+function groupActivityRunIsCurrent(group, runId) {
+  const room = $groupChats.get()[group]
+  const live = $groupLiveActivity.get()[group]
+
+  return Boolean(
+    room &&
+      live &&
+      live.runId === runId &&
+      live.epoch === room.epoch &&
+      room.activityRunId === runId
+  )
+}
+
+function updateGroupLiveRun(group, runId, mutate) {
+  const current = $groupLiveActivity.get()[group]
+  if (!current || current.runId !== runId || !groupActivityRunIsCurrent(group, runId)) {
+    return false
+  }
+
+  const next = mutate({
+    ...current,
+    members: Object.fromEntries(Object.entries(current.members || {}).map(([key, member]) => [key, { ...member }])),
+    recent: [...(current.recent || [])]
+  })
+
+  $groupLiveActivity.set({ ...$groupLiveActivity.get(), [group]: next })
+  return true
+}
+
+function beginGroupLiveRun(group, members, thread, runId, epoch, previousRunWasLive) {
+  const now = Date.now()
+  const rows = {}
+
+  for (const member of members || []) {
+    const key = groupMemberActivityKey(member)
+    if (!key) {
+      continue
+    }
+
+    rows[key] = {
+      key,
+      name: member.name,
+      source: member.remoteSource ? member.connectionLabel || member.connectionId || '' : '',
+      status: 'queued',
+      startedAt: null,
+      updatedAt: now,
+      sessionId: null,
+      currentTool: '',
+      toolPreview: '',
+      childAgents: []
+    }
+  }
+
+  const run = {
+    group,
+    runId,
+    epoch,
+    thread,
+    status: 'running',
+    startedAt: now,
+    updatedAt: now,
+    round: 0,
+    activeMemberKey: null,
+    members: rows,
+    recent: previousRunWasLive ? [{ at: now, kind: 'cancelled', previousRun: true }] : []
+  }
+
+  if (previousRunWasLive) {
+    for (const [token, binding] of groupActivityBindings) {
+      if (binding.group === group && binding.runId !== runId) {
+        groupActivityBindings.delete(token)
+      }
+    }
+    pruneGroupLiveCoalesceState(pending => pending.group === group && pending.runId !== runId)
+  }
+
+  $groupLiveActivity.set({ ...$groupLiveActivity.get(), [group]: run })
+  return run
+}
+
+function applyGroupLiveMemberPatch(group, runId, memberKey, patch) {
+  updateGroupLiveRun(group, runId, run => {
+    const member = run.members?.[memberKey]
+    if (!member) {
+      return run
+    }
+
+    const now = Date.now()
+    const status = patch.status || member.status
+    const active = GROUP_LIVE_ACTIVE_STATUSES.has(status)
+
+    run.members[memberKey] = {
+      ...member,
+      ...patch,
+      startedAt: member.startedAt || (active ? now : null),
+      updatedAt: now
+    }
+    run.updatedAt = now
+    run.activeMemberKey = active ? memberKey : run.activeMemberKey === memberKey ? null : run.activeMemberKey
+    return run
+  })
+}
+
+function flushGroupLiveMemberPatch(token, { dropPending = false } = {}) {
+  const pending = groupLiveCoalescedPatches.get(token)
+  const timer = groupLiveCoalesceTimers.get(token)
+
+  if (timer) {
+    try {
+      clearTimeout(timer)
+    } catch {
+      /* test harnesses may not expose timer teardown */
+    }
+  }
+
+  groupLiveCoalesceTimers.delete(token)
+  groupLiveCoalescedPatches.delete(token)
+
+  if (pending && !dropPending) {
+    applyGroupLiveMemberPatch(pending.group, pending.runId, pending.memberKey, pending.patch)
+  }
+}
+
+/** Drop any coalesced patch/timer state for tokens under a predicate (all
+ *  entries when omitted). Called wherever bindings are pruned so a member
+ *  that goes silent mid-run cannot leave its 120ms timer entry behind after
+ *  the run ends. */
+function pruneGroupLiveCoalesceState(predicate) {
+  for (const token of groupLiveCoalesceTimers.keys()) {
+    const pending = groupLiveCoalescedPatches.get(token)
+
+    // A token with no pending patch still owns a live timer; parse-free
+    // matching is impossible, so consult the pending payload when present
+    // and otherwise leave the entry to fire and self-remove.
+    if (pending && (predicate ? predicate(pending) : true)) {
+      flushGroupLiveMemberPatch(token, { dropPending: true })
+    }
+  }
+}
+
+function setGroupLiveMember(group, runId, memberKey, patch) {
+  const live = $groupLiveActivity.get()[group]
+  const member = live?.runId === runId ? live.members?.[memberKey] : null
+
+  if (!member) {
+    return
+  }
+
+  const phaseChanged = patch.status && patch.status !== member.status
+  const operationChanged =
+    patch.currentTool !== undefined &&
+    (patch.currentTool !== member.currentTool || patch.toolPreview !== member.toolPreview)
+  const token = `${group}:${runId}:${memberKey}`
+
+  // State transitions publish immediately. Repeated heartbeats/deltas are
+  // coalesced so a high-frequency stream cannot cause render churn.
+  if (phaseChanged || operationChanged) {
+    groupLiveCoalescedPatches.delete(token)
+    flushGroupLiveMemberPatch(token)
+    applyGroupLiveMemberPatch(group, runId, memberKey, patch)
+    return
+  }
+
+  groupLiveCoalescedPatches.set(token, { group, runId, memberKey, patch })
+
+  if (groupLiveCoalesceTimers.has(token)) {
+    return
+  }
+
+  try {
+    groupLiveCoalesceTimers.set(token, setTimeout(() => flushGroupLiveMemberPatch(token), GROUP_LIVE_COALESCE_MS))
+  } catch {
+    flushGroupLiveMemberPatch(token)
+  }
+}
+
+function finishGroupLiveMember(group, runId, memberKey, status) {
+  setGroupLiveMember(group, runId, memberKey, {
+    status,
+    currentTool: '',
+    toolPreview: '',
+    finishedAt: Date.now()
+  })
+
+  for (const [token, binding] of groupActivityBindings) {
+    if (binding.runId === runId && binding.memberKey === memberKey) {
+      groupActivityBindings.delete(token)
+    }
+  }
+  pruneGroupLiveCoalesceState(pending => pending.runId === runId && pending.memberKey === memberKey)
+}
+
+function appendGroupLiveRecent(run, event) {
+  const recent = {
+    at: event.at || Date.now(),
+    kind: event.kind,
+    member: event.member,
+    text: event.text || '',
+    previousRun: Boolean(event.previousRun)
+  }
+
+  run.recent = [...(run.recent || []), recent].slice(-GROUP_LIVE_RECENT_LIMIT)
+}
+
+function setGroupLiveChildAgent(group, runId, memberKey, child) {
+  updateGroupLiveRun(group, runId, run => {
+    const member = run.members?.[memberKey]
+    if (!member || !child?.id) {
+      return run
+    }
+
+    const children = [...(member.childAgents || [])]
+    const index = children.findIndex(item => item.id === child.id)
+    if (index >= 0) {
+      children[index] = { ...children[index], ...child }
+    } else {
+      children.push(child)
+    }
+
+    run.members[memberKey] = { ...member, status: 'delegating', childAgents: children, updatedAt: Date.now() }
+    run.updatedAt = Date.now()
+    run.activeMemberKey = memberKey
+    return run
+  })
+}
+
+function applyGroupActivityToLive(group, event, runId) {
+  const live = $groupLiveActivity.get()[group]
+  if (!live || live.runId !== runId || !groupActivityRunIsCurrent(group, runId)) {
+    return
+  }
+
+  if (event.previousRun) {
+    updateGroupLiveRun(group, runId, run => {
+      appendGroupLiveRecent(run, event)
+      run.updatedAt = Date.now()
+      return run
+    })
+    return
+  }
+
+  const memberKey = event.memberKey ||
+    Object.keys(live.members || {}).find(key => live.members[key]?.name === event.member)
+
+  if (event.kind === 'settled') {
+    updateGroupLiveRun(group, runId, run => {
+      appendGroupLiveRecent(run, event)
+      run.status = 'settled'
+      run.activeMemberKey = null
+      run.updatedAt = Date.now()
+      return run
+    })
+    return
+  }
+
+  if (event.kind === 'cancelled') {
+    updateGroupLiveRun(group, runId, run => {
+      appendGroupLiveRecent(run, event)
+      run.status = 'cancelled'
+      run.activeMemberKey = null
+      run.updatedAt = Date.now()
+      for (const key of Object.keys(run.members || {})) {
+        if (GROUP_LIVE_ACTIVE_STATUSES.has(run.members[key].status)) {
+          run.members[key] = { ...run.members[key], status: 'cancelled', updatedAt: Date.now() }
+        }
+      }
+      return run
+    })
+    return
+  }
+
+  if (!memberKey) {
+    updateGroupLiveRun(group, runId, run => {
+      appendGroupLiveRecent(run, event)
+      run.updatedAt = Date.now()
+      return run
+    })
+    return
+  }
+
+  const statusByKind = {
+    working: 'thinking',
+    replied: 'replied',
+    passed: 'passed',
+    'timed-out': 'timed-out',
+    failed: 'failed',
+    delivered: 'replied'
+  }
+  const status = statusByKind[event.kind]
+
+  if (status) {
+    setGroupLiveMember(group, runId, memberKey, { status })
+    if (status === 'replied' || status === 'passed' || status === 'failed' || status === 'timed-out') {
+      for (const [token, binding] of groupActivityBindings) {
+        if (binding.runId === runId && binding.memberKey === memberKey) {
+          groupActivityBindings.delete(token)
+        }
+      }
+      pruneGroupLiveCoalesceState(pending => pending.runId === runId && pending.memberKey === memberKey)
+    }
+  }
+
+  updateGroupLiveRun(group, runId, run => {
+    appendGroupLiveRecent(run, event)
+    run.updatedAt = Date.now()
+    return run
+  })
+}
 
 function recordGroupActivity(group, event) {
   const room = $groupChats.get()[group]
@@ -239,12 +609,47 @@ function recordGroupActivity(group, event) {
     return null
   }
 
+  const live = $groupLiveActivity.get()[group]
+  const runId = event.runId || live?.runId || room.activityRunId
   const current = $groupActivity.get()[group] || { events: [] }
-  const entry = { at: Date.now(), epoch: room.epoch || 0, ...event }
+  const entry = {
+    at: Date.now(),
+    epoch: event.epoch ?? (live && live.runId === runId ? live.epoch : room.epoch || 0),
+    ...event,
+    runId
+  }
   const events = [...current.events, entry].slice(-GROUP_ACTIVITY_LIMIT)
   $groupActivity.set({ ...$groupActivity.get(), [group]: { ...current, events } })
 
+  if (runId) {
+    applyGroupActivityToLive(group, entry, runId)
+  }
+
   return entry
+}
+
+function clearGroupActivityRun(group, runId) {
+  const live = $groupLiveActivity.get()[group]
+
+  if (!live || live.runId !== runId) {
+    return
+  }
+
+  // Keep the terminal projection visible so the disclosure can truthfully show
+  // the settled/cancelled result after the async drive releases its bindings.
+  if (live.status === 'running') {
+    $groupLiveActivity.set({
+      ...$groupLiveActivity.get(),
+      [group]: { ...live, status: 'settled', activeMemberKey: null, updatedAt: Date.now() }
+    })
+  }
+
+  for (const [token, binding] of groupActivityBindings) {
+    if (binding.group === group && binding.runId === runId) {
+      groupActivityBindings.delete(token)
+    }
+  }
+  pruneGroupLiveCoalesceState(pending => pending.group === group && pending.runId === runId)
 }
 
 /** Events for the room's CURRENT run — superseded runs (epoch moved on)
@@ -252,6 +657,231 @@ function recordGroupActivity(group, event) {
 function currentGroupActivity(group) {
   const epoch = ($groupChats.get()[group] || {}).epoch || 0
   return ($groupActivity.get()[group] || {}).events?.filter(event => (event.epoch || 0) === epoch) || []
+}
+
+function currentGroupLiveActivity(group) {
+  return $groupLiveActivity.get()[group] || null
+}
+
+function groupLiveStatusLabel(status, member) {
+  const tool = member?.currentTool ? ` · ${member.currentTool}` : ''
+
+  return {
+    queued: 'Queued',
+    preparing: 'Preparing',
+    waiting: 'Waiting for response',
+    thinking: 'Thinking',
+    tool: `Using a tool${tool}`,
+    delegating: 'Delegating',
+    writing: 'Writing reply',
+    finalizing: 'Finalizing',
+    reconnecting: 'Waiting for gateway updates…',
+    replied: 'Replied',
+    passed: 'Passed',
+    failed: 'Failed',
+    'timed-out': 'Timed out',
+    cancelled: 'Cancelled'
+  }[status] || 'Working'
+}
+
+function groupLiveElapsed(at) {
+  const seconds = Math.max(0, Math.floor((Date.now() - (at || Date.now())) / 1000))
+
+  if (seconds < 60) {
+    return `${seconds}s`
+  }
+
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m ${seconds % 60}s`
+}
+
+function groupActivityPhase(event) {
+  const type = String(event?.type || '')
+  const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {}
+
+  if (type === 'error' || type === 'message.complete' && (payload.error || payload.status === 'error')) {
+    return { status: 'failed' }
+  }
+  if (type === 'tool.generating') {
+    return { status: 'preparing', currentTool: groupActivityToolName(payload), toolPreview: groupActivityToolPreview(payload) }
+  }
+  if (type === 'tool.start' || type === 'tool.progress' || type === 'tool.output_risk') {
+    return { status: 'tool', currentTool: groupActivityToolName(payload), toolPreview: groupActivityToolPreview(payload) }
+  }
+  if (type === 'tool.complete') {
+    return { status: 'thinking', currentTool: '', toolPreview: '' }
+  }
+  if (type.startsWith('subagent.')) {
+    const childId = String(payload.subagent_id || payload.id || '').trim()
+    const childText = String(payload.text || payload.tool_preview || payload.summary || '').replace(/\s+/g, ' ').trim().slice(0, 120)
+    return {
+      status: 'delegating',
+      childAgents: childId ? [{ id: childId, status: String(payload.status || 'running'), text: childText }] : undefined
+    }
+  }
+  if (type === 'message.delta' || type === 'message.interim' || type === 'assistant.delta') {
+    return { status: 'writing' }
+  }
+  if (type === 'message.complete') {
+    return { status: 'finalizing' }
+  }
+  if (type === 'session.info') {
+    return { status: payload.running === false ? 'finalizing' : 'thinking' }
+  }
+  if (type === 'thinking.delta' || type === 'reasoning.delta' || type === 'reasoning.available' || type.startsWith('moa.')) {
+    return { status: 'thinking' }
+  }
+
+  return null
+}
+
+function groupActivityEventSessionId(event) {
+  const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {}
+  return String(event?.session_id || event?.sessionId || payload.session_id || payload.runtime_session_id || payload.child_session_id || '').trim()
+}
+
+function groupActivityEventProfile(event) {
+  const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {}
+  return String(event?.profile || event?.profile_name || payload.profile || payload.profile_name || '').trim()
+}
+
+function groupActivityEventConnectionId(event) {
+  const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {}
+  return String(event?.connectionId || payload.connectionId || payload.connection_id || '').trim()
+}
+
+function bindGroupActivitySession(group, member, runId, epoch, runtime, stored) {
+  const binding = {
+    group,
+    memberKey: groupMemberActivityKey(member),
+    member: member.name,
+    profile: String(member.name || '').trim(),
+    connectionId: groupActivityConnectionId(member),
+    runId,
+    epoch,
+    runtime: String(runtime || '').trim(),
+    stored: String(stored || '').trim()
+  }
+  const token = `${runId}:${binding.memberKey}:${++groupActivityRunSequence}`
+  binding.token = token
+  groupActivityBindings.set(token, binding)
+  return binding
+}
+
+function unbindGroupActivitySession(binding) {
+  if (!binding) {
+    return
+  }
+
+  groupActivityBindings.delete(binding.token)
+  pruneGroupLiveCoalesceState(
+    pending => pending.group === binding.group && pending.runId === binding.runId && pending.memberKey === binding.memberKey
+  )
+}
+
+function findGroupActivityBinding(event) {
+  const sessionId = groupActivityEventSessionId(event)
+  const profile = groupActivityEventProfile(event)
+  const connectionId = groupActivityEventConnectionId(event)
+
+  if (!sessionId) {
+    return null
+  }
+
+  for (const binding of groupActivityBindings.values()) {
+    if (binding.runtime !== sessionId && binding.stored !== sessionId) {
+      continue
+    }
+    if (connectionId && binding.connectionId && connectionId !== binding.connectionId) {
+      continue
+    }
+    if (profile && binding.profile && profile !== binding.profile) {
+      continue
+    }
+    if (!groupActivityRunIsCurrent(binding.group, binding.runId)) {
+      continue
+    }
+    return binding
+  }
+
+  return null
+}
+
+/** Apply gateway frames to the live member row. Session polling remains the
+ *  recovery authority, but normal visual updates arrive here immediately. */
+function handleGroupGatewayEvent(event) {
+  const binding = findGroupActivityBinding(event)
+  if (!binding) {
+    return
+  }
+
+  const phase = groupActivityPhase(event)
+  if (!phase) {
+    return
+  }
+
+  if (phase.status === 'delegating' && phase.childAgents?.length) {
+    for (const child of phase.childAgents) {
+      setGroupLiveChildAgent(binding.group, binding.runId, binding.memberKey, child)
+    }
+  }
+
+  setGroupLiveMember(binding.group, binding.runId, binding.memberKey, {
+    ...phase,
+    sessionId: binding.runtime,
+    updatedAt: Date.now()
+  })
+}
+
+function markGroupActivityReconnecting() {
+  const liveMap = { ...$groupLiveActivity.get() }
+  const now = Date.now()
+
+  for (const [group, live] of Object.entries(liveMap)) {
+    if (live?.status !== 'running') {
+      continue
+    }
+
+    liveMap[group] = {
+      ...live,
+      status: 'reconnecting',
+      activeMemberKey: null,
+      updatedAt: now,
+      members: Object.fromEntries(
+        Object.entries(live.members || {}).map(([key, member]) => [
+          key,
+          GROUP_LIVE_ACTIVE_STATUSES.has(member.status)
+            ? { ...member, status: 'reconnecting', updatedAt: now }
+            : { ...member }
+        ])
+      )
+    }
+  }
+
+  $groupLiveActivity.set(liveMap)
+  groupActivityBindings.clear()
+  pruneGroupLiveCoalesceState()
+}
+
+function reconcileGroupActivityFromSession(group, runId, memberKey, state) {
+  const live = $groupLiveActivity.get()[group]
+  if (!live || live.runId !== runId || !groupActivityRunIsCurrent(group, runId)) {
+    return
+  }
+
+  const member = live.members?.[memberKey]
+  if (!member) {
+    return
+  }
+
+  const busy = Boolean(state?.inflight || state?.running)
+  const messages = Array.isArray(state?.messages) ? state.messages : []
+
+  if (busy && (member.status === 'reconnecting' || !GROUP_LIVE_ACTIVE_STATUSES.has(member.status))) {
+    setGroupLiveMember(group, runId, memberKey, { status: 'waiting' })
+  } else if (!busy && messages.length && GROUP_LIVE_ACTIVE_STATUSES.has(member.status)) {
+    setGroupLiveMember(group, runId, memberKey, { status: 'finalizing' })
+  }
 }
 
 /** Human label for one activity event, used by the collapsed summary and
@@ -1128,11 +1758,47 @@ function handleSessionsGatewayTransition() {
   }
 
   $groupChats.set(rooms)
+
   // Pull before re-publishing so a reconnect or source swap never lets this
   // client's stale cache hide a room written by another Desktop/mobile client.
   void pullGroupChatServerState()
     .catch(() => false)
     .then(() => scheduleGroupChatServerSync($groupChats.get()))
+
+  // The socket transition invalidates the current event bindings. Keep the
+  // live projection visible as a truthful recovery state rather than turning a
+  // reconnect into a false failure or leaving a stale spinner behind.
+  const live = { ...$groupLiveActivity.get() }
+  const now = Date.now()
+
+  for (const name of Object.keys(live)) {
+    const room = rooms[name]
+    const run = live[name]
+
+    if (!room || !run || (run.status !== 'running' && run.status !== 'reconnecting')) {
+      continue
+    }
+
+    live[name] = {
+      ...run,
+      epoch: room.epoch,
+      status: 'reconnecting',
+      activeMemberKey: null,
+      updatedAt: now,
+      members: Object.fromEntries(
+        Object.entries(run.members || {}).map(([key, member]) => [
+          key,
+          GROUP_LIVE_ACTIVE_STATUSES.has(member.status)
+            ? { ...member, status: 'reconnecting', updatedAt: now }
+            : { ...member }
+        ])
+      )
+    }
+  }
+
+  $groupLiveActivity.set(live)
+  groupActivityBindings.clear()
+  pruneGroupLiveCoalesceState()
 }
 
 /** Per-bot appearance + display meta, persisted via ctx.storage:
@@ -4757,6 +5423,13 @@ async function disbandGroupChat(group, members) {
   }
 
   $groupChats.set(all)
+  $groupLiveActivity.set({ ...$groupLiveActivity.get(), [group]: null })
+  for (const [token, binding] of groupActivityBindings) {
+    if (binding.group === group) {
+      groupActivityBindings.delete(token)
+    }
+  }
+  pruneGroupLiveCoalesceState(pending => pending.group === group)
 
   if ($groupChatWorkspace.get() === group) {
     $groupChatWorkspace.set(null)
@@ -5197,14 +5870,20 @@ async function answerGroupClarify(entry, member, answers) {
  *  so slow models aren't cut off mid-run. A turn that still times out
  *  records a stranded marker so the finished reply can be harvested into
  *  the room at the member's next turn instead of being lost. */
-async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
+async function runGroupChatMemberTurn(group, member, prompt, thread, images, runId, epoch) {
   const { runtime, stored } = await ensureGroupChatSession(group, member)
 
   if (!runtime) {
     return null
   }
 
-  recordGroupActivity(group, { kind: 'working', member: member.name, thread })
+  const binding = bindGroupActivitySession(group, member, runId, epoch, runtime, stored)
+  const memberKey = groupMemberActivityKey(member)
+  setGroupLiveMember(group, runId, memberKey, {
+    status: 'waiting',
+    sessionId: runtime
+  })
+  recordGroupActivity(group, { kind: 'working', member: member.name, memberKey, thread, runId })
 
   // Baseline: how many messages exist before our submit.
   let before = 0
@@ -5268,7 +5947,12 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
     ? `${prompt}\n\nAttached files staged in your session workspace:\n${fileRefs.join('\n')}`
     : prompt
 
-  await requestForBot(member, 'prompt.submit', { session_id: runtime, text: turnText })
+  try {
+    await requestForBot(member, 'prompt.submit', { session_id: runtime, text: turnText })
+  } catch (error) {
+    unbindGroupActivitySession(binding)
+    throw error
+  }
 
   const started = Date.now()
   let deadline = started + GROUP_TURN_TIMEOUT_MS
@@ -5294,6 +5978,7 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
     // hold the turn open: the member isn't stalling, it's waiting on us.
     const awaitingUser = syncGroupClarify(group, member, state)
     const done = !busy && !awaitingUser
+    reconcileGroupActivityFromSession(group, runId, memberKey, state)
 
     if (messages.length > before && done) {
       for (let i = messages.length - 1; i >= 0; i--) {
@@ -5310,14 +5995,16 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
           recordGroupActivity(group, {
             kind: isGroupPassText(replyText) ? 'passed' : 'replied',
             member: member.name,
-            thread
+            memberKey: groupMemberActivityKey(member),
+            thread,
+            runId
           })
 
           return replyText
         }
       }
 
-      recordGroupActivity(group, { kind: 'passed', member: member.name, thread })
+      recordGroupActivity(group, { kind: 'passed', member: member.name, memberKey: groupMemberActivityKey(member), thread, runId })
 
       return null
     }
@@ -5334,7 +6021,7 @@ async function runGroupChatMemberTurn(group, member, prompt, thread, images) {
   // clarify timeout runs its own course) and read as a pass, but remember the baseline + thread
   // (runtime-only) so the finished reply can be posted late into the RIGHT
   // thread instead of vanishing.
-  recordGroupActivity(group, { kind: 'timed-out', member: member.name, thread })
+  recordGroupActivity(group, { kind: 'timed-out', member: member.name, memberKey: groupMemberActivityKey(member), thread, runId })
   syncGroupClarify(group, member, null)
   updateGroupChat(group, r => {
     r.stranded = { ...(r.stranded || {}), [groupMemberKey(member)]: { before, thread } }
@@ -5372,6 +6059,17 @@ async function harvestStrandedGroupReply(group, member) {
   }
 
   if (state?.inflight || state?.running) {
+    updateGroupChat(group, r => {
+      const current = r.stranded?.[memberKey]
+      r.stranded = {
+        ...(r.stranded || {}),
+        [memberKey]: {
+          ...(typeof current === 'object' ? current : { before: strandedBefore, thread: strandedThread }),
+          stillBusy: true
+        }
+      }
+      return r
+    })
     return // still grinding — keep waiting
   }
 
@@ -5407,7 +6105,7 @@ async function harvestStrandedGroupReply(group, member) {
       const reply = String(text).trim()
 
       if (reply && !isGroupPassText(reply)) {
-        recordGroupActivity(group, { kind: 'delivered', member: member.name, thread: strandedThread })
+        recordGroupActivity(group, { kind: 'delivered', member: member.name, memberKey, thread: strandedThread, runId: room.activityRunId })
         appendGroupChatEntry(
           group,
           { kind: 'member', name: member.name, ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {}) },
@@ -5430,7 +6128,7 @@ async function harvestStrandedGroupReply(group, member) {
  *  next member boundary, bails, and the newest send's own loop takes over.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
-async function runGroupChatRounds(group, members, thread) {
+async function runGroupChatRounds(group, members, thread, activityRunId) {
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
   let posted = 0
@@ -5450,21 +6148,8 @@ async function runGroupChatRounds(group, members, thread) {
       }
 
       const roomLog = (($groupChats.get()[group] || {}).log || []).filter(e => groupThreadOf(e) === thread)
-      // Exclude members the harvest pass just above confirmed are STILL
-      // running (their stranded marker survived harvest because
-      // state.inflight/running was true). Re-selecting one here would
-      // prompt.submit into their live session — the gateway's default busy
-      // policy redirects or hard-interrupts that turn (tui_gateway's
-      // _handle_busy_submit), killing exactly the long-running work this
-      // stranded/harvest mechanism exists to protect. Skip them; the next
-      // harvest pass picks the reply up once it actually lands. A marker's
-      // mere presence means "still stranded" (harvestStrandedGroupReply
-      // deletes it once the member is confirmed done/dead) — presence, not
-      // value shape, since markers are a bare number pre-thread or
-      // {before, thread} post-thread.
       const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
       const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round)
-        .filter(member => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member)))
       let spokeThisRound = 0
 
       for (const member of responders) {
@@ -5482,6 +6167,10 @@ async function runGroupChatRounds(group, members, thread) {
         // Delta: NEW room entries, narrowed to this thread — the member's
         // turn sees only the conversation it's part of.
         const delta = room.log.slice(seen).filter(e => groupThreadOf(e) === thread)
+
+        if (strandedNow[memberKey]?.stillBusy === true) {
+          continue
+        }
 
         if (!delta.length) {
           continue
@@ -5511,9 +6200,16 @@ async function runGroupChatRounds(group, members, thread) {
         let reply = null
 
         try {
-          reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages)
+          reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages, activityRunId, startEpoch)
         } catch {
-          recordGroupActivity(group, { kind: 'failed', member: member.name, thread })
+          recordGroupActivity(group, {
+            kind: 'failed',
+            member: member.name,
+            memberKey: groupMemberActivityKey(member),
+            thread,
+            runId: activityRunId,
+            epoch: startEpoch
+          })
           reply = null // a failed turn is a pass, never a room error
         }
 
@@ -5552,6 +6248,7 @@ async function runGroupChatRounds(group, members, thread) {
         r.turn = null
         return r
       })
+      clearGroupActivityRun(group, activityRunId)
 
       // #89545: the loop's harvest pass only ran at the top of each round of
       // an ACTIVE loop — a member whose turn timed out after the final round
@@ -5629,34 +6326,47 @@ function sendToGroupChat(group, members, text, thread, images) {
   })
   appendGroupChatEntry(group, { kind: 'user', name: 'You' }, trimmed, target, attached)
 
+  const priorLive = $groupLiveActivity.get()[group]
   const wasRunning = ($groupChats.get()[group] || {}).running === true
+  const nextEpoch = (($groupChats.get()[group] || {}).epoch || 0) + 1
+  const activityRunId = `group-run:${++groupActivityRunSequence}`
+
+  if (priorLive?.status === 'running' || priorLive?.status === 'reconnecting') {
+    recordGroupActivity(group, {
+      kind: 'cancelled',
+      member: null,
+      thread: priorLive.thread,
+      runId: priorLive.runId,
+      epoch: priorLive.epoch
+    })
+  }
 
   updateGroupChat(group, room => {
-    room.epoch = (room.epoch || 0) + 1
+    room.epoch = nextEpoch
+    room.activityRunId = activityRunId
     room.running = true
     return room
   })
+  beginGroupLiveRun(group, members, target, activityRunId, nextEpoch, Boolean(priorLive))
 
-  recordGroupActivity(group, { kind: 'queued', member: 'You', thread: target })
+  recordGroupActivity(group, { kind: 'queued', member: 'You', thread: target, runId: activityRunId, epoch: nextEpoch })
 
-  if (!wasRunning) {
-    void runGroupChatRounds(group, members, target).catch(() => {
-      updateGroupChat(group, r => {
-        r.running = false
-        return r
-      })
-    })
-  } else {
-    // A loop is live; it bails at its next boundary. Chain the fresh loop
-    // after a short settle so exactly one drive owns the room.
-    setTimeout(() => {
-      void runGroupChatRounds(group, members, target).catch(() => {
+  const drive = () =>
+    void runGroupChatRounds(group, members, target, activityRunId).catch(() => {
+      if (($groupChats.get()[group] || {}).activityRunId === activityRunId) {
         updateGroupChat(group, r => {
           r.running = false
           return r
         })
-      })
-    }, 250)
+      }
+    })
+
+  if (!wasRunning) {
+    drive()
+  } else {
+    // A loop is live; it bails at its next boundary. Chain the fresh loop
+    // after a short settle so exactly one drive owns the room.
+    setTimeout(drive, 250)
   }
 
   return target
@@ -9996,8 +10706,21 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
   // Collapsible Activity view: collapsed by default — opening it is always an
   // explicit user action, it never steals focus, and it never auto-scrolls.
   const [activityOpen, setActivityOpen] = useState(false)
-  // Subscribe: activity rows re-render as turn events land.
+  const liveActivity = useValue($groupLiveActivity)[group] || null
+  // Subscribe: rows update as gateway phases land. A one-second local clock is
+  // enabled only while a run is live so elapsed labels advance without a
+  // permanent render loop.
   useValue($groupActivity)
+  const [, setActivityClock] = useState(0)
+  useEffect(() => {
+    if (!liveActivity || (liveActivity.status !== 'running' && liveActivity.status !== 'reconnecting')) {
+      return undefined
+    }
+
+    const timer = setInterval(() => setActivityClock(value => value + 1), 1000)
+    return () => clearInterval(timer)
+  }, [liveActivity?.runId, liveActivity?.status])
+
   // Pending member questions for THIS room (#90694), oldest first.
   const clarifyAll = useValue($groupClarify)
   const roomClarifies = Object.values(clarifyAll || {})
@@ -10070,11 +10793,28 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
       title: (b.remoteSource ? '' : allMeta[b.name]?.title) || b.title || ''
     }))
 
-  // Activity disclosure: quiet, collapsed by default. The collapsed row shows
-  // the latest event; expanding lists the current run's events newest-first.
-  // Events are epoch-tagged, so a superseded run's history drops out of view.
+  // Activity disclosure: quiet, collapsed by default. The primary surface is
+  // a stable live row per member; the bounded transition trail is secondary.
   const activityEvents = currentGroupActivity(group)
   const latestActivity = activityEvents.length ? activityEvents[activityEvents.length - 1] : null
+  const liveRows = liveActivity ? Object.values(liveActivity.members || {}) : []
+  const activeRow = liveRows.find(row => GROUP_LIVE_ACTIVE_STATUSES.has(row.status) || row.status === 'delegating' || row.status === 'reconnecting')
+  const activitySummary = liveActivity
+    ? liveActivity.status === 'reconnecting'
+      ? 'Waiting for gateway updates…'
+      : activeRow
+        ? `${groupSpeakerLabel(activeRow.name)} · ${groupLiveStatusLabel(activeRow.status, activeRow)}`
+        : liveActivity.status === 'settled'
+          ? 'Run settled'
+          : 'Ready'
+    : latestActivity
+      ? `${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`
+      : 'Ready'
+  const liveTone = activeRow && (activeRow.status === 'failed' || activeRow.status === 'timed-out')
+    ? 'text-destructive'
+    : activeRow
+      ? 'text-(--ui-accent,#4f9cf9)'
+      : 'text-(--ui-text-quaternary)'
   const activityPanel = jsxs('div', {
     className: 'border-b border-(--ui-stroke-secondary)',
     children: [
@@ -10091,11 +10831,20 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
             name: activityOpen ? 'chevron-down' : 'chevron-right',
             className: 'shrink-0 text-[0.65rem]'
           }),
+          jsx(Codicon, {
+            name: activeRow ? 'sync' : liveActivity?.status === 'settled' ? 'check' : 'circle-outline',
+            className: cn('shrink-0 text-[0.65rem]', liveTone)
+          }),
           jsx('span', { className: 'shrink-0 font-medium', children: 'Activity' }),
-          latestActivity
+          jsx('span', {
+            className: cn('min-w-0 flex-1 truncate', liveTone),
+            'aria-live': 'polite',
+            children: activitySummary
+          }),
+          liveActivity?.startedAt
             ? jsx('span', {
-                className: 'min-w-0 flex-1 truncate',
-                children: `${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`
+                className: 'shrink-0 text-[0.625rem] text-(--ui-text-quaternary)',
+                children: groupLiveElapsed(liveActivity.startedAt)
               })
             : null
         ]
@@ -10103,29 +10852,55 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
       activityOpen
         ? jsx('div', {
             id: `group-activity:${group}`,
-            className: 'grid gap-0.5 px-2.5 pb-1.5',
-            children: activityEvents.length
-              ? [...activityEvents]
-                  .reverse()
-                  .map((event, i) =>
-                    jsxs('div', {
-                      className: 'flex items-center gap-1.5 text-[0.7rem]',
-                      children: [
-                        jsx(Codicon, {
-                          name: GROUP_ACTIVITY_GLYPHS[event.kind] || 'circle-outline',
-                          className: cn('shrink-0 text-[0.65rem]', groupActivityTone(event.kind))
-                        }),
-                        jsx('span', {
-                          className: cn('min-w-0 flex-1 truncate', groupActivityTone(event.kind)),
-                          children: groupActivityLabel(event)
-                        }),
-                        jsx('span', {
-                          className: 'shrink-0 text-[0.625rem] text-(--ui-text-quaternary)',
-                          children: relativeTime(event.at)
+            className: 'grid gap-1.5 px-2.5 pb-2',
+            children: liveActivity
+              ? jsxs('div', {
+                  className: 'grid gap-1.5',
+                  children: [
+                    liveRows.map(row =>
+                      jsxs('div', {
+                        className: 'flex min-w-0 items-start gap-2 text-[0.7rem]',
+                        children: [
+                          jsx(Codicon, {
+                            name: GROUP_ACTIVITY_GLYPHS[row.status] || (GROUP_LIVE_ACTIVE_STATUSES.has(row.status) ? 'sync' : 'circle-outline'),
+                            className: cn('mt-0.5 shrink-0 text-[0.65rem]',
+                              row.status === 'failed' || row.status === 'timed-out' ? 'text-destructive' :
+                                GROUP_LIVE_ACTIVE_STATUSES.has(row.status) ? 'text-(--ui-accent,#4f9cf9)' : 'text-(--ui-text-tertiary)')
+                          }),
+                          jsxs('div', {
+                            className: 'min-w-0 flex-1',
+                            children: [
+                              jsxs('div', {
+                                className: 'flex min-w-0 items-baseline gap-1.5',
+                                children: [
+                                  jsx('span', { className: 'shrink-0 font-medium text-foreground', children: groupSpeakerLabel(row.name) }),
+                                  row.source ? jsx('span', { className: 'min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)', children: row.source }) : null,
+                                  jsx('span', { className: 'ml-auto shrink-0 text-[0.625rem] text-(--ui-text-quaternary)', children: groupLiveElapsed(row.startedAt || row.updatedAt) })
+                                ]
+                              }),
+                              jsx('div', {
+                                className: cn('truncate', row.status === 'failed' || row.status === 'timed-out' ? 'text-destructive' : 'text-(--ui-text-secondary)'),
+                                children: groupLiveStatusLabel(row.status, row)
+                              }),
+                              row.toolPreview
+                                ? jsx('div', { className: 'truncate text-[0.625rem] text-(--ui-text-quaternary)', children: row.toolPreview })
+                                : null,
+                              row.childAgents?.length
+                                ? jsx('div', { className: 'truncate text-[0.625rem] text-(--ui-text-quaternary)', children: `${row.childAgents.length} delegated worker${row.childAgents.length === 1 ? '' : 's'}` })
+                                : null
+                            ]
+                          })
+                        ]
+                      }, row.key)
+                    ),
+                    liveActivity.recent?.length
+                      ? jsx('div', {
+                          className: 'border-t border-(--ui-stroke-secondary) pt-1 text-[0.625rem] text-(--ui-text-quaternary)',
+                          children: `Recent transition: ${groupActivityLabel(liveActivity.recent[liveActivity.recent.length - 1])}`
                         })
-                      ]
-                    }, `${event.at}:${i}`)
-                  )
+                      : null
+                  ]
+                })
               : jsx('div', {
                   className: 'px-0.5 pb-0.5 text-[0.625rem] text-(--ui-text-quaternary)',
                   children: 'No activity in this turn yet.'
@@ -11475,6 +12250,7 @@ export default {
     // clock before its onDispose hook — these kept firing until app restart).
     const unbindProfileListener = bindProfileSync($focusedBotProfile)
     const unbindGatewayListener = host.state.gateway.listen(handleSessionsGatewayTransition)
+    const unbindGroupEventListener = typeof host.onEvent === 'function' ? host.onEvent('*', handleGroupGatewayEvent) : null
 
     if (typeof ctx.onDispose === 'function') {
       ctx.onDispose(() => {
@@ -11485,6 +12261,20 @@ export default {
         if (typeof unbindGatewayListener === 'function') {
           unbindGatewayListener()
         }
+        if (typeof unbindGroupEventListener === 'function') {
+          unbindGroupEventListener()
+        }
+        groupActivityBindings.clear()
+        pruneGroupLiveCoalesceState()
+        for (const timer of groupLiveCoalesceTimers.values()) {
+          try {
+            clearTimeout(timer)
+          } catch {
+            /* timer cleanup is best-effort during plugin disposal */
+          }
+        }
+        groupLiveCoalesceTimers.clear()
+        groupLiveCoalescedPatches.clear()
       })
     }
 

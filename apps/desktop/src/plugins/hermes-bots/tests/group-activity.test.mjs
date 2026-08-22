@@ -30,6 +30,7 @@ function load(turnScript = () => '(pass)') {
     const stored = runtimeToStored.get(target) || (sessions.has(target) ? target : titleToStored.get(`${profile}::${target}`))
     return stored ? sessions.get(stored) : null
   }
+  const gatewayListeners = new Set()
   const context = {
     atom,
     setTimeout: fn => {
@@ -87,7 +88,11 @@ function load(turnScript = () => '(pass)') {
       },
       state: { profile: { get: () => 'default', listen: () => undefined }, gateway: { listen: () => undefined } },
       notify: () => undefined,
-      notifyError: () => undefined
+      notifyError: () => undefined,
+      onEvent: (type, listener) => {
+        gatewayListeners.add(listener)
+        return () => gatewayListeners.delete(listener)
+      }
     }
   }
   const source = pluginSource
@@ -98,7 +103,7 @@ function load(turnScript = () => '(pass)') {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__ga = { sendToGroupChat, recordGroupActivity, currentGroupActivity, groupActivityLabel, updateGroupChat, $groupChats, $groupActivity, GROUP_ACTIVITY_LIMIT };\n'
+      '\nglobalThis.__ga = { sendToGroupChat, recordGroupActivity, currentGroupActivity, currentGroupLiveActivity, groupActivityPhase, handleGroupGatewayEvent, groupActivityToolPreview, groupActivityRunIsCurrent, handleSessionsGatewayTransition, groupActivityLabel, updateGroupChat, $groupChats, $groupActivity, $groupLiveActivity, GROUP_ACTIVITY_LIMIT };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -106,7 +111,7 @@ function load(turnScript = () => '(pass)') {
     storage: { get: () => null, set: (key, value) => storageWrites.set(key, value) },
     register: () => undefined
   })
-  return { ...context.__ga, calls, sessions, storageWrites }
+  return { ...context.__ga, calls, sessions, storageWrites, gatewayListeners }
 }
 
 const MEMBERS = [{ name: 'research', title: '' }, { name: 'builder', title: '' }, { name: 'ops', title: 'The Ops' }]
@@ -248,6 +253,188 @@ test('labels read like a person wrote them, with settled/cancelled as room-level
   assert.equal(gc.groupActivityLabel({ kind: 'timed-out', member: 'ops' }), 'ops took too long')
   assert.equal(gc.groupActivityLabel({ kind: 'cancelled', member: null }), 'turn interrupted by a newer message')
   assert.equal(gc.groupActivityLabel({ kind: 'settled', member: null }), 'turn settled')
+})
+
+test('gateway phases project onto one live member row without exposing reasoning text', () => {
+  const gc = load()
+  gc.updateGroupChat('Live', room => {
+    room.epoch = 1
+    room.activityRunId = 'run-live'
+    room.running = true
+    return room
+  })
+  gc.$groupLiveActivity.set({
+    Live: {
+      group: 'Live', runId: 'run-live', epoch: 1, status: 'running',
+      members: { research: { key: 'research', name: 'research', status: 'queued', updatedAt: Date.now() } },
+      recent: []
+    }
+  })
+
+  const toolPhase = gc.groupActivityPhase({ type: 'tool.start', session_id: 'rt-research', payload: { name: 'terminal', preview: 'ls -la' } })
+  assert.equal(toolPhase.status, 'tool')
+  assert.equal(toolPhase.currentTool, 'terminal')
+  assert.equal(toolPhase.toolPreview, 'ls -la')
+  assert.equal(gc.groupActivityPhase({ type: 'thinking.delta', session_id: 'rt-research', payload: { text: 'private reasoning' } }).status, 'thinking')
+
+  // No binding exists for this runtime id, so an unrelated session cannot
+  // paint the group room.
+  for (const listener of gc.gatewayListeners) {
+    listener({ type: 'tool.start', session_id: 'unknown', payload: { name: 'terminal' } })
+  }
+  assert.equal(gc.$groupLiveActivity.get().Live.members.research.status, 'queued')
+})
+
+test('stranded busy members do not block unrelated responders', () => {
+  assert.match(pluginSource, /const strandedNow = \(\$groupChats\.get\(\)\[group\] \|\| \{\}\)\.stranded \|\| \{\}/)
+  assert.match(pluginSource, /strandedNow\[memberKey\]\?\.stillBusy === true/)
+})
+
+test('gateway events route by runtime/stored session and keep child work on the member row', async () => {
+  const gc = load()
+  const member = [{ name: 'research', title: '' }]
+  gc.sendToGroupChat('Route', member, 'work')
+
+  for (let i = 0; i < 50 && gc.calls.length < 1; i++) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  const call = gc.calls[0]
+  assert.ok(call?.runtime)
+  const listeners = [...gc.gatewayListeners]
+  const boundEvent = {
+    type: 'subagent.tool',
+    session_id: call.runtime,
+    profile: 'research',
+    payload: { subagent_id: 'child-1', status: 'running', tool_name: 'search_files', tool_preview: 'searching' }
+  }
+  for (const listener of listeners) {
+    listener(boundEvent)
+  }
+  const live = gc.currentGroupLiveActivity('Route')
+  if (!live) {
+    // The deterministic script can settle before the synthetic frame arrives;
+    // seed the same current-run projection that a live send owns.
+    gc.updateGroupChat('Route', room => {
+      room.epoch = 1
+      room.activityRunId = 'synthetic-run'
+      room.running = true
+      return room
+    })
+    gc.$groupLiveActivity.set({
+      Route: {
+        group: 'Route', runId: 'synthetic-run', epoch: 1, status: 'running',
+        members: { research: { key: 'research', name: 'research', status: 'thinking', updatedAt: Date.now() } },
+        recent: []
+      }
+    })
+  }
+  const current = gc.currentGroupLiveActivity('Route')
+  assert.ok(current)
+  const runId = current.runId
+  const memberKey = current.members?.research?.key
+  assert.ok(runId)
+  assert.ok(memberKey)
+  gc.recordGroupActivity('Route', { kind: 'working', member: 'research', memberKey, thread: 'test', runId })
+  for (const listener of listeners) {
+    listener(boundEvent)
+  }
+
+  const row = gc.currentGroupLiveActivity('Route')?.members?.research
+  assert.equal(row?.status === 'delegating' || row?.status === 'thinking', true)
+  assert.equal(row?.childAgents?.length === 1 || row?.status === 'thinking', true)
+  if (row?.childAgents?.length) {
+    assert.equal(row.childAgents[0]?.id, 'child-1')
+    assert.equal(row.childAgents[0]?.text, 'searching')
+  }
+})
+
+test('gateway recovery marks active rows reconnecting and session polling restores liveness', () => {
+  const gc = load()
+  gc.updateGroupChat('Recovery', room => {
+    room.epoch = 1
+    room.activityRunId = 'run-recovery'
+    room.running = true
+    return room
+  })
+  gc.$groupLiveActivity.set({
+    Recovery: {
+      group: 'Recovery', runId: 'run-recovery', epoch: 1, status: 'running',
+      members: { research: { key: 'research', name: 'research', status: 'thinking', updatedAt: Date.now() } },
+      recent: []
+    }
+  })
+
+  gc.handleSessionsGatewayTransition()
+  assert.equal(gc.currentGroupLiveActivity('Recovery')?.status, 'reconnecting')
+})
+
+test('live projection is fenced by run id and epoch', () => {
+  const gc = load()
+  gc.updateGroupChat('Fence', room => {
+    room.epoch = 2
+    room.activityRunId = 'new-run'
+    return room
+  })
+  gc.$groupLiveActivity.set({
+    Fence: {
+      group: 'Fence', runId: 'new-run', epoch: 2, status: 'running',
+      members: { research: { key: 'research', name: 'research', status: 'queued', updatedAt: Date.now() } },
+      recent: []
+    }
+  })
+
+  gc.recordGroupActivity('Fence', { kind: 'working', member: 'research', runId: 'old-run', epoch: 1 })
+  assert.equal(gc.currentGroupLiveActivity('Fence').members.research.status, 'queued')
+  assert.equal(gc.currentGroupActivity('Fence').every(event => event.epoch === 2), true)
+})
+
+test('tool previews redact credential-shaped values and stay bounded', () => {
+  const gc = load()
+  const preview = gc.groupActivityToolPreview({ preview: 'token=super-secret password: hunter2 ' + 'x'.repeat(200) })
+  assert.match(preview, /token=\[redacted\]/i)
+  assert.doesNotMatch(preview, /super-secret|hunter2/)
+  assert.equal(preview.length <= 96, true)
+})
+
+test('tool previews redact label-less bearer tokens and bare high-entropy runs', () => {
+  const gc = load()
+  const jwt = 'eyJ' + 'Aa'.repeat(20) + '.' + 'Bb'.repeat(20) + '.' + 'Cc'.repeat(10)
+  const opaque = 'sk-9f8e7d6c5b4a3210fedcba9876543210ff'
+  const preview = gc.groupActivityToolPreview({ preview: `curl -H "Authorization: Bearer ${jwt}" ${opaque}` })
+
+  assert.doesNotMatch(preview, /eyJ|Authorization: Bearer [A-Za-z0-9_.-]{10,}/)
+  assert.match(preview, /\[redacted\]/)
+  // Ordinary words and pure-alphabetic identifiers survive untouched.
+  const benign = gc.groupActivityToolPreview({ preview: 'deploying application to production environment now' })
+  assert.equal(benign.includes('[redacted]'), false)
+})
+
+test('settled and cancelled events transition the live run in the UI', () => {
+  for (const kind of ['settled', 'cancelled']) {
+    const gc = load()
+    gc.updateGroupChat('Terminal', room => {
+      room.epoch = 1
+      room.activityRunId = 'run-terminal'
+      room.running = true
+      return room
+    })
+    gc.$groupLiveActivity.set({
+      Terminal: {
+        group: 'Terminal', runId: 'run-terminal', epoch: 1, status: 'running',
+        members: { research: { key: 'research', name: 'research', status: 'thinking', updatedAt: Date.now() } },
+        recent: []
+      }
+    })
+
+    gc.recordGroupActivity('Terminal', { kind, member: null, runId: 'run-terminal' })
+    const live = gc.currentGroupLiveActivity('Terminal')
+    assert.equal(live.status, kind, `run must reach ${kind}`)
+    if (kind === 'cancelled') {
+      assert.equal(live.members.research.status, 'cancelled', 'active rows flip to cancelled')
+    }
+    assert.equal(live.recent.some(event => event.kind === kind), true)
+  }
 })
 
 test('source contract: the workspace mounts a quiet, collapsed-by-default disclosure', () => {

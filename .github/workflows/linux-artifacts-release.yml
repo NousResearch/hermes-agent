@@ -1,11 +1,9 @@
-name: Build & Publish Linux Artifacts
+name: Linux Release Artifacts
 
-# Triggered on every new GitHub Release. Builds all Linux distribution formats:
-# - Flatpak (Flathub-ready)
-# - Snap (Snap Store-ready)
-# - AppImage (portable)
-# - deb/rpm (native packages)
-# All uploaded as Release assets.
+# Builds every Hermes Desktop Linux distribution format as separate parallel
+# jobs — Flatpak, Snap, AppImage, deb, rpm — then uploads ALL of them as
+# assets on a single GitHub Release. Triggered on release publish;
+# workflow_dispatch builds are saved as workflow artifacts only.
 
 on:
   release:
@@ -26,17 +24,106 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-linux:
-    name: Build All Linux Artifacts
+  # ── Shared Electron app build (linux-unpacked), reused by all formats ──
+  build-electron:
+    name: Build Electron app
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 25
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
-      # ── System deps ──────────────────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Upgrade npm
+        run: npm i -g npm@12
+
+      - name: Install npm dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build Electron app
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Upload unpacked build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: electron-unpacked
+          path: apps/desktop/release/linux-unpacked
+          retention-days: 1
+
+  # ── Per-format package builds ───────────────────────────────────────────
+  build-appimage-deb-rpm:
+    name: Build AppImage + deb + rpm
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build-electron
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Upgrade npm
+        run: npm i -g npm@12
+
+      - name: Install npm dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Download unpacked build
+        uses: actions/download-artifact@v4
+        with:
+          name: electron-unpacked
+          path: apps/desktop/release/linux-unpacked
+
+      - name: Build AppImage + deb + rpm
+        working-directory: apps/desktop
+        run: npm run dist:linux
+
+      - name: Verify artifacts
+        run: |
+          ls -la apps/desktop/release/*.AppImage
+          chmod +x apps/desktop/release/*.AppImage
+          apps/desktop/release/*.AppImage --help | head -5 || true
+          test -f apps/desktop/release/*.deb
+          test -f apps/desktop/release/*.rpm
+
+      - name: Upload packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-packages-appimage-deb-rpm
+          path: |
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.deb
+            apps/desktop/release/*.rpm
+          retention-days: 1
+          if-no-files-found: error
+
+  build-flatpak:
+    name: Build Flatpak
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build-electron
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
       - name: Install Flatpak tooling
         run: |
           sudo apt-get update -qq
@@ -53,12 +140,6 @@ jobs:
             org.freedesktop.Sdk.Extension.node22//25.08 \
             org.electronjs.Electron2.BaseApp//25.08
 
-      - name: Install Snapcraft
-        uses: snapcore/action-install@b2ff61d1c7f3a9a3a5e3f0e8d8b3e5c7d1f2e4b6 # v1
-        with:
-          channel: latest/stable
-
-      # ── Node / npm for Electron build ──────────────────────────────────
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -72,12 +153,12 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
-      # ── Build the Electron app (linux-unpacked) ────────────────────────
-      - name: Build Electron app
-        working-directory: apps/desktop
-        run: npm run build
+      - name: Download unpacked build
+        uses: actions/download-artifact@v4
+        with:
+          name: electron-unpacked
+          path: apps/desktop/release/linux-unpacked
 
-      # ── Build all Linux artifacts ──────────────────────────────────────
       - name: Build Flatpak
         working-directory: apps/desktop
         run: |
@@ -91,22 +172,60 @@ jobs:
             release/com.nousresearch.Hermes.flatpak \
             com.nousresearch.Hermes
 
-      - name: Build Snap
-        working-directory: apps/desktop
-        run: |
-          node scripts/stage-snap.mjs
-          snapcraft --destructive-mode
-
-      - name: Build AppImage + deb + rpm
-        working-directory: apps/desktop
-        run: npm run dist:linux
-
-      # ── Verify artifacts ───────────────────────────────────────────────
       - name: Verify Flatpak
         run: |
           flatpak run --command=sh com.nousresearch.Hermes -c '
             test -x /app/bin/hermes-desktop && echo "OK: Flatpak" || exit 1
           ' || exit 1
+
+      - name: Upload Flatpak bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-flatpak
+          path: apps/desktop/release/com.nousresearch.Hermes.flatpak
+          retention-days: 1
+          if-no-files-found: error
+
+  build-snap:
+    name: Build Snap
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build-electron
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Install Snapcraft
+        uses: snapcore/action-install@b2ff61d1c7f3a9a3a5e3f0e8d8b3e5c7d1f2e4b6 # v1
+        with:
+          channel: latest/stable
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Upgrade npm
+        run: npm i -g npm@12
+
+      - name: Install npm dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Download unpacked build
+        uses: actions/download-artifact@v4
+        with:
+          name: electron-unpacked
+          path: apps/desktop/release/linux-unpacked
+
+      - name: Build Snap
+        working-directory: apps/desktop
+        run: |
+          node scripts/stage-snap.mjs
+          snapcraft --destructive-mode
 
       - name: Verify Snap
         run: |
@@ -115,18 +234,32 @@ jobs:
             test -x /snap/hermes-desktop/current/bin/hermes-desktop && echo "OK: Snap" || exit 1
           ' || exit 1
 
-      - name: Verify AppImage
-        run: |
-          ls -la apps/desktop/release/*.AppImage
-          chmod +x apps/desktop/release/*.AppImage
-          apps/desktop/release/*.AppImage --help | head -5 || true
+      - name: Upload Snap
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-snap
+          path: apps/desktop/hermes-desktop_*.snap
+          retention-days: 1
+          if-no-files-found: error
 
-      # ── Upload all artifacts to Release ────────────────────────────────
+  # ── Attach everything to the GitHub Release ─────────────────────────────
+  upload-to-release:
+    name: Upload all artifacts to Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build-appimage-deb-rpm, build-flatpak, build-snap]
+    if: github.event_name == 'release'
+    steps:
+      - name: Download all built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: linux-*
+
       - name: Upload Flatpak to Release
         uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
-        if: github.event_name == 'release'
         with:
-          files: apps/desktop/release/com.nousresearch.Hermes.flatpak
+          files: artifacts/linux-flatpak/com.nousresearch.Hermes.flatpak
           name: Hermes Desktop Flatpak (Linux)
           body: |
             Official Hermes Desktop Flatpak for Linux.
@@ -134,9 +267,8 @@ jobs:
 
       - name: Upload Snap to Release
         uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
-        if: github.event_name == 'release'
         with:
-          files: apps/desktop/hermes-desktop_*.snap
+          files: artifacts/linux-snap/hermes-desktop_*.snap
           name: Hermes Desktop Snap (Linux)
           body: |
             Official Hermes Desktop Snap for Linux.
@@ -144,9 +276,8 @@ jobs:
 
       - name: Upload AppImage to Release
         uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
-        if: github.event_name == 'release'
         with:
-          files: apps/desktop/release/*.AppImage
+          files: artifacts/linux-packages-appimage-deb-rpm/*.AppImage
           name: Hermes Desktop AppImage (Linux)
           body: |
             Official Hermes Desktop AppImage for Linux.
@@ -154,9 +285,8 @@ jobs:
 
       - name: Upload deb to Release
         uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
-        if: github.event_name == 'release'
         with:
-          files: apps/desktop/release/*.deb
+          files: artifacts/linux-packages-appimage-deb-rpm/*.deb
           name: Hermes Desktop deb (Debian/Ubuntu)
           body: |
             Official Hermes Desktop .deb package.
@@ -164,24 +294,9 @@ jobs:
 
       - name: Upload rpm to Release
         uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
-        if: github.event_name == 'release'
         with:
-          files: apps/desktop/release/*.rpm
+          files: artifacts/linux-packages-appimage-deb-rpm/*.rpm
           name: Hermes Desktop rpm (Fedora/RHEL)
           body: |
             Official Hermes Desktop .rpm package.
             Install: `sudo dnf install ./Hermes-*.rpm`
-
-      # ── Also upload as workflow artifacts ──────────────────────────────
-      - name: Upload all artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: linux-artifacts-${{ github.ref_name }}
-          path: |
-            apps/desktop/release/com.nousresearch.Hermes.flatpak
-            apps/desktop/hermes-desktop_*.snap
-            apps/desktop/release/*.AppImage
-            apps/desktop/release/*.deb
-            apps/desktop/release/*.rpm
-          retention-days: 30
-          overwrite: true

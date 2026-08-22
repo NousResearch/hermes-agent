@@ -515,6 +515,20 @@ npm run fmt       # prettier
 npm test          # vitest
 ```
 
+### JS tests (repo-wide)
+
+JS/TS workspace tests live in `tests-js` (vitest) plus per-workspace suites.
+From the repo root (Node workspaces: `apps/*`, `ui-tui`, `web`, `tests-js`):
+
+```bash
+npm run check     # typecheck + vitest + lint across all workspaces
+npm run fix       # eslint --fix + prettier across all workspaces
+npm run --prefix tests-js test        # root JS contract tests only
+```
+
+CI (`js-tests.yml`) runs each workspace's `check:*` scripts; any Python test
+asserting about JS artifacts belongs in `tests-js`, not `tests/*.py`.
+
 ### TUI in the Dashboard (`hermes dashboard` → `/chat`)
 
 The dashboard embeds the real `hermes --tui` — **not** a rewrite.  See `hermes_cli/pty_bridge.py` + the `@app.websocket("/api/pty")` endpoint in `hermes_cli/web_server.py`.
@@ -597,22 +611,27 @@ The registry handles schema collection, dispatch, availability checking, and err
 
 ## Dependency Pinning Policy
 
-All dependencies must have upper bounds to limit supply-chain attack surface.
-This policy was established after the litellm compromise (PR #2796, #2810) and
-reinforced after the Mini Shai-Hulud worm campaign (May 2026).
+All dependencies are pinned to limit supply-chain attack surface. This policy
+was established after the litellm compromise (PR #2796, #2810) and reinforced
+after the Mini Shai-Hulud worm campaign (May 2026). As of 2026-05-12 every
+direct dependency in `pyproject.toml` is **exact-pinned** (`==X.Y.Z`, no
+ranges) — see the rationale comment atop the `dependencies` list. Provider-
+specific/heavy packages belong in extras and lazy-install via
+`tools/lazy_deps.py`, not core `dependencies`.
 
 | Source type | Treatment | Example |
 |---|---|---|
-| PyPI package | `>=floor,<next_major` | `"httpx>=0.28.1,<1"` |
+| PyPI package (pyproject) | `==exact` | `"httpx==0.28.1"` |
 | Git URL | Commit SHA | `git+https://...@<40-char-sha>` |
 | GitHub Actions | Commit SHA + comment | `uses: actions/checkout@<sha>  # v4` |
-| CI-only pip | `==exact` | `pyyaml==6.0.2` |
+| JS deps (package-lock) | lockfile-committed, `npm overrides` for transitive pins | see root `package.json` |
 
-**When adding a new dependency to `pyproject.toml`:**
-1. Pin to `>=current_version,<next_major` for post-1.0 (e.g. `>=1.5.0,<2`).
-2. For pre-1.0 packages, use `<0.(current_minor + 2)` (e.g. `>=0.29,<0.32`).
-3. Never commit a bare `>=X.Y.Z` without a ceiling — CI and reviewers will reject it.
-4. Run `uv lock` to regenerate `uv.lock` with hashes.
+**When adding a new dependency:**
+1. Pin `==current_version` in `pyproject.toml`. Don't reintroduce ranges
+   without a written justification in the pin comment.
+2. Run `uv lock` to regenerate `uv.lock` with hashes.
+3. Python requires `>=3.11,<3.14` — the `<3.14` ceiling is load-bearing
+   (Rust-backed transitives lack cp314 wheels); don't raise it casually.
 
 Reference: #2810 (bounds pass), #9801 (SHA pinning + audit CI).
 

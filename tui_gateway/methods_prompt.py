@@ -786,6 +786,9 @@ def _(rid, params: dict) -> dict:
                 sid,
                 session,
                 (err.get("error") or {}).get("message", "agent initialization failed"),
+                # Agent construction never reached the provider: this is a
+                # local-runtime failure (env/config/venv), not an API error.
+                error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True},
             )
             with session["history_lock"]:
                 session["running"] = False

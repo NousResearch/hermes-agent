@@ -60,21 +60,22 @@ def _(rid, params: dict) -> dict:
             return text[:80] + "..."
         return text
 
-    def _preferred_session_row(profile_path, session_id):
-        """Precise summary for ONE caller-pinned session id, or None.
+    def _canonical_session_row(profile_path):
+        """Summary of the profile's canonical "Bot Chat" registry row, or None.
 
-        Complements ``last_session``: that field answers "what is the newest
-        conversation", this answers "what about THIS conversation". Callers
-        that open a specific session on click (e.g. a roster whose rows open
-        a pinned chat) pass their pins via ``preferred_session_ids`` so the
-        preview and the click target describe the same session
-        (hermes-agent#88200).
+        The canonical chat's identity is the NAME: the session titled exactly
+        "Bot Chat" on this profile (core UNIQUE(title) makes it a registry of
+        at most one row). Complements ``last_session``: that field answers
+        "what is the newest conversation", this answers "where is the
+        forever-chat" — so a roster row's preview and its click target
+        describe the same session (hermes-agent#88200) with no client-side
+        pointer involved.
 
         Exact-lookup semantics, deliberately different from the listing:
-        hidden rows still resolve (a hidden-from-sidebar session EXISTS),
+        hidden rows still resolve (canonical chats are always hidden),
         compression lineages resolve to the live tip with the same resolver
         ``session.resume`` uses, and denied internal sources (tool/kanban)
-        count as absent. The reported ``id`` stays the caller's durable pin
+        count as absent. The reported ``id`` stays the durable registry row
         while ``resolved_id`` names the live tip. Best-effort: any failure
         degrades to None rather than failing the whole profiles.list call.
         """
@@ -89,8 +90,11 @@ def _(rid, params: dict) -> dict:
             deny = frozenset({"kanban", "tool"})
             db = SessionDB(db_path=db_path)
             try:
-                row = db.get_session(session_id)
+                row = db.get_session_by_title("Bot Chat")
                 if not row:
+                    return None
+                session_id = str(row.get("id") or "").strip()
+                if not session_id:
                     return None
                 if (row.get("source") or "").strip().lower() in deny:
                     return None
@@ -205,13 +209,6 @@ def _(rid, params: dict) -> dict:
         from hermes_cli.profiles import list_profiles
 
         include_sessions = is_truthy_value(params.get("include_sessions", True))
-        # Optional precise lookups: {profile_name: session_id} from callers
-        # that open a specific session per row (pinned-chat rosters). Only
-        # resolved when include_sessions is on; each named profile row gains
-        # a ``preferred_session`` summary (None when the id is gone).
-        preferred_ids = params.get("preferred_session_ids")
-        if not isinstance(preferred_ids, dict):
-            preferred_ids = {}
         out = []
         for p in list_profiles():
             row = {
@@ -231,9 +228,10 @@ def _(rid, params: dict) -> dict:
                 # a profile as active while its worker runs (#90268). Older
                 # clients ignore the extra field.
                 row["worker_session"] = worker_row
-                pin = preferred_ids.get(p.name)
-                if isinstance(pin, str) and pin.strip():
-                    row["preferred_session"] = _preferred_session_row(p.path, pin.strip())
+                # The profile's canonical "Bot Chat" registry row (or None) —
+                # identity is the NAME, resolved server-side on every listing
+                # so no client ever needs to carry a session pointer.
+                row["canonical_session"] = _canonical_session_row(p.path)
 
             # Client-agnostic UI metadata (avatars, accent colors, pinned
             # order, …) — stored server-side in profile.yaml so every

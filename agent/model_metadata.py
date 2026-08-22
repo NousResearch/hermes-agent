@@ -501,13 +501,19 @@ DEFAULT_CONTEXT_LENGTHS = {
     # https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000,
     "minimax": 204800,
-    # GLM — GLM-5.2 ships with a 1M context window (verified empirically:
-    # needle-in-a-haystack retrieval at 789K prompt tokens succeeded with
-    # zero errors on api.z.ai/api/coding/paas/v4).  Older GLM models
-    # (5, 5.1, 5-turbo) are ~202K.  Longest-key-first substring matching
-    # ensures "glm-5.2" resolves to 1M while older variants still hit the
-    # generic 202K fallback.
+    # GLM — GLM-5.2 and GLM-5.3 ship with a 1M context window.  GLM-5.2 was
+    # verified empirically (needle-in-a-haystack retrieval at 789K prompt
+    # tokens succeeded with zero errors on api.z.ai/api/coding/paas/v4).
+    # GLM-5.3 uses the same base model (all gains are post-training) with
+    # 1M context / 128K max output per docs.z.ai/guides/llm/glm-5.3
+    # (verified 2026-08-14).  Older GLM models (5, 5.1, 5-turbo) are ~202K.
+    # Longest-key-first substring matching ensures "glm-5.2"/"glm-5.3"
+    # resolve to 1M while older variants still hit the generic 202K fallback.
     "glm-5.2": 1_048_576,
+    # OpenRouter's free GLM-5.2 variant is capped at 256K (live metadata,
+    # 2026-08-21) — longer key wins over the 1M paid entry above.
+    "glm-5.2:free": 256_000,
+    "glm-5.3": 1_048_576,
     "glm": 202752,
     # xAI Grok — xAI /v1/models does not return context_length metadata,
     # so these hardcoded fallbacks prevent Hermes from probing-down to
@@ -563,7 +569,15 @@ DEFAULT_CONTEXT_LENGTHS = {
     # (stealth/ox-alpha). 1M context per OpenRouter live metadata (2026-08-20).
     "ox-alpha": 1_048_576,
     # Nemotron — NVIDIA's open-weights series (128K context across all sizes)
+    # EXCEPT 3.5 Lightning, which ships a 1M window (OpenRouter live metadata
+    # + OpenCode Zen free tier, verified 2026-08-21).
+    "nemotron-3.5-lightning": 1_000_000,
     "nemotron": 131072,
+    # Poolside Laguna 2.1 (s/xs) — 256K window per OpenRouter live metadata
+    # (2026-08-21). Covers laguna-s-2.1:free, laguna-xs-2.1:free, and the
+    # OpenCode Zen laguna-s-2.1-free slug via substring matching.
+    "laguna-s-2.1": 262144,
+    "laguna-xs-2.1": 262144,
     # Arcee
     "trinity": 262144,
     # OpenRouter
@@ -2384,6 +2398,7 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.6-sol": 272_000,
     "gpt-5.6-terra": 272_000,
     "gpt-5.6-luna": 272_000,
+    "gpt-daybreak-blue-latest": 272_000,
     "gpt-5.5": 272_000,
     "gpt-5.4": 272_000,
     "gpt-5.2": 272_000,
@@ -2417,6 +2432,7 @@ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {
 }
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
     "gpt-5.4": 900_000,   # verified live at 900K; gpt-5.4-mini rejected 500K — excluded
+    "gpt-daybreak-blue-latest": 900_000,  # exact Daybreak/Sol alias verified at 911,276
 }
 
 # The advertised value the verified-above table is allowed to override.

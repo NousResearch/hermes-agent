@@ -122,6 +122,12 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // gap in their View family) and Hermes has no chord dispatcher, so this
   // takes the nearest free single combo instead of a ⌘K ⌘S two-stroke.
   { id: 'view.toggleStatusbar', category: 'view', defaults: ['mod+shift+s'] },
+  // ⌥⌘T — "t" for tabs, reaching past ⇧ because ⌘⇧T is reopen-closed-tab
+  // everywhere. Ships BOUND, unlike VS Code's settings-only tab-bar switch:
+  // here the hide can take away every other affordance the zone had, so the
+  // way back has to already exist. (⌥+letter emits a symbol on macOS; the
+  // binding resolves through KeyT via comboFromEvent's `event.code` fallback.)
+  { id: 'view.toggleTabStrip', category: 'view', defaults: ['mod+alt+t'] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },

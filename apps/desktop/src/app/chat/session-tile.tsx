@@ -27,7 +27,7 @@ import { ModelMenuPanel } from '@/app/shell/model-menu-panel'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
-import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupHeaderHidden } from '@/components/pane-shell/tree/store'
+import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupTabStrip } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { transcribeAudio } from '@/hermes'
@@ -560,7 +560,7 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
     const group = tree ? findGroupOfPane(tree, 'workspace') : null
 
     if (group) {
-      setTreeGroupHeaderHidden(group.id, true)
+      setTreeGroupTabStrip(group.id, 'never')
     }
   }
 
@@ -616,9 +616,9 @@ export const watchSessionTiles = paneMirror<SessionTile>({
     </SessionTabMenu>
   ),
   // A tile's tab drags like a sidebar row — stack / split / drop-to-link — with
-  // its tap (activate) + double-tap (hide bar) preserved. Always takes the drag.
-  tabDrag: (storedSessionId, event, onTap, double) => {
-    startSessionDrag(tileDragPayload(storedSessionId), event, { double, onTap })
+  // its tap (activate) preserved. Always takes the drag.
+  tabDrag: (storedSessionId, event, onTap) => {
+    startSessionDrag(tileDragPayload(storedSessionId), event, { onTap })
 
     return true
   },

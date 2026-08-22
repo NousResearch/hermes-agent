@@ -151,6 +151,45 @@ class TestRuntimeProvider:
         assert result["provider"] == "bedrock"
         assert result["api_mode"] == "bedrock_converse"
 
+    def test_bedrock_openai_models_route_to_mantle_responses(self, monkeypatch):
+        """Bedrock's OpenAI models (GPT-5.5 / GPT-5.6 family) are not Converse
+        models — they only answer on the Mantle /openai/v1 Responses surface.
+        Every allowlisted ID must route there, with the aws-sdk IAM sentinel."""
+        from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-2")
+
+        assert "openai.gpt-5.5" in BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+        for suffix in ("sol", "terra", "luna"):
+            assert f"openai.gpt-5.6-{suffix}" in BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+
+        for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
+            with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+                 patch("hermes_cli.runtime_provider._get_model_config", return_value={
+                     "provider": "bedrock",
+                     "default": model_id,
+                 }):
+                result = resolve_runtime_provider(requested="bedrock")
+
+            assert result["api_mode"] == "codex_responses", model_id
+            assert result["model"] == model_id
+            assert result["base_url"] == "https://bedrock-mantle.us-east-2.api.aws/openai/v1"
+            assert result["api_key"] == "aws-sdk"
+            assert result["bedrock_openai"] is True, model_id
+
+    def test_bedrock_openai_context_length_is_272k(self):
+        """AWS model cards list a 272K context window for the Mantle OpenAI
+        models; make sure we do not fall back to the 128K default."""
+        from agent.bedrock_adapter import (
+            BEDROCK_OPENAI_RESPONSES_MODEL_IDS,
+            get_bedrock_context_length,
+        )
+        for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
+            assert get_bedrock_context_length(model_id) == 272_000
+
 
 # ---------------------------------------------------------------------------
 # providers.py integration
@@ -473,3 +512,55 @@ class TestAuxiliaryClientBedrockResolution:
             )
             wire_kwargs = boto3_client.converse.call_args.kwargs
             assert wire_kwargs["inferenceConfig"]["maxTokens"] == 1234
+
+    def test_bedrock_mantle_config_region_beats_env_region(self, monkeypatch):
+        """bedrock.region in config.yaml must win over AWS_REGION for auxiliary
+        Mantle calls — the same priority the main runtime resolver uses (#65076
+        review: aux resolution previously derived its region env-first and
+        could leave the primary runtime's configured region)."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "eu-central-1")
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bearer")
+
+        captured = {}
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.api_key = kwargs.get("api_key")
+                self.base_url = kwargs.get("base_url")
+
+            def close(self):
+                pass
+
+        with patch("hermes_cli.config.load_config_readonly",
+                   return_value={"bedrock": {"region": "us-west-2"}}), \
+             patch("agent.auxiliary_client.OpenAI", _FakeOpenAI):
+            from agent.auxiliary_client import resolve_provider_client
+            client, model = resolve_provider_client("bedrock", "openai.gpt-5.6-sol")
+
+        assert client is not None
+        assert model == "openai.gpt-5.6-sol"
+        assert "us-west-2" in captured.get("base_url", ""), (
+            "Mantle auxiliary base_url ignored config.yaml bedrock.region"
+        )
+
+    def test_bedrock_openai_aux_uses_responses_client(self, monkeypatch):
+        """Auxiliary tasks on Bedrock GPT models use the Mantle Responses
+        path (SigV4 http client + aws-sdk sentinel), not the Anthropic shim."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-2")
+
+        with patch("agent.auxiliary_client.OpenAI", return_value=MagicMock()) as mock_openai, \
+             patch("agent.bedrock_adapter.build_bedrock_openai_http_client", return_value=MagicMock()):
+            from agent.auxiliary_client import resolve_provider_client, CodexAuxiliaryClient
+            client, model = resolve_provider_client("bedrock", "openai.gpt-5.5")
+
+        assert model == "openai.gpt-5.5"
+        assert isinstance(client, CodexAuxiliaryClient)
+        kwargs = mock_openai.call_args.kwargs
+        assert kwargs["api_key"] == "aws-sdk"
+        assert kwargs["base_url"] == "https://bedrock-mantle.us-east-2.api.aws/openai/v1"
+        assert "http_client" in kwargs

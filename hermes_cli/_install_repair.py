@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -115,6 +116,55 @@ def _venv_scripts_dir(root: Path) -> Path | None:
 
     scripts = venv_bin_dir(venv_dir, windows=_is_windows())
     return scripts if scripts.is_dir() else None
+
+
+def _sync_windows_cli_launchers(root: Path) -> list[Path]:
+    """Copy the venv's Hermes launchers into the dedicated PATH directory.
+
+    Windows installs expose ``<root>\\bin`` on PATH instead of the full
+    ``venv\\Scripts`` directory, which would shadow the user's Python.  Keep
+    that narrow PATH layout usable after an update by restoring launchers that
+    are missing from the dedicated directory.
+
+    ``hermes.exe`` is required; ``hermes-acp.exe`` is copied when available.
+    Existing files are left alone because ``bin\\hermes.exe`` may be the
+    executable currently running this process.
+    """
+    if not _is_windows():
+        return []
+
+    root = Path(root)
+    scripts_dir = _venv_scripts_dir(root)
+    if scripts_dir is None:
+        raise FileNotFoundError(
+            f"project venv executable directory not found under: {root}"
+        )
+    required_source = scripts_dir / "hermes.exe"
+    if not required_source.is_file():
+        raise FileNotFoundError(
+            f"required Hermes launcher not found: {required_source}"
+        )
+
+    bin_dir = root / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    copied: list[Path] = []
+    for name in ("hermes.exe", "hermes-acp.exe"):
+        source = scripts_dir / name
+        if not source.is_file():
+            continue
+        destination = bin_dir / name
+        if destination.exists():
+            continue
+        shutil.copy2(source, destination)
+        copied.append(destination)
+
+    required_destination = bin_dir / "hermes.exe"
+    if not required_destination.is_file():
+        raise FileNotFoundError(
+            f"Hermes launcher was not installed: {required_destination}"
+        )
+    return copied
 
 
 def _load_console_script_names(root: Path) -> list[str]:

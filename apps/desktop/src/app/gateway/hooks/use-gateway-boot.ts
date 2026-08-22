@@ -52,6 +52,7 @@ import {
   $attentionSessionIds,
   $workingSessionIds,
   liveSessionScopes,
+  reconcileBusyStatesOnReconnect,
   recordSessionEventScope,
   resetTileRuntimeBindings
 } from '@/store/session-states'
@@ -252,6 +253,12 @@ export function useGatewayBoot({
         // A respawned backend re-mints (recycles) runtime ids, so any tile's
         // bound runtime id is now stale — drop them so each tile re-resumes.
         resetTileRuntimeBindings()
+        // Same staleness, other half: pre-reconnect busy flags are keyed by
+        // those dead runtime ids and would never receive their terminal
+        // busy:false — clear them or the sidebar running arc lies forever
+        // (#53902/#73082). A genuinely live turn re-asserts busy on its next
+        // post-reconnect event.
+        reconcileBusyStatesOnReconnect()
         // Resync state that may have moved on the backend while we were asleep.
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)

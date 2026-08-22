@@ -4001,6 +4001,7 @@ def select_provider_and_model(args=None):
         "kilocode",
         "opencode-zen",
         "opencode-go",
+        "opencode-free",
         "alibaba",
         "huggingface",
         "xiaomi",
@@ -4901,6 +4902,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_print_curator_first_run_notice",
         "_print_curator_recent_run_notice",
         "_print_fts_optimize_available_notice",
+        "_print_parked_branch_kept_notice",
         "_print_parked_branch_skip_warning",
         "_print_stash_cleanup_guidance",
         "_print_update_completion",
@@ -10078,6 +10080,22 @@ def cmd_update(args):
         managed_error("update Hermes Agent")
         return
 
+    # --plan is read-only and deployment-kind aware, so it runs BEFORE the
+    # docker/nix/apt refusal gates: on an image-managed or package-managed
+    # install the plan itself reports "not updatable in place" plus the
+    # right mechanism — strictly more useful than the bare refusal text.
+    if getattr(args, "plan", False):
+        # Read-only plan phase (#91277 Phase 2): inventory every running
+        # Hermes runtime across profiles, its supervisor, and its running
+        # code version — without mutating anything. Safe on a live fleet.
+        from hermes_cli.update_inventory import (
+            collect_runtime_inventory,
+            print_update_plan,
+        )
+
+        print_update_plan(collect_runtime_inventory())
+        return
+
     # Docker users can't ``git pull`` — the image excludes ``.git`` from
     # the build context.  Bail with a friendly explanation pointing at
     # ``docker pull`` BEFORE any of the apply-path / check-path branches
@@ -10129,6 +10147,38 @@ def cmd_update(args):
 
     try:
         _self()._cmd_update_impl(args, gateway_mode=gateway_mode)
+    except SystemExit as _update_exit:
+        # Receipt boundary (#91283 review): the impl has many early
+        # sys.exit paths (concurrent-instance preflight, venv-holder
+        # refusal, head-pinned no-op, fetch failure) that never reach an
+        # inner finalize. Persist any still-open receipt with the real
+        # exit code, then let the exit proceed unchanged. No-op when an
+        # inner path already finalized (exactly-once by construction).
+        try:
+            from hermes_cli.update_receipt import finalize_pending_update_receipt
+
+            _code = _update_exit.code if isinstance(_update_exit.code, int) else 1
+            finalize_pending_update_receipt(_code, f"sys.exit({_code})")
+        except Exception:
+            pass
+        raise
+    except BaseException as _update_exc:
+        try:
+            from hermes_cli.update_receipt import finalize_pending_update_receipt
+
+            finalize_pending_update_receipt(
+                1, f"{type(_update_exc).__name__}: {_update_exc}"
+            )
+        except Exception:
+            pass
+        raise
+    else:
+        try:
+            from hermes_cli.update_receipt import finalize_pending_update_receipt
+
+            finalize_pending_update_receipt(0, "completed at command boundary")
+        except Exception:
+            pass
     finally:
         _update_lock.release()
         _finalize_update_output(_update_io_state)

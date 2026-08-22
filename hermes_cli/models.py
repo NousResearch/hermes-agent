@@ -116,8 +116,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # MiniMax
     ("minimax/minimax-m3",                     ""),
     # Z-AI
+    ("z-ai/glm-5.3",                           ""),
     ("z-ai/glm-5.2",                           "default"),
-    ("z-ai/glm-5.1",                           ""),
     # Xiaomi
     ("xiaomi/mimo-v2.5-pro",                   ""),
     # Tencent
@@ -135,11 +135,12 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Free tier
     ("stealth/ox-alpha",                       "free"),  # "Ox Alpha" stealth reasoning model — 1M ctx
     ("openrouter/elephant-alpha",              "free"),
-    ("poolside/laguna-m.1:free",               "free"),
-    ("tencent/hy3:free",                       "free"),
+    ("z-ai/glm-5.2:free",                      "free"),
+    ("poolside/laguna-s-2.1:free",             "free"),
+    ("poolside/laguna-xs-2.1:free",            "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
     ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
-    ("inclusionai/ring-2.6-1t:free",           "free"),
+    ("nvidia/nemotron-3.5-lightning:free",     "free"),
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
@@ -293,8 +294,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # MiniMax
         "minimax/minimax-m3",
         # Z-AI
+        "z-ai/glm-5.3",
         "z-ai/glm-5.2",
-        "z-ai/glm-5.1",
         # Xiaomi
         "xiaomi/mimo-v2.5-pro",
         # Tencent
@@ -305,6 +306,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nvidia/nemotron-3-super-120b-a12b",
         # Sakana
         "sakana/fugu-ultra",
+        # Stealth — "Ox Alpha" reasoning model, free ($0/$0 on the portal),
+        # 1M ctx / 131K max output. Same model as OpenCode Zen's
+        # x-preview-f-free; metadata entries live under the bare "ox-alpha"
+        # slug (model_metadata.py / reasoning_timeouts.py).
+        "stealth/ox-alpha",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.
@@ -367,6 +373,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.1-flash-lite-preview",
     ],
     "zai": [
+        "glm-5.3",
         "glm-5.2",
         "glm-5.1",
         "glm-5",
@@ -385,6 +392,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         # Third-party agentic models hosted on build.nvidia.com
         # (map to OpenRouter defaults — users get familiar picks on NIM)
+        "z-ai/glm-5.3",
         "z-ai/glm-5.2",
         "moonshotai/kimi-k2.6",
         "minimaxai/minimax-m3",
@@ -519,7 +527,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-opus-4-5",
-        "claude-opus-4-1",
         "claude-sonnet-4-6",
         "claude-sonnet-4-5",
         "claude-sonnet-4",
@@ -537,6 +544,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "minimax-m3",
         "minimax-m2.7",
         "minimax-m2.5",
+        "glm-5.3",
         "glm-5.2",
         "glm-5.1",
         "glm-5",
@@ -544,12 +552,25 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-v4-pro",
         "deepseek-v4-flash",
         "deepseek-v4-flash-free",
-        "qwen3.7-max",
-        "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.5-plus",
         "big-pickle",
         "mimo-v2.5-free",
+        "hy3-free",
+        "laguna-s-2.1-free",
+        "nemotron-3-ultra-free",
+        "nemotron-3.5-lightning-free",
+        "muse-spark-1.2-contributor-free",
+    ],
+    # OpenCode free tier — keyless (no OpenCode account needed). Synced
+    # against live GET /zen/v1/models + anonymous probes (2026-08-21);
+    # deepseek-v4-flash-free delisted (promo ended, now 401s).
+    # big-pickle + mimo-v2.5-free delisted (UA-gated: the relay 429s
+    # FreeUsageLimitError for every client except User-Agent
+    # "opencode/latest"; we send honest Hermes attribution and don't
+    # impersonate other clients — verified 2026-08-21).
+    "opencode-free": [
+        "x-preview-f-free",  # "Ox Alpha" stealth model — free, 1M ctx, ZDR
         "hy3-free",
         "laguna-s-2.1-free",
         "nemotron-3-ultra-free",
@@ -586,6 +607,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "hy3",
         "hy3-preview",
         "muse-spark-1.2-contributor",
+        # Go-subscription twin of the Zen keyless Ox Alpha (live go/v1
+        # catalog 2026-08-21; NOT keyless — Go relay requires a Go key).
+        "ox-alpha-free",
     ],
     "kilocode": [
         "anthropic/claude-opus-4.6",
@@ -648,6 +672,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "openai.gpt-5.5",
+        "openai.gpt-5.6-sol",
+        "openai.gpt-5.6-terra",
+        "openai.gpt-5.6-luna",
         "us.amazon.nova-pro-v1:0",
         "us.amazon.nova-lite-v1:0",
         "us.amazon.nova-micro-v1:0",
@@ -1277,7 +1305,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "ChatGPT/Codex subscription or direct OpenAI API", ["openai-codex", "openai-api"]),
     "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan & Qwen CLI OAuth", ["alibaba", "alibaba-coding-plan", "qwen-oauth"]),
-    "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
+    "opencode": ("OpenCode",        "Zen pay-as-you-go, Go subscription, or free tier", ["opencode-zen", "opencode-go", "opencode-free"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
 }
 
@@ -1397,6 +1425,8 @@ _PROVIDER_ALIASES = {
     "zen": "opencode-zen",
     "go": "opencode-go",
     "opencode-go-sub": "opencode-go",
+    "free": "opencode-free",
+    "opencode_free": "opencode-free",
     "aigateway": "ai-gateway",
     "vercel": "ai-gateway",
     "vercel-ai-gateway": "ai-gateway",
@@ -2280,15 +2310,13 @@ def compute_sale_discount(
     that rounds below 1% is treated as no sale (never render "-0%"). Returns
     ``None`` when there is no sale (missing/equal/invalid original), so UIs
     show normal prices.
+
+    Free / $0 models are a special case: they are always "-100%" sale chrome
+    (Teknium, Aug 2026 — the picker's discount column should say 100% off
+    rather than sit blank on free rows). The ``was_*`` raws come from
+    ``original`` when the gateway serves one and are empty strings otherwise;
+    callers must skip the "was" segment when both are empty.
     """
-    if not isinstance(original, dict):
-        return None
-
-    was_prompt = original.get("prompt")
-    was_completion = original.get("completion")
-    if was_prompt in (None, "") and was_completion in (None, ""):
-        return None
-
     def _finite(raw: Any) -> float | None:
         try:
             n = float(raw)
@@ -2303,11 +2331,26 @@ def compute_sale_discount(
             return None
         return n if n >= 0 and n == n else None
 
-    # Free / $0 models never show sale chrome, even if a leftover list price
-    # is higher (e.g. a :free sibling that inherited pricing.original).
+    orig_dict = original if isinstance(original, dict) else {}
+    was_prompt = orig_dict.get("prompt")
+    was_completion = orig_dict.get("completion")
+
+    # Free / $0 models: flat 100% off, with "was" prices only when the
+    # gateway actually served an original (e.g. a :free sibling); a
+    # natively-free model (stealth/ox-alpha) gets bare "-100%" chrome.
     cur_prompt_any = _nonneg(prompt) if prompt not in (None, "") else None
     cur_comp_any = _nonneg(completion) if completion not in (None, "") else None
-    if cur_prompt_any == 0 and cur_comp_any == 0:
+    if cur_prompt_any == 0 and cur_comp_any in (0, None):
+        return (
+            100,
+            str(was_prompt) if was_prompt not in (None, "") else "",
+            str(was_completion) if was_completion not in (None, "") else "",
+        )
+
+    if not isinstance(original, dict):
+        return None
+
+    if was_prompt in (None, "") and was_completion in (None, ""):
         return None
 
     cur_prompt = _finite(prompt) if prompt not in (None, "") else None
@@ -4028,6 +4071,13 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             pass
 
+    # OpenCode Free: curated keyless list only. models.dev's cost.input==0
+    # filter lags reality (deepseek-v4-flash-free stayed "free" there after
+    # its promo ended and the relay began 401ing keyless requests), so the
+    # curated list — synced against anonymous live probes — is authoritative.
+    if normalized == "opencode-free":
+        return list(_PROVIDER_MODELS.get(normalized, []))
+
     # ── Profile-based generic live fetch (all simple api-key providers) ──
     # Handles any provider registered in providers/ with auth_type="api_key".
     # Replaces per-provider copy-paste blocks (stepfun, gmi, zai, etc.).
@@ -5290,8 +5340,10 @@ def opencode_provider_family(provider_id: Optional[str]) -> Optional[str]:
     if not raw:
         return None
     canonical = normalize_provider(provider_id)
-    if canonical in {"opencode-zen", "opencode-go"}:
+    if canonical in {"opencode-zen", "opencode-go", "opencode-free"}:
         return canonical
+    if raw.startswith("opencode-free"):
+        return "opencode-free"
     if raw.startswith("opencode-go"):
         return "opencode-go"
     if raw.startswith("opencode-zen"):
@@ -5316,25 +5368,34 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 
 
 # OpenCode Zen free-tier models (``*-free`` slugs, e.g. x-preview-f-free /
-# "Ox Alpha") are served ANONYMOUSLY on the Zen relay: a request with no
-# Authorization header succeeds, while ANY non-empty bearer the relay doesn't
-# recognize is rejected with 401 "Invalid API key" — including our
-# "no-key-required" placeholder and OpenCode GO subscription keys (the Go
-# relay doesn't serve the free tier at all: "Model x is not supported").
+# "Ox Alpha", plus unsuffixed free models like big-pickle) are served
+# ANONYMOUSLY on the Zen relay: a request with no Authorization header
+# succeeds, while ANY non-empty bearer the relay doesn't recognize is
+# rejected with 401 "Invalid API key" — including our "no-key-required"
+# placeholder and OpenCode GO subscription keys (the Go relay doesn't serve
+# the free tier at all: "Model x is not supported").
 # Verified live 2026-08-21 against POST /zen/v1/chat/completions.
 OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER = "opencode-zen-free-keyless"
 _OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
 
+# Free-tier models whose slug does NOT carry the ``-free`` suffix.
+# (big-pickle is OpenCode's rotating free stealth slot.)
+_OPENCODE_KEYLESS_EXTRA_SLUGS = frozenset({"big-pickle"})
+
 
 def is_opencode_zen_free_model(model_id: Optional[str]) -> bool:
-    """True when ``model_id`` is an OpenCode Zen free-tier slug (``*-free``).
+    """True when ``model_id`` is an OpenCode Zen free-tier slug.
 
-    Tolerates provider-prefixed ids (``opencode-zen/x-preview-f-free``).
-    The Go catalog serves no ``-free`` models (verified 2026-08-21), so the
-    suffix alone identifies the Zen free tier across the OpenCode family.
+    Matches the ``*-free`` suffix plus the known unsuffixed free slugs
+    (``big-pickle``). Tolerates provider-prefixed ids
+    (``opencode-zen/x-preview-f-free``). The Go catalog serves no free
+    models (verified 2026-08-21), so this identifies the Zen free tier
+    across the OpenCode family.
     """
     bare = str(model_id or "").strip().rsplit("/", 1)[-1].lower()
-    return bool(bare) and bare.endswith("-free")
+    if not bare:
+        return False
+    return bare.endswith("-free") or bare in _OPENCODE_KEYLESS_EXTRA_SLUGS
 
 
 def opencode_zen_free_headers() -> dict:
@@ -5361,14 +5422,27 @@ def opencode_zen_free_runtime(provider_id: Optional[str], model_id: Optional[str
     """Keyless runtime entry for an OpenCode Zen free-tier model, or None.
 
     Returns a resolve_runtime_provider-shaped dict pinning the request to the
-    Zen relay with the keyless placeholder whenever ``model_id`` is a
-    ``*-free`` slug and ``provider_id`` is in the OpenCode family. Free-tier
-    slugs live only on the Zen relay, so this also heals a selection made
-    under the opencode-go provider (the Go relay rejects them).
+    Zen relay with the keyless placeholder whenever:
+
+    - ``provider_id`` is ``opencode-free`` (the dedicated keyless provider —
+      EVERY model on it routes anonymously; that is the provider's contract), or
+    - ``provider_id`` is any other OpenCode-family provider and ``model_id``
+      is in the VERIFIED keyless catalog (``_PROVIDER_MODELS["opencode-free"]``)
+      — heals a free-model selection made under opencode-zen/opencode-go,
+      whose keys the free tier rejects.
+
+    Membership, not the ``-free`` suffix, is the heal criterion: the suffix
+    stopped being a reliable keyless signal when ``ox-alpha-free`` appeared
+    on the Go relay as a KEYED subscription model (2026-08-21) — suffix-based
+    healing would have routed it to a Zen relay that doesn't serve it.
     """
     family = opencode_provider_family(provider_id)
-    if family is None or not is_opencode_zen_free_model(model_id):
+    if family is None:
         return None
+    if family != "opencode-free":
+        bare = normalize_opencode_model_id(provider_id, model_id).strip().lower()
+        if bare not in {m.lower() for m in _PROVIDER_MODELS.get("opencode-free", [])}:
+            return None
     normalized = normalize_opencode_model_id(provider_id, model_id)
     api_mode = opencode_model_api_mode("opencode-zen", normalized)
     base_url = normalize_opencode_base_url(
@@ -5403,6 +5477,10 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     (https://opencode.ai/docs/zen/ and https://opencode.ai/docs/go/).
     """
     family = opencode_provider_family(provider_id)
+    # opencode-free is Zen-hosted (the free tier lives on the Zen relay),
+    # so it shares Zen's per-model endpoint routing.
+    if family == "opencode-free":
+        family = "opencode-zen"
     normalized = normalize_opencode_model_id(provider_id, model_id).lower()
     if not normalized:
         return "chat_completions"
@@ -6730,8 +6808,8 @@ def validate_requested_model(
     # AWS SDK control plane (ListFoundationModels + ListInferenceProfiles).
     if normalized == "bedrock":
         try:
-            from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_region
-            region = resolve_bedrock_region()
+            from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_runtime_region
+            region = resolve_bedrock_runtime_region()
             discovered = discover_bedrock_models(region)
             discovered_ids = {m["id"] for m in discovered}
             if requested in discovered_ids:

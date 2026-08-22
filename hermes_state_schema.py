@@ -368,6 +368,15 @@ class SessionSchemaMixin:
 
     def _recover_stale_fts(self, cursor: sqlite3.Cursor, *, legacy: bool) -> bool:
         """Atomically rebuild stale base/trigram indexes and resume syncing."""
+        foreign_holders = self._foreign_state_db_holders()
+        if foreign_holders:
+            logger.warning(
+                "Deferred stale state.db FTS rebuild while foreign processes "
+                "hold the database or WAL sidecars (%s); canonical writes and "
+                "LIKE search remain available.",
+                foreign_holders,
+            )
+            return False
         try:
             trigram_status = self._fts_table_probe(cursor, "messages_fts_trigram")
         except sqlite3.DatabaseError:

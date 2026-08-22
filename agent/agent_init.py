@@ -909,14 +909,12 @@ def init_agent(
     agent._active_children = []      # Running child AIAgents (for interrupt propagation)
     agent._active_children_lock = threading.Lock()
 
-    # Background memory/skill review state (agent/background_review.py). Holds
-    # the forked review AIAgent while its run_conversation() is in flight, so
-    # the NEXT live turn can proactively interrupt a still-running review
-    # instead of letting the two race concurrently against the same
-    # session_id/credentials (observed as doubled prompt-token counts and a
-    # Ctrl+C-proof lockup when a live turn started before a review fired at
-    # the end of the prior turn had finished).
+    # Background memory/skill review state (agent/background_review.py).
+    # ``_background_review_run`` is installed before the worker starts and
+    # fences its first provider-capable phase; the direct agent pointer keeps
+    # normal interrupt propagation available once the fork is constructed.
     agent._background_review_agent = None
+    agent._background_review_run = None
     agent._background_review_lock = threading.Lock()
 
     # Store OpenRouter provider preferences
@@ -1261,6 +1259,7 @@ def init_agent(
             _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
             print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
     else:
+        client_kwargs = {}
         if api_key and base_url:
             # Explicit credentials from CLI/gateway — construct directly.
             # The runtime provider resolver already handled auth for us.
@@ -1432,6 +1431,19 @@ def init_agent(
                         "select a provider, or run `hermes setup` for first-time "
                         "configuration."
                     )
+        # Bedrock GPT-5.5/5.6 use Bedrock Mantle's OpenAI Responses endpoint.
+        # Runtime resolution uses api_key="aws-sdk" as the IAM-auth sentinel;
+        # attach an httpx client that SigV4-signs every OpenAI SDK request.
+        # No-op for non-Mantle base URLs.
+        try:
+            from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
+            configure_bedrock_openai_client_kwargs(
+                client_kwargs,
+                timeout=_provider_timeout,
+            )
+        except Exception:
+            if agent.provider == "bedrock" and "bedrock-mantle." in str(client_kwargs.get("base_url", "")):
+                raise
         
         agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
@@ -1815,13 +1827,18 @@ def init_agent(
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
-    # A flush/background agent may pass skip_memory=True to avoid spinning up an
-    # external memory *provider*, but if the caller also explicitly enables the
-    # "memory" toolset it still needs the built-in file-backed store — otherwise
-    # the memory tool dispatches with store=None and every call fails (#65429).
-    # So the built-in store is created unless memory is globally disabled, while
-    # the external-provider block below stays gated on skip_memory.
-    _memory_toolset_requested = "memory" in (agent.enabled_toolsets or [])
+    # skip_memory=True skips the external memory *provider*. Flush/background
+    # agents can still pass enabled_toolsets=["memory"] so the built-in file
+    # store exists and the memory tool does not fail with store=None (#65429).
+    # A toolset on disabled_toolsets is not a request: a caller that denylists
+    # memory while its default toolset still names it must not get MEMORY.md
+    # loaded by an enabled-only check. (Cron agents now run with
+    # skip_memory=False and take the normal path here.)
+    _enabled_toolsets = agent.enabled_toolsets or []
+    _disabled_toolsets = agent.disabled_toolsets or []
+    _memory_toolset_requested = (
+        "memory" in _enabled_toolsets and "memory" not in _disabled_toolsets
+    )
     if not skip_memory or _memory_toolset_requested:
         try:
             from tools.memory_tool import (

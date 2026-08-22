@@ -100,6 +100,12 @@ export const zh: Translations = {
         `先退出已保存的远程浏览器会话，然后打开${signInLabel}。也可以使用本地网关切换到随应用提供的后端。`,
       signOutAndSignIn: '退出并重新登录',
       remoteFailureHint: '在“网关设置”中检查网关 URL 和登录，或切换到本地网关。',
+      cloudDownTitle: 'Nous Cloud 代理已宕机',
+      cloudDownDescription:
+        '此网关连接的 Nous 托管云代理正在返回服务器错误。无法在此处重启——请检查其状态、切换到本地网关或获取支持。',
+      cloudDownHint: '使用下方按钮打开 Nous Portal（查看实例状态与操作）或加入 Discord 获取支持。',
+      cloudDownCheckPortal: '查看 Portal 状态',
+      cloudDownDiscord: '在 Discord 获取帮助',
       hideRecentLogs: '隐藏最近日志',
       showRecentLogs: '显示最近日志',
       signedInTitle: '已登录',
@@ -198,6 +204,29 @@ export const zh: Translations = {
     dismiss: '忽略'
   },
 
+  sendDiagnostics: {
+    title: '向 Nous 发送诊断信息',
+    privacyNotice:
+      '这会将调试包上传到 Nous 内部存储（并非公开粘贴板）。内容包括系统信息（操作系统、版本、服务商、已配置的 API 密钥种类 — 绝不包含密钥本身）以及完整的 agent、gateway 和桌面端日志（每个最多 512 KB，很可能包含对话内容、工具输出与文件路径）。上传前会先脱敏。仅 Nous 员工与获准的 Discord 版主可查看，14 天后自动删除。',
+    upload: '上传',
+    uploading: '上传中…',
+    cancel: '取消',
+    close: '关闭',
+    copyLink: '复制链接',
+    uploadIdFallback: id => `未返回查看链接 — 请向支持人员提供上传 ID ${id}`,
+    doneTitle: '诊断信息已发送',
+    doneDescription: '调试包已私密上传。在您的支持会话中分享以下链接，团队即可查看您的日志。',
+    failedTitle: '上传失败',
+    failedHint:
+      '您也可以在终端运行 `hermes debug share --nous`，或运行 `hermes debug share --local` 在不上传的情况下查看报告。',
+    handoffLead: '在以下位置继续讨论:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'Nous Portal 支持',
+      discord: 'Discord'
+    }
+  },
+
   titlebar: {
     hideSidebar: '隐藏侧边栏',
     showSidebar: '显示侧边栏',
@@ -271,6 +300,7 @@ export const zh: Translations = {
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.toggleReview': '切换审查面板',
       'view.toggleStatusbar': '切换状态栏',
+      'view.toggleTabStrip': '切换标签',
       'view.showFiles': '显示文件浏览器',
       'view.showBrowser': '打开浏览器',
       'view.showTerminal': '显示终端',
@@ -505,6 +535,11 @@ export const zh: Translations = {
       sessionDensityCompact: '紧凑',
       sessionDensityComfortable: '舒适',
       sessionDensityDetailed: '详细',
+      tabStripTitle: '标签栏',
+      tabStripDesc: '在分区上方显示标签。自动模式会在分区只有一个面板时隐藏标签。',
+      tabStripAuto: '自动',
+      tabStripAlways: '始终',
+      tabStripNever: '从不',
       terminalFontTitle: '终端字体',
       terminalFontDesc:
         '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',
@@ -3147,8 +3182,8 @@ export const zh: Translations = {
   },
 
   zones: {
-    showHeader: '显示标题栏',
-    hideHeader: '隐藏标题栏',
+    showTabStrip: '显示标签',
+    hideTabStrip: '隐藏标签',
     showStripTab: title => `显示 ${title}`,
     hideStripTab: title => `隐藏 ${title}`,
     lastTabKeptTitle: '保留最后一个标签',
@@ -3237,6 +3272,24 @@ export const zh: Translations = {
       branchNewChat: '在新对话中分支',
       react: '回应',
       dismissError: '关闭错误',
+      errorLayers: {
+        auth: '认证错误',
+        billing: '额度不足',
+        disk: '磁盘已满',
+        endpoint: '自定义端点错误',
+        gateway: '网关错误',
+        generic: '本轮失败',
+        provider: '模型服务商错误',
+        runtime: '本地运行时错误',
+        streaming: '流式连接错误'
+      },
+      errorRetry: '重试',
+      errorSwitchProvider: '切换服务商',
+      errorOpenLogs: '打开日志',
+      errorOpenLogsFailed: '无法打开日志文件夹',
+      errorOpenDesktopLogs: '打开桌面端日志',
+      errorCopyDiagnostics: '复制错误详情',
+      errorSendDiagnostics: '发送诊断信息',
       filesChanged: count => `${count} 个文件已更改`,
       reviewChanges: '查看',
       readAloudFailed: '朗读失败',

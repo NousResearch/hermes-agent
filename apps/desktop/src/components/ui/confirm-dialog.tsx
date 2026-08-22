@@ -58,6 +58,7 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const { t } = useI18n()
   const confirmRef = useRef<HTMLButtonElement>(null)
+  const closeTimerRef = useRef<null | number>(null)
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
   const busy = status === 'saving' || status === 'done'
@@ -72,6 +73,24 @@ export function ConfirmDialog({
       setError(null)
     }
   }, [open])
+
+  // Cancel the pending close timer on unmount. The timer below holds the
+  // "done" beat visible for 600ms, and an unmount inside that window used to
+  // leave it armed. It then called onClose on a tree that is gone, which
+  // reaches setState in the parent. Under vitest the environment can be torn
+  // down first, and React then reads `window` during the update and throws
+  // ReferenceError.
+  // The write below is a timer handle, and not a mirror of a reactive value.
+  // It happens on unmount only, and it clears the handle this component owns.
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current !== null) {
+        window.clearTimeout(closeTimerRef.current)
+        closeTimerRef.current = null
+      }
+    }
+  }, [])
 
   async function run() {
     if (busy) {
@@ -96,7 +115,10 @@ export function ConfirmDialog({
     try {
       await onConfirm()
       setStatus('done')
-      window.setTimeout(onClose, 600)
+      closeTimerRef.current = window.setTimeout(() => {
+        closeTimerRef.current = null
+        onClose()
+      }, 600)
     } catch (err) {
       setStatus('idle')
       setError(err instanceof Error ? err.message : t.errors.genericFailure)

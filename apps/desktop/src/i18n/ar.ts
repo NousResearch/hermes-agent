@@ -1,6 +1,28 @@
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
+  sendDiagnostics: {
+    title: 'إرسال التشخيصات إلى Nous',
+    privacyNotice:
+      'سيؤدي هذا إلى رفع حزمة تصحيح إلى التخزين الداخلي لدى Nous (ليست لصيقة عامة). تتضمن معلومات النظام (نظام التشغيل، الإصدارات، المزوّد، وأنواع مفاتيح API المُهيأة — وليس المفاتيح نفسها أبداً) والسجلات الكاملة للوكيل والبوابة وسطح المكتب (حتى 512 كيلوبايت لكل منها، ومن المرجح أن تحتوي على محتوى المحادثات ومخرجات الأدوات ومسارات الملفات). تُحجب الأسرار قبل الرفع. لا يمكن الاطلاع عليها إلا لموظفي Nous ومشرفي Discord المعتمدين، وتُحذف تلقائياً بعد 14 يوماً.',
+    upload: 'رفع',
+    uploading: 'جارٍ الرفع…',
+    cancel: 'إلغاء',
+    close: 'إغلاق',
+    copyLink: 'نسخ الرابط',
+    uploadIdFallback: id => `لم يتم إرجاع رابط عرض — اذكر معرّف الرفع ${id} للدعم`,
+    doneTitle: 'تم إرسال التشخيصات',
+    doneDescription: 'تم رفع الحزمة بشكل خاص. شارك الرابط أدناه في محادثة الدعم لكي يتمكن الفريق من رؤية سجلاتك.',
+    failedTitle: 'فشل الرفع',
+    failedHint:
+      'يمكنك أيضاً تشغيل `hermes debug share --nous` من الطرفية، أو `hermes debug share --local` لعرض التقرير دون رفعه.',
+    handoffLead: 'تابع النقاش في:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'دعم بوابة Nous',
+      discord: 'Discord'
+    }
+  },
   common: {
     apply: 'تطبيق',
     back: 'رجوع',
@@ -85,6 +107,12 @@ export const ar = defineLocale({
       retry: 'إعادة المحاولة',
       repairInstall: 'إصلاح التثبيت',
       useLocalGateway: 'استخدام البوابة المحلية',
+      cloudDownTitle: 'عامل Nous Cloud معطّل',
+      cloudDownDescription:
+        'يعيد عامل السحابة المُدار من Nous الذي يتصل به هذا البوابة خطأً من الخادم. لا يمكن إعادة تشغيله من هنا — تحقق من حالته، أو بدّل إلى البوابة المحلية، أو احصل على الدعم.',
+      cloudDownHint: 'تفتح الأزرار أدناه بوابة Nous (حالة المثيل وعناصر التحكم) أو Discord للحصول على الدعم.',
+      cloudDownCheckPortal: 'التحقق من حالة البوابة',
+      cloudDownDiscord: 'الحصول على مساعدة عبر Discord',
       openLogs: 'فتح السجلات',
       repairHint: 'يعيد الإصلاح تشغيل المثبت وقد يستغرق بضع دقائق على جهاز جديد.',
       remoteSignInHint: signInLabel =>
@@ -2345,8 +2373,8 @@ export const ar = defineLocale({
     }
   },
   zones: {
-    showHeader: 'إظهار الرأس',
-    hideHeader: 'إخفاء الرأس',
+    showTabStrip: 'إظهار علامات التبويب',
+    hideTabStrip: 'إخفاء علامات التبويب',
     showStripTab: title => `إظهار ${title}`,
     hideStripTab: title => `إخفاء ${title}`,
     lastTabKeptTitle: 'يبقى آخر تبويب',
@@ -2434,6 +2462,24 @@ export const ar = defineLocale({
       branchNewChat: 'تفريع إلى محادثة جديدة',
       react: 'تفاعل',
       dismissError: 'تجاهل الخطأ',
+      errorLayers: {
+        auth: 'خطأ في المصادقة',
+        billing: 'نفاد الرصيد',
+        disk: 'القرص ممتلئ',
+        endpoint: 'خطأ في نقطة النهاية المخصصة',
+        gateway: 'خطأ في البوابة',
+        generic: 'فشلت الجولة',
+        provider: 'خطأ من المزوّد',
+        runtime: 'خطأ في بيئة التشغيل المحلية',
+        streaming: 'خطأ في اتصال البث'
+      },
+      errorRetry: 'إعادة المحاولة',
+      errorSwitchProvider: 'تبديل المزوّد',
+      errorOpenLogs: 'فتح السجلات',
+      errorOpenLogsFailed: 'تعذّر فتح مجلد السجلات',
+      errorOpenDesktopLogs: 'فتح سجلات سطح المكتب',
+      errorCopyDiagnostics: 'نسخ تفاصيل الخطأ',
+      errorSendDiagnostics: 'إرسال التشخيصات',
       filesChanged: count => `${count} ملفات تم تغييرها`,
       reviewChanges: 'مراجعة',
       readAloudFailed: 'فشلت القراءة بصوت عال',

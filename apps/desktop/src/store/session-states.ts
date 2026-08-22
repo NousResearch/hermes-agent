@@ -373,6 +373,49 @@ export function clearAllSessionStates() {
   $sessionStates.set({})
 }
 
+/** Downgrade cached busy/awaiting states after a gateway reconnect.
+ *
+ *  A respawned backend re-mints runtime ids (the same fact that drives
+ *  resetTileRuntimeBindings), so a pre-reconnect `busy` can never receive its
+ *  terminal `busy: false` publish — the runtime id it would arrive under is
+ *  dead. Left alone, that state keeps its session in $workingSessionIds
+ *  forever: the sidebar running arc and agents-panel "running" chrome lie for
+ *  hours after the turn actually ended (#53902, #73082 — stale-flag half).
+ *
+ *  `scope` picks which socket's sessions to reconcile, keyed by the event-
+ *  source scope recorded at fan-in: a SECONDARY (registry) reconnect passes
+ *  its composite scope and touches only runtimes that arrived on that socket;
+ *  the PRIMARY reconnect passes undefined and touches only scope-less
+ *  runtimes (primary/local events record no scope). Neither can clear live
+ *  work riding a different, still-healthy connection.
+ *
+ *  Direction of failure is deliberate: a turn that IS still live (transient
+ *  socket blip, same backend) re-asserts busy on its next event or inflight
+ *  snapshot within a beat, so at worst its arc blinks once. A dead turn's
+ *  state, by contrast, would never clear on its own. `needsInput` is left
+ *  untouched — a blocking prompt is the one claim the user must explicitly
+ *  answer, and post-reconnect refresh re-asserts or retires it via its own
+ *  path. Transition side-effects run through publishSessionState, so
+ *  watchdogs disarm, stall hints drop, and settle/unread bookkeeping stays
+ *  consistent. */
+export function reconcileBusyStatesOnReconnect(scope?: string) {
+  const states = $sessionStates.get()
+
+  for (const [runtimeId, state] of Object.entries(states)) {
+    if (!state || (!state.busy && !state.awaitingResponse)) {
+      continue
+    }
+
+    const recorded = sessionScopeByRuntimeId.get(runtimeId)
+
+    if (scope === undefined ? recorded !== undefined : recorded !== scope) {
+      continue
+    }
+
+    publishSessionState(runtimeId, { ...state, awaitingResponse: false, busy: false })
+  }
+}
+
 // Derived per-session status sets — pure projections of `$sessionStates` (which
 // holds `busy`/`needsInput` per runtime), keeping the data flow one-directional:
 // gateway event → cache → $sessionStates → computed views.

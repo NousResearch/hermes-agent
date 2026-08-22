@@ -196,7 +196,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -1829,4 +1829,74 @@ test('source contract: approval card renders the command and routes approval.res
   assert.match(pluginSource, /'approval\.respond'/)
   assert.match(pluginSource, /kind: 'approval'/)
   assert.match(pluginSource, /wants to run a command/)
+})
+
+test('durableGroupChatRooms excludes tombstoned rooms — the remote-merge persist path\'s own durable-map builder, independent of updateGroupChat\'s inline one', () => {
+  const gc = load(() => '(pass)')
+
+  const durable = gc.durableGroupChatRooms({
+    Live: { tombstone: true, log: [], watermarks: {}, epoch: 4, running: false },
+    Keep: { log: [{ from: { kind: 'user' }, text: 'hi', at: 1 }], watermarks: {}, members: [] }
+  })
+
+  assert.ok(!('Live' in durable), 'tombstone excluded from the remote-merge persist path too')
+  assert.ok('Keep' in durable, 'real room still persisted')
+})
+
+test('durableGroupChatRooms carries roomId — omitting it drops the durable id on the next cold hydrate', () => {
+  const gc = load(() => '(pass)')
+
+  const durable = gc.durableGroupChatRooms({
+    Team: {
+      log: [{ from: { kind: 'user' }, text: 'hi', at: 1 }],
+      watermarks: {},
+      members: [],
+      roomId: 'room-abc123'
+    },
+    Legacy: {
+      log: [{ from: { kind: 'user' }, text: 'hi', at: 1 }],
+      watermarks: {},
+      members: []
+    }
+  })
+
+  assert.equal(durable.Team.roomId, 'room-abc123', 'immutable room identity must survive the remote-merge persist path')
+  assert.equal(durable.Legacy.roomId, null, 'a room with no roomId persists an explicit null, not undefined')
+})
+
+test('remote-merge reachability: a disband tombstone that survives a merge (gateway has not received the delete yet) is never written to storage', async () => {
+  const gc = load(() => '(pass)')
+
+  // Simulate a drive still mid-turn at disband time, exactly like the
+  // sibling disband test above — this room is a live tombstone in $groupChats.
+  gc.$groupChats.set({
+    Live: { tombstone: true, log: [], watermarks: {}, epoch: 4, running: false }
+  })
+
+  // The remote gateway has NOT yet received the delete (plausible now that
+  // sync fans out to every reachable default-profile gateway independently)
+  // — its snapshot still carries a live copy of the room under the same
+  // display name.
+  const merged = gc.mergeRemoteGroupChatSnapshotIntoRooms(
+    {
+      rooms: {
+        Live: {
+          log: [{ from: { kind: 'member', name: 'research' }, text: 'still going', at: 1 }],
+          members: [{ name: 'research' }]
+        }
+      }
+    },
+    gc.$groupChats.get()
+  )
+
+  // The merge spreads `...existing` before its explicit field overrides,
+  // none of which touch `tombstone` — so the flag survives into the merged
+  // room. This is the reachability step: without it, durableGroupChatRooms
+  // would never even see a tombstoned room from this path.
+  assert.equal(merged.Live.tombstone, true, 'tombstone forwarded by the merge (reachability precondition)')
+
+  await gc.persistGroupChatRooms(merged)
+
+  const durable = gc.storageWrites.get('group-chats')
+  assert.ok(durable && !('Live' in durable), 'merged tombstone must not resurrect as a persisted room')
 })

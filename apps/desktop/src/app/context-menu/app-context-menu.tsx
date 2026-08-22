@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { useNavigate } from 'react-router'
 
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
 import { HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
 import { writeClipboardText } from '@/components/ui/copy-button'
@@ -565,6 +566,15 @@ function shellSections({ navigate, t }: ShellVerbs): ReactNode[][] {
         key="shell-statusbar"
         label={t.keybinds.actions['view.toggleStatusbar']}
         onSelect={toggleStatusbarVisible}
+      />,
+      // The pointer-only way back to a hidden tab strip: right-clicking the
+      // shell reaches this menu from anywhere, including a zone that has no
+      // chrome left to right-click.
+      <Item
+        icon="layout-menubar"
+        key="shell-tabstrip"
+        label={t.keybinds.actions['view.toggleTabStrip']}
+        onSelect={() => void toggleTargetZoneTabStrip()}
       />,
       <Item
         icon="settings-gear"

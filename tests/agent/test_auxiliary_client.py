@@ -2501,6 +2501,7 @@ class TestAuxiliaryAuthRefreshRetry:
     def test_call_llm_refreshes_codex_on_401_for_vision(self):
         failing_client = MagicMock()
         failing_client.base_url = "https://chatgpt.com/backend-api/codex"
+        failing_client.api_key = "stale-codex-token"
         failing_client.chat.completions = _FailingThenSuccessCompletions()
 
         fresh_client = MagicMock()
@@ -2511,7 +2512,7 @@ class TestAuxiliaryAuthRefreshRetry:
             patch(
                 "agent.auxiliary_client.resolve_vision_provider_client",
                 side_effect=[("openai-codex", failing_client, "gpt-5.4"), ("openai-codex", fresh_client, "gpt-5.4")],
-            ),
+            ) as resolve_mock,
             patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
         ):
             resp = call_llm(
@@ -2522,7 +2523,53 @@ class TestAuxiliaryAuthRefreshRetry:
             )
 
         assert resp.choices[0].message.content == "fresh-sync"
-        mock_refresh.assert_called_once_with("openai-codex")
+        mock_refresh.assert_called_once_with(
+            "openai-codex", failed_api_key="stale-codex-token"
+        )
+        # Regression: the retry must resolve from the refreshed credential
+        # source. Passing the rejected explicit key overrides the refreshed
+        # cache and deterministically reproduces the same 401.
+        assert resolve_mock.call_args_list[1].kwargs.get("api_key") is None
+
+    @pytest.mark.asyncio
+    async def test_async_auth_refresh_drops_rejected_key_on_retry(self):
+        """The async recovery path must obey the same credential invariant."""
+        failing_client = MagicMock()
+        failing_client.base_url = "https://chatgpt.com/backend-api/codex"
+        failing_client.api_key = "stale-async-token"
+        failing_client.chat.completions = _AsyncFailingThenSuccessCompletions()
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("fresh-async")
+        )
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                side_effect=[
+                    ("openai-codex", failing_client, "gpt-5.4"),
+                    ("openai-codex", fresh_client, "gpt-5.4"),
+                ],
+            ) as resolve_mock,
+            patch(
+                "agent.auxiliary_client._refresh_provider_credentials",
+                return_value=True,
+            ) as mock_refresh,
+        ):
+            resp = await async_call_llm(
+                task="vision",
+                provider="openai-codex",
+                model="gpt-5.4",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "fresh-async"
+        mock_refresh.assert_called_once_with(
+            "openai-codex", failed_api_key="stale-async-token"
+        )
+        assert resolve_mock.call_args_list[1].kwargs.get("api_key") is None
 
 
 
@@ -2558,6 +2605,67 @@ class TestAuxiliaryAuthRefreshRetry:
         mock_refresh_oauth.assert_called_once_with("refresh-token", use_json=False)
         mock_write.assert_called_once_with("fresh-token", "refresh-token-2", 9999999999999)
         stale_client.close.assert_called_once()
+
+    def test_anthropic_uses_newer_disk_token_without_rotating_again(self, monkeypatch):
+        """A long-running client may lag behind a credential rotated elsewhere.
+
+        Refreshing again is actively harmful: Anthropic rotates refresh tokens,
+        so it revokes the just-written token that a sibling profile may already
+        have copied. The current on-disk access token is the recovery; evict the
+        stale client and rebuild from disk.
+        """
+        stale_client = MagicMock()
+        cache_key = ("anthropic", False, None, None, None)
+
+        with (
+            patch(
+                "agent.auxiliary_client._client_cache",
+                {cache_key: (stale_client, "claude-sonnet-5", None)},
+            ),
+            patch(
+                "agent.anthropic_adapter.read_claude_code_credentials",
+                return_value={
+                    "accessToken": "new-token-already-on-disk",
+                    "refreshToken": "current-refresh-token",
+                    "expiresAt": 9999999999999,
+                },
+            ),
+            patch("agent.anthropic_adapter._refresh_oauth_token") as force_refresh,
+        ):
+            from agent.auxiliary_client import _refresh_provider_credentials
+
+            assert _refresh_provider_credentials(
+                "anthropic", failed_api_key="revoked-token-in-cached-client"
+            ) is True
+
+        force_refresh.assert_not_called()
+        stale_client.close.assert_called_once()
+
+    def test_anthropic_same_failed_token_forces_refresh(self):
+        """If disk still contains the rejected token, a real refresh is needed."""
+        with (
+            patch(
+                "agent.anthropic_adapter.read_claude_code_credentials",
+                return_value={
+                    "accessToken": "same-revoked-token",
+                    "refreshToken": "refresh-token",
+                    "expiresAt": 9999999999999,
+                },
+            ),
+            patch(
+                "agent.anthropic_adapter._refresh_oauth_token",
+                return_value="fresh-token",
+            ) as force_refresh,
+            patch("agent.auxiliary_client._evict_cached_clients") as evict,
+        ):
+            from agent.auxiliary_client import _refresh_provider_credentials
+
+            assert _refresh_provider_credentials(
+                "anthropic", failed_api_key="same-revoked-token"
+            ) is True
+
+        force_refresh.assert_called_once()
+        evict.assert_called_once_with("anthropic")
 
     def test_refresh_provider_credentials_remints_vertex_token_and_evicts_cache(self):
         """Vertex tokens live ~1h; on a long-running gateway the cached

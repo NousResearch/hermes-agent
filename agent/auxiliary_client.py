@@ -4900,8 +4900,18 @@ async def _retry_same_provider_async(
     )
 
 
-def _refresh_provider_credentials(provider: str) -> bool:
-    """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
+def _refresh_provider_credentials(
+    provider: str, *, failed_api_key: Optional[str] = None
+) -> bool:
+    """Refresh short-lived credentials for OAuth-backed auxiliary providers.
+
+    ``failed_api_key`` is the token the rejected client actually used. This is
+    essential for long-running gateways: another process (CLI, sibling
+    profile, credential-sync job) may already have rotated the credential file
+    while the cached auxiliary client still holds the revoked token. In that
+    case the current on-disk token is already the recovery — use it rather than
+    rotating the refresh token again and invalidating sibling profiles.
+    """
     normalized = _normalize_aux_provider(provider)
     try:
         if normalized == "copilot":
@@ -4939,10 +4949,32 @@ def _refresh_provider_credentials(provider: str) -> bool:
             _evict_cached_clients(normalized)
             return True
         if normalized == "anthropic":
-            from agent.anthropic_adapter import read_claude_code_credentials, _refresh_oauth_token, resolve_anthropic_token
+            from agent.anthropic_adapter import (
+                _refresh_oauth_token,
+                read_claude_code_credentials,
+                resolve_anthropic_token,
+            )
 
             creds = read_claude_code_credentials()
-            token = _refresh_oauth_token(creds) if isinstance(creds, dict) and creds.get("refreshToken") else None
+            current_token = (
+                str(creds.get("accessToken", "") or "").strip()
+                if isinstance(creds, dict) else ""
+            )
+            failed_token = str(failed_api_key or "").strip()
+
+            # The client is stale but the shared credential file is already
+            # newer (typically another process refreshed it). Do NOT rotate
+            # the refresh token again: that would revoke the token a sibling
+            # profile has just copied. Evict and rebuild from disk instead.
+            if current_token and failed_token and current_token != failed_token:
+                _evict_cached_clients(normalized)
+                return True
+
+            token = (
+                _refresh_oauth_token(creds)
+                if isinstance(creds, dict) and creds.get("refreshToken")
+                else None
+            )
             if not str(token or "").strip():
                 token = resolve_anthropic_token()
             if not str(token or "").strip():
@@ -9858,7 +9890,10 @@ def _call_llm_impl(
         if (_is_auth_error(first_err)
                 and auth_refresh_provider not in {"auto", "", None}
                 and not client_is_nous):
-            if _refresh_provider_credentials(auth_refresh_provider):
+            failed_api_key = str(getattr(client, "api_key", "") or "")
+            if _refresh_provider_credentials(
+                auth_refresh_provider, failed_api_key=failed_api_key
+            ):
                 if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
                     # The stale client is cached under the route label
                     # (e.g. "auto"), not the concrete backend we refreshed.
@@ -9872,7 +9907,11 @@ def _call_llm_impl(
                     resolved_provider=auth_refresh_provider,
                     resolved_model=resolved_model or final_model,
                     resolved_base_url=resolved_base_url,
-                    resolved_api_key=resolved_api_key,
+                    # Never feed the rejected credential back into the rebuilt
+                    # client. The refresh path evicts the cache and updates the
+                    # provider's credential source; passing resolved_api_key
+                    # here would override both and reproduce the same 401.
+                    resolved_api_key=None,
                     resolved_api_mode=resolved_api_mode,
                     main_runtime=main_runtime,
                     final_model=final_model,
@@ -10601,7 +10640,10 @@ async def _async_call_llm_impl(
         if (_is_auth_error(first_err)
                 and auth_refresh_provider not in {"auto", "", None}
                 and not client_is_nous):
-            if _refresh_provider_credentials(auth_refresh_provider):
+            failed_api_key = str(getattr(client, "api_key", "") or "")
+            if _refresh_provider_credentials(
+                auth_refresh_provider, failed_api_key=failed_api_key
+            ):
                 if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
                     # The stale client is cached under the route label
                     # (e.g. "auto"), not the concrete backend we refreshed.
@@ -10615,7 +10657,11 @@ async def _async_call_llm_impl(
                     resolved_provider=auth_refresh_provider,
                     resolved_model=resolved_model or final_model,
                     resolved_base_url=resolved_base_url,
-                    resolved_api_key=resolved_api_key,
+                    # Never feed the rejected credential back into the rebuilt
+                    # client. The refresh path evicts the cache and updates the
+                    # provider's credential source; passing resolved_api_key
+                    # here would override both and reproduce the same 401.
+                    resolved_api_key=None,
                     resolved_api_mode=resolved_api_mode,
                     final_model=final_model,
                     messages=messages,

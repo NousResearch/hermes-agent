@@ -7,7 +7,8 @@ import {
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
   isWslEnvironment,
-  resolveLinuxPasswordStore
+  resolveLinuxPasswordStore,
+  resolveOzonePlatformHint
 } from './bootstrap-platform'
 
 test('isWslEnvironment detects WSL2 env vars on linux', () => {
@@ -123,3 +124,35 @@ test('resolveLinuxPasswordStore warns on unknown values instead of applying them
   assert.equal(result.store, null)
   assert.match(String(result.warning), /keychain-of-wonders/)
 })
+
+test('resolveOzonePlatformHint defaults to auto on native Wayland', () => {
+  assert.deepEqual(
+    resolveOzonePlatformHint({ env: { WAYLAND_DISPLAY: 'wayland-1' }, platform: 'linux' }),
+    { hint: 'auto', warning: null }
+  )
+})
+
+test('resolveOzonePlatformHint stays off on X11 and non-linux', () => {
+  assert.deepEqual(resolveOzonePlatformHint({ env: { DISPLAY: ':0' }, platform: 'linux' }), {
+    hint: null,
+    warning: null
+  })
+  assert.deepEqual(
+    resolveOzonePlatformHint({ env: { WAYLAND_DISPLAY: 'wayland-0' }, platform: 'darwin' }),
+    { hint: null, warning: null }
+  )
+})
+
+test('resolveOzonePlatformHint honors explicit overrides', () => {
+  assert.equal(
+    resolveOzonePlatformHint({ env: { HERMES_DESKTOP_OZONE_PLATFORM_HINT: 'x11' }, platform: 'linux' }).hint,
+    'x11'
+  )
+  assert.match(
+    String(
+      resolveOzonePlatformHint({ env: { HERMES_DESKTOP_OZONE_PLATFORM_HINT: 'quartz' }, platform: 'linux' }).warning
+    ),
+    /quartz/
+  )
+})
+

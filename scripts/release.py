@@ -2616,6 +2616,11 @@ def main():
             changelog_file.unlink(missing_ok=True)
             print(f"  ✓ GitHub release created: {result.stdout.strip()}")
             print(f"\n  🎉 Release v{new_version} ({tag_name}) published!")
+            print(
+                "  Desktop installers (macOS DMG, Windows NSIS/MSI, Linux AppImage) "
+                "are built by .github/workflows/desktop-release.yml and attached to this release."
+            )
+
         else:
             if result is None:
                 print("  ✗ GitHub release skipped: `gh` CLI not found.")

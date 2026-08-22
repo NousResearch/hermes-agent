@@ -509,10 +509,12 @@ Build installers:
 npm run dist:mac     # DMG + zip
 npm run dist:win     # NSIS + MSI
 npm run dist:linux   # AppImage + deb + rpm
+npm run dist:linux:appimage  # AppImage only
 npm run pack         # unpacked app under release/ (no installer)
 ```
 
-macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+GitHub Releases attach those installers via `.github/workflows/desktop-release.yml` (macOS, Windows, and Linux AppImage). macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+
 
 ### macOS permissions and local rebuilds (TCC)
 

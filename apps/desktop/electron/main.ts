@@ -56,8 +56,10 @@ import {
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
   isWslEnvironment,
-  resolveLinuxPasswordStore
+  resolveLinuxPasswordStore,
+  resolveOzonePlatformHint
 } from './bootstrap-platform'
+
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
 import { detectBundleSkew } from './bundle-skew'
@@ -457,6 +459,18 @@ if (PASSWORD_STORE.store) {
   app.commandLine.appendSwitch('password-store', PASSWORD_STORE.store)
   console.log(`[hermes] using password-store backend: ${PASSWORD_STORE.store}`)
 }
+
+const OZONE = resolveOzonePlatformHint()
+
+if (OZONE.warning) {
+  console.warn(`[hermes] ${OZONE.warning}`)
+}
+
+if (OZONE.hint) {
+  app.commandLine.appendSwitch('ozone-platform-hint', OZONE.hint)
+  console.log(`[hermes] ozone-platform-hint=${OZONE.hint}`)
+}
+
 
 // Windows sandbox / GPU breakpoint crash recovery (#38216).
 //

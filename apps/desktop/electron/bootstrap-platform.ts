@@ -141,10 +141,48 @@ function resolveLinuxPasswordStore(options: { env?: NodeJS.ProcessEnv; platform?
   return { store: requested, warning: null }
 }
 
+const OZONE_HINTS: Record<string, true> = { auto: true, wayland: true, x11: true }
+
+
+/**
+ * Chromium Ozone platform for Linux. `auto` picks native Wayland when
+ * WAYLAND_DISPLAY is set, otherwise X11 — the right default for AppImage
+ * on Hyprland/Sway/GNOME without bricking X11/VNC. Override with
+ * HERMES_DESKTOP_OZONE_PLATFORM_HINT. Must be applied before app `ready`.
+ */
+function resolveOzonePlatformHint(options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}) {
+  const env = options.env ?? process.env
+  const platform = options.platform ?? process.platform
+  const requested = String(env.HERMES_DESKTOP_OZONE_PLATFORM_HINT || '')
+    .trim()
+    .toLowerCase()
+
+  if (requested) {
+    if (OZONE_HINTS[requested]) {
+      return { hint: requested, warning: null }
+    }
+
+    return {
+      hint: null,
+      warning: `Unknown HERMES_DESKTOP_OZONE_PLATFORM_HINT "${requested}" (use auto, wayland, or x11).`
+    }
+  }
+
+  if (platform === 'linux' && env.WAYLAND_DISPLAY) {
+    return { hint: 'auto', warning: null }
+  }
+
+  return { hint: null, warning: null }
+}
+
+
+
 export {
   bundledRuntimeImportCheck,
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
   isWslEnvironment,
-  resolveLinuxPasswordStore
+  resolveLinuxPasswordStore,
+  resolveOzonePlatformHint
 }
+

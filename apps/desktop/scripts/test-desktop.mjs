@@ -178,6 +178,38 @@ function ensureNsis() {
   run('npm', ['run', 'dist:win:nsis'])
 }
 
+function resolveAppImagePath() {
+  if (!exists(RELEASE_ROOT)) {
+    return path.join(RELEASE_ROOT, `Hermes-${PACKAGE_JSON.version}-linux-${ARCH}.AppImage`)
+  }
+
+  const prefix = `Hermes-${PACKAGE_JSON.version}`
+  const candidates = fs
+    .readdirSync(RELEASE_ROOT)
+    .filter(name => name.endsWith('.AppImage'))
+    .filter(name => name.startsWith(prefix))
+    .sort((a, b) => {
+      const aMtime = fs.statSync(path.join(RELEASE_ROOT, a)).mtimeMs
+      const bMtime = fs.statSync(path.join(RELEASE_ROOT, b)).mtimeMs
+      return bMtime - aMtime
+    })
+
+  return candidates.length > 0
+    ? path.join(RELEASE_ROOT, candidates[0])
+    : path.join(RELEASE_ROOT, `Hermes-${PACKAGE_JSON.version}-linux-${ARCH}.AppImage`)
+}
+
+function ensureAppImage() {
+  if (PLATFORM !== 'linux') {
+    die('AppImage mode is Linux-only; on macOS use `dmg`, on Windows use `nsis`.')
+  }
+  if (process.env.HERMES_DESKTOP_SKIP_BUILD === '1' && exists(resolveAppImagePath())) {
+    return
+  }
+  run('npm', ['run', 'dist:linux:appimage'])
+}
+
+
 function openApp() {
   if (!exists(APP.binary)) {
     die(`Missing packaged app: ${APP.binary}`)
@@ -387,7 +419,10 @@ function printArtifacts(options = {}) {
   } else if (PLATFORM === 'win32') {
     const exe = resolveNsisPath()
     if (exe) console.log(`  installer: ${exe}`)
+  } else {
+    console.log(`  appimage: ${resolveAppImagePath()}`)
   }
+
   console.log(`  runtime: ${runtimeRoot}`)
   if (stamp) {
     console.log(`  install-stamp: ${stamp.commit.slice(0, 12)} on ${stamp.branch}`)
@@ -403,6 +438,7 @@ function help() {
   npm run test:desktop:fresh     # build packaged app, launch with temp userData + HERMES_HOME
   npm run test:desktop:dmg       # (macOS only) build DMG and open it
   npm run test:desktop:nsis      # (win32 only) build NSIS installer
+  npm run test:desktop:appimage  # (Linux only) build AppImage
   npm run test:desktop:all       # build installer, validate app payload, print paths
 
 Fast rerun (skip rebuild if the packaged app already exists):
@@ -428,15 +464,19 @@ if (MODE === 'existing') {
 } else if (MODE === 'nsis') {
   ensureNsis()
   printArtifacts(validateBundle())
+} else if (MODE === 'appimage') {
+  ensureAppImage()
+  printArtifacts(validateBundle())
 } else if (MODE === 'all') {
   if (PLATFORM === 'darwin') {
     ensureDmg()
   } else if (PLATFORM === 'win32') {
     ensureNsis()
   } else {
-    ensurePackagedApp()
+    ensureAppImage()
   }
   printArtifacts(validateBundle())
 } else {
   help()
 }
+

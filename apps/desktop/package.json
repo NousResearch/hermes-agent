@@ -1,8 +1,11 @@
 {
   "name": "hermes",
   "productName": "Hermes",
+  "desktopName": "Hermes",
   "private": true,
   "version": "0.17.0",
+
+
   "description": "Native desktop shell for Hermes Agent.",
   "author": "Nous Research",
   "repository": {
@@ -41,6 +44,8 @@
     "dist:win:msi": "npm run build && npm run builder -- --win msi",
     "dist:win:nsis": "npm run build && npm run builder -- --win nsis",
     "dist:linux": "npm run build && npm run builder -- --linux AppImage deb rpm",
+    "dist:linux:appimage": "npm run build && npm run builder -- --linux AppImage",
+
     "perf": "node scripts/perf/run.mjs",
     "update:shim": "bash ../../scripts/desktop-update/repro.sh shim",
     "update:shim:fail": "bash ../../scripts/desktop-update/repro.sh shim-fail",
@@ -54,8 +59,10 @@
     "test:desktop:all": "node scripts/test-desktop.mjs all",
     "test:desktop:dmg": "node scripts/test-desktop.mjs dmg",
     "test:desktop:nsis": "node scripts/test-desktop.mjs nsis",
+    "test:desktop:appimage": "node scripts/test-desktop.mjs appimage",
     "test:desktop:existing": "node scripts/test-desktop.mjs existing",
     "test:desktop:fresh": "node scripts/test-desktop.mjs fresh",
+
     "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",
     "lint": "eslint src/ electron/",
     "lint:fix": "eslint src/ electron/ --fix",
@@ -284,12 +291,22 @@
       "category": "Development",
       "maintainer": "Nous Research <support@nousresearch.com>",
       "synopsis": "Native desktop shell for Hermes Agent.",
+      "syncDesktopName": true,
+      "desktop": {
+        "entry": {
+          "StartupWMClass": "Hermes",
+          "MimeType": "x-scheme-handler/hermes;"
+        }
+      },
       "target": [
         "AppImage",
         "deb",
         "rpm"
       ]
     },
+
+
+
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,

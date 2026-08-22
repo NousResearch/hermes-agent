@@ -37,6 +37,7 @@ environment and is never logged.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -99,6 +100,14 @@ _DM_DISCOVERY_EVERY = 5
 _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0
+
+# Outbound delivery is not complete until the relay can return the exact event
+# the CLI said it accepted. Keep both the read-back and the one safe resend
+# bounded; an ambiguous result must never become a duplicate reply.
+_DELIVERY_READBACK_ATTEMPTS = 3
+_DELIVERY_READBACK_DELAY = 0.5
+_DELIVERY_SEND_ATTEMPTS = 2
+_DELIVERY_CACHE_CAP = 500
 
 # WebSocket transport (NIP-42 authenticated Nostr subscription).
 # kind 44100 is Buzz's channel-membership event — used for live DM discovery.
@@ -381,10 +390,10 @@ class BuzzAdapter(BasePlatformAdapter):
             interval = _DEFAULT_POLL_INTERVAL
         self.poll_interval = max(_MIN_POLL_INTERVAL, interval)
 
-        # Whether channel messages must @mention the agent to get a response.
-        # Defaults to True (respond only when addressed). Set False to make the
-        # agent respond to every message in a watched channel. DMs always
-        # dispatch regardless. Env (BUZZ_REQUIRE_MENTION) overrides config.yaml.
+        # Parse the historical mention setting for configuration compatibility.
+        # The hardened inbound boundary below always requires a literal @ mention
+        # in shared channels; DMs remain exempt. The old opt-out cannot weaken
+        # that production safety gate.
         _rm_raw = os.getenv("BUZZ_REQUIRE_MENTION")
         if _rm_raw is None:
             _rm_cfg = extra.get("require_mention", True)
@@ -436,6 +445,11 @@ class BuzzAdapter(BasePlatformAdapter):
         self._channel_meta: Dict[str, dict] = {}
         self._user_names: Dict[str, str] = {}
         self._poll_count = 0
+        # Instance-local state preserves profile isolation. A verified result
+        # can be reused for an identical response; an ambiguous result is
+        # latched so a caller retry cannot duplicate an unproven publication.
+        self._verified_deliveries: OrderedDict[str, SendResult] = OrderedDict()
+        self._ambiguous_deliveries: OrderedDict[str, None] = OrderedDict()
 
     @property
     def name(self) -> str:
@@ -599,6 +613,211 @@ class BuzzAdapter(BasePlatformAdapter):
 
     # ── Sending ───────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _delivery_key(chat_id: str, content: str, reply_target: Optional[str]) -> str:
+        material = json.dumps(
+            [str(chat_id), str(reply_target or ""), hashlib.sha256(content.encode("utf-8")).hexdigest()],
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _trim_delivery_cache(cache: OrderedDict) -> None:
+        while len(cache) > _DELIVERY_CACHE_CAP:
+            cache.popitem(last=False)
+
+    @staticmethod
+    def _safe_retryable_failure(returncode: int, stderr: str) -> bool:
+        """Retry only when the CLI explicitly proves nothing was published."""
+        if returncode != 2:
+            return False
+        try:
+            data = json.loads(stderr or "{}")
+        except ValueError:
+            return False
+        return (
+            isinstance(data, dict)
+            and data.get("retryable") is True
+            and data.get("published") is False
+        )
+
+    @staticmethod
+    def _event_has_tag(event: dict, kind: str, value: str) -> bool:
+        tags = event.get("tags")
+        return isinstance(tags, list) and any(
+            isinstance(tag, (list, tuple))
+            and len(tag) > 1
+            and str(tag[0]) == kind
+            and str(tag[1]) == value
+            for tag in tags
+        )
+
+    @staticmethod
+    def _event_has_reply_anchor(event: dict, reply_target: Optional[str]) -> bool:
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return reply_target is None
+        reply_tags = [
+            tag
+            for tag in tags
+            if isinstance(tag, (list, tuple))
+            and len(tag) > 1
+            and str(tag[0]) == "e"
+            and (len(tag) < 4 or str(tag[3]) in ("reply", "root"))
+        ]
+        if reply_target is None:
+            return not reply_tags
+        return any(str(tag[1]) == str(reply_target) for tag in reply_tags)
+
+    async def _read_back_delivery(
+        self,
+        *,
+        chat_id: str,
+        event_id: str,
+        content: str,
+        reply_target: Optional[str],
+    ) -> Tuple[bool, str]:
+        """Boundedly prove identity, channel, event, anchor, and content."""
+        expected_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        diagnostic = "event_not_found"
+        for attempt in range(_DELIVERY_READBACK_ATTEMPTS):
+            code, out, _err = await self._run_cli(
+                ["messages", "get", "--channel", str(chat_id), "--limit", str(_FETCH_LIMIT)]
+            )
+            if code != 0:
+                diagnostic = f"readback_exit_{code}"
+            else:
+                matching = [
+                    event
+                    for event in _parse_json_list(out)
+                    if str(event.get("id") or "") == event_id
+                ]
+                if matching:
+                    event = matching[0]
+                    actual_hash = hashlib.sha256(
+                        str(event.get("content") or "").encode("utf-8")
+                    ).hexdigest()
+                    checks = {
+                        "identity": bool(self._self_pubkey)
+                        and str(event.get("pubkey") or "").lower() == self._self_pubkey.lower(),
+                        "channel": self._event_has_tag(event, "h", str(chat_id)),
+                        "anchor": self._event_has_reply_anchor(event, reply_target),
+                        "content": actual_hash == expected_hash,
+                    }
+                    failed = [name for name, passed in checks.items() if not passed]
+                    if not failed:
+                        return True, "verified"
+                    diagnostic = "mismatch:" + ",".join(failed)
+            if attempt + 1 < _DELIVERY_READBACK_ATTEMPTS:
+                await asyncio.sleep(_DELIVERY_READBACK_DELAY)
+        return False, diagnostic
+
+    async def _send_and_verify(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        args: List[str],
+        reply_target: Optional[str],
+    ) -> SendResult:
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        delivery_key = self._delivery_key(chat_id, content, reply_target)
+        cached = self._verified_deliveries.get(delivery_key)
+        if cached is not None:
+            self._verified_deliveries.move_to_end(delivery_key)
+            return cached
+        if delivery_key in self._ambiguous_deliveries:
+            return SendResult(
+                success=False,
+                error="FAILED_DELIVERY[ambiguous_result_latched]: resend suppressed to prevent duplicate",
+                retryable=False,
+                raw_response={"state": "FAILED_DELIVERY", "content_sha256": content_hash},
+            )
+
+        for attempt in range(1, _DELIVERY_SEND_ATTEMPTS + 1):
+            code, out, err = await self._run_cli(args, input_text=content)
+            if code != 0:
+                safe_retry = self._safe_retryable_failure(code, err)
+                if attempt < _DELIVERY_SEND_ATTEMPTS and safe_retry:
+                    continue
+                ambiguous = code == 124 or not safe_retry
+                if ambiguous:
+                    self._ambiguous_deliveries[delivery_key] = None
+                    self._trim_delivery_cache(self._ambiguous_deliveries)
+                return SendResult(
+                    success=False,
+                    error=f"FAILED_DELIVERY[send_exit_{code}]",
+                    retryable=False,
+                    raw_response={
+                        "state": "FAILED_DELIVERY",
+                        "content_sha256": content_hash,
+                        "send_attempts": attempt,
+                        "ambiguous": ambiguous,
+                    },
+                )
+
+            try:
+                data = json.loads(out or "{}")
+            except ValueError:
+                data = None
+            event_id = data.get("event_id") if isinstance(data, dict) else None
+            if (
+                not isinstance(data, dict)
+                or data.get("accepted") is not True
+                or not isinstance(event_id, str)
+                or not event_id
+            ):
+                # A zero exit with an undocumented result may already have
+                # published. Never retry it and never default acceptance.
+                self._ambiguous_deliveries[delivery_key] = None
+                self._trim_delivery_cache(self._ambiguous_deliveries)
+                return SendResult(
+                    success=False,
+                    error="FAILED_DELIVERY[acceptance_unproven]: buzz send response lacked accepted=true and event_id",
+                    retryable=False,
+                    raw_response={"state": "FAILED_DELIVERY", "content_sha256": content_hash},
+                )
+
+            verified, diagnostic = await self._read_back_delivery(
+                chat_id=str(chat_id),
+                event_id=event_id,
+                content=content,
+                reply_target=reply_target,
+            )
+            if not verified:
+                self._ambiguous_deliveries[delivery_key] = None
+                self._trim_delivery_cache(self._ambiguous_deliveries)
+                return SendResult(
+                    success=False,
+                    message_id=event_id,
+                    error=f"FAILED_DELIVERY[readback_unproven]: {diagnostic}",
+                    retryable=False,
+                    raw_response={
+                        "state": "FAILED_DELIVERY",
+                        "event_id": event_id,
+                        "content_sha256": content_hash,
+                        "readback": diagnostic,
+                    },
+                )
+
+            self._mark_seen(str(chat_id), event_id)
+            result = SendResult(
+                success=True,
+                message_id=event_id,
+                raw_response={
+                    "state": "DELIVERED",
+                    "event_id": event_id,
+                    "content_sha256": content_hash,
+                    "readback": "verified",
+                    "send_attempts": attempt,
+                },
+            )
+            self._verified_deliveries[delivery_key] = result
+            self._trim_delivery_cache(self._verified_deliveries)
+            return result
+
+        raise AssertionError("bounded Buzz delivery loop exhausted")
+
     async def send(
         self,
         chat_id: str,
@@ -612,26 +831,35 @@ class BuzzAdapter(BasePlatformAdapter):
         reply_target = reply_to or (metadata or {}).get("thread_id")
         if reply_target:
             args += ["--reply-to", str(reply_target)]
-        code, out, err = await self._run_cli(args, input_text=content)
-        if code != 0:
-            return SendResult(
-                success=False,
-                error=_cli_error_message(err, code),
-                retryable=code == 2,
-            )
-        try:
-            data = json.loads(out or "{}")
-        except ValueError:
-            data = {}
-        event_id = data.get("event_id")
-        if event_id:
-            # Belt-and-braces echo suppression: the poll loop already skips
-            # our own pubkey, but marking the id seen makes de-dupe explicit.
-            self._mark_seen(str(chat_id), str(event_id))
-        return SendResult(
-            success=bool(data.get("accepted", True)),
-            message_id=str(event_id) if event_id else None,
-            raw_response=data,
+        return await self._send_and_verify(
+            chat_id=str(chat_id),
+            content=content,
+            args=args,
+            reply_target=str(reply_target) if reply_target else None,
+        )
+
+    async def _send_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ) -> SendResult:
+        """Use the Buzz delivery boundary's own fail-closed retry policy.
+
+        The base implementation treats every non-network failure as a Markdown
+        formatting error and sends a different plain-text fallback. After an
+        ambiguous Buzz result that would be a second, potentially duplicate
+        reply with a different fingerprint. All safe retry, read-back, and
+        ambiguity handling therefore stays inside ``_send_and_verify``.
+        """
+        return await self.send(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -683,20 +911,11 @@ class BuzzAdapter(BasePlatformAdapter):
             ]
             if reply_to:
                 args += ["--reply-to", str(reply_to)]
-            code, out, err = await self._run_cli(args, input_text=caption or "")
-            if code != 0:
-                return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
-            try:
-                data = json.loads(out or "{}")
-            except ValueError:
-                data = {}
-            event_id = data.get("event_id")
-            if event_id:
-                self._mark_seen(str(chat_id), str(event_id))
-            return SendResult(
-                success=bool(data.get("accepted", True)),
-                message_id=str(event_id) if event_id else None,
-                raw_response=data,
+            return await self._send_and_verify(
+                chat_id=str(chat_id),
+                content=caption or "",
+                args=args,
+                reply_target=str(reply_to) if reply_to else None,
             )
         # Markdown renders in Buzz, so a URL arrives as a clickable image link.
         text = f"{caption}\n{image_url}" if caption else image_url
@@ -1030,10 +1249,10 @@ class BuzzAdapter(BasePlatformAdapter):
         self._maybe_latch_dm(channel_id, state, event)
 
         is_dm = state["chat_type"] == "dm"
-        # In shared channels, respond only when addressed — unless
-        # require_mention is disabled, in which case respond to every message.
-        # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
+        # Shared channels always require a literal @ mention. The historical
+        # require_mention opt-out cannot bypass this production safety gate.
+        # DMs remain explicitly exempt.
+        if not is_dm and not self._is_mentioned(content):
             return
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
@@ -1137,14 +1356,14 @@ class BuzzAdapter(BasePlatformAdapter):
         logger.info("Buzz: conversation %s reclassified as DM (message p-tagged to self)", channel_id)
 
     def _is_mentioned(self, content: str) -> bool:
-        """True when the message addresses this agent (npub, hex, or name)."""
+        """True only when the message literally @-addresses this agent."""
         lowered = content.lower()
-        if self._self_pubkey and self._self_pubkey in lowered:
+        if self._self_pubkey and f"@{self._self_pubkey}" in lowered:
             return True
-        if self._self_npub and self._self_npub in lowered:
+        if self._self_npub and f"@{self._self_npub}" in lowered:
             return True
         if self._display_name:
-            pattern = rf"(?<!\w)@?{re.escape(self._display_name.lower())}(?!\w)"
+            pattern = rf"(?<!\w)@{re.escape(self._display_name.lower())}(?!\w)"
             if re.search(pattern, lowered):
                 return True
         return False
@@ -1170,9 +1389,9 @@ class BuzzAdapter(BasePlatformAdapter):
             candidates.append(re.escape(self._self_pubkey))
         if not candidates:
             return text
-        # Optional leading '@', one of the identity forms, optional trailing
+        # Literal leading '@', one of the identity forms, optional trailing
         # ':' or ',' and surrounding whitespace.
-        pattern = rf"^@?(?:{'|'.join(candidates)})[\s:,]*"
+        pattern = rf"^@(?:{'|'.join(candidates)})[\s:,]*"
         stripped = re.sub(pattern, "", text, count=1, flags=re.IGNORECASE)
         return stripped.strip()
 
@@ -1391,20 +1610,49 @@ async def _standalone_send(
     for path in media_files or []:
         args += ["--file", str(path)]
     try:
-        code, out, err = await _exec_buzz(
-            cli_path, args, relay_url=relay, private_key=private_key, input_text=message
+        identity_code, identity_out, _identity_err = await _exec_buzz(
+            cli_path,
+            ["users", "get"],
+            relay_url=relay,
+            private_key=private_key,
         )
     except asyncio.CancelledError:
         raise
-    except OSError as e:
-        return {"error": f"Buzz standalone send failed to launch CLI: {e}"}
-    if code != 0:
-        return {"error": f"Buzz standalone send failed: {_cli_error_message(err, code)}"}
+    except OSError:
+        return {"error": "FAILED_DELIVERY[standalone_cli_launch]"}
+    profiles = _parse_json_list(identity_out) if identity_code == 0 else []
+    self_pubkey = str(profiles[0].get("pubkey") or "").lower() if profiles else ""
+    if not self_pubkey:
+        return {"error": f"FAILED_DELIVERY[standalone_identity_unproven_exit_{identity_code}]"}
+
+    verifier = BuzzAdapter(pconfig)
+    verifier.relay_url = relay
+    verifier.cli_path = cli_path
+    verifier._private_key = private_key
+    verifier._self_pubkey = self_pubkey
     try:
-        data = json.loads(out or "{}")
-    except ValueError:
-        data = {}
-    return {"success": True, "message_id": str(data.get("event_id") or "")}
+        result = await verifier._send_and_verify(
+            chat_id=target,
+            content=message,
+            args=args,
+            reply_target=str(thread_id) if thread_id else None,
+        )
+    except asyncio.CancelledError:
+        raise
+    except OSError:
+        return {"error": "FAILED_DELIVERY[standalone_cli_launch]"}
+    if not result.success:
+        return {
+            "error": result.error or "FAILED_DELIVERY[standalone_unproven]",
+            "state": "FAILED_DELIVERY",
+            "message_id": result.message_id or "",
+        }
+    return {
+        "success": True,
+        "state": "DELIVERED",
+        "message_id": result.message_id or "",
+        "content_sha256": (result.raw_response or {}).get("content_sha256"),
+    }
 
 
 def interactive_setup() -> None:

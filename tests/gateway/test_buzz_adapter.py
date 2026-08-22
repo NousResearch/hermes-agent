@@ -1,6 +1,7 @@
 """Tests for the Buzz platform adapter plugin."""
 
 import asyncio
+import hashlib
 import json
 
 import pytest
@@ -45,6 +46,7 @@ _ENV_VARS = (
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
+    "BUZZ_REQUIRE_MENTION",
 )
 
 
@@ -54,6 +56,7 @@ def _clean_env(monkeypatch, tmp_path):
     for var in _ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(_buzz_mod, "_DEFAULT_CREDENTIALS_DIR", tmp_path / "no-creds")
+    monkeypatch.setattr(_buzz_mod, "_DELIVERY_READBACK_DELAY", 0)
     yield
 
 
@@ -65,6 +68,20 @@ def _event(event_id, pubkey=OTHER_PUBKEY, content="hello", created_at=1000, kind
         "created_at": created_at,
         "kind": kind,
         "tags": [["h", CHANNEL]],
+    }
+
+
+def _published_event(event_id, content, *, pubkey=SELF_PUBKEY, channel=CHANNEL, reply_to=None):
+    tags = [["h", channel]]
+    if reply_to:
+        tags.append(["e", reply_to, "", "reply"])
+    return {
+        "id": event_id,
+        "pubkey": pubkey,
+        "content": content,
+        "created_at": 1001,
+        "kind": 9,
+        "tags": tags,
     }
 
 
@@ -243,6 +260,12 @@ class TestMentionGating:
         await self._poll_with(adapter, _event("e1", content="hey @Chip can you help?", created_at=10))
         assert len(adapter._dispatched) == 1
 
+    @pytest.mark.asyncio
+    async def test_bare_name_does_not_activate_channel(self, adapter):
+        adapter.require_mention = False
+        await self._poll_with(adapter, _event("e1", content="hey Chip can you help?", created_at=10))
+        assert adapter._dispatched == []
+
 
     @pytest.mark.asyncio
     async def test_allowlist_blocks_unauthorized(self, adapter):
@@ -392,6 +415,7 @@ class TestBuzzAdapterSend:
         adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
         cli = _ScriptedCli()
         cli.script("messages", "send", {"accepted": True, "event_id": "evt123", "message": ""})
+        cli.script("messages", "get", [_published_event("evt123", "hello **markdown**")])
         adapter._run_cli = cli
 
         result = await adapter.send(CHANNEL, "hello **markdown**")
@@ -415,11 +439,190 @@ class TestBuzzAdapterSend:
         adapter = _make_adapter()
         cli = _ScriptedCli()
         cli.script("messages", "send", {"accepted": True, "event_id": "evt126", "message": ""})
+        cli.script("messages", "get", [_published_event("evt126", "screenshot")])
         adapter._run_cli = cli
         result = await adapter.send_image(CHANNEL, str(img), caption="screenshot")
         assert result.success is True
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response", [{"event_id": "evt-missing"}, "not-json"])
+    async def test_missing_or_malformed_acceptance_is_failed_delivery(self, response):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", response)
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "must be proven")
+
+        assert result.success is False
+        assert result.retryable is False
+        assert "FAILED_DELIVERY[acceptance_unproven]" in result.error
+        assert [call for call in cli.calls if call[0][:2] == ["messages", "send"]]
+        assert not [call for call in cli.calls if call[0][:2] == ["messages", "get"]]
+
+    @pytest.mark.asyncio
+    async def test_failed_relay_readback_is_visible(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-readback"})
+        cli.script("messages", "get", [])
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "relay must return me")
+
+        assert result.success is False
+        assert result.retryable is False
+        assert "FAILED_DELIVERY[readback_unproven]" in result.error
+        assert len([call for call in cli.calls if call[0][:2] == ["messages", "get"]]) == 3
+
+    @pytest.mark.asyncio
+    async def test_reply_preserves_trigger_event_anchor(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-reply"})
+        cli.script(
+            "messages",
+            "get",
+            [_published_event("evt-reply", "anchored answer", reply_to="inbound-trigger")],
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "anchored answer", reply_to="inbound-trigger")
+
+        assert result.success is True
+        send_args = cli.calls[0][0]
+        assert send_args[send_args.index("--reply-to") + 1] == "inbound-trigger"
+
+    @pytest.mark.asyncio
+    async def test_long_markdown_and_code_payload_is_hash_verified(self):
+        adapter = _make_adapter()
+        content = "# Result\n\n```typescript\n" + ("const ok = true;\n" * 1000) + "```"
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-long"})
+        cli.script("messages", "get", [_published_event("evt-long", content)])
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, content)
+
+        assert result.success is True
+        assert result.raw_response["content_sha256"]
+        assert cli.calls[0][1] == content
+
+    @pytest.mark.asyncio
+    async def test_explicit_not_published_failure_retries_once(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            {},
+            code=2,
+            stderr=json.dumps({"error": "relay", "retryable": True, "published": False}),
+        )
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-retry"})
+        cli.script("messages", "get", [_published_event("evt-retry", "retry safely")])
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "retry safely")
+
+        assert result.success is True
+        assert result.raw_response["send_attempts"] == 2
+        assert len([call for call in cli.calls if call[0][:2] == ["messages", "send"]]) == 2
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_timeout_is_never_resent(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {}, code=124, stderr='{"error":"timeout"}')
+        adapter._run_cli = cli
+
+        first = await adapter._send_with_retry(CHANNEL, "one copy only", reply_to="inbound")
+        second = await adapter._send_with_retry(CHANNEL, "one copy only", reply_to="inbound")
+
+        assert first.success is False and second.success is False
+        assert first.retryable is False and second.retryable is False
+        assert "ambiguous_result_latched" in second.error
+        assert len([call for call in cli.calls if call[0][:2] == ["messages", "send"]]) == 1
+        assert [call[1] for call in cli.calls if call[0][:2] == ["messages", "send"]] == ["one copy only"]
+
+    @pytest.mark.asyncio
+    async def test_base_retry_wrapper_never_plaintext_fallbacks_failed_delivery(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"event_id": "evt-unproven"})
+        adapter._run_cli = cli
+
+        result = await adapter._send_with_retry(CHANNEL, "original **markdown**")
+
+        assert result.success is False
+        assert "acceptance_unproven" in result.error
+        sends = [call for call in cli.calls if call[0][:2] == ["messages", "send"]]
+        assert len(sends) == 1
+        assert sends[0][1] == "original **markdown**"
+
+    @pytest.mark.asyncio
+    async def test_unresolved_mention_fails_visibly(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            {},
+            code=1,
+            stderr='{"error":"unresolved_mention","message":"cannot resolve @Missing"}',
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "@Missing review this")
+
+        assert result.success is False
+        assert "FAILED_DELIVERY[send_exit_1]" in result.error
+
+    @pytest.mark.asyncio
+    async def test_failure_diagnostics_never_echo_cli_stderr(self):
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            {},
+            code=1,
+            stderr='{"error":"relay","message":"SECRET_SENTINEL"}',
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send(CHANNEL, "safe diagnostics")
+
+        assert "SECRET_SENTINEL" not in result.error
+        assert "SECRET_SENTINEL" not in json.dumps(result.raw_response)
+
+    @pytest.mark.asyncio
+    async def test_delivery_cache_is_instance_and_profile_local(self):
+        first = _make_adapter()
+        second = _make_adapter()
+        second._self_pubkey = "b" * 64
+        first_cli = _ScriptedCli()
+        second_cli = _ScriptedCli()
+        first_cli.script("messages", "send", {"accepted": True, "event_id": "evt-a"})
+        first_cli.script("messages", "get", [_published_event("evt-a", "isolated")])
+        second_cli.script("messages", "send", {"accepted": True, "event_id": "evt-b"})
+        second_cli.script(
+            "messages",
+            "get",
+            [_published_event("evt-b", "isolated", pubkey="b" * 64)],
+        )
+        first._run_cli = first_cli
+        second._run_cli = second_cli
+
+        first_result = await first.send(CHANNEL, "isolated")
+        second_result = await second.send(CHANNEL, "isolated")
+
+        assert first_result.success is True and second_result.success is True
+        assert first_result.message_id != second_result.message_id
+        assert len([call for call in first_cli.calls if call[0][:2] == ["messages", "send"]]) == 1
+        assert len([call for call in second_cli.calls if call[0][:2] == ["messages", "send"]]) == 1
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -522,19 +725,53 @@ class TestStandaloneSend:
         monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
         monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
 
-        captured = {}
+        captured = []
 
         async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=30.0):
-            captured.update(cli_path=cli_path, args=args, relay_url=relay_url, input_text=input_text)
-            return 0, json.dumps({"accepted": True, "event_id": "evt-cron", "message": ""}), ""
+            captured.append({"cli_path": cli_path, "args": args, "relay_url": relay_url, "input_text": input_text})
+            if args[:2] == ["users", "get"]:
+                return 0, json.dumps([{"pubkey": SELF_PUBKEY}]), ""
+            if args[:2] == ["messages", "send"]:
+                return 0, json.dumps({"accepted": True, "event_id": "evt-cron", "message": ""}), ""
+            if args[:2] == ["messages", "get"]:
+                return 0, json.dumps([_published_event("evt-cron", "cron says hi")]), ""
+            raise AssertionError(args)
 
         monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
 
         result = await _standalone_send(PlatformConfig(enabled=True, extra={}), CHANNEL, "cron says hi")
-        assert result == {"success": True, "message_id": "evt-cron"}
-        assert captured["args"][:2] == ["messages", "send"]
-        assert captured["input_text"] == "cron says hi"
+        assert result == {
+            "success": True,
+            "state": "DELIVERED",
+            "message_id": "evt-cron",
+            "content_sha256": hashlib.sha256(b"cron says hi").hexdigest(),
+        }
+        send_call = next(call for call in captured if call["args"][:2] == ["messages", "send"])
+        assert send_call["input_text"] == "cron says hi"
         # The private key must never be part of argv
-        assert all("nsec1x" not in str(a) for a in captured["args"])
+        assert all("nsec1x" not in str(a) for call in captured for a in call["args"])
 
+    @pytest.mark.asyncio
+    async def test_standalone_send_missing_acceptance_fails_closed(self, monkeypatch, tmp_path):
+        from gateway.config import PlatformConfig
 
+        fake_cli = tmp_path / "buzz"
+        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
+        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
+        calls = []
+
+        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=30.0):
+            calls.append(args)
+            if args[:2] == ["users", "get"]:
+                return 0, json.dumps([{"pubkey": SELF_PUBKEY}]), ""
+            if args[:2] == ["messages", "send"]:
+                return 0, json.dumps({"event_id": "evt-unproven"}), ""
+            raise AssertionError(args)
+
+        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
+        result = await _standalone_send(PlatformConfig(enabled=True, extra={}), CHANNEL, "cron")
+        assert result["state"] == "FAILED_DELIVERY"
+        assert "acceptance_unproven" in result["error"]
+        assert len([args for args in calls if args[:2] == ["messages", "send"]]) == 1

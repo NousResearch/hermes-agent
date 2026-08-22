@@ -375,6 +375,97 @@ class TestRunJobKanbanIsolation:
 
 
 # ---------------------------------------------------------------------------
+# Delegated-child lineage must not leak INTO cron jobs
+# ---------------------------------------------------------------------------
+
+class TestRunJobDelegatedLineageReset:
+    """A scheduled job's asyncio task can inherit ``_DELEGATED_CHILD_CONTEXT``
+    from a session that had a delegate_task child active at spawn time. Left
+    set, ``is_delegated_child_process_context()`` is True for the whole job,
+    every terminal subprocess env gets scrubbed + marked, and ``hermes kanban``
+    dies at DB init with the child mutation guard — the intermittent
+    \"Watchdog tooling broken: ... delegate_task child contexts cannot mutate\"
+    false alarm (observed live 2026-07-30 → 2026-08-16)."""
+
+    def test_reset_helper_clears_contextvar_and_env_marker(self, monkeypatch):
+        import agent.delegation_context as dc
+
+        monkeypatch.setenv(dc.DELEGATED_CHILD_ENV_MARKER, "1")
+        token = dc._DELEGATED_CHILD_CONTEXT.set(True)
+        try:
+            assert dc.is_delegated_child_process_context() is True
+            reset_token = dc.reset_delegated_child_lineage()
+            try:
+                assert dc.is_delegated_child_process_context() is False
+                assert dc.DELEGATED_CHILD_ENV_MARKER not in os.environ
+            finally:
+                dc.restore_delegated_child_lineage(reset_token)
+            # ContextVar restored for the (real-child) outer scope.
+            assert dc.is_delegated_child_context() is True
+        finally:
+            dc._DELEGATED_CHILD_CONTEXT.reset(token)
+
+    def test_run_job_clears_inherited_delegated_lineage(self, monkeypatch):
+        import cron.scheduler as sched
+        import agent.delegation_context as dc
+
+        observed: dict = {}
+
+        class LineageProbeAgent:
+            def __init__(self, **kwargs):
+                observed["child_ctx_during_init"] = (
+                    dc.is_delegated_child_process_context()
+                )
+
+            def run_conversation(self, *_a, **_kw):
+                observed["child_ctx_during_run"] = (
+                    dc.is_delegated_child_process_context()
+                )
+                # This is what tools/environments/local.py consults before
+                # scrubbing + marking every terminal subprocess env.
+                observed["subprocess_env"] = dc.delegated_child_subprocess_env(None)
+                return {"final_response": "done", "messages": []}
+
+            def get_activity_summary(self):
+                return {"seconds_since_activity": 0.0}
+
+        TestRunJobKanbanIsolation._install_stubs(
+            monkeypatch, observed, agent_cls=LineageProbeAgent
+        )
+
+        # Simulate the leak: lineage inherited at job start.
+        token = dc._DELEGATED_CHILD_CONTEXT.set(True)
+        try:
+            success, *_ = sched.run_job(
+                TestRunJobKanbanIsolation._job("delegated-lineage-leak")
+            )
+        finally:
+            dc._DELEGATED_CHILD_CONTEXT.reset(token)
+
+        assert success is True
+        assert observed["child_ctx_during_init"] is False
+        assert observed["child_ctx_during_run"] is False
+        # env=None passthrough preserved — no scrub, no marker injection.
+        assert observed["subprocess_env"] is None
+
+    def test_run_job_clears_leaked_env_marker(self, monkeypatch):
+        import cron.scheduler as sched
+        import agent.delegation_context as dc
+
+        observed: dict = {}
+        TestRunJobKanbanIsolation._install_stubs(monkeypatch, observed)
+
+        monkeypatch.setenv(dc.DELEGATED_CHILD_ENV_MARKER, "1")
+        success, *_ = sched.run_job(
+            TestRunJobKanbanIsolation._job("delegated-lineage-envleak")
+        )
+
+        assert success is True
+        assert observed["kanban_env_during_init"] == {}
+        assert dc.DELEGATED_CHILD_ENV_MARKER not in os.environ
+
+
+# ---------------------------------------------------------------------------
 # Drift guard
 # ---------------------------------------------------------------------------
 

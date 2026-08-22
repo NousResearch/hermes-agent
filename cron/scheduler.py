@@ -59,6 +59,8 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context,
     exit_non_dispatcher_owned_context,
+    reset_delegated_child_lineage,
+    restore_delegated_child_lineage,
 )
 
 logger = logging.getLogger(__name__)
@@ -5492,6 +5494,7 @@ def run_job(
     _cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
     _cron_session_token = None
     _non_dispatcher_token = None
+    _delegated_lineage_token = None
     try:
         if not _cwd_lock_acquired:
             # Fail closed (#79768): running without the lock would let a
@@ -5534,6 +5537,13 @@ def run_job(
         # concurrent cron jobs on the parallel pool.  contextvars.copy_context()
         # at the run_conversation hop carries this into the agent thread.
         _non_dispatcher_token = enter_non_dispatcher_owned_context()
+        # Scheduled jobs are never delegate_task children, but the job's
+        # asyncio task can inherit delegated-child lineage from a session
+        # that had a child active at spawn time.  Clear it so the job's
+        # terminal subprocesses don't get the child env scrub/marker (which
+        # makes `hermes kanban` die at DB init with the mutation guard —
+        # the intermittent "Watchdog tooling broken" false alarm).
+        _delegated_lineage_token = reset_delegated_child_lineage()
         if _job_workdir:
             os.environ["TERMINAL_CWD"] = _job_workdir
             logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
@@ -6370,6 +6380,8 @@ def run_job(
             _cron_session_var.reset(_cron_session_token)
         if _non_dispatcher_token is not None:
             exit_non_dispatcher_owned_context(_non_dispatcher_token)
+        if _delegated_lineage_token is not None:
+            restore_delegated_child_lineage(_delegated_lineage_token)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:

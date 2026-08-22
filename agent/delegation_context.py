@@ -121,6 +121,33 @@ def exit_non_dispatcher_owned_context(token: Token[bool]) -> None:
     _NON_DISPATCHER_OWNED_CONTEXT.reset(token)
 
 
+def reset_delegated_child_lineage() -> Token[bool]:
+    """Clear inherited delegate_task lineage for a scope that is NOT a child.
+
+    Scheduled cron jobs are never delegate_task children, but a job's asyncio
+    task can inherit ``_DELEGATED_CHILD_CONTEXT`` (and, defensively, a leaked
+    ``HERMES_DELEGATED_CHILD_CONTEXT`` os.environ marker) when a
+    delegation-enabled session has a child active at task-spawn time.  Left
+    set, every terminal subprocess the job spawns gets its env scrubbed and
+    marked (``scrub_kanban_env``), so ``hermes kanban`` invocations die at DB
+    init with the child mutation guard — a false alarm for the job.
+
+    Token-based for callers whose scope is a long ``try``/``finally`` rather
+    than a ``with`` block.  Pair with :func:`restore_delegated_child_lineage`.
+    """
+    import os
+
+    # Never legitimate in this process's own environ: the marker is only set
+    # in *copied* envs handed to child subprocesses.  Popping is corrective.
+    os.environ.pop(DELEGATED_CHILD_ENV_MARKER, None)
+    return _DELEGATED_CHILD_CONTEXT.set(False)
+
+
+def restore_delegated_child_lineage(token: Token[bool]) -> None:
+    """Restore the flag saved by :func:`reset_delegated_child_lineage`."""
+    _DELEGATED_CHILD_CONTEXT.reset(token)
+
+
 def is_delegated_child_process_context() -> bool:
     """Return True in this process or a subprocess spawned by a child."""
     import os

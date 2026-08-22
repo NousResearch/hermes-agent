@@ -211,6 +211,61 @@ def test_non_ghostty_terminals_still_push_kitty_protocol():
     assert b"\x1b[>4;2m" in out.written
 
 
+@pytest.mark.parametrize(
+    "flag",
+    ["1", "true", "TRUE", "yes", "on", " 1 "],
+)
+def test_disable_extended_keys_env_skips_protocol_push(flag):
+    """HERMES_DISABLE_EXTENDED_KEYS restores pre-v0.20.4 raw key bytes (#91624).
+
+    CJK IME composition under WezTerm/WSL2 commits two characters per commit
+    and arrow keys die once the terminal re-encodes keys; the flag must skip
+    the push even on an allowlisted terminal.
+    """
+    import cli as cli_mod
+
+    out = _FakeOutput()
+    result = cli_mod._enable_extended_enter_keys(
+        output=out,
+        env={"TERM_PROGRAM": "WezTerm", "TERM": "xterm-256color",
+             "HERMES_DISABLE_EXTENDED_KEYS": flag},
+    )
+    assert result is False
+    assert out.written == b""
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ["0", "", "false", "off"],
+)
+def test_disable_extended_keys_falsy_values_keep_the_push(flag):
+    """Falsy spellings must not opt out — only explicit enable-words do."""
+    import cli as cli_mod
+
+    out = _FakeOutput()
+    result = cli_mod._enable_extended_enter_keys(
+        output=out,
+        env={"TERM_PROGRAM": "WezTerm", "TERM": "xterm-256color",
+             "HERMES_DISABLE_EXTENDED_KEYS": flag},
+    )
+    assert result is True
+    assert b"\x1b[>1u" in out.written
+
+
+def test_disable_extended_keys_absent_keeps_default_push():
+    """Without the flag the push happens exactly as before — no behavior change."""
+    import cli as cli_mod
+
+    out = _FakeOutput()
+    result = cli_mod._enable_extended_enter_keys(
+        output=out,
+        env={"TERM_PROGRAM": "WezTerm", "TERM": "xterm-256color"},
+    )
+    assert result is True
+    assert b"\x1b[>1u" in out.written
+    assert b"\x1b[>4;2m" in out.written
+
+
 @pytest.mark.linux_only
 def test_proc_version_microsoft_marker_preserves_newline():
     """WSL detection via /proc when env vars are scrubbed (sudo etc.).

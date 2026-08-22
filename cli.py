@@ -4274,7 +4274,21 @@ def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = 
 
     The exit reset sequence pops/resets both modes, so this is safe across
     normal exits, Ctrl+C, and SIGTERM cleanup.
+
+    ``HERMES_DISABLE_EXTENDED_KEYS=1`` skips the push entirely, so the
+    terminal keeps sending raw key bytes as before v0.20.4. Escape hatch
+    for terminals where the re-encoding is not decodable — CJK IME
+    composition under WezTerm/WSL2 commits two characters at a time and
+    arrow keys stop moving the cursor (#91624); same mechanism family as
+    the unmapped CSI-u reports (#86866, #87631, #88221, #90640). Truthy
+    spellings are ``1/true/yes/on`` (case-insensitive); any other value —
+    including ``0``, ``false``, ``off``, and empty — deliberately does NOT
+    opt out, unlike tools that treat any non-empty value as true.
     """
+    if env is None:
+        env = os.environ
+    if (env.get("HERMES_DISABLE_EXTENDED_KEYS") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return False
     if not _terminal_supports_extended_enter_keys(env):
         return False
     # Ghostty exception: only modifyOtherKeys — see _is_ghostty_terminal.

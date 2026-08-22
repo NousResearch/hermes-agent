@@ -21,6 +21,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import { $skillSuggestionsEnabled, setSkillSuggestionsEnabled } from '@/store/skill-suggestions'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import {
@@ -354,6 +355,7 @@ export function AppearanceSettings() {
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const reactionsEnabled = useStore($reactionsEnabled)
+  const skillSuggestionsEnabled = useStore($skillSuggestionsEnabled)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
   const installs = useStore($marketplaceInstalls)
@@ -751,6 +753,24 @@ export function AppearanceSettings() {
             }
             description={a.reactionsDesc}
             title={a.reactionsTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setSkillSuggestionsEnabled(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={skillSuggestionsEnabled ? 'on' : 'off'}
+              />
+            }
+            description={a.skillSuggestionsDesc}
+            title={a.skillSuggestionsTitle}
           />
 
           <ListRow

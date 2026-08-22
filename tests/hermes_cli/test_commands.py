@@ -497,6 +497,35 @@ class TestGhostText:
         assert _suggestion("/alpha /b", completer=completer) == "eta"
 
 
+class TestGhostTextIntentHints:
+    """CN-intent hint matching (regression for AI review on #86940).
+
+    Latin keywords match on word boundaries so ``help`` inside ``helpline`` /
+    ``helping`` must NOT fire /help; standalone ``help`` still does. CJK
+    keywords (no spaces) keep substring behavior so 学习无人机 → /learn.
+    """
+
+    def test_help_hint_fires_on_standalone_word(self):
+        assert _suggestion("help me") == "/help help me"
+
+    def test_help_hint_fires_when_word_is_space_delimited(self):
+        # "help desk" is a real help intent — word-boundary matching keeps it.
+        assert _suggestion("help desk") == "/help help desk"
+
+    def test_help_hint_not_fired_by_substring_words(self):
+        # Reviewer's exact false-positive examples: substring matching used to
+        # fire /help for any text containing "help" anywhere.
+        assert _suggestion("helpline") is None
+        assert _suggestion("helping") is None
+
+    def test_cjk_keyword_keeps_substring_behavior(self):
+        assert _suggestion("学习无人机CAAC考证") == "/learn 学习无人机CAAC考证"
+        assert _suggestion("语音输入测试") == "/voice 语音输入测试"
+
+    def test_latin_voice_keyword_fires(self):
+        assert _suggestion("voice memo") == "/voice voice memo"
+
+
 # ---------------------------------------------------------------------------
 # Telegram command name sanitization
 # ---------------------------------------------------------------------------

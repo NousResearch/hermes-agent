@@ -28,6 +28,7 @@ import asyncio
 import concurrent.futures
 import dataclasses
 import faulthandler
+import hashlib
 import inspect
 import json
 import logging
@@ -3240,6 +3241,62 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
         pass
 
     return None
+
+
+def _deduplicate_audio_paths(audio_paths: List[str]) -> tuple[List[str], List[str]]:
+    """Preserve order while removing repeated paths and identical audio files.
+
+    Content hashing is limited to files that share a byte size. Missing or
+    unreadable paths retain path-only identity so a failed probe cannot drop a
+    distinct attachment.
+    """
+    unique_paths: List[str] = []
+    duplicate_paths: List[str] = []
+    seen_paths = set()
+    size_buckets: Dict[int, List[tuple[str, Optional[bytes]]]] = {}
+
+    def _digest(path: str) -> Optional[bytes]:
+        try:
+            with open(path, "rb") as audio_file:
+                return hashlib.file_digest(audio_file, "sha256").digest()
+        except (OSError, ValueError):
+            return None
+
+    for path in audio_paths:
+        if path in seen_paths:
+            duplicate_paths.append(path)
+            continue
+        seen_paths.add(path)
+
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            unique_paths.append(path)
+            continue
+
+        bucket = size_buckets.setdefault(size, [])
+        if not bucket:
+            bucket.append((path, None))
+            unique_paths.append(path)
+            continue
+
+        current_digest = _digest(path)
+        is_duplicate = False
+        for index, (prior_path, prior_digest) in enumerate(bucket):
+            if prior_digest is None:
+                prior_digest = _digest(prior_path)
+                bucket[index] = (prior_path, prior_digest)
+            if current_digest is not None and current_digest == prior_digest:
+                is_duplicate = True
+                break
+
+        if is_duplicate:
+            duplicate_paths.append(path)
+            continue
+        bucket.append((path, current_digest))
+        unique_paths.append(path)
+
+    return unique_paths, duplicate_paths
 
 
 def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
@@ -24879,8 +24936,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 list if every clip failed or STT is disabled. Callers can use
                 this to echo transcripts back to the user before the agent loop.
         """
-        seen = set()
-        audio_paths = [p for p in audio_paths if p not in seen and not seen.add(p)]
+        audio_paths, duplicate_paths = await asyncio.to_thread(
+            _deduplicate_audio_paths, audio_paths
+        )
+        for path in duplicate_paths:
+            logger.info("Skipping duplicate audio attachment before STT: %s", path)
         if not getattr(self.config, "stt_enabled", True):
             notes = []
             for path in audio_paths:

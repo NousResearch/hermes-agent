@@ -1893,15 +1893,22 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # (Telegram forum / Discord thread parity); always isolate AND
         # always reply in-thread.
         if chat_type == "dm":
+            always_thread = os.getenv("GOOGLE_CHAT_ALWAYS_THREAD_DMS", "").lower() in ("true", "1", "yes") or self.config.extra.get("always_thread_dms", False)
+            isolate_all = os.getenv("GOOGLE_CHAT_ISOLATE_ALL_THREADS", "").lower() in ("true", "1", "yes") or self.config.extra.get("isolate_all_threads", False)
             is_side_thread = prev_thread_count > 0
-            session_thread_id = thread_name if is_side_thread else None
-            # Outbound thread cache: populated only when side-thread, so
-            # _resolve_thread_id falls through to "no thread" on main
-            # flow and the bot reply lands as a top-level sibling.
-            if thread_name and space_name and is_side_thread:
-                self._last_inbound_thread[space_name] = thread_name
-            elif space_name:
-                self._last_inbound_thread.pop(space_name, None)
+            if always_thread:
+                session_thread_id = thread_name if (is_side_thread or isolate_all) else None
+                if thread_name and space_name:
+                    self._last_inbound_thread[space_name] = thread_name
+            else:
+                session_thread_id = thread_name if is_side_thread else None
+                # Outbound thread cache: populated only when side-thread, so
+                # _resolve_thread_id falls through to "no thread" on main
+                # flow and the bot reply lands as a top-level sibling.
+                if thread_name and space_name and is_side_thread:
+                    self._last_inbound_thread[space_name] = thread_name
+                elif space_name:
+                    self._last_inbound_thread.pop(space_name, None)
         else:
             session_thread_id = thread_name
             # Groups always reply in-thread.

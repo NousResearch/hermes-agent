@@ -48,3 +48,11 @@ optional_env:
     description: "Default space for cron / notification delivery (e.g. spaces/AAAA...)."
     prompt: "Home space ID (or empty)"
     password: false
+  - name: GOOGLE_CHAT_ALWAYS_THREAD_DMS
+    description: "If true, Hermes will always reply to top-level DM messages inside their auto-created Google Chat thread, rather than as adjacent top-level cards."
+    prompt: "Always reply inside DM threads? (true/false)"
+    password: false
+  - name: GOOGLE_CHAT_ISOLATE_ALL_THREADS
+    description: "If true (and GOOGLE_CHAT_ALWAYS_THREAD_DMS is enabled), each DM thread will be treated as an independent conversation session with isolated history. If false (default), they share the main DM session."
+    prompt: "Isolate session history per DM thread? (true/false)"
+    password: false

@@ -194,6 +194,32 @@ model:
 #     model: databricks-claude-fable-5
 #     key_cmd: "databricks auth token -p MY-PROFILE"
 
+# Reasoning wire format (optional): reasoning_format
+# ------------------------------------------------------------------
+# provider=custom endpoints disagree on how reasoning controls are spelled on
+# the wire. When reasoning is enabled with an effort level, Hermes defaults to
+# a top-level `reasoning_effort` string — the native OpenAI-compatible shape
+# GLM/ARK and DashScope expect. OpenRouter-style gateways instead want a
+# nested `reasoning` object in the request body, and some strict proxies
+# reject either unknown field with a 400. Set `reasoning_format` on the
+# provider entry to pick the dialect your endpoint speaks:
+#
+#   top_level         (default; same as unset) top-level reasoning_effort
+#                     string. Disable sends reasoning_effort: "none" plus
+#                     extra_body.think: false (Ollama).
+#   reasoning_object  nested request-body object instead:
+#                     reasoning: {"enabled": true, "effort": "<level>"}
+#                     (disable sends {"enabled": false})
+#   none              never send reasoning fields for this endpoint — for
+#                     proxies that 400 on unrecognized parameters
+#
+# Unknown values are ignored (treated as unset).
+#
+# providers:
+#   my-gateway:
+#     base_url: "http://127.0.0.1:8317/v1"
+#     reasoning_format: reasoning_object
+
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
 # and per-model exceptions.

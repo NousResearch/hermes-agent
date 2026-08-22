@@ -1281,7 +1281,7 @@ providers:
     transport: anthropic_messages  # for Anthropic-compatible proxies
 ```
 
-Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `ssl_ca_cert` / `ssl_verify`, and `enabled: false` to hide an entry without deleting it.
+Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `reasoning_format` (see below), `ssl_ca_cert` / `ssl_verify`, and `enabled: false` to hide an entry without deleting it.
 
 #### Command-minted credentials (`key_cmd`)
 
@@ -1334,6 +1334,25 @@ extra_body:
   chat_template_kwargs:
     enable_thinking: false
 ```
+
+#### Reasoning wire format (`reasoning_format`)
+
+Custom endpoints disagree on how reasoning controls are spelled on the wire. When reasoning is enabled with an effort level, Hermes defaults to sending a **top-level `reasoning_effort` string** — the native OpenAI-compatible shape GLM/ARK and DashScope expect. But OpenRouter-style gateways instead want a nested `reasoning` **object** in the request body, and some strict proxies reject either unknown field with a 400. Set `reasoning_format` on the provider entry to pick the dialect your endpoint speaks:
+
+```yaml
+providers:
+  my-gateway:
+    base_url: "http://127.0.0.1:8317/v1"
+    reasoning_format: reasoning_object
+```
+
+| Value | Enabled + effort | Disabled (`/reasoning none`) |
+|-------|------------------|------------------------------|
+| `top_level` (default; same as unset) | top-level `reasoning_effort: "<level>"` | top-level `reasoning_effort: "none"` + `extra_body.think: false` (Ollama) |
+| `reasoning_object` | `extra_body.reasoning: {"enabled": true, "effort": "<level>"}` | `extra_body.reasoning: {"enabled": false}` |
+| `none` | no reasoning fields sent | no reasoning fields sent |
+
+Efforts pass through verbatim in every dialect (including levels like `max` or `ultra` that only some backends accept — the endpoint validates them). Unknown `reasoning_format` values are ignored and fall back to the default, so a typo never silently changes the request shape. Use `none` when a proxy rejects any reasoning parameter — including the disable fields — with a 400.
 
 The `hermes model` → Custom Endpoint wizard now prompts for the API mode explicitly and persists your answer to `config.yaml` (as `transport` on the provider entry). URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 

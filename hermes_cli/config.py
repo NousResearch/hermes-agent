@@ -1388,8 +1388,8 @@ def _normalize_custom_provider_entry(
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "key_cmd",
         "api_mode", "transport", "model", "default_model", "models",
-        "models_discovered",
-        "context_length", "rate_limit_delay",
+"models_discovered",
+        "context_length", "rate_limit_delay", "reasoning_format",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
         "ssl_ca_cert", "ssl_verify",
@@ -1529,6 +1529,10 @@ def _normalize_custom_provider_entry(
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
 
+    reasoning_format = entry.get("reasoning_format")
+    if isinstance(reasoning_format, str) and reasoning_format.strip():
+        normalized["reasoning_format"] = reasoning_format.strip()
+
     discover_models = entry.get("discover_models")
     if isinstance(discover_models, bool):
         normalized["discover_models"] = discover_models
@@ -1580,6 +1584,7 @@ def _custom_provider_entry_to_provider_config(
         "models_discovered",
         "context_length",
         "rate_limit_delay",
+        "reasoning_format",
         "discover_models",
         "extra_body",
         "extra_headers",
@@ -1861,6 +1866,65 @@ def get_custom_provider_context_length(
             continue
         if ctx > 0:
             return ctx
+    return None
+
+
+# Accepted values for ``providers.<name>.reasoning_format``. Anything else is
+# treated as unset so a typo can never silently change the wire format.
+_CUSTOM_REASONING_FORMATS = {"top_level", "reasoning_object", "none"}
+
+
+def get_custom_provider_reasoning_format(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Return the ``reasoning_format`` declared on the matching provider entry.
+
+    Matches the entry whose normalized route identity equals *base_url*,
+    mirroring :func:`get_custom_provider_context_length`, and returns one of
+    ``"top_level"`` / ``"reasoning_object"`` / ``"none"`` (case-insensitive in
+    config). Returns ``None`` when no entry matches, the entry declares no
+    format, or the value is not one of the accepted formats — callers treat
+    ``None`` as the historical default (``top_level``).
+
+    ``provider="custom"`` endpoints disagree on how reasoning controls are
+    spelled on the wire: GLM/ARK/DashScope read a top-level
+    ``reasoning_effort`` string, OpenRouter-style gateways expect a nested
+    ``reasoning`` object in the request body, and some proxies reject either
+    unknown field with a 400. This per-provider key lets users pick the
+    dialect their endpoint speaks (#72649).
+
+    If multiple entries normalize to the same route, entries are checked in
+    compatibility-list order and the first valid ``reasoning_format`` wins;
+    entries with missing or invalid values are skipped.
+    """
+    if not base_url:
+        return None
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            return None
+    if not isinstance(custom_providers, list):
+        return None
+
+    target_url = normalize_route_base_url(base_url)
+    if not target_url:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = normalize_route_base_url(entry.get("base_url"))
+        if not entry_url or entry_url != target_url:
+            continue
+        raw = entry.get("reasoning_format")
+        if not isinstance(raw, str):
+            continue
+        fmt = raw.strip().lower()
+        if fmt in _CUSTOM_REASONING_FORMATS:
+            return fmt
     return None
 
 

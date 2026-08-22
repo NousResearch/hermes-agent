@@ -280,7 +280,15 @@ Review staged writes from the CLI or any messaging platform:
 
 This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background
-ones — waits for your yes/no before it ever enters your profile.
+ones — waits for your yes/no before it ever enters your profile. Staged records
+use pending schema v2 with a canonical payload hash and a full-record integrity
+hash that binds dispatch context. On POSIX systems Hermes keeps the pending
+directories at `0700` and each record at `0600`, with descriptor-anchored reads
+and writes. Records are capped at 8 MiB, listing fails closed above 4,096
+entries, and approval claims each record into a non-replayable quarantine before
+applying it. Platforms where that owner-only boundary cannot be enforced fail
+closed. Unsafe, legacy, oversized, or integrity-invalid records remain
+untouched and cannot be applied through the approval commands.
 
 ## Background review notifications (`display.memory_notifications`)
 

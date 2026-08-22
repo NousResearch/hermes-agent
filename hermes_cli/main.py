@@ -2929,9 +2929,19 @@ def _resolve_use_tui(args) -> bool:
         return False
 
 
+def _bind_cli_session_source(args, *, default_source: str = "cli"):
+    """Bind the CLI surface into task-local provenance and legacy env state."""
+    from gateway.session_context import set_session_vars
+
+    source = (getattr(args, "source", None) or default_source).strip()
+    os.environ["HERMES_SESSION_SOURCE"] = source
+    return set_session_vars(source=source)
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = _resolve_use_tui(args)
+    _bind_cli_session_source(args, default_source="tui" if use_tui else "cli")
 
     _apply_safe_mode(args)
 

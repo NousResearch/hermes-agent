@@ -205,6 +205,16 @@ def set_current_session_id(session_id: str) -> None:
 
 
 @contextmanager
+def scoped_session_source(source: str) -> Iterator[None]:
+    """Bind one task-local surface/source and restore its prior value."""
+    token = _SESSION_SOURCE.set(source)
+    try:
+        yield
+    finally:
+        _SESSION_SOURCE.reset(token)
+
+
+@contextmanager
 def scoped_current_session_id(session_id: str | None = None) -> Iterator[None]:
     """Bind a task-local session id and restore the prior value on exit.
 
@@ -388,6 +398,17 @@ def reset_session_vars() -> None:
         clear_session_cwd()
     except Exception:
         pass
+
+
+def get_session_var(name: str, default: str = "") -> str:
+    """Read a session ContextVar without falling back to process environment."""
+    var = _VAR_MAP.get(name)
+    if var is None:
+        return default
+    value = var.get()
+    if value is _UNSET:
+        return default
+    return value
 
 
 def get_session_env(name: str, default: str = "") -> str:

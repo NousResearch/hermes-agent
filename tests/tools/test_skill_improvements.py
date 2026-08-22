@@ -109,11 +109,11 @@ word word word
         mode = stat.S_IMODE((self.skills_dir / "mode-skill" / "SKILL.md").stat().st_mode)
         assert mode == 0o644
 
-    def test_create_rollback_removes_skill_when_scan_blocks(self, monkeypatch):
-        """Blocked skill creation removes the newly created skill directory."""
+    def test_create_refuses_before_publish_when_scan_blocks(self, monkeypatch):
+        """Blocked skill creation never publishes a discoverable skill directory."""
         monkeypatch.setattr(
-            "tools.skill_manager_tool._security_scan_skill",
-            lambda _skill_dir: "blocked",
+            "tools.skill_manager_tool._security_scan_new_skill_content",
+            lambda *_args: "blocked",
         )
 
         result = _create_skill("blocked-skill", SKILL_CONTENT)

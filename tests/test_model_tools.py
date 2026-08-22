@@ -30,6 +30,52 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
+    def test_dispatch_receives_tool_call_correlation_id(self):
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}') as dispatch:
+            result = handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                session_id="session-2",
+                tool_call_id="call-3",
+                skip_pre_tool_call_hook=True,
+                skip_tool_request_middleware=True,
+                skip_tool_execution_middleware=True,
+            )
+
+        assert result == '{"ok":true}'
+        dispatch.assert_called_once_with(
+            "web_search",
+            {"q": "test"},
+            task_id="task-1",
+            session_id="session-2",
+            tool_call_id="call-3",
+            user_task=None,
+        )
+
+    def test_execute_code_dispatch_receives_tool_call_correlation_id(self):
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}') as dispatch:
+            result = handle_function_call(
+                "execute_code",
+                {"code": "print('ok')"},
+                task_id="task-1",
+                session_id="session-2",
+                tool_call_id="call-3",
+                enabled_tools=["execute_code", "read_file"],
+                skip_pre_tool_call_hook=True,
+                skip_tool_request_middleware=True,
+                skip_tool_execution_middleware=True,
+            )
+
+        assert result == '{"ok":true}'
+        dispatch.assert_called_once_with(
+            "execute_code",
+            {"code": "print('ok')"},
+            task_id="task-1",
+            session_id="session-2",
+            tool_call_id="call-3",
+            enabled_tools=["execute_code", "read_file"],
+        )
 
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):

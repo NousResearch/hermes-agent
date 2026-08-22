@@ -42,12 +42,16 @@ web dashboard.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import os
+import re
+import stat
 import time
 import uuid
-from pathlib import Path
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
@@ -107,12 +111,267 @@ def _normalize_enabled(value: Any) -> bool:
 # Pending store (file-backed)
 # ---------------------------------------------------------------------------
 
-def _pending_dir(subsystem: str) -> Path:
-    return get_hermes_home() / "pending" / subsystem
+class PendingStoreError(RuntimeError):
+    """Raised when a pending record cannot be staged safely."""
 
 
-def stage_write(subsystem: str, payload: Dict[str, Any],
-                *, summary: str, origin: str) -> Dict[str, Any]:
+_SCHEMA_VERSION = 2
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_PENDING_ID_RE = re.compile(r"^[0-9a-f]{8}$")
+_MAX_PENDING_RECORD_BYTES = 8 * 1024 * 1024
+_MAX_PENDING_DIRECTORY_ENTRIES = 4096
+_ALLOWED_ORIGINS = frozenset({"foreground", "background_review"})
+_REQUIRED_SESSION_CONTEXT_FIELDS = (
+    "profile",
+    "session_id",
+    "surface",
+    "tool_call_id",
+)
+
+
+def _canonical_payload_bytes(payload: Dict[str, Any]) -> bytes:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _canonical_record_bytes(record: Dict[str, Any]) -> bytes:
+    integrity_fields = {
+        key: value for key, value in record.items() if key != "record_hash"
+    }
+    return json.dumps(
+        integrity_fields,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _owner_only_permissions_supported() -> bool:
+    """Return whether this runtime can enforce the pending-store owner boundary."""
+    return (
+        os.name != "nt"
+        and isinstance(getattr(os, "O_NOFOLLOW", None), int)
+        and isinstance(getattr(os, "O_DIRECTORY", None), int)
+        and os.open in os.supports_dir_fd
+        and os.mkdir in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.unlink in os.supports_dir_fd
+        and os.scandir in os.supports_fd
+    )
+
+
+def collect_session_context(
+    *, session_id: Optional[str], tool_call_id: Optional[str]
+) -> Dict[str, str]:
+    """Build audit context from task-local identity plus dispatch IDs."""
+    try:
+        from gateway.session_context import get_session_var
+
+        profile = get_session_var("HERMES_SESSION_PROFILE", "")
+        surface = (
+            get_session_var("HERMES_SESSION_PLATFORM", "")
+            or get_session_var("HERMES_SESSION_SOURCE", "")
+        )
+        context_session_id = get_session_var("HERMES_SESSION_ID", "")
+    except ImportError:
+        profile = ""
+        surface = ""
+        context_session_id = ""
+    if not profile:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            profile = get_active_profile_name()
+        except Exception:
+            profile = "default"
+    return {
+        "profile": profile or "default",
+        "session_id": (session_id or context_session_id or "").strip(),
+        "surface": (surface or "").strip(),
+        "tool_call_id": (tool_call_id or "").strip(),
+    }
+
+
+def validate_pending_record(record: Dict[str, Any]) -> tuple[bool, str]:
+    """Validate the integrity and bound provenance of a v2 pending record."""
+    if not isinstance(record, dict):
+        return False, "pending record is not an object"
+    if record.get("schema_version") != _SCHEMA_VERSION:
+        return False, "pending record is not schema v2"
+    subsystem = record.get("subsystem")
+    if subsystem not in _SUBSYSTEMS:
+        return False, "pending record has an invalid subsystem"
+    pending_id = record.get("id")
+    if not isinstance(pending_id, str) or not _PENDING_ID_RE.fullmatch(pending_id):
+        return False, "pending record has an invalid id"
+    summary = record.get("summary")
+    if not isinstance(summary, str):
+        return False, "pending record summary is not text"
+    origin = record.get("origin")
+    if origin not in _ALLOWED_ORIGINS:
+        return False, "pending record has an invalid origin"
+    created_at = record.get("created_at")
+    if (
+        isinstance(created_at, bool)
+        or not isinstance(created_at, (int, float))
+        or not math.isfinite(created_at)
+        or created_at <= 0
+    ):
+        return False, "pending record has an invalid created_at"
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return False, "pending record payload is not an object"
+    action = record.get("action")
+    if not isinstance(action, str) or not action or action != payload.get("action"):
+        return False, "pending record action does not match its payload"
+    try:
+        expected_payload_hash = hashlib.sha256(
+            _canonical_payload_bytes(payload)
+        ).hexdigest()
+    except (TypeError, ValueError):
+        return False, "pending record payload is not canonical JSON"
+    if record.get("payload_hash") != expected_payload_hash:
+        return False, "pending record payload hash does not match"
+    session_context = record.get("session_context")
+    if not isinstance(session_context, dict):
+        return False, "pending record has no session context"
+    for field in _REQUIRED_SESSION_CONTEXT_FIELDS:
+        value = session_context.get(field)
+        if not isinstance(value, str) or not value.strip():
+            return False, f"pending record session context is missing {field}"
+    if subsystem == SKILLS:
+        target_hash = record.get("target_tree_pre_image_hash")
+        if not isinstance(target_hash, str) or not _SHA256_RE.fullmatch(target_hash):
+            return False, "pending skill record has no valid target pre-image hash"
+    try:
+        expected_record_hash = hashlib.sha256(
+            _canonical_record_bytes(record)
+        ).hexdigest()
+    except (TypeError, ValueError):
+        return False, "pending record metadata is not canonical JSON"
+    if record.get("record_hash") != expected_record_hash:
+        return False, "pending record integrity hash does not match"
+    return True, ""
+
+
+def _validate_owner_only_directory_fd(fd: int, label: str) -> None:
+    info = os.fstat(fd)
+    if not stat.S_ISDIR(info.st_mode):
+        raise PendingStoreError(f"{label} is not a directory")
+    if hasattr(os, "geteuid") and info.st_uid != os.geteuid():
+        raise PendingStoreError(f"{label} is not owned by the current user")
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        raise PendingStoreError(f"{label} must have mode 0700")
+
+
+@contextmanager
+def _open_pending_directory_fd(subsystem: str, *, create: bool = False):
+    """Open the pending store through held no-follow directory descriptors."""
+    if subsystem not in _SUBSYSTEMS:
+        raise PendingStoreError("invalid pending subsystem")
+    if not _owner_only_permissions_supported():
+        raise PendingStoreError(
+            "owner-only pending-store permissions are not supported on this platform"
+        )
+    flags = os.O_RDONLY | os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    home_fd = pending_fd = subsystem_fd = None
+    try:
+        home_fd = os.open(get_hermes_home(), flags)
+        home_info = os.fstat(home_fd)
+        if not stat.S_ISDIR(home_info.st_mode):
+            raise PendingStoreError("Hermes home is not a real directory")
+        if hasattr(os, "geteuid") and home_info.st_uid != os.geteuid():
+            raise PendingStoreError("Hermes home is not owned by the current user")
+        if create:
+            try:
+                os.mkdir("pending", 0o700, dir_fd=home_fd)
+            except FileExistsError:
+                pass
+        pending_fd = os.open("pending", flags, dir_fd=home_fd)
+        _validate_owner_only_directory_fd(pending_fd, "pending store directory")
+        if create:
+            try:
+                os.mkdir(subsystem, 0o700, dir_fd=pending_fd)
+            except FileExistsError:
+                pass
+        subsystem_fd = os.open(subsystem, flags, dir_fd=pending_fd)
+        _validate_owner_only_directory_fd(
+            subsystem_fd, f"pending {subsystem} directory"
+        )
+        yield subsystem_fd
+    except PendingStoreError:
+        raise
+    except OSError as exc:
+        raise PendingStoreError(
+            f"pending store path is not a real directory or cannot be opened safely: {exc}"
+        ) from exc
+    finally:
+        for fd in (subsystem_fd, pending_fd, home_fd):
+            if fd is not None:
+                os.close(fd)
+
+
+def _write_owner_only_record(
+    directory_fd: int, filename: str, record: Dict[str, Any]
+) -> None:
+    """Atomically publish one 0600 JSON record without overwriting an id."""
+    data = json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8")
+    tmp = f".{filename}.{uuid.uuid4().hex}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = None
+    published = False
+    try:
+        fd = os.open(tmp, flags, 0o600, dir_fd=directory_fd)
+        with os.fdopen(fd, "wb") as handle:
+            fd = None
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(
+            tmp,
+            filename,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        published = True
+        os.unlink(tmp, dir_fd=directory_fd)
+        os.fsync(directory_fd)
+        info = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
+            raise PendingStoreError("pending record was not published safely as 0600")
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        if published:
+            try:
+                os.unlink(filename, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+        try:
+            os.unlink(tmp, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def stage_write(
+    subsystem: str,
+    payload: Dict[str, Any],
+    *,
+    summary: str,
+    origin: str,
+    session_context: Optional[Dict[str, str]] = None,
+    target_tree_pre_image_hash: Optional[str] = None,
+) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
 
     Args:
@@ -125,12 +384,20 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
             entry text itself.
         origin: ``foreground`` or ``background_review`` — recorded for audit.
 
-    Returns a dict with ``id`` and metadata. Best-effort: on disk failure it
-    logs and still returns a record (the write is simply lost, which is the
-    safe failure for an approval gate — nothing is silently committed).
+    Returns a validated dict with ``id`` and metadata. Any validation, ownership,
+    path-safety, size, or disk failure raises ``PendingStoreError`` so the caller
+    can fail closed without reporting a staged write that was not persisted.
     """
     pid = uuid.uuid4().hex[:8]
+    try:
+        payload_bytes = _canonical_payload_bytes(payload)
+    except (TypeError, ValueError) as exc:
+        raise PendingStoreError(
+            "pending record payload is not canonical JSON"
+        ) from exc
+    payload_hash = hashlib.sha256(payload_bytes).hexdigest()
     record = {
+        "schema_version": _SCHEMA_VERSION,
         "id": pid,
         "subsystem": subsystem,
         "action": payload.get("action", ""),
@@ -138,66 +405,251 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         "origin": origin or "foreground",
         "created_at": time.time(),
         "payload": payload,
+        "payload_hash": payload_hash,
+        "session_context": dict(session_context or {}),
     }
+    if target_tree_pre_image_hash is not None:
+        record["target_tree_pre_image_hash"] = target_tree_pre_image_hash
+    record["record_hash"] = hashlib.sha256(
+        _canonical_record_bytes(record)
+    ).hexdigest()
+    valid, reason = validate_pending_record(record)
+    if not valid:
+        raise PendingStoreError(reason)
+    record_size = len(json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8"))
+    if record_size > _MAX_PENDING_RECORD_BYTES:
+        raise PendingStoreError("pending record exceeds the staging size limit")
+
     try:
-        d = _pending_dir(subsystem)
-        d.mkdir(parents=True, exist_ok=True)
-        path = d / f"{pid}.json"
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
-    except Exception as e:  # pragma: no cover - disk failure path
-        logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+        with _open_pending_directory_fd(subsystem, create=True) as directory_fd:
+            _write_owner_only_record(directory_fd, f"{pid}.json", record)
+    except PendingStoreError:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Failed to stage pending %s write: %s", subsystem, exc, exc_info=True
+        )
+        raise PendingStoreError(f"failed to stage pending {subsystem} write") from exc
     return record
 
 
-def list_pending(subsystem: str) -> List[Dict[str, Any]]:
-    """Return all pending records for ``subsystem``, oldest first."""
-    d = _pending_dir(subsystem)
-    if not d.exists():
-        return []
-    records: List[Dict[str, Any]] = []
-    for p in d.glob("*.json"):
+def _read_pending_record_fd(
+    directory_fd: int, subsystem: str, pending_id: str
+) -> Optional[tuple[Dict[str, Any], tuple[int, int]]]:
+    if not isinstance(pending_id, str) or not _PENDING_ID_RE.fullmatch(pending_id):
+        return None
+    filename = f"{pending_id}.json"
+    try:
+        info = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            return None
+        if info.st_nlink != 1 or info.st_size > _MAX_PENDING_RECORD_BYTES:
+            return None
+        if hasattr(os, "geteuid") and info.st_uid != os.geteuid():
+            return None
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            return None
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(filename, flags, dir_fd=directory_fd)
         try:
-            records.append(json.loads(p.read_text(encoding="utf-8")))
-        except Exception:
-            logger.warning("Skipping unreadable pending record: %s", p)
-    records.sort(key=lambda r: r.get("created_at", 0))
+            before = os.fstat(fd)
+            if (before.st_dev, before.st_ino) != (info.st_dev, info.st_ino):
+                return None
+            chunks = []
+            total = 0
+            while True:
+                chunk = os.read(
+                    fd,
+                    min(1024 * 1024, _MAX_PENDING_RECORD_BYTES + 1 - total),
+                )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > _MAX_PENDING_RECORD_BYTES:
+                    return None
+            after = os.fstat(fd)
+        finally:
+            os.close(fd)
+        stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_nlink")
+        if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+            return None
+        record = json.loads(b"".join(chunks).decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    valid, _ = validate_pending_record(record)
+    if not valid:
+        return None
+    if record.get("id") != pending_id or record.get("subsystem") != subsystem:
+        return None
+    return record, (after.st_dev, after.st_ino)
+
+
+def _read_pending_record(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        with _open_pending_directory_fd(subsystem) as directory_fd:
+            result = _read_pending_record_fd(directory_fd, subsystem, pending_id)
+    except PendingStoreError:
+        return None
+    return result[0] if result is not None else None
+
+
+def list_pending(subsystem: str) -> List[Dict[str, Any]]:
+    """Return safe, valid v2 records for ``subsystem``, oldest first."""
+    records: List[Dict[str, Any]] = []
+    try:
+        with _open_pending_directory_fd(subsystem) as directory_fd:
+            names = []
+            with os.scandir(directory_fd) as entries:
+                for entry in entries:
+                    names.append(entry.name)
+                    if len(names) > _MAX_PENDING_DIRECTORY_ENTRIES:
+                        logger.warning(
+                            "Pending %s directory exceeds the entry budget", subsystem
+                        )
+                        return []
+            names.sort()
+            for name in names:
+                if not name.endswith(".json"):
+                    continue
+                result = _read_pending_record_fd(
+                    directory_fd, subsystem, name[:-5]
+                )
+                if result is None:
+                    logger.warning(
+                        "Skipping unsafe or invalid pending record: %s/%s",
+                        subsystem,
+                        name,
+                    )
+                    continue
+                records.append(result[0])
+    except (OSError, PendingStoreError):
+        return []
+    records.sort(key=lambda record: record.get("created_at", 0))
     return records
 
 
 def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
-    """Return a single pending record by id, or None."""
-    path = _pending_dir(subsystem) / f"{pending_id}.json"
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    """Return one safe, valid v2 pending record by id, or None."""
+    return _read_pending_record(subsystem, pending_id)
 
 
 def discard_pending(subsystem: str, pending_id: str) -> bool:
-    """Delete a pending record. Returns True if it existed."""
-    path = _pending_dir(subsystem) / f"{pending_id}.json"
+    """Delete a validated pending record. Unsafe/legacy records stay untouched."""
     try:
-        if path.exists():
-            path.unlink()
+        with _open_pending_directory_fd(subsystem) as directory_fd:
+            result = _read_pending_record_fd(directory_fd, subsystem, pending_id)
+            if result is None:
+                return False
+            _, expected_identity = result
+            filename = f"{pending_id}.json"
+            current = os.stat(
+                filename, dir_fd=directory_fd, follow_symlinks=False
+            )
+            if (current.st_dev, current.st_ino) != expected_identity:
+                return False
+            if current.st_nlink != 1 or not stat.S_ISREG(current.st_mode):
+                return False
+            os.unlink(filename, dir_fd=directory_fd)
+            os.fsync(directory_fd)
             return True
-    except Exception as e:  # pragma: no cover
-        logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
-    return False
+    except (OSError, PendingStoreError) as exc:  # pragma: no cover - disk failure path
+        logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, exc)
+        return False
+
+
+def _pending_claim_name(pending_id: str) -> str:
+    return f".{pending_id}.applying"
+
+
+def claim_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
+    """Move a valid record to a non-replayable claim before applying it."""
+    try:
+        with _open_pending_directory_fd(subsystem) as directory_fd:
+            result = _read_pending_record_fd(directory_fd, subsystem, pending_id)
+            if result is None:
+                return None
+            record, expected_identity = result
+            filename = f"{pending_id}.json"
+            current = os.stat(
+                filename, dir_fd=directory_fd, follow_symlinks=False
+            )
+            if (current.st_dev, current.st_ino) != expected_identity:
+                return None
+            claim_name = _pending_claim_name(pending_id)
+            os.link(
+                filename,
+                claim_name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            os.unlink(filename, dir_fd=directory_fd)
+            os.fsync(directory_fd)
+            return record
+    except (OSError, PendingStoreError) as exc:
+        logger.error("Failed to claim pending %s/%s: %s", subsystem, pending_id, exc)
+        return None
+
+
+def restore_pending_claim(subsystem: str, pending_id: str) -> bool:
+    """Restore a failed apply claim to the reviewable queue without overwrite."""
+    try:
+        with _open_pending_directory_fd(subsystem) as directory_fd:
+            claim_name = _pending_claim_name(pending_id)
+            info = os.stat(
+                claim_name, dir_fd=directory_fd, follow_symlinks=False
+            )
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())
+            ):
+                return False
+            os.link(
+                claim_name,
+                f"{pending_id}.json",
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            os.unlink(claim_name, dir_fd=directory_fd)
+            os.fsync(directory_fd)
+            return True
+    except (OSError, PendingStoreError) as exc:
+        logger.error("Failed to restore pending claim %s/%s: %s", subsystem, pending_id, exc)
+        return False
+
+
+def finalize_pending_claim(subsystem: str, pending_id: str) -> bool:
+    """Delete a successfully applied record from its non-replayable quarantine."""
+    try:
+        with _open_pending_directory_fd(subsystem) as directory_fd:
+            claim_name = _pending_claim_name(pending_id)
+            info = os.stat(
+                claim_name, dir_fd=directory_fd, follow_symlinks=False
+            )
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())
+            ):
+                return False
+            os.unlink(claim_name, dir_fd=directory_fd)
+            os.fsync(directory_fd)
+            return True
+    except (OSError, PendingStoreError) as exc:
+        logger.error("Failed to finalize pending claim %s/%s: %s", subsystem, pending_id, exc)
+        return False
 
 
 def pending_count(subsystem: str) -> int:
-    """Cheap count of pending records (for notification badges)."""
-    d = _pending_dir(subsystem)
-    if not d.exists():
-        return 0
-    try:
-        return sum(1 for _ in d.glob("*.json"))
-    except Exception:
-        return 0
+    """Count safe, valid pending records for notification badges."""
+    return len(list_pending(subsystem))
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +666,10 @@ def current_origin() -> str:
     """
     try:
         from tools.skill_provenance import get_current_write_origin
-        return get_current_write_origin()
+        origin = get_current_write_origin()
+        if origin == "assistant_tool":
+            return "foreground"
+        return origin
     except Exception:
         return "foreground"
 

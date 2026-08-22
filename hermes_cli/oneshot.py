@@ -28,7 +28,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Optional
 
-from gateway.session_context import declare_stateless_channel
+from gateway.session_context import declare_stateless_channel, scoped_session_source
 from hermes_cli.fallback_config import get_fallback_chain
 
 
@@ -274,25 +274,26 @@ def run_oneshot(
     result: dict = {}
     failure: BaseException | None = None
     try:
-        with redirect_stdout(devnull), redirect_stderr(devnull):
-            try:
-                response, result = _run_agent(
-                    prompt,
-                    model=model,
-                    provider=provider,
-                    toolsets=explicit_toolsets,
-                    use_config_toolsets=use_config_toolsets,
-                    skills=skills,
-                )
-            except BaseException as exc:  # noqa: BLE001
-                # Capture anything that escapes the agent (including OSError
-                # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
-                # KeyboardInterrupt, SystemExit, etc.) so we can surface it on
-                # the real stderr instead of crashing past the redirect with a
-                # traceback that the caller never sees. A silent exit in a
-                # cron / SSH / subprocess context is the worst failure mode.
-                # See #30623.
-                failure = exc
+        with scoped_session_source("cli"):
+            with redirect_stdout(devnull), redirect_stderr(devnull):
+                try:
+                    response, result = _run_agent(
+                        prompt,
+                        model=model,
+                        provider=provider,
+                        toolsets=explicit_toolsets,
+                        use_config_toolsets=use_config_toolsets,
+                        skills=skills,
+                    )
+                except BaseException as exc:  # noqa: BLE001
+                    # Capture anything that escapes the agent (including OSError
+                    # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
+                    # KeyboardInterrupt, SystemExit, etc.) so we can surface it on
+                    # the real stderr instead of crashing past the redirect with a
+                    # traceback that the caller never sees. A silent exit in a
+                    # cron / SSH / subprocess context is the worst failure mode.
+                    # See #30623.
+                    failure = exc
     finally:
         try:
             devnull.close()

@@ -32,11 +32,16 @@ Directory layout for user skills:
             └── SKILL.md
 """
 
+import contextvars as _ctxvars
+import hashlib
 import json
 import logging
+import os
 import re
 import shutil
-import contextvars as _ctxvars
+import stat
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -97,7 +102,12 @@ def _reset_background_review_read_marks() -> None:
 # Import security scanner — external hub installs always get scanned;
 # agent-created skills only get scanned when skills.guard_agent_created is on.
 try:
-    from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+    from tools.skills_guard import (
+        scan_skill,
+        scan_skill_content,
+        should_allow_install,
+        format_scan_report,
+    )
     _GUARD_AVAILABLE = True
 except ImportError:
     _GUARD_AVAILABLE = False
@@ -122,14 +132,33 @@ def _guard_agent_created_enabled() -> bool:
         return False
 
 
-def _security_scan_skill(skill_dir: Path) -> Optional[str]:
+def _guard_agent_created_enabled_readonly() -> bool:
+    """Read the create-scan policy without creating the Hermes directory tree."""
+    try:
+        from hermes_cli.config import read_raw_config, _expand_env_vars
+        from hermes_cli.managed_scope import apply_managed_overlay
+
+        cfg = apply_managed_overlay(_expand_env_vars(read_raw_config()))
+        return is_truthy_value(
+            cfg_get(cfg, "skills", "guard_agent_created"),
+            default=False,
+        )
+    except Exception:
+        return False
+
+
+def _security_scan_skill(
+    skill_dir: Path, *, guard_enabled: Optional[bool] = None
+) -> Optional[str]:
     """Scan a skill directory after write. Returns error string if blocked, else None.
 
     No-op when skills.guard_agent_created is disabled (the default).
     """
     if not _GUARD_AVAILABLE:
         return None
-    if not _guard_agent_created_enabled():
+    if guard_enabled is None:
+        guard_enabled = _guard_agent_created_enabled()
+    if not guard_enabled:
         return None
     try:
         result = scan_skill(skill_dir, source="agent-created")
@@ -147,6 +176,35 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     except Exception as e:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
+
+
+def _security_scan_new_skill_content(name: str, content: str) -> Optional[str]:
+    """Scan exact proposed SKILL.md bytes before they become discoverable."""
+    if not _GUARD_AVAILABLE:
+        return None
+    guard_enabled = None
+    if _pending_target_anchor.get() is not None:
+        # Approval replay must not let load_config() materialize an absent
+        # skills root after the staged pre-image was bound.
+        guard_enabled = _guard_agent_created_enabled_readonly()
+    if guard_enabled is None:
+        guard_enabled = _guard_agent_created_enabled()
+    if not guard_enabled:
+        return None
+    try:
+        result = scan_skill_content(
+            content,
+            skill_name=name,
+            source="agent-created",
+        )
+        allowed, reason = should_allow_install(result)
+        if allowed is not True:
+            report = format_scan_report(result)
+            return f"Security scan blocked this skill ({reason}):\n{report}"
+    except Exception as e:
+        logger.warning("Security scan failed for proposed skill %s: %s", name, e, exc_info=True)
+    return None
+
 
 import yaml
 
@@ -930,23 +988,33 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if existing:
         return {
             "success": False,
-            "error": f"A skill named '{name}' already exists at {existing['path']}."
+            "error": f"A skill named '{name}' already exists at {existing['path']}.",
         }
+
+    pre_image_guard = _pending_pre_image_guard(name, category)
+    if pre_image_guard:
+        return pre_image_guard
+
+    # Scan the exact proposed bytes before publishing SKILL.md. A rejected
+    # create never becomes discoverable and needs no race-prone rollback.
+    scan_error = _security_scan_new_skill_content(name, content)
+    if scan_error:
+        return {"success": False, "error": scan_error}
 
     # Create the skill directory
     skill_dir = _resolve_skill_dir(name, category)
-    skill_dir.mkdir(parents=True, exist_ok=True)
+    if _pending_target_anchor.get() is None:
+        skill_dir.mkdir(parents=True, exist_ok=True)
 
     # Write instructional documents with a readable mode while preserving
     # the mode of an existing file across the atomic replacement.
     skill_md = skill_dir / "SKILL.md"
-    atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
-
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
-    if scan_error:
-        shutil.rmtree(skill_dir, ignore_errors=True)
-        return {"success": False, "error": scan_error}
+    pre_image_guard = _pending_pre_image_guard(name, category)
+    if pre_image_guard:
+        return pre_image_guard
+    _pending_atomic_write_text(
+        skill_md, content, create_parents=True, expect_absent=True
+    )
 
     # Extract description from frontmatter for verbose notifications
     _desc = ""
@@ -1031,16 +1099,38 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if read_guard:
         return read_guard
 
+    pre_image_guard = _pending_pre_image_guard(name)
+    if pre_image_guard:
+        return pre_image_guard
+
     # Back up original content for rollback
-    original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
-    atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
+    original_content = _pending_read_text(skill_md) if skill_md.exists() else None
+    pre_image_guard = _pending_pre_image_guard(name)
+    if pre_image_guard:
+        return pre_image_guard
+    _pending_atomic_write_text(skill_md, content)
+    try:
+        published_tree_hash = _pending_assert_anchor_tree_current()
+    except ValueError:
+        if original_content is not None:
+            _pending_assert_published_text_current(skill_md, content)
+            _pending_atomic_write_text(skill_md, original_content)
+        raise
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
         if original_content is not None:
-            atomic_write_text(skill_md, original_content, preserve_mode=True)
+            _pending_assert_published_text_current(skill_md, content)
+            _pending_atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
+    try:
+        _pending_assert_anchor_tree_current(published_tree_hash)
+    except ValueError:
+        if original_content is not None:
+            _pending_assert_published_text_current(skill_md, content)
+            _pending_atomic_write_text(skill_md, original_content)
+        raise
 
     # Extract description from new content for verbose notifications
     _desc = ""
@@ -1120,7 +1210,11 @@ def _patch_skill(
     if read_guard:
         return read_guard
 
-    content = target.read_text(encoding="utf-8")
+    pre_image_guard = _pending_pre_image_guard(name)
+    if pre_image_guard:
+        return pre_image_guard
+
+    content = _pending_read_text(target)
 
     # Use the same fuzzy matching engine as the file patch tool.
     # This handles whitespace normalization, indentation differences,
@@ -1162,13 +1256,29 @@ def _patch_skill(
             }
 
     original_content = content  # for rollback
-    atomic_write_text(target, new_content, preserve_mode=True, create_mode=0o644)
+    pre_image_guard = _pending_pre_image_guard(name)
+    if pre_image_guard:
+        return pre_image_guard
+    _pending_atomic_write_text(target, new_content)
+    try:
+        published_tree_hash = _pending_assert_anchor_tree_current()
+    except ValueError:
+        _pending_assert_published_text_current(target, new_content)
+        _pending_atomic_write_text(target, original_content)
+        raise
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
     if scan_error:
-        atomic_write_text(target, original_content, preserve_mode=True)
+        _pending_assert_published_text_current(target, new_content)
+        _pending_atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
+    try:
+        _pending_assert_anchor_tree_current(published_tree_hash)
+    except ValueError:
+        _pending_assert_published_text_current(target, new_content)
+        _pending_atomic_write_text(target, original_content)
+        raise
 
     result = {
         "success": True,
@@ -1201,6 +1311,16 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+    if _pending_target_anchor.get() is not None:
+        return {
+            "success": False,
+            "error": (
+                "Approved skill deletes cannot be replayed with a portable "
+                "inode-bound unlink; the target was left unchanged. "
+                "Reject this record or perform a separate explicit delete."
+            ),
+            "_fail_closed": True,
+        }
     org_guard = _org_mirror_write_guard(name, existing["path"], "delete")
     if org_guard:
         return org_guard
@@ -1264,7 +1384,11 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     except Exception:
         curator_pass = False
 
-    if curator_pass:
+    pending_replay = _pending_target_anchor.get() is not None
+    if curator_pass and not pending_replay:
+        pre_image_guard = _pending_pre_image_guard(name)
+        if pre_image_guard:
+            return pre_image_guard
         try:
             from tools.skill_usage import archive_skill
             ok, archive_msg = archive_skill(name)
@@ -1277,12 +1401,22 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
             message += f" Content absorbed into '{absorbed_target}'."
         return {"success": True, "message": message, "_archived": True}
 
-    shutil.rmtree(skill_dir)
+    pre_image_guard = _pending_pre_image_guard(name)
+    if pre_image_guard:
+        return pre_image_guard
+    _pending_rmtree(skill_dir)
 
-    # Clean up empty category directories (don't remove the skills root itself)
-    parent = skill_dir.parent
-    if parent != skills_root and parent.exists() and not any(parent.iterdir()):
-        parent.rmdir()
+    # Clean up empty category directories only on the ordinary pathname path.
+    if _pending_target_anchor.get() is None:
+        parent = skill_dir.parent
+        if parent != skills_root and parent.exists() and not any(parent.iterdir()):
+            parent.rmdir()
+
+    if curator_pass:
+        message = f"Skill '{name}' archived in the approved-write quarantine."
+        if is_consolidation:
+            message += f" Content absorbed into '{absorbed_target}'."
+        return {"success": True, "message": message, "_archived": True}
 
     message = f"Skill '{name}' deleted."
     if is_consolidation:
@@ -1338,19 +1472,49 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
         )
         if read_guard:
             return read_guard
-    target.parent.mkdir(parents=True, exist_ok=True)
+    pre_image_guard = _pending_pre_image_guard(name)
+    if pre_image_guard:
+        return pre_image_guard
+    if _pending_target_anchor.get() is None:
+        target.parent.mkdir(parents=True, exist_ok=True)
     # Back up for rollback
-    original_content = target.read_text(encoding="utf-8") if target.exists() else None
-    atomic_write_text(target, file_content, preserve_mode=True, create_mode=0o644)
+    original_content = _pending_read_text(target) if target.exists() else None
+    pre_image_guard = _pending_pre_image_guard(name)
+    if pre_image_guard:
+        return pre_image_guard
+    _pending_atomic_write_text(
+        target,
+        file_content,
+        create_parents=True,
+        expect_absent=original_content is None,
+    )
+
+    def _rollback_published_file() -> None:
+        _pending_assert_published_text_current(target, file_content)
+        if original_content is not None:
+            _pending_atomic_write_text(target, original_content)
+        else:
+            try:
+                _pending_unlink(target)
+            except FileNotFoundError:
+                pass
+
+    try:
+        published_tree_hash = _pending_assert_anchor_tree_current()
+    except ValueError:
+        _rollback_published_file()
+        raise
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
-        if original_content is not None:
-            atomic_write_text(target, original_content, preserve_mode=True)
-        else:
-            target.unlink(missing_ok=True)
+        _rollback_published_file()
         return {"success": False, "error": scan_error}
+    try:
+        _pending_assert_anchor_tree_current(published_tree_hash)
+    except ValueError:
+        _rollback_published_file()
+        raise
 
     result = {
         "success": True,
@@ -1404,12 +1568,18 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     if read_guard:
         return read_guard
 
-    target.unlink()
+    pre_image_guard = _pending_pre_image_guard(name)
+    if pre_image_guard:
+        return pre_image_guard
 
-    # Clean up empty subdirectories
-    parent = target.parent
-    if parent != skill_dir and parent.exists() and not any(parent.iterdir()):
-        parent.rmdir()
+    _pending_unlink(target)
+
+    # Clean up empty subdirectories only on the ordinary pathname-based path.
+    # Approved replay keeps descriptor identity binding and leaves empty parents.
+    if _pending_target_anchor.get() is None:
+        parent = target.parent
+        if parent != skill_dir and parent.exists() and not any(parent.iterdir()):
+            parent.rmdir()
 
     return {
         "success": True,
@@ -1423,13 +1593,998 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
 # ContextVar bypass: set while replaying an already-approved staged skill write
 # so skill_manage() does not re-gate (and re-stage) it.
-import contextvars as _ctxvars
 _skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False
 )
 
 
-def _apply_skill_write_gate(action, name, **payload_kwargs):
+_MAX_PENDING_PRE_IMAGE_BYTES = 64 * 1024 * 1024
+_MAX_PENDING_PRE_IMAGE_ENTRIES = 16_384
+_pending_apply_pre_image_hash: "_ctxvars.ContextVar[Optional[str]]" = _ctxvars.ContextVar(
+    "pending_apply_pre_image_hash", default=None
+)
+_pending_target_anchor: "_ctxvars.ContextVar[Optional[Dict[str, Any]]]" = (
+    _ctxvars.ContextVar("pending_target_anchor", default=None)
+)
+_skill_write_thread_lock = threading.RLock()
+
+
+@contextmanager
+def _skill_write_lock():
+    """Serialize skill mutations across threads and POSIX Hermes processes."""
+    with _skill_write_thread_lock:
+        if os.name == "nt":
+            yield
+            return
+        import fcntl
+
+        lock_path = get_hermes_home() / ".skill-write.lock"
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(lock_path, flags, 0o600)
+        try:
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())
+            ):
+                raise ValueError("skill write lock is not owner-only")
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+
+def _pending_fs_identity(info: os.stat_result) -> tuple:
+    """Bind replay identity to ctime so mtime-restored writes still diverge."""
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        info.st_nlink,
+        info.st_mode,
+    )
+
+
+def _pending_refresh_directory_identity(
+    anchor: Dict[str, Any], directory_fd: int, relative_key: str
+) -> None:
+    """Refresh metadata changed by Hermes' own descriptor-relative mutation."""
+    info = os.fstat(directory_fd)
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError("pending skill target parent is not a directory")
+    anchor.setdefault("tree_identities", {})[relative_key] = _pending_fs_identity(
+        info
+    )
+
+
+def _hash_skill_tree_fd(
+    root: Path,
+    root_fd: int,
+    identities: Optional[Dict[str, tuple]] = None,
+) -> str:
+    """Hash one skill tree through held no-follow directory descriptors."""
+    root_info = os.fstat(root_fd)
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise ValueError("skill target is not a real directory")
+    if identities is not None:
+        identities["."] = _pending_fs_identity(root_info)
+    digest = hashlib.sha256()
+    digest.update(
+        (
+            f"present\0{root.absolute()}\0{root_info.st_dev}\0{root_info.st_ino}\0"
+            f"{stat.S_IMODE(root_info.st_mode):o}\0"
+        ).encode("utf-8")
+    )
+    total_bytes = 0
+    total_entries = 0
+
+    def _walk(directory_fd: int, prefix: str = "") -> None:
+        nonlocal total_bytes, total_entries
+        directory_before = os.fstat(directory_fd)
+        names = []
+        with os.scandir(directory_fd) as entries:
+            for entry in entries:
+                names.append(entry.name)
+                total_entries += 1
+                if total_entries > _MAX_PENDING_PRE_IMAGE_ENTRIES:
+                    raise ValueError("skill target tree exceeds entry limit")
+        names.sort()
+        for name in names:
+            relative = f"{prefix}/{name}" if prefix else name
+            info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            mode = stat.S_IMODE(info.st_mode)
+            if stat.S_ISLNK(info.st_mode):
+                raise ValueError("skill target tree contains a symlink")
+            if stat.S_ISDIR(info.st_mode):
+                child_fd = os.open(
+                    name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    opened = os.fstat(child_fd)
+                    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                        raise ValueError("skill target changed while hashing")
+                    if identities is not None:
+                        identities[relative] = _pending_fs_identity(opened)
+                    digest.update(f"dir\0{relative}\0{mode:o}\0".encode("utf-8"))
+                    _walk(child_fd, relative)
+                finally:
+                    os.close(child_fd)
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("skill target contains an unsupported file type")
+            if info.st_nlink != 1:
+                raise ValueError("skill target tree contains a hard-linked file")
+            total_bytes += info.st_size
+            if total_bytes > _MAX_PENDING_PRE_IMAGE_BYTES:
+                raise ValueError("skill target tree exceeds the pre-image size limit")
+            file_fd = os.open(
+                name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd
+            )
+            try:
+                before = os.fstat(file_fd)
+                if (
+                    (before.st_dev, before.st_ino) != (info.st_dev, info.st_ino)
+                    or before.st_nlink != 1
+                    or not stat.S_ISREG(before.st_mode)
+                ):
+                    raise ValueError("skill target file changed before hashing")
+                file_digest = hashlib.sha256()
+                while True:
+                    chunk = os.read(file_fd, 1024 * 1024)
+                    if not chunk:
+                        break
+                    file_digest.update(chunk)
+                after = os.fstat(file_fd)
+            finally:
+                os.close(file_fd)
+            stable_fields = (
+                "st_dev",
+                "st_ino",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+                "st_nlink",
+                "st_mode",
+            )
+            if any(
+                getattr(before, field) != getattr(after, field)
+                for field in stable_fields
+            ):
+                raise ValueError("skill target changed while its pre-image was hashed")
+            if identities is not None:
+                identities[relative] = _pending_fs_identity(after)
+            digest.update(b"file\0")
+            digest.update(relative.encode("utf-8"))
+            digest.update(f"\0{mode:o}\0{after.st_size}\0".encode("ascii"))
+            digest.update(file_digest.digest())
+            digest.update(b"\0")
+        directory_after = os.fstat(directory_fd)
+        directory_fields = (
+            "st_dev",
+            "st_ino",
+            "st_mtime_ns",
+            "st_ctime_ns",
+            "st_nlink",
+            "st_mode",
+        )
+        if any(
+            getattr(directory_before, field) != getattr(directory_after, field)
+            for field in directory_fields
+        ):
+            raise ValueError("skill target changed while its pre-image was hashed")
+
+    _walk(root_fd)
+    return digest.hexdigest()
+
+
+def _target_tree_pre_image_hash(name: str, category: Optional[str] = None) -> str:
+    """Hash a skill tree and the identity of the selected target directory."""
+    found = _find_skill(name)
+    digest = hashlib.sha256()
+    if not found:
+        destination = _resolve_skill_dir(name, category)
+        skills_root = _skills_dir()
+        digest.update(b"absent\0")
+        digest.update(str(destination.resolve(strict=False)).encode("utf-8"))
+        digest.update(b"\0")
+        try:
+            root_info = skills_root.lstat()
+        except FileNotFoundError:
+            anchor_root = skills_root.parent
+            anchor_info = anchor_root.lstat()
+            if stat.S_ISLNK(anchor_info.st_mode) or not stat.S_ISDIR(
+                anchor_info.st_mode
+            ):
+                raise ValueError("skills root parent is not a real directory")
+            digest.update(
+                (
+                    f"root-parent\0{anchor_root.resolve()}\0{anchor_info.st_dev}\0"
+                    f"{anchor_info.st_ino}\0{stat.S_IMODE(anchor_info.st_mode):o}\0"
+                ).encode("utf-8")
+            )
+            current_parent = skills_root
+            digest.update(
+                f"parent-absent\0{current_parent}\0".encode("utf-8")
+            )
+            relative_parent = destination.parent.relative_to(skills_root)
+            for part in relative_parent.parts:
+                current_parent = current_parent / part
+                digest.update(
+                    f"parent-absent\0{current_parent}\0".encode("utf-8")
+                )
+        else:
+            if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+                raise ValueError("skills root is not a real directory")
+            digest.update(
+                (
+                    f"root\0{skills_root.resolve()}\0{root_info.st_dev}\0"
+                    f"{root_info.st_ino}\0{stat.S_IMODE(root_info.st_mode):o}\0"
+                ).encode("utf-8")
+            )
+            try:
+                relative_parent = destination.parent.relative_to(skills_root)
+            except ValueError as exc:
+                raise ValueError("new skill target escapes the skills root") from exc
+            current_parent = skills_root
+            missing_parent = False
+            for part in relative_parent.parts:
+                current_parent = current_parent / part
+                if missing_parent:
+                    digest.update(
+                        f"parent-absent\0{current_parent}\0".encode("utf-8")
+                    )
+                    continue
+                try:
+                    parent_info = current_parent.lstat()
+                except FileNotFoundError:
+                    missing_parent = True
+                    digest.update(
+                        f"parent-absent\0{current_parent}\0".encode("utf-8")
+                    )
+                    continue
+                if stat.S_ISLNK(parent_info.st_mode) or not stat.S_ISDIR(
+                    parent_info.st_mode
+                ):
+                    raise ValueError("new skill target parent is not a real directory")
+                digest.update(
+                    (
+                        f"parent\0{current_parent.resolve()}\0{parent_info.st_dev}\0"
+                        f"{parent_info.st_ino}\0{stat.S_IMODE(parent_info.st_mode):o}\0"
+                    ).encode("utf-8")
+                )
+        return digest.hexdigest()
+
+    root = Path(found["path"])
+    if os.name == "nt" or not hasattr(os, "O_NOFOLLOW"):
+        raise ValueError("descriptor-safe skill pre-image hashing is unsupported")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parent_fd = os.open(root.parent, flags)
+    try:
+        root_fd = os.open(root.name, flags, dir_fd=parent_fd)
+        try:
+            path_info = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+            opened = os.fstat(root_fd)
+            if (
+                not stat.S_ISDIR(path_info.st_mode)
+                or (path_info.st_dev, path_info.st_ino)
+                != (opened.st_dev, opened.st_ino)
+            ):
+                raise ValueError("skill target identity changed while opening")
+            result = _hash_skill_tree_fd(root, root_fd)
+            final_path = os.stat(
+                root.name, dir_fd=parent_fd, follow_symlinks=False
+            )
+            if (final_path.st_dev, final_path.st_ino) != (
+                opened.st_dev,
+                opened.st_ino,
+            ):
+                raise ValueError("skill target identity changed while hashing")
+            return result
+        finally:
+            os.close(root_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _pending_pre_image_guard(
+    name: str, category: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    expected = _pending_apply_pre_image_hash.get()
+    if not expected:
+        return None
+    try:
+        current = _target_tree_pre_image_hash(name, category)
+    except (OSError, ValueError) as exc:
+        return {
+            "success": False,
+            "error": f"Could not validate skill target pre-image: {exc}",
+        }
+    if current != expected:
+        return {
+            "success": False,
+            "error": (
+                "Pending skill write target pre-image changed; "
+                "restage against the current skill."
+            ),
+        }
+    return None
+
+
+@contextmanager
+def _pending_target_anchor_context(name: str, category: Optional[str] = None):
+    """Bind approved writes to a held no-follow target-tree descriptor."""
+    expected = _pending_apply_pre_image_hash.get()
+    if not expected:
+        yield None
+        return
+    if os.name == "nt" or not hasattr(os, "O_NOFOLLOW"):
+        raise ValueError("descriptor-anchored pending skill apply is unsupported")
+
+    found = _find_skill(name)
+    if found:
+        root = Path(found["path"])
+    else:
+        skills_root = _skills_dir()
+        try:
+            skills_root_info = skills_root.lstat()
+        except FileNotFoundError:
+            root = skills_root.parent
+        else:
+            if stat.S_ISLNK(skills_root_info.st_mode) or not stat.S_ISDIR(
+                skills_root_info.st_mode
+            ):
+                raise ValueError("skills root is not a real directory")
+            root = skills_root
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parent_fd = os.open(root.parent, flags)
+    try:
+        root_fd = os.open(root.name, flags, dir_fd=parent_fd)
+    except BaseException:
+        os.close(parent_fd)
+        raise
+    token = None
+    try:
+        opened = os.fstat(root_fd)
+        current_path = root.lstat()
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or stat.S_ISLNK(current_path.st_mode)
+            or (opened.st_dev, opened.st_ino)
+            != (current_path.st_dev, current_path.st_ino)
+        ):
+            raise ValueError("skill target identity changed before apply")
+        tree_identities: Dict[str, tuple] = {".": _pending_fs_identity(opened)}
+        if found:
+            current_hash = _hash_skill_tree_fd(root, root_fd, tree_identities)
+        else:
+            current_hash = _target_tree_pre_image_hash(name, category)
+            destination = _resolve_skill_dir(name, category)
+            relative_parent = destination.parent.relative_to(root)
+            chain_fd = os.dup(root_fd)
+            prefix_parts: List[str] = []
+            try:
+                for part in relative_parent.parts:
+                    try:
+                        next_fd = os.open(
+                            part,
+                            flags,
+                            dir_fd=chain_fd,
+                        )
+                    except FileNotFoundError:
+                        break
+                    prefix_parts.append(part)
+                    tree_identities["/".join(prefix_parts)] = _pending_fs_identity(
+                        os.fstat(next_fd)
+                    )
+                    os.close(chain_fd)
+                    chain_fd = next_fd
+            finally:
+                os.close(chain_fd)
+        current_path = root.lstat()
+        if (
+            current_hash != expected
+            or (opened.st_dev, opened.st_ino)
+            != (current_path.st_dev, current_path.st_ino)
+        ):
+            raise ValueError("Pending skill write target pre-image changed")
+        anchor = {
+            "root_fd": root_fd,
+            "parent_fd": parent_fd,
+            "root_name": root.name,
+            "root_path": root,
+            "root_dev": opened.st_dev,
+            "root_ino": opened.st_ino,
+            "target_exists": bool(found),
+            "tree_identities": tree_identities,
+        }
+        token = _pending_target_anchor.set(anchor)
+        yield anchor
+    finally:
+        if token is not None:
+            _pending_target_anchor.reset(token)
+        os.close(root_fd)
+        os.close(parent_fd)
+
+
+def _pending_anchor_is_current() -> bool:
+    anchor = _pending_target_anchor.get()
+    if anchor is None:
+        return True
+    try:
+        current = Path(anchor["root_path"]).lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(current.st_mode)
+        and not stat.S_ISLNK(current.st_mode)
+        and (current.st_dev, current.st_ino)
+        == (anchor["root_dev"], anchor["root_ino"])
+    )
+
+
+def _pending_assert_anchor_tree_current(
+    expected_hash: Optional[str] = None,
+) -> Optional[str]:
+    """Validate and hash the published tree around a pathname-based scan."""
+    anchor = _pending_target_anchor.get()
+    if anchor is None:
+        return None
+    if not _pending_anchor_is_current():
+        raise ValueError("Pending skill write target pre-image changed")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    root_fd = os.open(".", flags, dir_fd=anchor["root_fd"])
+    identities: Dict[str, tuple] = {}
+    try:
+        current_hash = _hash_skill_tree_fd(
+            Path(anchor["root_path"]), root_fd, identities
+        )
+    finally:
+        os.close(root_fd)
+    if (
+        identities != anchor.get("tree_identities", {})
+        or not _pending_anchor_is_current()
+        or (expected_hash is not None and current_hash != expected_hash)
+    ):
+        raise ValueError("Pending skill write target pre-image changed")
+    return current_hash
+
+
+def _pending_assert_published_text_current(target: Path, expected: str) -> None:
+    """Permit rollback only while the leaf still contains Hermes-published bytes."""
+    if _pending_target_anchor.get() is None:
+        return
+    try:
+        current = _pending_read_text(target)
+    except FileNotFoundError as exc:
+        raise ValueError("Pending skill write target pre-image changed") from exc
+    if current != expected:
+        raise ValueError("Pending skill write target pre-image changed")
+
+
+@contextmanager
+def _pending_target_parent_fd(target: Path, *, create_parents: bool = False):
+    anchor = _pending_target_anchor.get()
+    if anchor is None:
+        yield None, target.name
+        return
+    try:
+        relative = target.relative_to(Path(anchor["root_path"]))
+    except ValueError as exc:
+        raise ValueError("pending skill target escaped its anchored root") from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError("pending skill target path is invalid")
+
+    fd = os.dup(anchor["root_fd"])
+    try:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent_parts = relative.parts[:-1]
+        prefix_parts: List[str] = []
+        identities = anchor.get("tree_identities", {})
+        for part in parent_parts:
+            parent_identity_key = "/".join(prefix_parts) or "."
+            prefix_parts.append(part)
+            identity_key = "/".join(prefix_parts)
+            expected_identity = identities.get(identity_key)
+            created = False
+            if create_parents:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    if expected_identity is None:
+                        raise ValueError(
+                            "Pending skill write target pre-image changed"
+                        )
+                else:
+                    if expected_identity is not None:
+                        raise ValueError(
+                            "Pending skill write target pre-image changed"
+                        )
+                    created = True
+                    _pending_refresh_directory_identity(
+                        anchor, fd, parent_identity_key
+                    )
+            elif expected_identity is None:
+                raise ValueError("Pending skill write target pre-image changed")
+            next_fd = os.open(part, flags, dir_fd=fd)
+            info = os.fstat(next_fd)
+            if not stat.S_ISDIR(info.st_mode):
+                os.close(next_fd)
+                raise ValueError("pending skill target parent is not a directory")
+            current_identity = _pending_fs_identity(info)
+            if expected_identity is not None and current_identity != expected_identity:
+                os.close(next_fd)
+                raise ValueError("Pending skill write target pre-image changed")
+            if created:
+                identities[identity_key] = current_identity
+            os.close(fd)
+            fd = next_fd
+        yield fd, relative.parts[-1]
+    finally:
+        os.close(fd)
+
+
+def _pending_read_text(target: Path) -> str:
+    anchor = _pending_target_anchor.get()
+    if anchor is None:
+        return target.read_text(encoding="utf-8")
+    with _pending_target_parent_fd(target) as (parent_fd, leaf):
+        assert parent_fd is not None
+        fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise ValueError("pending skill target file is unsafe")
+            chunks = []
+            total = 0
+            while True:
+                chunk = os.read(fd, min(1024 * 1024, MAX_SKILL_FILE_BYTES + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > MAX_SKILL_FILE_BYTES:
+                    raise ValueError("pending skill target file exceeds size limit")
+            after = os.fstat(fd)
+            if _pending_fs_identity(before) != _pending_fs_identity(after):
+                raise ValueError("pending skill target changed while reading")
+            relative_key = target.relative_to(Path(anchor["root_path"])).as_posix()
+            anchor.setdefault("read_identities", {})[
+                relative_key
+            ] = _pending_fs_identity(after)
+            return b"".join(chunks).decode("utf-8")
+        finally:
+            os.close(fd)
+
+
+def _atomic_create_text_noreplace(
+    target: Path,
+    content: str,
+    *,
+    create_parents: bool = False,
+    create_mode: int = 0o644,
+) -> None:
+    """Atomically publish a new text leaf without replacing an existing one."""
+    if create_parents:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(
+        f".pending-{os.getpid()}-{os.urandom(8).hex()}.tmp"
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(temp, flags, 0o600)
+    linked = False
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, create_mode)
+        view = memoryview(content.encode("utf-8"))
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("skill create staging write made no progress")
+            view = view[written:]
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.link(temp, target)
+        linked = True
+        os.unlink(temp)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if not linked or temp.exists():
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+
+
+def _pending_atomic_write_text(
+    target: Path,
+    content: str,
+    *,
+    create_parents: bool = False,
+    expect_absent: bool = False,
+) -> None:
+    anchor = _pending_target_anchor.get()
+    if anchor is None:
+        if expect_absent:
+            _atomic_create_text_noreplace(
+                target,
+                content,
+                create_parents=create_parents,
+                create_mode=0o644,
+            )
+        else:
+            atomic_write_text(
+                target,
+                content,
+                preserve_mode=True,
+                create_mode=0o644,
+            )
+        return
+    if not _pending_anchor_is_current():
+        raise ValueError("Pending skill write target pre-image changed")
+    with _pending_target_parent_fd(target, create_parents=create_parents) as (
+        parent_fd,
+        leaf,
+    ):
+        assert parent_fd is not None
+        try:
+            existing = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            existing = None
+        if expect_absent and existing is not None:
+            raise ValueError("Pending skill write target pre-image changed")
+        if existing is not None and (
+            not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1
+        ):
+            raise ValueError("pending skill target file is unsafe")
+        relative_key = target.relative_to(Path(anchor["root_path"])).as_posix()
+        expected_identity = anchor.get("read_identities", {}).get(relative_key)
+        if expected_identity is None:
+            expected_identity = anchor.get("tree_identities", {}).get(relative_key)
+        current_identity = (
+            None if existing is None else _pending_fs_identity(existing)
+        )
+        if current_identity != expected_identity:
+            raise ValueError("Pending skill write target pre-image changed")
+        temp_name = f".pending-{os.getpid()}-{os.urandom(8).hex()}.tmp"
+        fd = os.open(
+            temp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        published = False
+        try:
+            publish_mode = (
+                stat.S_IMODE(existing.st_mode) if existing is not None else 0o644
+            )
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, publish_mode)
+            if existing is not None and hasattr(os, "fchown"):
+                try:
+                    os.fchown(fd, existing.st_uid, existing.st_gid)
+                except PermissionError:
+                    pass
+            data = content.encode("utf-8")
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+            os.fsync(fd)
+            os.close(fd)
+            fd = -1
+            if not _pending_anchor_is_current():
+                raise ValueError("Pending skill write target pre-image changed")
+            try:
+                before_publish = os.stat(
+                    leaf, dir_fd=parent_fd, follow_symlinks=False
+                )
+            except FileNotFoundError:
+                before_publish_identity = None
+            else:
+                before_publish_identity = _pending_fs_identity(before_publish)
+            if before_publish_identity != current_identity:
+                raise ValueError("Pending skill write target pre-image changed")
+            if expect_absent:
+                os.link(
+                    temp_name,
+                    leaf,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+                os.unlink(temp_name, dir_fd=parent_fd)
+            else:
+                os.replace(
+                    temp_name,
+                    leaf,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+            published = True
+            published_identity = _pending_fs_identity(
+                os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+            )
+            anchor.setdefault("tree_identities", {})[
+                relative_key
+            ] = published_identity
+            anchor.setdefault("read_identities", {})[
+                relative_key
+            ] = published_identity
+            os.fsync(parent_fd)
+            parent_relative = target.parent.relative_to(
+                Path(anchor["root_path"])
+            ).as_posix()
+            _pending_refresh_directory_identity(
+                anchor,
+                parent_fd,
+                "." if parent_relative == "." else parent_relative,
+            )
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            if not published:
+                try:
+                    os.unlink(temp_name, dir_fd=parent_fd)
+                except OSError:
+                    pass
+
+
+def _pending_unlink(target: Path) -> None:
+    anchor = _pending_target_anchor.get()
+    if anchor is None:
+        target.unlink()
+        return
+    if not _pending_anchor_is_current():
+        raise ValueError("Pending skill write target pre-image changed")
+    with _pending_target_parent_fd(target) as (parent_fd, leaf):
+        assert parent_fd is not None
+        info = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("pending skill target file is unsafe")
+        relative_key = target.relative_to(Path(anchor["root_path"])).as_posix()
+        expected_identity = anchor.get("tree_identities", {}).get(relative_key)
+        if expected_identity is None or _pending_fs_identity(info) != expected_identity:
+            raise ValueError("Pending skill write target pre-image changed")
+        current = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+        if _pending_fs_identity(current) != expected_identity:
+            raise ValueError("Pending skill write target pre-image changed")
+        os.unlink(leaf, dir_fd=parent_fd)
+        anchor.get("tree_identities", {}).pop(relative_key, None)
+        anchor.get("read_identities", {}).pop(relative_key, None)
+        os.fsync(parent_fd)
+        parent_relative = target.parent.relative_to(
+            Path(anchor["root_path"])
+        ).as_posix()
+        _pending_refresh_directory_identity(
+            anchor,
+            parent_fd,
+            "." if parent_relative == "." else parent_relative,
+        )
+
+
+def _snapshot_pending_delete_tree_fd(
+    directory_fd: int,
+    remaining: List[int],
+    *,
+    prefix: str = "",
+    snapshot: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Validate and snapshot a delete tree completely before any mutation."""
+    result = snapshot if snapshot is not None else {"children": {}, "identities": {}}
+    directory_before = os.fstat(directory_fd)
+    names = []
+    with os.scandir(directory_fd) as entries:
+        for entry in entries:
+            names.append(entry.name)
+            if len(names) > remaining[0]:
+                raise ValueError("pending skill target tree has too many entries")
+    names.sort()
+    remaining[0] -= len(names)
+    result["children"][prefix] = names
+    result["identities"][prefix or "."] = _pending_fs_identity(directory_before)
+    for name in names:
+        relative = f"{prefix}/{name}" if prefix else name
+        info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError("pending skill target tree contains a symbolic link")
+        if stat.S_ISDIR(info.st_mode):
+            child_fd = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=directory_fd,
+            )
+            try:
+                opened = os.fstat(child_fd)
+                if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                    raise ValueError("Pending skill write target pre-image changed")
+                _snapshot_pending_delete_tree_fd(
+                    child_fd,
+                    remaining,
+                    prefix=relative,
+                    snapshot=result,
+                )
+            finally:
+                os.close(child_fd)
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("pending skill target tree contains an unsafe file")
+        file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        try:
+            opened = os.fstat(file_fd)
+            if _pending_fs_identity(opened) != _pending_fs_identity(info):
+                raise ValueError("Pending skill write target pre-image changed")
+            result["identities"][relative] = _pending_fs_identity(opened)
+        finally:
+            os.close(file_fd)
+    directory_after = os.fstat(directory_fd)
+    if _pending_fs_identity(directory_after) != _pending_fs_identity(directory_before):
+        raise ValueError("Pending skill write target pre-image changed")
+    return result
+
+
+def _pending_assert_snapshot_matches_anchor(
+    target: Path, snapshot: Dict[str, Any]
+) -> None:
+    """Require a rollback tree to equal the state published by this replay."""
+    anchor = _pending_target_anchor.get()
+    if anchor is None:
+        return
+    try:
+        prefix = target.relative_to(Path(anchor["root_path"])).as_posix()
+    except ValueError as exc:
+        raise ValueError("pending skill target escaped its anchored root") from exc
+    identities = anchor.get("tree_identities", {})
+    if prefix == ".":
+        expected = dict(identities)
+    else:
+        expected = {}
+        for key, identity in identities.items():
+            if key == prefix:
+                expected["."] = identity
+            elif key.startswith(f"{prefix}/"):
+                expected[key[len(prefix) + 1 :]] = identity
+    if not expected or expected != snapshot.get("identities", {}):
+        raise ValueError("Pending skill write target pre-image changed")
+
+
+def _pending_quarantine_tree(parent_fd: int, leaf: str, target_fd: int) -> str:
+    """Atomically move the exact approved tree into an excluded quarantine."""
+    expected = _pending_fs_identity(os.fstat(target_fd))
+    current_euid = getattr(os, "geteuid", lambda: None)()
+    try:
+        os.mkdir(".archive", 0o755, dir_fd=parent_fd)
+    except FileExistsError:
+        pass
+    archive_fd = os.open(
+        ".archive",
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=parent_fd,
+    )
+    try:
+        archive_info = os.fstat(archive_fd)
+        if (
+            not stat.S_ISDIR(archive_info.st_mode)
+            or stat.S_IMODE(archive_info.st_mode) & 0o022
+            or (current_euid is not None and archive_info.st_uid != current_euid)
+        ):
+            raise ValueError("pending skill delete archive is unsafe")
+        try:
+            os.mkdir(".pending-deletes", 0o700, dir_fd=archive_fd)
+        except FileExistsError:
+            pass
+        quarantine_fd = os.open(
+            ".pending-deletes",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=archive_fd,
+        )
+        try:
+            quarantine_info = os.fstat(quarantine_fd)
+            if (
+                not stat.S_ISDIR(quarantine_info.st_mode)
+                or stat.S_IMODE(quarantine_info.st_mode) != 0o700
+                or (
+                    current_euid is not None
+                    and quarantine_info.st_uid != current_euid
+                )
+            ):
+                raise ValueError("pending skill delete quarantine is unsafe")
+            tombstone = f"{leaf}-{os.urandom(12).hex()}"
+            os.rename(
+                leaf,
+                tombstone,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=quarantine_fd,
+            )
+            moved = os.stat(
+                tombstone,
+                dir_fd=quarantine_fd,
+                follow_symlinks=False,
+            )
+            if _pending_fs_identity(moved) != expected:
+                try:
+                    os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    os.rename(
+                        tombstone,
+                        leaf,
+                        src_dir_fd=quarantine_fd,
+                        dst_dir_fd=parent_fd,
+                    )
+                raise ValueError("Pending skill write target pre-image changed")
+            os.fsync(quarantine_fd)
+            os.fsync(parent_fd)
+            return tombstone
+        finally:
+            os.close(quarantine_fd)
+    finally:
+        os.close(archive_fd)
+
+
+def _pending_rmtree(target: Path) -> None:
+    anchor = _pending_target_anchor.get()
+    if anchor is None:
+        shutil.rmtree(target)
+        return
+    if not _pending_anchor_is_current():
+        raise ValueError("Pending skill write target pre-image changed")
+
+    def _remove_at(parent_fd: int, leaf: str, target_fd: int) -> None:
+        opened = os.fstat(target_fd)
+        if not stat.S_ISDIR(opened.st_mode):
+            raise ValueError("pending skill target directory is unsafe")
+        snapshot = _snapshot_pending_delete_tree_fd(
+            target_fd,
+            [_MAX_PENDING_PRE_IMAGE_ENTRIES],
+        )
+        _pending_assert_snapshot_matches_anchor(target, snapshot)
+        _pending_quarantine_tree(parent_fd, leaf, target_fd)
+
+    if target == Path(anchor["root_path"]):
+        parent_fd = os.dup(anchor["parent_fd"])
+        target_fd = os.dup(anchor["root_fd"])
+        try:
+            _remove_at(parent_fd, anchor["root_name"], target_fd)
+        finally:
+            os.close(target_fd)
+            os.close(parent_fd)
+        return
+
+    with _pending_target_parent_fd(target) as (parent_fd, leaf):
+        assert parent_fd is not None
+        target_fd = os.open(
+            leaf,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+        try:
+            _remove_at(parent_fd, leaf, target_fd)
+        finally:
+            os.close(target_fd)
+
+
+def _apply_skill_write_gate(
+    action,
+    name,
+    *,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    **payload_kwargs,
+):
     """Evaluate the skill write gate. Returns a JSON tool-result string when the
     write should NOT proceed (blocked or staged), or None to perform the real
     write. Bypassed during approved-pending replay.
@@ -1460,7 +2615,23 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         old_string=payload_kwargs.get("old_string") or "",
         new_string=payload_kwargs.get("new_string") or "",
     )
-    record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    try:
+        target_hash = _target_tree_pre_image_hash(
+            name, payload_kwargs.get("category")
+        )
+        record = wa.stage_write(
+            wa.SKILLS,
+            payload,
+            summary=gist,
+            origin=wa.current_origin(),
+            session_context=wa.collect_session_context(
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+            ),
+            target_tree_pre_image_hash=target_hash,
+        )
+    except (OSError, ValueError, wa.PendingStoreError) as exc:
+        return tool_error(f"Skill write was not staged safely: {exc}", success=False)
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "gist": gist, "message": decision.message},
@@ -1468,11 +2639,25 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     )
 
 
-def apply_skill_pending(payload: Dict[str, Any]) -> str:
-    """Replay a staged skill write, bypassing the gate. Returns the tool result
-    JSON string. Called by the /skills approve handler.
-    """
+def apply_skill_pending(
+    payload: Dict[str, Any],
+    *,
+    expected_target_tree_pre_image_hash: Optional[str] = None,
+    origin: str = "foreground",
+) -> str:
+    """Replay a staged skill write after revalidating bound state and origin."""
+    if not expected_target_tree_pre_image_hash:
+        return tool_error("Pending skill write has no target pre-image hash.", success=False)
+    from tools.skill_provenance import (
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
     token = _skill_gate_bypass.set(True)
+    pre_image_token = _pending_apply_pre_image_hash.set(
+        expected_target_tree_pre_image_hash
+    )
+    origin_token = set_current_write_origin(origin)
     try:
         return skill_manage(
             action=payload.get("action", ""),
@@ -1487,6 +2672,8 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
             absorbed_into=payload.get("absorbed_into"),
         )
     finally:
+        reset_current_write_origin(origin_token)
+        _pending_apply_pre_image_hash.reset(pre_image_token)
         _skill_gate_bypass.reset(token)
 
 
@@ -1540,7 +2727,7 @@ def _maybe_debounced_sync_push(skill_name: str) -> None:
         _sync_push_timer.start()
 
 
-def skill_manage(
+def _skill_manage_unlocked(
     action: str,
     name: str,
     content: str = None,
@@ -1551,8 +2738,9 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
-    task_id: str = None,
-    session_id: str = None,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -1572,6 +2760,7 @@ def skill_manage(
         file_path=file_path, file_content=file_content,
         old_string=old_string, new_string=new_string,
         replace_all=replace_all, absorbed_into=absorbed_into,
+        session_id=session_id, tool_call_id=tool_call_id,
     )
     if gate_result is not None:
         return gate_result
@@ -1587,7 +2776,11 @@ def skill_manage(
         from tools import skill_ledger as _ledger
         _pre = _find_skill(name)
         _ledger_before_dir = _pre["path"] if _pre else None
-        _ledger_before = _ledger.capture_before(_ledger_before_dir)
+        _ledger_before = (
+            []
+            if _ledger_before_dir is None
+            else _ledger.capture_before(_ledger_before_dir)
+        )
     except Exception:
         pass
 
@@ -1701,6 +2894,44 @@ def skill_manage(
             pass
 
     return json.dumps(result, ensure_ascii=False)
+
+
+def skill_manage(
+    action: str,
+    name: str,
+    content: str = None,
+    category: str = None,
+    file_path: str = None,
+    file_content: str = None,
+    old_string: str = None,
+    new_string: str = None,
+    replace_all: bool = False,
+    absorbed_into: str = None,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+) -> str:
+    """Run one skill operation while holding the cross-runtime mutation lock."""
+    try:
+        with _skill_write_lock():
+            with _pending_target_anchor_context(name, category):
+                return _skill_manage_unlocked(
+                    action=action,
+                    name=name,
+                    content=content,
+                    category=category,
+                    file_path=file_path,
+                    file_content=file_content,
+                    old_string=old_string,
+                    new_string=new_string,
+                    replace_all=replace_all,
+                    absorbed_into=absorbed_into,
+                    task_id=task_id,
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                )
+    except (OSError, ValueError) as exc:
+        return tool_error(f"Skill write lock could not be secured: {exc}", success=False)
 
 
 # =============================================================================
@@ -1845,6 +3076,7 @@ registry.register(
         replace_all=args.get("replace_all", False),
         absorbed_into=args.get("absorbed_into"),
         task_id=kw.get("task_id"),
-        session_id=kw.get("session_id")),
+        session_id=kw.get("session_id"),
+        tool_call_id=kw.get("tool_call_id")),
     emoji="📝",
 )

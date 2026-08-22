@@ -163,6 +163,42 @@ class TestCreateSkill:
         assert result["success"] is False
         assert "already exists" in result["error"]
 
+    @pytest.mark.linux_only
+    def test_create_never_replaces_concurrent_leaf_at_publish(
+        self, tmp_path, monkeypatch
+    ):
+        from tools import skill_manager_tool as sm
+
+        target = tmp_path / "my-skill" / "SKILL.md"
+        real_atomic_write = sm.atomic_write_text
+        real_link = sm.os.link
+        injected = {"done": False}
+
+        def _create_concurrent():
+            if injected["done"]:
+                return
+            injected["done"] = True
+            target.write_text("concurrent-owner-content", encoding="utf-8")
+
+        def _atomic_write(path, content):
+            if Path(path) == target:
+                _create_concurrent()
+            return real_atomic_write(path, content)
+
+        def _link(src, dst, *args, **kwargs):
+            if Path(dst) == target:
+                _create_concurrent()
+            return real_link(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(sm, "atomic_write_text", _atomic_write)
+        monkeypatch.setattr(sm.os, "link", _link)
+
+        with _skill_dir(tmp_path), pytest.raises(FileExistsError):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+
+        assert injected["done"] is True
+        assert target.read_text(encoding="utf-8") == "concurrent-owner-content"
+
     def test_create_rejects_category_traversal(self, tmp_path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -518,6 +554,23 @@ class TestSecurityScanGate:
                        return_value={"skills": {"guard_agent_created": quoted}}):
                 assert _guard_agent_created_enabled() is False, \
                     f"guard_agent_created={quoted!r} must coerce to False"
+
+    def test_readonly_guard_expands_env_without_materializing_skills_root(
+        self, tmp_path, monkeypatch
+    ):
+        from tools.skill_manager_tool import _guard_agent_created_enabled_readonly
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "skills:\n  guard_agent_created: ${GUARD_POLICY_TEST}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("GUARD_POLICY_TEST", "true")
+
+        assert _guard_agent_created_enabled_readonly() is True
+        assert not (home / "skills").exists()
 
 
 # ---------------------------------------------------------------------------

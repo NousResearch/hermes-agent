@@ -946,8 +946,15 @@ def load_on_disk_store() -> "MemoryStore":
     return store
 
 
-def _apply_write_gate(action: str, target: str, content: Optional[str],
-                      old_text: Optional[str]) -> Optional[str]:
+def _apply_write_gate(
+    action: str,
+    target: str,
+    content: Optional[str],
+    old_text: Optional[str],
+    *,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+) -> Optional[str]:
     """Evaluate the memory write gate. Returns a JSON tool-result string when
     the write should NOT proceed normally (blocked or staged), or None when the
     caller should perform the real write.
@@ -991,11 +998,19 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         "content": content,
         "old_text": old_text,
     }
-    record = wa.stage_write(
-        wa.MEMORY, payload,
-        summary=f"{summary}: {detail[:120]}",
-        origin=wa.current_origin(),
-    )
+    try:
+        record = wa.stage_write(
+            wa.MEMORY,
+            payload,
+            summary=f"{summary}: {detail[:120]}",
+            origin=wa.current_origin(),
+            session_context=wa.collect_session_context(
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+            ),
+        )
+    except wa.PendingStoreError as exc:
+        return tool_error(f"Memory write was not staged safely: {exc}", success=False)
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "message": decision.message},
@@ -1003,7 +1018,13 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
     )
 
 
-def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Optional[str]:
+def _apply_batch_write_gate(
+    target: str,
+    operations: List[Dict[str, Any]],
+    *,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+) -> Optional[str]:
     """Evaluate the write gate for a batch of memory operations.
 
     Returns a JSON tool-result string when the batch should NOT proceed
@@ -1039,11 +1060,19 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
         return tool_error(decision.message, success=False)
 
     payload = {"action": "batch", "target": target, "operations": operations}
-    record = wa.stage_write(
-        wa.MEMORY, payload,
-        summary=f"{summary}: {detail[:120]}",
-        origin=wa.current_origin(),
-    )
+    try:
+        record = wa.stage_write(
+            wa.MEMORY,
+            payload,
+            summary=f"{summary}: {detail[:120]}",
+            origin=wa.current_origin(),
+            session_context=wa.collect_session_context(
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+            ),
+        )
+    except wa.PendingStoreError as exc:
+        return tool_error(f"Memory write was not staged safely: {exc}", success=False)
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "message": decision.message},
@@ -1091,6 +1120,8 @@ def memory_tool(
     new_text: str = None,
     operations: Optional[List[Dict[str, Any]]] = None,
     store: Optional[MemoryStore] = None,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -1130,7 +1161,12 @@ def memory_tool(
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        gate_result = _apply_batch_write_gate(target, operations)
+        gate_result = _apply_batch_write_gate(
+            target,
+            operations,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        )
         if gate_result is not None:
             return gate_result
         result = store.apply_batch(target, operations)
@@ -1155,7 +1191,14 @@ def memory_tool(
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
-    gate_result = _apply_write_gate(action, target, content, old_text)
+    gate_result = _apply_write_gate(
+        action,
+        target,
+        content,
+        old_text,
+        session_id=session_id,
+        tool_call_id=tool_call_id,
+    )
     if gate_result is not None:
         return gate_result
 
@@ -1383,7 +1426,9 @@ registry.register(
         old_text=args.get("old_text"),
         new_text=args.get("new_text"),
         operations=args.get("operations"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+        session_id=kw.get("session_id"),
+        tool_call_id=kw.get("tool_call_id")),
     check_fn=check_memory_requirements,
     emoji="🧠",
     dynamic_schema_overrides=_build_memory_schema_overrides,

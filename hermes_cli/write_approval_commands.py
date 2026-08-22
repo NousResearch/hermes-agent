@@ -122,16 +122,29 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
             return f"No pending {subsystem} write with id '{target}'."
         targets = [rec]
 
-    applied, failed = 0, []
+    applied, failed, warnings = 0, [], []
     for rec in targets:
-        ok, msg = _apply_one(subsystem, rec, memory_store)
+        claimed = wa.claim_pending(subsystem, rec["id"])
+        if claimed is None:
+            failed.append(f"{rec['id']}: pending record could not be claimed safely")
+            continue
+        ok, msg = _apply_one(subsystem, claimed, memory_store)
         if ok:
-            wa.discard_pending(subsystem, rec["id"])
             applied += 1
+            if not wa.finalize_pending_claim(subsystem, rec["id"]):
+                warnings.append(
+                    f"{rec['id']}: write applied but quarantine cleanup failed; "
+                    "the record remains non-replayable"
+                )
         else:
-            failed.append(f"{rec['id']}: {msg}")
+            restored = wa.restore_pending_claim(subsystem, rec["id"])
+            suffix = "" if restored else "; non-replayable claim retained"
+            failed.append(f"{rec['id']}: {msg}{suffix}")
 
     out = [f"Approved {applied} {subsystem} write(s)."]
+    if warnings:
+        out.append("Warnings:")
+        out.extend(f"  {warning}" for warning in warnings)
     if failed:
         out.append("Failed:")
         out.extend(f"  {f}" for f in failed)
@@ -139,6 +152,9 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
 
 
 def _apply_one(subsystem: str, rec, memory_store):
+    valid, reason = wa.validate_pending_record(rec)
+    if not valid:
+        return False, reason
     payload = rec.get("payload", {})
     try:
         if subsystem == wa.MEMORY:
@@ -149,7 +165,15 @@ def _apply_one(subsystem: str, rec, memory_store):
             return bool(result.get("success")), result.get("error", "")
         else:
             from tools.skill_manager_tool import apply_skill_pending
-            result = json.loads(apply_skill_pending(payload))
+            result = json.loads(
+                apply_skill_pending(
+                    payload,
+                    expected_target_tree_pre_image_hash=rec.get(
+                        "target_tree_pre_image_hash"
+                    ),
+                    origin=rec.get("origin", "foreground"),
+                )
+            )
             return bool(result.get("success")), result.get("error", "")
     except Exception as e:
         return False, str(e)

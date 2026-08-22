@@ -201,6 +201,43 @@ def cancel_background_review_for_live_turn(agent: Any) -> None:
 _REVIEW_MAX_ITERATIONS = 16
 
 
+def _review_provider_matches_parent(
+    agent: Any,
+    parent_runtime: Dict[str, Any],
+    task_provider: str,
+) -> bool:
+    """Return whether an aux provider name identifies the live parent route.
+
+    Named custom providers resolve to the generic runtime provider ``custom``
+    while the agent retains the user-facing alias in ``requested_provider``.
+    Compare both identities, but do not treat bare ``custom`` as equivalent to
+    every named custom endpoint: that would collapse a legitimate separate
+    route onto the parent credential.
+    """
+    task_identity = str(task_provider or "").strip().lower().replace(" ", "-")
+    resolved_identity = str(
+        parent_runtime.get("provider") or getattr(agent, "provider", "") or ""
+    ).strip().lower().replace(" ", "-")
+    requested_identity = str(
+        parent_runtime.get("requested_provider")
+        or getattr(agent, "requested_provider", "")
+        or ""
+    ).strip().lower().replace(" ", "-")
+
+    if requested_identity and task_identity == requested_identity:
+        return True
+    if resolved_identity and resolved_identity != "custom":
+        return task_identity == resolved_identity
+    if resolved_identity != "custom":
+        return False
+
+    if requested_identity and requested_identity not in {"auto", "custom"}:
+        from hermes_cli.providers import custom_provider_aliases
+
+        return task_identity in custom_provider_aliases(requested_identity)
+    return task_identity == "custom"
+
+
 def _background_review_task_config(
     task_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -295,6 +332,11 @@ def _resolve_review_runtime(
         parent_api_mode = "codex_responses"
     parent = {
         "provider": agent.provider,
+        "requested_provider": (
+            parent_runtime.get("requested_provider")
+            or getattr(agent, "requested_provider", "")
+            or agent.provider
+        ),
         "model": agent.model,
         "api_key": parent_runtime.get("api_key") or None,
         "base_url": parent_runtime.get("base_url") or None,
@@ -310,11 +352,26 @@ def _resolve_review_runtime(
     task_provider = (str(task.get("provider", "")).strip() or None)
     task_model = (str(task.get("model", "")).strip() or None)
     task_base_url = (str(task.get("base_url", "")).strip() or None)
-    task_api_key = (str(task.get("api_key", "")).strip() or None)
     if not (task_provider and task_provider != "auto" and task_model):
         return parent
-    if task_provider == (agent.provider or "") and task_model == (agent.model or ""):
+    if (
+        task_model == (agent.model or "")
+        and _review_provider_matches_parent(agent, parent_runtime, task_provider)
+    ):
         return parent  # same model/provider as parent -> not routed
+    task_key_env = str(
+        task.get("key_env") or task.get("api_key_env") or ""
+    ).strip()
+    if task_key_env:
+        from agent.secret_scope import get_secret
+
+        # ``key_env`` is the durable credential reference and is authoritative
+        # over any already-expanded ``api_key`` copy. In a multiplex process,
+        # that copy may have been interpolated from the default profile's
+        # process environment before this profile's scope was installed.
+        task_api_key = (get_secret(task_key_env, "") or "").strip() or None
+    else:
+        task_api_key = (str(task.get("api_key", "")).strip() or None)
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         rp = resolve_runtime_provider(
@@ -325,6 +382,7 @@ def _resolve_review_runtime(
         )
         return {
             "provider": rp.get("provider") or task_provider,
+            "requested_provider": rp.get("requested_provider") or task_provider,
             "model": rp.get("model") or task_model,
             "api_key": rp.get("api_key"),
             "base_url": rp.get("base_url"),
@@ -1190,6 +1248,10 @@ def _run_review_in_thread(
                 quiet_mode=True,
                 platform=agent.platform,
                 provider=_rt.get("provider") or agent.provider,
+                requested_provider=(
+                    _rt.get("requested_provider")
+                    or getattr(agent, "requested_provider", None)
+                ),
                 api_mode=_rt.get("api_mode"),
                 base_url=_rt.get("base_url") or None,
                 api_key=_rt.get("api_key") or None,

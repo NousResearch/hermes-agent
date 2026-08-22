@@ -20,6 +20,7 @@ def _make_agent_stub(agent_cls):
     agent.model = "test-model"
     agent.platform = "test"
     agent.provider = "openai"
+    agent.requested_provider = "openai-direct"
     agent.session_id = "sess-123"
     agent.quiet_mode = True
     agent._memory_store = None
@@ -234,6 +235,7 @@ def test_review_fork_inherits_prefill_and_provider_routing():
     ), "fork prefill aliases the parent's dicts (needs deepcopy)"
     assert init_kwargs.get("providers_allowed") == agent.providers_allowed
     assert init_kwargs.get("provider_sort") == agent.provider_sort
+    assert init_kwargs.get("requested_provider") == agent.requested_provider
 
 
 def test_review_fork_pins_session_start_and_session_id():

@@ -11,7 +11,10 @@ Pure-function / config-driven; no live model calls.
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from agent import background_review as br
+from hermes_cli import runtime_provider as _runtime_provider  # noqa: F401
 
 
 def _msg(role, content, tool_calls=None):
@@ -26,8 +29,14 @@ def _msg(role, content, tool_calls=None):
 # ---------------------------------------------------------------------------
 
 class _FakeAgent:
-    def __init__(self, provider="openai-codex", model="gpt-5.5"):
+    def __init__(
+        self,
+        provider="openai-codex",
+        model="gpt-5.5",
+        requested_provider=None,
+    ):
         self.provider = provider
+        self.requested_provider = requested_provider or provider
         self.model = model
         self._credential_pool: Any = None
         self.request_overrides = {}
@@ -96,6 +105,152 @@ def test_routing_same_model_as_parent_is_not_routed():
     with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg):
         rt = br._resolve_review_runtime(agent)
     assert rt["routed"] is False  # same model/provider → keep full-replay path
+
+
+@pytest.mark.parametrize(
+    "task_provider",
+    ("litellm-local", "custom:litellm-local"),
+)
+def test_routing_same_custom_alias_inherits_live_parent_credential(task_provider):
+    """A named custom alias resolving to ``custom`` is still the parent route.
+
+    In a multiplex process, config interpolation may have captured the default
+    profile's process-global key before this profile's scope was installed.
+    The review must recognize the requested alias and inherit the live parent
+    credential instead of explicitly forwarding that stale expanded value.
+    """
+    from agent import secret_scope
+
+    agent = _FakeAgent(
+        provider="custom",
+        requested_provider="litellm-local",
+        model="MiniMax-M3",
+    )
+    task = {
+        "provider": task_provider,
+        "model": "MiniMax-M3",
+        "api_key": "wrong-default-profile-key",
+        "key_env": "LITELLM_MASTER_KEY",
+    }
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope(
+        {"LITELLM_MASTER_KEY": "scoped-profile-key"}
+    )
+    try:
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider"
+        ) as resolve_runtime, patch(
+            "agent.secret_scope.get_secret"
+        ) as get_secret:
+            rt = br._resolve_review_runtime(agent, task)
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(False)
+
+    assert rt["routed"] is False
+    assert rt["requested_provider"] == "litellm-local"
+    assert rt["api_key"] == "parent-key"
+    resolve_runtime.assert_not_called()
+    get_secret.assert_not_called()
+
+
+def test_distinct_review_provider_uses_scoped_key_env_credential():
+    """A different provider remains routed even when its model name matches."""
+    from agent import secret_scope
+
+    agent = _FakeAgent(
+        provider="custom",
+        requested_provider="litellm-local",
+        model="MiniMax-M3",
+    )
+    task = {
+        "provider": "other-proxy",
+        "model": "MiniMax-M3",
+        "api_key": "wrong-default-profile-key",
+        "key_env": "LITELLM_MASTER_KEY",
+    }
+    routed = {
+        "provider": "custom",
+        "requested_provider": "other-proxy",
+        "model": "MiniMax-M3",
+        "api_key": "scoped-profile-key",
+        "base_url": "http://127.0.0.1:4001/v1",
+        "api_mode": "chat_completions",
+    }
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope(
+        {"LITELLM_MASTER_KEY": "scoped-profile-key"}
+    )
+    try:
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=routed,
+        ) as resolve_runtime:
+            rt = br._resolve_review_runtime(agent, task)
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(False)
+
+    assert rt["routed"] is True
+    assert rt["requested_provider"] == "other-proxy"
+    assert rt["model"] == "MiniMax-M3"
+    resolve_runtime.assert_called_once_with(
+        requested="other-proxy",
+        target_model="MiniMax-M3",
+        explicit_api_key="scoped-profile-key",
+        explicit_base_url=None,
+    )
+
+
+def test_distinct_review_provider_real_resolution_uses_profile_scope(
+    tmp_path,
+    monkeypatch,
+):
+    """Exercise config expansion through the real custom-provider resolver."""
+    from agent import secret_scope
+
+    hermes_home = tmp_path / "profile"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """
+providers:
+  other-proxy:
+    api: http://127.0.0.1:4001/v1
+    key_env: LITELLM_MASTER_KEY
+    default_model: MiniMax-M3
+auxiliary:
+  background_review:
+    provider: other-proxy
+    model: MiniMax-M3
+    api_key: ${LITELLM_MASTER_KEY}
+    key_env: LITELLM_MASTER_KEY
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "wrong-default-profile-key")
+    agent = _FakeAgent(
+        provider="custom",
+        requested_provider="litellm-local",
+        model="MiniMax-M3",
+    )
+
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope(
+        {"LITELLM_MASTER_KEY": "scoped-profile-key"}
+    )
+    try:
+        rt = br._resolve_review_runtime(agent)
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(False)
+
+    assert rt["routed"] is True
+    assert rt["provider"] == "custom"
+    assert rt["requested_provider"] == "other-proxy"
+    assert rt["model"] == "MiniMax-M3"
+    assert rt["api_key"] == "scoped-profile-key"
+    assert rt["base_url"] == "http://127.0.0.1:4001/v1"
 
 
 def test_routing_resolution_failure_falls_back_to_parent():

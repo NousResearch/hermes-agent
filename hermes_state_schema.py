@@ -888,6 +888,22 @@ class SessionSchemaMixin:
         except sqlite3.OperationalError:
             pass
 
+        # Same shape as the repair above, for experiences written before the
+        # scoping key moved from raw cwd to the project root.
+        # _reconcile_columns() ADDs ``workspace`` with DEFAULT '', which no
+        # workspace-scoped lookup can ever match — the rows would be stranded.
+        # Seeding it from ``cwd`` restores exactly the pre-move behaviour for
+        # them (cwd WAS the key), and they migrate to the project root on their
+        # next observation. Idempotent: matches nothing once seeded.
+        try:
+            cursor.execute(
+                "UPDATE experiences SET workspace = cwd "
+                "WHERE COALESCE(workspace, '') = '' "
+                "AND COALESCE(cwd, '') != ''"
+            )
+        except sqlite3.OperationalError:
+            pass  # table or column absent on this runtime — nothing to heal
+
         fts5_available = self._sqlite_supports_fts5(cursor)
         fts_migrations_complete = True
         self._fts_stale = cursor.execute(

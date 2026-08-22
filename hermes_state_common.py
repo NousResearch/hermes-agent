@@ -504,6 +504,57 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     delivery_claimed_at REAL
 );
 
+-- Level 2 experience learning: one row per distinct task pattern, merged
+-- across repeats. See agent/experience.py and hermes_state_experience.py.
+--
+-- ``workspace`` is the scoping key (git repo root, else marker root, else
+-- cwd), NOT the raw cwd: a task learned in ``repo/`` must still be found from
+-- ``repo/src``. ``cwd`` is kept alongside it as provenance only — nothing
+-- queries it.
+--
+-- ``verification`` carries the independent "was there build/test evidence"
+-- axis from agent/verification_evidence.py: passed | failed | stale |
+-- unverified | not_applicable | '' (unknown). It is deliberately NOT folded
+-- into ``outcome``, which answers the separate question of whether the turn
+-- completed at all.
+CREATE TABLE IF NOT EXISTS experiences (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    turn_id TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    task TEXT NOT NULL,
+    task_norm TEXT NOT NULL DEFAULT '',
+    task_hash TEXT NOT NULL,
+    strategy TEXT,
+    tools TEXT,
+    outcome TEXT NOT NULL,
+    exit_reason TEXT,
+    failure_reason TEXT,
+    recovery TEXT,
+    user_correction TEXT,
+    metrics TEXT,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    observations INTEGER NOT NULL DEFAULT 1,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    correction_count INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    cwd TEXT,
+    workspace TEXT NOT NULL DEFAULT '',
+    verification TEXT NOT NULL DEFAULT '',
+    superseded INTEGER NOT NULL DEFAULT 0,
+    schema_rev INTEGER NOT NULL DEFAULT 1
+);
+
+-- An intermediate build shipped the dedup lookup as a UNIQUE index keyed on
+-- ``cwd``. Drop both retired names so every database converges on the shape
+-- declared here: SCHEMA_SQL is the single source of truth, and
+-- CREATE ... IF NOT EXISTS alone cannot undo a previously-created object.
+-- Idempotent no-ops once dropped.
+DROP INDEX IF EXISTS idx_experiences_hash;
+DROP INDEX IF EXISTS idx_experiences_lookup;
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -544,6 +595,20 @@ CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
     ON sessions(system_prompt_hash);
+-- ``workspace`` is added to pre-existing ``experiences`` tables by
+-- _reconcile_columns(), which runs AFTER SCHEMA_SQL — so an index over it
+-- belongs here, not there.
+--
+-- Deliberately NOT UNIQUE: this script runs on every DB open, and a UNIQUE
+-- index that ever failed to build (duplicate rows from a hand-edited or
+-- future-written database) would abort the whole script and make the state DB
+-- unopenable. Uniqueness is already guaranteed by record_experience's
+-- select-then-insert inside _execute_write's BEGIN IMMEDIATE transaction,
+-- which serializes writers across processes.
+CREATE INDEX IF NOT EXISTS idx_experiences_workspace_hash
+    ON experiences(task_hash, workspace);
+CREATE INDEX IF NOT EXISTS idx_experiences_live_recent
+    ON experiences(superseded, updated_at DESC);
 """
 
 

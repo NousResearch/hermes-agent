@@ -1038,3 +1038,79 @@ class TestDefaultDowngradeNotice:
         )
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.default_downgrade_notice() is None
+
+
+class TestPermissionBlocked:
+    """Chrome's "Allow remote debugging?" popup is a USER action, not a fault.
+
+    The harness reports it as ``permission-blocked`` on stderr with a non-zero
+    exit. Left as a plain result, that instruction is buried inside a JSON blob
+    and the agent reads the turn as an environment failure and gives up -- which
+    is exactly what happened in the field. It has to come back as an error whose
+    text says who must do what.
+
+    ``subprocess.run`` is stubbed rather than using ``_fake_cli``: that helper
+    writes a ``#!/bin/sh`` script, which does not execute on Windows, so those
+    tests cannot be verified on this platform.
+    """
+
+    @staticmethod
+    def _stub_run(monkeypatch, *, returncode, stderr, stdout=""):
+        import subprocess as _sp
+
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+        monkeypatch.setattr(
+            bu_cli.subprocess,
+            "run",
+            lambda *a, **kw: _sp.CompletedProcess(
+                args=a[0] if a else [], returncode=returncode,
+                stdout=stdout, stderr=stderr,
+            ),
+        )
+
+    def test_permission_blocked_becomes_an_actionable_error(self, monkeypatch):
+        self._stub_run(
+            monkeypatch,
+            returncode=1,
+            stderr=(
+                'browser-harness: Chrome is asking "Allow remote debugging?"\n'
+                "browser-harness: permission-blocked: wait for the user to "
+                "click Allow in the Chrome permission popup before retrying."
+            ),
+        )
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+
+        assert "error" in result, "a user-actionable state must not be a plain result"
+        low = result["error"].lower()
+        assert "allow" in low and "chrome" in low, "must name the action and where"
+        assert "user" in low, "must say WHO does it -- the agent cannot click it"
+        # The raw harness text survives for debugging.
+        assert "permission-blocked" in result.get("stderr", "")
+
+    def test_other_failures_are_left_alone(self, monkeypatch):
+        """Only the known-actionable state is rewritten; nothing else changes."""
+        self._stub_run(monkeypatch, returncode=3, stderr="boom: something else")
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+
+        assert "error" not in result
+        assert result["success"] is False
+        assert result["exit_code"] == 3
+        assert "boom" in result["stderr"]
+
+    def test_success_is_never_turned_into_an_error(self, monkeypatch):
+        """The harness prints the Allow notice on SUCCESSFUL runs too.
+
+        Gating on the marker alone would fail a working call, so the guard also
+        requires a non-zero exit.
+        """
+        self._stub_run(
+            monkeypatch,
+            returncode=0,
+            stdout="1\n",
+            stderr="browser-harness: permission-blocked: stale notice",
+        )
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+
+        assert "error" not in result
+        assert result["success"] is True
+        assert result["output"] == "1\n"

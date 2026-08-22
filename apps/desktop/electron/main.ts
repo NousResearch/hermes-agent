@@ -314,6 +314,7 @@ import {
   scanVenvBlockers,
   stopSafeVenvBlockers
 } from './venv-blocker-scan'
+import { findOrphanedVenvHolders, PROBE_TIMEOUT_MS as ORPHAN_PROBE_TIMEOUT_MS } from './venv-orphan-reap'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
@@ -3420,6 +3421,27 @@ async function releaseBackendLock(updateRoot, tag) {
   })
 
   const shim = venvHermesShimPath(updateRoot)
+
+  // Reap ORPHANED holders of this install's shim before the poll starts.
+  //
+  // The sweep above only covers PIDs this desktop instance owns. A
+  // `hermes gateway run` / `hermes dashboard` outliving a PREVIOUS desktop
+  // session belongs to neither registry, so nothing killed it — it held the
+  // shim locked, the poll below timed out, and every update aborted telling
+  // the user to close a window that no longer exists. See venv-orphan-reap.ts
+  // for why this is scoped to orphans of this exact shim path (a `hermes` in
+  // the user's own terminal has a live parent and is deliberately left alone).
+  //
+  // Best-effort: a probe failure returns no PIDs and the poll behaves exactly
+  // as it did before.
+  for (const pid of await findOrphanedVenvHolders(shim, {
+    execText: (command, args) => execText(command, args, { timeout: ORPHAN_PROBE_TIMEOUT_MS }),
+    onProbeFailure: message => rememberLog(`[${tag}] orphan scan unavailable: ${message}`)
+  })) {
+    rememberLog(`[${tag}] reaping orphaned venv holder pid=${pid} (its parent is gone)`)
+    forceKillProcessTree(pid)
+  }
+
   const deadlineMs = Date.now() + 15000
 
   while (Date.now() < deadlineMs) {

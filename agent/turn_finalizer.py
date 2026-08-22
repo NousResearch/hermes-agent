@@ -783,6 +783,33 @@ def finalize_turn(
         messages=messages,
     )
 
+    # ── Level 2 experience learning ───────────────────────────────
+    # Runs after the response is delivered and after the session is persisted,
+    # at the one chokepoint where every surface's turn outcome is already
+    # decided. Interrupted turns are still recorded (an interrupted approach
+    # is itself information), but a persistence-isolated review fork is not —
+    # see experience_runtime._store.
+    #
+    # Fully guarded: a learning failure must never cost the user a turn, so
+    # nothing here can raise into the result path.
+    try:
+        from agent.experience_runtime import record_turn_experience
+
+        record_turn_experience(
+            agent,
+            user_message=original_user_message,
+            messages=messages,
+            completed=completed,
+            failed=failed,
+            interrupted=interrupted,
+            exit_reason=_turn_exit_reason,
+            final_response=final_response,
+            api_calls=api_call_count,
+            turn_id=turn_id,
+        )
+    except Exception:
+        logger.debug("experience recording failed", exc_info=True)
+
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
     # Suppressed when skip_background_review=True (e.g. cron) — review forks

@@ -1031,6 +1031,105 @@ def _read_discord_prompt_timeout() -> int:
     return seconds
 
 
+# ── WebSocket-block probe ──────────────────────────────────────────────
+#
+# Recovers the cause discord.py masks. See _connect_failure_details.
+
+_GATEWAY_HOST = "gateway.discord.gg"
+_WS_PROBE_TIMEOUT_S = 5.0
+
+
+def _read_ws_handshake_status(
+    host: str = _GATEWAY_HOST, timeout_s: float = _WS_PROBE_TIMEOUT_S
+) -> tuple:
+    """Open one WebSocket upgrade against *host* and return ``(status, reason, body)``.
+
+    Deliberately hand-rolled over a raw socket rather than reusing aiohttp:
+    the whole point is to see the server's answer to the upgrade, and a
+    client library turns a non-101 into an exception that discards the status
+    line and the body — the two things worth reading. A filtering proxy puts
+    its identity in exactly those (``403 WebSocketBlock`` plus an HTML page).
+
+    Blocking; call it off the event loop.
+    """
+    import base64
+    import os as _os
+    import socket
+    import ssl
+
+    key = base64.b64encode(_os.urandom(16)).decode()
+    request = (
+        "GET /?v=10&encoding=json HTTP/1.1\r\n"
+        f"Host: {host}\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "\r\n"
+    ).encode()
+
+    ctx = ssl.create_default_context()
+    with socket.create_connection((host, 443), timeout=timeout_s) as sock:
+        with ctx.wrap_socket(sock, server_hostname=host) as tls:
+            tls.sendall(request)
+            chunks = []
+            total = 0
+            while total < 2048:
+                chunk = tls.recv(2048)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if b"\r\n\r\n" in b"".join(chunks):
+                    break
+    raw = b"".join(chunks).decode("utf-8", "replace")
+    head, _, body = raw.partition("\r\n\r\n")
+    status_line = head.split("\r\n", 1)[0]
+    parts = status_line.split(" ", 2)
+    try:
+        status = int(parts[1])
+    except (IndexError, ValueError):
+        return 0, status_line, body
+    reason = parts[2] if len(parts) > 2 else ""
+    return status, reason, body
+
+
+def _websocket_block_reason(
+    host: str = _GATEWAY_HOST, timeout_s: float = _WS_PROBE_TIMEOUT_S
+) -> str:
+    """One line naming why the gateway upgrade was refused, or ``""``.
+
+    Returns ``""`` for a successful upgrade AND for any probe failure: this
+    runs while a connection attempt is already failing, so it must never
+    replace one error with another, and "the probe itself broke" is not
+    information the operator can act on.
+    """
+    try:
+        status, reason, body = _read_ws_handshake_status(host, timeout_s)
+    except Exception as exc:  # noqa: BLE001 - best-effort diagnostic
+        logger.debug("WebSocket block probe failed: %s", exc)
+        return ""
+    if status == 101:
+        return ""
+
+    detail = f"HTTP {status}" + (f" {reason}".rstrip() if reason else "")
+    # An HTML answer to a WebSocket upgrade is never Discord: it is a filter
+    # serving its own block page, which is the single most useful thing to
+    # tell the operator because no amount of retrying will clear it.
+    looks_like_interstitial = "<html" in (body or "").lower()
+    hint = (
+        " An intercepting proxy or firewall is blocking WebSocket upgrades — "
+        "this cannot self-heal; allow them for this host or use a network "
+        "that does not filter them."
+        if looks_like_interstitial
+        else ""
+    )
+    return (
+        f"The {host} WebSocket upgrade was refused ({detail}); "
+        f"discord.py reports this as an AttributeError on 'sequence'.{hint}"
+    )
+
+
 class DiscordAdapter(BasePlatformAdapter):
     """
     Discord bot adapter.
@@ -1508,9 +1607,37 @@ class DiscordAdapter(BasePlatformAdapter):
             # retried it forever with zero owner signal. Auth/permission
             # failures can never self-heal: mark them retryable=False so they
             # drop out of the reconnect queue and surface as fatal.
-            code, message, retryable = self._classify_connect_exception(e)
+            code, message, retryable = await self._connect_failure_details(e)
             self._set_fatal_error(code, message, retryable=retryable)
             return False
+
+    async def _connect_failure_details(self, error: Exception) -> tuple:
+        """``_classify_connect_exception`` plus the cause discord.py hides.
+
+        A refused gateway handshake never reaches us as itself: discord.py's
+        reconnect path reads ``self.ws.sequence`` on a connection that never
+        opened and raises ``AttributeError: 'NoneType' object has no attribute
+        'sequence'``. Type-based classification correctly calls that unknown
+        and retryable — and then the operator sees an AttributeError with no
+        hint that an intercepting proxy is answering every WebSocket upgrade
+        with ``403``, while the token is fine and REST calls all succeed.
+
+        So for failures we do NOT already understand, measure the handshake and
+        append what it says. Measuring rather than parsing the exception is
+        what keeps the classifier's "never match on message text" rule intact.
+        Typed failures (bad token, missing intents) are already actionable and
+        are never probed — no network call, no delay, no changed verdict.
+        """
+        code, message, retryable = self._classify_connect_exception(error)
+        if code != "discord_connect_error":
+            return code, message, retryable
+        try:
+            reason = await asyncio.to_thread(_websocket_block_reason)
+        except Exception:  # pragma: no cover - the probe is best-effort
+            reason = ""
+        if reason:
+            message = f"{message} {reason}"
+        return code, message, retryable
 
     def _classify_connect_exception(self, error: Exception) -> tuple:
         """Map a Discord startup exception to ``(code, message, retryable)``.

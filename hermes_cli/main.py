@@ -11651,7 +11651,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
-        "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
+        "dump", "egress", "experience", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
@@ -12989,6 +12989,27 @@ def main():
     # =========================================================================
     # curator command — background skill maintenance
     # =========================================================================
+    # =========================================================================
+    # experience command — inspect and manage Level 2 experience learning
+    # =========================================================================
+    experience_parser = subparsers.add_parser(
+        "experience",
+        help="Level 2 experience learning — stats, list, why, forget",
+        description=(
+            "Hermes records what happened on each turn and, when a later "
+            "request resembles a past one, injects that record as advisory "
+            "context. These commands show what it holds, explain what a given "
+            "prompt would retrieve and why, and let you make it forget. "
+            "Disable the feature entirely with experience.enabled: false."
+        ),
+    )
+    try:
+        from hermes_cli.experience import register_cli as _register_experience_cli
+
+        _register_experience_cli(experience_parser)
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("experience CLI wiring failed: %s", _exc)
+
     curator_parser = subparsers.add_parser(
         "curator",
         help="Background skill maintenance (curator) — status, run, pause, pin",

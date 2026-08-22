@@ -1898,6 +1898,33 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Level 2 experience learning — task → outcome → experience → retrieval
+    # → reuse. Experiences are recorded in state.db (the `experiences` table)
+    # at the end of every turn and injected, when relevant, into the API copy
+    # of the next matching user message. Purely observational: nothing here
+    # modifies source, skills, config or dependencies.
+    "experience": {
+        # Master switch. false = no recording, no retrieval (the pre-feature
+        # behaviour). Env override: HERMES_EXPERIENCE=0.
+        "enabled": True,
+        # Record outcomes but stop injecting retrieved context. Useful as a
+        # benchmark baseline and as a narrow kill switch when a prompt is
+        # sensitive to extra context. Env: HERMES_EXPERIENCE_RETRIEVAL=0.
+        "retrieval_enabled": True,
+        # Hard cap on experiences injected per turn. Context pollution is the
+        # main risk of this feature; keep this small.
+        "max_results": 3,
+        # Relevance floor in [0,1]. Rows below it are dropped outright — an
+        # unrelated experience in context is worse than none.
+        "min_score": 0.18,
+        # Experiences older than this are neither retrieved nor scored.
+        "max_age_days": 90,
+        # Hard character cap on the injected block.
+        "max_context_chars": 1800,
+        # Amortized prune cadence, in experience writes. 0 disables pruning.
+        "prune_every": 200,
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all

@@ -77,6 +77,11 @@ _MIN_TIMEOUT_S = 5
 _MAX_TIMEOUT_S = 1800
 _STDERR_CAP_CHARS = 4000
 
+# The harness's marker for "a human must click Allow in Chrome". It prefixes
+# several message variants ("...was not accepted within Ns", "...popup has not
+# been accepted", ...), so match the token rather than any one sentence.
+_PERMISSION_BLOCKED_MARKER = "permission-blocked"
+
 # Filesystem-safe task ids for per-task workspace dirs.
 _TASK_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -663,6 +668,29 @@ def browser_exec(
         if len(stderr) > _STDERR_CAP_CHARS:
             stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
         result["stderr"] = stderr
+
+    # Chrome's "Allow remote debugging?" popup is a USER action, and the only
+    # state the harness reports that no amount of retrying can clear. As a
+    # plain result the instruction is buried in a JSON blob, and the agent
+    # reads the turn as an environment failure and abandons the task instead
+    # of asking the user for the one click that unblocks it. Surface it as an
+    # error whose text names who must do what.
+    #
+    # The non-zero gate matters: the harness prints the Allow notice on
+    # SUCCESSFUL runs too, so matching the marker alone would fail working
+    # calls.
+    if proc.returncode != 0 and _PERMISSION_BLOCKED_MARKER in stderr:
+        return tool_error(
+            "Chrome has not granted remote-debugging access: its "
+            '"Allow remote debugging?" popup was never accepted, so the '
+            "browser harness cannot attach. You cannot clear this from code "
+            "— ask the user to switch to their Chrome window, click Allow, "
+            "and tell you when it is done; then retry this call. Retrying "
+            "before that will fail the same way.",
+            exit_code=proc.returncode,
+            stderr=stderr,
+            **({"workspace": workspace} if workspace else {}),
+        )
 
     screenshot = _find_screenshot(proc.stdout, started)
     if screenshot:

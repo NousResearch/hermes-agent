@@ -55,11 +55,13 @@ def compose_user_api_content(
     content: Any,
     ext_prefetch_cache: str,
     plugin_user_context: str,
+    experience_context: str = "",
 ) -> Optional[str]:
     """Compose the API-bound content of the current turn's user message.
 
-    Sources: memory-manager prefetch + ``pre_llm_call`` plugin context with
-    target="user_message" (the default). Both are appended to the *API copy*
+    Sources: memory-manager prefetch, retrieved Level 2 experience
+    (``agent.experience``), and ``pre_llm_call`` plugin context with
+    target="user_message" (the default). All are appended to the *API copy*
     of the user message only — the stored content stays clean.
 
     This is the single source of that composition. The prologue stamps the
@@ -79,6 +81,11 @@ def compose_user_api_content(
         fenced = build_memory_context_block(ext_prefetch_cache)
         if fenced:
             injections.append(fenced)
+    if experience_context:
+        # Already fenced + instruction-neutralized by
+        # agent.experience.format_experience_block. Appended after memory so
+        # curated memory (authoritative) precedes past observations (advisory).
+        injections.append(experience_context)
     if plugin_user_context:
         injections.append(plugin_user_context)
     if not injections:
@@ -424,6 +431,10 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
+    # Fenced Level 2 experience block injected into the API copy of the
+    # current user message (agent/experience.py). Empty when nothing scored
+    # above the relevance floor, or when experience learning is disabled.
+    experience_context: str = ""
     # Turn-start preflight already proved an immediate retry ineffective.
     preflight_compression_blocked: bool = False
 
@@ -1369,6 +1380,27 @@ def build_turn_context(
             except Exception:
                 pass
 
+    # ── Level 2 experience: retrieve + correction signal ──────────
+    # Reuses this prologue's chokepoint so every surface (CLI, gateway,
+    # cron, delegation) gets the same behaviour. Best-effort throughout:
+    # a learning failure must never cost the user a turn.
+    experience_context = ""
+    try:
+        from agent.experience_runtime import (
+            apply_user_correction,
+            retrieve_experience_context,
+        )
+
+        _exp_query = (
+            original_user_message if isinstance(original_user_message, str) else ""
+        )
+        # Correction first: it may supersede a row that retrieval would
+        # otherwise surface for this very turn.
+        apply_user_correction(agent, _exp_query)
+        experience_context = retrieve_experience_context(agent, _exp_query)
+    except Exception:
+        logger.debug("experience retrieval skipped", exc_info=True)
+
     # ── api_content sidecar: persist what you send ──
     # The prefetch/plugin context above is injected into the API copy of this
     # turn's user message, never into the stored content — so on the next
@@ -1394,7 +1426,10 @@ def build_turn_context(
     ):
         _turn_user_msg = messages[current_turn_user_idx]
         _api_content = compose_user_api_content(
-            _turn_user_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
+            _turn_user_msg.get("content", ""),
+            ext_prefetch_cache,
+            plugin_user_context,
+            experience_context,
         )
         if _api_content is not None and _api_content != _turn_user_msg.get("content"):
             _turn_user_msg["api_content"] = _api_content
@@ -1477,5 +1512,6 @@ def build_turn_context(
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
+        experience_context=experience_context,
         preflight_compression_blocked=_preflight_compression_blocked,
     )

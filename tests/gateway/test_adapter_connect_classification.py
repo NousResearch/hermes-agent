@@ -448,3 +448,128 @@ class TestRuntimeStatusAttentionFields:
         platform = payload["platforms"]["telegram"]
         assert platform["needs_attention"] is False
         assert platform["retrying_since"] is None
+
+
+# ── Discord: recovering the cause discord.py masks ─────────────────────
+
+
+class TestDiscordWebSocketBlockProbe:
+    """discord.py hides why a gateway handshake was rejected.
+
+    On a refused upgrade its reconnect path reads ``self.ws.sequence`` on a
+    connection that never opened, so what reaches the adapter is
+    ``AttributeError: 'NoneType' object has no attribute 'sequence'`` -- three
+    layers away from the real cause. Seen in the field behind an intercepting
+    corporate proxy that answers every WebSocket upgrade with
+    ``403 WebSocketBlock``: the token was valid and REST calls succeeded, so
+    every type-based signal said "transient, retry forever".
+
+    The probe measures the handshake instead of parsing the exception, which
+    is what keeps ``_classify_connect_exception``'s "never match on message
+    text" rule intact.
+    """
+
+    def _probe(self):
+        from plugins.platforms.discord.adapter import _websocket_block_reason
+
+        return _websocket_block_reason
+
+    def test_refused_upgrade_is_reported_with_its_status(self, monkeypatch):
+        import plugins.platforms.discord.adapter as adapter
+
+        monkeypatch.setattr(
+            adapter, "_read_ws_handshake_status",
+            lambda *a, **kw: (403, "WebSocketBlock", "<html>mwg-internal blocked</html>"),
+        )
+        reason = self._probe()()
+        assert reason, "a refused upgrade must produce a reason"
+        assert "403" in reason
+        assert "WebSocketBlock" in reason
+        assert "websocket" in reason.lower()
+
+    def test_html_interstitial_names_the_intercepting_proxy(self, monkeypatch):
+        import plugins.platforms.discord.adapter as adapter
+
+        monkeypatch.setattr(
+            adapter, "_read_ws_handshake_status",
+            lambda *a, **kw: (403, "Forbidden", "<!DOCTYPE html><html>blocked</html>"),
+        )
+        assert "proxy" in self._probe()().lower()
+
+    def test_successful_upgrade_reports_nothing(self, monkeypatch):
+        import plugins.platforms.discord.adapter as adapter
+
+        monkeypatch.setattr(
+            adapter, "_read_ws_handshake_status",
+            lambda *a, **kw: (101, "Switching Protocols", ""),
+        )
+        assert self._probe()() == ""
+
+    def test_probe_never_raises(self, monkeypatch):
+        """It runs on an error path; it must not replace one failure with another."""
+        import plugins.platforms.discord.adapter as adapter
+
+        def _boom(*a, **kw):
+            raise OSError("network down")
+
+        monkeypatch.setattr(adapter, "_read_ws_handshake_status", _boom)
+        assert self._probe()() == ""
+
+
+class TestDiscordConnectFailureDetails:
+    """The probe result has to reach the message the operator actually reads."""
+
+    def _adapter(self):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        a = object.__new__(DiscordAdapter)
+        a._allowed_user_ids = set()
+        a._allowed_role_ids = set()
+        return a
+
+    @pytest.mark.asyncio
+    async def test_block_reason_is_appended_to_the_message(self, monkeypatch):
+        import plugins.platforms.discord.adapter as adapter
+
+        monkeypatch.setattr(
+            adapter, "_websocket_block_reason",
+            lambda *a, **kw: "gateway.discord.gg refused the WebSocket upgrade: HTTP 403 WebSocketBlock",
+        )
+        a = self._adapter()
+        code, message, retryable = await a._connect_failure_details(
+            AttributeError("'NoneType' object has no attribute 'sequence'")
+        )
+        assert code == "discord_connect_error"
+        assert "403 WebSocketBlock" in message
+        assert retryable is True
+
+    @pytest.mark.asyncio
+    async def test_typed_failures_are_not_probed(self, monkeypatch):
+        """A token rejection needs no network probe -- and must stay terminal."""
+        called = []
+        import plugins.platforms.discord.adapter as adapter
+
+        monkeypatch.setattr(
+            adapter, "_websocket_block_reason",
+            lambda *a, **kw: called.append(1) or "should not appear",
+        )
+        a = self._adapter()
+        code, message, retryable = await a._connect_failure_details(
+            LoginFailure("Improper token")
+        )
+        assert code == "discord_auth_error"
+        assert retryable is False
+        assert "should not appear" not in message
+        assert not called, "no probe for a failure we already understand"
+
+    @pytest.mark.asyncio
+    async def test_no_block_leaves_the_message_unchanged(self, monkeypatch):
+        import plugins.platforms.discord.adapter as adapter
+
+        monkeypatch.setattr(adapter, "_websocket_block_reason", lambda *a, **kw: "")
+        a = self._adapter()
+        _code, message, _retryable = await a._connect_failure_details(
+            OSError("connection reset")
+        )
+        assert "connection reset" in message or "Discord" in message
+        assert "WebSocket" not in message

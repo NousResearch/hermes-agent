@@ -107,6 +107,34 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert "RAM 92% on host" in doc
 
 
+def test_run_job_no_agent_never_resolves_agent_toolsets(hermes_env):
+    """A script-only job stays outside the agent tool-authority boundary."""
+    from cron.jobs import create_job
+    import cron.scheduler as scheduler
+
+    script_path = hermes_env / "scripts" / "probe.sh"
+    script_path.write_text("#!/bin/bash\necho 'script-only ok'\n")
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="probe.sh",
+        no_agent=True,
+        deliver="local",
+    )
+
+    with patch.object(
+        scheduler,
+        "_resolve_cron_enabled_toolsets",
+        side_effect=AssertionError("agent toolsets resolved for no_agent job"),
+    ):
+        success, doc, final_response, error = scheduler.run_job(job)
+
+    assert success is True
+    assert error is None
+    assert "script-only ok" in final_response
+    assert "script-only ok" in doc
+
+
 def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     """Regression: a standalone cron tick process starts without home-channel
     vars in its environment, and the agent path's per-run dotenv reload never

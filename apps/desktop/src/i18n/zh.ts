@@ -46,6 +46,7 @@ export const zh: Translations = {
   },
 
   fileMenu: {
+    actions: '文件操作',
     revealFinder: '在访达中显示',
     revealExplorer: '在文件资源管理器中显示',
     revealFileManager: '打开所在文件夹',

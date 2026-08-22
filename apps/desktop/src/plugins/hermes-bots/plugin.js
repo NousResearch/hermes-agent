@@ -4220,6 +4220,40 @@ async function openBotCanonicalChat(name) {
   return createCanonicalChat(name)
 }
 
+function normalizeBotActivationValue(value) {
+  return String(value ?? '').trim()
+}
+
+/**
+ * Return a user-facing activation error when Bot Mode did not land on the
+ * requested source/profile and an open gateway.
+ */
+function botSourceActivationError(input) {
+  const targetConnectionId = normalizeBotActivationValue(input.targetConnectionId)
+  const activeConnectionId = normalizeBotActivationValue(input.activeConnectionId)
+
+  if (
+    (input.sourceScoped || input.remoteSource) &&
+    targetConnectionId &&
+    targetConnectionId !== 'local' &&
+    activeConnectionId !== targetConnectionId
+  ) {
+    return `Still on ${activeConnectionId || 'this device'}, not ${normalizeBotActivationValue(input.targetConnectionLabel) || targetConnectionId}`
+  }
+
+  const targetProfile = normalizeBotActivationValue(input.targetProfile) || 'default'
+
+  if (input.activeProfile != null && normalizeBotActivationValue(input.activeProfile) !== targetProfile) {
+    return `Still on ${normalizeBotActivationValue(input.activeProfile) || 'default'} profile, not ${targetProfile}`
+  }
+
+  if (input.gatewayState != null && input.gatewayState !== 'open') {
+    return 'Hermes gateway is not connected'
+  }
+
+  return null
+}
+
 async function prepareBotSource(bot) {
   if (!bot.sourceScoped) {
     return
@@ -4231,15 +4265,19 @@ async function prepareBotSource(bot) {
 
   await host.ensureAgent(bot.connectionId, bot.name)
 
-  if (!bot.remoteSource) {
-    return
-  }
+  const activationError = botSourceActivationError({
+    activeConnectionId: typeof host.activeConnectionId === 'function' ? host.activeConnectionId() : undefined,
+    activeProfile: host.state?.profile?.get?.(),
+    gatewayState: host.state?.gateway?.get?.(),
+    remoteSource: Boolean(bot.remoteSource),
+    sourceScoped: Boolean(bot.sourceScoped),
+    targetConnectionLabel: bot.connectionLabel,
+    targetConnectionId: bot.connectionId,
+    targetProfile: bot.name
+  })
 
-  const liveId = String(typeof host.activeConnectionId === 'function' ? host.activeConnectionId() || '' : '').trim()
-  const targetId = String(bot.connectionId || '').trim()
-
-  if (targetId && targetId !== 'local' && liveId !== targetId) {
-    throw new Error(`Still on ${liveId || 'this device'}, not ${bot.connectionLabel || targetId}`)
+  if (activationError) {
+    throw new Error(activationError)
   }
 
   // The canonical chat is found by NAME on the now-active owner source —

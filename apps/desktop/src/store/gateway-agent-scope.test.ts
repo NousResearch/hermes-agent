@@ -82,6 +82,8 @@ function installAgentDesktop(): DesktopStub {
 }
 
 beforeEach(() => {
+  gatewayMocks.connect.mockReset()
+  gatewayMocks.connect.mockResolvedValue(undefined)
   configureGatewayRegistry({ onEvent: vi.fn() })
 })
 
@@ -103,6 +105,48 @@ describe('registry-agent scope eviction (activeGateway must never silently hit t
     expect(activeGateway()).not.toBe(primary)
     expect($gateway.get()).not.toBe(primary)
     expect(gatewayMocks.connect).toHaveBeenCalledWith(agentConn.wsUrl)
+  })
+
+  it('retries a transient cold-start websocket failure before publishing', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installAgentDesktop()
+    gatewayMocks.connect.mockRejectedValueOnce(new Error('ECONNRESET'))
+
+    await expect(ensureGatewayForAgent('homelab', 'research')).resolves.toBe(true)
+
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(2)
+    expect(isActivePrimary()).toBe(false)
+    expect(activeGateway()?.connectionState).toBe('open')
+  })
+
+  it('keeps the previous route when both bounded activation attempts fail', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    await ensureGatewayForProfile('default')
+    installAgentDesktop()
+    gatewayMocks.connect.mockRejectedValue(new Error('ECONNRESET'))
+
+    await expect(ensureGatewayForAgent('homelab', 'research')).resolves.toBe(false)
+
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(2)
+    expect(isActivePrimary()).toBe(true)
+    expect(activeGateway()).toBe(primary)
+    expect($gateway.get()).toBe(primary)
+  })
+
+  it('does not publish a closed profile secondary after activation fails', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    await ensureGatewayForProfile('default')
+    installAgentDesktop()
+    gatewayMocks.connect.mockRejectedValue(new Error('ECONNRESET'))
+
+    await expect(ensureGatewayForProfile('research')).resolves.toBe(false)
+
+    expect(isActivePrimary()).toBe(true)
+    expect(activeGateway()).toBe(primary)
+    expect($gateway.get()).toBe(primary)
   })
 
   it('keeps the primary active when a fresh registry activation cannot resolve', async () => {

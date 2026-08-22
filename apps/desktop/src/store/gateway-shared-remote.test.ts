@@ -132,12 +132,13 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
 
     await ensureGatewayForProfile('worker')
 
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(2)
     expect(gatewayMocks.setConnection).toHaveBeenCalledOnce()
     expect(gatewayMocks.setConnection).toHaveBeenLastCalledWith(connection)
 
     await ensureActiveGatewayOpen()
 
-    expect(gatewayMocks.setConnection).toHaveBeenCalledTimes(2)
+    expect(gatewayMocks.setConnection).toHaveBeenCalledOnce()
     expect(gatewayMocks.setConnection).toHaveBeenLastCalledWith(connection)
   })
 })

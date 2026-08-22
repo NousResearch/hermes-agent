@@ -75,6 +75,7 @@ interface Secondary {
 // backend spawn + socket connect with margin, while still letting a leaked
 // lease expire quickly enough for the reaper to reclaim the entry.
 const ACTIVATION_LEASE_MS = 30_000
+const ACTIVATION_ATTEMPTS = 2
 
 // ── HMR-stable module state ─────────────────────────────────────────────────
 // All mutable singletons (live sockets, active-profile routing, the event
@@ -354,6 +355,49 @@ async function openSecondary(entry: Secondary): Promise<void> {
       entry.connectPromise = null
     }
   }
+}
+
+// A cold-started backend can have a listening port before its first websocket
+// handshake is ready. Give a foreground activation one immediate retry for
+// that narrow transport race; any longer recovery remains owned by the normal
+// exponential reconnect loop.
+async function openSecondaryForActivation(entry: Secondary): Promise<boolean> {
+  if (isOpen(entry.gateway)) {
+    return true
+  }
+
+  if (!window.hermesDesktop) {
+    return false
+  }
+
+  for (let attempt = 0; attempt < ACTIVATION_ATTEMPTS; attempt += 1) {
+    if (!entry.wantOpen) {
+      return false
+    }
+
+    clearTimer(entry)
+
+    try {
+      await openSecondary(entry)
+    } catch (error) {
+      // These are permanent registry/profile conditions, not a transient
+      // websocket race. Let the normal reconnect path apply its existing
+      // fail-stop handling instead of issuing a duplicate spawn request.
+      if ((entry.connectionId && isMissingConnectionError(error)) || isMissingProfileError(error)) {
+        break
+      }
+    }
+
+    if (isOpen(entry.gateway)) {
+      return true
+    }
+  }
+
+  if (entry.wantOpen && !isOpen(entry.gateway)) {
+    scheduleReconnect(entry)
+  }
+
+  return false
 }
 
 function scheduleReconnect(entry: Secondary): void {
@@ -709,9 +753,7 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
   const scope = registryBackendScopeKey(connectionId, profile)
 
   if (scope === normKey(profile)) {
-    await ensureGatewayForProfile(profile)
-
-    return true
+    return ensureGatewayForProfile(profile)
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
@@ -737,12 +779,7 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
   if (!isOpen(entry.gateway)) {
     clearTimer(entry)
     entry.reconnectAttempt = 0
-
-    try {
-      await openSecondary(entry)
-    } catch {
-      scheduleReconnect(entry)
-    }
+    await openSecondaryForActivation(entry)
   }
 
   // The activation is settling either way — release the prune lease.
@@ -753,6 +790,7 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
   const activated =
     entry.wantOpen &&
     g.secondaries.get(scope) === entry &&
+    isOpen(entry.gateway) &&
     Boolean(entry.connection) &&
     applyActive(scope, activationEpoch)
 
@@ -765,14 +803,12 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
+export async function ensureGatewayForProfile(profile: string): Promise<boolean> {
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
   if (key === g.primaryProfile) {
-    applyActive(key, activationEpoch)
-
-    return
+    return applyActive(key, activationEpoch)
   }
 
   // Global-remote share (routing case 3): one remote host serves every
@@ -781,9 +817,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   // descriptor — $activeGatewayProfile still moves to `key`, so request
   // scoping and profile-aware surfaces behave identically.
   if (await sharedPrimaryRoute(key)) {
-    applyActive(g.primaryProfile, activationEpoch)
-
-    return
+    return applyActive(g.primaryProfile, activationEpoch)
   }
 
   let entry = g.secondaries.get(key)
@@ -801,20 +835,24 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   if (!isOpen(entry.gateway)) {
     clearTimer(entry)
     entry.reconnectAttempt = 0
-
-    try {
-      await openSecondary(entry)
-    } catch {
-      scheduleReconnect(entry)
-    }
+    await openSecondaryForActivation(entry)
   }
 
   // The activation is settling either way — release the prune lease.
   entry.activationLeaseUntil = 0
 
-  if (entry.wantOpen && g.secondaries.get(key) === entry && applyActive(key, activationEpoch) && entry.connection) {
+  const activated =
+    entry.wantOpen &&
+    g.secondaries.get(key) === entry &&
+    isOpen(entry.gateway) &&
+    Boolean(entry.connection) &&
+    applyActive(key, activationEpoch)
+
+  if (activated && entry.connection) {
     publishActiveConnection(entry.connection)
   }
+
+  return activated
 }
 
 // Reconnect the active gateway after a transient request failure. Primary

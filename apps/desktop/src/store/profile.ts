@@ -344,7 +344,16 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     // syncConnectionToActiveProfile await left a window where $gateway
     // already targeted the new backend while $connection still described the
     // previous one, and remote-aware paths announced the wrong mode (#46651).
-    const [connection] = await Promise.all([resolveConnectionForProfile(target), ensureGatewayForProfile(target)])
+    const [connection, activated] = await Promise.all([
+      resolveConnectionForProfile(target),
+      ensureGatewayForProfile(target)
+    ])
+
+    if (!activated) {
+      console.warn(`[profile] profile gateway activation for "${target}" did not land`)
+
+      return
+    }
 
     // ONE publication frame. batch() defers Nanostores' notifications to the
     // end of the callback, so the profile pointer and the connection

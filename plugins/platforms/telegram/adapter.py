@@ -9732,6 +9732,44 @@ class TelegramAdapter(BasePlatformAdapter):
             profile=self._session_key_profile(event.source),
         )
 
+    @staticmethod
+    def _merge_raw_messages(existing: MessageEvent, event: MessageEvent) -> None:
+        """Preserve every raw Telegram message folded into a batch.
+
+        Text, photo-burst, and media-group batching all keep only the
+        *first* event's ``raw_message`` once a follow-up item is merged
+        into it -- the merge only touches ``text``/``media_urls``/
+        ``media_types``. Any caller that inspects ``event.raw_message``
+        afterwards (to read ``forward_origin``, the original sender, or
+        the original timestamp) only ever sees the first message of the
+        batch, and a follow-up photo's own file is indistinguishable from
+        the first photo's once ``media_urls`` is flattened.
+
+        Call this before merging so callers that care can read
+        ``event._raw_messages`` for every underlying message, and
+        ``event._media_owners`` to map a media URL back to the specific
+        message it arrived on.
+        """
+        merged = getattr(existing, "_raw_messages", None)
+        if merged is None:
+            merged = [getattr(existing, "raw_message", None)]
+            existing._raw_messages = merged  # type: ignore[attr-defined]
+        merged.append(getattr(event, "raw_message", None))
+
+        owners = getattr(existing, "_media_owners", None)
+        if owners is None:
+            owners = {}
+            for url in (getattr(existing, "media_urls", None) or []):
+                owners[url] = getattr(existing, "raw_message", None)
+            existing._media_owners = owners  # type: ignore[attr-defined]
+        # Identical URLs across merged events collapse here (last writer
+        # wins) while the caller still extends ``media_urls`` with every
+        # entry -- so a duplicated URL maps to the *later* message that
+        # carried it. Fine for distinct cached files; revisit if callers
+        # ever need per-entry ownership of repeated URLs.
+        for url in (getattr(event, "media_urls", None) or []):
+            owners[url] = getattr(event, "raw_message", None)
+
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.
 
@@ -9751,6 +9789,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
+            self._merge_raw_messages(existing, event)
             # Append text from the follow-up chunk
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
@@ -9875,6 +9914,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if existing is None:
             self._pending_photo_batches[batch_key] = event
         else:
+            self._merge_raw_messages(existing, event)
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
             if event.text:
@@ -10202,6 +10242,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if existing is None:
             self._media_group_events[media_group_id] = event
         else:
+            self._merge_raw_messages(existing, event)
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
             if event.text:

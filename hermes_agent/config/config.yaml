@@ -1,0 +1,4 @@
+inference:
+  provider: custom
+  model: llama3
+  base_url: http://127.0.0

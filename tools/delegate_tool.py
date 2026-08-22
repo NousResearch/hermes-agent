@@ -1027,9 +1027,26 @@ def _get_orchestrator_enabled() -> bool:
 
 
 def _get_inherit_mcp_toolsets() -> bool:
-    """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
+    """Whether child agents should receive the parent's MCP toolsets.
+
+    Default True preserves historical behavior: children keep parent MCP on
+    full inherit, and narrowed children also re-add parent MCP via
+    ``_preserve_parent_mcp_toolsets``.
+
+    When False, MCP toolsets are stripped on **every** child-build path —
+    including the common case where ``toolsets`` is unset and the child would
+    otherwise copy the parent's full enabled set. The previous implementation
+    only consulted this flag on the narrowed-``toolsets`` branch, so
+    ``delegation.inherit_mcp_toolsets: false`` had no effect on normal
+    ``delegate_task`` calls (both call sites pass ``toolsets=None``).
+    """
     cfg = _load_config()
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
+
+
+def _strip_mcp_toolsets(toolsets: List[str]) -> List[str]:
+    """Drop canonical MCP toolsets (and registered MCP aliases) from a list."""
+    return [t for t in toolsets if not _is_mcp_toolset_name(t)]
 
 
 def _is_mcp_toolset_name(name: str) -> bool:
@@ -1670,6 +1687,16 @@ def _build_child_agent(
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
+    # Apply inherit_mcp_toolsets=false on *all* paths. The narrowed-toolsets
+    # branch already skips _preserve_parent_mcp_toolsets when false; full
+    # parent inherit still carried mcp-* toolsets until this strip.
+    mcp_denies: List[str] = []
+    if not _get_inherit_mcp_toolsets():
+        child_toolsets = _strip_mcp_toolsets(child_toolsets)
+        # Also subtract via disabled_toolsets so composite/platform bundles
+        # cannot reintroduce MCP tools after expansion (#17309 pattern).
+        mcp_denies = sorted(t for t in parent_toolsets if _is_mcp_toolset_name(t))
+
     # Blocked tools also live inside mixed platform bundles (hermes-cli,
     # hermes-telegram, etc.) that _strip_blocked_tools must keep because they
     # carry useful tools too. Pass exact one-tool deny toolsets through to the
@@ -1688,7 +1715,10 @@ def _build_child_agent(
         ]
     child_disabled_toolsets = list(
         dict.fromkeys(
-            inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"]
+            inherited_disabled
+            + _blocked_toolsets_for_role(effective_role)
+            + ["kanban"]
+            + mcp_denies
         )
     )
 

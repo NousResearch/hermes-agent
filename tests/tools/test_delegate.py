@@ -1036,6 +1036,74 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             ["web", "browser"],
         )
 
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"inherit_mcp_toolsets": False},
+    )
+    def test_build_child_agent_strips_mcp_on_full_parent_inherit(self, mock_cfg):
+        """inherit_mcp_toolsets=false must apply when toolsets=None (normal delegate_task)."""
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = [
+            "terminal",
+            "file",
+            "web",
+            "mcp-trello",
+            "mcp-hound",
+            "mcp-agentmail",
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test default full inherit path",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        enabled = MockAgent.call_args[1]["enabled_toolsets"]
+        self.assertNotIn("mcp-trello", enabled)
+        self.assertNotIn("mcp-hound", enabled)
+        self.assertNotIn("mcp-agentmail", enabled)
+        for name in ("terminal", "file", "web"):
+            self.assertIn(name, enabled)
+        disabled = MockAgent.call_args[1]["disabled_toolsets"]
+        self.assertIn("mcp-trello", disabled)
+        self.assertIn("mcp-hound", disabled)
+        self.assertIn("mcp-agentmail", disabled)
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_agent_keeps_mcp_on_full_parent_inherit_by_default(
+        self, mock_cfg
+    ):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file", "mcp-trello"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test default full inherit keeps MCP",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        enabled = MockAgent.call_args[1]["enabled_toolsets"]
+        self.assertIn("mcp-trello", enabled)
+        self.assertIn("terminal", enabled)
+
 
 class TestChildCredentialLeasing(unittest.TestCase):
     def test_run_single_child_acquires_and_releases_lease(self):

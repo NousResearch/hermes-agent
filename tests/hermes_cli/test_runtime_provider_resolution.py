@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent import secret_scope
 from hermes_cli import runtime_provider as rp
 
 
@@ -654,6 +655,143 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["api_key"] == "local-provider-key"
     assert resolved["requested_provider"] == "local"
     assert resolved["source"] == "custom_provider:Local"
+
+
+def _scoped_runtime_provider_configs(schema, *, raw_api_key, expanded_api_key):
+    """Build matching raw and expanded configs for each named-provider schema."""
+    entry = {
+        "name": "Scope Runtime",
+        "api_key": expanded_api_key,
+    }
+    raw_entry = {
+        "name": "Scope Runtime",
+        "api_key": raw_api_key,
+    }
+    if schema == "providers":
+        entry["api"] = "https://scope-runtime.example/v1"
+        raw_entry["api"] = "https://scope-runtime.example/v1"
+        return (
+            {"providers": {"scope-runtime": entry}},
+            {"providers": {"scope-runtime": raw_entry}},
+        )
+
+    entry["base_url"] = "https://scope-runtime.example/v1"
+    raw_entry["base_url"] = "https://scope-runtime.example/v1"
+    return (
+        {"custom_providers": [entry]},
+        {"custom_providers": [raw_entry]},
+    )
+
+
+def _patch_scoped_runtime_provider_config(
+    monkeypatch, schema, *, raw_api_key, expanded_api_key
+):
+    """Keep runtime resolution deterministic while exercising raw-template lookup."""
+    expanded, raw = _scoped_runtime_provider_configs(
+        schema,
+        raw_api_key=raw_api_key,
+        expanded_api_key=expanded_api_key,
+    )
+    monkeypatch.setattr(rp, "load_config", lambda: expanded)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: expanded)
+    # ``raising=False`` lets the regression tests run against the old runtime
+    # resolver too, where no raw-template reader exists yet.
+    monkeypatch.setattr(rp, "read_raw_config", lambda: raw, raising=False)
+    monkeypatch.setattr(
+        rp, "_try_resolve_from_custom_pool", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(rp, "_host_derived_api_key", lambda _base_url: "")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+
+@pytest.fixture
+def runtime_secret_scope():
+    """Install a multiplexed profile secret scope for one runtime test."""
+    tokens = []
+    previous_multiplex = secret_scope.is_multiplex_active()
+
+    def _install(secrets):
+        tokens.append(secret_scope.set_secret_scope(secrets))
+        secret_scope.set_multiplex_active(True)
+
+    try:
+        yield _install
+    finally:
+        for token in reversed(tokens):
+            secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(previous_multiplex)
+
+
+@pytest.mark.parametrize("schema", ("providers", "custom_providers"))
+def test_runtime_named_custom_provider_rebuilds_raw_api_key_template_from_scope(
+    monkeypatch, runtime_secret_scope, schema
+):
+    """Every raw ``${...}`` segment must use the active profile's secrets.
+
+    ``load_config`` expands this template with the process environment before
+    runtime resolution. In a multiplexed gateway that process value can belong
+    to another profile, so the runtime must recover the raw template and rebuild
+    it through the installed secret scope for both supported provider schemas.
+    """
+    monkeypatch.setenv("RUNTIME_SCOPE_PREFIX", "other")
+    monkeypatch.setenv("RUNTIME_SCOPE_SUFFIX", "profile")
+    runtime_secret_scope(
+        {
+            "RUNTIME_SCOPE_PREFIX": "this",
+            "RUNTIME_SCOPE_SUFFIX": "profile-key",
+        }
+    )
+    _patch_scoped_runtime_provider_config(
+        monkeypatch,
+        schema,
+        raw_api_key="sk-${RUNTIME_SCOPE_PREFIX}-${RUNTIME_SCOPE_SUFFIX}",
+        expanded_api_key="sk-other-profile",
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:scope-runtime")
+
+    assert resolved["api_key"] == "sk-this-profile-key"
+
+
+@pytest.mark.parametrize("schema", ("providers", "custom_providers"))
+@pytest.mark.parametrize(
+    ("case", "process_value", "expanded_api_key", "scope_values"),
+    (
+        ("missing", None, "${RUNTIME_SCOPE_KEY}", {}),
+        (
+            "out-of-scope",
+            "sk-other-profile",
+            "sk-other-profile",
+            {"UNRELATED_SCOPE_KEY": "not-this-key"},
+        ),
+    ),
+)
+def test_runtime_named_custom_provider_drops_unresolvable_raw_api_key_template(
+    monkeypatch,
+    runtime_secret_scope,
+    schema,
+    case,
+    process_value,
+    expanded_api_key,
+    scope_values,
+):
+    """Missing and out-of-scope template values must not reach the provider."""
+    if process_value is None:
+        monkeypatch.delenv("RUNTIME_SCOPE_KEY", raising=False)
+    else:
+        monkeypatch.setenv("RUNTIME_SCOPE_KEY", process_value)
+    runtime_secret_scope(scope_values)
+    _patch_scoped_runtime_provider_config(
+        monkeypatch,
+        schema,
+        raw_api_key="${RUNTIME_SCOPE_KEY}",
+        expanded_api_key=expanded_api_key,
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:scope-runtime")
+
+    assert resolved["api_key"] == "no-key-required", case
 
 
 def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):

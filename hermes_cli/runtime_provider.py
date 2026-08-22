@@ -41,9 +41,11 @@ from hermes_cli.auth import (
     normalize_actual_base_url,
 )
 from hermes_cli.config import (
+    _env_ref_var_name,
     get_compatible_custom_providers,
     load_config,
     normalize_extra_headers,
+    read_raw_config,
 )
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from hermes_constants import OPENROUTER_BASE_URL
@@ -704,6 +706,83 @@ def _lift_extra_headers(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
         result["extra_headers"] = extra_headers
 
 
+def _raw_custom_provider_api_key_refs() -> Dict[tuple, str]:
+    """Index unexpanded custom-provider ``api_key`` templates by identity.
+
+    ``load_config`` expands ``${...}`` through process-global ``os.environ``.
+    Runtime resolution needs the original template to rebuild it through the
+    active profile secret scope instead of trusting that expanded value.
+    """
+    raw_config = read_raw_config()
+    if not isinstance(raw_config, dict):
+        return {}
+
+    refs: Dict[tuple, str] = {}
+
+    def _record(name: Any, provider_key: Any, model: Any, api_key: Any) -> None:
+        template = str(api_key or "").strip()
+        if "${" not in template:
+            return
+        name = str(name or "").strip()
+        provider_key = str(provider_key or "").strip()
+        model = str(model or "").strip()
+        identities = []
+        if name:
+            identities.extend(((name.lower(),), (name.lower(), model)))
+        if provider_key:
+            identities.extend(
+                ((provider_key.lower(),), (provider_key.lower(), model))
+            )
+        for identity in identities:
+            refs.setdefault(identity, template)
+
+    raw_legacy = raw_config.get("custom_providers")
+    if isinstance(raw_legacy, list):
+        for entry in raw_legacy:
+            if isinstance(entry, dict):
+                _record(
+                    entry.get("name", ""),
+                    entry.get("provider_key", ""),
+                    entry.get("model", "") or entry.get("default_model", ""),
+                    entry.get("api_key", ""),
+                )
+
+    raw_providers = raw_config.get("providers")
+    if isinstance(raw_providers, dict):
+        for provider_key, entry in raw_providers.items():
+            if isinstance(entry, dict):
+                _record(
+                    entry.get("name", "") or provider_key,
+                    provider_key,
+                    entry.get("model", "") or entry.get("default_model", ""),
+                    entry.get("api_key", ""),
+                )
+
+    return refs
+
+
+def _lookup_raw_custom_provider_api_key_ref(
+    refs: Dict[tuple, str],
+    *,
+    name: Any,
+    provider_key: Any = "",
+    model: Any = "",
+) -> str:
+    """Find a raw ``api_key`` template using the loaded entry's identities."""
+    name = str(name or "").strip().lower()
+    provider_key = str(provider_key or "").strip().lower()
+    model = str(model or "").strip()
+    for identity in (
+        (provider_key, model),
+        (provider_key,),
+        (name, model),
+        (name,),
+    ):
+        if identity[0] and identity in refs:
+            return refs[identity]
+    return ""
+
+
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm:
@@ -744,6 +823,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 return None
 
     config = load_config()
+    raw_api_key_refs = _raw_custom_provider_api_key_refs()
     
     # First check providers: dict (new-style user-defined providers)
     providers = config.get("providers")
@@ -764,6 +844,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             ).strip()
             resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
             # Fall back to inline api_key when key_env is absent or unresolvable
+            uses_inline_api_key = not bool(resolved_api_key)
             if not resolved_api_key:
                 resolved_api_key = str(entry.get("api_key", "") or "").strip()
 
@@ -781,6 +862,15 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
+                    if uses_inline_api_key:
+                        api_key_ref = _lookup_raw_custom_provider_api_key_ref(
+                            raw_api_key_refs,
+                            name=entry.get("name", ep_name),
+                            provider_key=ep_name,
+                            model=entry.get("default_model", ""),
+                        )
+                        if api_key_ref:
+                            result["api_key_ref"] = api_key_ref
                     extra_body = entry.get("extra_body")
                     if isinstance(extra_body, dict):
                         result["extra_body"] = dict(extra_body)
@@ -834,6 +924,14 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             "base_url": base_url.strip(),
             "api_key": str(entry.get("api_key", "") or "").strip(),
         }
+        api_key_ref = _lookup_raw_custom_provider_api_key_ref(
+            raw_api_key_refs,
+            name=name,
+            provider_key=provider_key,
+            model=entry.get("model", ""),
+        )
+        if api_key_ref:
+            result["api_key_ref"] = api_key_ref
         key_env = str(entry.get("key_env", "") or "").strip()
         if key_env:
             result["key_env"] = key_env
@@ -1093,6 +1191,31 @@ def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[
     return {"extra_body": dict(extra_body)}
 
 
+def _resolve_scoped_api_key_template(template: str) -> str:
+    """Rebuild every ``${...}`` in an inline key through the secret scope.
+
+    A missing, out-of-scope, malformed, or non-environment reference fails
+    closed. Falling back to the already-expanded config value would reintroduce
+    the process-global credential that this lookup is meant to exclude.
+    """
+    template = str(template or "").strip()
+    if "${" not in template:
+        return ""
+
+    unresolved = False
+
+    def _scoped_ref(match: re.Match) -> str:
+        nonlocal unresolved
+        ref_name = _env_ref_var_name(match.group(1))
+        value = str(_getenv(ref_name, "") or "").strip() if ref_name else ""
+        if not value:
+            unresolved = True
+        return value
+
+    rebuilt = re.sub(r"\${([^}]+)}", _scoped_ref, template)
+    return "" if unresolved or "${" in rebuilt else rebuilt.strip()
+
+
 def _resolve_named_custom_runtime(
     *,
     requested_provider: str,
@@ -1187,9 +1310,13 @@ def _resolve_named_custom_runtime(
 
     _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
     _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
+    inline_api_key = str(custom_provider.get("api_key", "") or "").strip()
+    api_key_ref = str(custom_provider.get("api_key_ref", "") or "").strip()
+    if "${" in api_key_ref:
+        inline_api_key = _resolve_scoped_api_key_template(api_key_ref)
     api_key_candidates = [
         (explicit_api_key or "").strip(),
-        str(custom_provider.get("api_key", "") or "").strip(),
+        inline_api_key,
         _getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
         # Gate provider env keys on their authoritative hosts — sending
         # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).

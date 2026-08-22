@@ -23,6 +23,7 @@ from hermes_cli.cli_output import line_input
 
 import argparse
 import os
+import re
 import subprocess
 import urllib.parse
 
@@ -1534,9 +1535,74 @@ def _model_flow_named_custom(config, provider_info):
     saved_model = provider_info.get("model", "")
     provider_key = (provider_info.get("provider_key") or "").strip()
 
-    # Resolve key from env var if api_key not set directly
+    from hermes_cli.config import _env_ref_var_name, get_env_value
+
+    # ``provider_info["api_key"]`` is the value *after* ``_expand_env_vars``,
+    # and that expansion resolves ``${VAR}`` straight out of the process-global
+    # ``os.environ`` (``config.py::_env_expand_match``) — it is not scope-aware.
+    # So a ``${VAR}`` config ref reaches this flow in one of two states, and
+    # only one of them is visible in ``api_key``:
+    #
+    #   * variable NOT set — the literal is kept verbatim "so callers can
+    #     detect them". This caller did not: the placeholder is truthy, so it
+    #     was accepted as the key and sent as the bearer token, and it also
+    #     shadowed the ``key_env`` fallback below.
+    #   * variable SET — ``api_key`` is a plain resolved string carrying no
+    #     trace of the ref, so no inspection of it can tell this apart from a
+    #     directly-configured inline key. Its value came from the *process*
+    #     environment, which under the multiplexed gateway is another
+    #     profile's key, and it is about to be sent to this provider's
+    #     ``base_url``. That is the case this flow has to catch, and it is
+    #     precisely the one the placeholder shape cannot see.
+    #
+    # The unexpanded template survives on ``api_key_ref`` — the field
+    # ``_custom_provider_api_key_config_value`` already trusts to persist this
+    # entry — so key the decision off the template rather than off the
+    # expanded value, and re-resolve through the scope-aware reader.
+    api_key_template = str(provider_info.get("api_key_ref") or "").strip()
+    if not api_key_template and isinstance(api_key, str):
+        api_key_template = api_key.strip()
+    if "${" in api_key_template:
+        # Rebuild the whole credential from the template by re-running
+        # ``_expand_env_vars``' own ``\${([^}]+)}`` pattern, resolving each
+        # match through the scope-aware reader instead of ``os.environ``.
+        # Substituting every ref — rather than special-casing a template that
+        # happens to be exactly one whole ref — is what makes this cover the
+        # composite (``sk-${SUFFIX}``) and multi-ref (``${A}-${B}``) shapes.
+        # Each ``${...}`` inside those was substituted out of the same
+        # process-global environment, so each is the same cross-profile read;
+        # the surrounding literal text does not make it a different question,
+        # and a composite leaves no ``${`` behind to be recognised by later.
+        unresolved: list[str] = []
+
+        def _scoped_ref(match):
+            ref_var = _env_ref_var_name(match.group(1))
+            value = (get_env_value(ref_var) or "") if ref_var else ""
+            if not value:
+                unresolved.append(match.group(0))
+            return value
+
+        rebuilt = re.sub(r"\${([^}]+)}", _scoped_ref, api_key_template)
+        # Fail closed. A ref this profile cannot resolve — unset, outside the
+        # scope, or a non-env SecretRef source that ``_env_ref_var_name``
+        # declines — leaves a hole in the credential, and a partially built
+        # key must never be sent to the endpoint. Dropping it also re-opens
+        # the ``key_env`` fallback below, which a truthy value would shadow.
+        api_key = "" if unresolved else rebuilt
+    elif isinstance(api_key, str) and "${" in api_key:
+        # A placeholder the expansion could not resolve is still a
+        # placeholder, never a credential — do not probe with it.
+        api_key = ""
+
+    # Resolve key from env var if api_key not set directly. Route the read
+    # through ``get_env_value`` so it honours the per-profile secret scope:
+    # a raw ``os.environ`` read hands this profile whatever key the process
+    # environment holds — another profile's, under the multiplexed gateway —
+    # and the resolved value is then sent as the bearer token to *this*
+    # provider's ``base_url``. Matches the four sibling ``key_env`` reads in
+    # this module and the picker read in ``model_switch``.
     if not api_key and key_env:
-        api_key = os.environ.get(key_env, "")
+        api_key = get_env_value(key_env) or ""
     config_api_key = _custom_provider_api_key_config_value(provider_info, api_key)
 
     # Honor ``discover_models: false`` (default True) — when discovery is

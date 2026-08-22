@@ -388,6 +388,29 @@ class ProjectionDB:
         return [{"role": "user", "content": "hello", "timestamp": 1_755_104_400.0}]
 
 
+class InactiveMessageProjectionDB(ProjectionDB):
+    def get_messages(
+        self, session_id: str, include_inactive: bool = False
+    ) -> list[dict]:
+        del session_id
+        if include_inactive:
+            return [
+                {
+                    "role": "user",
+                    "content": "compacted user message",
+                    "platform_message_id": "221",
+                    "timestamp": 1_755_104_400.0,
+                },
+                {
+                    "role": "assistant",
+                    "content": "compacted assistant message",
+                    "platform_message_id": "222",
+                    "timestamp": 1_755_104_460.0,
+                },
+            ]
+        return [{"role": "user", "content": "active", "timestamp": 1_755_104_500.0}]
+
+
 class ShortcutProjectionDB:
     def __init__(self) -> None:
         self.sessions: dict[str, dict[str, object]] = {}
@@ -1126,6 +1149,42 @@ async def test_bridge_dispatches_app_reply_into_the_real_agent_session() -> None
             "thread_id": "20197",
             "session_id": "session-1",
             "text": "Please turn on the porch light.",
+            "reply_to_message_id": "101",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_bridge_dispatches_plain_callable_agent_callback() -> None:
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator()
+    calls: list[dict[str, Any]] = []
+
+    async def dispatch(**kwargs: Any) -> None:
+        calls.append(dict(kwargs))
+
+    server = reply_server(
+        sender=sender,
+        generator=generator,
+        agent_dispatcher=dispatch,
+    )
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.reply",
+            "params": reply_params(text="Please summarize the latest update."),
+        })
+    )
+
+    assert response["result"]["answer_state"] == "answer_pending"
+    assert calls == [
+        {
+            "chat_id": "123456789",
+            "thread_id": "20197",
+            "session_id": "session-1",
+            "text": "Please summarize the latest update.",
             "reply_to_message_id": "101",
         }
     ]
@@ -1942,6 +2001,76 @@ def test_public_index_uses_force_redaction_and_title_fallback() -> None:
     )
     index = server._public_index(store.rows[0])
     assert index["title"] == "Telegram loop"
+
+
+def test_public_index_emits_a_private_forum_topic_deep_link() -> None:
+    store = FakeStore()
+    server = BeckyLoopsBridgeServer(
+        config=BeckyLoopsConfig(
+            enabled=True,
+            chat_id="-1004476874933",
+            token="t" * 64,
+            port=0,
+            topic_control="unavailable",
+            topic_reply="unavailable",
+        ),
+        store=store,
+        summarizer=FakeSummarizer(),
+    )
+
+    index = server._public_index(store.rows[0])
+
+    assert index["telegram_url"] == "https://t.me/c/4476874933/20197"
+
+
+def test_public_index_targets_the_latest_topic_message_when_available() -> None:
+    store = FakeStore()
+    store.transcripts["session-1"] = [
+        {
+            "role": "user",
+            "content": "Earlier",
+            "platform_message_id": "20201",
+            "timestamp": 1_755_104_400.0,
+        },
+        {
+            "role": "assistant",
+            "content": "Latest",
+            "platform_message_id": "20214",
+            "timestamp": 1_755_104_460.0,
+        },
+    ]
+    server = BeckyLoopsBridgeServer(
+        config=BeckyLoopsConfig(
+            enabled=True,
+            chat_id="-1004476874933",
+            token="t" * 64,
+            port=0,
+            topic_control="unavailable",
+            topic_reply="unavailable",
+        ),
+        store=store,
+        summarizer=FakeSummarizer(),
+    )
+
+    index = server._public_index(store.rows[0])
+
+    assert index["telegram_url"] == "https://t.me/c/4476874933/20197/20214?single"
+
+
+def test_session_store_targets_latest_message_after_compaction() -> None:
+    from gateway.becky_loops import SessionDBBeckyLoopsStore
+
+    db = InactiveMessageProjectionDB()
+    db.rows[0].update({
+        "chat_id": "-1004476874933",
+        "thread_id": "20197",
+        "id": "compacted-session",
+    })
+    store = SessionDBBeckyLoopsStore(db)
+
+    row = store.list_topics("-1004476874933")[0]
+
+    assert row["telegram_url"] == "https://t.me/c/4476874933/20197/222?single"
 
 
 @pytest.mark.asyncio

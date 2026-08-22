@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -140,6 +141,9 @@ class AgentReplyDispatcher(Protocol):
         text: str,
         reply_to_message_id: str,
     ) -> None: ...
+
+
+AgentReplyCallback = Callable[..., Awaitable[None]]
 
 
 class TopicController(Protocol):
@@ -300,7 +304,9 @@ class BeckyLoopsStore(Protocol):
 
     def get_topic(self, source_ref: str) -> dict[str, Any] | None: ...
 
-    def transcript(self, session_id: str) -> list[dict[str, Any]]: ...
+    def transcript(
+        self, session_id: str, *, include_inactive: bool = False
+    ) -> list[dict[str, Any]]: ...
 
     def revision_for_topic(
         self, row: dict[str, Any], transcript: list[dict[str, Any]]
@@ -468,6 +474,14 @@ class SessionDBBeckyLoopsStore:
             last_response, last_response_at = _latest_public_becky_response(
                 transcript, hidden_values
             )
+            latest_message_id = _latest_telegram_message_id(transcript)
+            if latest_message_id is None:
+                # Hermes compaction marks older Telegram turns inactive.  Keep
+                # those turns out of the summary input, but still use the
+                # newest stored platform message ID for the navigation link.
+                latest_message_id = _latest_telegram_message_id(
+                    self.transcript(session_id, include_inactive=True)
+                )
             revision_input = {**raw, "source_ref": ref}
             source_state = "active" if raw.get("ended_at") is None else "closed"
             item = {
@@ -484,7 +498,9 @@ class SessionDBBeckyLoopsStore:
                 "updated_at": _utc_datetime(
                     raw.get("last_active") or raw.get("started_at")
                 ),
-                "telegram_url": None,
+                "telegram_url": _private_forum_topic_url(
+                    self._chat_id, thread_id, latest_message_id
+                ),
                 "session_id": session_id,
                 "thread_id": thread_id,
                 "last_becky_response": last_response,
@@ -508,8 +524,10 @@ class SessionDBBeckyLoopsStore:
                 return item
         return None
 
-    def transcript(self, session_id: str) -> list[dict[str, Any]]:
-        return self._db.get_messages(session_id, include_inactive=False)
+    def transcript(
+        self, session_id: str, *, include_inactive: bool = False
+    ) -> list[dict[str, Any]]:
+        return self._db.get_messages(session_id, include_inactive=include_inactive)
 
     def _shortcut_session_id(self, topic_id: str) -> str:
         digest = hashlib.sha256(
@@ -685,7 +703,7 @@ class BeckyLoopsBridgeServer:
         topic_sender: TopicSender | None = None,
         topic_controller: TopicController | None = None,
         reply_generator: ReplyGenerator | None = None,
-        agent_dispatcher: AgentReplyDispatcher | None = None,
+        agent_dispatcher: AgentReplyDispatcher | AgentReplyCallback | None = None,
     ) -> None:
         if not config.enabled:
             raise ValueError("Becky loops bridge is disabled")
@@ -1322,6 +1340,9 @@ class BeckyLoopsBridgeServer:
                 if self.agent_dispatcher is not None and attempt.answer is None:
                     if attempt.state == "answer_pending":
                         return self._reply_attempt_result(attempt)
+                    logger.info(
+                        "Becky loop reply selecting Telegram agent handoff"
+                    )
                     try:
                         row, _, current_revision = self._current_topic(
                             attempt.source_ref, attempt.expected_revision
@@ -1330,7 +1351,14 @@ class BeckyLoopsBridgeServer:
                         attempt.state = "answer_pending"
                         raise
                     try:
-                        await self.agent_dispatcher.dispatch(
+                        dispatch = getattr(
+                            self.agent_dispatcher,
+                            "dispatch",
+                            self.agent_dispatcher,
+                        )
+                        if not callable(dispatch):
+                            raise RuntimeError("agent reply dispatcher is unavailable")
+                        await dispatch(
                             chat_id=self.config.chat_id,
                             thread_id=attempt.thread_id,
                             session_id=str(row["session_id"]),
@@ -1340,7 +1368,12 @@ class BeckyLoopsBridgeServer:
                     except asyncio.CancelledError:
                         attempt.state = "answer_pending"
                         raise
-                    except Exception:
+                    except Exception as exc:
+                        logger.error(
+                            "Becky loop Telegram agent handoff failed (%s)",
+                            type(exc).__name__,
+                            exc_info=True,
+                        )
                         attempt.state = "answer_unavailable"
                         return self._reply_attempt_result(attempt)
                     attempt.state = "answer_pending"
@@ -1348,6 +1381,7 @@ class BeckyLoopsBridgeServer:
                     result["revision"] = current_revision
                     return result
                 if attempt.answer is None:
+                    logger.info("Becky loop reply selecting auxiliary fallback")
                     try:
                         row, transcript, _ = self._current_topic(
                             attempt.source_ref, attempt.expected_revision
@@ -1367,7 +1401,12 @@ class BeckyLoopsBridgeServer:
                     except asyncio.CancelledError:
                         attempt.state = "answer_unavailable"
                         raise
-                    except Exception:
+                    except Exception as exc:
+                        logger.error(
+                            "Becky loop auxiliary reply generation failed (%s)",
+                            type(exc).__name__,
+                            exc_info=True,
+                        )
                         attempt.state = "answer_unavailable"
                         return self._reply_attempt_result(attempt)
                     attempt.answer = answer
@@ -1450,12 +1489,14 @@ class BeckyLoopsBridgeServer:
             str(row.get("thread_id") or ""),
             str(row.get("source_ref") or ""),
         }
+        latest_message_id: str | None = None
         if "last_becky_response" in row:
             last_response = row.get("last_becky_response")
             last_response_at = row.get("last_becky_response_at")
         else:
             session_id = str(row.get("session_id") or "")
             transcript = self.store.transcript(session_id) if session_id else []
+            latest_message_id = _latest_telegram_message_id(transcript)
             for message in transcript:
                 for key in (
                     "id",
@@ -1496,7 +1537,13 @@ class BeckyLoopsBridgeServer:
             "message_count": max(0, int(row.get("message_count") or 0)),
             "created_at": _utc_datetime(row.get("created_at")).isoformat(),
             "updated_at": _utc_datetime(row.get("updated_at")).isoformat(),
-            "telegram_url": None,
+            # This is consumed only by the authenticated Becky bridge.  The
+            # dashboard keeps its public LoopCard telegram_url intentionally
+            # null and resolves this value through its own redirect route.
+            "telegram_url": row.get("telegram_url")
+            or _private_forum_topic_url(
+                self.config.chat_id, row.get("thread_id"), latest_message_id
+            ),
             "last_becky_response": last_response,
             "last_becky_response_at": response_at,
         }
@@ -1858,6 +1905,55 @@ def _valid_telegram_id(value: Any) -> bool:
     return bool(_TELEGRAM_ID_RE.fullmatch(str(value).strip()))
 
 
+def _latest_telegram_message_id(transcript: list[dict[str, Any]]) -> str | None:
+    """Return the greatest platform message ID known for one Telegram topic."""
+    candidates: list[int] = []
+    for message in transcript:
+        for key in ("platform_message_id", "telegram_message_id", "message_id"):
+            value = message.get(key)
+            if isinstance(value, bool):
+                continue
+            text = str(value or "").strip()
+            if _POSITIVE_TELEGRAM_ID_RE.fullmatch(text):
+                candidates.append(int(text))
+                break
+    return str(max(candidates)) if candidates else None
+
+
+def _private_forum_topic_url(
+    chat_id: object, thread_id: object, message_id: object | None = None
+) -> str | None:
+    """Build Telegram's private-supergroup topic/message link, fail closed.
+
+    Telegram's ``t.me/c/<channel>/<thread>/<message>?single`` form opens a
+    specific message in a forum topic.  Without a known message ID, the
+    shorter topic link is used.  The bridge never emits links for other chat
+    shapes or malformed identifiers.
+    """
+    chat_text = str(chat_id).strip()
+    thread_text = str(thread_id).strip()
+    if (
+        not _valid_telegram_id(chat_text)
+        or not _valid_telegram_id(thread_text)
+        or not chat_text.startswith("-100")
+    ):
+        return None
+    chat_value = int(chat_text)
+    thread_value = int(thread_text)
+    if chat_value >= -1_000_000_000_000 or thread_value <= 0:
+        return None
+    internal_channel_id = abs(chat_value) - 1_000_000_000_000
+    if internal_channel_id <= 0:
+        return None
+    base = f"https://t.me/c/{internal_channel_id}/{thread_value}"
+    if not _valid_telegram_id(message_id):
+        return base
+    message_value = int(str(message_id).strip())
+    if message_value <= 0:
+        return base
+    return f"{base}/{message_value}?single"
+
+
 def _has_configured_loop_topic(
     raw: dict[str, Any], section: dict[str, Any], chat_id: str
 ) -> bool:
@@ -1922,7 +2018,7 @@ async def start_becky_loops_bridge(
     topic_sender: TopicSender | None = None,
     topic_controller: TopicController | None = None,
     reply_generator: ReplyGenerator | None = None,
-    agent_dispatcher: AgentReplyDispatcher | None = None,
+    agent_dispatcher: AgentReplyDispatcher | AgentReplyCallback | None = None,
 ) -> BeckyLoopsBridgeServer | None:
     """Start the opt-in bridge and return its lifecycle handle."""
     if config is None or not config.enabled:

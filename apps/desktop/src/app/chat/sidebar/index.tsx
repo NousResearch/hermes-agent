@@ -1752,27 +1752,25 @@ export function ChatSidebar({
                       </div>
                     ) : (
                       <>
-                        {!showAllProfiles ? (
-                          <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
-                            <Button
-                              aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
-                              className={HEADER_ACTION_BTN}
-                              onClick={event => {
-                                event.stopPropagation()
+                        <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
+                          <Button
+                            aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
+                            className={HEADER_ACTION_BTN}
+                            onClick={event => {
+                              event.stopPropagation()
 
-                                if (agentsGrouped) {
-                                  openProjectCreate()
-                                } else {
-                                  onNewSessionInWorkspace(null)
-                                }
-                              }}
-                              size="icon-xs"
-                              variant="ghost"
-                            >
-                              <Codicon name="add" size="0.75rem" />
-                            </Button>
-                          </Tip>
-                        ) : null}
+                              if (agentsGrouped) {
+                                openProjectCreate()
+                              } else {
+                                onNewSessionInWorkspace(null)
+                              }
+                            }}
+                            size="icon-xs"
+                            variant="ghost"
+                          >
+                            <Codicon name="add" size="0.75rem" />
+                          </Button>
+                        </Tip>
                         <div className="grid size-6 place-items-center">
                           <SidebarFilterMenu className={HEADER_NAV_BTN} />
                         </div>

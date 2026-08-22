@@ -1935,6 +1935,14 @@ DEFAULT_CONFIG = {
         # budget still applies.
         "max_summary_chars": 24000,
 
+        # Hard per-turn token ceiling for subagent completion calls. When a
+        # delegation runtime does not set max_output_tokens, child agents fall
+        # back to this value. 0 (default) = uncapped, preserving current stock
+        # behavior. Set a positive integer to bound sub-agent output cost.
+        # For backward compatibility, the legacy key ``max_tokens`` is also
+        # honored by the delegation params builder.
+        "max_output_tokens": 0,
+
         "child_timeout_seconds": 0,  # optional wall-clock cap per child agent. 0 (default)
                                      # = no timeout: children fail only from real errors
                                      # (API, tools, iteration budget), never a delegation

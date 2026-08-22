@@ -4550,7 +4550,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
         "request_overrides": dict(runtime.get("request_overrides") or {}),
-        "max_output_tokens": runtime.get("max_output_tokens"),
+        "max_output_tokens": runtime.get("max_output_tokens") or cfg.get("max_output_tokens") or cfg.get("max_tokens"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }

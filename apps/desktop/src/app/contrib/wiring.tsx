@@ -283,7 +283,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     setMessages
   })
 
-  const { connectionRef, gateway, gatewayRef, requestGateway: ambientRequestGateway } = useGatewayRequest()
+  const {
+    bindGatewayRequest,
+    connectionRef,
+    gateway,
+    gatewayRef,
+    requestGateway: ambientRequestGateway
+  } = useGatewayRequest()
 
   // When chrome stays on the launch backend (Bot Mode / all-profiles
   // navigation), session-owned RPCs still have to hit the session's backend.
@@ -297,7 +303,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       return requestForSessionProfile<T>(owner, ambientRequestGateway, method, params ?? {}, timeoutMs, signal)
     },
-    [ambientRequestGateway]
+    [ambientRequestGateway, selectedStoredSessionIdRef]
   )
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
@@ -480,9 +486,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   } = useSessionActions({
     activeSessionId,
     activeSessionIdRef,
+    bindGatewayRequest,
     busyRef,
     creatingSessionRef,
     ensureSessionState,
+    gatewayRef,
     getRouteToken,
     getRoutedStoredSessionId,
     navigate,
@@ -585,8 +593,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const composer = useComposerActions({ activeSessionId, currentCwd, requestGateway })
 
   const branchInNewChat = useCallback(
-    async (messageId?: string) => {
-      const branched = await branchCurrentSession(messageId)
+    async (messageId?: string, targetSessionId?: string) => {
+      const branched = await branchCurrentSession(messageId, targetSessionId)
 
       if (branched) {
         await refreshSessions().catch(() => undefined)

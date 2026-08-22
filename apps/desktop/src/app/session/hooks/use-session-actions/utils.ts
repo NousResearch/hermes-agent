@@ -1236,25 +1236,35 @@ export function selectBranchMessages(
   return toBranchMessages(authoritativeMessages.slice(0, authoritativeIndex + 1))
 }
 
+interface OptimisticSessionContext {
+  cwd?: null | string
+  profile?: null | string
+}
+
 export function upsertOptimisticSession(
   created: SessionCreateResponse,
   id: string,
   title: string | null = null,
   preview: string | null = null,
   parentSessionId: string | null = null,
-  lastActive?: number
+  lastActive?: number,
+  context?: OptimisticSessionContext
 ) {
   const now = lastActive ?? Date.now() / 1000
-  // Stamp the profile the session was just created on (= the live gateway's
-  // profile) so the scoped sidebar shows the new row immediately instead of
-  // filtering it out as "default" until the aggregator re-fetches.
-  const profileKey = normalizeProfileKey($activeGatewayProfile.get())
+  // Stamp an explicit owning profile when the caller already resolved it;
+  // otherwise use the live gateway profile. This keeps cross-profile runtime
+  // operations on their source socket without misfiling the optimistic row.
+  const profileKey = normalizeProfileKey(context?.profile ?? $activeGatewayProfile.get())
+
+  const fallbackCwd = Object.hasOwn(context ?? {}, 'cwd')
+    ? context?.cwd?.trim() || null
+    : $currentCwd.get().trim() || null
 
   const session: SessionInfo = {
     // Seed cwd so the grouped sidebar can place the new row in its repo/worktree
     // lane immediately (the overlay groups by path); fall back to the workspace
     // the session was just started in when the create response omits it.
-    cwd: created.info?.cwd ?? ($currentCwd.get().trim() || null),
+    cwd: created.info?.cwd ?? fallbackCwd,
     ended_at: null,
     id,
     input_tokens: 0,
@@ -1398,21 +1408,21 @@ type SessionRuntimeStatePatch = Partial<
   >
 >
 
-interface ApplyRuntimeInfoOptions {
-  /**
-   * Whether this runtime belongs to the session the MAIN pane is showing.
-   * Foreground (the default) mirrors into the composer atoms every main-pane
-   * surface reads.
-   *
-   * A tile or a background branch must pass `false`: it owns a different
-   * worktree, and writing its cwd into `$currentCwd` re-pointed the main
-   * composer's coding rail (and the persisted workspace cwd) at the tile's
-   * repo — the main rail painted a branch from a tree its session was never
-   * in. The returned patch still carries every field, so the caller's own
-   * per-session state is unaffected.
-   */
-  foreground?: boolean
-}
+/**
+ * Foreground (the default) mirrors runtime metadata into the composer atoms.
+ * A tile or background branch must declare both `foreground: false` and its
+ * immutable owner profile so delayed metadata cannot bleed into the profile
+ * that happens to be active when the response arrives.
+ */
+type ApplyRuntimeInfoOptions =
+  | {
+      foreground?: true
+      profile?: null | string
+    }
+  | {
+      foreground: false
+      profile: null | string
+    }
 
 /** Mirror a session's runtime state into the composer atoms the MAIN pane
  *  renders from. Foreground sessions only — see ApplyRuntimeInfoOptions. */
@@ -1465,8 +1475,10 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
 
 export function applyRuntimeInfo(
   info: SessionRuntimeInfo | undefined,
-  { foreground = true }: ApplyRuntimeInfoOptions = {}
+  options: ApplyRuntimeInfoOptions = {}
 ): SessionRuntimeStatePatch | null {
+  const { foreground = true } = options
+
   if (!info) {
     return null
   }
@@ -1476,7 +1488,11 @@ export function applyRuntimeInfo(
   reportBackendContract(info.desktop_contract)
 
   if (info.approval_mode !== undefined) {
-    reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
+    const approvalProfile = Object.hasOwn(options, 'profile')
+      ? normalizeProfileKey(options.profile)
+      : normalizeProfileKey($activeGatewayProfile.get())
+
+    reconcileApprovalModeForProfile(approvalProfile, info.approval_mode)
   }
 
   requestDesktopOnboardingForCredentialWarning(info.credential_warning)

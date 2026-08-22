@@ -48,6 +48,7 @@ vi.mock('@/store/session', () => ({ setConnection: vi.fn(), setGatewayState: vi.
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 
 const {
+  acquireGatewayRequestLease,
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForAgent,
@@ -135,6 +136,30 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
 
     releaseConnect()
     await expect(switching).resolves.toBe(true)
+  })
+
+  it('releasing a command lease cannot consume a prune deferred by an in-flight activation', async () => {
+    let releaseConnect: () => void = () => undefined
+    connectGate = new Promise<void>(resolve => {
+      releaseConnect = resolve
+    })
+
+    const switching = ensureGatewayForProfile('bot')
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(secondaryGateways).toHaveLength(1)
+
+    const commandLease = acquireGatewayRequestLease(secondaryGateways[0] as never, 'bot')
+
+    pruneSecondaryGateways(new Set())
+    commandLease.release()
+
+    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+
+    releaseConnect()
+    await switching
+
+    expect(secondaryGateways[0].connectionState).toBe('open')
   })
 
   it('the lease is released once the switch settles — a later prune reclaims the idle entry', async () => {

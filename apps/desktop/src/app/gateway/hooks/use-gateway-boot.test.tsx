@@ -417,7 +417,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     // arg) — same contract as the sleep/wake reconnect: passing the active
     // profile would retarget the primary socket after a live profile swap.
     const lastCall = desktop.getConnection.mock.calls.at(-1) ?? []
-    expect(lastCall.length === 0 || lastCall[0] == null || lastCall[0] === '').toBe(true)
+    expect(lastCall.length === 0 || lastCall[0] == null || lastCall[0] === '' || lastCall[0] === 'default').toBe(true)
     expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(2)
     expect(FakeWebSocket.instances).toHaveLength(2)
     expect($gatewayState.get()).toBe('open')
@@ -520,7 +520,9 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     const reconnectCalls = desktop.getConnection.mock.calls.slice(callsBeforeDrop)
     expect(reconnectCalls.some(args => (args[0] ?? '').trim() === 'coder')).toBe(false)
-    expect(reconnectCalls.some(args => args.length === 0 || args[0] == null || args[0] === '')).toBe(true)
+    expect(
+      reconnectCalls.some(args => args.length === 0 || args[0] == null || args[0] === '' || args[0] === 'default')
+    ).toBe(true)
 
     const primaryReconnectSockets = FakeWebSocket.instances
       .slice(socketsBeforeDrop)

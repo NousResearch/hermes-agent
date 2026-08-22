@@ -3,8 +3,14 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
-import { revealTreePane } from '@/components/pane-shell/tree/store'
-import { deleteSession, getAllSessionMessages, getLatestSessionMessages, setSessionArchived } from '@/hermes'
+import { focusedSessionTabAnchor, revealTreePane } from '@/components/pane-shell/tree/store'
+import {
+  deleteSession,
+  getAllSessionMessages,
+  getLatestSessionMessages,
+  type HermesGateway,
+  setSessionArchived
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
@@ -13,12 +19,18 @@ import { setSessionYolo } from '@/lib/yolo-session'
 import { normalizeChoices, setClarifyRequest } from '@/store/clarify'
 import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
-import { openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
+import {
+  type GatewayRequester,
+  type GatewayRequestLease,
+  openGatewayForAgent,
+  openGatewayForProfile
+} from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $freshSessionRequest,
   $gatewaySwapTarget,
   $newChatProfile,
   $showAllProfiles,
@@ -75,7 +87,7 @@ import {
   $sessionTiles,
   closeSessionTile,
   dropSessionState,
-  openSessionTile,
+  openSessionTileForProfile,
   patchSessionTile,
   publishSessionState,
   type TileDock
@@ -118,9 +130,11 @@ import {
 interface SessionActionsOptions {
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
+  bindGatewayRequest: (gateway: HermesGateway, profile: string) => GatewayRequestLease
   busyRef: MutableRefObject<boolean>
   creatingSessionRef: MutableRefObject<boolean>
   ensureSessionState: (sessionId: string, storedSessionId?: string | null) => ClientSessionState
+  gatewayRef: MutableRefObject<HermesGateway | null>
   getRouteToken: () => string
   getRoutedStoredSessionId: () => null | string
   navigate: NavigateFunction
@@ -137,6 +151,14 @@ interface SessionActionsOptions {
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null
   ) => ClientSessionState
+}
+
+interface BranchUiIntent {
+  anchor?: string
+  freshSessionRequest: number
+  profile: string
+  routeToken: string
+  selectedStoredSessionId: null | string
 }
 
 // Stored ids created in THIS renderer run. A brand-new session lives only in the
@@ -275,9 +297,11 @@ function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewCha
 export function useSessionActions({
   activeSessionId,
   activeSessionIdRef,
+  bindGatewayRequest,
   busyRef,
   creatingSessionRef,
   ensureSessionState,
+  gatewayRef,
   getRouteToken,
   getRoutedStoredSessionId,
   navigate,
@@ -572,12 +596,14 @@ export function useSessionActions({
   const openNewSessionTile = useCallback(
     async (dir: TileDock = 'right', options?: { cwd?: null | string; listed?: boolean }) => {
       const listed = options?.listed ?? true
+      const sourceProfile = normalizeProfileKey($activeGatewayProfile.get())
+      const requestedCwd = (options?.cwd || resolveNewSessionCwd()).trim()
 
       try {
         // Fresh tile → the caller's workspace when one was named (the sidebar
         // "+" on a project/worktree lane), else the resolved new-session cwd
         // (project scope → configured default).
-        const params = await desktopSessionCreateParams((options?.cwd || resolveNewSessionCwd()).trim())
+        const params = await desktopSessionCreateParams(requestedCwd)
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id
 
@@ -595,7 +621,10 @@ export function useSessionActions({
         // unlisted (draft) tab stays out of the session list until its first
         // turn persists and a refresh surfaces it.
         if (listed) {
-          upsertOptimisticSession(created, stored, null, null)
+          upsertOptimisticSession(created, stored, null, null, null, undefined, {
+            cwd: requestedCwd,
+            profile: sourceProfile
+          })
         }
 
         // A tile lives in its OWN worktree, so it must not run the full
@@ -604,18 +633,27 @@ export function useSessionActions({
         // so the right rail kept showing the previous session's tree when a
         // Project "+" created a session while the main chat was occupied
         // (#76696). Split/side tiles deliberately stay isolated.
-        const runtimeInfo = applyRuntimeInfo(created.info, { foreground: false })
-        updateSessionState(created.session_id, state => (runtimeInfo ? { ...state, ...runtimeInfo } : state), stored)
+        const runtimeInfo = applyRuntimeInfo(created.info, { foreground: false, profile: sourceProfile })
+        updateSessionState(
+          created.session_id,
+          state => ({ ...state, cwd: requestedCwd, ...(runtimeInfo ?? {}) }),
+          stored
+        )
 
-        openSessionTile(stored, dir)
-        patchSessionTile(stored, { runtimeId: created.session_id })
+        const openedInActiveProfile = openSessionTileForProfile(stored, sourceProfile, dir)
 
-        if (dir === 'center' && runtimeInfo?.cwd) {
+        if (openedInActiveProfile) {
+          patchSessionTile(stored, { runtimeId: created.session_id })
+        }
+
+        if (openedInActiveProfile && dir === 'center' && runtimeInfo?.cwd) {
           setCurrentCwdTransient(runtimeInfo.cwd)
           setWorkspaceCwdOwner(stored)
         }
 
-        revealTreePane(`session-tile:${stored}`)
+        if (openedInActiveProfile) {
+          revealTreePane(`session-tile:${stored}`)
+        }
 
         if (listed) {
           broadcastSessionsChanged()
@@ -1490,6 +1528,17 @@ export function useSessionActions({
     ]
   )
 
+  const captureBranchUiIntent = useCallback(
+    (): BranchUiIntent => ({
+      anchor: focusedSessionTabAnchor() ?? undefined,
+      freshSessionRequest: $freshSessionRequest.get(),
+      profile: normalizeProfileKey($activeGatewayProfile.get()),
+      routeToken: getRouteToken(),
+      selectedStoredSessionId: selectedStoredSessionIdRef.current
+    }),
+    [getRouteToken, selectedStoredSessionIdRef]
+  )
+
   // Shared fork: create a child session seeded with `branchMessages`, linked to
   // `parentStoredId` so it nests under its parent, then open it as its own tab
   // and switch to it — the parent chat stays put (mirrors openNewSessionTile).
@@ -1500,34 +1549,51 @@ export function useSessionActions({
       parentStoredId: null | string,
       cwd?: string,
       profile?: null | string,
-      branchCount?: number
+      sourceRequest?: GatewayRequester,
+      uiIntent?: BranchUiIntent,
+      branchCount?: number,
+      ownsForegroundRoute = false
     ): Promise<boolean> => {
-      creatingSessionRef.current = true
+      if (ownsForegroundRoute) {
+        creatingSessionRef.current = true
+      }
 
       try {
-        // A branch belongs to its parent's OWNING profile. Swapping the live
-        // gateway first AND passing `profile` on the create mirrors
-        // desktopSessionCreateParams/resumeSession: in app-global remote mode
-        // one backend serves every profile, so an omitted profile silently
-        // lands the branch on the launch (default) profile — the "session
-        // jumps between profiles after branching" bug. The swap also makes
-        // upsertOptimisticSession's $activeGatewayProfile stamp correct.
-        await ensureGatewayProfile(profile)
+        let targetUiIntent = uiIntent
+
+        // A stored-transcript branch has no live runtime, so create it on the
+        // parent's owning profile. A live branch is different: its runtime is
+        // scoped to the socket that resumed it (including cross-profile tiles),
+        // so swapping gateways before session.branch would make that runtime
+        // unreachable. Keep the source socket and stamp the optimistic row with
+        // the explicit parent profile below.
+        if (!sourceSessionId) {
+          await ensureGatewayProfile(profile)
+          targetUiIntent = captureBranchUiIntent()
+        }
 
         // No title: the backend auto-names the branch from its parent's lineage.
-        const branched = sourceSessionId
-          ? await requestGateway<SessionCreateResponse>('session.branch', {
-              session_id: sourceSessionId,
-              ...(branchCount !== undefined ? { count: branchCount } : {})
-            })
-          : await requestGateway<SessionCreateResponse>('session.create', {
-              cols: 96,
-              source: 'desktop',
-              ...(cwd && { cwd }),
-              ...(profile ? { profile } : {}),
-              messages: branchMessages.map(({ content, role }) => ({ content, role })),
-              ...(parentStoredId && { parent_session_id: parentStoredId })
-            })
+        let branched: SessionCreateResponse
+
+        if (sourceSessionId) {
+          if (!sourceRequest) {
+            throw new Error('Hermes gateway unavailable')
+          }
+
+          branched = await sourceRequest<SessionCreateResponse>('session.branch', {
+            session_id: sourceSessionId,
+            ...(branchCount !== undefined ? { count: branchCount } : {})
+          })
+        } else {
+          branched = await requestGateway<SessionCreateResponse>('session.create', {
+            cols: 96,
+            source: 'desktop',
+            ...(cwd && { cwd }),
+            ...(profile ? { profile } : {}),
+            messages: branchMessages.map(({ content, role }) => ({ content, role })),
+            ...(parentStoredId && { parent_session_id: parentStoredId })
+          })
+        }
 
         const responseBranchMessages =
           sourceSessionId && branched.messages?.length ? toBranchMessages(toChatMessages(branched.messages)) : []
@@ -1545,20 +1611,21 @@ export function useSessionActions({
           ? rows.filter(session => session.parent_session_id?.trim() === parentStoredId).length
           : 0
 
-        setFreshDraftReady(false)
         upsertOptimisticSession(
           branched,
           routedSessionId,
           copy.branchTitle(siblings + 1).toLowerCase(),
           preview,
           parentStoredId,
-          parent ? parent.last_active || parent.started_at : undefined
+          parent ? parent.last_active || parent.started_at : undefined,
+          { cwd, profile }
         )
         ensureSessionState(branched.session_id, routedSessionId)
         updateSessionState(
           branched.session_id,
           state => ({
             ...state,
+            ...(cwd !== undefined ? { cwd } : {}),
             messages: effectiveBranchMessages.map(({ source }) => source),
             busy: false,
             awaitingResponse: false
@@ -1568,20 +1635,42 @@ export function useSessionActions({
 
         // The branch opens as its own tile in the parent's worktree, not as the
         // primary session — keep its runtime out of the main composer atoms.
-        const runtimeInfo = applyRuntimeInfo(branched.info, { foreground: false })
+        const resolvedUiIntent = targetUiIntent ?? captureBranchUiIntent()
+        const runtimeInfoOwner = profile?.trim() || resolvedUiIntent.profile
+        const runtimeInfo = applyRuntimeInfo(branched.info, { foreground: false, profile: runtimeInfoOwner })
         patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)
 
         if (runtimeInfo) {
           updateSessionState(branched.session_id, state => ({ ...state, ...runtimeInfo }), routedSessionId)
         }
 
-        // Open the branch as its own tab and switch to it, leaving the parent
-        // chat exactly where it is. Prime the tile with the create runtime so it
-        // skips a redundant resume. Do NOT select it as the primary session
-        // first — openSessionTile no-ops when the id is already primary.
-        openSessionTile(routedSessionId, 'center')
-        patchSessionTile(routedSessionId, { runtimeId: branched.session_id })
-        revealTreePane(`session-tile:${routedSessionId}`)
+        // Persist the child under the profile layout that launched the branch.
+        // If the user moved elsewhere while either lookup/RPC was pending, do
+        // not publish it into the newer profile's tile set or steal focus. The
+        // inactive placement resumes its runtime when that profile is revisited.
+        const openedInActiveProfile = openSessionTileForProfile(
+          routedSessionId,
+          resolvedUiIntent.profile,
+          'center',
+          resolvedUiIntent.anchor
+        )
+
+        const uiIntentStillCurrent =
+          openedInActiveProfile &&
+          normalizeProfileKey($activeGatewayProfile.get()) === resolvedUiIntent.profile &&
+          $freshSessionRequest.get() === resolvedUiIntent.freshSessionRequest &&
+          getRouteToken() === resolvedUiIntent.routeToken &&
+          selectedStoredSessionIdRef.current === resolvedUiIntent.selectedStoredSessionId &&
+          (focusedSessionTabAnchor() ?? undefined) === resolvedUiIntent.anchor
+
+        if (openedInActiveProfile) {
+          patchSessionTile(routedSessionId, { runtimeId: branched.session_id })
+        }
+
+        if (uiIntentStillCurrent) {
+          revealTreePane(`session-tile:${routedSessionId}`)
+        }
+
         broadcastSessionsChanged()
 
         return true
@@ -1590,97 +1679,160 @@ export function useSessionActions({
 
         return false
       } finally {
-        window.setTimeout(() => {
-          creatingSessionRef.current = false
-        }, 0)
+        if (ownsForegroundRoute) {
+          window.setTimeout(() => {
+            creatingSessionRef.current = false
+          }, 0)
+        }
       }
     },
-    [copy, creatingSessionRef, ensureSessionState, requestGateway, updateSessionState]
+    [
+      captureBranchUiIntent,
+      copy,
+      creatingSessionRef,
+      ensureSessionState,
+      getRouteToken,
+      requestGateway,
+      selectedStoredSessionIdRef,
+      updateSessionState
+    ]
   )
 
-  // Branch the open chat — optionally from a specific message — off its live transcript.
+  // Branch an open chat — optionally from a specific message — off its live transcript.
+  // Slash commands from a tile pass that tile's runtime explicitly; message
+  // actions omit it and keep using the foreground chat.
   const branchCurrentSession = useCallback(
-    async (messageId?: string): Promise<boolean> => {
-      if (!activeSessionIdRef.current) {
+    async (messageId?: string, targetSessionId?: string): Promise<boolean> => {
+      const sessionId = targetSessionId ?? activeSessionIdRef.current
+
+      if (!sessionId) {
         notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNeedsChat })
 
         return false
       }
 
-      if (busyRef.current) {
+      const isForeground = sessionId === activeSessionIdRef.current
+      const targetState = sessionStateByRuntimeIdRef.current.get(sessionId)
+
+      // A background/tile target must never fall through to the foreground's
+      // transcript or metadata. If its runtime state disappeared during
+      // dispatch, fail closed instead of branching an unrelated conversation.
+      if (!targetState && !isForeground) {
+        notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNeedsChat })
+
+        return false
+      }
+
+      if (isForeground ? busyRef.current : targetState!.busy) {
         notify({ kind: 'warning', title: copy.sessionBusy, message: copy.branchStopCurrent })
 
         return false
       }
 
+      // Preserve the foreground branch path exactly as it was: the shared view
+      // carries the latest optimistic transcript. Only an offscreen target reads
+      // its isolated runtime cache. Everything below is invocation-owned and is
+      // captured before profile/transcript resolution can yield.
+      const messages = isForeground ? $messages.get() : targetState!.messages
       const startingActiveSessionId = activeSessionIdRef.current
-      const messages = $messages.get()
-      const storedSessionId = selectedStoredSessionIdRef.current
+      const parentStoredId = isForeground ? selectedStoredSessionIdRef.current : targetState!.storedSessionId
       const startingRouteToken = getRouteToken()
-      const startingCwd = $currentCwd.get().trim()
+      const startingCwd = isForeground ? $currentCwd.get().trim() : targetState!.cwd.trim()
+      const sourceGateway = gatewayRef.current
+      const uiIntent = captureBranchUiIntent()
+      let sourceLease: GatewayRequestLease | null = null
 
-      // The live atom may be a compacted model projection. Read the durable
-      // display projection before choosing the branch prefix so a whole-chat
-      // branch does not inherit only the summary/tail. If the backend is
-      // temporarily unavailable, retain the local snapshot and let the branch
-      // RPC make its own authoritative read.
-      let authoritativeMessages: ChatMessage[] | null = null
-      const profile = await resolveSessionProfile(storedSessionId)
-
-      if (storedSessionId) {
-        try {
-          const persisted = await getAllSessionMessages(storedSessionId, profile)
-          const hydrated = toChatMessages(persisted.messages)
-
-          if (hydrated.length) {
-            authoritativeMessages = hydrated
-          }
-        } catch {
-          // The branch RPC has a backend-side display projection fallback.
+      // Pin transport, source profile, and UI intent before profile resolution
+      // yields. The command lease keeps a background source registered across
+      // the production profile-switch pruning policy; its requester reconnects
+      // and retries only on this exact owner.
+      try {
+        if (!sourceGateway) {
+          throw new Error('Hermes gateway unavailable')
         }
-      }
 
-      const drift = sessionContextDrift({
-        startRouteToken: startingRouteToken,
-        nowRouteToken: getRouteToken(),
-        startSelectedStoredId: storedSessionId,
-        nowSelectedStoredId: selectedStoredSessionIdRef.current
-      })
+        sourceLease = bindGatewayRequest(sourceGateway, uiIntent.profile)
+        const resolvedProfile = await resolveSessionProfile(parentStoredId)
+        const profile = normalizeProfileKey(resolvedProfile ?? uiIntent.profile)
 
-      const runtimeChanged = activeSessionIdRef.current !== startingActiveSessionId
-      const selectionChanged = selectedStoredSessionIdRef.current !== storedSessionId
+        // The live atom may be a compacted model projection. Read the durable
+        // display projection before choosing the branch prefix so a whole-chat
+        // branch does not inherit only the summary/tail. Offscreen targets keep
+        // their isolated live cache and never hydrate through foreground state.
+        let authoritativeMessages: ChatMessage[] | null = null
 
-      if (drift || runtimeChanged || selectionChanged) {
-        console.warn('[branch-drift-abort]', drift ?? 'runtime-or-selection-changed', {
-          phase: 'transcript-hydration'
+        if (isForeground && parentStoredId) {
+          try {
+            const persisted = await getAllSessionMessages(parentStoredId, profile)
+            const hydrated = toChatMessages(persisted.messages)
+
+            if (hydrated.length) {
+              authoritativeMessages = hydrated
+            }
+          } catch {
+            // The branch RPC has a backend-side display projection fallback.
+          }
+        }
+
+        const drift = sessionContextDrift({
+          startRouteToken: startingRouteToken,
+          nowRouteToken: getRouteToken(),
+          startSelectedStoredId: parentStoredId,
+          nowSelectedStoredId: selectedStoredSessionIdRef.current
         })
 
+        const runtimeChanged = activeSessionIdRef.current !== startingActiveSessionId
+        const selectionChanged = selectedStoredSessionIdRef.current !== parentStoredId
+
+        if (isForeground && (drift || runtimeChanged || selectionChanged)) {
+          console.warn('[branch-drift-abort]', drift ?? 'runtime-or-selection-changed', {
+            phase: 'transcript-hydration'
+          })
+
+          return false
+        }
+
+        const branchMessages = selectBranchMessages(messages, authoritativeMessages, messageId)
+
+        if (!branchMessages.length) {
+          notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
+
+          return false
+        }
+
+        clearNotifications()
+
+        return await forkBranch(
+          branchMessages,
+          sessionId,
+          parentStoredId,
+          startingCwd,
+          profile,
+          sourceLease.request,
+          uiIntent,
+          messageId || !isForeground ? branchMessages.length : undefined,
+          isForeground
+        )
+      } catch (err) {
+        notifyError(err, copy.branchFailed)
+
         return false
+      } finally {
+        sourceLease?.release()
       }
-
-      const branchMessages = selectBranchMessages(messages, authoritativeMessages, messageId)
-
-      if (!branchMessages.length) {
-        notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
-
-        return false
-      }
-
-      clearNotifications()
-
-      // The open chat's owning profile, NOT the picker's / launch profile —
-      // /profile only retargets new chats, so a branch of an existing thread
-      // must stay on that thread's backend (cache hit for an open session).
-      return forkBranch(
-        branchMessages,
-        startingActiveSessionId,
-        storedSessionId,
-        startingCwd,
-        profile,
-        messageId ? branchMessages.length : undefined
-      )
     },
-    [activeSessionIdRef, busyRef, copy, forkBranch, getRouteToken, selectedStoredSessionIdRef]
+    [
+      activeSessionIdRef,
+      bindGatewayRequest,
+      busyRef,
+      captureBranchUiIntent,
+      copy,
+      forkBranch,
+      gatewayRef,
+      getRouteToken,
+      selectedStoredSessionIdRef,
+      sessionStateByRuntimeIdRef
+    ]
   )
 
   // Branch any listed session, not just the open one. Reads the target's stored

@@ -833,6 +833,38 @@ export function openSessionTile(
   }
 }
 
+/**
+ * Persist a tile into an explicit profile namespace without disturbing the
+ * profile currently on screen. Returns true when that namespace is active, in
+ * which case the regular open path also publishes the tile for immediate pane
+ * adoption. An inactive profile receives only durable placement; its runtime is
+ * re-resumed when the user returns to it.
+ */
+export function openSessionTileForProfile(
+  storedSessionId: string,
+  profile: string,
+  dir: TileDock = 'right',
+  anchor?: string,
+  before?: null | string
+): boolean {
+  const targetProfile = normalizeProfileKey(profile)
+
+  if (targetProfile === profileKey()) {
+    openSessionTile(storedSessionId, dir, anchor, before)
+
+    return true
+  }
+
+  const stored = tilesByProfile[targetProfile] ?? []
+
+  if (!stored.some(tile => tile.storedSessionId === storedSessionId)) {
+    tilesByProfile[targetProfile] = [...stored, { anchor, before: before ?? undefined, dir, storedSessionId }]
+    persistTiles()
+  }
+
+  return false
+}
+
 /** ⌘W on the MAIN tab: the next session tab stacked WITH the workspace, to
  *  shift into main. Walks the workspace group's strip from the workspace tab
  *  outward (the tab after it first, then wrapping to the ones before), and

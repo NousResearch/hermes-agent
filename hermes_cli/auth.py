@@ -1665,6 +1665,45 @@ _POOL_STATUS_FIELDS = (
 )
 
 
+def reset_credential_pool_statuses(
+    provider_id: str,
+    *,
+    auth_file: Optional[Path] = None,
+) -> int:
+    """Clear one provider's cooldown fields in exactly one local auth store.
+
+    ``read_credential_pool`` may return entries inherited from the global-root
+    fallback, while ordinary pool writes remain profile-local.  Resetting a
+    loaded :class:`~agent.credential_pool.CredentialPool` would therefore risk
+    materialising inherited credentials in a named profile.  Work directly on
+    the requested store instead so callers can reset several profile stores
+    without copying credentials between them.
+    """
+    target_path = auth_file if auth_file is not None else _auth_file_path()
+    with _auth_store_lock(target_path=target_path):
+        auth_store = _load_auth_store(target_path)
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            return 0
+        entries = pool.get(provider_id)
+        if not isinstance(entries, list):
+            return 0
+
+        count = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if not any(entry.get(field) is not None for field in _POOL_STATUS_FIELDS):
+                continue
+            for field in _POOL_STATUS_FIELDS:
+                entry[field] = None
+            count += 1
+
+        if count:
+            _save_auth_store(auth_store, target_path=target_path)
+        return count
+
+
 def _merge_disk_cooldown_state(
     entry: Dict[str, Any],
     disk_entry: Optional[Dict[str, Any]],

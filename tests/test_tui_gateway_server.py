@@ -16850,7 +16850,7 @@ def test_shutdown_sessions_closes_every_session_via_helper(monkeypatch):
     seen = []
     monkeypatch.setattr(
         server, "_close_session_by_id",
-        lambda sid, *, end_reason: seen.append((sid, end_reason)),
+        lambda sid, *, end_reason, predicate=None: seen.append((sid, end_reason)),
     )
     server._sessions.clear()
     server._sessions["a"] = {}
@@ -16859,6 +16859,63 @@ def test_shutdown_sessions_closes_every_session_via_helper(monkeypatch):
         server._shutdown_sessions()
         assert sorted(sid for sid, _ in seen) == ["a", "b"]
         assert {reason for _, reason in seen} == {"tui_shutdown"}
+    finally:
+        server._sessions.clear()
+
+
+def test_shutdown_sessions_spares_a_session_whose_turn_is_running(monkeypatch):
+    """The atexit sweep must not spend a live session's one-shot finalize latch.
+
+    Nothing joins the turn thread, so finalizing mid-turn persists a truncated
+    transcript, commits memory from it and releases the active-session lease
+    under live work, leaving the session permanently un-finalizable. Unfinalized
+    stays recoverable through the turn-end flush.
+    """
+    monkeypatch.setattr(server, "_release_gateway_wake_owner", lambda: False)
+    torn = []
+    monkeypatch.setattr(
+        server,
+        "_teardown_session",
+        lambda session, *, end_reason: torn.append((session["_sid"], end_reason)),
+    )
+    server._sessions.clear()
+    live = {"running": True}
+    idle = {"running": False}
+    server._sessions["live"] = live
+    server._sessions["idle"] = idle
+    try:
+        server._shutdown_sessions()
+        # The idle session is reclaimed exactly as before.
+        assert torn == [("idle", "tui_shutdown")]
+        assert "idle" not in server._sessions
+        # The live one is left registered and un-latched.
+        assert server._sessions.get("live") is live
+        assert not live.get("_finalized")
+    finally:
+        server._sessions.clear()
+
+
+def test_shutdown_sessions_skips_a_session_the_drain_already_finalized(monkeypatch):
+    """`compute_host.flush_all_sessions` finalizes in place without popping.
+
+    Its sessions therefore reach the atexit sweep with the latch already spent,
+    so a second teardown has nothing left to persist and would only re-announce
+    a reclaim and close an agent on a process that is exiting.
+    """
+    monkeypatch.setattr(server, "_release_gateway_wake_owner", lambda: False)
+    torn = []
+    monkeypatch.setattr(
+        server,
+        "_teardown_session",
+        lambda session, *, end_reason: torn.append(session["_sid"]),
+    )
+    server._sessions.clear()
+    flushed = {"running": False, "_finalized": True}
+    server._sessions["flushed"] = flushed
+    try:
+        server._shutdown_sessions()
+        assert torn == []
+        assert server._sessions.get("flushed") is flushed
     finally:
         server._sessions.clear()
 

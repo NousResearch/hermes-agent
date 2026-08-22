@@ -1209,6 +1209,30 @@ def _close_sessions_for_transport(
     return reaped, detached
 
 
+def _shutdown_session_is_reclaimable(session: dict) -> bool:
+    """Whether the atexit sweep may finalize ``session``.
+
+    ``_finalize_session`` is a one-shot latch, so spending it on a session
+    whose turn is still running throws that single chance away mid-turn:
+    ``_persist_session`` snapshots a truncated transcript, ``commit_memory_session``
+    commits long-term memory from it, the durable row is ended, ``on_session_end``
+    fires ``interrupted=True``, and the active-session lease is released out from
+    under live work — while nothing joins the turn thread, so its tail is
+    thereafter unpersistable. Leaving a live-turn session unfinalized keeps it
+    recoverable through the turn-end flush instead, the same trade
+    ``compute_host.HostRuntime.shutdown`` already makes for its drain flush.
+
+    Sessions the drain flush already finalized are skipped for the same reason
+    in reverse: the latch is spent, so teardown has nothing left to persist and
+    would only re-announce a reclaim and close an agent on a dying process.
+
+    Every other automatic reclaim path in this module already gates on
+    ``running`` (``_ws_session_is_orphaned``, ``_session_is_evictable``,
+    ``_session_is_lru_evictable``); this one runs on *every* exit and did not.
+    """
+    return not session.get("_finalized") and not session.get("running")
+
+
 def _shutdown_sessions() -> None:
     try:
         _release_gateway_wake_owner()
@@ -1217,7 +1241,11 @@ def _shutdown_sessions() -> None:
     with _sessions_lock:
         sids = list(_sessions)
     for sid in sids:
-        _close_session_by_id(sid, end_reason="tui_shutdown")
+        _close_session_by_id(
+            sid,
+            end_reason="tui_shutdown",
+            predicate=_shutdown_session_is_reclaimable,
+        )
 
 
 # Last-resort net for any disconnect path that slips past the WS finally. TTL is

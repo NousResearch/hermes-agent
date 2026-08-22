@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -29,6 +30,16 @@ _skill_commands_home: Optional[str] = None
 # freshness lookup always see a consistent snapshot. Scanning itself stays
 # outside this lock.
 _publish_lock = threading.Lock()
+# Completed scans keyed by (platform, home, project). One backend process
+# serves many sessions, each potentially in a different project; a single
+# published slot would make two sessions in two repos invalidate each other on
+# every completion request and rescan the disk each time (cache thrash). The
+# keyed store keeps repeat completions cheap per project; the legacy triple
+# above remains the "most recent scan" view that reload_skills() diffs against.
+# Bounded: session workspaces are unbounded over a process's life, the cache
+# must not be.
+_skill_commands_by_scope: "OrderedDict[tuple, Dict[str, Dict[str, Any]]]" = OrderedDict()
+_SKILL_COMMANDS_SCOPE_CACHE_MAX = 8
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
@@ -227,6 +238,26 @@ def _resolve_skill_commands_home() -> str:
     from hermes_constants import get_hermes_home
 
     return str(get_hermes_home())
+
+
+def _resolve_skill_commands_project() -> str:
+    """Return the project root the skill scan is currently scoped to.
+
+    Project skills (``.hermes/skills`` / ``.agents/skills`` under the enclosing
+    git checkout) are part of the scanned universe, but the cache only tracked
+    platform + Hermes home. One backend PROCESS serves MANY sessions on
+    Desktop/gateway/ACP, each pinning its own session cwd, so whichever session
+    scanned first froze its project's skills into the cache for everyone else.
+
+    Returns ``""`` when the current session is not inside a project.
+    """
+    try:
+        from agent.skill_utils import find_project_root
+
+        root = find_project_root()
+    except Exception:  # pragma: no cover — defensive, never break the scan
+        return ""
+    return str(root) if root else ""
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
@@ -430,6 +461,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     global _skill_commands, _skill_commands_platform, _skill_commands_home
     platform = _resolve_skill_commands_platform()
     home = _resolve_skill_commands_home()
+    project = _resolve_skill_commands_project()
     # Build into a local map and publish once, at the end. Writing straight
     # into the global made a scan's partial results visible to everything
     # else in the process: a second, overlapping scan deduped against its own
@@ -540,10 +572,18 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     # without rescanning — serving another platform's disabled-skill view,
     # exactly the leak #14536 closed. Only the publish/lookup pair is locked;
     # the scan above (file I/O, deferred imports) stays outside it.
+    # The scope tuple (platform, home, project) was resolved BEFORE the scan,
+    # in this same context, so the published entry is labeled with the scope
+    # the scan actually ran under.
     with _publish_lock:
         _skill_commands = commands
         _skill_commands_platform = platform
         _skill_commands_home = home
+        scope = (platform, home, project)
+        _skill_commands_by_scope.pop(scope, None)
+        _skill_commands_by_scope[scope] = commands
+        while len(_skill_commands_by_scope) > _SKILL_COMMANDS_SCOPE_CACHE_MAX:
+            _skill_commands_by_scope.popitem(last=False)
     return commands
 
 
@@ -552,23 +592,36 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
 
     Rescans when the active platform scope changes (e.g. a gateway
     process serving Telegram and Discord concurrently) so each platform
-    sees its own ``skills.platform_disabled`` view (#14536), and when the
+    sees its own ``skills.platform_disabled`` view (#14536), when the
     active profile's Hermes home changes (e.g. Desktop switching profiles
-    mid-session) so each profile sees its own ``skills.external_dirs`` (#88023).
+    mid-session) so each profile sees its own ``skills.external_dirs``
+    (#88023), and when the resolved PROJECT root differs so each session sees
+    the repo skills of the project it actually has open — and only those.
+
+    Scans are memoized per (platform, home, project) scope: two sessions in
+    two different repos each keep their own completed scan instead of
+    invalidating a single shared slot back and forth on every completion
+    request.
     """
     current_platform = _resolve_skill_commands_platform()
     current_home = _resolve_skill_commands_home()
-    # Read the map and its tags under the same lock that publishes them, so
-    # the freshness decision is made against a consistent snapshot.
+    current_project = _resolve_skill_commands_project()
+    # Read under the same lock that publishes, so the freshness decision is
+    # made against a consistent snapshot. An empty LEGACY map means either a
+    # by-hand cache reset (tests do this to force a rescan — several idioms
+    # exist, some nulling tags and some not, so the map itself is the only
+    # signal that catches all of them) or a scan that genuinely found zero
+    # skills. Both force a rescan. For the zero-skill case that trades the
+    # memo away — a skill-less process rescans per request, as it always has —
+    # which is the conservative side: serving a possibly-stale scoped entry
+    # after a reset would be a correctness bug, an extra rescan is only cost.
     with _publish_lock:
-        commands = _skill_commands
-        is_fresh = (
-            bool(commands)
-            and _skill_commands_platform == current_platform
-            and _skill_commands_home == current_home
+        cached = _skill_commands_by_scope.get(
+            (current_platform, current_home, current_project)
         )
-    if is_fresh:
-        return commands
+        reset_by_hand = not _skill_commands
+    if cached and not reset_by_hand:
+        return cached
     # Scan outside the lock — it does file I/O and deferred imports, and
     # concurrent scans are already safe (each builds its own map).
     return scan_skill_commands()
@@ -614,6 +667,12 @@ def reload_skills() -> Dict[str, Any]:
         return out
 
     before = _snapshot(_skill_commands)
+
+    # The disk changed, so EVERY scope's memoized scan is suspect — global
+    # skills appear in all of them. Drop the whole keyed cache; other scopes
+    # rebuild on their next request (the single-slot behaviour, made explicit).
+    with _publish_lock:
+        _skill_commands_by_scope.clear()
 
     # Rescan the skills dir. ``scan_skill_commands`` resets
     # ``_skill_commands = {}`` internally and repopulates it.

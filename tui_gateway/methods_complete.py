@@ -333,6 +333,15 @@ def _(rid, params: dict) -> dict:
     if not text.startswith("/"):
         return _ok(rid, {"items": []})
 
+    # Skill completions resolve PROJECT skills from the calling session's cwd.
+    # Without this scope the handler runs on the bare backend process — whose
+    # cwd is the install tree on Desktop — so the popover offered only global
+    # skills AND poisoned the process-wide skill cache for every other session.
+    # Entered via the context-manager protocol rather than a `with` block so the
+    # handler body below stays byte-identical to its pre-split server.py form
+    # (see method_ctx.py); the scope itself never raises.
+    _slash_scope = _completion_session_scope(params)
+    _slash_scope.__enter__()
     try:
         from hermes_cli.commands import SlashCommandCompleter
         from prompt_toolkit.document import Document
@@ -464,6 +473,8 @@ def _(rid, params: dict) -> dict:
         )
     except Exception as e:
         return _err(rid, 5020, str(e))
+    finally:
+        _slash_scope.__exit__(None, None, None)
 
 
 @method("model.options")

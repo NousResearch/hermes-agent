@@ -65,13 +65,27 @@ export function useSlashCompletions(options: {
    *  come from here, not the backend (whose skin list is CLI/TUI-only). */
   skinThemes?: DesktopThemeCommandOption[]
   activeSkin?: string
+  /** Session identity for the backend's skill scan. The catalog includes the
+   *  session's PROJECT skills (`.hermes/skills` / `.agents/skills` in the open
+   *  repo), which the backend can only resolve from this session's cwd — one
+   *  backend process serves every session, so without these the scan ran
+   *  against the install tree and no repo skill ever reached the popover. */
+  sessionId?: string | null
+  cwd?: string | null
 }): {
   adapter: Unstable_TriggerAdapter
   loading: boolean
 } {
-  const { gateway, skinThemes, activeSkin } = options
+  const { gateway, skinThemes, activeSkin, sessionId, cwd } = options
   const enabled = Boolean(gateway)
   const epoch = useStore($slashCompletionsEpoch)
+
+  // Two sessions in different projects get different catalogs, so a cached
+  // response is only valid for the workspace that produced it. Mirrors the
+  // `@` path cache, which is scoped the same way for the same reason.
+  // JSON.stringify, not a `|` join: a delimiter that can appear inside a cwd
+  // lets two different (cwd, sessionId) pairs collide on one cache key.
+  const scope = JSON.stringify([cwd ?? '', sessionId ?? ''])
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
@@ -141,9 +155,23 @@ export function useSlashCompletions(options: {
       }
 
       try {
+        // Session identity rides on both RPCs so the backend resolves THIS
+        // session's project skills rather than the backend process's own cwd.
+        const scopeParams: Record<string, string> = {}
+
+        if (sessionId) {
+          scopeParams.session_id = sessionId
+        }
+
+        if (cwd) {
+          scopeParams.cwd = cwd
+        }
+
         if (!query) {
           const catalog = filterDesktopCommandsCatalog(
-            await cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
+            await cachedSlashCompletion(`catalog|${scope}`, () =>
+              gateway.request<CommandsCatalogLike>('commands.catalog', scopeParams)
+            )
           )
 
           // Prefer the categorized layout so the popover renders section headers
@@ -183,8 +211,11 @@ export function useSlashCompletions(options: {
           return { items, query }
         }
 
-        const result = await cachedSlashCompletion(`slash:${text.toLowerCase()}`, () =>
-          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', { text })
+        const result = await cachedSlashCompletion(`slash:${text.toLowerCase()}|${scope}`, () =>
+          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', {
+            ...scopeParams,
+            text
+          })
         )
 
         // Arg-completion items (replace_from > 1) carry just the arg stub —
@@ -232,7 +263,7 @@ export function useSlashCompletions(options: {
         // search that hides a match is broken. Usage rides along on the catalog
         // response, which the popover has already fetched by the time anyone
         // types; if it somehow hasn't, order falls back to the backend's.
-        const catalogSkills = peekCachedSlashCompletion<CommandsCatalogLike>('catalog')?.skills
+        const catalogSkills = peekCachedSlashCompletion<CommandsCatalogLike>(`catalog|${scope}`)?.skills
 
         const ranked = [
           ...decorated.filter(item => item.group !== 'Skills'),
@@ -249,7 +280,7 @@ export function useSlashCompletions(options: {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin]
+    [gateway, skinThemes, activeSkin, scope, sessionId, cwd]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {
@@ -291,9 +322,9 @@ export function useSlashCompletions(options: {
         return true
       }
 
-      return hasCachedSlashCompletion(query ? `slash:${text.toLowerCase()}` : 'catalog')
+      return hasCachedSlashCompletion(query ? `slash:${text.toLowerCase()}|${scope}` : `catalog|${scope}`)
     },
-    [skinThemes]
+    [skinThemes, scope]
   )
 
   return useLiveCompletionAdapter({ enabled, epoch, fetcher, isCached, toItem })

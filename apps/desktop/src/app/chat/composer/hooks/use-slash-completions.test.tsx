@@ -41,11 +41,11 @@ const RANKED_CATALOG = {
 const commandsOf = (items: readonly Unstable_TriggerItem[]) =>
   items.map(item => (item.metadata as { command?: string })?.command)
 
-function harness(gateway: HermesGateway) {
+function harness(gateway: HermesGateway, scope?: { cwd?: string; sessionId?: string }) {
   const api: { search?: (query: string) => readonly Unstable_TriggerItem[] } = {}
 
   function Probe() {
-    const { adapter } = useSlashCompletions({ gateway })
+    const { adapter } = useSlashCompletions({ cwd: scope?.cwd ?? null, gateway, sessionId: scope?.sessionId ?? null })
     api.search = adapter.search
 
     return null
@@ -153,5 +153,55 @@ describe('useSlashCompletions', () => {
     await completions(api, '')
 
     expect(commandsOf(await completions(api, 'research'))).toEqual(['/research', '/research-paper-writing'])
+  })
+
+  // The catalog includes the session's PROJECT skills (`.hermes/skills` /
+  // `.agents/skills` in the open repo). One backend process serves every
+  // session, so it can only resolve which project that is from the session
+  // identity we send — without it the scan ran against the backend's own
+  // directory and no repo skill ever reached the popover.
+  it('scopes both completion RPCs to the session and its workspace', async () => {
+    const request = vi.fn().mockResolvedValue(CATALOG)
+    const api = harness({ request } as unknown as HermesGateway, { cwd: '/repo', sessionId: 'sid-1' })
+
+    await completions(api, '')
+    expect(request).toHaveBeenCalledWith('commands.catalog', { cwd: '/repo', session_id: 'sid-1' })
+
+    request.mockResolvedValue({ items: [{ text: '/work', display: '/work', meta: '' }] })
+    await completions(api, 'wo')
+    expect(request).toHaveBeenCalledWith('complete.slash', { cwd: '/repo', session_id: 'sid-1', text: '/wo' })
+  })
+
+  it('does not serve one workspace a catalog cached for another', async () => {
+    const request = vi.fn().mockResolvedValue(CATALOG)
+
+    const inRepo = harness({ request } as unknown as HermesGateway, { cwd: '/repo-a', sessionId: 'a' })
+    await completions(inRepo, '')
+    expect(request).toHaveBeenCalledTimes(1)
+
+    // A second session in a different repo must re-ask rather than inherit
+    // repo A's answer — the catalog is per-workspace, not per-process.
+    cleanup()
+    const elsewhere = harness({ request } as unknown as HermesGateway, { cwd: '/repo-b', sessionId: 'b' })
+    await completions(elsewhere, '')
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(request).toHaveBeenLastCalledWith('commands.catalog', { cwd: '/repo-b', session_id: 'b' })
+  })
+
+  // A raw `${cwd}|${sessionId}` join lets a delimiter inside the cwd forge
+  // another scope's key: ('/repo|x', 'sid') and ('/repo', 'x|sid') both
+  // serialize to '/repo|x|sid'. Directories with `|` in their name are legal
+  // on POSIX filesystems, so these are two REAL distinct scopes.
+  it('does not collide cache keys when a cwd contains the delimiter', async () => {
+    const request = vi.fn().mockResolvedValue(CATALOG)
+
+    const first = harness({ request } as unknown as HermesGateway, { cwd: '/repo|x', sessionId: 'sid' })
+    await completions(first, '')
+    expect(request).toHaveBeenCalledTimes(1)
+
+    cleanup()
+    const second = harness({ request } as unknown as HermesGateway, { cwd: '/repo', sessionId: 'x|sid' })
+    await completions(second, '')
+    expect(request).toHaveBeenCalledTimes(2)
   })
 })

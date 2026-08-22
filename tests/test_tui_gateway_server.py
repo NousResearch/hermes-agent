@@ -19907,3 +19907,253 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+def _session_cwd_is_honoured() -> bool:
+    """True when ``find_project_root()`` consults the per-session cwd pin.
+
+    These three tests assert that the completion/dispatch RPCs scan in the
+    CALLING session's project. That is only observable once the project
+    resolver reads the ``_SESSION_CWD`` contextvar this scope sets; on a tree
+    where it still resolves ``TERMINAL_CWD``/process cwd, the scope is correct
+    but has no visible effect. Skip rather than fail there, so this PR is green
+    on its own and turns green-with-teeth once the resolver lands.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from agent.runtime_cwd import _SESSION_CWD, set_session_cwd
+    from agent.skill_utils import find_project_root
+
+    probe = Path(tempfile.mkdtemp()) / "proj"
+    (probe / ".git").mkdir(parents=True)
+    token = set_session_cwd(str(probe))
+    try:
+        return find_project_root() == probe.resolve()
+    finally:
+        _SESSION_CWD.reset(token)
+
+
+_needs_session_cwd = pytest.mark.skipif(
+    not _session_cwd_is_honoured(),
+    reason="find_project_root() does not yet read _SESSION_CWD; the session "
+    "scope is applied but not observable (see the PR description)",
+)
+
+
+def _slash_scope_project_probe(method, params):
+    """Run a completion RPC and report the project root the skill scan saw.
+
+    Both handlers enumerate skills through ``agent.skill_commands``; this stubs
+    that call so the test observes the resolved PROJECT — the thing that was
+    wrong — without depending on any skill actually existing on disk.
+
+    Resolves through ``find_project_root()`` rather than any skill-command
+    helper so this test exercises only the session scope it is about.
+    """
+    seen = {}
+
+    import agent.skill_commands as sc
+
+    real = sc.scan_skill_commands
+
+    def _probe():
+        from agent.skill_utils import find_project_root
+
+        root = find_project_root()
+        seen["project"] = str(root) if root else ""
+        return {}
+
+    sc.scan_skill_commands = _probe
+    sc._skill_commands = {}
+    try:
+        server.handle_request({"id": "1", "method": method, "params": params})
+    finally:
+        sc.scan_skill_commands = real
+        sc._skill_commands = {}
+    return seen.get("project")
+
+
+@_needs_session_cwd
+def test_commands_catalog_scans_skills_in_the_calling_sessions_project(tmp_path):
+    """Desktop symptom: repo skills never reached the `/` popover.
+
+    One backend process serves every session, so the catalog handler ran with
+    the PROCESS cwd (the install tree on Desktop) and found no project at all.
+    The session's cwd has to scope the scan.
+    """
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+
+    assert _slash_scope_project_probe("commands.catalog", {"cwd": str(repo)}) == str(
+        repo.resolve()
+    )
+
+
+@_needs_session_cwd
+def test_complete_slash_scans_skills_in_the_calling_sessions_project(tmp_path):
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+
+    assert _slash_scope_project_probe(
+        "complete.slash", {"text": "/", "cwd": str(repo)}
+    ) == str(repo.resolve())
+
+
+def test_completion_rpcs_do_not_leak_their_session_cwd(tmp_path):
+    """The pinned cwd must not outlive the request that set it.
+
+    A leaked contextvar would hand the NEXT session — any surface, any repo —
+    this session's project, and with it skills whose trust was granted per repo.
+    """
+    from agent.runtime_cwd import _session_cwd_override
+
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+
+    before = _session_cwd_override()
+    server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {"cwd": str(repo)}}
+    )
+    server.handle_request(
+        {
+            "id": "2",
+            "method": "complete.slash",
+            "params": {"text": "/", "cwd": str(repo)},
+        }
+    )
+    assert _session_cwd_override() == before
+
+
+def test_complete_slash_restores_cwd_even_when_the_handler_raises(tmp_path, monkeypatch):
+    from agent.runtime_cwd import _session_cwd_override
+
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+
+    def _boom(*a, **k):
+        raise RuntimeError("completer exploded")
+
+    monkeypatch.setattr("hermes_cli.commands.SlashCommandCompleter", _boom)
+
+    before = _session_cwd_override()
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/x", "cwd": str(repo)}}
+    )
+
+    assert "error" in resp
+    assert _session_cwd_override() == before
+
+
+@_needs_session_cwd
+def test_command_dispatch_resolves_a_project_skill_from_the_session(tmp_path, monkeypatch):
+    """Invocation, not just display: `/name` + Enter must find a repo skill.
+
+    `command.dispatch` looked the skill up with the backend process's own cwd,
+    so a user in a trusted repo could see the skill in the popover (once the
+    catalog was scoped) and still get "not a skill command" on Enter.
+    """
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+
+    import agent.skill_commands as sc
+
+    seen = {}
+
+    def _probe():
+        from agent.skill_utils import find_project_root
+
+        root = find_project_root()
+        seen["project"] = str(root) if root else ""
+        return {"/repo-only": {"name": "repo-only", "description": "from the repo"}}
+
+    monkeypatch.setattr(sc, "scan_skill_commands", _probe)
+    monkeypatch.setattr(
+        sc, "build_skill_invocation_message", lambda *a, **k: "expanded skill body"
+    )
+    # The stub never populates the module cache, and the scope this handler
+    # enters changes what a later scan would resolve. Reset the module state so
+    # the next file to import skill_commands doesn't inherit a half-built
+    # snapshot — cross-file order dependence here is a known trap (#57068).
+    monkeypatch.setattr(sc, "_skill_commands", {}, raising=False)
+    monkeypatch.setattr(sc, "_skill_commands_platform", None, raising=False)
+    monkeypatch.setattr(sc, "_skill_commands_home", None, raising=False)
+
+    server._sessions["disp-sid"] = {"cwd": str(repo), "session_key": "disp-key"}
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "command.dispatch",
+                "params": {"name": "/repo-only", "arg": "", "session_id": "disp-sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("disp-sid", None)
+
+    assert seen.get("project") == str(repo.resolve())
+    assert resp["result"]["type"] == "skill"
+    assert resp["result"]["name"] == "repo-only"
+
+
+def _slash_scope_pin_probe(method, params):
+    """Run a completion RPC and report the cwd pin the skill scan ran under.
+
+    Reads the contextvar itself rather than ``find_project_root()``, so it
+    observes the scope's own contract — WHICH cwd wins — and stays meaningful
+    on trees where the resolver does not yet honour the pin.
+    """
+    seen = {}
+
+    import agent.skill_commands as sc
+
+    real = sc.scan_skill_commands
+
+    def _probe():
+        from agent.runtime_cwd import _session_cwd_override
+
+        seen["pin"] = _session_cwd_override()
+        return {}
+
+    sc.scan_skill_commands = _probe
+    sc._skill_commands = {}
+    try:
+        server.handle_request({"id": "1", "method": method, "params": params})
+    finally:
+        sc.scan_skill_commands = real
+        sc._skill_commands = {}
+    return seen.get("pin")
+
+
+def test_completion_scope_prefers_the_session_record_over_the_client_cwd(tmp_path):
+    """The session's pinned cwd is the authority; the client param is not.
+
+    The skill scan decides which PROJECT's skills are offered and invoked, so
+    a buggy or hostile renderer must not be able to point it at an arbitrary
+    directory once a session exists. ``session.cwd.set`` / workspace moves
+    keep the record current, so honouring it never serves a stale workspace.
+    """
+    repo_a = tmp_path / "session-project"
+    repo_a.mkdir()
+    repo_b = tmp_path / "client-claimed"
+    repo_b.mkdir()
+
+    server._sessions["auth-sid"] = {"cwd": str(repo_a)}
+    try:
+        pin = _slash_scope_pin_probe(
+            "commands.catalog", {"session_id": "auth-sid", "cwd": str(repo_b)}
+        )
+    finally:
+        server._sessions.pop("auth-sid", None)
+
+    assert pin == os.path.abspath(str(repo_a))
+
+
+def test_completion_scope_falls_back_to_the_client_cwd_before_any_session(tmp_path):
+    """Pre-session (no record yet), the client's cwd param still scopes the scan."""
+    repo = tmp_path / "pre-session-project"
+    repo.mkdir()
+
+    pin = _slash_scope_pin_probe("commands.catalog", {"cwd": str(repo)})
+
+    assert pin == os.path.abspath(str(repo))

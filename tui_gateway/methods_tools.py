@@ -339,7 +339,14 @@ def _(rid, params: dict) -> dict:
             # loaded once per catalog build.
             usage, origin_of = _skill_usage_lookup()
 
-            for k, info in sorted(scan_skill_commands().items()):
+            # Scoped to the CALLING session's cwd: the scan resolves project
+            # skills from it, and this handler otherwise runs on the bare
+            # backend process (whose cwd is the install tree on Desktop), so
+            # every repo skill was missing from the `/` popover.
+            with _completion_session_scope(params):
+                scanned = sorted(scan_skill_commands().items())
+
+            for k, info in scanned:
                 d = str(info.get("description", "Skill"))
                 all_pairs.append([k, d[:120] + ("…" if len(d) > 120 else "")])
                 name = str(info.get("name") or k.lstrip("/"))
@@ -547,12 +554,25 @@ def _(rid, params: dict) -> dict:
             build_skill_invocation_message,
         )
 
-        cmds = scan_skill_commands()
-        key = f"/{name}"
-        if key in cmds:
-            msg = build_skill_invocation_message(
-                key, arg, task_id=session.get("session_key", "") if session else ""
+        # Same session scope the completion RPCs use, for the same reason: the
+        # scan resolves PROJECT skills from the session's cwd. Without it a user
+        # could not INVOKE a repo skill even by typing its name and pressing
+        # Enter — the dispatcher looked for it in the backend process's own
+        # directory and reported "not a skill command". Both the lookup and the
+        # message build run inside the scope, since building the invocation
+        # re-reads the skill from disk.
+        with _completion_session_scope({"session_id": params.get("session_id"), "cwd": (session or {}).get("cwd")}):
+            cmds = scan_skill_commands()
+            key = f"/{name}"
+            msg = (
+                build_skill_invocation_message(
+                    key, arg, task_id=session.get("session_key", "") if session else ""
+                )
+                if key in cmds
+                else None
             )
+
+        if key in cmds:
             if msg:
                 return _ok(
                     rid,
@@ -1205,8 +1225,19 @@ def _(rid, params: dict) -> dict:
             set_hermes_home_override(_profile_home) if _profile_home else None
         )
         try:
-            _cmd_key = f"/{_cmd_base}"
-            if _cmd_key in get_skill_commands():
+            # Same session scope the other skill-enumerating RPCs use: this
+            # lookup decides whether a `/name` is a skill (and must be routed to
+            # command.dispatch) or a shell command to execute. Resolved against
+            # the backend process's cwd, a PROJECT skill was invisible here, so
+            # `/implement` in a repo fell through this guard and was handed to
+            # the slash worker as an ordinary command.
+            with _completion_session_scope(
+                {"session_id": params.get("session_id"), "cwd": session.get("cwd")}
+            ):
+                _cmd_key = f"/{_cmd_base}"
+                _is_skill = _cmd_key in get_skill_commands()
+
+            if _is_skill:
                 return _err(
                     rid, 4018, f"skill command: use command.dispatch for {_cmd_key}"
                 )

@@ -115,7 +115,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const expanded = draft.includes('\n')
   const canSubmit = draft.trim().length > 0
   const at = useAtCompletions({ cwd, gateway, sessionId })
-  const slash = useSlashCompletions({ gateway })
+  const slash = useSlashCompletions({ cwd, gateway, sessionId })
   const emoji = useEmojiCompletions()
 
   // This is the one composer that routinely unmounts, so it is where the focus

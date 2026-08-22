@@ -482,6 +482,142 @@ class TestScanSkillCommands:
         # partial one growing from 0.
         assert observed_sizes == [skill_count] * skill_count
 
+    def test_scans_are_memoized_per_project_scope(self, tmp_path):
+        """Two sessions in two projects each keep their own completed scan.
+
+        Scoping the scan by session fixed CORRECTNESS, but with one shared
+        cache slot two sessions in different repos would invalidate each other
+        on every completion request — every keystroke a full disk rescan.
+        The cache is keyed by (platform, home, project): alternating projects
+        must trigger exactly one scan per project.
+        """
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+
+        # A non-empty global skill: a scan that finds nothing publishes an
+        # empty map, which get_skill_commands treats as a cold cache (the
+        # pre-existing always-rescan-when-empty behaviour) and would make
+        # every call below a scan regardless of memoization.
+        skills_dir = tmp_path / "skills"
+        _make_skill(skills_dir, "global-skill")
+        repo_a = str(tmp_path / "repo_a")
+        repo_b = str(tmp_path / "repo_b")
+
+        scans = []
+        real_scan = sc_mod.scan_skill_commands
+
+        def counting_scan():
+            scans.append(sc_mod._resolve_skill_commands_project())
+            return real_scan()
+
+        current_project = {"value": ""}
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", skills_dir),
+            patch.object(sc_mod, "scan_skill_commands", counting_scan),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_home", None),
+            patch.object(
+                sc_mod,
+                "_skill_commands_by_scope",
+                type(sc_mod._skill_commands_by_scope)(),
+            ),
+            patch.object(
+                sc_mod,
+                "_resolve_skill_commands_project",
+                lambda: current_project["value"],
+            ),
+        ):
+            for project in (repo_a, repo_b, repo_a, repo_b, repo_a):
+                current_project["value"] = project
+                assert "/global-skill" in get_skill_commands()
+
+        # One scan per project — not one per alternation.
+        assert len(scans) == 2, (
+            f"expected 2 scans (one per project), got {len(scans)}: {scans}"
+        )
+        assert set(scans) == {repo_a, repo_b}
+
+    def test_reload_skills_drops_every_scope(self, tmp_path):
+        """/reload-skills invalidates ALL memoized scopes, not just the active one.
+
+        Global skills appear in every scope's scan, so a disk change makes
+        every memoized entry suspect. A scope OTHER than the one that ran the
+        reload must rescan on its next request instead of serving its
+        pre-reload snapshot.
+        """
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands, reload_skills
+
+        skills_dir = tmp_path / "skills"
+        _make_skill(skills_dir, "first")
+        repo_a = str(tmp_path / "repo_a")
+        repo_b = str(tmp_path / "repo_b")
+
+        current_project = {"value": ""}
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", skills_dir),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_home", None),
+            patch.object(
+                sc_mod,
+                "_skill_commands_by_scope",
+                type(sc_mod._skill_commands_by_scope)(),
+            ),
+            patch.object(
+                sc_mod,
+                "_resolve_skill_commands_project",
+                lambda: current_project["value"],
+            ),
+        ):
+            # Prime both scopes with the pre-change skill set.
+            current_project["value"] = repo_a
+            assert "/first" in get_skill_commands()
+            current_project["value"] = repo_b
+            assert "/first" in get_skill_commands()
+
+            # Disk changes; scope A runs the reload.
+            _make_skill(skills_dir, "second")
+            current_project["value"] = repo_a
+            reload_skills()
+
+            # Scope B must NOT serve its pre-reload snapshot.
+            current_project["value"] = repo_b
+            assert "/second" in get_skill_commands(), (
+                "a memoized scope survived reload_skills() and served its "
+                "pre-reload snapshot"
+            )
+
+    def test_scope_cache_is_bounded(self, tmp_path):
+        """The per-scope memo cannot grow without bound as workspaces churn."""
+        import agent.skill_commands as sc_mod
+
+        empty_local_dir = tmp_path / "no-local-skills"
+        empty_local_dir.mkdir()
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_home", None),
+            patch.object(sc_mod, "_skill_commands_by_scope", type(sc_mod._skill_commands_by_scope)()),
+        ):
+            for index in range(sc_mod._SKILL_COMMANDS_SCOPE_CACHE_MAX + 5):
+                project = tmp_path / f"proj-{index}"
+                project.mkdir()
+                with patch.object(
+                    sc_mod, "_resolve_skill_commands_project", lambda p=project: str(p)
+                ):
+                    scan_skill_commands()
+
+            assert (
+                len(sc_mod._skill_commands_by_scope)
+                <= sc_mod._SKILL_COMMANDS_SCOPE_CACHE_MAX
+            )
+
 
 class TestResolveSkillCommandKey:
     """Telegram bot-command names disallow hyphens, so the menu registers

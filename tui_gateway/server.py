@@ -3499,6 +3499,71 @@ def _clear_session_context(tokens: list) -> None:
         pass
 
 
+def _completion_scope_cwd(params: dict | None) -> str:
+    """Resolve the cwd a skill-scan scope should pin, session record first.
+
+    ``_completion_cwd`` consults the CLIENT's ``cwd`` param before the session
+    record — the right order for file completion, where the renderer knows
+    which directory the user is typing a path against. For the skill scan it
+    is backwards: the scan decides which PROJECT's skills are offered and
+    invoked, and that authority belongs to the server-side session record
+    (kept current by ``session.cwd.set`` / ``session.workspace.move``), not to
+    whatever a buggy or hostile renderer names. The param remains the rung for
+    pre-session contexts — no record yet, or a record with no pinned cwd.
+    """
+    params = params or {}
+    sid = params.get("session_id")
+    session = _sessions.get(sid, {}) if isinstance(sid, str) and sid else {}
+    pinned = session.get("cwd")
+    if pinned:
+        # The pin stays authoritative even when the directory is gone (deleted
+        # worktree): the scan then simply resolves no project, which is the
+        # truth. Falling back to the client's param here would hand a hostile
+        # renderer exactly the steering this function exists to remove; the
+        # legitimate fix for a dead pin is session.cwd.set / workspace.move.
+        try:
+            return os.path.abspath(os.path.expanduser(str(pinned)))
+        except Exception:
+            pass
+    return _completion_cwd(params)
+
+
+@contextlib.contextmanager
+def _completion_session_scope(params: dict | None):
+    """Pin the calling session's cwd for the duration of a completion RPC.
+
+    Completion handlers (``commands.catalog``, ``complete.slash``) enumerate
+    skills, and the skill scan resolves PROJECT skills from the session's
+    working directory. Unlike prompt handlers, these never entered a session
+    context — they ran on the bare backend process, whose cwd is the install
+    tree on Desktop. So the `/` popover listed only global skills, and whichever
+    session scanned first also poisoned the process-wide skill cache for every
+    other session.
+
+    Pinning ``_SESSION_CWD`` (the same contextvar the prompt path sets) makes
+    the scan resolve THIS session's project. Cheap: contextvar set/reset, one
+    session lookup. Once the session has a pinned cwd, that record outranks
+    the client's ``cwd`` param — see ``_completion_scope_cwd``.
+    """
+    token = None
+    try:
+        from agent.runtime_cwd import set_session_cwd
+
+        token = set_session_cwd(_completion_scope_cwd(params))
+    except Exception:
+        token = None
+    try:
+        yield
+    finally:
+        if token is not None:
+            try:
+                from agent.runtime_cwd import _SESSION_CWD
+
+                _SESSION_CWD.reset(token)
+            except Exception:
+                pass
+
+
 def _enable_gateway_prompts() -> None:
     """Route approvals through gateway callbacks instead of CLI input()."""
     os.environ["HERMES_GATEWAY_SESSION"] = "1"

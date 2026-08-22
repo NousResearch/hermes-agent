@@ -160,8 +160,9 @@ export function useAtCompletions(options: {
 
   // Cache key: the completion depends on the query AND the directory it's
   // resolved against, so a cwd or session change can't serve another tree's
-  // listing.
-  const cacheKey = useCallback((query: string) => `${cwd ?? ''}|${sessionId ?? ''}|${query}`, [cwd, sessionId])
+  // listing. JSON.stringify, not a `|` join: a delimiter that can appear
+  // inside a cwd (or the query itself) lets two different scopes collide.
+  const cacheKey = useCallback((query: string) => JSON.stringify([cwd ?? '', sessionId ?? '', query]), [cwd, sessionId])
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {

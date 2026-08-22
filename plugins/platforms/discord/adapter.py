@@ -87,6 +87,10 @@ _DISCORD_SELECT_FIELD_LIMIT = 100
 # Discord caps a single select menu at 25 options; a View holds at most 5 rows.
 _DISCORD_SELECT_MAX_OPTIONS = 25
 _DISCORD_SELECT_MAX_ROWS = 5
+# Model-select capacity: keep 2 rows for Back/Cancel, fill the rest with selects.
+_DISCORD_MODEL_SELECT_CAPACITY = (
+    _DISCORD_SELECT_MAX_ROWS - 2
+) * _DISCORD_SELECT_MAX_OPTIONS
 _DISCORD_BUTTON_LABEL_LIMIT = 80
 _DISCORD_ELLIPSIS = "\u2026"
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
@@ -9355,7 +9359,11 @@ def _define_discord_view_classes() -> None:
             # select menus (up to 3×25 = 75); the old code hard-capped at 25
             # and silently dropped the tail (e.g. Nous `:free` Portal picks).
             total = provider.get("total_models", 0) if provider else 0
-            shown = min(len(provider.get("models", [])), 75) if provider else 0
+            shown = (
+                min(len(provider.get("models", [])), _DISCORD_MODEL_SELECT_CAPACITY)
+                if provider
+                else 0
+            )
             extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
 
             await interaction.response.edit_message(
@@ -9529,7 +9537,7 @@ def _define_discord_view_classes() -> None:
             allowed_role_ids: Optional[set] = None,
         ):
             super().__init__(timeout=120)
-            self.choices = list(choices)[:25]  # Discord select cap
+            self.choices = list(choices)[:_DISCORD_SELECT_MAX_OPTIONS]
             self.on_choice_selected = on_choice_selected
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()

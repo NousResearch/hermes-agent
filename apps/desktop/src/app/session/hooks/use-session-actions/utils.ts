@@ -2,6 +2,7 @@ import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-k
 import { getSession } from '@/hermes'
 import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
+import { isCompressionSummaryText } from '@/lib/compression-summary'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
@@ -436,6 +437,26 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
 const isGatewaySystemMarker = (message: ChatMessage): boolean =>
   message.role === 'user' && chatMessageText(message).trimStart().startsWith('[System:')
 
+/** True only when a synthetic summary actually carries this optimistic turn.
+ * LCM's "User requests verbatim" entries are JSON-style quoted strings. The
+ * direct-text fallback covers legacy summaries while requiring enough text to
+ * avoid treating a fresh short reply such as "ok" as an old summarized turn. */
+const compressionSummaryRepresentsUserMessage = (summary: ChatMessage, message: ChatMessage): boolean => {
+  if (!isCompressionSummaryText(chatMessageText(summary))) {
+    return false
+  }
+
+  const userText = textWithoutReferenceLines(chatMessageText(message)).trim()
+
+  if (!userText) {
+    return false
+  }
+
+  const summaryText = chatMessageText(summary)
+
+  return summaryText.includes(JSON.stringify(userText)) || (userText.length >= 32 && summaryText.includes(userText))
+}
+
 /**
  * Does the row carry anything a viewer would miss — streamed answer text, or
  * the reasoning / tool-call structure the gateway's flat dump cannot express?
@@ -596,8 +617,9 @@ export function preserveLocalPendingTurnMessages(
     if (
       isOptimisticUser &&
       latestAuthoritativeUser &&
-      textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
-        textWithoutReferenceLines(chatMessageText(message))
+      (textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
+        textWithoutReferenceLines(chatMessageText(message)) ||
+        nextMessages.some(candidate => compressionSummaryRepresentsUserMessage(candidate, message)))
     ) {
       continue
     }

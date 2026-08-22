@@ -441,6 +441,9 @@ export const ar = defineLocale({
       toolViewDesc: 'تحكم في كيفية عرض نشاط الأدوات داخل المحادثة.',
       reasoningCollapsedTitle: 'طي التفكير افتراضيًا',
       reasoningCollapsedDesc: 'أبقِ التفكير المتدفق متاحًا دون توسيعه حتى تفتحه.',
+      compactionSummariesTitle: 'إظهار ملخصات ضغط السياق',
+      compactionSummariesDesc:
+        'اعرض صفوف الملخص الاصطناعية في المحادثة. إخفاؤها لا يغيّر السجل المحفوظ أو سياق النموذج.',
       translucencyTitle: 'شفافية النافذة',
       translucencyDesc: 'إظهار سطح المكتب من خلال النافذة بالكامل، بما في ذلك النص.',
       translucencyGlassDesc: 'زجاج غير لامع: يظهر سطح المكتب كضبابية ناعمة بينما يبقى النص واضحًا.',

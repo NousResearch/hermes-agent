@@ -10,11 +10,37 @@ import {
   type MessageGroup,
   resolveThreadScrollTarget,
   subscribeToThreadForeground,
+  threadStructuralSignature,
   transcriptPaneBudget
 } from './list'
 
 afterEach(() => {
   vi.restoreAllMocks()
+})
+
+describe('threadStructuralSignature', () => {
+  const messages = [
+    {
+      content: [{ type: 'text', text: '[Recent Summary (d0, node 66)]\nEarlier context' }],
+      id: 'summary',
+      role: 'user'
+    },
+    { content: [{ type: 'text', text: 'answer' }], id: 'answer', role: 'assistant' }
+  ]
+
+  it('keeps compaction summaries and real indices by default', () => {
+    expect(threadStructuralSignature(messages)).toBe('0:summary:user\n1:answer:assistant')
+  })
+
+  it('omits only the synthetic summary when the preference is off', () => {
+    expect(threadStructuralSignature(messages, false)).toBe('1:answer:assistant')
+  })
+
+  it('does not hide an ordinary user message that merely mentions compression', () => {
+    const ordinary = [{ content: [{ type: 'text', text: 'What did compression do?' }], id: 'user', role: 'user' }]
+
+    expect(threadStructuralSignature(ordinary, false)).toBe('0:user:user')
+  })
 })
 
 describe('subscribeToThreadForeground', () => {

@@ -19,8 +19,10 @@ import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
 import { usePaneLifecycle } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
+import { isCompressionSummaryText } from '@/lib/compression-summary'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
+import { $showCompactionSummaries } from '@/store/compaction-summary-visibility'
 import {
   onScrollToBottomRequest,
   onThreadEditClose,
@@ -63,6 +65,34 @@ export type MessageGroup = { id: string; weight: number } & (
 // What the DOM can hold is bounded above by the store window regardless
 // (TRANSCRIPT_WINDOW_BUDGET), so this cannot admit more than one window's
 // content.
+interface StructuralThreadMessage {
+  content: readonly { text?: string; type: string }[]
+  id: string
+  role: string
+}
+
+function threadMessageText(message: StructuralThreadMessage): string {
+  return message.content
+    .filter(part => part.type === 'text' && typeof part.text === 'string')
+    .map(part => part.text)
+    .join('')
+}
+
+/** Keep assistant-ui's real message indices while omitting presentation-only rows. */
+export function threadStructuralSignature(
+  messages: readonly StructuralThreadMessage[],
+  showCompactionSummaries = true
+): string {
+  return messages
+    .flatMap((message, index) => {
+      const hiddenSummary =
+        !showCompactionSummaries && message.role === 'user' && isCompressionSummaryText(threadMessageText(message))
+
+      return hiddenSummary ? [] : [`${index}:${message.id}:${message.role}`]
+    })
+    .join('\n')
+}
+
 const RENDER_BUDGET = 600
 // Every mounted transcript list registers here (see the mount effect). The
 // budget above is sized for ONE full-height pane; a grid split shows several
@@ -371,9 +401,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // new resetKey per appended part, which reconciled every turn's subtree on
   // every tick (measured: 540 wasted Block renders per explain() sample with
   // two threads streaming).
-  const structuralSignature = useAuiState(s =>
-    s.thread.messages.map((message, index) => `${index}:${message.id}:${message.role}`).join('\n')
-  )
+  const showCompactionSummaries = useStore($showCompactionSummaries)
+
+  const structuralSignature = useAuiState(s => threadStructuralSignature(s.thread.messages, showCompactionSummaries))
 
   const weightSignature = useAuiState(s =>
     s.thread.messages.map(message => messagePaintWeight(message.content)).join(',')

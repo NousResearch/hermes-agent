@@ -14,6 +14,7 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $showCompactionSummaries, setShowCompactionSummaries } from '@/store/compaction-summary-visibility'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
@@ -345,6 +346,7 @@ export function AppearanceSettings() {
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
+  const showCompactionSummaries = useStore($showCompactionSummaries)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
   const zoomPercent = useStore($zoomPercent)
@@ -785,6 +787,13 @@ export function AppearanceSettings() {
             }
             description={a.reasoningCollapsedDesc}
             title={a.reasoningCollapsedTitle}
+          />
+
+          <ToggleRow
+            checked={showCompactionSummaries}
+            description={a.compactionSummariesDesc}
+            label={a.compactionSummariesTitle}
+            onChange={setShowCompactionSummaries}
           />
 
           <ListRow

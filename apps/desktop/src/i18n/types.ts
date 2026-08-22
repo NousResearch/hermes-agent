@@ -434,6 +434,8 @@ export interface Translations {
       toolViewDesc: string
       reasoningCollapsedTitle: string
       reasoningCollapsedDesc: string
+      compactionSummariesTitle: string
+      compactionSummariesDesc: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
       sessionDensityTitle: string

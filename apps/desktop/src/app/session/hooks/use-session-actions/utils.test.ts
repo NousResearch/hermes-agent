@@ -725,6 +725,79 @@ describe('reconcileResumeMessages', () => {
 })
 
 describe('preserveLocalPendingTurnMessages', () => {
+  it('drops an optimistic user turn when compression replaced it with a summary row', () => {
+    const summary = msg(
+      '9-user',
+      'user',
+      '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted. User request: "the original question".'
+    )
+
+    const next = [summary, msg('10-assistant', 'assistant', 'post-compaction answer')]
+
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'the original question')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '9-user',
+      '10-assistant'
+    ])
+  })
+
+  it('drops the optimistic user turn for LCM-style recent-summary rows too', () => {
+    const summary = msg(
+      '9-user',
+      'user',
+      '[Recent Summary (d0, node 66)]\n## User requests verbatim\n- "the original question"'
+    )
+
+    const next = [summary]
+    const previous = [msg('user-optimistic', 'user', 'the original question')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual(['9-user'])
+  })
+
+  it('drops a represented optimistic user turn after newer post-compaction turns', () => {
+    const original = 'the original question with enough detail to identify the turn'
+
+    const summary = msg('9-user', 'user', `[Recent Summary (d0, node 66)]\n## User requests verbatim\n- "${original}"`)
+
+    const next = [
+      summary,
+      msg('10-assistant', 'assistant', 'post-compaction answer'),
+      msg('11-user', 'user', 'a newer question'),
+      msg('12-assistant', 'assistant', 'a newer answer')
+    ]
+
+    const previous = [...next, msg('user-optimistic-stale', 'user', original)]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '9-user',
+      '10-assistant',
+      '11-user',
+      '12-assistant'
+    ])
+  })
+
+  it('keeps a new optimistic turn that an older compaction summary does not represent', () => {
+    const summary = msg(
+      '9-user',
+      'user',
+      '[Recent Summary (d0, node 66)]\n## User requests verbatim\n- "an older question"'
+    )
+
+    const next = [summary, msg('10-assistant', 'assistant', 'post-compaction answer')]
+    const previous = [...next, msg('user-optimistic-new', 'user', 'a genuinely new question')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '9-user',
+      '10-assistant',
+      'user-optimistic-new'
+    ])
+  })
+
   it('keeps an optimistic user turn and pending assistant when the server projection is behind', () => {
     const next = [msg('1-user', 'user', 'first'), msg('2-assistant', 'assistant', 'first answer')]
 

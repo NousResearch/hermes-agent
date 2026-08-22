@@ -106,3 +106,50 @@ describe('the catalog owns model curation', () => {
     expect($modelVisibilityOpen.get()).toBe(true)
   })
 })
+
+describe('the catalog renders per-model pricing', () => {
+  it('shows $/Mtok input/output and the sale tag when the provider ships pricing', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['anthropic/claude-sonnet-5'],
+          name: 'Nous Portal',
+          slug: 'nous',
+          pricing: {
+            'anthropic/claude-sonnet-5': {
+              input: '$1.60',
+              output: '$8.00',
+              cache: '$0.16',
+              free: false,
+              discount_percent: 20
+            }
+          }
+        }
+      ]
+    })
+
+    renderMenu()
+
+    await screen.findByText('$1.60/$8.00')
+    expect(screen.queryByText('−20%')).not.toBeNull()
+  })
+
+  it('renders a free label for free-tier models', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['nous/hermes-4'],
+          name: 'Nous Portal',
+          slug: 'nous',
+          pricing: {
+            'nous/hermes-4': { input: 'free', output: 'free', cache: null, free: true }
+          }
+        }
+      ]
+    })
+
+    renderMenu()
+
+    await screen.findByText('free')
+  })
+})

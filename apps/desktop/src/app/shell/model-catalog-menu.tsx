@@ -36,7 +36,7 @@ import {
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
-import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
+import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/types/hermes'
 
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
@@ -53,6 +53,31 @@ function isCurrentProvider(provider: ModelOptionProvider, currentProvider: strin
 // hover-revealed edit submenu (reasoning/fast) stays open to play with (its
 // items preventDefault on select).
 export const ModelMenuCloseContext = createContext<() => void>(() => {})
+
+/** Compact per-row price: `$in/$out` per Mtok, "free", and a sale tag when the
+ *  portal reports a discounted list price. Rendered only when the provider's
+ *  payload carries pricing (Nous Portal and others that ship it). */
+function ModelPrice({ pricing }: { pricing: ModelPricing }) {
+  if (pricing.free) {
+    return <span className="shrink-0 pl-2 text-[0.625rem] text-(--ui-green)">free</span>
+  }
+
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1.5 pl-2 text-[0.625rem] tabular-nums text-(--ui-text-tertiary)"
+      title={`Input ${pricing.input}/Mtok · Output ${pricing.output}/Mtok`}
+    >
+      <span>
+        {pricing.input}/{pricing.output}
+      </span>
+      {pricing.discount_percent ? (
+        <span className="rounded bg-(--ui-green)/10 px-1 py-px font-medium text-(--ui-green)">
+          −{pricing.discount_percent}%
+        </span>
+      ) : null}
+    </span>
+  )
+}
 
 /** One model choice, everything a caller needs to act on a selection.
  *  `effort` is '' for "inherit the default" and 'none' for thinking off. */
@@ -404,6 +429,10 @@ export function ModelCatalogMenu({
                     const isCurrent = activeId !== null
                     const name = modelDisplayParts(family.id).name
                     const caps = group.provider.capabilities?.[family.id]
+                    // Live per-model $/Mtok pricing (Nous Portal and other
+                    // providers that ship it). The `-fast` sibling shares the
+                    // base id's price.
+                    const pricing = group.provider.pricing?.[family.id]
 
                     // Effective settings for this row: the live choice when it's
                     // the active model, otherwise its remembered preset. Row
@@ -453,6 +482,7 @@ export function ModelCatalogMenu({
                             <HighlightMatches query={search} text={name} />
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                           </span>
+                          {pricing ? <ModelPrice pricing={pricing} /> : null}
                           {isCurrent ? (
                             <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
                           ) : null}

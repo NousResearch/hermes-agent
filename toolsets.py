@@ -213,6 +213,17 @@ TOOLSETS = {
         ],
         "includes": []
     },
+
+    # Stable direct surface for Browser Use CLI 3.0 one-shot/worker runs.
+    # The bundled registry entry also declares this toolset, but explicit
+    # --toolsets validation happens before late plugin discovery in some CLI
+    # paths. Keeping the one-tool definition here avoids silently dropping
+    # browser_exec and does not expose web_search or the legacy browser_* set.
+    "browser-use": {
+        "description": "Browser Use CLI 3.0 automation via browser_exec",
+        "tools": ["browser_exec"],
+        "includes": []
+    },
     
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",

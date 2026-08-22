@@ -79,7 +79,7 @@ parts:
       # Ensure the native backend can find system tools
       export PATH="/usr/bin:/bin:/usr/local/bin:${PATH}"
       cd "$HOME"
-      exec /app/share/hermes-desktop/Hermes "$@"
+      exec "$SNAP/share/hermes-desktop/Hermes" "$@"
       EOF
       chmod +x $CRAFT_PRIME/bin/hermes-desktop
 
@@ -92,9 +92,4 @@ parts:
       'hermes-desktop.png': 'usr/share/icons/hicolor/512x512/apps/com.nousresearch.Hermes.png'
       'hermes-desktop.metainfo.xml': 'usr/share/metainfo/com.nousresearch.Hermes.metainfo.xml'
 
-# Layout to make Hermes binary accessible
-layout:
-  /app/share/hermes-desktop:
-    bind: $SNAP/share/hermes-desktop
-  /app/bin/zypak-wrapper.sh:
-    bind-file: $SNAP/share/hermes-desktop/zypak-wrapper.sh
+# (no layout: top-level /app dirs are invalid in snaps — Flatpak paths, not snap)

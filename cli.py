@@ -21006,6 +21006,16 @@ def main(
     
     # Handle query shorthand
     query = query or q
+
+    # A single-query CLI process exits after this turn and has no later event
+    # loop that can deliver a detached delegation result. Mark it stateless
+    # before agent/tool initialization so delegate_task uses its existing
+    # inline fallback instead of dispatching work that shutdown will interrupt.
+    # Interactive CLI sessions remain delivery-capable. See #71453.
+    if query or image:
+        from gateway.session_context import declare_stateless_channel
+
+        declare_stateless_channel()
     
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to hermes-cli toolset which includes cronjob management tools

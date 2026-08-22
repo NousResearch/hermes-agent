@@ -448,6 +448,7 @@ def bounded_probe_run(
     *,
     timeout: float,
     errors: str = "replace",
+    env: "Mapping[str, str] | None" = None,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=...)``
     for fail-open probe call sites. Returns a ``CompletedProcess`` when the
@@ -474,8 +475,17 @@ def bounded_probe_run(
     POSIX the child is placed in its own process group (``process_group=0``,
     Python ≥3.11) so timeout cleanup can take down descendants with the
     launcher instead of orphaning them.
+
+    *env*, when given, replaces the child's environment exactly as
+    ``subprocess.run(env=...)`` would. The Node-toolchain probes in
+    ``hermes_constants`` need it to put the Hermes-managed Node directory on
+    ``PATH`` so a managed ``npm``/``npx`` shim can find its own ``node``;
+    without it those call sites could not adopt this helper and were left on
+    the unbounded ``run()`` that this function exists to replace (#91087).
     """
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
+    if env is not None:
+        _popen_kwargs["env"] = env
     try:
         proc = subprocess.Popen(
             list(argv),

@@ -16,11 +16,14 @@ with different backends via a bridge pattern.
 """
 
 import asyncio
+import hashlib
 import logging
 import os
 import platform
 import re
+import secrets
 import signal
+import stat
 import subprocess
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -60,6 +63,70 @@ logger = logging.getLogger(__name__)
 # Inbound owner-typed WhatsApp text is prefixed at MessageEvent construction so
 # transcripts stay disambiguated even if downstream plugins fail before silent_ingest.
 _OWNER_REPLY_PREFIX = "[owner reply] "
+
+
+def _set_owner_message_secret_permissions(descriptor: int, secret_path: Path) -> None:
+    """Restrict a secret file using the safest chmod available on this platform."""
+    descriptor_stat = os.fstat(descriptor)
+    if not stat.S_ISREG(descriptor_stat.st_mode):
+        raise ValueError("owner message secret must be a regular file")
+
+    fchmod = getattr(os, "fchmod", None)
+    if callable(fchmod):
+        fchmod(descriptor, 0o600)
+        return
+
+    # Windows Python 3.11/3.12 does not expose os.fchmod. Before falling back
+    # to path-based chmod, reject symlinks and prove the path still identifies
+    # the open regular file. Recheck afterward so a concurrent replacement is
+    # detected rather than accepted as the protected secret.
+    path_stat = os.stat(secret_path, follow_symlinks=False)
+    if not stat.S_ISREG(path_stat.st_mode) or not os.path.samestat(
+        descriptor_stat, path_stat
+    ):
+        raise ValueError("owner message secret must be a regular file")
+    os.chmod(secret_path, 0o600)
+    protected_stat = os.stat(secret_path, follow_symlinks=False)
+    if not stat.S_ISREG(protected_stat.st_mode) or not os.path.samestat(
+        descriptor_stat, protected_stat
+    ):
+        raise ValueError("owner message secret changed while securing permissions")
+
+
+def _load_or_create_owner_message_secret(
+    secret_path: Path, allowed_parent: Optional[Path] = None
+) -> str:
+    """Return a private, stable high-entropy bearer secret for one session."""
+    if allowed_parent is not None:
+        allowed_parent.mkdir(parents=True, exist_ok=True)
+        if secret_path.parent.is_symlink() or (
+            secret_path.parent.resolve(strict=False) != allowed_parent.resolve(strict=True)
+        ):
+            raise ValueError("owner message secret must be inside the WhatsApp session directory")
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(secret_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        secret = secrets.token_urlsafe(32)
+        descriptor = os.open(
+            secret_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            os.write(descriptor, (secret + "\n").encode("utf-8"))
+            _set_owner_message_secret_permissions(descriptor, secret_path)
+        finally:
+            os.close(descriptor)
+        return secret
+    try:
+        _set_owner_message_secret_permissions(descriptor, secret_path)
+        secret = os.read(descriptor, 4096).decode("utf-8").strip()
+    finally:
+        os.close(descriptor)
+    if len(secret.encode("utf-8")) < 32:
+        raise ValueError("owner message secret must contain at least 32 bytes")
+    return secret
 
 
 def _listener_pids_on_port(port: int) -> list:
@@ -455,6 +522,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             read_receipts if isinstance(read_receipts, bool)
             else str(read_receipts or "").strip().lower() in {"1", "true", "yes", "on"}
         )
+        forward_owner = config.extra.get(
+            "forward_owner_messages", _wenv("WHATSAPP_FORWARD_OWNER_MESSAGES", "false")
+        )
+        self._forward_owner_messages = (
+            forward_owner if isinstance(forward_owner, bool)
+            else str(forward_owner or "").strip().lower() in {"1", "true", "yes", "on"}
+        )
+        self._owner_messages_external_consumer = bool(
+            config.extra.get("owner_messages_external_consumer", False)
+        )
+        self._owner_message_secret_file = Path(config.extra.get(
+            "owner_message_secret_file",
+            self._session_path / "owner-messages.secret",
+        ))
+        self._owner_message_secret: Optional[str] = None
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -505,6 +587,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not math.isfinite(parsed) or parsed < 0:
             return float(default)
         return parsed
+
+    def _ensure_owner_message_secret(self) -> Optional[str]:
+        if not getattr(self, "_forward_owner_messages", False):
+            return None
+        secret = getattr(self, "_owner_message_secret", None)
+        if secret is None:
+            secret_file = getattr(
+                self,
+                "_owner_message_secret_file",
+                self._session_path / "owner-messages.secret",
+            )
+            secret = _load_or_create_owner_message_secret(secret_file, self._session_path)
+            self._owner_message_secret_file = secret_file
+            self._owner_message_secret = secret
+        return secret
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
@@ -623,6 +720,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
+            owner_message_secret = self._ensure_owner_message_secret()
+            owner_message_auth_fingerprint = (
+                hashlib.sha256(owner_message_secret.encode("utf-8")).hexdigest()[:16]
+                if owner_message_secret else ""
+            )
             
             # Check if bridge is already running and connected
             import aiohttp
@@ -648,7 +750,24 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 running_hash = data.get("scriptHash", "")
                                 disk_hash = _file_content_hash(bridge_path)
                                 running_read_receipts = bool(data.get("sendReadReceipts", False))
-                                config_matches = running_read_receipts == self._send_read_receipts
+                                running_owner_forwarding = bool(
+                                    data.get("forwardOwnerMessages", False)
+                                )
+                                running_owner_external_consumer = bool(
+                                    data.get("ownerMessagesExternalConsumer", False)
+                                )
+                                running_owner_auth_fingerprint = str(
+                                    data.get("ownerMessageAuthFingerprint", "")
+                                )
+                                config_matches = (
+                                    running_read_receipts == self._send_read_receipts
+                                    and running_owner_forwarding
+                                    == getattr(self, "_forward_owner_messages", False)
+                                    and running_owner_external_consumer
+                                    == getattr(self, "_owner_messages_external_consumer", False)
+                                    and running_owner_auth_fingerprint
+                                    == owner_message_auth_fingerprint
+                                )
                                 if (
                                     running_hash
                                     and disk_hash
@@ -664,7 +783,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 stale_reason = (
                                     f"running={running_hash or 'unversioned'}, disk={disk_hash}"
                                     if running_hash != disk_hash
-                                    else "send_read_receipts config changed"
+                                    else "WhatsApp bridge config changed"
                                 )
                                 print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
                             else:
@@ -695,6 +814,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = (
                 "true" if self._send_read_receipts else "false"
             )
+            bridge_env["WHATSAPP_FORWARD_OWNER_MESSAGES"] = (
+                "true" if getattr(self, "_forward_owner_messages", False) else "false"
+            )
+            bridge_env["WHATSAPP_OWNER_MESSAGES_EXTERNAL_CONSUMER"] = (
+                "true" if getattr(self, "_owner_messages_external_consumer", False) else "false"
+            )
+            if owner_message_secret:
+                bridge_env["WHATSAPP_OWNER_MESSAGE_SECRET"] = owner_message_secret
+            else:
+                bridge_env.pop("WHATSAPP_OWNER_MESSAGE_SECRET", None)
             # Under multiplexing, the bridge subprocess runs with a copy of
             # os.environ that does NOT contain the secondary profile's .env
             # vars.  Inject the resolved WHATSAPP_* values so the Node bridge
@@ -712,7 +841,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 # Full set bridge.js consumes -- without these a secondary
                 # profile's bridge silently reverts to defaults for debug,
                 # forwarding, prefixes, and send pacing.
-                "WHATSAPP_DEBUG", "WHATSAPP_FORWARD_OWNER_MESSAGES",
+                "WHATSAPP_DEBUG",
                 "WHATSAPP_REPLY_PREFIX", "WHATSAPP_MAX_MESSAGE_LENGTH",
                 "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
             ):
@@ -923,6 +1052,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._close_bridge_log()
         print(f"[{self.name}] Disconnected")
     
+    def _apply_provider_send_intent(
+        self,
+        payload: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Fence automatic provider sends only in external-consumer mode."""
+        if not getattr(self, "_owner_messages_external_consumer", False):
+            return
+        payload["sendIntent"] = "automatic"
+        sequence = (metadata or {}).get("whatsapp_owner_fence_sequence")
+        if isinstance(sequence, int) and not isinstance(sequence, bool) and sequence >= 0:
+            payload["expectedOwnerFenceSequence"] = sequence
+
     async def send(
         self,
         chat_id: str,
@@ -964,6 +1106,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     # Only reply-to on the first text chunk, even if the bridge
                     # response omits a parseable message id.
                     payload["replyTo"] = reply_to
+                self._apply_provider_send_intent(payload, metadata)
 
                 async with self._http_session.post(
                     f"http://127.0.0.1:{self._bridge_port}/send",

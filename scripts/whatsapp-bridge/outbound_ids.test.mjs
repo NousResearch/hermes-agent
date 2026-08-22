@@ -1,7 +1,67 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { appendFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
-import { createOutboundIdTracker } from './outbound_ids.js';
+import {
+  createDurableOutboundIdTracker,
+  createOutboundIdTracker,
+  sendWithProvenance,
+} from './outbound_ids.js';
+
+test('durable outbound ids survive a bridge restart', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'hermes-outbound-'));
+  const tracker = createDurableOutboundIdTracker({ directory });
+  tracker.remember('connector-1');
+
+  assert.equal(createDurableOutboundIdTracker({ directory }).has('connector-1'), true);
+});
+
+test('durable tracker never evicts ids that are still inside the replay window', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'hermes-outbound-window-'));
+  const tracker = createDurableOutboundIdTracker({
+    directory,
+    maxSize: 2,
+    retentionMs: 60_000,
+    now: () => 1_000,
+  });
+  tracker.remember('connector-a');
+  tracker.remember('connector-b');
+  tracker.remember('connector-c');
+
+  assert.equal(tracker.has('connector-a'), true);
+  assert.equal(tracker.size(), 3);
+});
+
+test('durable tracker repairs an incomplete final journal record after crash', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'hermes-outbound-tail-'));
+  const tracker = createDurableOutboundIdTracker({ directory });
+  tracker.remember('connector-valid');
+  appendFileSync(path.join(directory, 'connector-outbound-ids.json'), '{"id":"partial');
+
+  const reopened = createDurableOutboundIdTracker({ directory });
+  assert.equal(reopened.has('connector-valid'), true);
+  reopened.remember('connector-after-repair');
+  assert.equal(createDurableOutboundIdTracker({ directory }).has('connector-after-repair'), true);
+});
+
+test('send provenance is durable before the connector send starts and remains after failure', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'hermes-outbound-race-'));
+  const tracker = createDurableOutboundIdTracker({ directory });
+  await assert.rejects(
+    sendWithProvenance({
+      tracker,
+      messageId: 'reserved-1',
+      send: async () => {
+        assert.equal(createDurableOutboundIdTracker({ directory }).has('reserved-1'), true);
+        throw new Error('simulated send failure');
+      },
+    }),
+    /simulated send failure/,
+  );
+  assert.equal(createDurableOutboundIdTracker({ directory }).has('reserved-1'), true);
+});
 
 test('remembers and recognises an outbound id', () => {
   const tracker = createOutboundIdTracker();

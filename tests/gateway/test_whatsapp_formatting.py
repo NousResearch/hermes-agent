@@ -149,6 +149,57 @@ class TestSendChunking:
         assert adapter._http_session.post.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_external_consumer_send_carries_automatic_owner_fence(self):
+        adapter = _make_adapter()
+        adapter._owner_messages_external_consumer = True
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send(
+            "chat1",
+            "automatic reply",
+            metadata={"whatsapp_owner_fence_sequence": 7},
+        )
+
+        assert result.success
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["sendIntent"] == "automatic"
+        assert payload["expectedOwnerFenceSequence"] == 7
+
+    @pytest.mark.asyncio
+    async def test_external_consumer_send_without_explicit_fence_fails_closed(self):
+        adapter = _make_adapter()
+        adapter._owner_messages_external_consumer = True
+        resp = MagicMock(status=400)
+        resp.text = AsyncMock(return_value="expectedOwnerFenceSequence required")
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send("chat1", "unfenced automatic reply")
+
+        assert not result.success
+        assert result.error == "expectedOwnerFenceSequence required"
+        resp.text.assert_awaited_once_with()
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["sendIntent"] == "automatic"
+        assert "expectedOwnerFenceSequence" not in payload
+
+    @pytest.mark.asyncio
+    async def test_standard_owner_forwarding_send_omits_intent_fields(self):
+        adapter = _make_adapter()
+        adapter._forward_owner_messages = True
+        adapter._owner_messages_external_consumer = False
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        await adapter.send("chat1", "ordinary reply")
+
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert "sendIntent" not in payload
+        assert "expectedOwnerFenceSequence" not in payload
+
+    @pytest.mark.asyncio
     async def test_long_message_chunked(self):
         adapter = _make_adapter()
         resp = MagicMock(status=200)

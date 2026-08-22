@@ -1,6 +1,10 @@
 import path from 'path';
-import { mkdirSync, writeFileSync } from 'fs';
-import { randomBytes } from 'crypto';
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import {
+  expandWhatsAppIdentifiers,
+  normalizeWhatsAppIdentifier,
+} from './allowlist.js';
 
 export const MIME_MAP = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
@@ -16,6 +20,605 @@ export const MIME_MAP = {
 export function normalizeWhatsAppId(value) {
   if (!value) return '';
   return String(value).replace(':', '@');
+}
+
+const DELIVERY_STATUS = new Map([
+  [2, 'sent'],
+  [3, 'delivered'],
+  [4, 'read'],
+  [5, 'read'],
+  ['SERVER_ACK', 'sent'],
+  ['DELIVERY_ACK', 'delivered'],
+  ['READ', 'read'],
+  ['PLAYED', 'read'],
+]);
+
+function validOutboundReceiptKey(key) {
+  return key?.fromMe === true
+    && typeof key.id === 'string'
+    && /^[A-Za-z0-9_-]{1,191}$/.test(key.id)
+    && !(typeof key.remoteJid === 'string'
+      && (key.remoteJid.endsWith('@g.us') || key.remoteJid.endsWith('@broadcast')));
+}
+
+function timestampIso(value) {
+  if (value === null || value === undefined) return null;
+  const seconds = typeof value?.toNumber === 'function' ? value.toNumber() : Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  try {
+    return new Date(seconds * 1000).toISOString();
+  } catch {
+    return null;
+  }
+}
+
+export function deliveryReceiptFromMessageUpdate({ key, update, now = () => new Date().toISOString() }) {
+  if (!validOutboundReceiptKey(key)) return null;
+  const rawStatus = update?.status;
+  const numericStatus = typeof rawStatus === 'string' && /^\d+$/.test(rawStatus)
+    ? Number(rawStatus)
+    : rawStatus;
+  const status = DELIVERY_STATUS.get(numericStatus);
+  if (!status) return null;
+  return { messageId: key.id, status, occurredAt: now() };
+}
+
+export function deliveryReceiptFromUserReceiptUpdate({
+  key,
+  receipt,
+  now = () => new Date().toISOString(),
+}) {
+  if (!validOutboundReceiptKey(key) || !receipt || typeof receipt !== 'object') return null;
+  const readAt = timestampIso(receipt.playedTimestamp) || timestampIso(receipt.readTimestamp);
+  if (readAt) return { messageId: key.id, status: 'read', occurredAt: readAt };
+  const deliveredAt = timestampIso(receipt.receiptTimestamp);
+  const hasDeliveredDevice = Array.isArray(receipt.deliveredDeviceJid)
+    && receipt.deliveredDeviceJid.length > 0;
+  if (deliveredAt || hasDeliveredDevice) {
+    return { messageId: key.id, status: 'delivered', occurredAt: deliveredAt || now() };
+  }
+  return null;
+}
+
+export function acknowledgeDeliveryReceipts(queue, acknowledgements) {
+  const keys = new Set();
+  for (const acknowledgement of acknowledgements || []) {
+    const messageId = acknowledgement?.messageId;
+    const status = acknowledgement?.status;
+    if (typeof messageId !== 'string' || !/^[A-Za-z0-9_-]{1,191}$/.test(messageId)) continue;
+    if (!['sent', 'delivered', 'read'].includes(status)) continue;
+    keys.add(`${messageId}:${status}`);
+  }
+  let removed = 0;
+  for (let index = queue.length - 1; index >= 0; index -= 1) {
+    const receipt = queue[index];
+    if (keys.has(`${receipt?.messageId}:${receipt?.status}`)) {
+      queue.splice(index, 1);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+const DELIVERY_STATUS_RANK = new Map([
+  ['sent', 1],
+  ['delivered', 2],
+  ['read', 3],
+]);
+
+export function createDeliveryReceiptQueue({
+  capacity = 1000,
+  pageSize = 100,
+  tombstoneRetentionMs = 30 * 24 * 60 * 60 * 1000,
+  now = Date.now,
+} = {}) {
+  if (!Number.isInteger(capacity) || capacity < 1) throw new RangeError('capacity must be positive');
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > capacity) {
+    throw new RangeError('pageSize must be within capacity');
+  }
+  if (!Number.isFinite(tombstoneRetentionMs) || tombstoneRetentionMs <= 0) {
+    throw new RangeError('tombstoneRetentionMs must be positive');
+  }
+  if (typeof now !== 'function') throw new TypeError('now must be a function');
+  const queue = [];
+  const seen = new Set();
+  const tombstones = new Map();
+
+  function pruneExpiredTombstones(referenceTime = now()) {
+    const cutoff = referenceTime - tombstoneRetentionMs;
+    for (const [messageId, tombstone] of tombstones) {
+      if (!Number.isFinite(tombstone?.acknowledgedAt) || tombstone.acknowledgedAt <= cutoff) {
+        tombstones.delete(messageId);
+      }
+    }
+  }
+
+  function highestKnownRank(messageId) {
+    let rank = 0;
+    for (const receipt of queue) {
+      if (receipt.messageId === messageId) {
+        rank = Math.max(rank, DELIVERY_STATUS_RANK.get(receipt.status));
+      }
+    }
+    rank = Math.max(rank, tombstones.get(messageId)?.rank || 0);
+    return rank;
+  }
+
+  return {
+    add(receipt) {
+      const messageId = receipt?.messageId;
+      const status = receipt?.status;
+      if (typeof messageId !== 'string' || !/^[A-Za-z0-9_-]{1,191}$/.test(messageId)) return false;
+      if (!DELIVERY_STATUS_RANK.has(status)) return false;
+      if (typeof receipt.occurredAt !== 'string' || !receipt.occurredAt) return false;
+      pruneExpiredTombstones();
+      const key = `${messageId}:${status}`;
+      if (seen.has(key)) return false;
+      if (highestKnownRank(messageId) >= DELIVERY_STATUS_RANK.get(status)) return false;
+      seen.add(key);
+      queue.push(receipt);
+      if (queue.length > capacity) {
+        const evicted = queue.shift();
+        seen.delete(`${evicted.messageId}:${evicted.status}`);
+      }
+      return true;
+    },
+    snapshot() {
+      return queue.slice(0, pageSize);
+    },
+    acknowledge(acknowledgements) {
+      const acknowledgedKeys = new Set();
+      for (const acknowledgement of acknowledgements || []) {
+        const messageId = acknowledgement?.messageId;
+        const status = acknowledgement?.status;
+        if (typeof messageId === 'string' && DELIVERY_STATUS_RANK.has(status)) {
+          const key = `${messageId}:${status}`;
+          if (seen.has(key)) acknowledgedKeys.add(key);
+        }
+      }
+      const removedExact = acknowledgeDeliveryReceipts(queue, acknowledgements);
+      const removedKeys = new Set(acknowledgedKeys);
+      if (removedExact) {
+        const acknowledgedRanks = new Map();
+        for (const key of acknowledgedKeys) {
+          const separator = key.lastIndexOf(':');
+          const messageId = key.slice(0, separator);
+          const rank = DELIVERY_STATUS_RANK.get(key.slice(separator + 1));
+          acknowledgedRanks.set(messageId, Math.max(acknowledgedRanks.get(messageId) || 0, rank));
+        }
+        for (let index = queue.length - 1; index >= 0; index -= 1) {
+          const receipt = queue[index];
+          const acknowledgedRank = acknowledgedRanks.get(receipt.messageId) || 0;
+          if (DELIVERY_STATUS_RANK.get(receipt.status) <= acknowledgedRank) {
+            queue.splice(index, 1);
+            removedKeys.add(`${receipt.messageId}:${receipt.status}`);
+          }
+        }
+        const acknowledgedAt = now();
+        for (const key of removedKeys) seen.delete(key);
+        for (const [messageId, rank] of acknowledgedRanks) {
+          const previousRank = tombstones.get(messageId)?.rank || 0;
+          tombstones.set(messageId, { rank: Math.max(previousRank, rank), acknowledgedAt });
+        }
+      }
+      return removedKeys.size;
+    },
+    size() {
+      return queue.length;
+    },
+  };
+}
+
+export function ownerMessageTokenMatches(expectedSecret, authorizationHeader) {
+  if (typeof expectedSecret !== 'string' || expectedSecret.length < 1) return false;
+  if (typeof authorizationHeader !== 'string' || !authorizationHeader.startsWith('Bearer ')) {
+    return false;
+  }
+  const expected = createHash('sha256').update(expectedSecret, 'utf8').digest();
+  const supplied = createHash('sha256').update(authorizationHeader.slice(7), 'utf8').digest();
+  return timingSafeEqual(expected, supplied);
+}
+
+export function providerSendIntentStatus({
+  externalConsumer,
+  sendIntent,
+  expectedOwnerFenceSequence,
+  expectedSecret,
+  authorizationHeader,
+} = {}) {
+  if (!externalConsumer) return 'standard';
+  if (sendIntent === 'human') {
+    return ownerMessageTokenMatches(expectedSecret, authorizationHeader) ? 'human' : 'unauthorized';
+  }
+  if (sendIntent === 'automatic') {
+    return Number.isSafeInteger(expectedOwnerFenceSequence) && expectedOwnerFenceSequence >= 0
+      ? 'automatic' : 'invalid';
+  }
+  return 'invalid';
+}
+
+export function providerSendErrorResponse(error, messageIds = []) {
+  const ids = Array.isArray(messageIds) ? messageIds.filter(id => typeof id === 'string' && id) : [];
+  if (error?.code === 'OWNER_FENCED') {
+    return {
+      statusCode: 409,
+      body: {
+        error: error.message,
+        code: 'OWNER_FENCED',
+        retryable: false,
+        partial: ids.length > 0,
+        messageId: ids[ids.length - 1],
+        messageIds: ids,
+      },
+    };
+  }
+  if (error?.code === 'SEND_QUEUE_EXPIRED' || error?.code === 'SEND_QUEUE_ABANDONED') {
+    return {
+      statusCode: 503,
+      body: {
+        error: error.message,
+        code: error.code,
+        retryable: true,
+        partial: ids.length > 0,
+        messageId: ids[ids.length - 1],
+        messageIds: ids,
+      },
+    };
+  }
+  return {
+    statusCode: 500,
+    body: {
+      error: error?.message || 'Provider send failed',
+      partial: ids.length > 0,
+      messageId: ids[ids.length - 1],
+      messageIds: ids,
+    },
+  };
+}
+
+export function ownerMessageDeliveryMode(fromOwner, externalConsumer) {
+  return fromOwner && externalConsumer ? 'external' : 'inbound';
+}
+
+export function ownerSendFenceStatus(queue, chatId, expectedSequence) {
+  if (!queue || typeof queue.lastSequence !== 'function') return 'invalid';
+  if (!Number.isSafeInteger(expectedSequence) || expectedSequence < 0) return 'invalid';
+  if (typeof queue.hasUnresolvedFence === 'function' && queue.hasUnresolvedFence()) return 'fenced';
+  return queue.lastSequence(chatId) === expectedSequence ? 'allowed' : 'fenced';
+}
+
+export function createSerializedSendQueue({ now = Date.now } = {}) {
+  if (typeof now !== 'function') throw new TypeError('now must be a function');
+  let queue = Promise.resolve();
+  function enqueueSend(fn, {
+    beforeRun,
+    timeoutMs,
+    timeoutError = () => new Error('send timed out'),
+    queueDeadlineAt,
+    queueError = () => Object.assign(
+      new Error('send expired while waiting in the bridge queue'),
+      { code: 'SEND_QUEUE_EXPIRED' },
+    ),
+    isAbandoned,
+  } = {}) {
+    let signalStart;
+    const started = new Promise(resolve => { signalStart = resolve; });
+    const run = async () => {
+      try {
+        if (typeof isAbandoned === 'function' && isAbandoned()) {
+          throw Object.assign(
+            new Error('request disconnected while waiting in the bridge queue'),
+            { code: 'SEND_QUEUE_ABANDONED' },
+          );
+        }
+        if (Number.isFinite(queueDeadlineAt) && now() >= queueDeadlineAt) throw queueError();
+        if (beforeRun) await beforeRun();
+        const providerPromise = Promise.resolve().then(fn);
+        signalStart({ providerPromise });
+        return await providerPromise;
+      } catch (error) {
+        signalStart({ error });
+        throw error;
+      }
+    };
+    const occupancy = queue.then(run, run);
+    queue = occupancy.catch(() => {});
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 0) return occupancy;
+    return started.then(({ providerPromise, error }) => {
+      if (error) throw error;
+      let timer;
+      const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(timeoutError()), timeoutMs);
+      });
+      return Promise.race([providerPromise, timeoutPromise]).finally(() => clearTimeout(timer));
+    });
+  }
+  return { enqueueSend };
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validSequenceMap(value, keyPattern) {
+  return isPlainObject(value) && Object.entries(value).every(([key, sequence]) => (
+    keyPattern.test(key) && Number.isSafeInteger(sequence) && sequence > 0
+  ));
+}
+
+function validateOwnerMessageState(parsed) {
+  const invalid = () => { throw new Error('Invalid owner message queue state'); };
+  if (!isPlainObject(parsed) || !Number.isSafeInteger(parsed.nextSequence)
+    || parsed.nextSequence < 1 || !Array.isArray(parsed.entries)) invalid();
+
+  const lastSequenceByChat = parsed.lastSequenceByChat ?? {};
+  const unresolvedLidFences = parsed.unresolvedLidFences ?? {};
+  const tombstones = parsed.tombstones ?? {};
+  if (!validSequenceMap(lastSequenceByChat, /^\d{7,20}@(s\.whatsapp\.net|lid)$/)
+    || !validSequenceMap(unresolvedLidFences, /^\d{7,20}@lid$/)
+    || !isPlainObject(tombstones)) invalid();
+
+  const messageIds = new Set();
+  const sequences = new Set();
+  let maximumSequence = 0;
+  for (const entry of parsed.entries) {
+    const event = entry?.event;
+    const valid = isPlainObject(entry)
+      && Number.isSafeInteger(entry.sequence) && entry.sequence > 0
+      && isPlainObject(event)
+      && typeof event.messageId === 'string' && /^[A-Za-z0-9_-]{1,191}$/.test(event.messageId)
+      && typeof event.chatId === 'string' && /^\d{7,20}@(s\.whatsapp\.net|lid)$/.test(event.chatId)
+      && typeof event.senderId === 'string' && event.senderId.length > 0
+      && event.fromOwner === true
+      && typeof event.type === 'string' && event.type.length > 0
+      && typeof event.body === 'string'
+      && Number.isFinite(event.timestamp) && event.timestamp > 0
+      && event.ownerFenceSequence === entry.sequence
+      && !messageIds.has(event.messageId)
+      && !sequences.has(entry.sequence);
+    if (!valid) invalid();
+    messageIds.add(event.messageId);
+    sequences.add(entry.sequence);
+    maximumSequence = Math.max(maximumSequence, entry.sequence);
+  }
+  for (const [messageId, tombstone] of Object.entries(tombstones)) {
+    const valid = /^[A-Za-z0-9_-]{1,191}$/.test(messageId)
+      && !messageIds.has(messageId)
+      && isPlainObject(tombstone)
+      && Number.isSafeInteger(tombstone.sequence) && tombstone.sequence > 0
+      && Number.isFinite(tombstone.acknowledgedAt) && tombstone.acknowledgedAt > 0;
+    if (!valid) invalid();
+    messageIds.add(messageId);
+    maximumSequence = Math.max(maximumSequence, tombstone.sequence);
+  }
+  for (const sequence of Object.values(lastSequenceByChat)) {
+    maximumSequence = Math.max(maximumSequence, sequence);
+  }
+  for (const sequence of Object.values(unresolvedLidFences)) {
+    maximumSequence = Math.max(maximumSequence, sequence);
+  }
+  if (parsed.nextSequence <= maximumSequence) invalid();
+
+  return { ...parsed, lastSequenceByChat, unresolvedLidFences, tombstones };
+}
+
+export function createOwnerMessageQueue({
+  directory,
+  pageSize = 100,
+  tombstoneRetentionMs = 30 * 24 * 60 * 60 * 1000,
+  now = Date.now,
+} = {}) {
+  if (typeof directory !== 'string' || !directory) {
+    throw new TypeError('directory is required for durable owner messages');
+  }
+  if (!Number.isInteger(pageSize) || pageSize < 1) throw new RangeError('pageSize must be positive');
+  if (!Number.isFinite(tombstoneRetentionMs) || tombstoneRetentionMs < 30 * 24 * 60 * 60 * 1000) {
+    throw new RangeError('tombstoneRetentionMs must cover at least 30 days');
+  }
+  if (typeof now !== 'function') throw new TypeError('now must be a function');
+  mkdirSync(directory, { recursive: true });
+  const statePath = path.join(directory, 'owner-messages.json');
+  let state = {
+    nextSequence: 1,
+    entries: [],
+    lastSequenceByChat: {},
+    unresolvedLidFences: {},
+    tombstones: {},
+  };
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, 'utf8'));
+    state = validateOwnerMessageState(parsed);
+    for (const entry of state.entries) {
+      const chat = entry.event.chatId;
+      state.lastSequenceByChat[chat] = Math.max(
+        Number(state.lastSequenceByChat[chat] || 0), entry.sequence,
+      );
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const queuedIds = state.entries.map(entry => entry?.event?.messageId).filter(Boolean);
+  const seen = new Set([...queuedIds, ...Object.keys(state.tombstones)]);
+
+  function persist() {
+    const temporaryPath = `${statePath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+    const descriptor = openSync(temporaryPath, 'w', 0o600);
+    try {
+      writeFileSync(descriptor, `${JSON.stringify(state)}\n`, { encoding: 'utf8' });
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
+    renameSync(temporaryPath, statePath);
+    let directoryDescriptor;
+    try {
+      directoryDescriptor = openSync(directory, 'r');
+      fsyncSync(directoryDescriptor);
+    } finally {
+      if (directoryDescriptor !== undefined) closeSync(directoryDescriptor);
+    }
+  }
+
+  function pruneExpiredTombstones(referenceTime = now()) {
+    const cutoff = referenceTime - tombstoneRetentionMs;
+    let changed = false;
+    for (const [messageId, tombstone] of Object.entries(state.tombstones)) {
+      if (!Number.isFinite(tombstone?.acknowledgedAt) || tombstone.acknowledgedAt <= cutoff) {
+        delete state.tombstones[messageId];
+        seen.delete(messageId);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  if (pruneExpiredTombstones()) persist();
+
+  function mappedIdentifiers(chatId) {
+    const identifier = normalizeWhatsAppIdentifier(chatId);
+    if (!identifier) return [];
+    return [...expandWhatsAppIdentifiers(identifier, directory)]
+      .filter(alias => alias !== identifier);
+  }
+
+  function reconcileUnresolvedLidFences() {
+    let changed = false;
+    for (const [lidChatId, sequence] of Object.entries(state.unresolvedLidFences)) {
+      const aliases = mappedIdentifiers(lidChatId);
+      if (aliases.length === 0) continue;
+      state.lastSequenceByChat[lidChatId] = Math.max(
+        Number(state.lastSequenceByChat[lidChatId] || 0), sequence,
+      );
+      for (const alias of aliases) {
+        const aliasChatId = `${alias}@s.whatsapp.net`;
+        state.lastSequenceByChat[aliasChatId] = Math.max(
+          Number(state.lastSequenceByChat[aliasChatId] || 0), sequence,
+        );
+      }
+      delete state.unresolvedLidFences[lidChatId];
+      changed = true;
+    }
+    // Persist exact alias keys and remove the conservative fence in the same
+    // atomic replacement before any automatic send is released.
+    if (changed) persist();
+  }
+
+  return {
+    add(event) {
+      const messageId = event?.messageId;
+      const chatId = event?.chatId;
+      const messageType = event?.type || (event?.hasMedia ? event?.mediaType : 'text');
+      const timestamp = typeof event?.timestamp === 'number'
+        ? event.timestamp
+        : Number(event?.timestamp?.toString?.());
+      if (event?.fromOwner !== true) return false;
+      if (typeof messageId !== 'string' || !/^[A-Za-z0-9_-]{1,191}$/.test(messageId)) return false;
+      if (typeof chatId !== 'string' || !/^\d{7,20}@(s\.whatsapp\.net|lid)$/.test(chatId)) return false;
+      if (typeof event.senderId !== 'string' || !event.senderId) return false;
+      if (typeof event.body !== 'string') return false;
+      if (!Number.isFinite(timestamp) || timestamp <= 0) return false;
+      const prunedTombstones = pruneExpiredTombstones();
+      if (seen.has(messageId)) {
+        if (prunedTombstones) persist();
+        return false;
+      }
+      const queuedEvent = {
+        messageId,
+        chatId,
+        senderId: event.senderId,
+        fromOwner: true,
+        type: messageType,
+        body: event.body,
+        timestamp,
+        ownerFenceSequence: state.nextSequence,
+      };
+      if (messageType !== 'text') {
+        queuedEvent.disposition = 'unsupported_media';
+        queuedEvent.requiresIntervention = true;
+      }
+      seen.add(messageId);
+      state.entries.push({ sequence: state.nextSequence, event: queuedEvent });
+      state.lastSequenceByChat[chatId] = state.nextSequence;
+      if (chatId.endsWith('@lid') && mappedIdentifiers(chatId).length === 0) {
+        state.unresolvedLidFences[chatId] = state.nextSequence;
+      }
+      state.nextSequence += 1;
+      persist();
+      return true;
+    },
+    snapshot() {
+      return state.entries.slice(0, pageSize).map(entry => entry.event);
+    },
+    page({ cursor = '0', limit = pageSize } = {}) {
+      const afterSequence = Number(cursor || 0);
+      const boundedLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, pageSize) : pageSize;
+      const available = state.entries.filter(entry => entry.sequence > afterSequence);
+      const selected = available.slice(0, boundedLimit);
+      return {
+        messages: selected.map(entry => entry.event),
+        nextCursor: selected.length ? String(selected[selected.length - 1].sequence) : String(afterSequence),
+        hasMore: available.length > selected.length,
+      };
+    },
+    acknowledge(acknowledgements) {
+      const ids = new Set();
+      for (const acknowledgement of acknowledgements || []) {
+        const messageId = acknowledgement?.messageId;
+        if (typeof messageId === 'string' && /^[A-Za-z0-9_-]{1,191}$/.test(messageId)) {
+          ids.add(messageId);
+        }
+      }
+      let removed = 0;
+      const retained = [];
+      const acknowledgedAt = now();
+      for (const entry of state.entries) {
+        if (ids.has(entry?.event?.messageId)) {
+          state.tombstones[entry.event.messageId] = {
+            sequence: entry.sequence,
+            acknowledgedAt,
+          };
+          removed += 1;
+        } else retained.push(entry);
+      }
+      if (removed) {
+        state.entries = retained;
+        persist();
+      }
+      return removed;
+    },
+    size() {
+      return state.entries.length;
+    },
+    lastSequence(chatId) {
+      reconcileUnresolvedLidFences();
+      const exactChatId = String(chatId);
+      const requestedIdentifier = normalizeWhatsAppIdentifier(exactChatId);
+      let maximum = Number(state.lastSequenceByChat[exactChatId] || 0);
+      if (!requestedIdentifier) return maximum;
+
+      const aliases = expandWhatsAppIdentifiers(requestedIdentifier, directory);
+      for (const [persistedChatId, sequence] of Object.entries(state.lastSequenceByChat)) {
+        if (persistedChatId === exactChatId || !Number.isSafeInteger(sequence)) continue;
+        const persistedIdentifier = normalizeWhatsAppIdentifier(persistedChatId);
+        // The exact JID is always eligible. A different JID is eligible only
+        // when an exact persisted session mapping reaches a different local
+        // identifier; never infer that equal local parts across JID types are
+        // aliases.
+        if (
+          persistedIdentifier
+          && persistedIdentifier !== requestedIdentifier
+          && aliases.has(persistedIdentifier)
+        ) {
+          maximum = Math.max(maximum, sequence);
+        }
+      }
+      return maximum;
+    },
+    hasUnresolvedFence() {
+      reconcileUnresolvedLidFences();
+      return Object.keys(state.unresolvedLidFences).length > 0;
+    },
+  };
 }
 
 export function getMessageContent(msg) {

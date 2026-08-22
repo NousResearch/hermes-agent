@@ -244,7 +244,9 @@ jobs:
           # unavailable on the runner VM itself, so destructive mode fails
           # sg lxd: fresh group membership requires a new session; also
           # give LXD time to finish first-time init
-          sg lxd -c "snapcraft"
+          # container (not VM): GH runners lack nested-KVM for LXD VMs, and
+          # the default instance type fails with "no network access"
+          sg lxd -c "env SNAPCRAFT_BUILD_ENVIRONMENT_TYPE=container snapcraft"
 
       - name: Verify Snap
         run: |

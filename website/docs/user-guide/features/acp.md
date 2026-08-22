@@ -23,7 +23,12 @@ conversation transport.
 
 ## What Hermes exposes in ACP mode
 
-Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. It includes:
+Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. It also
+loads the native plugin toolsets enabled for the active Hermes profile, so an ACP host
+such as Buzz sees the same profile-specific plugin capabilities as a native Hermes
+session. Disabled plugins remain unavailable, and profiles do not share plugin settings.
+
+The base ACP toolset includes:
 
 - file tools: `read_file`, `write_file`, `patch`, `search_files`
 - terminal tools: `terminal`, `process`
@@ -34,6 +39,18 @@ Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. I
 - vision
 
 It intentionally excludes things that do not fit typical editor UX, such as messaging delivery and cronjob management.
+
+ACP resolves native/plugin toolsets and MCP servers as separate capability
+namespaces. MCP servers are exposed under canonical `mcp-<server>` toolsets. If
+an unprefixed platform selection is ambiguous because the same name identifies
+both a native toolset and an MCP server, that selection does not grant either
+meaning. Capabilities granted independently by the curated `hermes-acp`
+baseline or an explicitly enabled native plugin remain available; an ambiguous
+MCP name cannot revoke them.
+
+The resolved capability policy is stored with the ACP session and copied across
+restore, fork, and model-switch operations. Later profile changes may tighten
+an existing session, but cannot silently widen its original tool or MCP access.
 
 ## Installation
 

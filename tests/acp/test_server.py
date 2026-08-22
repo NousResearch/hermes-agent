@@ -503,6 +503,60 @@ class TestSlashCommands:
         result = agent._handle_slash_command("/model", state)
         assert "test-model" in result
 
+    def test_model_switch_preserves_session_capability_policy(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = ["mcp-blocked"]
+        state.agent._acp_mcp_allowed_names = frozenset()
+        state.agent._acp_mcp_denied_names = frozenset({"blocked"})
+
+        with patch.object(
+            mock_manager,
+            "_make_agent",
+            return_value=MagicMock(model="new-model", provider="openrouter"),
+        ) as make_agent:
+            agent._handle_slash_command("/model new-model", state)
+
+        assert make_agent.call_args.kwargs["capability_policy"] == {
+            "enabled_toolsets": ["hermes-acp"],
+            "disabled_toolsets": ["mcp-blocked"],
+            "mcp_allowed_names": [],
+            "mcp_denied_names": ["blocked"],
+        }
+
+
+    def test_tools_listing_applies_disabled_toolsets(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.agent.enabled_toolsets = ["hermes-acp", "mcp-notes"]
+        state.agent.disabled_toolsets = ["mcp-notes"]
+
+        with patch("model_tools.get_tool_definitions", return_value=[]) as definitions:
+            agent._handle_slash_command("/tools", state)
+
+        definitions.assert_called_once_with(
+            enabled_toolsets=["hermes-acp", "mcp-notes"],
+            disabled_toolsets=["mcp-notes"],
+            quiet_mode=True,
+        )
+
+
+    def test_tools_listing_does_not_reinject_disabled_memory_provider(
+        self, agent, mock_manager
+    ):
+        state = self._make_state(mock_manager)
+        state.agent.enabled_toolsets = ["hermes-acp", "memory"]
+        state.agent.disabled_toolsets = ["memory"]
+        state.agent._memory_manager = MagicMock()
+        state.agent._memory_manager.get_all_tool_schemas.return_value = [
+            {"name": "external_memory_search", "description": "search"}
+        ]
+
+        with patch("model_tools.get_tool_definitions", return_value=[]):
+            result = agent._handle_slash_command("/tools", state)
+
+        assert result == "No tools available."
+        state.agent._memory_manager.get_all_tool_schemas.assert_not_called()
+
 
 
 
@@ -653,8 +707,80 @@ class TestRegisterSessionMcpServers:
 
 
     @pytest.mark.asyncio
+    async def test_no_mcp_policy_rejects_client_provided_server(self, agent, mock_manager):
+        """Late ACP registration must retain the session's initial no_mcp policy."""
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent._acp_mcp_allowed_names = frozenset()
+        server = McpServerStdio(
+            name="blocked",
+            command="/bin/test",
+            args=[],
+            env=[],
+        )
+
+        with patch("tools.mcp_tool.register_mcp_servers") as register:
+            await agent._register_session_mcp_servers(state, [server])
+
+        register.assert_not_called()
+        assert state.agent.enabled_toolsets == ["hermes-acp"]
+
+
+    @pytest.mark.asyncio
+    async def test_disabled_mcp_name_rejects_client_provided_server(
+        self, agent, mock_manager
+    ):
+        """Late ACP registration must retain global MCP denials."""
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent._acp_mcp_allowed_names = None
+        state.agent._acp_mcp_denied_names = frozenset({"blocked"})
+        server = McpServerStdio(
+            name="blocked", command="/bin/test", args=[], env=[]
+        )
+
+        with patch("tools.mcp_tool.register_mcp_servers") as register:
+            await agent._register_session_mcp_servers(state, [server])
+
+        register.assert_not_called()
+
+
+    @pytest.mark.asyncio
+    async def test_mcp_allowlist_filters_client_provided_servers(self, agent, mock_manager):
+        """Late ACP registration may add only names allowed when the session was built."""
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        state.agent.tools = []
+        state.agent.valid_tool_names = set()
+        state.agent._acp_mcp_allowed_names = frozenset({"allowed"})
+        allowed = McpServerStdio(
+            name="allowed", command="/bin/allowed", args=[], env=[]
+        )
+        blocked = McpServerStdio(
+            name="blocked", command="/bin/blocked", args=[], env=[]
+        )
+        registered_config = {}
+
+        with patch(
+            "tools.mcp_tool.register_mcp_servers",
+            side_effect=lambda config: registered_config.update(config),
+        ), patch("model_tools.get_tool_definitions", return_value=[]):
+            await agent._register_session_mcp_servers(state, [allowed, blocked])
+
+        assert set(registered_config) == {"allowed"}
+        assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-allowed"]
+
+
+    @pytest.mark.asyncio
     async def test_refreshes_agent_tool_surface(self, agent, mock_manager):
-        """After MCP registration, agent.tools and valid_tool_names are refreshed."""
+        """After registration, the shared policy-aware refresh path is used."""
         from acp.schema import McpServerStdio
 
         state = mock_manager.create_session(cwd="/tmp")
@@ -676,39 +802,53 @@ class TestRegisterSessionMcpServers:
             env=[],
         )
 
-        fake_tools = [
-            {"function": {"name": "mcp_srv_search"}},
-            {"function": {"name": "memory"}},
-            {"function": {"name": "terminal"}},
-        ]
+        def refresh(target, **kwargs):
+            target.enabled_toolsets = kwargs["enabled_override"]
+            target.tools = [{"function": {"name": "mcp_srv_search"}}]
+            target.valid_tool_names = {"mcp_srv_search"}
+            return {"mcp_srv_search"}
 
         with patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_search"]), \
-             patch("model_tools.get_tool_definitions", return_value=fake_tools) as mock_defs:
+             patch("tools.mcp_tool.refresh_agent_mcp_tools", side_effect=refresh) as mock_refresh, \
+             patch.object(mock_manager, "save_session") as save_session:
             await agent._register_session_mcp_servers(state, [server])
 
-        mock_defs.assert_called_once_with(
-            enabled_toolsets=["hermes-acp", "mcp-srv"],
-            disabled_toolsets=None,
+        mock_refresh.assert_called_once_with(
+            state.agent,
+            enabled_override=["hermes-acp", "mcp-srv"],
+            disabled_override=None,
             quiet_mode=True,
         )
         assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
-        assert state.agent.tools is fake_tools
-        assert state.agent.tools[-1] == {
-            "type": "function",
-            "function": {
-                "name": "hindsight_recall",
-                "description": "Recall",
-                "parameters": {},
-            },
-        }
-        assert state.agent.valid_tool_names == {
-            "hindsight_recall",
-            "memory",
-            "mcp_srv_search",
-            "terminal",
-        }
+        assert state.agent.valid_tool_names == {"mcp_srv_search"}
+        save_session.assert_called_once_with(state.session_id)
         # _invalidate_system_prompt should have been called
         state.agent._invalidate_system_prompt.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_rejects_acp_mcp_server_with_reserved_native_name(
+        self, agent, mock_manager
+    ):
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        state.agent._acp_mcp_allowed_names = None
+        state.agent._acp_mcp_denied_names = frozenset({"all", "*", "memory"})
+        reserved = McpServerStdio(
+            name="all", command="/bin/reserved", args=[], env=[]
+        )
+        safe = McpServerStdio(name="srv", command="/bin/safe", args=[], env=[])
+
+        with patch("tools.mcp_tool.register_mcp_servers") as register, patch(
+            "tools.mcp_tool.refresh_agent_mcp_tools"
+        ):
+            await agent._register_session_mcp_servers(state, [reserved, safe])
+
+        assert register.call_args.args[0] == {
+            "srv": {"command": "/bin/safe", "args": [], "env": {}}
+        }
 
     @pytest.mark.asyncio
     async def test_register_failure_logs_warning(self, agent, mock_manager):

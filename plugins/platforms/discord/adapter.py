@@ -1116,6 +1116,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        self._typing_loop_max_seconds = self._load_typing_loop_max_seconds()
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
         # WebSocket-level liveness probe. Discord REST and Gateway are distinct
@@ -4359,6 +4360,14 @@ class DiscordAdapter(BasePlatformAdapter):
             minimum=1,
         )
 
+    def _load_typing_loop_max_seconds(self) -> int:
+        """Return max typing-loop lifetime in seconds; 0 disables the deadline."""
+        return self._load_discord_int_config(
+            "typing_loop_max_seconds",
+            600,
+            minimum=0,
+        )
+
     def _voice_timeout_limit(self) -> int:
         return int(getattr(self, "_voice_timeout_seconds", self.VOICE_TIMEOUT))
 
@@ -5591,6 +5600,12 @@ class DiscordAdapter(BasePlatformAdapter):
         warning, sleeps for the ``retry_after`` duration (or a sensible
         default), and continues — it does NOT die on a single rate-limit
         hit.  Only CancelledError (from stop_typing) stops the loop.
+
+        A max-lifetime deadline (configurable via
+        ``discord.typing_loop_max_seconds``, default 600s) guards against
+        orphaned loops that never receive ``stop_typing()`` — e.g. a crashed
+        run, or a thread-vs-parent-channel key mismatch. When the deadline
+        elapses, the loop exits cleanly on its own.
         """
         if not self._client:
             return
@@ -5598,9 +5613,26 @@ class DiscordAdapter(BasePlatformAdapter):
         if chat_id in self._typing_tasks:
             return
 
+        _typing_loop_max_seconds = self._typing_loop_max_seconds
+
         async def _typing_loop() -> None:
             try:
+                _loop_deadline = (
+                    time.monotonic() + _typing_loop_max_seconds
+                    if _typing_loop_max_seconds > 0
+                    else None
+                )
                 while True:
+                    if (
+                        _loop_deadline is not None
+                        and time.monotonic() >= _loop_deadline
+                    ):
+                        logger.info(
+                            "Typing loop max lifetime (%ss) elapsed for %s — stopping",
+                            _typing_loop_max_seconds,
+                            chat_id,
+                        )
+                        return
                     try:
                         route = discord.http.Route(
                             "POST", "/channels/{channel_id}/typing",
@@ -5625,7 +5657,17 @@ class DiscordAdapter(BasePlatformAdapter):
                             return
                         await asyncio.sleep(retry_after)
                         continue
-                    await asyncio.sleep(12)
+                    # Typing indicator lasts ~10s on Discord's side, so we
+                    # refresh every 12s. Bound the sleep by the deadline so
+                    # the loop wakes up in time to honor the max-lifetime
+                    # guard instead of sleeping past it.
+                    if _loop_deadline is not None:
+                        remaining = _loop_deadline - time.monotonic()
+                        if remaining <= 0:
+                            return
+                        await asyncio.sleep(min(12, remaining))
+                    else:
+                        await asyncio.sleep(12)
             except asyncio.CancelledError:
                 pass
             finally:

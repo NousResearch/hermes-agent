@@ -271,6 +271,87 @@ class TestInstall:
         assert get_env_value("DEMO_KEY") == "secret-val"
         assert "demo" in load_config()["mcp_servers"]
 
+    def test_install_stdio_api_key_wires_env_references(self, catalog_dir, monkeypatch):
+        """stdio + api_key: auth.env must reach the generated MCP config as
+        env-backed references so the child process receives the credentials.
+
+        Regression test for #89316 — before the fix, _build_server_config
+        dropped auth.env entirely for stdio transports, so the stdio child
+        started without its API key even though install_entry() had saved it
+        to .env.
+        """
+        body = _basic_manifest(
+            name="example",
+            transport={"type": "stdio", "command": "/bin/true", "args": []},
+            auth={
+                "type": "api_key",
+                "env": [
+                    {"name": "EXAMPLE_BASE_URL", "prompt": "URL", "secret": False},
+                    {"name": "EXAMPLE_API_KEY", "prompt": "key", "secret": True},
+                ],
+            },
+        )
+        _write_manifest(catalog_dir, "example", body)
+
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(
+            mcp_catalog, "_prompt_input", lambda prompt, **kw: "secret-val"
+        )
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_config_path, load_config
+
+        install_entry(_entry("example"), enable=True)
+
+        server = load_config()["mcp_servers"]["example"]
+        assert server["command"] == "/bin/true"
+        # load_config resolves ${VAR} from .env — verify the resolved values
+        # reach the config (proving the template wired them through).
+        assert server["env"] == {
+            "EXAMPLE_BASE_URL": "secret-val",
+            "EXAMPLE_API_KEY": "secret-val",
+        }
+
+        # The raw file must carry ${...} templates, never the secret itself.
+        raw = get_config_path().read_text()
+        assert "${EXAMPLE_API_KEY}" in raw
+        assert "secret-val" not in raw
+
+    def test_install_stdio_api_key_merges_with_transport_env(
+        self, catalog_dir, monkeypatch
+    ):
+        """When both transport.env and auth.env exist, both must be present."""
+        body = _basic_manifest(
+            name="example",
+            transport={
+                "type": "stdio",
+                "command": "/bin/true",
+                "args": [],
+                "env": {"DEBUG": "1"},
+            },
+            auth={
+                "type": "api_key",
+                "env": [{"name": "EXAMPLE_KEY", "prompt": "key", "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "example", body)
+
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(
+            mcp_catalog, "_prompt_input", lambda prompt, **kw: "secret-val"
+        )
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("example"), enable=True)
+
+        env = load_config()["mcp_servers"]["example"]["env"]
+        assert env["DEBUG"] == "1"
+        assert env["EXAMPLE_KEY"] == "secret-val"
+
     def test_install_http_api_key_writes_bearer_headers(self, catalog_dir, monkeypatch):
         body = _basic_manifest(
             transport={"type": "http", "url": "https://mcp.example.com/sse"},

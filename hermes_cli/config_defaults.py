@@ -2280,6 +2280,13 @@ DEFAULT_CONFIG = {
                 "On it.",
             ],
         },
+        # Max lifetime (seconds) for the persistent typing loop. The loop that
+        # POSTs /channels/{id}/typing every 12s has no natural exit condition
+        # other than stop_typing() or a non-429 error — if stop_typing never
+        # reaches the adapter (e.g. a crashed run, or a thread-vs-parent-channel
+        # key mismatch), the loop runs forever and the "typing…" badge sticks
+        # until the gateway restarts. Set to 0 to disable the deadline guard.
+        "typing_loop_max_seconds": 600,
     },
 
     # WhatsApp platform settings (gateway mode)

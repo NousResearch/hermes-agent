@@ -1799,6 +1799,45 @@ class TestAuxiliaryFallbackLayering:
         # Main agent fallback should NOT be needed when chain succeeds
         mock_main.assert_not_called()
 
+    def test_inherited_routing_is_projected_per_fallback_destination(self):
+        primary_client = MagicMock()
+        primary_client.base_url = OPENROUTER_BASE_URL
+        rate_err = Exception("Rate limit exceeded")
+        rate_err.status_code = 429
+        primary_client.chat.completions.create.side_effect = rate_err
+
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://api.anthropic.com/v1"
+        fallback_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="fallback"))]
+        )
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary_client, "deepseek/deepseek-v4-flash"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("openrouter", "deepseek/deepseek-v4-flash", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(fallback_client, "claude-haiku-4-5", "anthropic"),
+        ), patch("agent.auxiliary_client._try_main_agent_model_fallback"):
+            result = call_llm(
+                task="compression",
+                main_runtime={
+                    "provider_preferences": {"ignore": ["digitalocean"]}
+                },
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "fallback"
+        primary_kwargs = primary_client.chat.completions.create.call_args.kwargs
+        fallback_kwargs = fallback_client.chat.completions.create.call_args.kwargs
+        assert primary_kwargs["extra_body"]["provider"] == {
+            "ignore": ["digitalocean"]
+        }
+        assert "provider" not in fallback_kwargs.get("extra_body", {})
+
 
     def test_warning_emitted_when_all_fallbacks_exhausted(self, monkeypatch, caplog):
         """When chain AND main model both fail, a user-visible warning fires before re-raise."""
@@ -2244,6 +2283,128 @@ class TestStaleBaseUrlWarning:
 
 
 class TestAuxiliaryTaskExtraBody:
+    def test_nous_native_anthropic_route_omits_openai_provider_routing(self):
+        from agent.auxiliary_client import (
+            AnthropicAuxiliaryClient,
+            _inherit_provider_preferences,
+        )
+
+        client = object.__new__(AnthropicAuxiliaryClient)
+        client.base_url = "https://inference-api.nousresearch.com/v1"
+        extra_body = {}
+
+        _inherit_provider_preferences(
+            extra_body,
+            {"provider_preferences": {"ignore": ["digitalocean"]}},
+            client,
+        )
+
+        assert "provider" not in extra_body
+
+    def test_nous_chat_completions_route_omits_provider_routing(self):
+        from agent.auxiliary_client import _inherit_provider_preferences
+
+        client = MagicMock()
+        client.base_url = "https://inference-api.nousresearch.com/v1"
+        extra_body = {}
+
+        _inherit_provider_preferences(
+            extra_body,
+            {"provider_preferences": {"ignore": ["digitalocean"]}},
+            client,
+        )
+
+        assert "provider" not in extra_body
+
+    def test_sync_call_inherits_main_provider_routing_for_openrouter(self):
+        client = MagicMock()
+        client.base_url = OPENROUTER_BASE_URL
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+        provider_preferences = {
+            "only": ["anthropic", "google"],
+            "ignore": ["digitalocean"],
+            "order": ["anthropic", "google"],
+            "sort": "throughput",
+        }
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "deepseek/deepseek-v4-flash"),
+        ):
+            result = call_llm(
+                task="title_generation",
+                provider="openrouter",
+                main_runtime={
+                    "provider": "openrouter",
+                    "provider_preferences": provider_preferences,
+                },
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["provider"] == provider_preferences
+
+    @pytest.mark.asyncio
+    async def test_async_call_inherits_main_provider_routing_for_openrouter(self):
+        client = MagicMock()
+        client.base_url = OPENROUTER_BASE_URL
+        response = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=response)
+        provider_preferences = {
+            "ignore": ["streamlake"],
+            "sort": "price",
+        }
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "deepseek/deepseek-v4-flash"),
+        ):
+            result = await async_call_llm(
+                task="title_generation",
+                provider="openrouter",
+                main_runtime={
+                    "provider": "openrouter",
+                    "provider_preferences": provider_preferences,
+                },
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["provider"] == provider_preferences
+
+    def test_task_provider_routing_overrides_inherited_preferences(self):
+        client = MagicMock()
+        client.base_url = OPENROUTER_BASE_URL
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+        task_preferences = {"only": ["google"], "sort": "latency"}
+        config = {
+            "auxiliary": {
+                "compression": {"extra_body": {"provider": task_preferences}}
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "hermes_cli.config.load_config_readonly", return_value=config
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "google/gemini-3-flash-preview"),
+        ):
+            call_llm(
+                task="compression",
+                provider="openrouter",
+                main_runtime={
+                    "provider_preferences": {"ignore": ["google"]}
+                },
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["provider"] == task_preferences
+
     def test_sync_call_merges_task_extra_body_from_config(self):
         client = MagicMock()
         client.base_url = "https://api.example.com/v1"

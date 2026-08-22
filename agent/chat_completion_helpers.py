@@ -560,23 +560,43 @@ def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
     return None
 
 
+def _provider_preferences_from_values(
+    *,
+    providers_allowed=None,
+    providers_ignored=None,
+    providers_order=None,
+    provider_sort=None,
+    provider_require_parameters=False,
+    provider_data_collection=None,
+) -> Dict[str, Any]:
+    """Build one validated provider-routing object from resolved values."""
+    preferences: Dict[str, Any] = {}
+    if providers_allowed:
+        preferences["only"] = providers_allowed
+    if providers_ignored:
+        preferences["ignore"] = providers_ignored
+    if providers_order:
+        preferences["order"] = providers_order
+    validated_sort = _validated_openrouter_provider_sort(provider_sort)
+    if validated_sort:
+        preferences["sort"] = validated_sort
+    if provider_require_parameters:
+        preferences["require_parameters"] = True
+    if provider_data_collection:
+        preferences["data_collection"] = provider_data_collection
+    return preferences
+
+
 def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
     """Build the validated provider-routing object shared by request paths."""
-    preferences: Dict[str, Any] = {}
-    if agent.providers_allowed:
-        preferences["only"] = agent.providers_allowed
-    if agent.providers_ignored:
-        preferences["ignore"] = agent.providers_ignored
-    if agent.providers_order:
-        preferences["order"] = agent.providers_order
-    provider_sort = _validated_openrouter_provider_sort(agent.provider_sort)
-    if provider_sort:
-        preferences["sort"] = provider_sort
-    if agent.provider_require_parameters:
-        preferences["require_parameters"] = True
-    if agent.provider_data_collection:
-        preferences["data_collection"] = agent.provider_data_collection
-    return preferences
+    return _provider_preferences_from_values(
+        providers_allowed=agent.providers_allowed,
+        providers_ignored=agent.providers_ignored,
+        providers_order=agent.providers_order,
+        provider_sort=agent.provider_sort,
+        provider_require_parameters=agent.provider_require_parameters,
+        provider_data_collection=agent.provider_data_collection,
+    )
 
 
 def _prompt_cache_scope_for_agent(agent) -> "str | None":

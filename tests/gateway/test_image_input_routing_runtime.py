@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -43,6 +45,47 @@ def _auto_config() -> dict:
         "agent": {"image_input_mode": "auto"},
         "auxiliary": {"vision": {"provider": "auto", "model": "", "base_url": ""}},
         "model": {"provider": "xiaomi", "default": "mimo-v2.5-pro"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_text_vision_preprocessing_binds_provider_routing(monkeypatch):
+    runner = _make_runner()
+    runner._provider_routing = {
+        "ignore": ["digitalocean"],
+        "order": ["anthropic", "google"],
+        "sort": "throughput",
+    }
+    monkeypatch.setattr(runner, "_decide_image_input_mode", lambda **_: "text")
+    monkeypatch.setattr(
+        runner,
+        "_resolve_session_agent_runtime",
+        lambda **_: (
+            "deepseek/deepseek-v4-flash",
+            {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1"},
+        ),
+    )
+
+    async def enrich(message, _paths):
+        return message
+
+    monkeypatch.setattr(runner, "_enrich_message_with_vision", enrich)
+    seen = {}
+
+    @contextmanager
+    def capture_runtime(runtime):
+        seen.update(runtime)
+        yield runtime
+
+    monkeypatch.setattr("agent.auxiliary_client.scoped_runtime_main", capture_runtime)
+
+    assert await runner._prepare_inbound_message_text(
+        event=_image_event(), source=_source(), history=[]
+    ) == "look"
+    assert seen["provider_preferences"] == {
+        "ignore": ["digitalocean"],
+        "order": ["anthropic", "google"],
+        "sort": "throughput",
     }
 
 

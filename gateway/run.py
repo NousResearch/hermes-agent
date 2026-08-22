@@ -18424,6 +18424,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         vision_runtime = dict(runtime_kwargs or {})
                         vision_runtime["model"] = turn_model
+                        from agent.chat_completion_helpers import (
+                            _provider_preferences_from_values,
+                        )
+
+                        provider_routing = getattr(self, "_provider_routing", {}) or {}
+                        vision_runtime["provider_preferences"] = (
+                            _provider_preferences_from_values(
+                                providers_allowed=provider_routing.get("only"),
+                                providers_ignored=provider_routing.get("ignore"),
+                                providers_order=provider_routing.get("order"),
+                                provider_sort=provider_routing.get("sort"),
+                                provider_require_parameters=provider_routing.get(
+                                    "require_parameters", False
+                                ),
+                                provider_data_collection=provider_routing.get(
+                                    "data_collection"
+                                ),
+                            )
+                        )
                     except Exception:
                         logger.debug(
                             "vision enrichment: session runtime resolution failed",

@@ -3476,6 +3476,7 @@ def set_runtime_main(
     auth_mode: str = "",
     session_id: str = "",
     cache_scope: str = "",
+    provider_preferences: Optional[Dict[str, Any]] = None,
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
@@ -3504,6 +3505,11 @@ def set_runtime_main(
         "auth_mode": (auth_mode or "").strip().lower(),
         "session_id": (session_id or "").strip(),
         "cache_scope": (cache_scope or "").strip(),
+        "provider_preferences": (
+            copy.deepcopy(provider_preferences)
+            if isinstance(provider_preferences, dict)
+            else {}
+        ),
     }
     # Publish authoritative context before updating locked compatibility
     # mirrors; concurrent sessions never read those mirrors at runtime.
@@ -3977,7 +3983,10 @@ _AUTO_PROVIDER_LABELS = {
 }
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
+    "requested_provider",
+    "provider_preferences",
+)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -4002,6 +4011,9 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     normalized: Dict[str, Any] = {}
     for field in _MAIN_RUNTIME_CONTEXT_FIELDS:
         value = main_runtime.get(field)
+        if field == "provider_preferences" and isinstance(value, dict):
+            normalized[field] = copy.deepcopy(value)
+            continue
         # Preserve a callable api_key (Entra ID bearer provider) unchanged.
         if field == "api_key" and callable(value) and not isinstance(value, str):
             normalized[field] = value
@@ -4013,6 +4025,22 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
         if isinstance(identity, str):
             normalized[identity_field] = identity.lower()
     return normalized
+
+
+def _inherit_provider_preferences(
+    extra_body: Dict[str, Any],
+    main_runtime: Dict[str, Any],
+    client: Any,
+) -> None:
+    """Apply the main routing policy to OpenRouter calls unless overridden."""
+    provider_preferences = main_runtime.get("provider_preferences")
+    if (
+        isinstance(provider_preferences, dict)
+        and provider_preferences
+        and "provider" not in extra_body
+        and _is_openrouter_client(client)
+    ):
+        extra_body["provider"] = copy.deepcopy(provider_preferences)
 
 
 def _get_provider_chain() -> List[tuple]:
@@ -5180,6 +5208,7 @@ def _call_fallback_candidate_sync(
     effective_timeout: float,
     effective_extra_body: dict,
     reasoning_config: Optional[dict],
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery.
 
@@ -5215,11 +5244,17 @@ def _call_fallback_candidate_sync(
         tools,
         destination=destination,
     )
+    fallback_extra_body = copy.deepcopy(effective_extra_body)
+    _inherit_provider_preferences(
+        fallback_extra_body,
+        main_runtime or {},
+        fb_client,
+    )
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=fallback_tools, timeout=effective_timeout,
-        extra_body=effective_extra_body, reasoning_config=reasoning_config,
+        extra_body=fallback_extra_body, reasoning_config=reasoning_config,
         base_url=destination.base_url, task=task)
     try:
         return _validate_llm_response(
@@ -5257,13 +5292,19 @@ def _call_fallback_candidate_sync(
                     tools,
                     destination=retry_destination,
                 )
+                retry_extra_body = copy.deepcopy(effective_extra_body)
+                _inherit_provider_preferences(
+                    retry_extra_body,
+                    main_runtime or {},
+                    retry_client,
+                )
                 retry_kwargs = _build_call_kwargs(
                     retry_destination.provider,
                     retry_destination.model,
                     retry_messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=retry_tools, timeout=effective_timeout,
-                    extra_body=effective_extra_body,
+                    extra_body=retry_extra_body,
                     reasoning_config=reasoning_config,
                     base_url=retry_destination.base_url, task=task)
                 try:
@@ -5305,6 +5346,7 @@ async def _call_fallback_candidate_async(
     effective_timeout: float,
     effective_extra_body: dict,
     reasoning_config: Optional[dict],
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Optional[Any]:
     """Async mirror of :func:`_call_fallback_candidate_sync`."""
     fb_timeout = _fallback_entry_timeout(task, fb_label)
@@ -5321,11 +5363,17 @@ async def _call_fallback_candidate_async(
         tools,
         destination=destination,
     )
+    fallback_extra_body = copy.deepcopy(effective_extra_body)
+    _inherit_provider_preferences(
+        fallback_extra_body,
+        main_runtime or {},
+        fb_client,
+    )
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=fallback_tools, timeout=effective_timeout,
-        extra_body=effective_extra_body, reasoning_config=reasoning_config,
+        extra_body=fallback_extra_body, reasoning_config=reasoning_config,
         base_url=destination.base_url, task=task)
     try:
         return _validate_llm_response(
@@ -5364,13 +5412,19 @@ async def _call_fallback_candidate_async(
                     tools,
                     destination=retry_destination,
                 )
+                retry_extra_body = copy.deepcopy(effective_extra_body)
+                _inherit_provider_preferences(
+                    retry_extra_body,
+                    main_runtime or {},
+                    retry_client,
+                )
                 retry_kwargs = _build_call_kwargs(
                     retry_destination.provider,
                     retry_destination.model,
                     retry_messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=retry_tools, timeout=effective_timeout,
-                    extra_body=effective_extra_body,
+                    extra_body=retry_extra_body,
                     reasoning_config=reasoning_config,
                     base_url=retry_destination.base_url, task=task)
                 try:
@@ -9512,6 +9566,10 @@ def _call_llm_impl(
 
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
+    primary_extra_body = copy.deepcopy(effective_extra_body)
+    _inherit_provider_preferences(
+        primary_extra_body, main_runtime, client
+    )
     if task:
         logger.info("Auxiliary %s: using %s (%s)%s",
                      task, request_provider or "auto", final_model or "default",
@@ -9523,7 +9581,7 @@ def _call_llm_impl(
     kwargs = _build_call_kwargs(
         request_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
+        tools=tools, timeout=effective_timeout, extra_body=primary_extra_body,
         reasoning_config=reasoning_config,
         base_url=_base_info or resolved_base_url, task=task)
     if extra_headers:
@@ -10070,6 +10128,7 @@ def _call_llm_impl(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
+                    main_runtime=main_runtime,
                     reasoning_config=reasoning_config)
                 if fb_resp is not None:
                     return fb_resp
@@ -10088,6 +10147,7 @@ def _call_llm_impl(
                         temperature=temperature, max_tokens=max_tokens,
                         tools=tools, effective_timeout=effective_timeout,
                         effective_extra_body=effective_extra_body,
+                        main_runtime=main_runtime,
                         reasoning_config=reasoning_config)
                     if fb_resp is not None:
                         return fb_resp
@@ -10333,10 +10393,14 @@ async def _async_call_llm_impl(
     # endpoint-specific temperature overrides can distinguish
     # api.moonshot.ai vs api.kimi.com/coding even on auto-detected routes.
     _client_base = str(getattr(client, "base_url", "") or "")
+    primary_extra_body = copy.deepcopy(effective_extra_body)
+    _inherit_provider_preferences(
+        primary_extra_body, main_runtime, client
+    )
     kwargs = _build_call_kwargs(
         request_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
+        tools=tools, timeout=effective_timeout, extra_body=primary_extra_body,
         reasoning_config=reasoning_config,
         base_url=_client_base or resolved_base_url, task=task)
 
@@ -10774,6 +10838,7 @@ async def _async_call_llm_impl(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
+                    main_runtime=main_runtime,
                     reasoning_config=reasoning_config)
                 if fb_resp is not None:
                     return fb_resp
@@ -10796,6 +10861,7 @@ async def _async_call_llm_impl(
                         temperature=temperature, max_tokens=max_tokens,
                         tools=tools, effective_timeout=effective_timeout,
                         effective_extra_body=effective_extra_body,
+                        main_runtime=main_runtime,
                         reasoning_config=reasoning_config)
                     if fb_resp is not None:
                         return fb_resp

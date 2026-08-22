@@ -1002,9 +1002,10 @@ DEFAULT_CONFIG = {
     # the configured provider is unavailable.
     #
     # extra_body: forwarded verbatim as request body fields on every aux call
-    # for that task. Use this to set provider-specific knobs (independent of
-    # main-agent settings). On OpenRouter you can set provider routing prefs
-    # and the Pareto Code coding-score floor here. Example:
+    # for that task. Use this to set provider-specific knobs. OpenRouter
+    # auxiliary calls inherit the main agent's provider_routing by default;
+    # an explicit extra_body.provider here overrides it for this task. The
+    # Pareto Code coding-score floor remains task-specific. Example:
     #
     #   auxiliary:
     #     compression:
@@ -1018,8 +1019,7 @@ DEFAULT_CONFIG = {
     #           - id: pareto-router
     #             min_coding_score: 0.5
     #
-    # Each aux task is independent — main-agent provider_routing and
-    # openrouter.min_coding_score do NOT propagate to aux calls by design.
+    # openrouter.min_coding_score does not propagate to auxiliary calls.
     "auxiliary": {
         # Same-provider retries for a transient transport blip (connection
         # reset / timeout / 5xx / 408) on ANY auxiliary call before falling

@@ -486,6 +486,7 @@ def build_turn_context(
     # after primary restoration has settled the runtime.
     try:
         from agent.auxiliary_client import set_runtime_main
+        from agent.chat_completion_helpers import _provider_preferences_for_agent
         from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
         # Rotation-stable prompt-cache scope. Memoized per segment on the
         # agent, so this is a DB walk at most once per segment — except a
@@ -507,6 +508,7 @@ def build_turn_context(
             auth_mode=getattr(agent, "auth_mode", "") or "",
             session_id=getattr(agent, "session_id", "") or "",
             cache_scope=_cache_scope,
+            provider_preferences=_provider_preferences_for_agent(agent),
         )
     except Exception:
         pass

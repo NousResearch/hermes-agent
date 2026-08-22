@@ -210,6 +210,29 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_prologue_binds_validated_provider_routing_for_auxiliary_calls():
+    agent = _FakeAgent()
+    agent.providers_allowed = ["anthropic"]
+    agent.providers_ignored = ["digitalocean"]
+    agent.providers_order = ["anthropic", "google"]
+    agent.provider_sort = "throughput"
+    agent.provider_require_parameters = True
+    agent.provider_data_collection = "deny"
+    set_runtime_main = MagicMock()
+
+    with patch("agent.auxiliary_client.set_runtime_main", set_runtime_main):
+        _build(agent)
+
+    assert set_runtime_main.call_args.kwargs["provider_preferences"] == {
+        "only": ["anthropic"],
+        "ignore": ["digitalocean"],
+        "order": ["anthropic", "google"],
+        "sort": "throughput",
+        "require_parameters": True,
+        "data_collection": "deny",
+    }
+
+
 def test_user_message_preserves_platform_event_timestamp():
     agent = _FakeAgent()
 

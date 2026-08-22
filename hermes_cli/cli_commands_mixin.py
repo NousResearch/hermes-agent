@@ -1093,6 +1093,23 @@ class CLICommandsMixin:
         self._pending_title = None
         _sync_process_session_id(target_id)
 
+        # Carry the read_file dedup cache across the session switch so the
+        # resumed agent doesn't re-read files it already has in its
+        # rehydrated transcript (#81725).  read_file_tool keys its dedup
+        # cache on the per-turn ``effective_task_id`` — held on
+        # ``agent._current_task_id`` after each turn — NOT on the session id,
+        # so keying a transfer on the old/new session ids is a guaranteed
+        # no-op.  Instead stash the outgoing turn's id on the agent; the
+        # resumed session's first ``run_conversation`` hands it (and its
+        # dedup entries) to the fresh per-turn key before dispatching tools.
+        if old_session_id and old_session_id != target_id:
+            old_task_id = getattr(self.agent, "_current_task_id", None) or None
+            if old_task_id:
+                try:
+                    self.agent._pending_dedup_transfer_from = old_task_id
+                except Exception:
+                    pass
+
         # Load conversation history (strip transcript-only metadata entries).
         # repair_alternation: this /resume feeds LIVE REPLAY — ``restored``
         # becomes ``self.conversation_history`` for subsequent turns. Heal a

@@ -553,6 +553,25 @@ def build_turn_context(
     # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
+    # Carry the read_file dedup cache across a mid-chat ``/resume`` (#81725).
+    # ``read_file_tool`` keys its dedup ``_read_tracker`` on the per-turn
+    # ``effective_task_id`` (NOT the session id), so a resumed session's
+    # first turn — which always generates a fresh uuid here — would otherwise
+    # start with an empty cache and re-read files the agent already has in
+    # its rehydrated transcript, pulling every attachment through the gateway
+    # again.  ``_handle_resume_command`` stashes the outgoing turn's id on
+    # ``agent._pending_dedup_transfer_from``; hand that cache forward to this
+    # turn's fresh key before any tool dispatch in the turn.
+    _pending_dedup_from = getattr(agent, "_pending_dedup_transfer_from", None)
+    if _pending_dedup_from and _pending_dedup_from != effective_task_id:
+        try:
+            from tools.file_tools import transfer_file_dedup
+            transfer_file_dedup(_pending_dedup_from, effective_task_id)
+        except Exception:
+            # Best-effort: a failed transfer just means the resumed session
+            # re-reads the files, identical to the pre-fix behaviour.
+            pass
+        agent._pending_dedup_transfer_from = None
     turn_id = str(getattr(agent, "_relay_pending_turn_id", "") or "")
     if not turn_id:
         turn_id = (

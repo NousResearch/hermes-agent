@@ -60,13 +60,23 @@ Once the gateway is running:
 
 ```bash
 curl http://localhost:8644/health
+curl http://localhost:8644/ready
 ```
 
-Expected response:
+Expected responses:
 
 ```json
 {"status": "ok", "platform": "webhook"}
 ```
+
+```json
+{"status": "ready", "platform": "webhook", "host": "0.0.0.0", "port": 8644, "routes": 2}
+```
+
+`/health` is liveness-only (the process is up and serving HTTP). `/ready` is
+readiness: it reports `200` with `status: "ready"` when the listener is bound
+and routes are loaded, and `503` with a `problems` list otherwise. Neither
+endpoint leaks secrets or route configuration.
 
 ---
 
@@ -80,6 +90,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 |----------|----------|-------------|
 | `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
+| `signature_mode` | No | Explicit signature scheme: `github`, `gitlab`, `svix`, `generic_v2` (default), or `generic_v1`. The adapter validates only the configured scheme and never infers one from request headers. |
 | `profile` | No | Profile authorized to execute this route when `gateway.multiplex_profiles` is enabled. Omit it for a default-profile-only route; set a profile name (for example `coder`) to bind the route and its secret to `/p/coder/webhooks/<route>`. |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
@@ -195,7 +206,7 @@ Prompts use dot-notation to access nested fields in the webhook payload:
 
 - `{pull_request.title}` resolves to `payload["pull_request"]["title"]`
 - `{repository.full_name}` resolves to `payload["repository"]["full_name"]`
-- `{__raw__}` — special token that dumps the **entire payload** as indented JSON (truncated at 4000 characters). Useful for monitoring alerts or generic webhooks where the agent needs the full context.
+- `{__raw__}` — special token that dumps the **entire payload** as a valid JSON envelope: `{"payload": "<indented JSON>", "truncated": true|false, "original_bytes": N}`. When the payload exceeds the 4000-character bound, `payload` holds the bounded value and `truncated` is `true` — the envelope is always structurally valid JSON (never a raw character slice).
 - Missing keys are left as the literal `{key}` string (no error)
 - Nested dicts and lists are JSON-serialized and truncated at 2000 characters
 
@@ -384,8 +395,9 @@ hermes webhook subscribe antenna-matches \
 | `401 Unauthorized` | HMAC signature invalid or missing. |
 | `400 Bad Request` | Malformed JSON body. |
 | `404 Not Found` | Unknown route name. |
+| `409 Conflict` | Idempotency key reused with a different body hash. |
 | `413 Payload Too Large` | Body exceeded `max_body_bytes`. |
-| `429 Too Many Requests` | Route rate limit exceeded. |
+| `429 Too Many Requests` | Route rate limit exceeded. Response carries a `Retry-After` header. |
 | `502 Bad Gateway` | Target adapter rejected the message or raised. The error is logged server-side; the response body is a generic `Delivery failed` to avoid leaking adapter internals. |
 
 ### Configuration gotchas
@@ -418,6 +430,33 @@ This returns the webhook URL and an auto-generated HMAC secret. Configure your s
 
 ```bash
 hermes webhook list
+hermes webhook list --json      # machine-readable, secrets masked
+```
+
+### Show one subscription
+
+```bash
+hermes webhook show github-issues
+hermes webhook show github-issues --json
+```
+
+### Update a subscription
+
+```bash
+hermes webhook update github-issues --prompt "New prompt" --events "issues,pull_request"
+```
+
+### Enable / disable a subscription
+
+```bash
+hermes webhook disable github-issues
+hermes webhook enable github-issues
+```
+
+### Rotate a secret
+
+```bash
+hermes webhook rotate-secret github-issues
 ```
 
 ### Remove a subscription
@@ -432,6 +471,9 @@ hermes webhook remove github-issues
 hermes webhook test github-issues
 hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "Test"}}'
 ```
+
+All management commands accept `--profile <name>` to operate on a named
+profile's subscriptions.
 
 ### How dynamic subscriptions work
 
@@ -494,14 +536,29 @@ The webhook adapter includes multiple layers of security:
 
 ### HMAC signature validation
 
-The adapter validates incoming webhook signatures using the appropriate method for each source:
+Each route binds to an explicit `signature_mode` — the adapter never infers a
+signature scheme from request headers. Supported modes:
 
-- **GitHub**: `X-Hub-Signature-256` header — HMAC-SHA256 hex digest prefixed with `sha256=`
-- **GitLab**: `X-Gitlab-Token` header — plain secret string match
-- **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
-- **Generic (V1, legacy)**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest of the body only. Still accepted for backward compatibility, but it has no replay protection (a captured request replays indefinitely); the gateway logs a deprecation warning once per route. Switch senders to V2.
+- **`github`** — `X-Hub-Signature-256` header, HMAC-SHA256 hex digest prefixed with `sha256=`.
+- **`gitlab`** — `X-Gitlab-Token` header, plain secret string match.
+- **`svix`** — Svix/AgentMail `svix-id` + `svix-timestamp` + `svix-signature` headers.
+- **`generic_v2`** (default) — `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers, HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later. A missing, malformed, or stale timestamp is rejected — never downgraded to V1.
+- **`generic_v1`** (legacy) — `X-Webhook-Signature` header, raw HMAC-SHA256 hex digest of the body only. Explicit compatibility mode with no replay protection; the gateway logs a deprecation warning once per route. It is never an automatic fallback from V2 — a route only uses V1 if `signature_mode: "generic_v1"` is set.
 
-If a secret is configured but no recognized signature header is present, the request is rejected.
+```yaml
+platforms:
+  webhook:
+    extra:
+      routes:
+        github-pr:
+          signature_mode: "github"
+          secret: "github-webhook-secret"
+```
+
+A route configured for one mode rejects another provider's headers even if
+they would have validated under header inference. If a secret is configured
+but no recognized signature for the route's mode is present, the request is
+rejected.
 
 ### Secret is required
 
@@ -529,7 +586,7 @@ Requests exceeding the limit receive a `429 Too Many Requests` response.
 
 ### Idempotency
 
-Delivery IDs (from `X-GitHub-Delivery`, `X-Request-ID`, or a timestamp fallback) are cached for **1 hour**. Duplicate deliveries (e.g. webhook retries) are silently skipped with a `200` response, preventing duplicate agent runs.
+Delivery IDs (from `X-GitHub-Delivery`, `X-Request-ID`, or a timestamp fallback) are cached for **1 hour**, keyed by `(profile, route, delivery_id)` and bound to a body hash. Duplicate deliveries on the same route (e.g. webhook retries) return `200` and are not re-processed. The same provider delivery sent to different routes executes each route once. A conflicting replay (same delivery ID on the same route with a different body) returns `409`.
 
 ### Body size limits
 

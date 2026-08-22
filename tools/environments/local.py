@@ -5,6 +5,7 @@ import ntpath
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -1781,6 +1782,8 @@ class LocalEnvironment(BaseEnvironment):
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
+        run_env = _make_run_env(self.env)
+
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
         # custom init files so tools registered outside bash_profile
@@ -1791,8 +1794,30 @@ class LocalEnvironment(BaseEnvironment):
             init_files = _resolve_shell_init_files()
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
+            # Debian's /etc/profile unconditionally resets PATH for
+            # non-root shells *before* sourcing /etc/profile.d/*.sh,
+            # discarding venv entries the Dockerfile's ENV PATH sets up.
+            # Restore it immediately, before anything else in this login
+            # shell runs — including the init-file sourcing just prepended
+            # above, and (for init_session's bootstrap specifically)
+            # cmd_string's own ``export -p`` snapshot dump (see base.py's
+            # ``_export_dump_excluding_session_vars``), which persists
+            # whatever PATH is current at that moment into the snapshot
+            # file every later terminal call sources. This restore must be
+            # the FIRST thing that runs, prepended in front of the
+            # init-file prelude too — not appended after cmd_string (the
+            # original placement here), which fixed the live shell's PATH
+            # too late: the dump had already captured and persisted the
+            # profile-reset value by then, so every subsequent command in
+            # the session still lost the venv. Init files still run after
+            # this and may freely extend PATH further (nvm/pyenv/asdf), so
+            # their own additions are unaffected and still land in the
+            # snapshot. See issue #56634.
+            path_key = _path_env_key(run_env)
+            if path_key is not None:
+                saved = shlex.quote(run_env.get(path_key, ""))
+                cmd_string = f"export {path_key}={saved}\n" + cmd_string
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
-        run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by
         # a previous tool call that ran ``rm -rf`` on its own working dir

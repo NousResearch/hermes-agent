@@ -181,6 +181,7 @@ class SessionState:
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    mcp_servers: List[Any] = field(default_factory=list)
 
 
 class SessionManager:

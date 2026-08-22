@@ -1,8 +1,8 @@
 ---
 name: fitness-nutrition
-description: "Workout planning, macros, and body metrics via wger/USDA."
+description: "Exercise/food reference and body metrics via wger/USDA."
 platforms: [linux, macos, windows]
-version: 1.0.0
+version: 1.1.0
 author: Hailey Marshall (haileymarshall), Hermes Agent
 authors:
   - haileymarshall
@@ -23,13 +23,14 @@ required_environment_variables:
 
 # Fitness & Nutrition
 
-Expert fitness coach and sports nutritionist skill. Two data sources
-plus offline calculators — everything a gym-goer needs in one place.
+Exercise and food-reference data plus offline calculators. Use this skill for
+lookups and mechanical calculations, not as a substitute for individualized
+medical advice, dietetic care, or a progressive training plan.
 
 **Data sources (all free, no pip dependencies):**
 
-- **wger** (https://wger.de/api/v2/) — open exercise database, 690+ exercises with muscles, equipment, images. Public endpoints need zero authentication.
-- **USDA FoodData Central** (https://api.nal.usda.gov/fdc/v1/) — US government nutrition database, 380,000+ foods. `DEMO_KEY` works instantly; free signup for higher limits.
+- **wger** (https://wger.de/api/v2/) — open exercise database with muscles, equipment, and images. Public endpoints need zero authentication.
+- **USDA FoodData Central** (https://api.nal.usda.gov/fdc/v1/) — US government food-composition database. `DEMO_KEY` works instantly; free signup for higher limits.
 
 **Offline calculators (pure stdlib Python):**
 
@@ -40,11 +41,13 @@ plus offline calculators — everything a gym-goer needs in one place.
 ## When to Use
 
 Trigger this skill when the user asks about:
-- Exercises, workouts, gym routines, muscle groups, workout splits
-- Food macros, calories, protein content, meal planning, calorie counting
-- Body composition: BMI, body fat, TDEE, caloric surplus/deficit
-- One-rep max estimates, training percentages, progressive overload
-- Macro ratios for cutting, bulking, or maintenance
+- Exercise reference by movement name, muscle, equipment, or category
+- Food energy, macro, micronutrient, or ingredient composition
+- BMI, body-fat, TDEE, or calorie-target calculations
+- One-rep-max estimates and derived training percentages
+- Generic macro templates for cutting, bulking, or maintenance
+
+Do not use this as the primary skill for progressive workout programming, workout tracking, individualized meal planning, or medical nutrition. Route those tasks to the relevant planning, tracking, or clinical workflow, and use this skill only for the needed reference data or calculation.
 
 ---
 
@@ -52,15 +55,16 @@ Trigger this skill when the user asks about:
 
 ### Exercise Lookup (wger API)
 
-All wger public endpoints return JSON and require no auth. Always add
-`format=json` and `language=2` (English) to exercise queries.
+All wger public endpoints return JSON and require no auth. Use the read-only
+`exerciseinfo` endpoint, add `language__code=en`, and request `format=json`.
 
 **Step 1 — Identify what the user wants:**
 
-- By muscle → use `/api/v2/exercise/?muscles={id}&language=2&status=2&format=json`
-- By category → use `/api/v2/exercise/?category={id}&language=2&status=2&format=json`
-- By equipment → use `/api/v2/exercise/?equipment={id}&language=2&status=2&format=json`
-- By name → use `/api/v2/exercise/search/?term={query}&language=english&format=json`
+- By muscle → use `/api/v2/exerciseinfo/?muscles={id}&language__code=en&format=json`
+- By category → use `/api/v2/exerciseinfo/?category={id}&language__code=en&format=json`
+- By equipment → use `/api/v2/exerciseinfo/?equipment={id}&language__code=en&format=json`
+- By name → run `python scripts/exercise_search.py "{query}"`; it uses
+  `/api/v2/exerciseinfo/?name__search={query}&language__code=en&format=json`
 - Full details → use `/api/v2/exerciseinfo/{exercise_id}/?format=json`
 
 **Step 2 — Reference IDs (so you don't need extra API calls):**
@@ -109,17 +113,10 @@ Equipment:
 
 ```bash
 # Search exercises by name
-QUERY="$1"
-ENCODED=$(python -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$QUERY")
-curl -s "https://wger.de/api/v2/exercise/search/?term=${ENCODED}&language=english&format=json" \
-  | python -c "
-import json,sys
-data=json.load(sys.stdin)
-for s in data.get('suggestions',[])[:10]:
-    d=s.get('data',{})
-    print(f\"  ID {d.get('id','?'):>4} | {d.get('name','N/A'):<35} | Category: {d.get('category','N/A')}\")
-"
+python scripts/exercise_search.py "pull up" --limit 10
 ```
+
+The helper fetches at most 100 wger candidates, reranks exact and all-token name matches, and returns only the requested 1–20 records.
 
 ```bash
 # Get full details for a specific exercise
@@ -143,23 +140,27 @@ if imgs: print(f\"Image     : {imgs[0].get('image','')}\")
 ```
 
 ```bash
-# List exercises filtering by muscle, category, or equipment
-# Combine filters as needed: ?muscles=4&equipment=1&language=2&status=2
-FILTER="$1"  # e.g. "muscles=4" or "category=11" or "equipment=3"
-curl -s "https://wger.de/api/v2/exercise/?${FILTER}&language=2&status=2&limit=20&format=json" \
-  | python -c "
-import json,sys
-data=json.load(sys.stdin)
-print(f'Found {data.get(\"count\",0)} exercises.')
-for ex in data.get('results',[]):
-    print(f\"  ID {ex['id']:>4} | muscles: {ex.get('muscles',[])} | equipment: {ex.get('equipment',[])}\")
-"
+# List exercises by one filter
+python scripts/exercise_search.py --muscle 4 --limit 20
+python scripts/exercise_search.py --category 11 --limit 20
+python scripts/exercise_search.py --equipment 3 --limit 20
+
+# Combine filters as needed
+python scripts/exercise_search.py --muscle 4 --equipment 1 --limit 20
 ```
+
+The helper resolves English names from each record's `translations`, then emits
+compact JSON with IDs, names, muscles, equipment, descriptions, and images.
 
 ### Nutrition Lookup (USDA FoodData Central)
 
 Uses `USDA_API_KEY` env var if set, otherwise falls back to `DEMO_KEY`.
 DEMO_KEY = 30 requests/hour. Free signup key = 1,000 requests/hour.
+
+Inspect the returned descriptions and FDC IDs before choosing a result; search
+rank alone is not an identity match. For packaged food, use the product label
+when available. Treat generic USDA values as estimates and state the per-100 g
+basis before scaling to a serving.
 
 ```bash
 # Search foods by name
@@ -213,25 +214,34 @@ or run inline for single calculations:
 - `python scripts/body_calc.py bodyfat <M|F> <neck_cm> <waist_cm> [hip_cm] <height_cm>`
 
 See `references/FORMULAS.md` for the science behind each formula.
+The CLI rejects unsupported categories, non-positive measurements, and 1RM
+sets above 10 repetitions instead of silently selecting defaults.
 
 ---
 
 ## Pitfalls
 
-- wger exercise endpoint returns **all languages by default** — always add `language=2` for English
-- wger includes **unverified user submissions** — add `status=2` to only get approved exercises
+- wger exercise data includes multiple translations — use the name-search
+  helper or select translation language ID `2` for English
+- wger is community-maintained reference data — verify exercise details instead
+  of treating a database entry as individualized technique or medical advice
 - USDA `DEMO_KEY` has **30 req/hour** — add `sleep 2` between batch requests or get a free key
 - USDA data is **per 100g** — remind users to scale to their actual portion size
+- USDA search results can be approximate — select the intended FDC ID, and let
+  a current product label override generic database values
 - BMI does not distinguish muscle from fat — high BMI in muscular people is not necessarily unhealthy
 - Body fat formulas are **estimates** (±3-5%) — recommend DEXA scans for precision
 - 1RM formulas lose accuracy above 10 reps — use sets of 3-5 for best estimates
-- wger's `exercise/search` endpoint uses `term` not `query` as the parameter name
+- Macro percentages are templates, not individualized prescriptions; use a
+  user-approved plan when one exists
 
 ---
 
 ## Verification
 
-After running exercise search: confirm results include exercise names, muscle groups, and equipment.
+After running exercise search: confirm the JSON includes exercise names,
+muscle groups, and equipment; an HTTP 200 with an unrelated unfiltered list is
+not a successful search.
 After nutrition lookup: confirm per-100g macros are returned with kcal, protein, fat, carbs.
 After calculators: sanity-check outputs (e.g. TDEE should be 1500-3500 for most adults).
 
@@ -241,10 +251,10 @@ After calculators: sanity-check outputs (e.g. TDEE should be 1500-3500 for most 
 
 | Task | Source | Endpoint |
 |------|--------|----------|
-| Search exercises by name | wger | `GET /api/v2/exercise/search/?term=&language=english` |
+| Search exercises by name | wger | `python scripts/exercise_search.py "query"` (`name__search`, `language__code=en`) |
 | Exercise details | wger | `GET /api/v2/exerciseinfo/{id}/` |
-| Filter by muscle | wger | `GET /api/v2/exercise/?muscles={id}&language=2&status=2` |
-| Filter by equipment | wger | `GET /api/v2/exercise/?equipment={id}&language=2&status=2` |
+| Filter by muscle | wger | `GET /api/v2/exerciseinfo/?muscles={id}&language__code=en` |
+| Filter by equipment | wger | `GET /api/v2/exerciseinfo/?equipment={id}&language__code=en` |
 | List categories | wger | `GET /api/v2/exercisecategory/` |
 | List muscles | wger | `GET /api/v2/muscle/` |
 | Search foods | USDA | `GET /fdc/v1/foods/search?query=&dataType=Foundation,SR Legacy` |

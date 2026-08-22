@@ -507,22 +507,7 @@ def _resolve_codex_usage_credentials(
     return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
 
 
-def _fetch_codex_account_usage(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-) -> Optional[AccountUsageSnapshot]:
-    token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "User-Agent": "codex-cli",
-    }
-    if account_id:
-        headers["ChatGPT-Account-Id"] = account_id
-    with httpx.Client(timeout=15.0) as client:
-        response = client.get(_resolve_codex_usage_url(resolved_base_url), headers=headers)
-        response.raise_for_status()
-    payload = response.json() or {}
+def _codex_usage_snapshot_from_payload(payload: dict) -> AccountUsageSnapshot:
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
     for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
@@ -561,6 +546,53 @@ def _fetch_codex_account_usage(
         windows=tuple(windows),
         details=tuple(details),
     )
+
+
+def fetch_codex_usage_for_token(
+    access_token: str,
+    base_url: Optional[str],
+    *,
+    timeout: float = 15.0,
+) -> Optional[AccountUsageSnapshot]:
+    """Fetch Codex account-usage telemetry for a bearer token.
+
+    This read-only helper intentionally does not resolve or refresh credentials
+    and does not pass ``ChatGPT-Account-Id``.  The usage endpoint keys the
+    response off the bearer token; callers that use pooled credentials can ask
+    for per-entry telemetry without mutating auth.json.
+    """
+    token = str(access_token or "").strip()
+    if not token:
+        return None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "codex-cli",
+    }
+    with httpx.Client(timeout=timeout) as client:
+        response = client.get(_resolve_codex_usage_url(base_url or ""), headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+    return _codex_usage_snapshot_from_payload(payload)
+
+
+def _fetch_codex_account_usage(
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": "codex-cli",
+    }
+    if account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+    with httpx.Client(timeout=15.0) as client:
+        response = client.get(_resolve_codex_usage_url(resolved_base_url), headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+    return _codex_usage_snapshot_from_payload(payload)
 
 
 @dataclass(frozen=True)

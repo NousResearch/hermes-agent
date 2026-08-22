@@ -2202,7 +2202,10 @@ def run_kanban_goal_loop(
     Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
     outcome is one of ``"completed_by_worker"``, ``"review_requested_by_worker"``,
     ``"changes_requested_by_reviewer"``, ``"blocked_budget"``,
-    ``"blocked_by_worker"``, or ``"stopped"``.
+    ``"blocked_transport"``, ``"blocked_by_worker"``,
+    ``"terminalization_failed"``, or ``"stopped"``. A terminalization failure
+    is distinct from a successful block so callers can fail closed rather than
+    exit cleanly while the task remains running.
     """
 
     def _log(msg: str) -> None:
@@ -2220,6 +2223,22 @@ def run_kanban_goal_loop(
     # The first turn already consumed one unit of budget.
     turns_used = 1
     nudged_to_finalize = False
+    consecutive_transport_failures = 0
+
+    def _block_or_report_failure(reason: str) -> bool:
+        """Require the durable block callback to confirm success."""
+        try:
+            result = block_fn(reason)
+        except Exception as exc:
+            _log(
+                "kanban goal loop: terminal block failed "
+                f"({type(exc).__name__})"
+            )
+            return False
+        if result is not True:
+            _log("kanban goal loop: terminal block was not confirmed")
+            return False
+        return True
 
     while True:
         # Did the worker terminate the task itself this turn?
@@ -2256,20 +2275,45 @@ def run_kanban_goal_loop(
         verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
         if verdict == "wait":
             verdict = "continue"
+        if _transport_failed:
+            consecutive_transport_failures += 1
+        else:
+            consecutive_transport_failures = 0
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
+
+        if consecutive_transport_failures >= DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES:
+            transport_reason = (
+                "Goal-mode worker's judge transport failed "
+                f"{consecutive_transport_failures} times in a row; "
+                "check the auxiliary judge provider and credentials."
+            )
+            if not _block_or_report_failure(transport_reason):
+                return {
+                    "outcome": "terminalization_failed",
+                    "turns_used": turns_used,
+                    "reason": "terminal block was not durably recorded",
+                }
+            return {
+                "outcome": "blocked_transport",
+                "turns_used": turns_used,
+                "reason": transport_reason,
+            }
 
         if verdict == "done":
             if nudged_to_finalize:
                 # Already asked once to call kanban_complete and it still
                 # didn't — block for review rather than spin.
                 _log(f"kanban goal loop: task {task_id} judged done but worker won't finalize; blocking")
-                try:
-                    block_fn(
-                        f"Goal-mode worker's output looked complete but it never "
-                        f"called kanban_complete after a finalize nudge ({reason})."
-                    )
-                except Exception as exc:
-                    _log(f"kanban goal loop: block_fn failed ({exc})")
+                block_reason = (
+                    f"Goal-mode worker's output looked complete but it never "
+                    f"called kanban_complete after a finalize nudge ({reason})."
+                )
+                if not _block_or_report_failure(block_reason):
+                    return {
+                        "outcome": "terminalization_failed",
+                        "turns_used": turns_used,
+                        "reason": "terminal block was not durably recorded",
+                    }
                 return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "judged done, never finalized"}
             prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
             nudged_to_finalize = True
@@ -2279,14 +2323,17 @@ def run_kanban_goal_loop(
         # Budget check BEFORE spending another turn.
         if turns_used >= max_turns:
             _log(f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; blocking")
-            try:
-                block_fn(
-                    f"Goal-mode worker exhausted its turn budget "
-                    f"({turns_used}/{max_turns}) without completing the task. "
-                    f"Last judge verdict: {_truncate(reason, 300)}"
-                )
-            except Exception as exc:
-                _log(f"kanban goal loop: block_fn failed ({exc})")
+            block_reason = (
+                f"Goal-mode worker exhausted its turn budget "
+                f"({turns_used}/{max_turns}) without completing the task. "
+                f"Last judge verdict: {_truncate(reason, 300)}"
+            )
+            if not _block_or_report_failure(block_reason):
+                return {
+                    "outcome": "terminalization_failed",
+                    "turns_used": turns_used,
+                    "reason": "terminal block was not durably recorded",
+                }
             return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "turn budget exhausted"}
 
         # Run another turn in the same session.

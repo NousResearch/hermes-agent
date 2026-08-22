@@ -205,3 +205,50 @@ class TestCLIJudgeGate:
         rc, complete_calls = self._run(monkeypatch, goal_mode=False)
         assert rc == 0
         assert complete_calls == ["t1"]
+
+
+def test_goal_loop_bounds_transport_failures_before_an_extra_turn(monkeypatch):
+    """Repeated judge transport errors stop at the dedicated failure bound."""
+    calls = []
+    blocked = []
+
+    def fake_judge(*_args, **_kwargs):
+        return "continue", "judge unavailable", False, None, True
+
+    monkeypatch.setattr(goals, "judge_goal", fake_judge)
+    res = goals.run_kanban_goal_loop(
+        task_id="t-transport",
+        goal_text="do the thing",
+        run_turn=lambda prompt: calls.append(prompt) or "still working",
+        task_status_fn=lambda: "running",
+        block_fn=lambda reason: blocked.append(reason) or True,
+        max_turns=50,
+        first_response="first turn",
+    )
+
+    assert res["outcome"] == "blocked_transport"
+    assert res["turns_used"] == goals.DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES
+    assert len(calls) == goals.DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES - 1
+    assert len(blocked) == 1
+    assert "transport" in blocked[0].lower()
+
+
+def test_goal_loop_surfaces_block_terminalization_failure(monkeypatch):
+    """A failed block write is not reported as a successful terminal outcome."""
+    monkeypatch.setattr(
+        goals,
+        "judge_goal",
+        lambda *_args, **_kwargs: ("continue", "not done", False, None, False),
+    )
+    res = goals.run_kanban_goal_loop(
+        task_id="t-block-failure",
+        goal_text="do the thing",
+        run_turn=lambda _prompt: "still working",
+        task_status_fn=lambda: "running",
+        block_fn=lambda _reason: False,
+        max_turns=1,
+        first_response="first turn",
+    )
+
+    assert res["outcome"] == "terminalization_failed"
+    assert res["turns_used"] == 1

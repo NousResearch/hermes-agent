@@ -342,6 +342,7 @@ def _fire_dispatch_tick_hook(
             result.auto_assigned_default,
             result.respawn_guarded,
             result.skipped_per_profile_capped,
+            result.skipped_resource_policy,
             result.skipped_unassigned,
             result.skipped_nonspawnable,
         )):
@@ -4330,6 +4331,7 @@ def _end_run(
     error: Optional[str] = None,
     metadata: Optional[dict] = None,
     status: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
 ) -> Optional[int]:
     """Close the currently-active run for ``task_id`` and clear the pointer.
 
@@ -4347,7 +4349,9 @@ def _end_run(
     if not row or not row["current_run_id"]:
         return None
     run_id = int(row["current_run_id"])
-    conn.execute(
+    if expected_run_id is not None and run_id != int(expected_run_id):
+        return None
+    cur = conn.execute(
         """
         UPDATE task_runs
            SET status        = ?,
@@ -4360,6 +4364,7 @@ def _end_run(
                claim_expires = NULL,
                worker_pid    = NULL
          WHERE id = ?
+           AND task_id = ?
            AND ended_at IS NULL
         """,
         (
@@ -4370,11 +4375,18 @@ def _end_run(
             json.dumps(metadata, ensure_ascii=False) if metadata else None,
             now,
             run_id,
+            task_id,
         ),
     )
-    conn.execute(
-        "UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,),
+    if cur.rowcount != 1:
+        raise sqlite3.IntegrityError("active run could not be closed exactly once")
+    pointer = conn.execute(
+        "UPDATE tasks SET current_run_id = NULL "
+        "WHERE id = ? AND current_run_id = ?",
+        (task_id, run_id),
     )
+    if pointer.rowcount != 1:
+        raise sqlite3.IntegrityError("active run pointer changed during terminalization")
     return run_id
 
 
@@ -5493,7 +5505,10 @@ def complete_task(
             outcome="completed", status="done",
             summary=summary if summary is not None else result,
             metadata=metadata,
+            expected_run_id=expected_run_id,
         )
+        if expected_run_id is not None and run_id != int(expected_run_id):
+            raise sqlite3.IntegrityError("expected run was not terminalized")
         # If complete_task was called on a never-claimed task (ready or
         # blocked → done with no run in flight), synthesize a
         # zero-duration run so the handoff fields are persisted in
@@ -6328,7 +6343,10 @@ def block_task(
                 conn, task_id,
                 outcome="blocked", status="blocked",
                 summary=reason,
+                expected_run_id=expected_run_id,
             )
+            if expected_run_id is not None and run_id != int(expected_run_id):
+                raise sqlite3.IntegrityError("expected run was not terminalized")
             if run_id is None and reason:
                 run_id = _synthesize_ended_run(
                     conn, task_id, outcome="blocked", summary=reason,
@@ -6386,7 +6404,10 @@ def block_task(
                 conn, task_id,
                 outcome="blocked", status="blocked",
                 summary=reason,
+                expected_run_id=expected_run_id,
             )
+            if expected_run_id is not None and run_id != int(expected_run_id):
+                raise sqlite3.IntegrityError("expected run was not terminalized")
             if run_id is None and reason:
                 run_id = _synthesize_ended_run(
                     conn, task_id, outcome="blocked", summary=reason,
@@ -6440,7 +6461,10 @@ def block_task(
                 conn, task_id,
                 outcome="blocked", status="blocked",
                 summary=reason,
+                expected_run_id=expected_run_id,
             )
+            if expected_run_id is not None and run_id != int(expected_run_id):
+                raise sqlite3.IntegrityError("expected run was not terminalized")
             # Synthesize a run when blocking a never-claimed task so the
             # reason is preserved in attempt history.
             if run_id is None and reason:
@@ -6624,7 +6648,10 @@ def request_review(
             status="review",
             summary=summary,
             metadata=metadata,
+            expected_run_id=expected_run_id,
         )
+        if expected_run_id is not None and run_id != int(expected_run_id):
+            raise sqlite3.IntegrityError("expected run was not terminalized")
         if run_id is None and (summary or metadata):
             run_id = _synthesize_ended_run(
                 conn,
@@ -6752,7 +6779,10 @@ def request_changes(
             outcome="changes_requested",
             status=new_status,
             summary=reason,
+            expected_run_id=expected_run_id,
         )
+        if expected_run_id is not None and run_id != int(expected_run_id):
+            raise sqlite3.IntegrityError("expected run was not terminalized")
         _append_event(
             conn,
             task_id,
@@ -7946,7 +7976,10 @@ def schedule_task(
             conn, task_id,
             outcome="scheduled", status="scheduled",
             summary=reason,
+            expected_run_id=expected_run_id,
         )
+        if expected_run_id is not None and run_id != int(expected_run_id):
+            raise sqlite3.IntegrityError("expected run was not terminalized")
         if run_id is None and reason:
             run_id = _synthesize_ended_run(
                 conn, task_id,
@@ -8013,6 +8046,126 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 )
 
 
+def _resource_policy_path() -> Optional[Path]:
+    """Resolve an explicitly configured admission policy.
+
+    Admission is opt-in for backward compatibility. Once configured, a
+    missing or invalid file fails closed; installations that never enabled
+    this extension keep the historical dispatcher behaviour.
+    """
+    override = os.environ.get("HERMES_KANBAN_RESOURCE_POLICY", "").strip()
+    if override:
+        return Path(override).expanduser()
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+        kanban_cfg = cfg.get("kanban") or {}
+        configured = kanban_cfg.get("resource_policy_file") or kanban_cfg.get("resource_policy")
+        if configured:
+            return Path(str(configured)).expanduser()
+    except Exception:
+        pass
+    return None
+
+
+def _resource_policy_workspace(task: "Task", board: Optional[str]) -> Optional[str]:
+    """Compute a non-mutating prospective workspace for pre-claim admission."""
+    if task.workspace_path:
+        return str(Path(task.workspace_path).expanduser().resolve(strict=False))
+    kind = task.workspace_kind or "scratch"
+    if kind == "scratch":
+        return str((workspaces_root(board=board) / task.id).resolve(strict=False))
+    if kind == "worktree":
+        try:
+            metadata = read_board_metadata(board or get_current_board())
+            default_workdir = str(metadata.get("default_workdir") or "").strip()
+            if default_workdir:
+                repo = _git_toplevel(Path(default_workdir).expanduser())
+                if repo:
+                    return str((repo / ".worktrees" / task.id).resolve(strict=False))
+        except Exception:
+            pass
+    return None
+
+
+def _resource_policy_task_candidate(row: Mapping[str, Any], policy: Mapping[str, Any], board: str) -> dict[str, Any]:
+    from hermes_cli import resource_policy as _rp
+    workspace = row["workspace_path"]
+    return _rp.candidate(
+        task_id=str(row["id"]), assignee=row["assignee"], board=board,
+        status=row["status"], workspace=workspace, git_origin=None, policy=policy,
+    )
+
+
+def _resource_policy_active_candidates(conn: sqlite3.Connection, board: Optional[str], policy: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Read running peers read-only from canonical board paths.
+
+    This deliberately does not call ``kanban_db_path`` for peers: workers pin
+    ``HERMES_KANBAN_DB`` to their own board, so peer discovery must bypass that
+    override and dedupe the current board by canonical resolved path.
+    """
+    current_slug = _normalize_board_slug(board) or get_current_board()
+    try:
+        current_path = str((kanban_home() / "kanban.db" if current_slug == DEFAULT_BOARD else board_dir(current_slug) / "kanban.db").resolve())
+    except Exception:
+        current_path = None
+    rows = conn.execute("SELECT id, assignee, status, workspace_path FROM tasks WHERE status = 'running'").fetchall()
+    active = [_resource_policy_task_candidate(row, policy, current_slug) for row in rows]
+    try:
+        boards = list_boards(include_archived=False)
+    except Exception:
+        boards = []
+    for meta in boards:
+        slug = _normalize_board_slug(meta.get("slug")) or DEFAULT_BOARD
+        path = (kanban_home() / "kanban.db" if slug == DEFAULT_BOARD else board_dir(slug) / "kanban.db")
+        try:
+            resolved = str(path.resolve())
+            if current_path and resolved == current_path or not path.exists():
+                continue
+            peer = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)
+            peer.row_factory = sqlite3.Row
+            try:
+                peer_rows = peer.execute("SELECT id, assignee, status, workspace_path FROM tasks WHERE status = 'running'").fetchall()
+                active.extend(_resource_policy_task_candidate(row, policy, slug) for row in peer_rows)
+            finally:
+                peer.close()
+        except Exception as exc:
+            _log.debug("kanban resource policy: peer board %s unavailable: %s", slug, exc)
+    return active
+
+
+def _resource_policy_admission(conn: sqlite3.Connection, task: "Task", board: Optional[str], active: list[dict[str, Any]], policy: Optional[Mapping[str, Any]], policy_error: Optional[str] = None) -> tuple[dict[str, Any], bool, str]:
+    """Evaluate a ready/review task before the claim CAS mutates its row."""
+    from hermes_cli import resource_policy as _rp
+    board_slug = _normalize_board_slug(board) or get_current_board()
+    if policy is None:
+        row = {
+            "task_id": task.id,
+            "status": task.status,
+            "resource_class": "material",
+        }
+        if policy_error:
+            return row, False, policy_error
+        return row, True, "resource policy not configured"
+    workspace = _resource_policy_workspace(task, board)
+    try:
+        row, allowed, reason = _rp.decision(
+            task_id=task.id, assignee=task.assignee, board=board_slug,
+            status=task.status, workspace=workspace, active=active,
+            policy=policy,
+        )
+        _log.info("kanban resource admission task=%s class=%s allowed=%s reason=%s", task.id, row.get("resource_class"), allowed, reason)
+        return row, allowed, reason
+    except Exception as exc:
+        return {"task_id": task.id, "resource_class": "material"}, False, f"resource policy evaluation failed: {str(exc).splitlines()[0][:180]}"
+
+
+def _record_resource_policy_denial(conn: sqlite3.Connection, task_id: str, resource_class: str, reason: str) -> None:
+    """Persist only a sanitized admission reason; never paths or policy data."""
+    with write_txn(conn):
+        _append_event(conn, task_id, "admission_denied", {"resource_class": str(resource_class)[:80], "reason": str(reason)[:240]})
+
+
 @dataclass
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass."""
@@ -8049,6 +8202,8 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    skipped_resource_policy: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks deferred by the machine-readable resource/power admission policy."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -9752,8 +9907,18 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     Fails open per board: one broken/corrupt board must not brick dispatch
     on the healthy ones.
     """
+    # Workers inherit HERMES_KANBAN_DB as a defense-in-depth pin.  Resolve
+    # board slugs directly here so peer-board accounting cannot collapse onto
+    # the worker's pinned current DB.
+    current_slug = _normalize_board_slug(board) or get_current_board()
     try:
-        current_path = str(kanban_db_path(board=board).expanduser().resolve())
+        current_path = str(
+            (
+                kanban_home() / "kanban.db"
+                if current_slug == DEFAULT_BOARD
+                else board_dir(current_slug) / "kanban.db"
+            ).expanduser().resolve()
+        )
     except Exception:
         current_path = None
     try:
@@ -9764,13 +9929,19 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     for meta in boards:
         slug = meta.get("slug") or DEFAULT_BOARD
         try:
-            path = kanban_db_path(board=slug).expanduser()
+            path = (
+                kanban_home() / "kanban.db"
+                if slug == DEFAULT_BOARD
+                else board_dir(slug) / "kanban.db"
+            ).expanduser()
             resolved = str(path.resolve())
             if current_path is not None and resolved == current_path:
                 continue
             if not path.exists():
                 continue
-            other = connect(board=slug)
+            other = sqlite3.connect(
+                f"file:{path}?mode=ro", uri=True, timeout=1
+            )
             try:
                 total += count_running_tasks(other)
             finally:
@@ -9942,6 +10113,23 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    _resource_policy = None
+    _resource_policy_error = None
+    _resource_active: list[dict[str, Any]] = []
+    _policy_path = _resource_policy_path()
+    if _policy_path is not None:
+        try:
+            from hermes_cli import resource_policy as _rp
+            _resource_policy = _rp.load_policy(_policy_path)
+        except Exception as exc:
+            _resource_policy_error = (
+                "resource policy unavailable; fail-closed "
+                f"({str(exc).splitlines()[0][:180]})"
+            )
+            _log.error(
+                "kanban resource policy load failed: %s",
+                _resource_policy_error,
+            )
     result.reclaimed = release_stale_claims(conn)
     if reconcile_orphans:
         # Orphaned-card reconciliation: requeue 'running' cards whose claim
@@ -9970,6 +10158,26 @@ def _dispatch_once_locked(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+
+    # Lifecycle reconciliation above may turn a stale/crashed RUNNING task
+    # back into READY. Build admission state only afterwards; otherwise the
+    # retry can conflict with its own stale start-of-tick snapshot.
+    if _resource_policy is not None:
+        try:
+            _resource_active = _resource_policy_active_candidates(
+                conn, board, _resource_policy,
+            )
+        except Exception as exc:
+            _resource_policy = None
+            _resource_policy_error = (
+                "resource policy peer snapshot unavailable; fail-closed "
+                f"({str(exc).splitlines()[0][:180]})"
+            )
+            _resource_active = []
+            _log.error(
+                "kanban resource policy snapshot failed: %s",
+                _resource_policy_error,
+            )
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -10194,6 +10402,17 @@ def _dispatch_once_locked(
                     (row["id"], row_assignee, current)
                 )
                 continue
+        candidate_task = get_task(conn, row["id"])
+        if candidate_task is None:
+            continue
+        policy_row, policy_allowed, policy_reason = _resource_policy_admission(
+            conn, candidate_task, board, _resource_active, _resource_policy, _resource_policy_error,
+        )
+        if not policy_allowed:
+            result.skipped_resource_policy.append((row["id"], policy_reason))
+            if not dry_run:
+                _record_resource_policy_denial(conn, row["id"], policy_row.get("resource_class", "material"), policy_reason)
+            continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -10218,6 +10437,7 @@ def _dispatch_once_locked(
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
             spawned += 1
+            _resource_active.append(policy_row)
             # Increment per-profile counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
             # Without this, dry_run reports every task as spawnable and
@@ -10281,6 +10501,7 @@ def _dispatch_once_locked(
             # complete_task).
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
+            _resource_active.append(policy_row)
             # Track the new in-flight count for this profile so later
             # iterations in this same tick respect the per-profile cap
             # (#21582). Subsequent ticks re-query from the DB.
@@ -10336,6 +10557,17 @@ def _dispatch_once_locked(
                     (row["id"], row["assignee"], current)
                 )
                 continue
+        candidate_task = get_task(conn, row["id"])
+        if candidate_task is None:
+            continue
+        policy_row, policy_allowed, policy_reason = _resource_policy_admission(
+            conn, candidate_task, board, _resource_active, _resource_policy, _resource_policy_error,
+        )
+        if not policy_allowed:
+            result.skipped_resource_policy.append((row["id"], policy_reason))
+            if not dry_run:
+                _record_resource_policy_denial(conn, row["id"], policy_row.get("resource_class", "material"), policy_reason)
+            continue
         guard_reason = check_respawn_guard(conn, row["id"], lane="review")
         if guard_reason is not None:
             result.respawn_guarded.append((row["id"], guard_reason))
@@ -10349,6 +10581,7 @@ def _dispatch_once_locked(
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             spawned += 1
+            _resource_active.append(policy_row)
             if _per_profile_cap is not None:
                 _per_profile_running[row["assignee"]] = (
                     _per_profile_running.get(row["assignee"], 0) + 1
@@ -10404,6 +10637,7 @@ def _dispatch_once_locked(
             )
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
+            _resource_active.append(policy_row)
             if _per_profile_cap is not None and claimed.assignee:
                 _per_profile_running[claimed.assignee] = (
                     _per_profile_running.get(claimed.assignee, 0) + 1

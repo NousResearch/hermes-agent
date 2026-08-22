@@ -434,6 +434,90 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
         conn.close()
 
 
+def test_stale_run_cannot_complete_new_attempt(kanban_home, monkeypatch):
+    """A late completion cannot close a task's successor run."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="retry completion guarded", assignee="worker")
+        kb.claim_task(conn, tid)
+        run1 = kb.latest_run(conn, tid)
+        kb._set_worker_pid(conn, tid, 98766)
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+        assert kb.detect_crashed_workers(conn) == [tid]
+
+        kb.claim_task(conn, tid)
+        run2 = kb.latest_run(conn, tid)
+        assert run2.id != run1.id
+        assert not kb.complete_task(
+            conn, tid, summary="late", expected_run_id=run1.id,
+        )
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.current_run_id == run2.id
+        assert kb.get_run(conn, run2.id).ended_at is None
+    finally:
+        conn.close()
+
+
+def test_terminalization_is_exactly_once(kanban_home):
+    """A second completion is a no-op and cannot append another terminal run."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="complete once", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        assert kb.complete_task(
+            conn, tid, summary="finished", expected_run_id=run_id,
+        )
+        assert not kb.complete_task(
+            conn, tid, summary="duplicate", expected_run_id=run_id,
+        )
+        assert len(kb.list_runs(conn, tid)) == 1
+        assert [e for e in kb.list_events(conn, tid) if e.kind == "completed"]
+        assert not [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == "completed"
+            and e.payload
+            and e.payload.get("summary") == "duplicate"
+        ]
+    finally:
+        conn.close()
+
+
+def test_terminalization_db_failure_rolls_back_and_does_not_report_success(kanban_home):
+    """A failed run-row write rolls back the task transition for reaping."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="db failure", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        conn.execute(
+            """
+            CREATE TRIGGER fail_task_run_close
+            BEFORE UPDATE OF status ON task_runs
+            BEGIN
+                SELECT RAISE(ABORT, 'synthetic run close failure');
+            END
+            """
+        )
+        conn.commit()
+        with pytest.raises(Exception, match="synthetic run close failure"):
+            kb.complete_task(
+                conn,
+                tid,
+                summary="must not succeed",
+                expected_run_id=run_id,
+            )
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.current_run_id == run_id
+        assert kb.get_run(conn, run_id).ended_at is None
+    finally:
+        conn.close()
+
+
 
 
 

@@ -558,8 +558,14 @@ export function overlayRepoLanes(
 
       const placedKey = pathKey(placed.path)
 
+      // After mergeRepoWorktreeGroups folds every main-checkout lane into one
+      // home lane labeled by the LIVE branch (e.g. `master`), live rows still
+      // compute `::branch::main` when `git_branch` is empty. Matching only by
+      // id/label then FORKS a phantom `main` lane and evicts those rows out of
+      // home. Prefer the folded home lane.
       lane =
         lanes.find(g => g.id === placed.id) ??
+        (placed.isMain ? lanes.find(g => g.isHome) : undefined) ??
         (placed.isMain
           ? lanes.find(g => g.isMain && g.label.toLowerCase() === placed.label.toLowerCase())
           : undefined) ??

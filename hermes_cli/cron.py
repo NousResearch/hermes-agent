@@ -115,6 +115,7 @@ def cron_list(show_all: bool = False):
 
     from cron.jobs import effective_job_state
 
+    delivery_warning_count = 0
     for job in jobs:
         job_id = job.get("id", "?")
         name = job.get("name", "(unnamed)")
@@ -179,7 +180,18 @@ def cron_list(show_all: bool = False):
         if last_status:
             last_run = job.get("last_run_at", "?")
             if last_status == "ok":
-                status_display = color("ok", Colors.GREEN)
+                delivery_unconfirmed = (
+                    job.get("delivery_state") == "pending"
+                    and int(job.get("delivery_attempts") or 0) == 0
+                )
+                delivery_warning = (
+                    bool(job.get("last_delivery_error")) or delivery_unconfirmed
+                )
+                if delivery_warning:
+                    delivery_warning_count += 1
+                    status_display = color("ok, delivery failed", Colors.YELLOW)
+                else:
+                    status_display = color("ok", Colors.GREEN)
             else:
                 status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
                 streak = int(job.get("failure_streak") or 0)
@@ -206,6 +218,14 @@ def cron_list(show_all: bool = False):
             )
 
         print()
+
+    if delivery_warning_count:
+        print(
+            color(
+                f"⚠ {delivery_warning_count} job(s) completed but delivery failed or unconfirmed",
+                Colors.YELLOW,
+            )
+        )
 
     _warn_if_gateway_not_running()
 

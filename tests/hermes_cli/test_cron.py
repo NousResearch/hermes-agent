@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cron.jobs import create_job, get_job, list_jobs
+from cron.jobs import create_job, get_job, list_jobs, mark_job_run, update_job
 from hermes_cli import cron as cron_cli
 from hermes_cli.cron import cron_command
 from hermes_cli.subcommands.cron import build_cron_parser
@@ -144,6 +144,51 @@ class TestGatewayNotRunningWarning:
         cron_command(Namespace(cron_command="list", all=True))
         out = capsys.readouterr().out
         assert "Gateway is not running" in out
+
+
+def test_cron_list_warns_when_ok_run_delivery_failed(
+    tmp_cron_dir, capsys, monkeypatch
+):
+    job = create_job(prompt="Daily report", schedule="every 1h")
+    assert mark_job_run(job["id"], True, None, delivery_error="boom")
+
+    persisted = get_job(job["id"])
+    assert persisted["last_status"] == "ok"
+    assert persisted["last_delivery_error"] == "boom"
+    assert persisted.get("failure_streak", 0) == 0
+
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+    monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "builtin")
+    cron_cli.cron_list()
+
+    out = capsys.readouterr().out
+    assert "Delivery failed" in out
+    assert "ok, delivery failed" in out
+    assert "Last run:" in out
+
+    assert mark_job_run(job["id"], True, None, delivery_error=None)
+    cron_cli.cron_list()
+    recovered = capsys.readouterr().out
+    assert "Delivery failed" not in recovered
+    assert "ok, delivery failed" not in recovered
+
+
+def test_cron_list_warns_when_delivery_is_pending_without_attempts(
+    tmp_cron_dir, capsys, monkeypatch
+):
+    job = create_job(prompt="Daily report", schedule="every 1h")
+    assert mark_job_run(job["id"], True, None)
+    assert update_job(
+        job["id"], {"delivery_state": "pending", "delivery_attempts": 0}
+    )
+
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+    monkeypatch.setattr(cron_cli, "_active_cron_provider_name", lambda: "builtin")
+    cron_cli.cron_list()
+
+    out = capsys.readouterr().out
+    assert "ok, delivery failed" in out
+    assert "completed but delivery failed or unconfirmed" in out
 
 
 class TestExternalCronProviderStatus:

@@ -90,3 +90,36 @@ export function quitPromptFor(work: ActiveWork, quittingForHandoff: boolean): nu
     message: work.count === 1 ? 'Hermes is still working on 1 chat.' : `Hermes is still working on ${work.count} chats.`
   }
 }
+
+/** What `before-quit` should do with a quit request. */
+export type QuitGuardAction = 'hold' | 'proceed' | 'prompt'
+
+export interface QuitGuardState {
+  /** The user answered "Quit Anyway"; the `app.quit()` that follows must pass. */
+  confirmed: boolean
+  /** The confirmation is on screen and still unanswered. */
+  promptOpen: boolean
+  /** Automated teardown asked for no modal at all. */
+  skipConfirm: boolean
+}
+
+/**
+ * Route a quit request past, into, or away from the confirmation.
+ *
+ * `skipConfirm` and `confirmed` are deliberate fall-throughs: automated
+ * teardown has nobody to answer a modal, and "Quit Anyway" re-enters
+ * `before-quit` with the latch set and must not be caught a second time.
+ *
+ * `promptOpen` is not a fall-through. The dialog is window-modal and leaves
+ * the app menu and the Dock menu live, so a second quit gesture can arrive
+ * while it is still on screen. Letting that one through would tear the backend
+ * down mid-turn behind a confirmation the user never answered — the exact loss
+ * this guard exists to prevent — so it is held instead.
+ */
+export function quitGuardAction(state: QuitGuardState): QuitGuardAction {
+  if (state.skipConfirm || state.confirmed) {
+    return 'proceed'
+  }
+
+  return state.promptOpen ? 'hold' : 'prompt'
+}

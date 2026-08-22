@@ -135,6 +135,10 @@ BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
+class DispatchPausedError(RuntimeError):
+    """Raised when a manual pause closes the final worker-spawn edge."""
+
+
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     """Normalize a per-task reasoning effort into a storable level.
 
@@ -584,6 +588,19 @@ def kanban_home() -> Path:
         return Path(override).expanduser()
     from hermes_constants import get_default_hermes_root
     return get_default_hermes_root()
+
+
+def dispatch_pause_path() -> Path:
+    """Return the shared-root manual dispatch-pause sentinel path."""
+    return kanban_home() / "state" / "dispatch_pause.json"
+
+
+def dispatch_is_paused() -> bool:
+    """Fail closed while the shared-root manual dispatch pause exists."""
+    try:
+        return dispatch_pause_path().exists()
+    except OSError:
+        return True
 
 
 def boards_root() -> Path:
@@ -4626,6 +4643,8 @@ def claim_task(
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
     """
+    if dispatch_is_paused():
+        return None
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -4754,6 +4773,8 @@ def claim_review_task(
     Creates a new run entry so the review agent's lifecycle is tracked
     independently from the original worker run.
     """
+    if dispatch_is_paused():
+        return None
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -9343,6 +9364,40 @@ def _record_spawn_failure(
     )
 
 
+def _release_paused_claim(conn: sqlite3.Connection, task_id: str) -> None:
+    """Return a claimed task to its source lane without counting a failure."""
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ? AND status = 'running'",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return
+        run_id = row["current_run_id"]
+        retry_status = _retry_status_for_run(conn, task_id, run_id)
+        if run_id is not None:
+            conn.execute(
+                "UPDATE task_runs SET status = 'reclaimed', outcome = 'reclaimed', "
+                "summary = 'dispatch paused before worker spawn', ended_at = ?, "
+                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND ended_at IS NULL",
+                (now, run_id),
+            )
+        conn.execute(
+            "UPDATE tasks SET status = ?, claim_lock = NULL, claim_expires = NULL, "
+            "worker_pid = NULL, current_run_id = NULL WHERE id = ? AND status = 'running'",
+            (retry_status, task_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "dispatch_paused",
+            {"retry_status": retry_status, "failure_counted": False},
+            run_id=run_id,
+        )
+
+
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
     """Record the spawned child's pid + emit a ``spawned`` event.
 
@@ -9835,6 +9890,10 @@ def dispatch_once(
     boards tick in parallel. See :func:`_dispatch_tick_lock` for the
     cross-process / cross-platform mechanics.
     """
+    if dispatch_is_paused():
+        result = DispatchResult()
+        _fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
+        return result
     try:
         db_path = kanban_db_path(board=board)
     except Exception:
@@ -10236,6 +10295,8 @@ def _dispatch_once_locked(
                 workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
             else:
                 workspace = resolve_workspace(claimed, board=board)
+        except DispatchPausedError:
+            _release_paused_claim(conn, claimed.id)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -10288,6 +10349,8 @@ def _dispatch_once_locked(
                 _per_profile_running[claimed.assignee] = (
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
+        except DispatchPausedError:
+            _release_paused_claim(conn, claimed.id)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
@@ -10408,6 +10471,8 @@ def _dispatch_once_locked(
                 _per_profile_running[claimed.assignee] = (
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
+        except DispatchPausedError:
+            _release_paused_claim(conn, claimed.id)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
@@ -10724,6 +10789,10 @@ def _default_spawn(
     vars all resolve to the same board the dispatcher claimed the task
     from. Workers cannot accidentally see other boards.
     """
+    if dispatch_is_paused():
+        raise DispatchPausedError(
+            f"Kanban dispatch is paused by {dispatch_pause_path()}"
+        )
     import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")

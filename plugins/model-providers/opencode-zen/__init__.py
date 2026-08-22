@@ -49,6 +49,22 @@ def _is_glm_5_2_model(model: str | None) -> bool:
     return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
 
 
+# Model slugs that all route to the same underlying "Ox Alpha" stealth model
+# (see hermes_cli/models.py: stealth/ox-alpha on OpenRouter) across the
+# different OpenCode relays that serve it:
+#   - x-preview-f-free — Zen (keyless) and opencode-free (keyless twin)
+#   - ox-alpha-free     — Go (keyed subscription twin, Go relay requires a
+#                         key; added to the opencode-go catalog 2026-08-21)
+# Same model, same wire contract (reasoning_effort: low/high/max only —
+# anything else 400s, because the model always engages in thinking),
+# just reached under a different catalog name per relay.
+_OX_ALPHA_MODEL_SLUGS = frozenset({"x-preview-f-free", "ox-alpha-free"})
+
+
+def _is_ox_alpha_model(model: str | None) -> bool:
+    return _flat_model_name(model) in _OX_ALPHA_MODEL_SLUGS
+
+
 class OpenCodeGoProfile(ProviderProfile):
     """OpenCode Go - model-specific reasoning controls."""
 
@@ -124,6 +140,14 @@ class OpenCodeGoProfile(ProviderProfile):
                 extra_body["thinking"] = {"type": "enabled"}
             return extra_body, top_level
 
+        if _is_ox_alpha_model(model):
+            # ox-alpha-free is the Go-subscription twin of the Zen/Free
+            # keyless "Ox Alpha" stealth model (see hermes_cli/models.py's
+            # opencode-go catalog entry) — same underlying model, same
+            # low/high/max-only wire contract, reached under a different
+            # catalog slug because the Go relay requires a key.
+            return _build_ox_alpha_reasoning_extras(reasoning_config, model)
+
         if not _is_deepseek_thinking_model(model):
             return extra_body, top_level
 
@@ -161,13 +185,15 @@ class OpenCodeGoProfile(ProviderProfile):
 def _build_ox_alpha_reasoning_extras(
     reasoning_config: dict | None, model: str | None
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Shared Ox Alpha (x-preview-f-free) reasoning_effort translation.
+    """Shared Ox Alpha reasoning_effort translation.
 
-    Used by both the opencode-zen profile and the opencode-free keyless
-    profile — the model is reachable through either provider and the wire
-    contract is identical (low/high/max only; anything else 400s).
+    Used by the opencode-zen profile, the keyless opencode-free profile, and
+    the opencode-go profile (its "ox-alpha-free" Go-subscription twin) — see
+    ``_OX_ALPHA_MODEL_SLUGS``. Same underlying model reachable through all
+    three providers under different catalog slugs; the wire contract is
+    identical (low/high/max only; anything else 400s).
     """
-    if _flat_model_name(model) != "x-preview-f-free":
+    if not _is_ox_alpha_model(model):
         return {}, {}
     if not isinstance(reasoning_config, dict):
         return {}, {}

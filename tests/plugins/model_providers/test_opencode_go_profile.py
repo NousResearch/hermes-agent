@@ -196,6 +196,55 @@ class TestOpenCodeGoGLM52Reasoning:
         assert top_level == {"reasoning_effort": "max"}
 
 
+class TestOpenCodeGoOxAlphaReasoning:
+    """ox-alpha-free is the Go-subscription twin of Zen/Free's keyless
+    "Ox Alpha" stealth model — same low/high/max-only wire contract."""
+
+    def test_max_effort_is_emitted(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"},
+            model="ox-alpha-free",
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "max"}
+
+    def test_unsupported_efforts_clamp_to_wire_vocabulary(self, opencode_go_profile):
+        """medium/xhigh are not on Ox Alpha's wire (400 raw); they must clamp
+        to the nearest supported level, never pass through unclamped."""
+        for requested, expected in (("medium", "low"), ("xhigh", "max")):
+            _, top_level = opencode_go_profile.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": requested},
+                model="ox-alpha-free",
+            )
+            assert top_level == {"reasoning_effort": expected}, requested
+
+    @pytest.mark.parametrize("reasoning_config", [None, {"enabled": False}])
+    def test_unset_or_disabled_preserves_server_default(
+        self, opencode_go_profile, reasoning_config
+    ):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning_config,
+            model="ox-alpha-free",
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    def test_aggregator_prefix_still_recognized(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"},
+            model="opencode-go/ox-alpha-free",
+        )
+        assert top_level == {"reasoning_effort": "max"}
+
+    def test_other_go_models_are_untouched(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"},
+            model="qwen3.6-plus",
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+
 class TestOpenCodeGoModelGating:
     """Other OpenCode Go models must not receive Kimi/DeepSeek/GLM controls."""
 
@@ -237,6 +286,20 @@ class TestOpenCodeGoFullKwargsIntegration:
         )
         assert "extra_body" not in kwargs
         assert kwargs["reasoning_effort"] == "high"
+
+    def test_ox_alpha_free_reasoning_reaches_top_level(self, opencode_go_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="ox-alpha-free",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=opencode_go_profile,
+            reasoning_config={"enabled": True, "effort": "max"},
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        assert "extra_body" not in kwargs
+        assert kwargs["reasoning_effort"] == "max"
 
     def test_deepseek_thinking_reaches_extra_body_and_top_level(
         self, opencode_go_profile

@@ -14,9 +14,8 @@ base: core24
 confinement: devmode
 grade: stable
 
-architectures:
-  - build-on: amd64
-    run-on: amd64
+platforms:
+  amd64:
 
 license: MIT
 

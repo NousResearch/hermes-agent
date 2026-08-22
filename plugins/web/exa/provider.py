@@ -12,9 +12,13 @@ Config keys this provider responds to::
       extract_backend: "exa"     # explicit per-capability
       backend: "exa"             # shared fallback for both
 
-Env var::
+Env vars::
 
     EXA_API_KEY=...    # https://exa.ai (paid tier; free trial available)
+    EXA_BASE_URL=...   # optional override of https://api.exa.ai — route Exa
+                       # calls through a self-hosted proxy or Exa-compatible
+                       # gateway. Resolved config-aware (process env, then
+                       # ~/.hermes/.env) via get_provider_env, like EXA_API_KEY.
 
 The previous in-tree implementation lived at
 ``tools.web_tools._exa_search`` / ``_exa_extract``; this file is the
@@ -25,7 +29,6 @@ ABC method-name change.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List
 
 from agent.web_search_provider import WebSearchProvider
@@ -44,6 +47,12 @@ def _get_exa_client() -> Any:
     Cache lives on :mod:`tools.web_tools` (as ``_exa_client``) so unit
     tests that reset that name between cases keep working. Raises
     ``ValueError`` when ``EXA_API_KEY`` is unset.
+
+    ``EXA_BASE_URL`` (optional) is passed through to the SDK constructor as
+    ``base_url``. It is resolved with :func:`agent.web_search_provider.
+    get_provider_env` so a setup-managed endpoint (written to the profile
+    ``.env``) is honored on the same paths as ``EXA_API_KEY``. When unset,
+    the SDK defaults to ``https://api.exa.ai`` — unchanged behavior.
     """
     import tools.web_tools as _wt
 
@@ -71,7 +80,11 @@ def _get_exa_client() -> Any:
 
     from exa_py import Exa  # noqa: WPS433 — deliberately lazy
 
-    client = Exa(api_key=api_key)
+    base_url = get_provider_env("EXA_BASE_URL")
+    kwargs: Dict[str, Any] = {"api_key": api_key}
+    if base_url:
+        kwargs["base_url"] = base_url
+    client = Exa(**kwargs)
     client.headers["x-exa-integration"] = "hermes-agent"
     _wt._exa_client = client
     return client
@@ -263,6 +276,11 @@ class ExaWebSearchProvider(WebSearchProvider):
                         },
                     ],
                     "web_tier": "paid",
+                },
+                {
+                    "key": "EXA_BASE_URL",
+                    "prompt": "Exa API base URL (optional, default https://api.exa.ai)",
+                    "url": "",
                 },
             ],
         }

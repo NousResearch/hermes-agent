@@ -4119,7 +4119,13 @@ def stream_tts_to_speaker(
         # arriving — no inter-sentence gap.
         _audio_queue: queue.Queue[Optional[queue.Queue[Optional[bytes]]]] = queue.Queue()
         _prefetch_threads: list[threading.Thread] = []
-        _prefetch_sem = threading.Semaphore(3)
+        # Local MLX streamer (qwen3tts-mlx) spawns one MLX worker process per
+        # sentence — each holds 2-3GB RAM + GPU. A 3-way prefetch would run
+        # three workers concurrently, multiply memory/GPU pressure and slow
+        # each other down (measured 2026-08). Serialize local streamers;
+        # keep 3-way for cloud APIs (network-bound, no local resource cost).
+        _is_local_mlx_streamer = bool(getattr(streamer, "_VENV", None))
+        _prefetch_sem = threading.Semaphore(1 if _is_local_mlx_streamer else 3)
         _CHUNK_QUEUE_MAX = 64
 
         def _create_output_stream():

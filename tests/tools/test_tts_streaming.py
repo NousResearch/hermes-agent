@@ -958,3 +958,174 @@ def test_sync_pipeline_cleans_temp_files(monkeypatch):
     assert created, "expected temp files to be created via mkstemp"
     leftovers = [p for p in created if os.path.exists(p)]
     assert not leftovers, f"temp files not cleaned: {leftovers}"
+
+
+# ── Local MLX streamer serializes prefetch (2026-08 resource guard) ───────
+
+
+def test_local_mlx_streamer_serializes_prefetch():
+    """A local MLX streamer (carrying ``_VENV``) must serialize prefetch to one
+    concurrent worker: each spawned worker holds 2-3GB RAM + GPU, so a 3-way
+    prefetch multiplies memory pressure and slows every worker down. Cloud
+    streamers keep the 3-way prefetch (network-bound, no local resource cost).
+    """
+    from tools import tts_tool
+
+    class _Local(ts.StreamingTTSProvider):
+        sample_rate = 24000
+        _VENV = "/opt/mlx-venv/bin/python3"  # local MLX marker
+
+        @staticmethod
+        def available():
+            return True
+
+        def stream(self, text):
+            yield b"\x01\x00" * 50
+
+    class _Cloud(ts.StreamingTTSProvider):
+        sample_rate = 24000
+
+        @staticmethod
+        def available():
+            return True
+
+        def stream(self, text):
+            yield b"\x01\x00" * 50
+
+    def _run(provider_cls):
+        sem_values = []
+        real_sem = threading.Semaphore
+
+        def _capture(n=1):
+            sem_values.append(n)
+            return real_sem(n)
+
+        sd, out = _sd_mock()
+        q = _drain_queue(["A complete sentence for testing."])
+        stop, done = threading.Event(), threading.Event()
+        with patch("tools.tts_streaming.resolve_streaming_provider",
+                   return_value=provider_cls({}, {})), \
+             patch.object(tts_tool, "_import_sounddevice", return_value=sd), \
+             patch.object(threading, "Semaphore", side_effect=_capture):
+            tts_tool.stream_tts_to_speaker(q, stop, done)
+        return sem_values
+
+    local_sems = _run(_Local)
+    cloud_sems = _run(_Cloud)
+    # Only the prefetch semaphore is constructed inside the pipeline.
+    assert 1 in local_sems, f"local MLX streamer must serialize prefetch, got {local_sems}"
+    assert 3 in cloud_sems, f"cloud streamer keeps 3-way prefetch, got {cloud_sems}"
+    assert 3 not in local_sems
+    assert 1 not in cloud_sems
+
+
+# ── Local MLX streamer subprocess lifecycle (2026-08 review hardening) ──────
+
+
+def _mlx_streamer(monkeypatch, proc):
+    """A Qwen3TTSMLXStreamer with available() forced true and Popen mocked."""
+    from tools.tts_streaming import Qwen3TTSMLXStreamer
+
+    streamer = Qwen3TTSMLXStreamer({}, {})
+    monkeypatch.setattr(
+        Qwen3TTSMLXStreamer, "available", staticmethod(lambda: True)
+    )
+    monkeypatch.setattr(
+        "subprocess.Popen", lambda *a, **k: proc
+    )
+    return streamer
+
+
+class _FakeProc:
+    """A Popen stand-in: stdin/stdout/stderr fakes plus lifecycle tracking."""
+
+    def __init__(self, frames=None, exit_code=0):
+        self.stdin = MagicMock()
+        self.stdout = _FakeStream(frames or [])
+        self.stderr = _FakeStream([b"boom"])
+        self.exit_code = exit_code
+        self.killed = False
+        self._poll = None
+
+    def poll(self):
+        return self._poll
+
+    def wait(self, timeout=None):
+        if self._poll is None:
+            self._poll = self.exit_code
+        return self._poll
+
+    def kill(self):
+        self.killed = True
+        self._poll = -9
+
+
+class _FakeStream:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self._pos = 0
+
+    def read(self, n=-1):
+        if self._pos >= len(self._chunks):
+            return b""
+        chunk = self._chunks[self._pos]
+        self._pos += 1
+        if n >= 0 and len(chunk) > n:
+            # Keep the remainder for the next read (frame payload reads).
+            self._chunks.insert(self._pos, chunk[n:])
+            return chunk[:n]
+        return chunk
+
+
+def test_mlx_streamer_kills_worker_on_early_close(monkeypatch):
+    """A caller that stops iterating early must not leak the worker process."""
+    import struct
+
+    frame = struct.pack("<I", 4) + b"\x00\x01\x02\x03"
+    proc = _FakeProc(frames=[frame])
+    streamer = _mlx_streamer(monkeypatch, proc)
+
+    gen = streamer.stream("hello")
+    first = next(gen)
+    assert first == b"\x00\x01\x02\x03"
+    # Close the generator before the worker finishes.
+    gen.close()
+
+    assert proc.killed, "early close must kill the worker subprocess"
+    assert proc.poll() is not None
+
+
+def test_mlx_streamer_rejects_oversized_frame_header(monkeypatch):
+    """A corrupt/oversized frame length must not make read(n) block forever."""
+    import struct
+
+    # Header claims 2 GiB — under the old code out.read(2GiB) would block
+    # indefinitely waiting for bytes the worker never sends.
+    proc = _FakeProc(frames=[struct.pack("<I", 2 * 1024 * 1024 * 1024)])
+    streamer = _mlx_streamer(monkeypatch, proc)
+
+    chunks = list(streamer.stream("hello"))
+    assert chunks == []
+    assert proc.poll() is not None
+
+
+def test_mlx_streamer_handles_worker_timeout(monkeypatch):
+    """proc.wait(30) timing out is surfaced as RuntimeError, not leaked."""
+    import subprocess
+
+    proc = _FakeProc(frames=[])
+    calls = {"n": 0}
+
+    def _hang_wait(timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise subprocess.TimeoutExpired(cmd=["env"], timeout=timeout or 30)
+        # After kill(), the re-wait returns the killed status.
+        return -9
+
+    proc.wait = _hang_wait
+    streamer = _mlx_streamer(monkeypatch, proc)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        list(streamer.stream("hello"))
+    assert proc.killed, "timed-out worker must be killed"

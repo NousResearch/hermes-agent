@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -425,3 +426,47 @@ def test_cli_and_dashboard_receive_graph_aware_deadlock_diagnostic(
         dashboard = _compute_task_diagnostics(conn, task_ids=[parent_id])
     assert dashboard[parent_id][0]["kind"] == "review_dependency_deadlock"
     assert dashboard[parent_id][0]["data"]["waiting_child_ids"] == [child_id]
+
+
+def test_cli_and_dashboard_classify_full_assignee_lane_as_normal_queueing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"max_in_progress_per_profile": 1}},
+    )
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    with kb.connect() as conn:
+        queued_id = kb.create_task(conn, title="Queued", assignee="builder")
+        active_id = kb.create_task(conn, title="Active", assignee="builder")
+        assert kb.claim_task(conn, active_id, claimer="builder:1") is not None
+        conn.execute(
+            "UPDATE task_events SET created_at = ? WHERE task_id = ? AND kind = 'created'",
+            (int(time.time()) - 45 * 60, queued_id),
+        )
+        conn.commit()
+
+    cli_single = json.loads(kc.run_slash(f"diagnostics --task {queued_id} --json"))
+    cli_fleet = json.loads(kc.run_slash("diagnostics --json"))
+    assert cli_single[0]["diagnostics"][0]["kind"] == "lane_capacity_full"
+    fleet_row = next(row for row in cli_fleet if row["task_id"] == queued_id)
+    assert fleet_row["diagnostics"][0]["data"]["active_task_ids"] == [active_id]
+
+    from plugins.kanban.dashboard.plugin_api import _compute_task_diagnostics
+
+    with kb.connect() as conn:
+        dashboard = _compute_task_diagnostics(conn, task_ids=[queued_id])
+    lane = dashboard[queued_id][0]
+    assert lane["kind"] == "lane_capacity_full"
+    assert lane["data"] == {
+        "active_task_ids": [active_id],
+        "lane_limit": 1,
+        "assignee": "builder",
+    }

@@ -198,6 +198,75 @@ def test_stranded_in_ready_fires_when_age_exceeds_threshold():
     assert stranded[0].data["assignee"] == "demo"
 
 
+def test_ready_task_at_healthy_assignee_lane_cap_reports_normal_queueing():
+    """A full per-profile lane is normal queueing, not a missing worker."""
+    now = 100_000
+    queued = _task(id="t_queued", assignee="demo", claim_lock=None)
+    active = _task(
+        id="t_active",
+        assignee="demo",
+        status="running",
+        claim_lock="demo:run",
+        claim_expires=now + 60,
+    )
+
+    diags = kd.compute_task_diagnostics(
+        queued,
+        [_event("promoted", ts=now - 45 * 60)],
+        [],
+        now=now,
+        config={"max_in_progress_per_profile": 1},
+        lane_context=kd.build_lane_context([queued, active], now=now),
+    )
+
+    assert not any(d.kind == "stranded_in_ready" for d in diags)
+    lane = next(d for d in diags if d.kind == "lane_capacity_full")
+    assert lane.data == {
+        "active_task_ids": ["t_active"],
+        "lane_limit": 1,
+        "assignee": "demo",
+    }
+    assert "t_active" in lane.title
+    assert "cap 1" in lane.detail
+    assert not any(action.kind == "reassign" for action in lane.actions)
+
+
+@pytest.mark.parametrize(
+    ("lane_limit", "active_assignee", "claim_expires", "expected_kind"),
+    [
+        (2, "demo", 100_060, "stranded_in_ready"),
+        (1, "other", 100_060, "stranded_in_ready"),
+        (1, "demo", 99_999, "stranded_in_ready"),
+    ],
+)
+def test_ready_task_requires_healthy_same_assignee_lane_at_cap(
+    lane_limit,
+    active_assignee,
+    claim_expires,
+    expected_kind,
+):
+    now = 100_000
+    queued = _task(id="t_queued", assignee="demo", claim_lock=None)
+    active = _task(
+        id="t_active",
+        assignee=active_assignee,
+        status="running",
+        claim_lock="active:run",
+        claim_expires=claim_expires,
+    )
+
+    diags = kd.compute_task_diagnostics(
+        queued,
+        [_event("promoted", ts=now - 45 * 60)],
+        [],
+        now=now,
+        config={"max_in_progress_per_profile": lane_limit},
+        lane_context=kd.build_lane_context([queued, active], now=now),
+    )
+
+    assert [d.kind for d in diags] == [expected_kind]
+
+
 
 
 # ---------------------------------------------------------------------------

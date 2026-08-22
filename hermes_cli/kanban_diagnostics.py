@@ -322,6 +322,30 @@ def _positive_int(value: Any, default: int) -> int:
     return parsed if parsed >= 1 else default
 
 
+def build_lane_context(tasks: Iterable[Any], *, now: int) -> dict[str, list[str]]:
+    """Index healthy running work by assignee for ready-lane diagnostics.
+
+    A running task occupies a lane only while it still holds an unexpired
+    claim. Stale/dead runs remain actionable through their existing recovery
+    diagnostics rather than reassuring tasks waiting behind them.
+    """
+    active_by_assignee: dict[str, list[str]] = {}
+    for candidate in tasks:
+        if _task_field(candidate, "status") != "running":
+            continue
+        assignee = str(_task_field(candidate, "assignee") or "").strip()
+        task_id = str(_task_field(candidate, "id") or "").strip()
+        try:
+            healthy_claim = bool(_task_field(candidate, "claim_lock")) and (
+                int(_task_field(candidate, "claim_expires", 0) or 0) > now
+            )
+        except (TypeError, ValueError):
+            healthy_claim = False
+        if assignee and task_id and healthy_claim:
+            active_by_assignee.setdefault(assignee, []).append(task_id)
+    return active_by_assignee
+
+
 def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Blocked-hallucination gate fires: a worker called kanban_complete
     with created_cards that didn't exist or weren't created by the
@@ -1025,6 +1049,31 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     if age_seconds < threshold_seconds:
         return []
 
+    lane_limit = _positive_int(cfg.get("max_in_progress_per_profile"), 0)
+    active_task_ids = list((cfg.get("_lane_context") or {}).get(assignee, []))
+    if lane_limit and len(active_task_ids) >= lane_limit:
+        active_label = ", ".join(active_task_ids)
+        return [Diagnostic(
+            kind="lane_capacity_full",
+            severity="warning",
+            title=f"{assignee} lane at cap {lane_limit} ({active_label})",
+            detail=(
+                f"This task is queued normally: assignee {assignee!r} has "
+                f"healthy active task(s) {active_label} occupying its "
+                f"per-profile cap {lane_limit}. It will be eligible when "
+                "that lane has capacity; do not reassign solely because it "
+                "has waited."
+            ),
+            first_seen_at=last_ready_ts,
+            last_seen_at=last_ready_ts,
+            count=len(active_task_ids),
+            data={
+                "active_task_ids": active_task_ids,
+                "lane_limit": lane_limit,
+                "assignee": assignee,
+            },
+        )]
+
     # Format the age in the largest sensible unit.
     if age_seconds >= 3600:
         age_str = f"{age_seconds / 3600:.1f}h"
@@ -1104,6 +1153,7 @@ DIAGNOSTIC_KINDS = (
     "review_dependency_deadlock",
     "stuck_in_blocked",
     "block_unblock_cycling",
+    "lane_capacity_full",
     "stranded_in_ready",
 )
 
@@ -1136,6 +1186,10 @@ def config_from_kanban_config(kanban_cfg: Optional[dict]) -> dict:
     diag_cfg.setdefault(
         "failure_limit",
         kanban_cfg.get("failure_limit", DEFAULT_CONFIG["failure_threshold"]),
+    )
+    diag_cfg.setdefault(
+        "max_in_progress_per_profile",
+        kanban_cfg.get("max_in_progress_per_profile"),
     )
     if (
         "failure_threshold" not in diag_cfg
@@ -1176,6 +1230,7 @@ def compute_task_diagnostics(
     now: Optional[int] = None,
     config: Optional[dict] = None,
     graph: Optional[dict] = None,
+    lane_context: Optional[dict[str, list[str]]] = None,
 ) -> list[Diagnostic]:
     """Run every rule against a single task's state and return a
     severity-sorted list of active diagnostics.
@@ -1188,6 +1243,8 @@ def compute_task_diagnostics(
     cfg = {**DEFAULT_CONFIG, **config}
     if graph is not None:
         cfg["_graph"] = graph
+    if lane_context is not None:
+        cfg["_lane_context"] = lane_context
     if (
         "failure_threshold" not in config
         and "spawn_failure_threshold" not in config

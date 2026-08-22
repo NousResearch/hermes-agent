@@ -1948,13 +1948,21 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
             if task is None:
                 print(f"no such task: {args.task}", file=sys.stderr)
                 return 1
+            now = int(time.time())
+            lane_rows = conn.execute(
+                "SELECT id, assignee, status, claim_lock, claim_expires FROM tasks "
+                "WHERE status = 'running'"
+            ).fetchall()
+            lane_context = kd.build_lane_context(lane_rows, now=now)
             diags_by_task = {
                 args.task: kd.compute_task_diagnostics(
                     task,
                     kb.list_events(conn, args.task),
                     kb.list_runs(conn, args.task),
+                    now=now,
                     graph=kb.task_graph_context(conn, args.task),
                     config=diag_config,
+                    lane_context=lane_context,
                 )
             }
         else:
@@ -1980,6 +1988,8 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 ):
                     run_by.setdefault(row["task_id"], []).append(row)
                 graph_by = kb.task_graph_contexts(conn, ids)
+                now = int(time.time())
+                lane_context = kd.build_lane_context(rows, now=now)
                 diags_by_task = {}
                 for r in rows:
                     tid = r["id"]
@@ -1987,8 +1997,10 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                         r,
                         ev_by.get(tid, []),
                         run_by.get(tid, []),
+                        now=now,
                         graph=graph_by.get(tid),
                         config=diag_config,
+                        lane_context=lane_context,
                     )
                     if dl:
                         diags_by_task[tid] = dl

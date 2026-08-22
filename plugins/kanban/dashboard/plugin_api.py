@@ -280,6 +280,15 @@ def _compute_task_diagnostics(
     if not rows:
         return {}
 
+    now = int(time.time())
+    # Lane occupancy is board-wide even for a single-card drawer request.
+    # Fetch it once so diagnostics do not issue a running-task query per card.
+    lane_rows = conn.execute(
+        "SELECT id, assignee, status, claim_lock, claim_expires FROM tasks "
+        "WHERE status = 'running'"
+    ).fetchall()
+    lane_context = kd.build_lane_context(lane_rows, now=now)
+
     # Index events + runs by task id. For very large boards this will
     # slurp a lot — acceptable on the dashboard's typical working set
     # (hundreds of tasks), but we can add pagination / filtering later
@@ -307,8 +316,10 @@ def _compute_task_diagnostics(
             r,
             events_by_task.get(tid, []),
             runs_by_task.get(tid, []),
+            now=now,
             config=diag_config,
             graph=graph_by_task.get(tid),
+            lane_context=lane_context,
         )
         if diags:
             out[tid] = [d.to_dict() for d in diags]

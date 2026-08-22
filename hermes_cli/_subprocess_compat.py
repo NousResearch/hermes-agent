@@ -21,9 +21,8 @@ Several common subprocess patterns break silently-or-loudly on Windows:
 This module centralizes the platform-branching logic so the rest of the
 codebase doesn't sprinkle ``if sys.platform == "win32":`` everywhere.
 
-**All helpers are no-ops on non-Windows** — calling them in Linux/macOS
-code paths is safe by design.  That's the "do no damage on POSIX"
-guarantee.
+Platform-flag helpers are no-ops on non-Windows. Windows command builders
+are only used after callers have identified a batch launcher.
 """
 
 from __future__ import annotations
@@ -32,13 +31,17 @@ import os
 import shutil
 import subprocess
 import sys
-from typing import Mapping, Sequence
+from typing import Any, Mapping, MutableMapping, Sequence
 
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
+    "run_windows_batch",
     "split_command_line",
     "suppress_platform_ver_console",
+    "kill_process_tree",
+    "windows_batch_command",
+    "windows_batch_proxy_command",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
@@ -102,8 +105,10 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     because CreateProcessW doesn't execute batch files directly.
 
     ``shutil.which(name)`` *does* resolve ``.cmd`` via PATHEXT and returns
-    the fully-qualified path — which CreateProcessW accepts because the
-    extension tells Windows to route through ``cmd.exe /c``.
+    the fully-qualified path. Callers that spawn a resolved batch shim must
+    still use :func:`windows_batch_command` with ``shell=False`` (or the async
+    :func:`windows_batch_proxy_command`) so ``cmd.exe`` cannot reinterpret
+    metacharacters in valid paths and arguments.
 
     On POSIX ``shutil.which`` also returns a fully-qualified path when
     found.  That's a small change from bare-name resolution (the OS does
@@ -111,8 +116,8 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     benefit of making the argv reproducible in logs.
 
     Behavior when the command is not on PATH:
-    - On Windows: return the bare name — caller can still try with
-      ``shell=True`` as a last resort, OR the subsequent Popen will
+    - On Windows: return the bare name — caller can still try with an explicit
+      command processor as a last resort, OR the subsequent Popen will
       raise FileNotFoundError with a readable error we want to surface.
     - On POSIX: same.  Bare ``npm`` on a Linux box without npm installed
       fails the same way it did before this function existed.
@@ -129,6 +134,137 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     if resolved:
         return [resolved, *argv]
     return [name, *argv]
+
+
+def windows_batch_command(
+    command: Sequence[str],
+    env: MutableMapping[str, str],
+    *,
+    prefix: str = "HERMES_BATCH_COMMAND",
+) -> str:
+    """Return a raw command line for an explicit Windows batch launcher.
+
+    Pass the returned *string* to :class:`subprocess.Popen` with
+    ``shell=False``. It starts exactly one explicit ``cmd.exe`` with ``/D``
+    (AutoRun disabled) and delayed expansion off. Argument values stay in the
+    child-only environment and expand inside quotes, preserving valid values
+    containing ``&``, ``%``, ``!``, ``^``, pipes, redirection characters,
+    spaces, parentheses, or trailing backslashes. Quotes and control
+    characters are rejected because ``cmd.exe`` cannot transport them without
+    reparsing.
+
+    This function mutates the caller-provided environment mapping in place.
+    Callers must pass a disposable copy and then give that same mapping to
+    :class:`subprocess.Popen`. The generated placeholder variables are
+    intentionally inherited by the batch child (and its descendants): cmd.exe
+    expands them exactly once to transport argv without reparsing its values.
+
+    Async callers should use :func:`windows_batch_proxy_command`: asyncio's
+    exec API converts argv with native quoting rules that are not cmd.exe's
+    rules, while the tiny native-Python proxy can pass this raw string directly
+    to ``CreateProcessW`` without introducing an implicit outer shell.
+    """
+    placeholders = []
+    for index, arg in enumerate(command):
+        value = str(arg)
+        if any(char in value for char in ('"', "\r", "\n", "\0")):
+            raise ValueError(
+                "Windows batch arguments cannot contain quotes or control characters"
+            )
+        if not value:
+            # ``cmd.exe`` leaves an undefined/empty ``%VAR%`` token literal in
+            # this parsing context. An explicit empty quoted token survives
+            # both shells and reaches the batch launcher as an empty argument.
+            placeholders.append('""')
+            continue
+        key = f"{prefix}_{index}"
+        # The placeholder is expanded inside a quoted command-line token. The
+        # native argv parser used by Node/Python treats a backslash immediately
+        # before that closing quote as an escape, so double only the trailing
+        # run for transport. Interior backslashes remain literal.
+        trailing_backslashes = len(value) - len(value.rstrip("\\"))
+        if trailing_backslashes:
+            value = (
+                value[:-trailing_backslashes]
+                + "\\" * (trailing_backslashes * 2)
+            )
+        env[key] = value
+        placeholders.append(f'"%{key}%"')
+
+    comspec = os.environ.get("COMSPEC") or os.path.join(
+        os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe"
+    )
+    inner = " ".join(placeholders)
+    return f'"{comspec}" /e:on /v:off /d /s /c "{inner}"'
+
+
+def windows_batch_proxy_command(command: Sequence[str]) -> list[str]:
+    """Return native argv for the async batch relay used by LSP clients.
+
+    The proxy itself is a normal Python executable, so asyncio can launch it
+    with ``create_subprocess_exec`` and no implicit command processor. The
+    proxy then uses :func:`windows_batch_command` with ``shell=False`` while
+    inheriting the LSP pipes verbatim.
+    """
+    values = [str(arg) for arg in command]
+    for value in values:
+        if any(char in value for char in ('"', "\r", "\n", "\0")):
+            raise ValueError(
+                "Windows batch arguments cannot contain quotes or control characters"
+            )
+    return [
+        sys.executable,
+        os.path.abspath(__file__),
+        "--windows-batch-proxy",
+        *values,
+    ]
+
+
+def run_windows_batch(
+    command: Sequence[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    prefix: str = "HERMES_BATCH_COMMAND",
+    timeout: float | None = None,
+    cwd: str | os.PathLike[str] | None = None,
+    text: bool = False,
+    encoding: str | None = None,
+    errors: str | None = None,
+    stdin=None,
+    creationflags: int = 0,
+) -> subprocess.CompletedProcess:
+    """Run a Windows batch launcher without an implicit shell.
+
+    Unlike ``subprocess.run(..., shell=True)``, this disables Command Processor
+    AutoRun and owns timeout cleanup for the complete ``cmd -> child`` tree.
+    Stdout and stderr are always captured, matching the two bounded batch call
+    sites that use this helper (npm installation and managed-Node probes).
+    """
+    run_env = dict(env if env is not None else os.environ)
+    command_line = windows_batch_command(command, run_env, prefix=prefix)
+    proc = subprocess.Popen(
+        command_line,
+        shell=False,
+        env=run_env,
+        cwd=cwd,
+        stdin=stdin,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=text,
+        encoding=encoding,
+        errors=errors,
+        creationflags=creationflags,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_process_tree(proc)
+        try:
+            proc.communicate(timeout=2)
+        except Exception:
+            pass
+        raise
+    return subprocess.CompletedProcess(list(command), proc.returncode, stdout, stderr)
 
 
 # -----------------------------------------------------------------------------
@@ -387,7 +523,7 @@ def noninteractive_git_env(
 # -----------------------------------------------------------------------------
 
 
-def kill_process_tree(proc: "subprocess.Popen") -> None:
+def kill_process_tree(proc: Any) -> None:
     """Best-effort terminate *proc* and its descendants on both platforms.
 
     ``proc.kill()`` alone only terminates the direct child. On Windows a
@@ -413,22 +549,10 @@ def kill_process_tree(proc: "subprocess.Popen") -> None:
     re-enter the deadlock class it fixes: it captures no pipes (DEVNULL), so its
     own timeout cleanup has no reader threads to join.
     """
-    if not IS_WINDOWS:
-        # Group-kill first: verify the child actually leads its own process
-        # group before signalling it, so we never blast a shared group.
-        try:
-            import signal as _signal
-
-            pgid = os.getpgid(proc.pid)
-            if pgid == proc.pid:
-                os.killpg(pgid, _signal.SIGKILL)  # windows-footgun: ok — inside `if not IS_WINDOWS` gate
-        except Exception:
-            pass
-    try:
-        proc.kill()
-    except OSError:
-        pass
     if IS_WINDOWS:
+        # Ask Windows to terminate the tree while the root PID is still alive.
+        # Killing the root first reparents its descendants and makes a later
+        # ``taskkill /T`` unable to discover them.
         try:
             subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
@@ -440,6 +564,31 @@ def kill_process_tree(proc: "subprocess.Popen") -> None:
                 creationflags=windows_hide_flags(),
             )
         except Exception:
+            pass
+        try:
+            if proc.returncode is None:
+                proc.kill()
+        except OSError:
+            pass
+        return
+
+    if not IS_WINDOWS:
+        # Group-kill first: verify the child actually leads its own process
+        # group before signalling it, so we never blast a shared group.
+        try:
+            import signal as _signal
+
+            getpgid = getattr(os, "getpgid")
+            killpg = getattr(os, "killpg")
+            sigkill = getattr(_signal, "SIGKILL")
+            pgid = getpgid(proc.pid)
+            if pgid == proc.pid:
+                killpg(pgid, sigkill)
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except OSError:
             pass
 
 
@@ -544,3 +693,36 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
 
 # Backward-compat alias — existing call sites/tests import the historical name.
 _kill_git_process_tree = kill_process_tree
+
+
+def _windows_batch_proxy_main(command: Sequence[str]) -> int:
+    """Relay inherited stdio through one explicit, AutoRun-disabled cmd.exe."""
+    if not command:
+        return 2
+    env = dict(os.environ)
+    try:
+        command_line = windows_batch_command(
+            command,
+            env,
+            prefix=f"HERMES_BATCH_PROXY_{os.getpid()}",
+        )
+        # Deliberately NO creationflags: CREATE_NO_WINDOW without explicit
+        # STARTUPINFO handles makes cmd.exe drop inherited pipe output, which
+        # would silently break the LSP protocol. The proxy is already spawned
+        # with CREATE_NO_WINDOW by the client, so cmd.exe inherits that hidden
+        # console and no window appears (verified empirically on Windows 11).
+        proc = subprocess.Popen(command_line, shell=False, env=env)
+    except (OSError, ValueError) as exc:
+        print(f"Hermes batch proxy failed to start: {exc}", file=sys.stderr)
+        return 2
+    try:
+        return proc.wait()
+    except BaseException:
+        kill_process_tree(proc)
+        raise
+
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--windows-batch-proxy":
+        raise SystemExit(_windows_batch_proxy_main(sys.argv[2:]))
+    raise SystemExit(2)

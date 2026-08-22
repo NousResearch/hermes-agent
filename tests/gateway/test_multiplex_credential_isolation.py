@@ -88,6 +88,39 @@ class TestProfilePathResolutionUnderMultiplexScope:
         assert b_seen == prof_b / "skills"
 
 
+    def test_context_files_follow_profile_without_changing_execution_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        from agent.prompt_builder import build_context_files_prompt
+        from agent.runtime_cwd import resolve_agent_cwd, resolve_context_cwd
+        from gateway.run import _profile_runtime_scope
+
+        execution_cwd = tmp_path / "shared-workdir"
+        execution_cwd.mkdir()
+        (execution_cwd / "AGENTS.md").write_text(
+            "ROOT_EXECUTION_MARKER", encoding="utf-8"
+        )
+        monkeypatch.setenv("TERMINAL_CWD", str(execution_cwd))
+
+        profile_names = ("default", "alpha", "beta", "gamma", "delta", "epsilon")
+        profiles = {}
+        for name in profile_names:
+            home = tmp_path / "profiles" / name
+            home.mkdir(parents=True)
+            marker = f"PROFILE_MARKER_{name.upper()}"
+            (home / "AGENTS.md").write_text(marker, encoding="utf-8")
+            profiles[name] = (home, marker)
+
+        for name, (home, marker) in profiles.items():
+            with _profile_runtime_scope(home):
+                prompt = build_context_files_prompt(cwd=resolve_context_cwd())
+                assert resolve_agent_cwd() == execution_cwd
+                assert marker in prompt
+                assert "ROOT_EXECUTION_MARKER" not in prompt
+                for other_name, (_, other_marker) in profiles.items():
+                    if other_name != name:
+                        assert other_marker not in prompt
+
 def test_cold_profile_hydrates_external_source_without_global_env(
     tmp_path, monkeypatch
 ):

@@ -113,6 +113,92 @@ class TestStoredPromptReuse:
         )
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
 
+    @pytest.mark.parametrize("stored_context_line", [None, "Context files directory: /old/profile"])
+    def test_profile_context_change_rebuilds_stored_prompt(
+        self, stored_context_line, tmp_path, monkeypatch
+    ):
+        # Import the guard AND the scope together, at call time. Several suites in
+        # tests/agent delete every `agent.*` entry from sys.modules
+        # (test_empty_tool_name_loop_dampening, test_verification_stop_caching,
+        # test_vision_routing_31179), so a module-level binding here would read the
+        # ContextVars of a superseded agent.runtime_cwd while _profile_runtime_scope
+        # writes the current one — the scope would look unset and this test would
+        # pass alone and fail in a full-directory run.
+        import importlib
+
+        from gateway.run import _profile_runtime_scope
+
+        restore = importlib.import_module("agent.conversation_loop")._restore_or_build_system_prompt
+
+        execution_cwd = tmp_path / "shared-workdir"
+        execution_cwd.mkdir()
+        active_profile = tmp_path / "profiles" / "active"
+        active_profile.mkdir(parents=True)
+        monkeypatch.setenv("TERMINAL_CWD", str(execution_cwd))
+
+        lines = [
+            "Host: Linux",
+            f"User home directory: {tmp_path}",
+            f"Current working directory: {execution_cwd}",
+        ]
+        if stored_context_line:
+            lines.append(stored_context_line)
+        lines.extend(
+            [
+                "Conversation started: Tuesday, June 16, 2026",
+                "Model: test-model",
+                "Provider: openrouter",
+                "Platform: cli",
+            ]
+        )
+        stored = "\n".join(lines)
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db, prebuilt_prompt="PROFILE_PROMPT_REBUILT")
+
+        with _profile_runtime_scope(active_profile):
+            restore(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == "PROFILE_PROMPT_REBUILT"
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.update_system_prompt.assert_called_once_with(
+            agent.session_id, "PROFILE_PROMPT_REBUILT"
+        )
+
+    def test_scoped_prompt_resumed_without_a_scope_rebuilds(self, tmp_path, monkeypatch):
+        """A prompt built INSIDE a profile scope must not survive resumption outside one.
+
+        The guard used to run only while currently scoped, which is the wrong half of
+        the comparison: the dangerous direction is a stored prompt that still carries
+        another profile's marker and instructions being reused by a session with no
+        scope at all. Compare whenever either side has a value.
+        """
+        execution_cwd = tmp_path / "shared-workdir"
+        execution_cwd.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(execution_cwd))
+
+        stored = "\n".join(
+            [
+                "Host: Linux",
+                f"User home directory: {tmp_path}",
+                f"Current working directory: {execution_cwd}",
+                "Context files directory: /profiles/other",
+                "Conversation started: Tuesday, June 16, 2026",
+                "Model: test-model",
+                "Provider: openrouter",
+                "Platform: cli",
+            ]
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db, prebuilt_prompt="UNSCOPED_PROMPT_REBUILT")
+
+        # No _profile_runtime_scope here: this is the resumed-outside-multiplex case.
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == "UNSCOPED_PROMPT_REBUILT"
+        agent._build_system_prompt.assert_called_once_with(None)
+
 
 # ---------------------------------------------------------------------------
 # Legitimate fresh-build paths (no history, no DB)

@@ -11,7 +11,7 @@ import asyncio
 import hashlib
 import hmac
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from aiohttp import web
@@ -22,7 +22,7 @@ from gateway.config import (
     Platform,
     PlatformConfig,
 )
-from gateway.platforms.base import MessageEvent, SendResult
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 
 
@@ -51,6 +51,15 @@ def _github_signature(body: bytes, secret: str) -> str:
     return "sha256=" + hmac.new(
         secret.encode(), body, hashlib.sha256
     ).hexdigest()
+
+
+async def _drain_background_tasks(
+    adapter: WebhookAdapter, timeout: float = 5.0
+) -> None:
+    deadline = asyncio.get_event_loop().time() + timeout
+    while adapter._background_tasks and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0.05)
 
 
 # A realistic GitHub pull_request event payload (trimmed)
@@ -248,7 +257,7 @@ class TestCrossPlatformDelivery:
             assert resp.status == 202
 
         # The adapter should have stored delivery info
-        chat_id = "webhook:alerts:alert-001"
+        chat_id = "webhook:alerts:delivery:alert-001"
         assert chat_id in adapter._delivery_info
 
         # Now call send() as if the agent has finished
@@ -261,6 +270,154 @@ class TestCrossPlatformDelivery:
         # Delivery info is retained after send() so interim status messages
         # don't strand the final response (TTL-based cleanup happens on POST).
         assert chat_id in adapter._delivery_info
+
+    @pytest.mark.asyncio
+    async def test_overlapping_persistent_turns_keep_per_delivery_targets(self):
+        """A later turn cannot replace an in-flight turn's rendered target."""
+        routes = {
+            "support": {
+                "secret": _INSECURE_NO_AUTH,
+                "session_key": "{tenant_id}:{account_id}:{conversation_id}",
+                "prompt": "{message}",
+                "deliver": "telegram",
+                "deliver_extra": {"chat_id": "{target}"},
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_tg_adapter = AsyncMock()
+        mock_tg_adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+        class _Runner:
+            adapters = {Platform.TELEGRAM: mock_tg_adapter}
+            config = GatewayConfig(
+                platforms={
+                    Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")
+                }
+            )
+
+            @staticmethod
+            def _profile_name_for_source(source):
+                return None
+
+        adapter.gateway_runner = _Runner()
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        seen_chat_ids = []
+
+        async def _message_handler(event: MessageEvent):
+            seen_chat_ids.append(event.source.chat_id)
+            if event.message_id == "delivery-1":
+                first_started.set()
+                await release_first.wait()
+            # Background work spawned while a turn is active inherits that
+            # turn's ContextVar. It must therefore retain this delivery's
+            # rendered destination rather than falling back to the persistent
+            # session chat id (which deliberately is not a delivery-info key).
+            await asyncio.create_task(
+                adapter.send(event.source.chat_id, f"status-{event.message_id}")
+            )
+            return f"reply-{event.message_id}"
+
+        adapter._message_handler = _message_handler
+        app = _create_app(adapter)
+        common = {
+            "tenant_id": "tenant-7",
+            "account_id": "account-3",
+            "conversation_id": "conversation-9",
+        }
+
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/support",
+                json={**common, "message": "first", "target": "chat-a"},
+                headers={"X-GitHub-Delivery": "delivery-1"},
+            )
+            assert first.status == 202
+            await asyncio.wait_for(first_started.wait(), timeout=2)
+
+            second = await cli.post(
+                "/webhooks/support",
+                json={**common, "message": "second", "target": "chat-b"},
+                headers={"X-GitHub-Delivery": "delivery-2"},
+            )
+            assert second.status == 202
+            release_first.set()
+            await _drain_background_tasks(adapter)
+
+        assert seen_chat_ids == [
+            "webhook:support:session:tenant-7:account-3:conversation-9",
+            "webhook:support:session:tenant-7:account-3:conversation-9",
+        ]
+        assert "delivery-1" in adapter._delivery_info
+        assert "delivery-2" in adapter._delivery_info
+        assert mock_tg_adapter.send.await_args_list == [
+            call("chat-a", "status-delivery-1", metadata=None),
+            call("chat-a", "reply-delivery-1", metadata=None),
+            call("chat-b", "status-delivery-2", metadata=None),
+            call("chat-b", "reply-delivery-2", metadata=None),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_processing_completion_restores_prior_delivery_context(self):
+        """A completed webhook turn cannot leak its delivery target in-task."""
+        adapter = _make_adapter({})
+        prior = adapter._active_delivery_id.set("prior-delivery")
+        event = MessageEvent(
+            text="test",
+            message_type=MessageType.TEXT,
+            source=adapter.build_source(
+                chat_id="webhook:alerts:delivery:new-delivery",
+                chat_name="webhook/alerts",
+                chat_type="webhook",
+                user_id="webhook:alerts",
+                user_name="alerts",
+            ),
+            message_id="new-delivery",
+            metadata={"webhook_persistent_session": True},
+        )
+
+        await adapter.on_processing_start(event)
+        assert adapter._active_delivery_id.get() == "new-delivery"
+        await adapter.on_processing_complete(event, outcome=None)
+        assert adapter._active_delivery_id.get() == "prior-delivery"
+        adapter._active_delivery_id.reset(prior)
+
+    @pytest.mark.asyncio
+    async def test_persistent_key_and_fallback_delivery_use_disjoint_session_ids(self):
+        """A fallback delivery ID cannot close or reuse a persistent conversation."""
+        routes = {
+            "support": {
+                "secret": _INSECURE_NO_AUTH,
+                "session_key": "{conversation_id}",
+                "prompt": "{message}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            persistent = await cli.post(
+                "/webhooks/support",
+                json={"conversation_id": "abc", "message": "persistent turn"},
+                headers={"X-GitHub-Delivery": "persistent-delivery"},
+            )
+            fallback = await cli.post(
+                "/webhooks/support",
+                json={"message": "fallback turn"},
+                headers={"X-GitHub-Delivery": "abc"},
+            )
+            assert persistent.status == fallback.status == 202
+            await _drain_background_tasks(adapter)
+
+        seen_chat_ids = [
+            call.args[0].source.chat_id for call in adapter.handle_message.await_args_list
+        ]
+        assert seen_chat_ids == [
+            "webhook:support:session:abc",
+            "webhook:support:delivery:abc",
+        ]
 
 
 # ===================================================================
@@ -300,7 +457,7 @@ class TestGitHubCommentDelivery:
             )
             assert resp.status == 202
 
-        chat_id = "webhook:pr-bot:gh-comment-001"
+        chat_id = "webhook:pr-bot:delivery:gh-comment-001"
         assert chat_id in adapter._delivery_info
 
         # Verify deliver_extra was rendered with payload data

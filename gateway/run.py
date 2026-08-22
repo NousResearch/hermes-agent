@@ -10313,6 +10313,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if getattr(event, "internal", False):
             return False
 
+        # Persistent webhook deliveries are ordered conversation turns, not
+        # live keystrokes steering an in-flight run. Put each delivery into the
+        # gateway FIFO rather than the adapter's single pending slot: merging
+        # would collapse message IDs and lose the later delivery's response
+        # target (`deliver_extra`).
+        if (
+            event.source.platform == Platform.WEBHOOK
+            and bool((event.metadata or {}).get("webhook_persistent_session"))
+        ):
+            self._queue_or_replace_pending_event(session_key, event)
+            return True
+
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
 

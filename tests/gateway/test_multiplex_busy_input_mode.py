@@ -311,6 +311,46 @@ async def test_default_busy_mode_is_unchanged_by_secondary_profile(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_persistent_webhook_turns_queue_in_arrival_order_under_interrupt_default():
+    """Conversation webhooks use the FIFO, never interrupt or merge turns."""
+    runner = _runner(default_mode="interrupt")
+    adapter = _ProfileAdapter(
+        PlatformConfig(enabled=True),
+        Platform.WEBHOOK,
+    )
+    runner.adapters[Platform.WEBHOOK] = adapter
+    events = [
+        MessageEvent(
+            text=f"turn {number}",
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.WEBHOOK,
+                chat_id="webhook:support:tenant-7:account-3:conversation-9",
+                chat_type="webhook",
+                user_id="webhook:support",
+            ),
+            message_id=f"delivery-{number}",
+            metadata={"webhook_persistent_session": True},
+        )
+        for number in (2, 3)
+    ]
+    session_key = runner._session_key_for_source(events[0].source)
+    agent = MagicMock()
+    agent._active_children = []
+    runner._running_agents[session_key] = agent
+
+    for event in events:
+        assert await runner._handle_active_session_busy_message(event, session_key) is True
+
+    agent.interrupt.assert_not_called()
+    agent.steer.assert_not_called()
+    assert adapter._pending_messages[session_key].message_id == "delivery-2"
+    assert [event.message_id for event in runner._session_state(
+        session_key
+    ).conversation.queued_events] == ["delivery-3"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("secondary_mode", [None, "not-a-mode"])
 async def test_missing_or_invalid_secondary_mode_falls_back_to_gateway_default(
     tmp_path,

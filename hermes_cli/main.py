@@ -11447,7 +11447,11 @@ def cmd_dashboard(args):
     if _headless_backend:
         # Don't build the SPA, and tell mount_spa() (read at web_server import
         # below) to disable it even if a stray dist exists. Set it first.
-        os.environ["HERMES_SERVE_HEADLESS"] = "1"
+        # EXCEPTION: Desktop app (HERMES_DESKTOP=1) spawns a serve backend but
+        # needs the SPA to be mounted so it can extract the session token from
+        # the root HTML — serve without SPA means Desktop can never auth via WS.
+        if os.environ.get("HERMES_DESKTOP") != "1":
+            os.environ["HERMES_SERVE_HEADLESS"] = "1"
     elif "HERMES_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)

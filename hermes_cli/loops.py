@@ -657,6 +657,7 @@ class LoopManager:
         if self._state is None or self._state.status == "cleared":
             return False
         self._state.status = "cleared"
+        self._state.awaiting_response = False
         save_loop(self.session_id, self._state)
         self._state = None
         return True

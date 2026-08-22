@@ -159,6 +159,24 @@ class GatewaySlashCommandsMixin:
         # expiring session id before reset_session() rotates it.
         old_entry = self.session_store._entries.get(session_key)
 
+        # A /loop belongs to the durable session id, rather than its stable
+        # route key.  Clear it before the reset's first await: a concurrent
+        # wakeup must not inherit the freshly-created /new conversation.
+        # Compression deliberately remains separate because its explicit
+        # migration path carries a loop to its child session.
+        old_session_id = getattr(old_entry, "session_id", None)
+        if isinstance(old_session_id, str) and old_session_id:
+            try:
+                from hermes_cli.loops import LoopManager
+
+                LoopManager(session_id=old_session_id).clear()
+            except Exception:
+                logger.warning(
+                    "Failed to clear /loop state for session reset %s",
+                    session_key,
+                    exc_info=True,
+                )
+
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.
         # Guard with getattr because test fixtures may skip __init__.

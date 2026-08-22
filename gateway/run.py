@@ -18829,6 +18829,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         expected_session_key = str(
             event_metadata.get("gateway_session_key") or ""
         ).strip()
+        pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
         if expected_session_key:
             derived_session_key = self._session_key_for_source(source)
             if derived_session_key != expected_session_key:
@@ -18838,10 +18839,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     expected_session_key,
                     derived_session_key,
                 )
+                self._clear_rejected_loop_wakeup(
+                    event_metadata,
+                    pinned_session_id,
+                )
                 return
 
         strict_session = bool(event_metadata.get("gateway_session_strict"))
-        pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
         if strict_session:
             session_entry = await self.async_session_store.lookup_by_session_key(
                 expected_session_key
@@ -18856,6 +18860,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "longer current for key=%s",
                     pinned_session_id or "missing",
                     expected_session_key or "missing",
+                )
+                self._clear_rejected_loop_wakeup(
+                    event_metadata,
+                    pinned_session_id,
                 )
                 return
         else:
@@ -21628,6 +21636,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return streamed
         return text
 
+    @staticmethod
+    def _clear_rejected_loop_wakeup(event_metadata: Any, session_id: str) -> None:
+        """Clear a loop whose strict internal wakeup was rejected.
+
+        The watcher claims a tick before handing it to an adapter.  If the
+        downstream strict-session gate rejects the event after a reset, the
+        old loop has no turn that could complete it; clear that stale state
+        instead of leaving it indefinitely ``awaiting_response``.
+        """
+        if (
+            not isinstance(event_metadata, dict)
+            or event_metadata.get("hermes_loop_wakeup") is not True
+            or not session_id
+        ):
+            return
+        try:
+            from hermes_cli.loops import LoopManager
+
+            LoopManager(session_id=session_id).clear()
+        except Exception:
+            logger.warning(
+                "Failed to clear rejected loop wakeup for session %s",
+                session_id,
+                exc_info=True,
+            )
+
     async def _post_turn_loop_completion(
         self,
         *,
@@ -21741,8 +21775,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         session_key = self._session_key_for_source(source)
                     except Exception:
-                        session_key = None
-                    if session_key and session_key in self._running_agents:
+                        logger.warning(
+                            "loop wakeup: failed to resolve a session key for %s; "
+                            "retaining the loop for retry",
+                            sid,
+                            exc_info=True,
+                        )
+                        continue
+                    if not session_key:
+                        logger.warning(
+                            "loop wakeup: unable to resolve a session key for %s; "
+                            "retaining the loop for retry",
+                            sid,
+                        )
+                        continue
+                    try:
+                        current_entry = await self.async_session_store.lookup_by_session_key(
+                            session_key
+                        )
+                    except Exception:
+                        logger.warning(
+                            "loop wakeup: failed to verify the current session for %s; "
+                            "retaining the loop for retry",
+                            sid,
+                            exc_info=True,
+                        )
+                        continue
+                    if current_entry is None or current_entry.session_id != sid:
+                        logger.info(
+                            "loop wakeup: session %s is no longer current for key %s; "
+                            "clearing the old loop",
+                            sid,
+                            session_key,
+                        )
+                        LoopManager(session_id=sid).clear()
+                        continue
+                    if session_key in self._running_agents:
                         continue  # busy — stays due, next scan retries
                     if goal_blocks_loop_tick(sid):
                         continue
@@ -21759,6 +21827,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             message_type=MessageType.TEXT,
                             source=source,
                             internal=True,
+                            metadata={
+                                "gateway_session_key": session_key,
+                                "gateway_session_id": sid,
+                                "gateway_session_strict": True,
+                                "hermes_loop_wakeup": True,
+                            },
                         )
                         logger.info(
                             "loop wakeup #%s — injecting for %s chat=%s thread=%s",

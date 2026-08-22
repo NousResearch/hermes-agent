@@ -6031,8 +6031,11 @@ def _get_pre_tool_call_directive_details(
     - ``rule_key`` is optional and only honored for ``approve`` directives. It
       lets plugins choose the allowlist grain for `[a]lways` approvals.
 
-    The first valid directive wins. Invalid or irrelevant hook return values
-    are silently ignored so existing observer-only hooks are unaffected.
+    Directive precedence is ``block`` > ``approve`` > no directive, NOT hook
+    registration order: any plugin's veto wins over another plugin's request
+    for human confirmation. Within a single action the first valid directive
+    wins. Invalid or irrelevant hook return values are silently ignored so
+    existing observer-only hooks are unaffected.
     """
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
@@ -6058,6 +6061,10 @@ def _get_pre_tool_call_directive_details(
 
     block_msg: Optional[str] = None
     modified_args: Optional[Dict[str, Any]] = None
+    # A later plugin's block must not be shadowed by an earlier plugin's
+    # approve, so approve is held back until the whole result list has been
+    # scanned for a veto.
+    first_approve: Optional[_PreToolCallDirective] = None
 
     for result in hook_results:
         if not isinstance(result, dict):
@@ -6079,19 +6086,40 @@ def _get_pre_tool_call_directive_details(
             continue
         message = result.get("message")
         message = message if isinstance(message, str) and message else None
-        # A block directive requires a message (it becomes the tool result);
-        # an approve directive can carry an optional reason.
-        if action == "block" and not message:
+        if action == "block":
+            # A block directive requires a message (it becomes the tool
+            # result); a message-less block is invalid and ignored.
+            if not message:
+                continue
+            return _PreToolCallDirective(
+                action="block", message=message, modified_args=modified_args,
+            )
+        # approve — may omit a message (an optional reason).
+        if first_approve is not None:
             continue
-        rule_key = result.get("rule_key") if action == "approve" else None
+        rule_key = result.get("rule_key")
         rule_key = rule_key.strip() if isinstance(rule_key, str) else None
         if not rule_key:
             rule_key = None
-        return _PreToolCallDirective(
-            action=action, message=message, rule_key=rule_key,
-            modified_args=modified_args,
+        # Snapshot the accumulated modify state as it stood when this approve
+        # was seen: deferring the return must not retroactively pull in modify
+        # directives that follow it.
+        #
+        # The copy is shallow, matching the ``dict(args)`` the accumulator
+        # itself is built from, and that is sufficient here: a later ``modify``
+        # reaches the accumulator only through ``modified_args.update(partial)``,
+        # which rebinds top-level keys rather than mutating the values behind
+        # them, so it cannot reach through this snapshot's shared references.
+        # Deep-copying would instead diverge from the documented shallow-merge
+        # contract for ``modify`` and silently break hooks that pass unpicklable
+        # or identity-significant objects through the args.
+        first_approve = _PreToolCallDirective(
+            action="approve", message=message, rule_key=rule_key,
+            modified_args=dict(modified_args) if modified_args is not None else None,
         )
 
+    if first_approve is not None:
+        return first_approve
     return _PreToolCallDirective(modified_args=modified_args)
 
 

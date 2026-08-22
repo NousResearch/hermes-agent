@@ -1083,6 +1083,93 @@ class TestPreToolCallDirective:
         )
         assert get_pre_tool_call_directive("write_file", {}) == ("approve", None)
 
+    def test_later_block_outranks_earlier_approve(self, monkeypatch):
+        """A security plugin's veto must not be shadowed by an earlier
+        plugin's approve (registration order is not precedence)."""
+        from hermes_cli.plugins import get_pre_tool_call_directive
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "earlier plugin approves"},
+                {"action": "block", "message": "later security plugin blocks"},
+            ],
+        )
+        assert get_pre_tool_call_directive("write_file", {}) == (
+            "block", "later security plugin blocks")
+
+    def test_earlier_block_still_wins(self, monkeypatch):
+        from hermes_cli.plugins import get_pre_tool_call_directive
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "block", "message": "security plugin blocks"},
+                {"action": "approve", "message": "later plugin approves"},
+            ],
+        )
+        assert get_pre_tool_call_directive("write_file", {}) == (
+            "block", "security plugin blocks")
+
+    def test_message_less_block_does_not_suppress_approve(self, monkeypatch):
+        """An invalid (message-less) block stays ignored, so the approve
+        directive is still returned rather than swallowed."""
+        from hermes_cli.plugins import get_pre_tool_call_directive
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "block"},
+                {"action": "approve", "message": "needs human ok"},
+            ],
+        )
+        assert get_pre_tool_call_directive("write_file", {}) == (
+            "approve", "needs human ok")
+
+    def test_first_approve_wins_among_approves(self, monkeypatch):
+        """Precedence only reorders block vs approve — among approves the
+        first valid one still wins, including its rule_key."""
+        from hermes_cli.plugins import _get_pre_tool_call_directive_details
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "nonsense"},
+                {"action": "approve", "message": "first", "rule_key": "write_file:ssh"},
+                {"action": "approve", "message": "second", "rule_key": "write_file:other"},
+            ],
+        )
+        details = _get_pre_tool_call_directive_details("write_file", {})
+        assert details.action == "approve"
+        assert details.message == "first"
+        assert details.rule_key == "write_file:ssh"
+
+    def test_deferred_approve_does_not_absorb_later_modify(self, monkeypatch):
+        """Holding approve back to look for a block must not retroactively
+        pull in modify directives that come after it."""
+        from hermes_cli.plugins import _get_pre_tool_call_directive_details
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"before": 1}},
+                {"action": "approve", "message": "needs human ok"},
+                {"action": "modify", "args": {"after": 2}},
+            ],
+        )
+        details = _get_pre_tool_call_directive_details("write_file", {"orig": 0})
+        assert details.action == "approve"
+        assert details.modified_args == {"orig": 0, "before": 1}
+
+    def test_block_still_carries_accumulated_modify(self, monkeypatch):
+        """A block returned early keeps the modify state accumulated so far."""
+        from hermes_cli.plugins import _get_pre_tool_call_directive_details
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "modify", "args": {"before": 1}},
+                {"action": "block", "message": "vetoed"},
+            ],
+        )
+        details = _get_pre_tool_call_directive_details("write_file", {"orig": 0})
+        assert details.action == "block"
+        assert details.modified_args == {"orig": 0, "before": 1}
+
 
 class TestResolvePreToolBlock:
     """Tests for the single dispatch-site chokepoint that resolves a

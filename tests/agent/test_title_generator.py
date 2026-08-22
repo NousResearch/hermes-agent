@@ -128,6 +128,39 @@ class TestGenerateTitle:
             assert generate_title("question", "answer") == "Investigate the title resolver bug"
 
 
+    def test_extracts_title_from_truncated_fenced_json(self):
+        """A response cut mid-fence (max_tokens truncation) must still yield
+        the title. The bare fence opener is the #83903 garbage title."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            '```json\n{"title": "Fix login button"'
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("login is broken")
+            assert title == "Fix login button"
+
+    def test_fence_marker_never_becomes_the_title(self):
+        """Worst case: nothing parseable survives truncation. The fence
+        opener must not be persisted as the session title (#83903)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "```json"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("hello") is None
+
+    def test_truncated_json_fragment_never_becomes_the_title(self):
+        """A value cut mid-string reads as a JSON fragment, not a title."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = '```json\n{"title": "Fix login bu'
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("login is broken") is None
+
+
 
     def test_invokes_failure_callback_on_exception(self):
         """failure_callback must fire so the user sees a warning (issue #15775)."""

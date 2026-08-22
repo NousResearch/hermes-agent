@@ -296,6 +296,16 @@ def _extract_title_text(content: str) -> str:
     fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", raw, re.DOTALL)
     if fenced:
         raw = fenced.group(1).strip()
+    else:
+        # Unterminated fence: a max_tokens-truncated response often ends
+        # mid-fence, with the JSON payload (or its ``"title": "..."`` core)
+        # still present after the opener. Drop the `````json`` opener so
+        # the parse/loose-scan below sees the payload, not the fence.
+        unterminated = re.match(r"^```(?:json)?\s*(.*)$", raw, re.DOTALL)
+        if unterminated:
+            inner = unterminated.group(1).strip()
+            if inner:
+                raw = inner
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, dict) and isinstance(parsed.get("title"), str):
@@ -317,7 +327,16 @@ def _extract_title_text(content: str) -> str:
         raw = strip_think_blocks(None, raw).strip()
     except Exception:
         logger.debug("strip_think_blocks unavailable for title output", exc_info=True)
-    raw = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
+    raw = next(
+        (
+            ln.strip()
+            for ln in raw.splitlines()
+            if ln.strip()
+            and not ln.strip().startswith("```")
+            and not ln.strip().startswith("{")
+        ),
+        "",
+    )
     if raw.lower().startswith("title:"):
         raw = raw[6:].strip()
     return raw.strip("\"'").strip()
@@ -403,9 +422,12 @@ def generate_title(
         response = call_llm(
             task="title_generation",
             messages=messages,
-            # A title is a handful of tokens. The old 500-token ceiling let a
-            # chatty model burn seconds generating prose we then threw away.
-            max_tokens=64,
+            # A title is a handful of tokens, but providers that wrap the
+            # JSON in a markdown fence (or emit a short preamble before it)
+            # need headroom past the object itself. The old 64-token ceiling
+            # truncated those responses mid-fence, and the truncated fence
+            # opener (`````json```) became the session title (#83903).
+            max_tokens=256,
             temperature=0.3,
             timeout=timeout,
             main_runtime=main_runtime,

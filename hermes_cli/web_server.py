@@ -530,6 +530,11 @@ _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 # overhead.
 _DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
 
+# Upper bound on uvicorn's graceful shutdown for the dashboard. Long enough for
+# in-flight HTTP requests to drain, short enough that SIGTERM is honoured well
+# inside systemd's default 90s TimeoutStopSec and Docker's 10s SIGKILL window.
+_DASHBOARD_GRACEFUL_SHUTDOWN_SECONDS = 5
+
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
@@ -19101,6 +19106,11 @@ def start_server(
         ws_ping_interval=None if _is_loopback else 20.0,
         ws_ping_timeout=None if _is_loopback else 20.0,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
+        # uvicorn defaults this to None — an unbounded graceful wait. A single
+        # still-open WebSocket (idle browser tab, half-open tunnel) then holds
+        # the process through SIGTERM until the supervisor's own kill timer
+        # fires, which reads as a hung dashboard to systemd/Docker (#58005).
+        timeout_graceful_shutdown=_DASHBOARD_GRACEFUL_SHUTDOWN_SECONDS,
     )
     server = uvicorn.Server(config)
 

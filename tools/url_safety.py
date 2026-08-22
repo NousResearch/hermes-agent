@@ -308,6 +308,16 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
+def is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Public wrapper over the shared private/internal address policy.
+
+    Exposed so other guards (e.g. the A2A push-callback check) classify
+    addresses with the *same* range list instead of maintaining their own
+    copy, which is how ranges like 100.64.0.0/10 get missed.
+    """
+    return _is_blocked_ip(ip)
+
+
 def is_always_blocked_url(url: str) -> bool:
     """Return True when the URL targets an always-blocked endpoint.
 

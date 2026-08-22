@@ -284,60 +284,103 @@ def sign_push_payload(payload: dict) -> str:
 # --------------------------------------------------------------------------
 
 import ipaddress
+import socket
 import urllib.parse
 
-# Blocked IP ranges for push callback URLs (SSRF prevention).
-# Even in localhost-only mode we block these — a remote peer shouldn't
-# be able to make us probe internal services.
-_BLOCKED_PREFIXES = (
-    "169.254.",    # link-local / AWS metadata
-    "127.",        # loopback
-    "10.",         # RFC1918 private
-    "172.16.", "172.17.", "172.18.", "172.19.", "172.20.",
-    "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
-    "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",  # RFC1918 private
-    "192.168.",    # RFC1918 private
-    "0.0.0.0",     # unspecified
-    "::1",         # IPv6 loopback
-    "fe80:",       # IPv6 link-local
-    "fc00:", "fd00:",  # IPv6 unique-local
-)
+
+def _resolve_callback_host(hostname: str) -> Optional[list]:
+    """Resolve *hostname* to the addresses a request to it would actually reach.
+
+    Returns a list of ``ip_address`` objects, or ``None`` when the host cannot
+    be resolved. A literal IP resolves to itself.
+
+    This is the step the old prefix-matching guard skipped. Alternate integer
+    spellings of an address (``2130706433``, ``0x7f000001``, ``0177.0.0.1``)
+    are rejected by ``ipaddress.ip_address`` but accepted by the OS resolver,
+    so classifying the *string* let them through while the socket still went
+    to 127.0.0.1.
+    """
+    try:
+        return [ipaddress.ip_address(hostname)]
+    except ValueError:
+        pass
+    try:
+        addr_info = socket.getaddrinfo(
+            hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+        )
+    except (socket.gaierror, UnicodeError, ValueError):
+        return None
+    resolved = []
+    for *_unused, sockaddr in addr_info:
+        ip_str = str(sockaddr[0]).split("%")[0]  # drop any IPv6 scope id
+        try:
+            resolved.append(ipaddress.ip_address(ip_str))
+        except ValueError:
+            logger.warning(
+                "A2A: unparseable resolved address %r for callback host %s",
+                sockaddr[0], hostname,
+            )
+            return None  # fail closed rather than skip an address we can't classify
+    return resolved or None
 
 
 def is_safe_callback_url(url: str) -> bool:
     """Check if a push notification callback URL is safe from SSRF.
 
-    Blocks internal/private/loopback/metadata addresses.
+    Blocks internal/private/loopback/link-local/CGNAT/metadata addresses.
     Only allows http:// and https:// schemes.
+
+    The decision is made on the RESOLVED address(es), never on the spelling of
+    the hostname, and uses the same range policy as ``tools.url_safety`` so the
+    two guards cannot drift apart.
+
+    In localhost-only mode (no A2A_BEARER_TOKEN / A2A_PEER_TOKENS configured)
+    loopback callbacks stay allowed — they are the local-testing path and the
+    listener is not remotely reachable in that posture.
     """
     if not url or not isinstance(url, str):
         return False
     try:
         parsed = urllib.parse.urlparse(url)
+        hostname = (parsed.hostname or "").strip().lower().rstrip(".")
     except Exception:
         return False
     if parsed.scheme not in ("http", "https"):
         return False
-    hostname = parsed.hostname or ""
     if not hostname:
         return False
-    hostname_lower = hostname.lower()
-    if hostname_lower == "localhost":
-        # Loopback callbacks only make sense for local testing.
-        return localhost_only()
-    for prefix in _BLOCKED_PREFIXES:
-        if hostname_lower.startswith(prefix.lower()):
-            if localhost_only() and prefix in ("127.", "::1"):
-                return True
-            return False
+
+    local_mode = localhost_only()
+
+    # Cloud metadata hostnames are never a legitimate callback target.
     try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved:
-            if localhost_only() and ip.is_loopback:
-                return True
-            return False
-    except ValueError:
-        pass  # not an IP, it's a hostname — fine
+        from tools.url_safety import is_always_blocked_url, is_blocked_ip
+    except Exception:  # pragma: no cover - core module always present
+        logger.error("A2A: url_safety unavailable — refusing callback URL")
+        return False
+    if is_always_blocked_url(url):
+        return False
+
+    addresses = _resolve_callback_host(hostname)
+    if addresses is None:
+        # Unresolvable host: fail closed. A callback we cannot resolve cannot
+        # be delivered anyway, and resolving later (rebinding) must not be a
+        # way to skip the check.
+        logger.warning("A2A: callback URL blocked — cannot resolve host: %s", hostname)
+        return False
+
+    for ip in addresses:
+        if not is_blocked_ip(ip):
+            continue
+        # Blocked range. The one carve-out is the documented local-testing
+        # posture, and only for loopback — never for RFC1918/link-local/CGNAT.
+        if local_mode and ip.is_loopback:
+            continue
+        logger.warning(
+            "A2A: callback URL blocked — %s resolves to internal address %s",
+            hostname, ip,
+        )
+        return False
     return True
 
 

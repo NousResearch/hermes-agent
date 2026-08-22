@@ -30,7 +30,7 @@ function load() {
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__groups = { botGroups, groupMembershipPatch, groupChatNames, groupLastActivity, groupChatMemberBots, durableGroupChatMembers, knownGroups, stripPreviewMarkdown, $groupChats };\n'
+      '\nglobalThis.__groups = { botGroups, groupMembershipPatch, groupChatNames, groupLastActivity, groupChatMemberBots, durableGroupChatMembers, knownGroups, stripPreviewMarkdown, rosterSectionIsOpen, hydrateRosterSectionsOpen, setRosterSectionOpen, $groupChats, $rosterSectionsOpen };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   return context.__groups
@@ -189,12 +189,34 @@ test('stripPreviewMarkdown: flattens bold, quotes, code, and links out of previe
   assert.equal(stripPreviewMarkdown(''), '')
 })
 
-test('source contract: the roster stays a flat list of bot and group rows', () => {
-  // Ordering is deliberately unchanged in this PR; sectioned ordering follows separately.
+test('roster sections: saved disclosure state is independent and search reveals both sections', () => {
+  const { rosterSectionIsOpen, $rosterSectionsOpen, setRosterSectionOpen } = load()
+
+  assert.equal(rosterSectionIsOpen('direct', { direct: false, groups: true }), false)
+  assert.equal(rosterSectionIsOpen('groups', { direct: false, groups: true }), true)
+  assert.equal(rosterSectionIsOpen('groups', { direct: false, groups: false }, 'topic'), true)
+  setRosterSectionOpen('direct', false)
+  assert.equal(JSON.stringify($rosterSectionsOpen.get()), JSON.stringify({ direct: false, groups: true }))
+  setRosterSectionOpen('groups', false)
+  assert.equal(JSON.stringify($rosterSectionsOpen.get()), JSON.stringify({ direct: false, groups: false }))
+})
+
+test('source contract: direct messages and groups render as separate roster sections', () => {
   assert.doesNotMatch(pluginSource, /function groupRoster\(/)
-  assert.match(pluginSource, /rosterRows\.map\(row =>/)
+  assert.match(pluginSource, /function RosterSection\(/)
+  assert.match(pluginSource, /label: 'Direct Messages'/)
+  assert.match(pluginSource, /label: 'Groups'/)
+  assert.match(pluginSource, /rosterSections\.map\(section =>/)
+  assert.match(pluginSource, /border-t border-\(--ui-stroke-secondary\)/)
   assert.match(pluginSource, /function GroupRow\(/)
   assert.match(pluginSource, /onGroup: setGrouping/)
+})
+
+test('source contract: section disclosure is hidden and disabled while searching', () => {
+  assert.match(pluginSource, /hidden: !open/)
+  assert.match(pluginSource, /disabled: toggleDisabled/)
+  assert.match(pluginSource, /toggleDisabled: Boolean\(query\.trim\(\)\)/)
+  assert.match(pluginSource, /clearing it deliberately restores each/)
 })
 
 test('source contract: group rows carry the needs-you badge and open via openGroupChat', () => {

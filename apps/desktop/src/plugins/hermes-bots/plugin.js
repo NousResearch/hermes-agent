@@ -212,6 +212,51 @@ const $groupChats = atom({})
 const $groupChatWorkspace = atom(null)
 /** Groups whose latest room activity mentions @user — the needs-you badge. */
 const $groupNeedsYou = atom({})
+const ROSTER_SECTION_KEYS = ['direct', 'groups']
+/** Persisted disclosure state for the Direct Messages and Groups sections. */
+const $rosterSectionsOpen = atom({ direct: true, groups: true })
+let rosterSectionMutationGeneration = 0
+
+function currentRosterSectionGeneration() {
+  return rosterSectionMutationGeneration
+}
+
+function setRosterSectionOpen(section, open) {
+  if (!ROSTER_SECTION_KEYS.includes(section)) {
+    return
+  }
+
+  const next = { ...$rosterSectionsOpen.get(), [section]: Boolean(open) }
+  rosterSectionMutationGeneration += 1
+  $rosterSectionsOpen.set(next)
+
+  try {
+    // Plugin storage has no cross-window subscription here; disclosure state
+    // is intentionally scoped to this window until the next plugin boot.
+    Promise.resolve(pluginCtx?.storage?.set?.('roster-sections-open', next)).catch(() => undefined)
+  } catch {
+    /* storage unavailable — disclosure state lasts for this window */
+  }
+}
+
+function hydrateRosterSectionsOpen(value, expectedGeneration = rosterSectionMutationGeneration) {
+  if (expectedGeneration !== rosterSectionMutationGeneration) {
+    return
+  }
+
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return
+  }
+
+  const current = $rosterSectionsOpen.get()
+  const next = {}
+
+  for (const key of ROSTER_SECTION_KEYS) {
+    next[key] = typeof value[key] === 'boolean' ? value[key] : current[key]
+  }
+
+  $rosterSectionsOpen.set(next)
+}
 // Pending prompts (clarify questions AND command approvals) raised inside
 // hidden group-member sessions, keyed `${group}::${memberKey}` (#90694).
 // Members run in invisible plumbing sessions, so a member's blocking prompt
@@ -10863,6 +10908,67 @@ function GroupRow({ active, group, members, needsYou, onOpen, onDisband }) {
   })
 }
 
+function RosterSection({ children, section, open, onToggle, toggleDisabled = false }) {
+  const contentId = `hermes-bots-section-${section.key}`
+  const count = section.rows.length
+  const attentionCount = Number(section.attentionCount || 0)
+  const attentionLabel = section.attentionLabel || 'attention item'
+  const headerLabel = `${section.label}: ${count} ${count === 1 ? 'item' : 'items'}${
+    attentionCount ? `, ${attentionCount} ${attentionLabel}` : ''
+  }`
+
+  return jsxs('section', {
+    'aria-labelledby': `${contentId}-heading`,
+    className: section.key === 'groups' ? 'border-t border-(--ui-stroke-secondary) pt-1.5' : undefined,
+    children: [
+      jsxs('button', {
+        type: 'button',
+        'aria-controls': contentId,
+        'aria-expanded': open,
+        'aria-label': headerLabel,
+        disabled: toggleDisabled,
+        title: toggleDisabled ? 'Clear search to change this section' : undefined,
+        className:
+          'flex w-full items-center gap-1.5 px-2 py-1 text-left text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary) transition-colors hover:text-foreground disabled:cursor-default disabled:hover:text-(--ui-text-quaternary)',
+        onClick: () => onToggle(!open),
+        children: [
+          jsx(Codicon, { name: open ? 'chevron-down' : 'chevron-right', className: 'text-[0.65rem]' }),
+          jsx('span', { id: `${contentId}-heading`, className: 'min-w-0 flex-1 truncate', children: section.label }),
+          jsx('span', { className: 'font-normal tabular-nums', children: String(count) }),
+          attentionCount
+            ? jsx('span', {
+                className:
+                  'shrink-0 rounded-full bg-(--ui-accent) px-1.5 text-[0.6rem] font-semibold normal-case text-white',
+                title: `${attentionCount} ${attentionLabel}`,
+                'aria-label': `${attentionCount} ${attentionLabel}`,
+                children: attentionCount
+              })
+            : null
+        ]
+      }),
+      jsx('div', {
+        id: contentId,
+        hidden: !open,
+        className: 'grid gap-0.5',
+        children: open
+          ? count
+            ? children
+            : jsx('div', {
+                className: 'px-2 py-1.5 text-[0.6875rem] text-(--ui-text-quaternary)',
+                children: `No ${section.label.toLowerCase()} yet.`
+              })
+          : null
+      })
+    ]
+  })
+}
+
+function rosterSectionIsOpen(section, saved, query = '') {
+  // Search is a temporary reveal: clearing it deliberately restores each
+  // section's saved disclosure state instead of changing the user's layout.
+  return Boolean(String(query || '').trim()) || saved?.[section] !== false
+}
+
 function BotsPane() {
   const { data, error, isLoading, refetch } = useRoster()
   const gatewayState = useValue(host.state.gateway)
@@ -10884,6 +10990,7 @@ function BotsPane() {
   useValue($groupMainTabsRev)
   const groupNeedsYou = useValue($groupNeedsYou)
   const groupRooms = useValue($groupChats)
+  const sectionsOpen = useValue($rosterSectionsOpen)
 
   // The socket opening (boot, SSH reconnect, sleep/wake) is the signal to
   // retry immediately instead of waiting out the poll interval.
@@ -10934,10 +11041,8 @@ function BotsPane() {
   const hiddenUnread = hiddenBots.some(bot => !bot.remoteSource && unreadByName[bot.name])
   const visibleRoster = showHidden ? roster : roster.filter(bot => !isBotHidden(bot, allMeta))
   const filteredRoster = filterBots(visibleRoster, allMeta, query)
-  // Group chats are first-class roster rows (Discord-style): one standalone
-  // row per room, competing in the SAME recency ordering as bot rows — a
-  // group's activity is its newest room-log line. Pinned bots still lead;
-  // groups and unpinned bots interleave by recency below them.
+  // Direct chats and group rooms have independent, collapsible sections.
+  // Each section preserves its existing pin/recency ordering.
   const needle = query.trim().toLowerCase()
   const groupRows = groupChatNames(allMeta, groupRooms)
     .filter(name => !needle || name.toLowerCase().includes(needle))
@@ -10947,10 +11052,14 @@ function BotsPane() {
       members: groupChatMemberBots(name, roster, allMeta),
       activity: groupLastActivity(groupRooms[name])
     }))
-  const rosterRows = [
-    ...filteredRoster.map(bot => ({ kind: 'bot', bot, pinned: isPinned(bot), activity: activityOf(bot) })),
-    ...groupRows
-  ].sort((a, b) => {
+  groupRows.sort((a, b) => b.activity - a.activity)
+  const directRows = filteredRoster.map(bot => ({
+    kind: 'bot',
+    bot,
+    pinned: isPinned(bot),
+    activity: activityOf(bot)
+  }))
+  directRows.sort((a, b) => {
     const pa = a.pinned ? 1 : 0
     const pb = b.pinned ? 1 : 0
 
@@ -10960,6 +11069,23 @@ function BotsPane() {
 
     return b.activity - a.activity
   })
+  const rosterSections = [
+    {
+      key: 'direct',
+      label: 'Direct Messages',
+      rows: directRows,
+      attentionCount: directRows.filter(row => !row.bot.remoteSource && unreadByName[row.bot.name]).length,
+      attentionLabel: 'unread'
+    },
+    {
+      key: 'groups',
+      label: 'Groups',
+      rows: groupRows,
+      attentionCount: groupRows.filter(row => groupNeedsYou[row.name]).length,
+      attentionLabel: 'needs you'
+    }
+  ]
+  const matchingRows = directRows.length + groupRows.length
 
   if (live) {
     $lastRoster.set(roster)
@@ -11131,14 +11257,14 @@ function BotsPane() {
           })()
         }
       }),
-      roster.length
+      roster.length || groupRows.length
         ? jsx('div', {
             className: 'px-2.5 pb-1.5',
             children: jsx(SearchField, {
-              'aria-label': 'Search bots',
+              'aria-label': 'Search direct messages and groups',
               containerClassName: 'w-full',
               inputClassName: 'w-full',
-              placeholder: 'Search bots…',
+              placeholder: 'Search chats…',
               value: query,
               onChange: setQuery
             })
@@ -11150,12 +11276,12 @@ function BotsPane() {
             children: staleNotice
           })
         : null,
-      isLoading && !roster.length
+      isLoading && !roster.length && !groupRows.length
         ? jsx('div', {
             className: 'flex flex-1 items-center justify-center',
             children: jsx(GlyphSpinner, { spinner: 'breathe', className: 'text-(--ui-text-tertiary)' })
           })
-        : error && !roster.length
+        : error && !roster.length && !groupRows.length
           ? jsxs('div', {
               className: 'grid gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)',
               children: [
@@ -11173,47 +11299,57 @@ function BotsPane() {
                 })
               ]
             })
-          : roster.length === 0
+          : roster.length === 0 && groupRows.length === 0
             ? jsx(EmptyState, {
                 icon: 'hubot',
                 title: 'No agents yet',
                 description: 'Create your first teammate.'
               })
-            : filteredRoster.length === 0 && rosterRows.length === 0
+            : matchingRows === 0
               ? jsx('div', {
                   'aria-live': 'polite',
                   className:
                     'flex flex-1 items-center justify-center px-4 text-center text-xs text-(--ui-text-tertiary)',
                   role: 'status',
                   children: query.trim()
-                    ? `No bots match “${query.trim()}”`
+                    ? `No chats match “${query.trim()}”`
                     : 'All bots are hidden — use the eye button above to show them.'
                 })
               : jsx(ScrollArea, {
                   className: 'hermes-bots-roster min-h-0 flex-1',
                   children: jsx('div', {
-                    className: 'grid w-full min-w-0 gap-0.5 px-1.5 pb-2',
-                    // Flat, Discord-style list: bot rows and group rows
-                    // interleaved by recency — no section headers.
-                    children: rosterRows.map(row =>
-                      row.kind === 'group'
-                        ? jsx(
-                            GroupRow,
-                            {
-                              active: groupChatName === row.name,
-                              group: row.name,
-                              members: row.members,
-                              needsYou: Boolean(groupNeedsYou[row.name]),
-                              onOpen: openGroupChat,
-                              onDisband: setDeletingGroup
-                            },
-                            `group:${row.name}`
+                    className: 'grid w-full min-w-0 gap-1 px-1.5 pb-2',
+                    children: rosterSections.map(section =>
+                      jsx(
+                        RosterSection,
+                        {
+                          section,
+                          open: rosterSectionIsOpen(section.key, sectionsOpen, query),
+                          toggleDisabled: Boolean(query.trim()),
+                          onToggle: open => setRosterSectionOpen(section.key, open),
+                          children: section.rows.map(row =>
+                            section.key === 'groups'
+                              ? jsx(
+                                  GroupRow,
+                                  {
+                                    active: groupChatName === row.name,
+                                    group: row.name,
+                                    members: row.members,
+                                    needsYou: Boolean(groupNeedsYou[row.name]),
+                                    onOpen: openGroupChat,
+                                    onDisband: setDeletingGroup
+                                  },
+                                  `group:${row.name}`
+                                )
+                              : jsx(
+                                  BotRow,
+                                  { bot: row.bot, onDelete: setDeleting, onEdit: setEditing, onGroup: setGrouping },
+                                  botRosterKey(row.bot)
+                                )
                           )
-                        : jsx(
-                            BotRow,
-                            { bot: row.bot, onDelete: setDeleting, onEdit: setEditing, onGroup: setGrouping },
-                            botRosterKey(row.bot)
-                          )
+                        },
+                        section.key
+                      )
                     )
                   })
                 }),
@@ -11422,6 +11558,17 @@ export default {
         .catch(() => undefined)
     } catch {
       /* no storage — default (silent) stays */
+    }
+
+    // Restore Direct Messages / Groups disclosure state without allowing a
+    // delayed hydration read to overwrite a newer click in this window.
+    try {
+      const hydrationGeneration = currentRosterSectionGeneration()
+      Promise.resolve(ctx.storage?.get?.('roster-sections-open'))
+        .then(value => hydrateRosterSectionsOpen(value, hydrationGeneration))
+        .catch(() => undefined)
+    } catch {
+      /* no storage — both sections start expanded */
     }
 
     // Hydrate persisted group-chat room logs (epoch/running are runtime-only

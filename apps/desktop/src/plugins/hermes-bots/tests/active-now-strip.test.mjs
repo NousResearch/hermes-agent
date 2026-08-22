@@ -164,7 +164,7 @@ test('activeBots ignores a finished worker outside the liveness window', () => {
 test('ActiveNowStrip renders above the roster, is a live region, and is click-accessible', () => {
   // Strip is placed between the pane header and the search field.
   const headerEnd = source.indexOf("children: 'Bots'")
-  const searchField = source.indexOf("placeholder: 'Search bots…'")
+  const searchField = source.indexOf("placeholder: 'Search chats…'")
   assert.ok(headerEnd >= 0 && searchField > headerEnd)
 
   const stripStart = source.indexOf('jsx(ActiveNowStrip')

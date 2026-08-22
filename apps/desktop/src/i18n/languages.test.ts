@@ -1,11 +1,27 @@
 import { describe, expect, it } from 'vitest'
 
+import { fr } from './fr'
 import { DEFAULT_LOCALE, isLocale, isSupportedLocaleValue, localeConfigValue, normalizeLocale } from './languages'
 
 describe('desktop i18n languages', () => {
+  it('keeps every fixed French sidebar navigation label non-empty', () => {
+    expect(fr.sidebar.nav).toMatchObject({
+      'new-session': 'Nouvelle session',
+      artifacts: 'Artefacts',
+      cron: 'Tâches planifiées',
+      messaging: 'Messagerie',
+      skills: 'Capacités'
+    })
+  })
+
   it('normalizes supported locale aliases', () => {
     expect(normalizeLocale('en')).toBe('en')
     expect(normalizeLocale('EN-US')).toBe('en')
+    expect(normalizeLocale('fr')).toBe('fr')
+    expect(normalizeLocale('FR-FR')).toBe('fr')
+    expect(normalizeLocale(' fr_fr ')).toBe('fr')
+    expect(normalizeLocale('French')).toBe('fr')
+    expect(normalizeLocale(' français ')).toBe('fr')
     expect(normalizeLocale('zh')).toBe('zh')
     expect(normalizeLocale('zh-CN')).toBe('zh')
     expect(normalizeLocale('zh-Hans')).toBe('zh')
@@ -32,6 +48,8 @@ describe('desktop i18n languages', () => {
     expect(isSupportedLocaleValue('ja-JP')).toBe(true)
     expect(isSupportedLocaleValue('de')).toBe(false)
     expect(isLocale('zh-CN')).toBe(false)
+    expect(isLocale('fr-FR')).toBe(false)
+    expect(isLocale('fr')).toBe(true)
     expect(isLocale('zh')).toBe(true)
     expect(isLocale('zh-hant')).toBe(true)
     expect(isLocale('ja')).toBe(true)
@@ -40,6 +58,7 @@ describe('desktop i18n languages', () => {
 
   it('returns the persisted config value for supported locales', () => {
     expect(localeConfigValue('en')).toBe('en')
+    expect(localeConfigValue('fr')).toBe('fr')
     expect(localeConfigValue('zh')).toBe('zh')
     expect(localeConfigValue('zh-hant')).toBe('zh-hant')
     expect(localeConfigValue('ja')).toBe('ja')

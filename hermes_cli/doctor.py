@@ -2331,14 +2331,36 @@ def run_doctor(args):
                         )
                         if sys.platform == "win32":
                             check_info(
-                                f"Install with: cd {PROJECT_ROOT} && "
-                                "npx playwright install chromium"
+                                "Install with: npx playwright install chromium"
                             )
                         else:
-                            check_info(
-                                f"Install with: cd {PROJECT_ROOT} && "
-                                "npx playwright install --with-deps chromium"
-                            )
+                            # Gate --with-deps behind sudo availability to
+                            # avoid silent hangs when Playwright spawns
+                            # an interactive sudo prompt (#25816).
+                            _is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+                            _can_sudo = False
+                            if not _is_root:
+                                import subprocess as _sp
+
+                                try:
+                                    _can_sudo = _sp.run(
+                                        ["sudo", "-n", "true"],
+                                        capture_output=True,
+                                        timeout=5,
+                                    ).returncode == 0
+                                except (OSError, _sp.TimeoutExpired):
+                                    pass
+                            if _is_root or _can_sudo:
+                                check_info(
+                                    "Install with: npx playwright install --with-deps chromium"
+                                )
+                            else:
+                                check_info(
+                                    "Install with: npx playwright install chromium"
+                                )
+                                check_info(
+                                    "Then run (once, with sudo): sudo npx playwright install-deps chromium"
+                                )
     elif _is_termux():
         check_info("Node.js not found (browser tools are optional in the tested Termux path)")
         check_info("Install Node.js on Termux with: pkg install nodejs")

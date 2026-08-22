@@ -1863,12 +1863,12 @@ Both keys are display-only and CLI-only: they are suppressed in quiet mode, when
 
 ### File-mutation verifier
 
-When `display.file_mutation_verifier` is `true` (default), Hermes appends a one-line advisory to the assistant's final response whenever a `write_file` or `patch` call failed during the turn and was never superseded by a successful write to the same path. This catches the "batch of parallel patches, half silently fail, model summarises success" class of over-claim without requiring you to manually run `git status` after every edit.
+When `display.file_mutation_verifier` is `true` (default), Hermes appends a one-line advisory to the assistant's final response whenever a `write_file` or `patch` call failed during the turn and was never superseded by a successful tracked write to the same path. This catches the "batch of parallel patches, half silently fail, model summarises success" class of over-claim. Because the verifier tracks `write_file` and `patch` rather than every possible filesystem effect, treat the footer as an unresolved-attempt warning and inspect the current state when another tool may have changed the target.
 
 Example footer:
 
 ```
-⚠️ File-mutation verifier: 3 file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
+⚠️ File-mutation verifier: 3 unresolved file-mutation failure(s) remain for this turn; verify the intended final state despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
   • concepts/automatic-organization.md — [patch] Could not find match for old_string
   • concepts/lora.md — [patch] Could not find match for old_string
   • concepts/rag-pipeline.md — [patch] Could not find match for old_string
@@ -1876,7 +1876,7 @@ Example footer:
 
 Set `file_mutation_verifier: false` (or `HERMES_FILE_MUTATION_VERIFIER=0`) to suppress the footer. The verifier only fires when real failures are outstanding at turn end — a model that retries a failed patch and succeeds within the same turn will not trigger it for that file.
 
-**Trust the verifier over the model's summary.** The footer means the listed files were **not** modified on disk, even if the assistant's closing message says the task is done. Common causes:
+**Treat the verifier as evidence of unresolved direct file-tool failures, not proof that a target was unchanged.** A listed path may have been modified earlier in the turn or through another approved tool such as `terminal`. Use `git status`, `read_file`, or another appropriate state check to determine the final result. Common causes of the tracked failure include:
 
 - **Write denied** — path is on the credential denylist or outside `HERMES_WRITE_SAFE_ROOT` (see [File write safety](./security.md#file-write-safety))
 - **Patch mismatch** — `old_string` did not match the file on disk
@@ -1885,7 +1885,7 @@ Set `file_mutation_verifier: false` (or `HERMES_FILE_MUTATION_VERIFIER=0`) to su
 Example footer when writes are blocked:
 
 ```
-⚠️ File-mutation verifier: 2 file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
+⚠️ File-mutation verifier: 2 unresolved file-mutation failure(s) remain for this turn; verify the intended final state despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
   • ~/.hermes/cron/jobs.json — [patch] Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (/path/to/project)
   • ~/.hermes/scripts/monitor.py — [write_file] Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (/path/to/project)
 ```

@@ -124,6 +124,138 @@ class TestSkillsDirectoryMount:
 
         assert mounts[0]["host_path"] == str(skills_dir)
 
+    def test_mount_source_is_stable_across_calls(self, tmp_path):
+        """Regression for #53630: sanitized mount source must be stable.
+
+        Once Hermes has returned a sanitized mount source for a skills dir
+        that contains a symlink, every subsequent call must return the *same*
+        path — never a fresh temp directory.  Otherwise a long-lived Docker
+        container that was bind-mounted to the old source loses its mount
+        contents the moment Hermes refreshes the copy.
+        """
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "legit.md").write_text("# real skill")
+        # Force the symlink-sanitized code path.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        (skills_dir / "evil_link").symlink_to(secret)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            first = get_skills_directory_mount()[0]["host_path"]
+            second = get_skills_directory_mount()[0]["host_path"]
+            third = get_skills_directory_mount()[0]["host_path"]
+
+        # The mount source must be stable across all calls.
+        assert first == second == third
+        # And it must live under a stable hermes-relative path, never
+        # /var/folders or /tmp (which is what broke long-lived containers).
+        assert first.startswith(str(hermes_home))
+        assert "hermes-skills-safe-" not in first
+        # The directory itself must still exist on disk.
+        assert Path(first).is_dir()
+        # And the legitimate file must be present.
+        assert (Path(first) / "legit.md").is_file()
+
+    def test_mount_source_refreshes_in_place(self, tmp_path):
+        """Regression for #53630: contents must be refreshed in place.
+
+        Adding a new non-symlink file to the source skills dir must show up
+        in the sanitized copy on the next call — without the copy's path
+        changing and without any prior files being lost.
+        """
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "old.md").write_text("old content")
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        (skills_dir / "evil_link").symlink_to(secret)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            first = get_skills_directory_mount()[0]["host_path"]
+            # Add a new file after the first call.
+            (skills_dir / "new.md").write_text("new content")
+            second = get_skills_directory_mount()[0]["host_path"]
+
+        # The path is stable.
+        assert first == second
+        safe_path = Path(first)
+        # Old content survives.
+        assert (safe_path / "old.md").read_text() == "old content"
+        # New content is present.
+        assert (safe_path / "new.md").read_text() == "new content"
+        # Symlink remains excluded.
+        assert not (safe_path / "evil_link").exists()
+
+    def test_mount_source_handles_file_to_dir_transition(self, tmp_path):
+        """A source path changing from a file to a directory must not raise.
+
+        Regression: `expected` used to track only the path, not its kind.  If
+        ``foo`` went from a file to a directory, the old ``safe_dir/foo`` file
+        was retained and ``target.mkdir()`` raised ``FileExistsError``.
+        """
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        # Force the symlink-sanitized path so we exercise the copy refresh.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        (skills_dir / "evil_link").symlink_to(secret)
+        # Start with a file at the transition path.
+        (skills_dir / "foo").write_text("file content")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            first = get_skills_directory_mount()[0]["host_path"]
+            safe_path = Path(first)
+            assert (safe_path / "foo").is_file()
+            assert (safe_path / "foo").read_text() == "file content"
+
+            # Replace the source file with a directory of the same name.
+            (skills_dir / "foo").unlink()
+            (skills_dir / "foo").mkdir()
+            (skills_dir / "foo" / "inner.md").write_text("inner content")
+            second = get_skills_directory_mount()[0]["host_path"]
+
+        # Path stays stable and the transition is handled cleanly.
+        assert first == second
+        assert (safe_path / "foo").is_dir()
+        assert (safe_path / "foo" / "inner.md").read_text() == "inner content"
+
+    def test_mount_source_handles_dir_to_file_transition(self, tmp_path):
+        """A source path changing from a directory to a file must copy correctly.
+
+        Regression: the reverse transition — ``foo`` going from a directory to
+        a file — used to copy into the stale ``safe_dir/foo`` directory instead
+        of replacing it with a file.
+        """
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        (skills_dir / "evil_link").symlink_to(secret)
+        # Start with a directory at the transition path.
+        (skills_dir / "foo").mkdir()
+        (skills_dir / "foo" / "old.md").write_text("old inner content")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            first = get_skills_directory_mount()[0]["host_path"]
+            safe_path = Path(first)
+            assert (safe_path / "foo").is_dir()
+
+            # Replace the source directory with a file of the same name.
+            (skills_dir / "foo" / "old.md").unlink()
+            (skills_dir / "foo").rmdir()
+            (skills_dir / "foo").write_text("now a file")
+            second = get_skills_directory_mount()[0]["host_path"]
+
+        # Path stays stable and the stale directory was replaced by a file.
+        assert first == second
+        assert (safe_path / "foo").is_file()
+        assert (safe_path / "foo").read_text() == "now a file"
+
 
 class TestIterSkillsFiles:
     def test_returns_files_skipping_symlinks(self, tmp_path):

@@ -71,6 +71,109 @@ def _clear_approval_state(monkeypatch):
     reset_session_vars()
 
 
+def test_run_job_does_not_inherit_delegated_child_context(monkeypatch, tmp_path):
+    """Cron is a root session even when its caller is a delegated child."""
+    from agent.delegation_context import (
+        delegated_child_context,
+        is_delegated_child_context,
+    )
+
+    class _DelegationProbeAgent:
+        def __init__(self, *args, **kwargs):
+            assert is_delegated_child_context() is False
+            assert get_session_env("HERMES_CRON_SESSION") == "1"
+
+        def run_conversation(self, prompt):
+            assert is_delegated_child_context() is False
+            assert get_session_env("HERMES_CRON_SESSION") == "1"
+            return {
+                "completed": True,
+                "failed": False,
+                "final_response": "cron root context",
+                "turn_exit_reason": "",
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setenv("HERMES_MODEL", "test-model")
+    monkeypatch.setattr("hermes_state.SessionDB", _DummySessionDB)
+    monkeypatch.setattr("run_agent.AIAgent", _DelegationProbeAgent)
+    monkeypatch.setattr(
+        "hermes_constants.resolve_reasoning_config", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "test-key", "base_url": None, "provider": "test-provider",
+            "api_mode": None, "command": None, "args": None,
+        },
+    )
+    monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", lambda: [])
+    monkeypatch.setattr(cron_scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(cron_scheduler, "get_fallback_chain", lambda _cfg: [])
+    monkeypatch.setattr(cron_scheduler, "_guard_job_credential_exfil", lambda _job: None)
+
+    with delegated_child_context():
+        success, _output, final_response, error = cron_scheduler.run_job({
+            "id": "delegated-cron", "name": "Delegated Cron", "prompt": "Run safely",
+            "schedule_display": "manual",
+        })
+        assert is_delegated_child_context() is True
+
+    assert success is True
+    assert error is None
+    assert final_response == "cron root context"
+
+
+def test_run_job_restores_delegated_context_when_cron_reset_raises(monkeypatch, tmp_path):
+    """A failing cron reset must not leak root identity back to the caller."""
+    from agent.delegation_context import (
+        delegated_child_context,
+        is_delegated_child_context,
+    )
+
+    class _RaisingResetVar:
+        def set(self, _value):
+            return object()
+
+        def reset(self, _token):
+            raise RuntimeError("cron reset failed")
+
+    monkeypatch.setenv("HERMES_MODEL", "test-model")
+    monkeypatch.setattr("hermes_state.SessionDB", _DummySessionDB)
+    monkeypatch.setattr("run_agent.AIAgent", _FakeCronAgent)
+    monkeypatch.setattr(
+        "hermes_constants.resolve_reasoning_config", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "***", "base_url": None, "provider": "test-provider",
+            "api_mode": None, "command": None, "args": None,
+        },
+    )
+    monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", lambda: [])
+    monkeypatch.setattr(cron_scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(cron_scheduler, "get_fallback_chain", lambda _cfg: [])
+    monkeypatch.setattr(cron_scheduler, "_guard_job_credential_exfil", lambda _job: None)
+    from gateway.session_context import _VAR_MAP
+
+    monkeypatch.setitem(_VAR_MAP, "HERMES_CRON_SESSION", _RaisingResetVar())
+
+    with delegated_child_context():
+        with pytest.raises(RuntimeError, match="cron reset failed"):
+            cron_scheduler.run_job(
+                {
+                    "id": "delegated-cron-reset-failure",
+                    "name": "Delegated Cron Reset Failure",
+                    "prompt": "Run safely",
+                    "schedule_display": "manual",
+                }
+            )
+        assert is_delegated_child_context() is True
+
+
 def _register_gateway_auto_approve(session_key: str) -> None:
     def _notify(_approval_data):
         with approval_module._lock:

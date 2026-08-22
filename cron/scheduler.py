@@ -57,6 +57,7 @@ from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
+    _DELEGATED_CHILD_CONTEXT,
     enter_non_dispatcher_owned_context,
     exit_non_dispatcher_owned_context,
 )
@@ -5492,6 +5493,7 @@ def run_job(
     _cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
     _cron_session_token = None
     _non_dispatcher_token = None
+    _delegated_child_token = None
     try:
         if not _cwd_lock_acquired:
             # Fail closed (#79768): running without the lock would let a
@@ -5514,6 +5516,12 @@ def run_job(
         # which would suppress the legacy os.environ fallback used by standalone
         # cron entrypoints and tests.
         _cron_session_token = _cron_session_var.set("1")
+
+        # A scheduled cron run is a root agent execution even if the scheduler
+        # was invoked from a delegated child. Clear the task-local marker before
+        # constructing AIAgent so schema/tool availability uses cron identity;
+        # reset it in finally so the caller's child isolation is unchanged.
+        _delegated_child_token = _DELEGATED_CHILD_CONTEXT.set(False)
 
         # Mark this job as NOT the dispatcher-owned kanban worker.
         #
@@ -6366,6 +6374,12 @@ def run_job(
         # clear_session_vars also clears _SESSION_CWD internally, so no
         # separate clear_session_cwd() call is needed.
         clear_session_vars(_ctx_tokens)
+        # Restore the caller's delegated-child identity first. A ContextVar
+        # reset can raise for a stale token, and this boundary must not leak
+        # cron's root identity back to the scheduler caller if another reset
+        # fails during cleanup.
+        if _delegated_child_token is not None:
+            _DELEGATED_CHILD_CONTEXT.reset(_delegated_child_token)
         if _cron_session_token is not None:
             _cron_session_var.reset(_cron_session_token)
         if _non_dispatcher_token is not None:

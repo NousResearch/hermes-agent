@@ -305,7 +305,181 @@ class TestStreamingAccumulator:
         assert tc[0].function.name == "terminal"
         assert tc[0].function.arguments == '{"command": "ls"}'
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_large_fragmented_tool_call_arguments_join_exactly(self, mock_close, mock_create):
+        """A large, highly-fragmented tool call assembles byte-identical JSON.
 
+        Regression for #92207: argument fragments are buffered in a list and
+        joined once at build time, so assembly is linear instead of quadratic.
+        """
+        import json
+
+        from run_agent import AIAgent
+
+        # ~1 MB payload delivered as ~4k small fragments.
+        value = "x" * (1024 * 1024)
+        expected = json.dumps({"payload": value})
+        # Split into small fragments like an SSE stream would deliver.
+        frag_len = 256
+        fragments = [
+            expected[i : i + frag_len] for i in range(0, len(expected), frag_len)
+        ]
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_big", name="write_file", arguments=fragments[0])
+            ]),
+        ]
+        chunks += [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments=frag)
+            ])
+            for frag in fragments[1:]
+        ]
+        chunks.append(_make_stream_chunk(finish_reason="tool_calls"))
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tc = response.choices[0].message.tool_calls
+        assert tc is not None
+        assert len(tc) == 1
+        assert tc[0].id == "call_big"
+        assert tc[0].function.name == "write_file"
+        assert tc[0].function.arguments == expected
+        assert json.loads(tc[0].function.arguments) == {"payload": value}
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("agent.relay_llm.stream")
+    def test_relay_finalizer_emits_joined_arguments(self, mock_relay_stream, mock_close, mock_create):
+        """The Relay finalizer payload carries a joined string, not fragments.
+
+        The finalizer feeds Relay's turn bookkeeping the OpenAI chat-completion
+        shape, so tool_call.function.arguments must be a string even though the
+        accumulator now stores fragments internally (#92207).
+        """
+        from run_agent import AIAgent
+
+        captured = {}
+        fake_stream = MagicMock()
+        fake_stream.final_response = None
+        fake_stream.__iter__.return_value = iter([
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="c1", name="search", arguments='{"q":')
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='"hello"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ])
+
+        def relay_stream_impl(*args, **kwargs):
+            captured["finalizer"] = kwargs.get("finalizer")
+            return fake_stream
+
+        mock_relay_stream.side_effect = relay_stream_impl
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([])
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        finalizer = captured.get("finalizer")
+        assert finalizer is not None
+        payload = finalizer()
+        tool_calls = payload["choices"][0]["message"]["tool_calls"]
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["function"]["name"] == "search"
+        assert tool_calls[0]["function"]["arguments"] == '{"q":"hello"}'
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_call_argument_assembly_is_chunk_boundary_invariant(self, mock_close, mock_create):
+        """Assembled arguments are byte-identical regardless of chunk boundaries.
+
+        Buffering fragments in a list and joining once (#92207) only pays off
+        if the join is boundary-invariant: the same JSON payload split into a
+        single chunk, many equal-size chunks, and odd/prime-size chunks (which
+        can split a multi-byte UTF-8 character across a boundary) must all
+        assemble to the exact same string.
+        """
+        import json
+
+        from run_agent import AIAgent
+
+        payload = json.dumps({"path": "/tmp/x", "content": "héllo wörld 日本語 " * 500})
+
+        def assemble(fragment_size):
+            fragments = [
+                payload[i : i + fragment_size]
+                for i in range(0, len(payload), fragment_size)
+            ] or [payload]
+
+            chunks = [
+                _make_stream_chunk(tool_calls=[
+                    _make_tool_call_delta(index=0, tc_id="call_x", name="write_file", arguments=fragments[0])
+                ]),
+            ]
+            chunks += [
+                _make_stream_chunk(tool_calls=[
+                    _make_tool_call_delta(index=0, arguments=frag)
+                ])
+                for frag in fragments[1:]
+            ]
+            chunks.append(_make_stream_chunk(finish_reason="tool_calls"))
+
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = iter(chunks)
+            mock_create.return_value = mock_client
+
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.api_mode = "chat_completions"
+            agent._interrupt_requested = False
+
+            response = agent._interruptible_streaming_api_call({})
+            return response.choices[0].message.tool_calls[0].function.arguments
+
+        # A single chunk, evenly-sized chunks, and prime-sized chunks (to
+        # cross multi-byte UTF-8 characters at arbitrary offsets).
+        results = {size: assemble(size) for size in (len(payload), 64, 7, 3, 1)}
+
+        for size, arguments in results.items():
+            assert arguments == payload, f"assembly diverged at fragment size {size}"
 
 
 

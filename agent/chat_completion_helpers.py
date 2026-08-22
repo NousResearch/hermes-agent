@@ -3970,7 +3970,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             return True
 
         def _relay_final_response() -> dict[str, Any]:
-            tool_calls = [tool_calls_acc[index] for index in sorted(tool_calls_acc)]
+            tool_calls = []
+            for index in sorted(tool_calls_acc):
+                entry = tool_calls_acc[index]
+                # Relay consumes the OpenAI response shape: function.arguments
+                # is the joined string, never the fragment buffer.
+                relay_tool = dict(entry)
+                relay_tool["function"] = {
+                    "name": entry["function"]["name"],
+                    "arguments": "".join(entry["function"]["arguments_parts"]),
+                }
+                tool_calls.append(relay_tool)
             return {
                 "model": model_name,
                 "choices": [
@@ -4208,7 +4218,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         tool_calls_acc[idx] = {
                             "id": _tc_id or "",
                             "type": "function",
-                            "function": {"name": "", "arguments": ""},
+                            "function": {"name": "", "arguments_parts": []},
                             "extra_content": None,
                         }
                     entry = tool_calls_acc[idx]
@@ -4234,7 +4244,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             entry["function"]["name"] = function_name
                         function_arguments = getattr(tc_function, "arguments", None)
                         if function_arguments:
-                            entry["function"]["arguments"] += function_arguments
+                            # Buffer fragments; join once at build time — a
+                            # per-chunk ``+=`` is quadratic on large tool calls
+                            # (#92207).
+                            entry["function"]["arguments_parts"].append(
+                                function_arguments
+                            )
                     extra = getattr(tc_delta, "extra_content", None)
                     if extra is None and hasattr(tc_delta, "model_extra"):
                         extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
@@ -4316,7 +4331,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             mock_tool_calls = []
             for idx in sorted(tool_calls_acc):
                 tc = tool_calls_acc[idx]
-                arguments = tc["function"]["arguments"]
+                arguments = "".join(tc["function"]["arguments_parts"])
                 tool_name = tc["function"]["name"] or "?"
                 if arguments and arguments.strip():
                     try:

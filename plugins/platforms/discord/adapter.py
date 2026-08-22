@@ -40,6 +40,22 @@ _DISCORD_MARKDOWN_LINK_LABEL_RE = re.compile(r"([\\\[\]])")
 _DISCORD_URL_LABEL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 
+def _discord_exception_detail(exc: BaseException) -> str:
+    """Return actionable Discord error detail without serializing internals."""
+    exception_type = type(exc).__name__
+    message = str(exc).strip()
+    if not message:
+        return exception_type
+    from agent.redact import redact_sensitive_text
+
+    safe_message = redact_sensitive_text(
+        message,
+        force=True,
+        redact_url_credentials=True,
+    ).strip()
+    return f"{exception_type}: {safe_message}" if safe_message else exception_type
+
+
 def _format_discord_markdown_link(label: str, url: str) -> str:
     """Return a Discord Markdown link whose label is not itself a URL.
 
@@ -77,6 +93,8 @@ _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.
 
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_SLASH_DISCOVERY_TERMINATE_GRACE_SECONDS = 1.0
+_DISCORD_SLASH_DISCOVERY_KILL_GRACE_SECONDS = 0.25
 # Discord enforces a hard cap of 100 global application (slash) commands per
 # app. Registering more makes the ENTIRE sync fail with error 30032
 # ("Maximum number of application commands reached"), which silently breaks
@@ -1114,6 +1132,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
+        self._slash_discovery_process: Optional[Any] = None
+        self._slash_discovery_cleanup_residual: Optional[dict[str, Any]] = None
+        self._slash_discovery_wait_residual_tasks: set[asyncio.Task] = set()
+        self._slash_discovery_cleanup_lock = asyncio.Lock()
         self._post_connect_task: Optional[asyncio.Task] = None
         # WebSocket-level liveness probe. Discord REST and Gateway are distinct
         # transports: a REST 200 cannot prove that this client is still receiving
@@ -1449,9 +1471,15 @@ class DiscordAdapter(BasePlatformAdapter):
                         guild_id,
                     )
 
-            # Register slash commands
+            # Discover potentially blocking plugin/skill metadata in a
+            # killable child. Only the parent mutates the command tree.
             if self._slash_commands:
-                self._register_slash_commands()
+                slash_metadata = await self._discover_slash_command_metadata()
+                # Give cancellation one final checkpoint after discovery. Once
+                # execution reaches the synchronous apply, the event loop cannot
+                # return a timeout midway through tree mutation.
+                await asyncio.sleep(0)
+                self._register_slash_commands(slash_metadata)
 
             # Start the bot in background
             self._disconnecting = False
@@ -1471,6 +1499,12 @@ class DiscordAdapter(BasePlatformAdapter):
             self._start_liveness_probe()
             return True
 
+        except asyncio.CancelledError:
+            # The runner cancels connect() when its wall-clock deadline wins.
+            # Teardown before propagating cancellation so no client or
+            # Bot.start task can outlive the timed-out adapter.
+            await self.disconnect()
+            raise
         except asyncio.TimeoutError:
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
             # Cancel the background bot task so it cannot fire on_message after
@@ -3573,7 +3607,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
-            result = SendResult(success=False, error=str(e))
+            result = SendResult(success=False, error=_discord_exception_detail(e))
             await asyncio.to_thread(
                 self._record_discord_response,
                 reply_to=reply_to,
@@ -3611,7 +3645,10 @@ class DiscordAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
-            return SendResult(success=False, error=f"Forum thread creation failed: {e}")
+            return SendResult(
+                success=False,
+                error=f"Forum thread creation failed: {_discord_exception_detail(e)}",
+            )
 
         thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
         thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
@@ -3627,7 +3664,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 msg = await thread_channel.send(content=chunk)
                 message_ids.append(str(msg.id))
             except Exception as e:
-                warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
+                warning = (
+                    f"Failed to send follow-up chunk to forum thread {thread_id}: "
+                    f"{_discord_exception_detail(e)}"
+                )
                 logger.warning("[%s] %s", self.name, warning)
                 warnings.append(warning)
 
@@ -3688,7 +3728,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 getattr(forum_channel, "id", "?"),
                 e,
             )
-            return SendResult(success=False, error=f"Forum thread creation failed: {e}")
+            return SendResult(
+                success=False,
+                error=f"Forum thread creation failed: {_discord_exception_detail(e)}",
+            )
 
         thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
         thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
@@ -3824,7 +3867,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return result
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=_discord_exception_detail(e))
 
     @staticmethod
     def _is_length_overflow_error(err: Exception) -> bool:
@@ -3882,7 +3925,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 "[%s] Overflow split: first-chunk edit failed: %s",
                 self.name, e, exc_info=True,
             )
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=_discord_exception_detail(e))
 
         # Step 2 — send each remaining chunk threaded as a reply to the prior.
         continuation_ids: list[str] = []
@@ -5832,10 +5875,123 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
-    def _register_slash_commands(self) -> None:
+    async def cancel_slash_discovery(self) -> None:
+        """Idempotently terminate and reap the active discovery child."""
+        async with self._slash_discovery_cleanup_lock:
+            process = self._slash_discovery_process
+            if process is None:
+                return
+            try:
+                if process.returncode is None:
+                    try:
+                        process.terminate()
+                    except ProcessLookupError:
+                        pass
+                    wait_task = asyncio.create_task(process.wait())
+                    done, _pending = await asyncio.wait(
+                        {wait_task},
+                        timeout=_DISCORD_SLASH_DISCOVERY_TERMINATE_GRACE_SECONDS,
+                    )
+                    if wait_task not in done:
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+                        done, _pending = await asyncio.wait(
+                            {wait_task},
+                            timeout=_DISCORD_SLASH_DISCOVERY_KILL_GRACE_SECONDS,
+                        )
+                    if wait_task not in done:
+                        residual = {
+                            "pid": getattr(process, "pid", None),
+                            "state": "killed_but_wait_unconfirmed",
+                        }
+                        self._slash_discovery_cleanup_residual = residual
+                        logger.warning(
+                            "[%s] Slash discovery child pid=%s did not confirm "
+                            "exit after kill; recording residual cleanup state",
+                            self.name,
+                            getattr(process, "pid", "unknown"),
+                        )
+                        wait_task.cancel()
+                        self._slash_discovery_wait_residual_tasks.add(wait_task)
+
+                        def _wait_residual_done(done_task: asyncio.Task) -> None:
+                            self._slash_discovery_wait_residual_tasks.discard(done_task)
+                            try:
+                                done_task.result()
+                            except asyncio.CancelledError:
+                                pass
+                            except Exception:
+                                logger.warning(
+                                    "[%s] Slash discovery residual wait failed",
+                                    self.name,
+                                    exc_info=True,
+                                )
+                            else:
+                                if self._slash_discovery_cleanup_residual is residual:
+                                    self._slash_discovery_cleanup_residual = None
+
+                        wait_task.add_done_callback(_wait_residual_done)
+                    else:
+                        await wait_task
+                        self._slash_discovery_cleanup_residual = None
+                else:
+                    await process.wait()
+                    self._slash_discovery_cleanup_residual = None
+            finally:
+                if self._slash_discovery_process is process:
+                    self._slash_discovery_process = None
+
+    async def _discover_slash_command_metadata(self) -> dict[str, Any]:
+        """Run the single slash-discovery implementation in a child process."""
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "hermes_cli.discord_slash_discovery",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self._slash_discovery_cleanup_residual = None
+        self._slash_discovery_process = process
+        try:
+            stdout, stderr = await process.communicate()
+        except BaseException:
+            await self.cancel_slash_discovery()
+            raise
+        finally:
+            if process.returncode is not None and self._slash_discovery_process is process:
+                self._slash_discovery_process = None
+
+        if process.returncode != 0:
+            detail = stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                "Discord slash-command discovery failed"
+                + (f": {detail}" if detail else "")
+            )
+        try:
+            payload = json.loads(stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Discord slash-command discovery returned invalid JSON") from exc
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            raise RuntimeError("Discord slash-command discovery returned an unsupported schema")
+        return payload
+
+    def _register_slash_commands(
+        self,
+        discovered: Optional[dict[str, Any]] = None,
+    ) -> None:
         """Register Discord slash commands on the command tree."""
         if not self._client:
             return
+
+        if discovered is None:
+            from hermes_cli.discord_slash_discovery import (
+                discover_discord_slash_metadata,
+            )
+
+            discovered = discover_discord_slash_metadata()
 
         tree = self._client.tree
 
@@ -6046,29 +6202,25 @@ class DiscordAdapter(BasePlatformAdapter):
         slot_cap = _DISCORD_MAX_APP_COMMANDS - 1
         dropped_over_cap = 0
         try:
-            from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
-
             try:
                 already_registered = {cmd.name for cmd in tree.get_commands()}
             except Exception:
                 pass
 
-            config_overrides = _resolve_config_gates()
-
-            for cmd_def in COMMAND_REGISTRY:
-                if not _is_gateway_available(cmd_def, config_overrides):
-                    continue
+            for command_name, command_description, command_args_hint in discovered.get(
+                "commands", []
+            ):
                 # Discord command names: lowercase, hyphens OK, max 32 chars.
-                discord_name = cmd_def.name.lower()[:32]
+                discord_name = command_name.lower()[:32]
                 if discord_name in already_registered:
                     continue
                 if len(already_registered) >= slot_cap:
                     dropped_over_cap += 1
                     continue
                 auto_cmd = _build_auto_slash_command(
-                    cmd_def.name,
-                    cmd_def.description,
-                    cmd_def.args_hint,
+                    command_name,
+                    command_description,
+                    command_args_hint,
                 )
                 try:
                     tree.add_command(auto_cmd)
@@ -6091,9 +6243,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # autocomplete UX as for built-in commands. No per-platform plugin
         # API needed — plugin commands are platform-agnostic.
         try:
-            from hermes_cli.commands import _iter_plugin_command_entries
-
-            for plugin_name, plugin_desc, plugin_args_hint in _iter_plugin_command_entries():
+            for plugin_name, plugin_desc, plugin_args_hint in discovered.get(
+                "plugins", []
+            ):
                 discord_name = plugin_name.lower()[:32]
                 if discord_name in already_registered:
                     continue
@@ -6120,7 +6272,11 @@ class DiscordAdapter(BasePlatformAdapter):
         # Register skills under a single /skill command group with category
         # subcommand groups.  This uses 1 top-level slot instead of N,
         # supporting up to 25 categories × 25 skills = 625 skills.
-        self._register_skill_group(tree)
+        self._register_skill_group(
+            tree,
+            discovered_entries=discovered.get("skills", []),
+            discovered_hidden=int(discovered.get("skill_hidden", 0)),
+        )
 
         if dropped_over_cap:
             # Staying under the cap keeps the whole sync succeeding; without
@@ -6184,7 +6340,13 @@ class DiscordAdapter(BasePlatformAdapter):
             applied,
         )
 
-    def _register_skill_group(self, tree) -> None:
+    def _register_skill_group(
+        self,
+        tree,
+        *,
+        discovered_entries: Optional[list] = None,
+        discovered_hidden: int = 0,
+    ) -> None:
         """Register a single ``/skill`` command with autocomplete on the name.
 
         Discord enforces an ~8000-byte per-command payload limit. The older
@@ -6223,7 +6385,25 @@ class DiscordAdapter(BasePlatformAdapter):
             self._skill_entries: list[tuple[str, str, str]] = []
             self._skill_lookup: dict[str, tuple[str, str]] = {}
             self._skill_group_reserved_names: set[str] = set(existing_names)
-            self._refresh_skill_catalog_state()
+            if discovered_entries is None:
+                self._refresh_skill_catalog_state()
+            else:
+                entries: list[tuple[str, str, str]] = []
+                names_used = set(existing_names)
+                hidden = discovered_hidden
+                for name, description, command_key in discovered_entries:
+                    if name in names_used:
+                        hidden += 1
+                        continue
+                    names_used.add(name)
+                    entries.append((name, description, command_key))
+                entries.sort(key=lambda entry: entry[0])
+                self._skill_entries = entries
+                self._skill_lookup = {
+                    name: (description, command_key)
+                    for name, description, command_key in entries
+                }
+                self._skill_group_hidden_count = hidden
 
             if not self._skill_entries:
                 return
@@ -7186,7 +7366,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 return {
                     "error": (
                         "Discord rejected direct thread creation and the fallback also failed. "
-                        f"Direct error: {direct_error}. Fallback error: {fallback_error}"
+                        f"Direct error: {_discord_exception_detail(direct_error)}. "
+                        f"Fallback error: {_discord_exception_detail(fallback_error)}"
                     )
                 }
 
@@ -7547,7 +7728,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(msg.id))
 
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=_discord_exception_detail(e))
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
@@ -7591,7 +7772,7 @@ class DiscordAdapter(BasePlatformAdapter):
             view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=_discord_exception_detail(e))
 
     async def send_clarify(
         self,
@@ -7718,7 +7899,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=_discord_exception_detail(e))
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
@@ -7760,7 +7941,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._nonconversational_messages.mark_many([str(msg.id)])
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=_discord_exception_detail(e))
 
     async def send_model_picker(
         self,
@@ -7822,7 +8003,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except Exception as e:
             logger.warning("[%s] send_model_picker failed: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=_discord_exception_detail(e))
 
     async def send_choice_picker(
         self,
@@ -7870,7 +8051,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except Exception as e:
             logger.warning("[%s] send_choice_picker failed: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=_discord_exception_detail(e))
 
     def _get_parent_channel_id(self, channel: Any) -> Optional[str]:
         """Return the parent channel ID for a Discord thread-like channel, if present."""
@@ -10080,7 +10261,12 @@ async def _standalone_send(
                                     _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
                                 )
                         except Exception as e:
-                            return {"error": _standalone_sanitize_error(f"Discord forum thread upload failed: {e}")}
+                            return {
+                                "error": _standalone_sanitize_error(
+                                    "Discord forum thread upload failed: "
+                                    f"{_discord_exception_detail(e)}"
+                                )
+                            }
                     else:
                         # No media — simple JSON POST creates the thread with
                         # just the text starter.
@@ -10187,7 +10373,9 @@ async def _standalone_send(
                                 _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
                             )
                 except Exception as e:
-                    warning = _standalone_sanitize_error(f"Failed to send media {media_path}: {e}")
+                    warning = _standalone_sanitize_error(
+                        f"Failed to send media {media_path}: {_discord_exception_detail(e)}"
+                    )
                     logger.error(warning)
                     warnings.append(warning)
 
@@ -10202,10 +10390,12 @@ async def _standalone_send(
             result["warnings"] = warnings
         return result
     except Exception as e:
-        # Include the exception type: TimeoutError().str() is empty, so
-        # "Discord send failed: " alone gave no diagnostic signal.
         logger.error("Discord standalone send failed", exc_info=True)
-        return {"error": _standalone_sanitize_error(f"Discord send failed: {type(e).__name__}: {e}")}
+        return {
+            "error": _standalone_sanitize_error(
+                f"Discord send failed: {_discord_exception_detail(e)}"
+            )
+        }
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────

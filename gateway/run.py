@@ -82,6 +82,8 @@ from hermes_cli.fallback_config import get_fallback_chain
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
+_ADAPTER_CONNECT_CLEANUP_TIMEOUT_SECS = 2.0
+_ADAPTER_CONNECT_SHUTDOWN_CLEANUP_TIMEOUT_SECS = 0.25
 # Telegram cold polling now proves one real getUpdates round trip before connect
 # returns. Leave enough outer budget for initialize/deleteWebhook/start_polling
 # wall deadlines plus readiness; other platforms retain the 30s isolation bound.
@@ -7236,6 +7238,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+        # Cleanup hooks that exceeded their hard connect-time bound remain
+        # owned and observable until they finish. The residual metadata does
+        # not retain adapters; only the exceptional task itself can do so.
+        self._connect_cleanup_tasks: set[asyncio.Task] = set()
+        self._connect_cleanup_residuals: dict[asyncio.Task, dict[str, Any]] = {}
 
         # Event-loop liveness heartbeat (#66892): rewritten every 30s while
         # the loop is dispatching. External supervisors use the file mtime /
@@ -7692,6 +7699,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT
         return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
 
+    async def _wait_for_pending_connect_cleanups(self) -> None:
+        """Make one bounded shutdown pass over residual connect cleanups."""
+        tasks = set(getattr(self, "_connect_cleanup_tasks", set()))
+        if not tasks:
+            return
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=_ADAPTER_CONNECT_SHUTDOWN_CLEANUP_TIMEOUT_SECS,
+        )
+        if pending:
+            residuals = getattr(self, "_connect_cleanup_residuals", {})
+            logger.warning(
+                "Shutdown leaving %d tracked connect cleanup(s) pending: %r",
+                len(pending),
+                [residuals.get(task) for task in pending],
+            )
+
     async def _connect_adapter_with_timeout(
         self, adapter, platform, *, is_reconnect: bool = False, initial: bool = False
     ) -> bool:
@@ -7719,17 +7743,101 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         task = asyncio.ensure_future(
             adapter.connect(is_reconnect=is_reconnect)
         )
+
+        def _track_pending_cleanup(cleanup_task: asyncio.Task) -> None:
+            tasks = getattr(self, "_connect_cleanup_tasks", None)
+            if tasks is None:
+                tasks = set()
+                self._connect_cleanup_tasks = tasks
+            residuals = getattr(self, "_connect_cleanup_residuals", None)
+            if residuals is None:
+                residuals = {}
+                self._connect_cleanup_residuals = residuals
+            process = getattr(adapter, "_slash_discovery_process", None)
+            residuals[cleanup_task] = {
+                "platform": platform.value,
+                "pid": getattr(process, "pid", None),
+                "state": "cleanup_pending_after_hard_timeout",
+            }
+            tasks.add(cleanup_task)
+
+            def _cleanup_done(done_task: asyncio.Task) -> None:
+                tasks.discard(done_task)
+                residual = residuals.pop(done_task, None)
+                try:
+                    done_task.result()
+                except asyncio.CancelledError:
+                    logger.warning(
+                        "%s connect residual cleanup was cancelled (%r)",
+                        platform.value,
+                        residual,
+                    )
+                except Exception:
+                    logger.warning(
+                        "%s connect residual cleanup failed (%r)",
+                        platform.value,
+                        residual,
+                        exc_info=True,
+                    )
+
+            cleanup_task.add_done_callback(_cleanup_done)
+
+        async def _cancel_connect() -> None:
+            task.cancel()
+            cleanup = getattr(adapter, "cancel_slash_discovery", None)
+            if callable(cleanup):
+                # Discord's synchronous plugin imports run in a child process.
+                # Reap it before releasing the runner at the deadline; a done
+                # callback alone owns the task but cannot own an OS process.
+                cleanup_task = asyncio.create_task(cleanup())
+                try:
+                    done, _pending = await asyncio.wait(
+                        {cleanup_task},
+                        timeout=_ADAPTER_CONNECT_CLEANUP_TIMEOUT_SECS,
+                    )
+                except asyncio.CancelledError:
+                    _track_pending_cleanup(cleanup_task)
+                    logger.warning(
+                        "%s connect cleanup wait was cancelled; cleanup remains tracked",
+                        platform.value,
+                    )
+                else:
+                    if cleanup_task not in done:
+                        _track_pending_cleanup(cleanup_task)
+                        residual = self._connect_cleanup_residuals[cleanup_task]
+                        logger.warning(
+                            "%s connect cleanup exceeded %.1fs; preserving original "
+                            "connect outcome with residual=%r",
+                            platform.value,
+                            _ADAPTER_CONNECT_CLEANUP_TIMEOUT_SECS,
+                            residual,
+                        )
+                    else:
+                        try:
+                            await cleanup_task
+                        except asyncio.CancelledError:
+                            logger.warning(
+                                "%s connect cleanup was cancelled; preserving the "
+                                "original connect outcome",
+                                platform.value,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "%s connect cleanup failed after cancellation",
+                                platform.value,
+                                exc_info=True,
+                            )
+            task.add_done_callback(consume_detached_task_result)
+
         try:
             done, _pending = await asyncio.wait({task}, timeout=timeout)
         except asyncio.CancelledError:
-            task.cancel()
-            task.add_done_callback(consume_detached_task_result)
+            await _cancel_connect()
             raise
         if task in done:
             result = await task
             return bool(result)
-        task.cancel()
-        task.add_done_callback(consume_detached_task_result)
+        await _cancel_connect()
         raise TimeoutError(
             f"{platform.value} connect timed out after {timeout:g}s"
         )
@@ -14912,6 +15020,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _amap.clear()
             if hasattr(self, "_profile_adapters"):
                 self._profile_adapters.clear()
+            await self._wait_for_pending_connect_cleanups()
             logger.info(
                 "Shutdown phase: all adapters disconnected at +%.2fs",
                 _phase_elapsed(),

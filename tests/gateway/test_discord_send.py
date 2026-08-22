@@ -3,9 +3,12 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import ClientResponseError, RequestInfo
+from multidict import CIMultiDict, CIMultiDictProxy
+from yarl import URL
 
 from gateway.config import PlatformConfig
 
@@ -44,7 +47,23 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+import discord as _discord_mod  # noqa: E402 — imported after _ensure_discord_mock
+from plugins.platforms.discord.adapter import (  # noqa: E402
+    DiscordAdapter,
+    _remember_channel_is_forum,
+    _standalone_send,
+)
+
+
+def _response_error_with_authorization(canary: str) -> ClientResponseError:
+    headers = CIMultiDictProxy(CIMultiDict({"Authorization": f"Bot {canary}"}))
+    url = URL("https://discord.com/api/v10/channels/555/messages")
+    return ClientResponseError(
+        RequestInfo(url=url, method="POST", headers=headers, real_url=url),
+        (),
+        status=401,
+        message="request failed",
+    )
 
 
 @pytest.mark.asyncio
@@ -151,11 +170,112 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
     assert send_calls[2]["reference"] is None
 
 
+@pytest.mark.asyncio
+async def test_send_failure_preserves_empty_string_exception_type(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(send=AsyncMock(side_effect=TimeoutError()))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "hello")
+
+    assert result.success is False
+    assert result.error == "TimeoutError"
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_preserves_empty_string_exception_type():
+    chat_id = "999000333"
+    _remember_channel_is_forum(chat_id, False)
+    config = SimpleNamespace(token="bot-token", extra={})
+
+    with patch("aiohttp.ClientSession", side_effect=TimeoutError()):
+        result = await _standalone_send(config, chat_id, "hello")
+
+    assert result == {"error": "Discord send failed: TimeoutError"}
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_does_not_expose_exception_request_headers():
+    canary = "discord-auth-canary-value"
+    error = _response_error_with_authorization(canary)
+    chat_id = "999000334"
+    _remember_channel_is_forum(chat_id, False)
+    config = SimpleNamespace(token="bot-token", extra={})
+
+    with patch("aiohttp.ClientSession", side_effect=error):
+        result = await _standalone_send(config, chat_id, "hello")
+
+    rendered = result["error"]
+    assert canary not in rendered
+    assert "Authorization" not in rendered
+    assert "RequestInfo" not in rendered
+    assert rendered == (
+        "Discord send failed: ClientResponseError: 401, message='request failed', "
+        "url='https://discord.com/api/v10/channels/555/messages'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_send_does_not_expose_exception_request_headers(tmp_path, monkeypatch):
+    canary = "discord-live-auth-canary"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    error = _response_error_with_authorization(canary)
+    channel = SimpleNamespace(send=AsyncMock(side_effect=error))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "hello")
+
+    assert result.error is not None
+    assert canary not in result.error
+    assert "Authorization" not in result.error
+    assert "RequestInfo" not in result.error
+    assert result.error == (
+        "ClientResponseError: 401, message='request failed', "
+        "url='https://discord.com/api/v10/channels/555/messages'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_thread_failure_preserves_both_empty_exception_types():
+    class FakeInteraction(_discord_mod.Interaction):
+        pass
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    parent_channel = SimpleNamespace(
+        create_thread=AsyncMock(side_effect=TimeoutError()),
+        send=AsyncMock(side_effect=TimeoutError()),
+    )
+    interaction = object.__new__(FakeInteraction)
+    object.__setattr__(interaction, "channel", parent_channel)
+    object.__setattr__(
+        interaction,
+        "user",
+        SimpleNamespace(display_name="Tester"),
+    )
+
+    result = await adapter._create_thread(interaction, name="incident")
+
+    assert result == {
+        "error": (
+            "Discord rejected direct thread creation and the fallback also failed. "
+            "Direct error: TimeoutError. Fallback error: TimeoutError"
+        )
+    }
+
+
 # ---------------------------------------------------------------------------
 # Forum channel tests
 # ---------------------------------------------------------------------------
-
-import discord as _discord_mod  # noqa: E402 — imported after _ensure_discord_mock
 
 
 class TestIsForumParent:
@@ -356,7 +476,7 @@ async def test_send_video_fails_loud_when_message_has_no_attachments(tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_send_video_missing_file_fails_fast_without_touching_channel():
+async def test_send_video_missing_file_fails_fast_without_touching_channel(monkeypatch):
     """A missing MEDIA path must fail loud before any Discord I/O (#66797).
 
     The pre-flight ``os.path.isfile`` guard turns a would-be crash inside
@@ -367,7 +487,14 @@ async def test_send_video_missing_file_fails_fast_without_touching_channel():
         raise AssertionError("channel must not be resolved for a missing file")
 
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
-    adapter._client = SimpleNamespace(get_channel=_boom, fetch_channel=AsyncMock(side_effect=_boom))
+    monkeypatch.setattr(
+        adapter,
+        "_client",
+        SimpleNamespace(
+            get_channel=_boom,
+            fetch_channel=AsyncMock(side_effect=_boom),
+        ),
+    )
 
     result = await adapter.send_video("555", "/no/such/clip.mp4")
 
@@ -403,9 +530,13 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
         id=7,
         create_thread=AsyncMock(return_value=created_thread),
     )
-    adapter._client = SimpleNamespace(
-        get_channel=lambda _chat_id: forum_channel,
-        fetch_channel=AsyncMock(),
+    monkeypatch.setattr(
+        adapter,
+        "_client",
+        SimpleNamespace(
+            get_channel=lambda _chat_id: forum_channel,
+            fetch_channel=AsyncMock(),
+        ),
     )
     monkeypatch.setattr(adapter, "_is_forum_parent", lambda _ch: True)
 
@@ -416,5 +547,3 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
     thread_kwargs = forum_channel.create_thread.await_args.kwargs
     assert thread_kwargs.get("file") is None
     assert isinstance(thread_kwargs.get("files"), list) and len(thread_kwargs["files"]) == 1
-
-

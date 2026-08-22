@@ -2,12 +2,14 @@ import asyncio
 import json
 import os
 import sys
+import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
+from gateway.run import GatewayRunner
 
 
 class _FakeAllowedMentions:
@@ -50,6 +52,7 @@ def _ensure_discord_mock():
         discord_mod.app_commands = SimpleNamespace(
             describe=lambda **kwargs: (lambda fn: fn),
             choices=lambda **kwargs: (lambda fn: fn),
+            autocomplete=lambda **kwargs: (lambda fn: fn),
             Choice=lambda **kwargs: SimpleNamespace(**kwargs),
         )
         discord_mod.opus = SimpleNamespace(is_loaded=lambda: True)
@@ -63,12 +66,16 @@ def _ensure_discord_mock():
         sys.modules.setdefault("discord.ext", ext_mod)
         sys.modules.setdefault("discord.ext.commands", commands_mod)
 
+    app_commands = getattr(sys.modules["discord"], "app_commands", None)
+    if app_commands is not None and not hasattr(app_commands, "autocomplete"):
+        app_commands.autocomplete = lambda **kwargs: (lambda fn: fn)
     sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
 
 
 _ensure_discord_mock()
 
 import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
+import gateway.run as gateway_run  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
@@ -296,6 +303,430 @@ async def test_connect_timeout_cancels_bot_task(monkeypatch):
         "leaving it alive creates a zombie Discord client that produces duplicate threads"
     )
 
+
+@pytest.mark.asyncio
+async def test_outer_connect_deadline_covers_sync_slash_discovery(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    runner = object.__new__(GatewayRunner)
+    runner._platform_connect_timeout_secs = lambda _platform: 0.01
+    process_started = asyncio.Event()
+    process_reaped = asyncio.Event()
+    process_killed = asyncio.Event()
+
+    class HangingDiscoveryProcess:
+        returncode = None
+        stdout = None
+        stderr = None
+
+        async def communicate(self):
+            process_started.set()
+            await asyncio.Future()
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            self.returncode = -9
+            process_killed.set()
+            process_reaped.set()
+
+        async def wait(self):
+            await process_reaped.wait()
+            return self.returncode
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock", lambda scope, identity: None
+    )
+    intents = SimpleNamespace(
+        message_content=False,
+        dm_messages=False,
+        guild_messages=False,
+        members=False,
+        voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(discord_platform.commands, "Bot", FakeBot)
+    monkeypatch.setattr(
+        discord_platform,
+        "_DISCORD_SLASH_DISCOVERY_TERMINATE_GRACE_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        discord_platform,
+        "_DISCORD_SLASH_DISCOVERY_KILL_GRACE_SECONDS",
+        0.01,
+    )
+    register = MagicMock()
+    monkeypatch.setattr(adapter, "_register_slash_commands", register)
+    create_process = AsyncMock(return_value=HangingDiscoveryProcess())
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+
+    started = time.monotonic()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            runner._connect_adapter_with_timeout(adapter, Platform.DISCORD),
+            timeout=0.5,
+        )
+    elapsed = time.monotonic() - started
+    await asyncio.sleep(0)
+
+    assert elapsed < 0.5
+    assert process_started.is_set()
+    assert process_killed.is_set()
+    assert process_reaped.is_set()
+    create_process.assert_awaited_once_with(
+        sys.executable,
+        "-m",
+        "hermes_cli.discord_slash_discovery",
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    register.assert_not_called()
+    assert adapter._slash_discovery_process is None
+    assert adapter._slash_discovery_wait_residual_tasks == set()
+    assert adapter._bot_task is None
+    assert adapter._client is None
+    assert getattr(runner, "_connect_cleanup_tasks", set()) == set()
+    assert getattr(runner, "_connect_cleanup_residuals", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_connect_deadline_does_not_wait_forever_after_discovery_kill(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    runner = object.__new__(GatewayRunner)
+    runner._platform_connect_timeout_secs = lambda _platform: 0.01
+    process_started = asyncio.Event()
+    kill_attempted = asyncio.Event()
+    wait_suppressed_cancellation = asyncio.Event()
+    release_wait = asyncio.Event()
+
+    class UnreapableDiscoveryProcess:
+        pid = 424242
+        returncode = None
+        stdout = None
+        stderr = None
+
+        async def communicate(self):
+            process_started.set()
+            await asyncio.Future()
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            kill_attempted.set()
+
+        async def wait(self):
+            while not release_wait.is_set():
+                try:
+                    await release_wait.wait()
+                except asyncio.CancelledError:
+                    wait_suppressed_cancellation.set()
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock", lambda scope, identity: None
+    )
+    intents = SimpleNamespace(
+        message_content=False,
+        dm_messages=False,
+        guild_messages=False,
+        members=False,
+        voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(discord_platform.commands, "Bot", FakeBot)
+    monkeypatch.setattr(
+        discord_platform,
+        "_DISCORD_SLASH_DISCOVERY_TERMINATE_GRACE_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        discord_platform,
+        "_DISCORD_SLASH_DISCOVERY_KILL_GRACE_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=UnreapableDiscoveryProcess()),
+    )
+
+    try:
+        with pytest.raises(TimeoutError, match="discord connect timed out"):
+            await asyncio.wait_for(
+                runner._connect_adapter_with_timeout(adapter, Platform.DISCORD),
+                timeout=0.2,
+            )
+
+        assert process_started.is_set()
+        assert kill_attempted.is_set()
+        assert wait_suppressed_cancellation.is_set()
+        assert adapter._slash_discovery_process is None
+        assert adapter._slash_discovery_cleanup_residual == {
+            "pid": 424242,
+            "state": "killed_but_wait_unconfirmed",
+        }
+        assert len(adapter._slash_discovery_wait_residual_tasks) == 1
+    finally:
+        release_wait.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    assert adapter._slash_discovery_wait_residual_tasks == set()
+    assert adapter._slash_discovery_cleanup_residual is None
+
+
+@pytest.mark.asyncio
+async def test_connect_timeout_preserved_when_cleanup_never_returns(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    runner._platform_connect_timeout_secs = lambda _platform: 0.01
+    cleanup_started = asyncio.Event()
+    cleanup_suppressed_cancellation = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    class AdapterWithHungCleanup:
+        async def connect(self, *, is_reconnect=False):
+            await asyncio.Future()
+
+        async def cancel_slash_discovery(self):
+            cleanup_started.set()
+            while not release_cleanup.is_set():
+                try:
+                    await release_cleanup.wait()
+                except asyncio.CancelledError:
+                    cleanup_suppressed_cancellation.set()
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_ADAPTER_CONNECT_CLEANUP_TIMEOUT_SECS",
+        0.01,
+    )
+
+    connect_task = asyncio.create_task(
+        runner._connect_adapter_with_timeout(
+            AdapterWithHungCleanup(),
+            Platform.DISCORD,
+        )
+    )
+    done, _pending = await asyncio.wait({connect_task}, timeout=0.08)
+    returned_within_hard_bound = connect_task in done
+
+    with pytest.raises(TimeoutError, match="discord connect timed out"):
+        await connect_task
+
+    assert cleanup_started.is_set()
+    assert returned_within_hard_bound is True
+    residual_task = next(iter(runner._connect_cleanup_tasks))
+    monkeypatch.setattr(
+        gateway_run,
+        "_ADAPTER_CONNECT_SHUTDOWN_CLEANUP_TIMEOUT_SECS",
+        0.01,
+    )
+    await asyncio.wait_for(runner._wait_for_pending_connect_cleanups(), timeout=0.08)
+    assert residual_task in runner._connect_cleanup_tasks
+
+    residual_task.cancel()
+    await cleanup_suppressed_cancellation.wait()
+    release_cleanup.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert runner._connect_cleanup_tasks == set()
+    assert runner._connect_cleanup_residuals == {}
+
+
+@pytest.mark.asyncio
+async def test_connect_cancellation_preserved_when_cleanup_never_returns(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    runner._platform_connect_timeout_secs = lambda _platform: 30.0
+    connect_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    class AdapterWithHungCleanup:
+        async def connect(self, *, is_reconnect=False):
+            connect_started.set()
+            await asyncio.Future()
+
+        async def cancel_slash_discovery(self):
+            cleanup_started.set()
+            await release_cleanup.wait()
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_ADAPTER_CONNECT_CLEANUP_TIMEOUT_SECS",
+        0.01,
+    )
+    connect_task = asyncio.create_task(
+        runner._connect_adapter_with_timeout(
+            AdapterWithHungCleanup(),
+            Platform.DISCORD,
+        )
+    )
+    await connect_started.wait()
+    connect_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(connect_task, timeout=0.2)
+
+    assert cleanup_started.is_set()
+    assert len(runner._connect_cleanup_tasks) == 1
+    release_cleanup.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert runner._connect_cleanup_tasks == set()
+    assert runner._connect_cleanup_residuals == {}
+
+
+@pytest.mark.asyncio
+async def test_connect_cancellation_before_parent_apply_does_not_mutate_tree(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    async def discovery_then_cancel():
+        current_task = asyncio.current_task()
+        assert current_task is not None
+        asyncio.get_running_loop().call_soon(current_task.cancel)
+        return {"schema_version": 1, "commands": [], "plugins": [], "skills": []}
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock", lambda scope, identity: None
+    )
+    intents = SimpleNamespace(
+        message_content=False,
+        dm_messages=False,
+        guild_messages=False,
+        members=False,
+        voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(discord_platform.commands, "Bot", FakeBot)
+    monkeypatch.setattr(adapter, "_discover_slash_command_metadata", discovery_then_cancel)
+    register = MagicMock()
+    monkeypatch.setattr(adapter, "_register_slash_commands", register)
+
+    with pytest.raises(asyncio.CancelledError):
+        await adapter.connect()
+
+    register.assert_not_called()
+    assert adapter._bot_task is None
+    assert adapter._client is None
+
+
+@pytest.mark.asyncio
+async def test_successful_discovery_metadata_is_applied_before_bot_start(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    metadata = {
+        "schema_version": 1,
+        "commands": [["status", "Show status", ""]],
+        "plugins": [["wave", "Wave hello", "[name]"]],
+        "skills": [["proof", "Run proof", "/proof"]],
+        "skill_hidden": 0,
+    }
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock", lambda scope, identity: None
+    )
+    intents = SimpleNamespace(
+        message_content=False,
+        dm_messages=False,
+        guild_messages=False,
+        members=False,
+        voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(discord_platform.commands, "Bot", FakeBot)
+    monkeypatch.setattr(
+        adapter,
+        "_discover_slash_command_metadata",
+        AsyncMock(return_value=metadata),
+    )
+    register = MagicMock()
+    monkeypatch.setattr(adapter, "_register_slash_commands", register)
+
+    assert await adapter.connect() is True
+
+    register.assert_called_once_with(metadata)
+    assert adapter._running is True
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_discovered_plugin_and_skill_callbacks_preserve_parent_semantics(
+    monkeypatch,
+):
+    class RecordingTree:
+        def __init__(self):
+            self.commands = {}
+
+        def command(self, *, name, description):
+            def decorator(callback):
+                self.commands[name] = SimpleNamespace(
+                    name=name,
+                    description=description,
+                    callback=callback,
+                )
+                return callback
+
+            return decorator
+
+        def add_command(self, command):
+            self.commands[command.name] = command
+
+        def get_commands(self):
+            return list(self.commands.values())
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    tree = RecordingTree()
+    monkeypatch.setattr(adapter, "_client", SimpleNamespace(tree=tree))
+    run_simple_slash = AsyncMock()
+    check_slash_authorization = AsyncMock(return_value=True)
+    monkeypatch.setattr(adapter, "_run_simple_slash", run_simple_slash)
+    monkeypatch.setattr(
+        adapter,
+        "_check_slash_authorization",
+        check_slash_authorization,
+    )
+    metadata = {
+        "schema_version": 1,
+        "commands": [],
+        "plugins": [["wave", "Wave hello", "[name]"]],
+        "skills": [["proof", "Run proof", "/proof"]],
+        "skill_hidden": 0,
+    }
+
+    adapter._register_slash_commands(metadata)
+
+    await tree.commands["wave"].callback(SimpleNamespace(), args="Ray")
+    run_simple_slash.assert_awaited_once_with(
+        ANY,
+        "/wave Ray",
+    )
+    assert adapter._skill_lookup == {"proof": ("Run proof", "/proof")}
+    assert "skill" in tree.commands
+    run_simple_slash.reset_mock()
+    await tree.commands["skill"].callback(
+        SimpleNamespace(),
+        name="proof",
+        args="fast",
+    )
+    run_simple_slash.assert_awaited_once_with(ANY, "/proof fast")
+
 @pytest.mark.asyncio
 async def test_disconnect_cancels_running_bot_task(monkeypatch):
     """Regression: disconnect() must cancel _bot_task even when connect() timed out.
@@ -506,7 +937,7 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
 
 
 @pytest.mark.asyncio
-async def test_safe_sync_reads_permission_attrs_from_existing_command():
+async def test_safe_sync_reads_permission_attrs_from_existing_command(monkeypatch):
     """Regression: AppCommand.to_dict() in discord.py does NOT include
     nsfw, dm_permission, or default_member_permissions — they live only
     on the attributes. Without reading those attrs, any command with
@@ -578,11 +1009,15 @@ async def test_safe_sync_reads_permission_attrs_from_existing_command():
         edit_global_command=AsyncMock(),
         delete_global_command=AsyncMock(),
     )
-    adapter._client = SimpleNamespace(
-        tree=fake_tree,
-        http=fake_http,
-        application_id=999,
-        user=SimpleNamespace(id=999),
+    monkeypatch.setattr(
+        adapter,
+        "_client",
+        SimpleNamespace(
+            tree=fake_tree,
+            http=fake_http,
+            application_id=999,
+            user=SimpleNamespace(id=999),
+        ),
     )
 
     summary = await adapter._safe_sync_slash_commands()
@@ -706,4 +1141,3 @@ class TestPrivilegedIntentsRequiredFatal:
         assert "Message Content Intent" in (adapter.fatal_error_message or "")
         assert "discord.com/developers/applications" in (adapter.fatal_error_message or "")
         assert adapter._bot_task is None
-

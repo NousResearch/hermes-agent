@@ -309,3 +309,25 @@ describe('liveTailStart', () => {
     }
   })
 })
+
+// Regression for the "Show earlier" no-op (#55191-adjacent): the render-phase
+// budget cap must only shrink a HOT-HIDDEN pane's budget, never a VISIBLE pane.
+// A visible pane legitimately grows its DOM budget ABOVE the shared paneBudget
+// on every "Show earlier" click, and an ungated cap reverted that growth on the
+// next render — so the click did nothing. The cap's contract lives in
+// list.tsx, but the boundary it must respect is expressed by transcriptPaneBudget:
+// a visible pane gets the full screen budget, a hot-hidden pane gets the small
+// retention budget. If that guarantee ever inverts, the click-to-page path
+// silently dies for visible panes.
+describe('render-phase budget cap respects pane visibility', () => {
+  it('grants a visible pane the full screen budget (room to grow on Show earlier)', () => {
+    // Single visible pane → full RENDER_BUDGET (600). "Show earlier" raises the
+    // DOM budget above this; the cap must not snap it back for a visible pane.
+    expect(transcriptPaneBudget(1, false)).toBeGreaterThan(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
+    expect(transcriptPaneBudget(1, false)).toBe(600)
+  })
+
+  it('grants a hot-hidden pane only the small retention budget', () => {
+    expect(transcriptPaneBudget(1, true)).toBe(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
+  })
+})

@@ -433,9 +433,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     setBudgetSessionKey(sessionKey)
     setHadGroups(hasGroups)
     setRenderBudget(FIRST_PAINT_BUDGET)
-  } else if (renderBudget > paneBudget) {
+  } else if (paneLifecycle === 'hot-hidden' && renderBudget > paneBudget) {
     // Apply the hidden budget during render so React never first commits the
-    // stale full transcript after this pane moves to the background.
+    // stale full transcript after this pane moves to the background. Guarded on
+    // the pane being hot-hidden: a VISIBLE pane legitimately grows its budget
+    // above paneBudget — each "Show earlier" click adds a full pane page — and
+    // an ungated cap reverts that growth on the very next render, making the
+    // click a no-op (regression from 62eefff697, "bound long-running app
+    // resource use").
     setRenderBudget(paneBudget)
   } else if (hadGroups !== hasGroups) {
     setHadGroups(hasGroups)

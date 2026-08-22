@@ -48,6 +48,60 @@ def _clear_vt100_prefix_cache() -> None:
         pass
 
 
+def install_keypress_data_normalization() -> int:
+    """Normalize KeyPress data for extended-key aliases that map to a
+    single plain character (Shift+Space → ``' '``, Shift+letter → the
+    uppercase letter, keypad digits → ``'0'``..``'9'``, keypad operators).
+
+    Root cause of #88071: ``Vt100Parser._call_handler`` builds
+    ``KeyPress(key, match.group(0))`` — the *key* is correctly remapped by
+    ``ANSI_SEQUENCES``, but the *data* field still carries the full raw
+    escape text (e.g. ``"\\x1b[32;2u"``). prompt_toolkit's default
+    character-insert binding (``self-insert``, ``basic.py``) inserts
+    ``event.data``, so the raw CSI bytes land in the prompt buffer. For a
+    plain space both fields are ``' '`` so it is invisible; for any mapped
+    extended sequence the escape text is what gets inserted.
+
+    This patches ``Vt100Parser._call_handler`` so that when a sequence maps
+    to a single plain character, the KeyPress data is that character rather
+    than the raw sequence — the bytes never reach the buffer. Idempotent;
+    repeated calls are no-ops.
+
+    Returns 1 when the patch was applied, 0 when already applied or the
+    import failed.
+    """
+    try:
+        import prompt_toolkit.input.vt100_parser as _vt100_mod
+        from prompt_toolkit.keys import Keys as _PtKeys
+    except Exception:
+        return 0
+
+    if getattr(
+        _vt100_mod.Vt100Parser._call_handler, "_hermes_char_data_normalized", False
+    ):
+        return 0
+
+    _orig_call_handler = _vt100_mod.Vt100Parser._call_handler
+
+    def _patched_call_handler(self, key, insert_text):
+        # A single plain character (not a Keys member, not a tuple) mapped
+        # from an extended sequence must carry the mapped character as its
+        # data — self-insert inserts event.data and the raw CSI would leak.
+        if (
+            isinstance(key, str)
+            and len(key) == 1
+            and not isinstance(key, _PtKeys)
+            and isinstance(insert_text, str)
+            and insert_text.startswith("\x1b")
+        ):
+            insert_text = key
+        return _orig_call_handler(self, key, insert_text)
+
+    _patched_call_handler._hermes_char_data_normalized = True
+    _vt100_mod.Vt100Parser._call_handler = _patched_call_handler
+    return 1
+
+
 def install_shift_enter_alias() -> int:
     """Map Shift+Enter byte sequences to the (Escape, ControlM) key tuple
     that Alt+Enter produces, so the existing Alt+Enter newline handler

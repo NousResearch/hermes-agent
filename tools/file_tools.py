@@ -461,6 +461,17 @@ def _file_ops_uses_host_paths(file_ops) -> bool:
     return isinstance(env, LocalEnvironment)
 
 
+def _file_ops_path(path: str, resolved: Path | PurePosixPath, file_ops) -> str:
+    """Return the path the backend must use for an already-guarded operation.
+
+    Host file operations must receive the same canonical target used by the
+    read guard: their process cwd can differ from the task workspace. Remote
+    and container backends retain their supplied path because it belongs to a
+    different filesystem namespace.
+    """
+    return str(resolved) if _file_ops_uses_host_paths(file_ops) else path
+
+
 def _rewrite_v4a_patch_paths_for_host(
     patch: str,
     path_to_resolved: dict,
@@ -1642,7 +1653,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         # The name blocklist above catches /dev/* and /proc/* aliases; this
         # catches the class — any FIFO/socket/device wherever it lives. A
         # read on a FIFO blocks until the exec timeout: a self-shipped DoS.
-        if _file_ops_uses_host_paths(_get_file_ops(task_id)):
+        file_ops = _get_file_ops(task_id)
+        if _file_ops_uses_host_paths(file_ops):
             kind = _special_file_kind(_resolved)
             if kind is not None:
                 return json.dumps({
@@ -1654,6 +1666,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                         "interact with it."
                     ),
                 })
+
+        # Check every read path before document extraction.  Extraction opens
+        # the source file itself, so placing the shared guard below it would
+        # let a protected .docx/.pdf bypass profile and credential rules.
+        block_error = get_read_block_error(str(_resolved))
+        if block_error:
+            return tool_error(block_error)
 
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
@@ -1668,7 +1687,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         )
 
         if is_extractable_document(str(_resolved)):
-            file_ops = _get_file_ops(task_id)
             try:
                 binary = file_ops.read_file_bytes(
                     str(_resolved), max_bytes=MAX_DOCUMENT_BYTES
@@ -1766,17 +1784,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 "Use vision_analyze for images, or terminal to inspect binary files."
             )
 
-        # ── Hermes internal path guard ────────────────────────────────
-        # Prevent prompt injection via catalog or hub metadata files,
-        # and block credential stores under HERMES_HOME.  Pass the
-        # already-resolved path so a relative-path read against
-        # TERMINAL_CWD == HERMES_HOME (e.g. "auth.json") still hits the
-        # denylist — get_read_block_error's own resolve() runs against
-        # the Python process cwd, which can differ.
-        block_error = get_read_block_error(str(_resolved))
-        if block_error:
-            return tool_error(block_error)
-
         # ── Negative-result cache ─────────────────────────────────────
         # If we already discovered this path doesn't exist (within TTL),
         # return the cached error without spawning the subprocess +
@@ -1845,8 +1852,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 pass  # stat failed — fall through to full read
 
         # ── Perform the read ──────────────────────────────────────────
-        file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        result = file_ops.read_file(
+            _file_ops_path(path, _resolved, file_ops), offset, limit
+        )
         result_dict = result.to_dict()
 
         # ── Populate negative-result cache on not-found ───────────────
@@ -2594,8 +2602,16 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             return cached_search_nf
 
         file_ops = _get_file_ops(task_id)
+        sink_path = (
+            _file_ops_path(path, resolved_path, file_ops)
+            if resolved_path
+            else path
+        )
         result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
+            pattern=pattern,
+            path=sink_path,
+            target=target,
+            file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
         omitted = _filter_read_blocked_search_results(result, task_id)

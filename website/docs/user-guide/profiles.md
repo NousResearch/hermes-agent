@@ -136,6 +136,26 @@ Profiles are often confused with workspaces or sandboxes, but they are different
 
 On the default `local` terminal backend, the agent still has the same filesystem access as your user account. A profile does not stop it from accessing folders outside the profile directory.
 
+For a named profile that uses a container-scoped terminal, you can also keep
+the host-side `read_file`, `search_files`, and file-write tools out of default
+and sibling-profile state:
+
+```yaml
+agent:
+  profile_scope: strict
+  # Optional: a root-level Hermes path intentionally shared with this profile.
+  profile_scope_allow:
+    - ~/.hermes/cache
+```
+
+Strict profile scope leaves normal project paths available and only blocks
+other Hermes profile trees. It does not sandbox the local terminal backend,
+which still runs as your OS user.
+
+If the profile's existing `config.yaml` is malformed or unreadable, this
+boundary fails closed for other Hermes profile trees until the configuration is
+readable again. Shared-path exceptions are unavailable during that period.
+
 If you want a profile to start in a specific project folder, set an explicit absolute `terminal.cwd` in that profile's `config.yaml`:
 
 ```yaml

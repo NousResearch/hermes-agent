@@ -129,10 +129,184 @@ def build_write_approval_paths(home: str) -> set[str]:
     }
 
 
+_PROFILE_SCOPE_CONFIG_HEALTH: dict[str, tuple[tuple[int, int, int], bool]] = {}
+
+
+def _profile_scope_config_is_unavailable() -> bool:
+    """Return whether an existing profile config cannot be safely parsed.
+
+    ``load_config_readonly()`` deliberately recovers from malformed YAML with
+    defaults in a fresh process (or with its last-known-good value in a long
+    lived process). That recovery is appropriate for most settings, but it
+    cannot silently remove an isolation policy. Keep a tiny signature-keyed
+    health cache so the common non-strict path only stats config.yaml.
+    """
+    try:
+        from hermes_cli.config import get_config_path
+        from utils import fast_safe_load
+
+        config_path = get_config_path()
+        try:
+            stat = config_path.stat()
+        except FileNotFoundError:
+            # A new profile without a config retains the documented default.
+            return False
+        except OSError:
+            return True
+
+        signature = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        cache_key = str(config_path)
+        cached = _PROFILE_SCOPE_CONFIG_HEALTH.get(cache_key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+
+        try:
+            with open(config_path, encoding="utf-8") as config_file:
+                unavailable = not isinstance(fast_safe_load(config_file) or {}, dict)
+        except Exception:
+            unavailable = True
+        _PROFILE_SCOPE_CONFIG_HEALTH[cache_key] = (signature, unavailable)
+        return unavailable
+    except Exception:
+        return True
+
+
+def _profile_scope_settings() -> tuple[str, tuple[Path, ...]]:
+    """Return the active profile's strict-scope mode and explicit exceptions.
+
+    This stays in the shared safety module instead of being captured when the
+    tool module imports: a multiplexed gateway switches ``HERMES_HOME`` while
+    serving profiles in one process.  ``load_config_readonly()`` is cached by
+    config path, so the per-operation lookup does not reparse YAML.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        agent = config.get("agent", {}) if isinstance(config, dict) else {}
+    except Exception:
+        # A configuration read failure cannot be allowed to remove an
+        # isolation policy. The restriction only covers other Hermes profile
+        # trees, while explicit shared-path exceptions remain unavailable until
+        # the configuration is readable again.
+        return "strict", ()
+
+    # ``load_config_readonly`` can return the last-known-good strict settings
+    # after a parse or read failure. Do not retain their explicit exceptions
+    # until the config source is healthy again.
+    if _profile_scope_config_is_unavailable():
+        return "strict", ()
+
+    if not isinstance(agent, dict) or agent.get("profile_scope") != "strict":
+        return "none", ()
+
+    raw_allow = agent.get("profile_scope_allow", [])
+    if not isinstance(raw_allow, (list, tuple)):
+        return "strict", ()
+
+    allowed: list[Path] = []
+    for raw_path in raw_allow:
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        try:
+            candidate = Path(raw_path).expanduser()
+            if candidate.is_absolute():
+                allowed.append(candidate.resolve())
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return "strict", tuple(allowed)
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """Return whether a resolved path is ``root`` or one of its children."""
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def classify_strict_profile_scope_target(path: str) -> Optional[dict]:
+    """Classify cross-profile access denied by ``agent.profile_scope: strict``.
+
+    Strict scope protects the Hermes state tree only.  A named profile can
+    access its own ``HERMES_HOME`` and any explicitly allowed shared paths,
+    but not default-profile state or sibling profiles.  The default profile
+    retains its own root while being unable to enter named-profile trees.
+
+    This is a host file-tool boundary, not a complete OS sandbox: the local
+    terminal backend deliberately runs as the user's OS account.
+    """
+    mode, allowed_paths = _profile_scope_settings()
+    if mode != "strict":
+        return None
+
+    try:
+        target = Path(os.path.expanduser(str(path))).resolve()
+        active_home = _hermes_home_path().resolve()
+        root = _hermes_root_path().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    if any(_is_within(target, allowed) for allowed in allowed_paths):
+        return None
+
+    profiles_dir = root / "profiles"
+    if active_home == root:
+        # The default profile owns the root, but named profiles nested under
+        # it are separate profile homes.
+        if not _is_within(target, profiles_dir):
+            return None
+        active_profile = "default"
+    else:
+        # Only named homes directly under <root>/profiles are profile-scoped.
+        try:
+            active_rel = active_home.relative_to(profiles_dir)
+        except ValueError:
+            return None
+        if len(active_rel.parts) != 1:
+            return None
+        if _is_within(target, active_home):
+            return None
+        if not _is_within(target, root):
+            return None
+        active_profile = active_rel.parts[0]
+
+    target_profile = "default"
+    try:
+        target_rel = target.relative_to(profiles_dir)
+        if target_rel.parts:
+            target_profile = target_rel.parts[0]
+    except ValueError:
+        pass
+
+    return {
+        "active_profile": active_profile,
+        "target_profile": target_profile,
+        "target_path": str(target),
+    }
+
+
+def _profile_scope_error(path: str, *, verb: str) -> Optional[str]:
+    """Return a user-facing strict-profile-scope error for ``path``."""
+    info = classify_strict_profile_scope_target(path)
+    if info is None:
+        return None
+    return (
+        f"{verb} denied by agent.profile_scope: strict: {info['target_path']} "
+        f"belongs to Hermes profile {info['target_profile']!r}, but the "
+        f"active profile is {info['active_profile']!r}. Switch profiles or "
+        "add a deliberate shared path to agent.profile_scope_allow."
+    )
+
+
 def _classify_write_denial(path: str) -> Optional[str]:
-    """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
+    """Return a write-denial category or ``None`` when writes are allowed."""
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
+
+    if classify_strict_profile_scope_target(resolved) is not None:
+        return "profile_scope"
 
     # Approval-gated paths (e.g. ~/.ssh/config) are NOT hard-denied here:
     # they are allowed at this layer so the interactive file tools can run
@@ -207,6 +381,8 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
     denial = _classify_write_denial(path)
     if denial is None:
         return None
+    if denial == "profile_scope":
+        return _profile_scope_error(path, verb=verb)
     if denial == "safe_root":
         roots_display = os.pathsep.join(sorted(get_safe_write_roots()))
         return (
@@ -247,7 +423,12 @@ _BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
 
-    Three categories are blocked:
+    Four categories are blocked:
+
+      * Other Hermes profiles when the active named profile sets
+        ``agent.profile_scope: strict``.  This protects host-side file tools
+        used alongside a container-scoped terminal; it is not an OS sandbox
+        for the local terminal backend.
 
       * Internal Hermes cache files under ``HERMES_HOME/skills/.hub`` —
         readable metadata that an attacker could use as a prompt-injection
@@ -290,6 +471,10 @@ def get_read_block_error(path: str) -> Optional[str]:
     terminal cwd differs from the process cwd.
     """
     resolved = Path(path).expanduser().resolve()
+
+    profile_scope_error = _profile_scope_error(str(resolved), verb="Read")
+    if profile_scope_error:
+        return profile_scope_error
 
     # Resolve BOTH the active HERMES_HOME (profile-aware) AND the global
     # Hermes root so credential stores at <root>/auth.json etc. are also

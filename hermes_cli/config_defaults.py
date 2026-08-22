@@ -54,6 +54,13 @@ DEFAULT_CONFIG = {
         # implicit provider stale timeouts are capped to the remaining
         # budget. CLI one-shot equivalent: `hermes chat --run-budget N`.
         "run_budget_seconds": None,
+        # Optional host-side file-tool boundary for named profiles. ``strict``
+        # refuses reads and writes to other Hermes profiles; it does not
+        # restrict the terminal tool on a local backend.
+        "profile_scope": "none",
+        # Absolute paths under the Hermes root that remain available when
+        # profile_scope is strict (for example a deliberately shared cache).
+        "profile_scope_allow": [],
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

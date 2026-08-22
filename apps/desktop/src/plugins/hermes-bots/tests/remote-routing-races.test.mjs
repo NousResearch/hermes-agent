@@ -37,7 +37,7 @@ function load({ requestProfile, agents, profileRoutes } = {}) {
       activeConnectionId = connectionId
       calls.push(['ensureAgent', connectionId, profile])
     },
-    newChat: route => calls.push(['newChat', route]),
+    newChat: (route, options) => calls.push(['newChat', route, options]),
     notify: () => undefined,
     notifyError: () => undefined,
     profileRoutes: profileRoutes || (async () => []),
@@ -50,6 +50,7 @@ function load({ requestProfile, agents, profileRoutes } = {}) {
       calls.push(['profile', route, method, params])
       return {}
     }),
+    setWorkspaceScope: (mode, ownerKey, target) => calls.push(['workspaceScope', mode, ownerKey, target]),
     state: {
       connectionId: { get: () => activeConnectionId, listen: () => undefined },
       gateway: { get: () => 'open', listen: () => undefined },
@@ -351,6 +352,17 @@ test('delayed duplicate, delete, and new chat keep source ownership', async () =
     .filter(value => value && typeof value === 'object')
   assert.ok(routes.length >= 3)
   assert.ok(routes.every(route => route.connectionId === 'remote-a'))
+
+  const newChat = runtime.calls.find(call => call[0] === 'newChat')
+  assert.equal(newChat[2].workspaceMode, 'bots')
+  assert.equal(newChat[2].workspaceOwnerKey, 'bot:remote-a::worker')
+  assert.equal(newChat[1].targetProfile, 'backend-worker')
+
+  const scope = runtime.calls.find(call => call[0] === 'workspaceScope')
+  assert.equal(scope[1], 'bots')
+  assert.equal(scope[2], 'bot:remote-a::worker')
+  assert.equal(scope[3].kind, 'route')
+  assert.equal(scope[3].route.connectionId, 'remote-a')
 })
 
 

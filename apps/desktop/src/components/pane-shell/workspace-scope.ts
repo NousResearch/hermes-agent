@@ -24,22 +24,77 @@ export const $workspaceMode = atom<WorkspaceMode>('sessions')
 /** Default workspace owner key: none (unscoped / global ownership). */
 export const $workspaceOwnerKey = atom<string | null>(null)
 
+/** Exact route for a fresh session in the current workspace. Kept structural
+ *  here so the generic pane shell does not depend on profile/gateway stores. */
+export interface WorkspaceSessionRoute {
+  connectionId: string
+  mode?: 'local' | 'remote'
+  profile: string
+  targetProfile?: string
+}
+
+/** What the shared `+` / session.newTab command means in this workspace. */
+export type WorkspaceNewSessionTarget =
+  | { kind: 'blocked'; message: string }
+  | { kind: 'route'; route: WorkspaceSessionRoute }
+
+/** Sessions uses its established ambient behavior (`null`). Bots publishes an
+ *  exact route or a concise reason that a generic session is unavailable. */
+export const $workspaceNewSessionTarget = atom<WorkspaceNewSessionTarget | null>(null)
+
 /** One key for window-local active-pane memory. Owner keys stay opaque. */
 export function workspaceScopeKey(mode: WorkspaceMode, ownerKey: string | null): string {
   return mode === 'sessions' ? 'sessions' : `bots:${ownerKey ?? ''}`
 }
 
-/** Publish one coherent presentation scope without an intermediate mixed frame. */
-export function setWorkspaceScope(mode: WorkspaceMode, ownerKey: string | null = null): boolean {
-  const nextOwnerKey = mode === 'bots' ? ownerKey : null
+function sameNewSessionTarget(a: WorkspaceNewSessionTarget | null, b: WorkspaceNewSessionTarget | null): boolean {
+  if (a === b) {
+    return true
+  }
 
-  if ($workspaceMode.get() === mode && $workspaceOwnerKey.get() === nextOwnerKey) {
+  if (!a || !b || a.kind !== b.kind) {
+    return false
+  }
+
+  if (a.kind === 'blocked' && b.kind === 'blocked') {
+    return a.message === b.message
+  }
+
+  if (a.kind === 'route' && b.kind === 'route') {
+    return (
+      a.route.connectionId === b.route.connectionId &&
+      a.route.mode === b.route.mode &&
+      a.route.profile === b.route.profile &&
+      a.route.targetProfile === b.route.targetProfile
+    )
+  }
+
+  return false
+}
+
+/** Publish one coherent presentation and creation scope without an
+ *  intermediate mixed frame. Sessions always retains its existing ambient
+ *  new-session behavior; alternate workspaces must state their intent. */
+export function setWorkspaceScope(
+  mode: WorkspaceMode,
+  ownerKey: string | null = null,
+  newSessionTarget: WorkspaceNewSessionTarget | null = null
+): boolean {
+  const nextOwnerKey = mode === 'bots' ? ownerKey : null
+  const nextNewSessionTarget = mode === 'bots' ? newSessionTarget : null
+
+  if (
+    $workspaceMode.get() === mode &&
+    $workspaceOwnerKey.get() === nextOwnerKey &&
+    sameNewSessionTarget($workspaceNewSessionTarget.get(), nextNewSessionTarget)
+  ) {
     return false
   }
 
   batch(() => {
     $workspaceMode.set(mode)
     $workspaceOwnerKey.set(nextOwnerKey)
+    $workspaceNewSessionTarget.set(nextNewSessionTarget)
   })
 
   return true

@@ -23,6 +23,12 @@ import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overla
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
+import {
+  $workspaceMode,
+  $workspaceNewSessionTarget,
+  $workspaceOwnerKey,
+  setWorkspaceScope
+} from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
@@ -39,6 +45,7 @@ import { requestVoiceConversationStart } from '@/store/composer'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
+import { notify } from '@/store/notifications'
 import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
@@ -545,6 +552,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // prefills the MAIN composer right after, so it has to own that surface.
   const startSessionInWorkspace = useCallback(
     (path: null | string, options?: { openTab?: boolean }) => {
+      setWorkspaceScope('sessions')
+
       if (options?.openTab && mainChatOccupied(activeSessionIdRef.current, $selectedStoredSessionId.get())) {
         void openNewSessionTile('center', { cwd: path, listed: false })
 
@@ -861,6 +870,32 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // it — Cursor-style. Every click opens a fresh "New session" tab (multiple
   // empty tabs are fine since none touch the session list).
   const openNewSessionTab = useCallback(() => {
+    const workspaceMode = $workspaceMode.get()
+    const workspaceOwnerKey = $workspaceOwnerKey.get()
+    const workspaceNewSessionTarget = $workspaceNewSessionTarget.get()
+
+    if (workspaceMode === 'bots') {
+      if (workspaceNewSessionTarget?.kind !== 'route' || !workspaceOwnerKey) {
+        notify({
+          kind: 'info',
+          message:
+            workspaceNewSessionTarget?.kind === 'blocked'
+              ? workspaceNewSessionTarget.message
+              : 'Select a Bot or group first.'
+        })
+
+        return
+      }
+
+      void openNewSessionTile('center', {
+        listed: false,
+        route: workspaceNewSessionTarget.route,
+        workspaceScope: { workspaceMode: 'bots', workspaceOwnerKey }
+      })
+
+      return
+    }
+
     void openNewSessionTile('center', { listed: false })
   }, [openNewSessionTile])
 

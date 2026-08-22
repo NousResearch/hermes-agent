@@ -26,12 +26,16 @@ import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'
 import {
   $narrowViewport,
+  $newSessionTabAction,
   $paneVisible,
   registerPaneCloser,
   removeTreePane,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
-import { setWorkspaceScope as publishWorkspaceScope } from '@/components/pane-shell/workspace-scope'
+import {
+  setWorkspaceScope as publishWorkspaceScope,
+  type WorkspaceNewSessionTarget
+} from '@/components/pane-shell/workspace-scope'
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
@@ -295,6 +299,11 @@ export interface PluginOpenSessionOptions {
    *  overlay ($resumeExhaustedSessionId) — a caller-side retry can't do this
    *  itself because only this SDK layer sees $resumeExhaustedSessionId. */
   retryHydrationTimeoutOnce?: boolean
+}
+
+export interface PluginNewChatOptions {
+  workspaceMode?: WorkspaceMode
+  workspaceOwnerKey?: string
 }
 
 function waitForFocusedSessionHydration({
@@ -747,6 +756,11 @@ export const host = {
           const intent = options.intent ?? 'in-place'
 
           if (options.workspaceMode === 'bots') {
+            publishWorkspaceScope(
+              'bots',
+              options.workspaceOwnerKey ?? null,
+              ownerRoute ? { kind: 'route', route: ownerRoute } : null
+            )
             openSession(storedSessionId, navigate, intent, {
               workspaceMode: 'bots',
               workspaceOwnerKey: options.workspaceOwnerKey
@@ -912,13 +926,38 @@ export const host = {
   },
 
   /** Switch the visible main-pane workspace without unregistering retained panes. */
-  setWorkspaceScope: (mode: WorkspaceMode, ownerKey: null | string = null): boolean =>
-    publishWorkspaceScope(mode, ownerKey),
+  setWorkspaceScope: (
+    mode: WorkspaceMode,
+    ownerKey: null | string = null,
+    newSessionTarget: WorkspaceNewSessionTarget | null = null
+  ): boolean => publishWorkspaceScope(mode, ownerKey, newSessionTarget),
 
   /** Start a fresh chat draft, optionally pointed at another profile (its
    *  backend spins up in the background — same door the sidebar's per-profile
    *  "+" uses). */
-  newChat: (profile?: null | string | PluginProfileRoute): void => {
+  newChat: (profile?: null | string | PluginProfileRoute, options: PluginNewChatOptions = {}): void => {
+    if (options.workspaceMode === 'bots') {
+      if (!profile || typeof profile === 'string' || !options.workspaceOwnerKey) {
+        notify({ kind: 'error', message: 'Select a Bot before starting another chat.' })
+
+        return
+      }
+
+      publishWorkspaceScope('bots', options.workspaceOwnerKey, { kind: 'route', route: { ...profile } })
+
+      const openTab = $newSessionTabAction.get()
+
+      if (!openTab) {
+        notify({ kind: 'error', message: 'Update Hermes Desktop to open another Bot chat.' })
+
+        return
+      }
+
+      openTab()
+
+      return
+    }
+
     if (profile && typeof profile !== 'string') {
       newSessionInAgent({ ...profile })
     } else {

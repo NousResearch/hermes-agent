@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
   $workspaceMode,
+  $workspaceNewSessionTarget,
   $workspaceOwnerKey,
   contributesToWorkspace,
   filterContributionsForWorkspace,
@@ -38,6 +39,7 @@ describe('workspace scope', () => {
   it('defaults to the un-switched sessions window state', () => {
     expect($workspaceMode.get()).toBe('sessions')
     expect($workspaceOwnerKey.get()).toBeNull()
+    expect($workspaceNewSessionTarget.get()).toBeNull()
   })
 
   it('publishes a coherent mode and owner in one batch', () => {
@@ -54,6 +56,35 @@ describe('workspace scope', () => {
 
     unbindMode()
     unbindOwner()
+  })
+
+  it('publishes the exact new-session route with its Bot owner', () => {
+    const route = {
+      connectionId: 'connection-a',
+      mode: 'remote' as const,
+      profile: 'writer',
+      targetProfile: 'writer'
+    }
+
+    expect(setWorkspaceScope('bots', 'bot:connection-a::writer', { kind: 'route', route })).toBe(true)
+    expect($workspaceNewSessionTarget.get()).toEqual({ kind: 'route', route })
+
+    // Equivalent route objects are a semantic no-op, not a new render signal.
+    expect(
+      setWorkspaceScope('bots', 'bot:connection-a::writer', { kind: 'route', route: { ...route } })
+    ).toBe(false)
+
+    setWorkspaceScope('sessions')
+    expect($workspaceNewSessionTarget.get()).toBeNull()
+  })
+
+  it('keeps a group owner explicit while blocking generic session creation', () => {
+    const target = { kind: 'blocked' as const, message: 'New group conversations start in the group composer.' }
+
+    setWorkspaceScope('bots', 'group:room-1', target)
+
+    expect($workspaceOwnerKey.get()).toBe('group:room-1')
+    expect($workspaceNewSessionTarget.get()).toEqual(target)
   })
 
   it('keeps global contributions visible in both modes', () => {

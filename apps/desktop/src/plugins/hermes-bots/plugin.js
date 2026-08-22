@@ -4568,12 +4568,22 @@ function isDefaultBot(bot) {
 
 function newBotChat(bot) {
   if (typeof host.newChat !== 'function') {
-    host.navigate?.('/')
+    host.notify?.({ kind: 'error', message: 'Update Hermes Desktop to open another Bot chat.' })
 
     return
   }
 
-  host.newChat(bot?.sourceScoped || bot?.remoteSource ? botConnectionRoute(bot) : bot?.name)
+  const route = botConnectionRoute(bot)
+
+  if (!route) {
+    host.notify?.({ kind: 'error', message: 'Update Hermes Desktop to open another Bot chat.' })
+
+    return
+  }
+
+  const ownerKey = botWorkspaceOwnerKey(bot)
+  setBotsWorkspaceOwner(ownerKey, bot)
+  host.newChat(route, { workspaceMode: 'bots', workspaceOwnerKey: ownerKey })
 }
 
 /** Resolve @handles in prose against the Bot Mode roster (local + Connections).
@@ -4773,6 +4783,24 @@ function botConnectionRoute(bot) {
   })
 }
 
+const BOTS_HOME_OWNER_KEY = 'bots:home'
+
+function botWorkspaceOwnerKey(bot) {
+  const route = botConnectionRoute(bot)
+
+  return `bot:${route ? botRouteKey(route) : String(bot?.name || 'default')}`
+}
+
+function groupWorkspaceOwnerKey(group) {
+  return `group:${groupChatRoomKey(group, $groupChats.get()[group])}`
+}
+
+function setBotsWorkspaceOwner(ownerKey, bot = null, blockedMessage = 'Select a Bot or group first.') {
+  const route = bot ? botConnectionRoute(bot) : null
+  const target = route ? { kind: 'route', route } : { kind: 'blocked', message: blockedMessage }
+
+  host.setWorkspaceScope?.('bots', ownerKey || BOTS_HOME_OWNER_KEY, target)
+}
 function backendTargetProfile(route, fallbackProfile = 'default') {
   if (!route) {
     return fallbackProfile
@@ -5288,7 +5316,7 @@ async function ensureBotMetadata(bot) {
  *  resolves a canonical-chat id. */
 async function openRosterBot(bot) {
   const generation = ++botOpenGeneration
-  const key = botRosterKey(bot)
+  const key = botSelectionKey(bot)
   const meta = botRosterMeta(bot, $botMeta.get())
   // Keep the currently visible group as a fallback until this explicit action
   // has actually fronted a new owner; a failed home open must not steal the
@@ -5297,35 +5325,7 @@ async function openRosterBot(bot) {
 
   haptic('tap')
   saveSelectedRosterBot(bot)
-
-  if (bot.remoteSource) {
-    // Selection only. A remote bot must never be opened through whichever
-    // gateway happens to be live; remote mention delivery remains backend-owned.
-    $openBotChat.set(null)
-    $groupChatWorkspace.set(null)
-
-    if (botsHomeEnabled()) {
-      // Explicitly front the selected owner but keep the existing group tab
-      // intact. If the workspace door refuses, restore the group selection so
-      // a failed roster action cannot leave the center ownerless.
-      if (!openBotsHomeWorkspace(true) && previousGroup) {
-        $groupChatWorkspace.set(previousGroup)
-      }
-    } else {
-      // Old shells have no home surface; keep the existing visible group as
-      // owner and offer only guidance, never renderer-owned remote delivery.
-      if (previousGroup) {
-        $groupChatWorkspace.set(previousGroup)
-      }
-      host.notify?.({
-        kind: 'info',
-        title: displayName(bot, meta),
-        message: `Stay in this chat and message @${botHandle(bot.name, bot)} from a Bot Chat.`
-      })
-    }
-
-    return false
-  }
+  setBotsWorkspaceOwner(botWorkspaceOwnerKey(bot), bot)
 
   $groupChatWorkspace.set(null)
 
@@ -5357,7 +5357,7 @@ async function openRosterBot(bot) {
   }
 
   try {
-    const registryId = await openBotCanonicalChat(bot.name)
+    const registryId = await openBotCanonicalChat(bot)
 
     if (generation !== botOpenGeneration) {
       return false
@@ -5397,7 +5397,7 @@ async function openRosterBot(bot) {
 
   $openBotChat.set({ key, openedRegistryId: '' })
   closeBotsHomeWorkspace()
-  host.newChat(bot.name)
+  newBotChat(bot)
   return true
 }
 
@@ -7585,11 +7585,9 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
           jsx(ContextMenuSeparator, {}),
           jsx(ContextMenuItem, {
             onSelect: () => {
-              $selectedBot.set(botSelectionKey(bot))
-
-              if (typeof host.newChat === 'function') {
-                newBotChat(bot)
-              }
+              saveSelectedRosterBot(bot)
+              setBotsWorkspaceOwner(botWorkspaceOwnerKey(bot), bot)
+              newBotChat(bot)
             },
             children: 'New chat with this agent'
           }),
@@ -12425,6 +12423,9 @@ function openBotsHomeWorkspace(explicit = false) {
     return false
   }
 
+  const selected = selectedRosterBot($lastRoster.get(), $selectedRosterKey.get())
+  const ownerKey = selected ? botWorkspaceOwnerKey(selected) : BOTS_HOME_OWNER_KEY
+  setBotsWorkspaceOwner(ownerKey, selected)
   // Already open and fronted: nothing to do. Already open but backgrounded
   // (a persisted layout can restore the tab behind the draft): re-open to
   // re-front it. Never stack a second registration — a stale disposer would
@@ -12537,6 +12538,8 @@ function openGroupChat(group) {
   // but it may not later close or visually steal the room the user chose.
   botOpenGeneration += 1
   $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: false })
+  const ownerKey = groupWorkspaceOwnerKey(group)
+  setBotsWorkspaceOwner(ownerKey, null, 'New group conversations start in the group composer.')
 
   if (typeof host.openWorkspace === 'function') {
     try {
@@ -13795,6 +13798,17 @@ export default {
 
       const stopSidebarSync = $sidebarVisible.listen(visible => {
         $botsPaneVisible.set(Boolean(visible))
+        if (visible) {
+          const group = $groupChatWorkspace.get()
+          const selected = selectedRosterBot($lastRoster.get(), $selectedRosterKey.get())
+          setBotsWorkspaceOwner(
+            group ? groupWorkspaceOwnerKey(group) : selected ? botWorkspaceOwnerKey(selected) : BOTS_HOME_OWNER_KEY,
+            group ? null : selected,
+            group ? 'New group conversations start in the group composer.' : 'Select a Bot or group first.'
+          )
+        } else {
+          host.setWorkspaceScope?.('sessions')
+        }
         // A generic composer has no stored-session owner, so passive sync
         // replaces it with the Bot home. A real restored chat keeps the
         // center until the user explicitly selects a Bot owner.

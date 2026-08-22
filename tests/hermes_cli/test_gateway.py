@@ -746,14 +746,18 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         assert result is False  # no orphans reaped
         assert killed_pids == []  # nothing was killed
 
-    def test_windows_probe_never_cleans_stale_registration(self, monkeypatch):
-        """The reaper's registration probe must pass cleanup_stale=False.
+    def test_windows_raw_record_supplies_exclusion_when_validation_fails(
+        self, monkeypatch
+    ):
+        """A registration that fails liveness VALIDATION must still shield
+        the recorded PID from the sweep.
 
-        With the destructive default, a registration that fails liveness
-        validation is unlinked mid-sweep, the recorded PID never joins the
-        exclusion set, and a healthy standalone gateway (`hermes gateway
-        run`, no service supervisor) is hard-killed. On Windows SIGTERM is
-        TerminateProcess — no graceful drain (#87158).
+        get_running_pid returns None whenever the record fails validation
+        (start-time mismatch, argv drift, lock hiccup) — regardless of
+        cleanup_stale, which only controls unlinking. The exclusion set is
+        therefore built from the RAW pidfile/lock records: a stale recorded
+        PID at worst spares one process, while a validation false-negative
+        would TerminateProcess a healthy standalone gateway (#87158).
         """
         recorded_pid = 52615
 
@@ -764,17 +768,21 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         recorded = SimpleNamespace(pid=recorded_pid, parent=lambda: None)
         self._install_fake_psutil(monkeypatch, [recorded])
 
-        # Simulate the failing-liveness-validation registration: the probe
-        # only returns the recorded PID when asked NOT to clean up; the
-        # destructive default path would unlink the record and return None.
-        seen_kwargs = []
+        # The raw record is present on disk; the validated probe rejects it.
+        monkeypatch.setattr(
+            "gateway.status._read_pid_record", lambda *a, **k: {"pid": recorded_pid}
+        )
+        monkeypatch.setattr(
+            "gateway.status._read_gateway_lock_record", lambda *a, **k: None
+        )
+        probe_kwargs = []
 
-        def probing_get_running_pid(cleanup_stale=True):
-            seen_kwargs.append(cleanup_stale)
-            return None if cleanup_stale else recorded_pid
+        def failing_validation(*a, cleanup_stale=True, **k):
+            probe_kwargs.append(cleanup_stale)
+            return None
 
         monkeypatch.setattr(
-            "gateway.status.get_running_pid", probing_get_running_pid
+            "gateway.status.get_running_pid", failing_validation
         )
         monkeypatch.setattr(
             gateway,
@@ -791,9 +799,9 @@ class TestReapUnsupervisedGatewayOrphansWindows:
 
         result = gateway._reap_unsupervised_gateway_orphans()
 
-        assert seen_kwargs == [False], (
-            "reaper probe must use cleanup_stale=False so the sweep never "
-            f"deletes its own exclusion evidence, got {seen_kwargs}"
+        assert probe_kwargs == [False], (
+            "the fallback probe must still be non-destructive so the sweep "
+            f"never unlinks the record it just read, got {probe_kwargs}"
         )
         assert result is False
         assert killed_pids == []  # the standalone gateway survived

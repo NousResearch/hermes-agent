@@ -657,6 +657,7 @@ _CONTEXT_LENGTH_KEYS = (
     "context_window",
     "context_size",
     "max_context_length",
+    "max_context_window",
     "max_position_embeddings",
     "max_model_len",
     "max_input_tokens",
@@ -1185,6 +1186,40 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         if pricing:
             return pricing
     return {}
+
+
+def _query_omlx_admin_context_length(
+    client: Any,
+    model: str,
+    server_url: str,
+) -> Optional[int]:
+    """Read oMLX's loaded runtime context window from the admin API."""
+    try:
+        resp = client.get(f"{server_url}/admin/api/models")
+        if resp.status_code != 200:
+            return None
+        payload = resp.json()
+    except Exception:
+        return None
+
+    entries: list[Dict[str, Any]] = []
+    if isinstance(payload, dict):
+        models = payload.get("models")
+        if isinstance(models, list):
+            entries = [entry for entry in models if isinstance(entry, dict)]
+        else:
+            entries = [payload]
+
+    if not entries:
+        return None
+
+    for entry in entries:
+        if _model_id_matches(entry.get("id", ""), model):
+            return _extract_context_length(entry)
+
+    if len(entries) == 1:
+        return _extract_context_length(entries[0])
+    return None
 
 
 def _add_model_aliases(cache: Dict[str, Dict[str, Any]], model_id: str, entry: Dict[str, Any]) -> None:
@@ -2300,7 +2335,10 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                 # configured name rarely equals the reported id (a GGUF path),
                 # so fall back to the sole model when nothing matches.
                 matched = None
+                is_omlx = False
                 for m in models_list:
+                    if m.get("owned_by") == "omlx":
+                        is_omlx = True
                     if _model_id_matches(m.get("id", ""), model):
                         matched = m
                         break
@@ -2326,6 +2364,10 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                             val = source.get(key)
                             if isinstance(val, (int, float)) and val:
                                 return int(val)
+                if is_omlx:
+                    ctx = _query_omlx_admin_context_length(client, model, server_url)
+                    if ctx is not None:
+                        return ctx
     except Exception as exc:
         if _is_connect_timeout(exc):
             _note_endpoint_blackholed(server_url)

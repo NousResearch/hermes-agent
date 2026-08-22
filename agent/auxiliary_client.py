@@ -5614,6 +5614,26 @@ def _candidate_context_window(
     return None
 
 
+def _credential_env_hint(provider: str) -> str:
+    """Best-known env-var name for a provider's API key, for error hints.
+
+    Falls back to the synthesized ``PROVIDER_API_KEY`` name for providers not
+    in the registry (e.g. ``opencode-zen`` -> ``OPENCODE-ZEN_API_KEY``). The
+    registry entry is authoritative when present so providers like
+    ``minimax-oauth`` advertise the real ``MINIMAX_API_KEY`` rather than the
+    nonexistent ``MINIMAX-OAUTH_API_KEY`` (#89516).
+    """
+    hint = f"{provider.upper()}_API_KEY"
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        pcfg = PROVIDER_REGISTRY.get(provider)
+        if pcfg and pcfg.api_key_env_vars:
+            hint = pcfg.api_key_env_vars[0]
+    except Exception:
+        pass
+    return hint
+
+
 def _try_configured_fallback_chain(
     task: str,
     failed_provider: str,
@@ -9477,7 +9497,7 @@ def _call_llm_impl(
                 else:
                     raise RuntimeError(
                         f"Provider '{_explicit}' is set in config.yaml but no API key "
-                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                        f"was found. Set the {_credential_env_hint(_explicit)} environment "
                         f"variable, or switch to a different provider with `hermes model`."
                     )
             # For auto/custom with no credentials, try the full auto chain
@@ -10298,7 +10318,7 @@ async def _async_call_llm_impl(
                 else:
                     raise RuntimeError(
                         f"Provider '{_explicit}' is set in config.yaml but no API key "
-                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                        f"was found. Set the {_credential_env_hint(_explicit)} environment "
                         f"variable, or switch to a different provider with `hermes model`."
                     )
             if client is None and not resolved_base_url:

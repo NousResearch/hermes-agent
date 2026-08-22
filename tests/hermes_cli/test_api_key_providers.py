@@ -83,6 +83,13 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("MINIMAX_CN_API_KEY",)
         assert pconfig.base_url_env_var == "MINIMAX_CN_BASE_URL"
 
+    def test_minimax_oauth_env_vars(self):
+        # Regression for #89516: the OAuth provider must advertise the real
+        # MINIMAX_API_KEY env var so credential-error hints don't tell users
+        # to set the nonexistent MINIMAX-OAUTH_API_KEY.
+        pconfig = PROVIDER_REGISTRY["minimax-oauth"]
+        assert pconfig.api_key_env_vars == ("MINIMAX_API_KEY",)
+
     def test_ai_gateway_env_vars(self):
         pconfig = PROVIDER_REGISTRY["ai-gateway"]
         assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)

@@ -80,6 +80,7 @@ export interface ConfigDisplayConfig {
   battery?: boolean
   bell_on_complete?: boolean
   busy_input_mode?: string
+  compact?: boolean
   details_mode?: string
   /** Focus view (/focus) — display-only reduced-output mode. */
   focus_view?: boolean

@@ -318,6 +318,7 @@ export interface TranscriptRow {
 export interface UiState {
   battery: boolean
   batteryStatus: BatteryInfo | null
+  bannerCompact: boolean
   bgTasks: Set<string>
   busy: boolean
   busyInputMode: BusyInputMode

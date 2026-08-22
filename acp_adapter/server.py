@@ -16,6 +16,7 @@ from typing import Any, Deque, Optional
 from urllib.parse import unquote, urlparse
 
 import acp
+from acp.exceptions import RequestError
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
@@ -1123,6 +1124,17 @@ class HermesACPAgent(acp.Agent):
         loop = asyncio.get_running_loop()
         loop.call_soon(asyncio.create_task, self._send_usage_update(state))
 
+    @staticmethod
+    def _validate_session_mcp_server_names(
+        mcp_servers: list[McpServerStdio | McpServerHttp | McpServerSse] | None,
+    ) -> None:
+        """Reject duplicate ACP MCP server names before mutating session state."""
+        server_names: set[str] = set()
+        for server in mcp_servers or []:
+            if server.name in server_names:
+                raise RequestError.invalid_params({"serverName": server.name})
+            server_names.add(server.name)
+
     async def _register_session_mcp_servers(
         self,
         state: SessionState,
@@ -1131,6 +1143,8 @@ class HermesACPAgent(acp.Agent):
         """Register ACP-provided MCP servers and refresh the agent tool surface."""
         if not mcp_servers:
             return
+
+        self._validate_session_mcp_server_names(mcp_servers)
 
         try:
             from tools.mcp_tool import register_mcp_servers
@@ -1594,6 +1608,7 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
+        self._validate_session_mcp_server_names(mcp_servers)
         state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
         self._schedule_mcp_late_refresh(state)
@@ -1616,6 +1631,7 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> LoadSessionResponse | None:
+        self._validate_session_mcp_server_names(mcp_servers)
         state = self.session_manager.update_cwd(session_id, cwd)
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
@@ -1664,6 +1680,7 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> ResumeSessionResponse:
+        self._validate_session_mcp_server_names(mcp_servers)
         state = self.session_manager.update_cwd(session_id, cwd)
         if state is None:
             logger.warning("resume_session: session %s not found, creating new", session_id)
@@ -1721,6 +1738,7 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> ForkSessionResponse:
+        self._validate_session_mcp_server_names(mcp_servers)
         state = self.session_manager.fork_session(session_id, cwd=cwd)
         new_id = state.session_id if state else ""
         if state is not None:

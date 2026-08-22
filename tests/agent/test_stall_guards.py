@@ -15,6 +15,8 @@ Two guards, both notice/re-prompt-only:
 These assert behavior contracts, not message snapshots.
 """
 
+import json
+
 from agent.agent_runtime_helpers import trailing_continue_intent
 from agent.tool_guardrails import (
     IDENTICAL_RESULT_STUB_MIN_CHARS,
@@ -73,6 +75,104 @@ def test_does_not_fire_when_results_differ():
         assert notice is None
 
 
+def test_explicit_unchanged_result_continues_streak_across_result_jitter():
+    c = ToolCallGuardrailController()
+    args = {"path": "README.md"}
+    unchanged = (
+        '{"status":"unchanged","dedup":true,'
+        '"content_returned":false,"message":"already returned"}'
+    )
+
+    assert c.observe_identical_call("read_file", args, "full contents") is None
+    assert c.observe_identical_call("read_file", args, unchanged) is None
+    notice = c.observe_identical_call("read_file", args, unchanged)
+
+    assert notice is not None
+    assert "3rd" in notice
+    assert "same underlying result" in notice
+
+
+def test_full_result_after_unchanged_stub_matches_original_anchor():
+    c = ToolCallGuardrailController()
+    args = {"path": "README.md"}
+    unchanged = (
+        '{"status":"unchanged","dedup":true,'
+        '"content_returned":false,"message":"already returned"}'
+    )
+
+    assert c.observe_identical_call("read_file", args, "version one") is None
+    assert c.observe_identical_call("read_file", args, unchanged) is None
+    notice = c.observe_identical_call("read_file", args, "version one")
+
+    assert notice is not None
+    assert "3rd" in notice
+
+
+def test_changed_result_after_unchanged_stub_restarts_streak():
+    c = ToolCallGuardrailController()
+    args = {"path": "README.md"}
+    unchanged = (
+        '{"status":"unchanged","dedup":true,'
+        '"content_returned":false,"message":"already returned"}'
+    )
+
+    assert c.observe_identical_call("read_file", args, "version one") is None
+    assert c.observe_identical_call("read_file", args, unchanged) is None
+    assert c.observe_identical_call("read_file", args, "version two") is None
+    assert c.observe_identical_call("read_file", args, "version two") is None
+    assert c.observe_identical_call("read_file", args, "version two") is not None
+
+
+def test_explicit_unchanged_contract_is_scoped_to_known_emitters():
+    c = ToolCallGuardrailController()
+    args = {"id": "same"}
+    unchanged = (
+        '{"status":"unchanged","dedup":true,'
+        '"content_returned":false,"message":"already returned"}'
+    )
+
+    assert c.observe_identical_call("other_tool", args, "full result") is None
+    assert c.observe_identical_call("other_tool", args, unchanged) is None
+    assert c.observe_identical_call("other_tool", args, unchanged) is None
+    assert c.observe_identical_call("other_tool", args, unchanged) is not None
+
+
+def test_skill_view_unchanged_envelope_continues_streak():
+    # skill_view's envelope carries extra fields (success, name, file) beyond
+    # the read_file shape; the contract keys on the three dedup fields only.
+    c = ToolCallGuardrailController()
+    args = {"name": "hermes-agent"}
+    unchanged = json.dumps(
+        {
+            "success": True,
+            "status": "unchanged",
+            "name": "hermes-agent",
+            "file": "SKILL.md",
+            "dedup": True,
+            "content_returned": False,
+            "message": "Skill content already in context.",
+        }
+    )
+
+    assert c.observe_identical_call("skill_view", args, "full skill content") is None
+    assert c.observe_identical_call("skill_view", args, unchanged) is None
+    notice = c.observe_identical_call("skill_view", args, unchanged)
+
+    assert notice is not None
+    assert "3rd" in notice
+
+
+def test_lookalike_unchanged_payload_does_not_inherit_prior_streak():
+    c = ToolCallGuardrailController()
+    args = {"path": "README.md"}
+    lookalike = '{"status":"unchanged","content_returned":false}'
+
+    assert c.observe_identical_call("read_file", args, "full contents") is None
+    assert c.observe_identical_call("read_file", args, lookalike) is None
+    assert c.observe_identical_call("read_file", args, lookalike) is None
+    assert c.observe_identical_call("read_file", args, lookalike) is not None
+
+
 def test_streak_resets_when_a_different_call_intervenes():
     c = ToolCallGuardrailController()
     assert _observe_n(c, 2)[-1] is None
@@ -88,6 +188,44 @@ def test_arg_canonicalization_ignores_key_order():
     assert c.observe_identical_call("t", {"a": 1, "b": 2}, r) is None
     assert c.observe_identical_call("t", {"b": 2, "a": 1}, r) is None
     assert c.observe_identical_call("t", {"a": 1, "b": 2}, r) is not None
+
+
+def test_todo_merge_jitter_still_fires_on_third_identical_result():
+    c = ToolCallGuardrailController()
+    todos = [
+        {"id": "1", "content": "inspect", "status": "completed"},
+        {"id": "2", "content": "fix", "status": "in_progress"},
+    ]
+
+    assert c.observe_identical_call("todo", {"todos": todos, "merge": True}, "same") is None
+    assert c.observe_identical_call("todo", {"todos": todos, "merge": False}, "same") is None
+    notice = c.observe_identical_call("todo", {"todos": todos, "merge": True}, "same")
+
+    assert notice is not None
+    assert "3rd" in notice
+
+
+def test_todo_item_order_remains_significant_for_stall_detection():
+    c = ToolCallGuardrailController()
+    todos = [
+        {"id": "1", "content": "first", "status": "pending"},
+        {"id": "2", "content": "second", "status": "pending"},
+    ]
+
+    for args in (
+        {"todos": todos, "merge": True},
+        {"todos": list(reversed(todos)), "merge": False},
+        {"todos": todos, "merge": True},
+    ):
+        assert c.observe_identical_call("todo", args, "same") is None
+
+
+def test_stall_arg_normalization_is_scoped_to_todo():
+    c = ToolCallGuardrailController()
+    for merge in (True, False, True):
+        assert c.observe_identical_call(
+            "other_tool", {"todos": [{"id": "1"}], "merge": merge}, "same"
+        ) is None
 
 
 def test_allowlisted_pollers_never_fire():
@@ -201,6 +339,24 @@ def test_stub_on_second_identical_call_first_full():
     assert "web_search" in r2
     assert "call_1" in r2  # references the FIRST occurrence in the streak
     assert len(r2) < len(_BIG)
+
+
+def test_stub_fires_on_second_jittered_todo_call():
+    # Jittered args (merge toggled) share the normalized stall signature, so a
+    # byte-identical duplicate result is stubbed on the 2nd call even though the
+    # raw args differ — and the stub still references the first call's id.
+    agent = _fake_agent()
+    todos = [{"id": "1", "content": "inspect", "status": "completed"}]
+    r1 = agent._append(
+        "todo", {"todos": todos, "merge": True}, _BIG, tool_call_id="call_1"
+    )
+    r2 = agent._append(
+        "todo", {"todos": todos, "merge": False}, _BIG, tool_call_id="call_2"
+    )
+    assert r1 == _BIG
+    assert r2 != _BIG
+    assert "byte-identical" in r2
+    assert "call_1" in r2
 
 
 def test_no_stub_when_fresh_result_differs():

@@ -2091,6 +2091,15 @@ def _check_skill_view_dedup(task_id, name, file_path) -> str | None:
             except OSError:
                 cache.pop(key, None)
                 return None
+            # CONTRACT with agent.tool_guardrails: this exact envelope
+            # (status="unchanged", dedup=True, content_returned=False)
+            # certifies that the skill content is byte-unchanged since the
+            # recorded view (mtime_ns+size check above). tool_guardrails trusts
+            # it to continue a stall streak
+            # (STALL_GUARD_UNCHANGED_RESULT_TOOLS); if the dedup logic above
+            # ever stamps "unchanged" on content that actually differs, the
+            # stall guard stays silent where it used to catch changed results.
+            # Change this shape only together with tool_guardrails.
             return json.dumps(
                 {
                     "success": True,

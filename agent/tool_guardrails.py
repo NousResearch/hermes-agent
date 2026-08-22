@@ -72,6 +72,30 @@ STALL_GUARD_REPEATABLE_TOOLS = frozenset(
     }
 )
 
+# Tools whose repeat-result envelope explicitly certifies that previously
+# returned content is unchanged and intentionally omitted. Keep this narrow:
+# arbitrary tools may use similarly named fields with different semantics.
+STALL_GUARD_UNCHANGED_RESULT_TOOLS = frozenset(
+    {
+        "read_file",
+        "skill_view",
+    }
+)
+
+# Tools whose arguments include how-to-apply selectors that don't change the
+# desired end state; those arguments are dropped from the stall signature.
+# Each entry maps a tool name to ``(required_list_arg, jitter_args)``: the
+# normalizer only applies when ``required_list_arg`` is a list (the end-state
+# payload), and every key in ``jitter_args`` is stripped before hashing. Keep
+# this narrow — like STALL_GUARD_UNCHANGED_RESULT_TOOLS above, each entry is
+# a deliberate claim about one tool's argument semantics, pinned by tests.
+STALL_GUARD_ARG_NORMALIZERS: dict[str, tuple[str, frozenset[str]]] = {
+    # todo: ``merge`` selects how to apply the list; alternating it while
+    # re-asserting the same ``todos`` is still the same stalled action. Item
+    # order inside ``todos`` stays significant — it defines priority.
+    "todo": ("todos", frozenset({"merge"})),
+}
+
 # Poller naming conventions (e.g. ``<vendor>_get_result``) used by generated /
 # MCP tool surfaces. Matched as suffixes so vendor-prefixed pollers are exempt
 # without enumerating every vendor.
@@ -296,6 +320,29 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
     )
 
 
+def _stall_guard_signature(
+    tool_name: str, args: Mapping[str, Any] | None
+) -> ToolCallSignature:
+    """Return the call identity used by the observational stall guard.
+
+    Some tools declare a desired end state while also accepting arguments that
+    only select how to apply it. ``STALL_GUARD_ARG_NORMALIZERS`` lists the
+    observed jitter patterns to normalize (currently just ``todo``'s ``merge``
+    selector) without weakening the stricter signatures used by failure and
+    no-progress guardrails.
+
+    All other tools and argument differences retain their exact canonical
+    identity.
+    """
+    coerced = _coerce_args(args)
+    normalizer = STALL_GUARD_ARG_NORMALIZERS.get(tool_name)
+    if normalizer is None or not isinstance(coerced.get(normalizer[0]), list):
+        return ToolCallSignature.from_call(tool_name, coerced)
+
+    normalized = {key: value for key, value in coerced.items() if key not in normalizer[1]}
+    return ToolCallSignature.from_call(tool_name, normalized)
+
+
 def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
     """Safety-fallback classifier used only when callers don't pass ``failed``.
 
@@ -353,6 +400,7 @@ class ToolCallGuardrailController:
         # this per-turn consecutive streak. Coordinate future work there.
         self._identical_streak_sig: ToolCallSignature | None = None
         self._identical_streak_result_hash: str = ""
+        self._identical_streak_anchor_result_hash: str = ""
         self._identical_streak_count: int = 0
         # tool_call_id of the FIRST call in the current streak, so a
         # result-reference stub can point at the message that carries the
@@ -552,11 +600,17 @@ class ToolCallGuardrailController:
         Two independent outputs from the same consecutive-streak tracker:
 
         - ``notice``: the compact loop-breaker notice, fired when the SAME
-          tool is called with identical canonical arguments AND returns an
-          identical result for the ``STALL_GUARD_IDENTICAL_CALL_THRESHOLD``-th
-          (and every subsequent) consecutive time within the turn. Purely
-          observational — never blocks the call. Allowlisted pollers
-          (``is_stall_guard_repeatable``) are exempt from the NOTICE.
+          tool is called with equivalent canonical arguments AND returns
+          the same underlying result for the
+          ``STALL_GUARD_IDENTICAL_CALL_THRESHOLD``-th (and every subsequent)
+          consecutive time within the turn. Purely observational — never
+          blocks the call. Allowlisted pollers (``is_stall_guard_repeatable``)
+          are exempt from the NOTICE. Equivalence tolerates two observed
+          no-progress jitter patterns: a declarative tool re-asserting the
+          same end state while toggling an apply-mode argument (``todo``
+          ``merge``), and an explicit unchanged/dedup envelope from a known
+          emitter (``read_file`` / ``skill_view``) certifying the previously
+          returned content is unchanged.
         - ``stub``: a short reference replacement for the CURRENT result,
           produced from the 2nd consecutive identical call whose fresh result
           is byte-identical to the previous one. The tool still executed —
@@ -568,28 +622,36 @@ class ToolCallGuardrailController:
           under ``IDENTICAL_RESULT_STUB_MIN_CHARS`` and failed/error results
           are never stubbed, and only plain-string results are considered.
 
-        Any intervening different call or changed result resets the streak.
-        Callers substitute/append at tool RESULT construction time, which is
-        cache-safe: tool results are append-only and never mutate
-        already-sent context.
+        A genuinely changed result resets the streak. A result matching the
+        streak's anchor (the full payload that started the streak) or an
+        explicit unchanged envelope continues it, so alternating full payload
+        and dedup stub cannot evade the threshold. Callers substitute/append
+        at tool RESULT construction time, which is cache-safe: tool results
+        are append-only and never mutate already-sent context.
         """
         is_plain_str = isinstance(result, str)
-        signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+        signature = _stall_guard_signature(tool_name, args)
         result_hash = _result_hash(result) if is_plain_str else ""
+        explicit_unchanged = _is_explicit_unchanged_result(tool_name, result)
 
         if (
             is_plain_str
             and self._identical_streak_sig == signature
-            and self._identical_streak_result_hash == result_hash
+            and (
+                self._identical_streak_result_hash == result_hash
+                or self._identical_streak_anchor_result_hash == result_hash
+                or explicit_unchanged
+            )
         ):
             self._identical_streak_count += 1
         else:
             # New streak (or non-string result, which never forms a streak —
             # multimodal content lists pass through untouched).
             self._identical_streak_sig = signature if is_plain_str else None
-            self._identical_streak_result_hash = result_hash
+            self._identical_streak_anchor_result_hash = result_hash
             self._identical_streak_count = 1 if is_plain_str else 0
             self._identical_streak_first_call_id = tool_call_id or ""
+        self._identical_streak_result_hash = result_hash
 
         count = self._identical_streak_count
 
@@ -601,7 +663,7 @@ class ToolCallGuardrailController:
             ordinal = f"{count}{'th' if 11 <= count % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(count % 10, 'th')}"
             notice = (
                 f"[hermes note: this is the {ordinal} consecutive identical call to "
-                f"{tool_name} with identical arguments returning the same result. "
+                f"{tool_name} with equivalent arguments returning the same underlying result. "
                 "Do not repeat it — change arguments, use a different tool, or "
                 "proceed with what you have.]"
             )
@@ -788,6 +850,26 @@ def _result_hash(result: str | None) -> str:
     else:
         canonical = result or ""
     return _sha256(canonical)
+
+
+def _is_explicit_unchanged_result(tool_name: str, result: str | None) -> bool:
+    """Whether a known tool certifies that its underlying content is unchanged.
+
+    Trust-the-emitter contract: the guard does not re-verify content; it
+    relies on the emitters in ``tools/file_tools.py`` (read_file) and
+    ``tools/skills_tool.py`` (skill_view) only stamping this envelope after
+    an mtime/size equality check. Each emitter carries a CONTRACT comment
+    keeping the two sides in sync.
+    """
+    if tool_name not in STALL_GUARD_UNCHANGED_RESULT_TOOLS or not isinstance(result, str):
+        return False
+    parsed = safe_json_loads(result)
+    return bool(
+        isinstance(parsed, dict)
+        and parsed.get("status") == "unchanged"
+        and parsed.get("dedup") is True
+        and parsed.get("content_returned") is False
+    )
 
 
 def _as_bool(value: Any, default: bool) -> bool:

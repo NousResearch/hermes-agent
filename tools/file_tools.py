@@ -1834,6 +1834,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                             already_read=hits + 1,
                         )
 
+                    # CONTRACT with agent.tool_guardrails: this exact envelope
+                    # (status="unchanged", dedup=True, content_returned=False)
+                    # certifies that the file content is byte-unchanged since
+                    # the referenced full read. tool_guardrails trusts it to
+                    # continue a stall streak (STALL_GUARD_UNCHANGED_RESULT_TOOLS);
+                    # if the dedup logic above ever stamps "unchanged" on content
+                    # that actually differs, the stall guard stays silent where
+                    # it used to catch changed results. Change this shape only
+                    # together with tool_guardrails.
                     return json.dumps({
                         "status": "unchanged",
                         "message": _READ_DEDUP_STATUS_MESSAGE,

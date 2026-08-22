@@ -1403,6 +1403,33 @@ def _content_policy_blocked_result(
     }
 
 
+def _malformed_function_call_result(
+    messages: List[Dict],
+    api_call_count: int,
+    *,
+    final_response: str,
+    error_detail: str,
+) -> Dict[str, Any]:
+    """Build the terminal turn result for a provider-rejected tool call.
+
+    Native Gemini can return HTTP 200 with
+    ``finishReason=MALFORMED_FUNCTION_CALL`` (or ``UNEXPECTED_TOOL_CALL``)
+    and empty content. That is a rejection of the model's tool-call shape,
+    not a successful empty reply and not a safety refusal. The turn ends
+    here (no empty-content retries) as a failed, non-completed result so
+    trajectories are not saved as successes (#83869).
+    """
+    return {
+        "final_response": final_response,
+        "messages": messages,
+        "api_calls": api_call_count,
+        "completed": False,
+        "failed": True,
+        "error": f"malformed_function_call: {error_detail}",
+        "turn_exit_reason": "malformed_function_call",
+    }
+
+
 def _compression_deferred_result(
     agent,
     messages: List[Dict],
@@ -3607,6 +3634,97 @@ def run_conversation(
                         api_call_count,
                         final_response=_refusal_response,
                         error_detail=_refusal_text or "model declined (content_filter)",
+                    )
+
+                # ── Malformed function call (HTTP 200) ─────────────────
+                # Native Gemini returns ``finishReason=MALFORMED_FUNCTION_CALL``
+                # (and sometimes ``UNEXPECTED_TOOL_CALL``) with empty content
+                # when the model's tool-call shape is invalid. The adapter maps
+                # those to ``malformed_function_call``. Without this branch the
+                # empty payload falls through to empty-content retries and is
+                # saved as a successful ``(empty)`` trajectory (#83869).
+                # Not a safety refusal — do not route through content_filter.
+                if finish_reason == "malformed_function_call":
+                    _mfc_transport = agent._get_transport()
+                    _mfc_result = _mfc_transport.normalize_response(response)
+                    _mfc_text = (getattr(_mfc_result, "content", None) or "").strip()
+                    if not _mfc_text:
+                        _mfc_text = (agent._extract_reasoning(_mfc_result) or "").strip()
+
+                    agent._invoke_api_request_error_hook(
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        api_call_count=api_call_count,
+                        api_start_time=api_start_time,
+                        api_kwargs=api_kwargs,
+                        error_type="MalformedFunctionCall",
+                        error_message=_mfc_text or "provider rejected a malformed function call",
+                        status_code=None,
+                        retry_count=retry_count,
+                        max_retries=max_retries,
+                        retryable=False,
+                        reason="malformed_function_call",
+                    )
+
+                    if thinking_spinner:
+                        thinking_spinner.stop("")
+                        thinking_spinner = None
+                    if agent.thinking_callback:
+                        agent.thinking_callback("")
+
+                    # Deterministic for the unchanged prompt — never retry
+                    # empty-content. Try a configured fallback once (a
+                    # different model may emit a valid call); otherwise
+                    # surface the rejection terminally.
+                    if agent._has_pending_fallback():
+                        agent._buffer_status(
+                            "⚠️ Gemini rejected a malformed function call — trying fallback..."
+                        )
+                    if agent._try_activate_fallback():
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt)
+                        retry_count = 0
+                        compression_attempts = 0
+                        _retry.primary_recovery_attempted = False
+                        # Match content_filter failover: break out of the
+                        # retry loop so restart_with_rebuilt_messages re-runs
+                        # preflight against the fallback context window (#84733).
+                        _retry.restart_with_rebuilt_messages = True
+                        break
+
+                    agent._flush_status_buffer()
+                    logger.warning(
+                        "%sProvider rejected a malformed function call "
+                        "(finish_reason=malformed_function_call). "
+                        "model=%s provider=%s",
+                        agent.log_prefix, agent.model, agent.provider,
+                    )
+                    agent._emit_status(
+                        "⚠️ Gemini rejected a malformed function call from the model."
+                    )
+
+                    _mfc_detail = (
+                        f"Provider message: {_mfc_text}"
+                        if _mfc_text
+                        else "The provider returned no explanation."
+                    )
+                    _mfc_response = (
+                        "⚠️  Gemini rejected a malformed function call "
+                        "from the model (not a Hermes/gateway failure).\n\n"
+                        f"{_mfc_detail}\n\n"
+                        "This is not a safety refusal. The model produced a "
+                        "tool call Gemini's API could not parse. Try again, "
+                        "or add a fallback provider with `hermes fallback add`."
+                    )
+
+                    agent._cleanup_task_resources(effective_task_id)
+                    agent._persist_session(messages, conversation_history)
+                    return _malformed_function_call_result(
+                        messages,
+                        api_call_count,
+                        final_response=_mfc_response,
+                        error_detail=_mfc_text or "provider rejected a malformed function call",
                     )
 
                 if finish_reason == "length":

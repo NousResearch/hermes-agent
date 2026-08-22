@@ -73,9 +73,12 @@ def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
     """Best-effort auto-track. Never raises."""
     try:
         p = Path(path_str).expanduser()
+        # exists() can raise PermissionError on unreadable parents (e.g.
+        # /root/*) — treat as "not a trackable file", per the never-raises
+        # contract above. (#perf-audit-20260822)
+        if not p.exists():
+            return
     except Exception:
-        return
-    if not p.exists():
         return
     category = dg.guess_category(p)
     if category is None:

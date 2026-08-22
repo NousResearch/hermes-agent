@@ -896,6 +896,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_hb.add_argument("task_id")
     p_hb.add_argument("--note", default=None,
                       help="Optional short note attached to the heartbeat event")
+    p_hb.add_argument(
+        "--disposition",
+        choices=("progressing", "blocked"),
+        default=None,
+        help="Structured liveness state: progressing or blocked",
+    )
 
     # --- assignees ---
     p_asg = sub.add_parser(
@@ -1511,6 +1517,7 @@ def _cmd_heartbeat(args: argparse.Namespace) -> int:
             conn,
             args.task_id,
             note=getattr(args, "note", None),
+            disposition=getattr(args, "disposition", None),
             expected_run_id=_worker_run_id_for(args.task_id),
         )
     if not ok:
@@ -2653,11 +2660,19 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_spawn = cli_max if cli_max is not None else _coerce_positive_int(
             _kanban_cfg.get("max_spawn")
         )
+        blocked_disposition_timeout_seconds = _coerce_positive_int(
+            _kanban_cfg.get("dispatch_blocked_disposition_timeout_seconds")
+        ) or 0
+        stranded_review_timeout_seconds = _coerce_positive_int(
+            _kanban_cfg.get("dispatch_stranded_review_timeout_seconds")
+        ) or 0
     except Exception:
         default_assignee = None
         max_in_progress_per_profile = None
         max_in_progress = None
         max_spawn = getattr(args, "max", None)
+        blocked_disposition_timeout_seconds = 0
+        stranded_review_timeout_seconds = 0
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn,
@@ -2667,6 +2682,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            blocked_disposition_timeout_seconds=blocked_disposition_timeout_seconds,
+            stranded_review_timeout_seconds=stranded_review_timeout_seconds,
         )
     if getattr(args, "json", False):
         print(json.dumps({
@@ -2674,6 +2691,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "crashed": res.crashed,
             "timed_out": res.timed_out,
             "stale": res.stale,
+            "blocked_dispositions": res.blocked_dispositions,
+            "stranded_reviews": res.stranded_reviews,
             "auto_blocked": res.auto_blocked,
             "promoted": res.promoted,
             "spawned": [
@@ -2699,6 +2718,12 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Stale:        {len(res.stale)}")
     if res.stale:
         print(f"  {', '.join(res.stale)}")
+    print(f"Blocked disp: {len(res.blocked_dispositions)}")
+    if res.blocked_dispositions:
+        print(f"  {', '.join(res.blocked_dispositions)}")
+    print(f"Stranded rev: {len(res.stranded_reviews)}")
+    if res.stranded_reviews:
+        print(f"  {', '.join(res.stranded_reviews)}")
     print(f"Auto-blocked: {len(res.auto_blocked)}")
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")

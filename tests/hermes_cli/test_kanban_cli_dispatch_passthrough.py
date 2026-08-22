@@ -23,10 +23,22 @@ def isolated_kanban_home(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_cli_passthrough_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    yield test_home
+    saved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name.startswith("hermes_cli")
+        or name.startswith("hermes_state")
+        or name == "hermes_constants"
+    }
+    for mod in list(saved_modules):
+        sys.modules.pop(mod, None)
+    try:
+        yield test_home
+    finally:
+        for mod in list(sys.modules.keys()):
+            if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
+                del sys.modules[mod]
+        sys.modules.update(saved_modules)
 
 
 def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, monkeypatch):
@@ -69,6 +81,32 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
     )
     assert captured.get("default_assignee") == "default"
     assert captured.get("max_in_progress_per_profile") == 2
+
+
+def test_cli_dispatch_passes_recovery_timeouts_from_config(isolated_kanban_home, monkeypatch):
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    fake_config = {
+        "kanban": {
+            "dispatch_blocked_disposition_timeout_seconds": 123,
+            "dispatch_stranded_review_timeout_seconds": 456,
+        }
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
+
+    captured = {}
+    monkeypatch.setattr(
+        kanban_db,
+        "dispatch_once",
+        lambda conn, **kw: (captured.update(kw), kanban_db.DispatchResult())[1],
+    )
+
+    args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=False)
+    kb_cli._cmd_dispatch(args)
+
+    assert captured.get("blocked_disposition_timeout_seconds") == 123
+    assert captured.get("stranded_review_timeout_seconds") == 456
 
 
 def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypatch):

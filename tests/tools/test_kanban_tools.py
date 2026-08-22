@@ -350,6 +350,31 @@ def test_heartbeat_extends_claim_expires(worker_env):
     )
 
 
+def test_heartbeat_tool_records_structured_disposition(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_heartbeat({
+        "note": "waiting on owner input",
+        "disposition": "blocked",
+    })
+    assert json.loads(out).get("ok") is True
+
+    conn = kb.connect()
+    try:
+        row = conn.execute(
+            "SELECT last_disposition FROM tasks WHERE id = ?", (worker_env,)
+        ).fetchone()
+        events = [e for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"]
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert events and events[-1].payload is not None
+    assert row["last_disposition"] == "blocked"
+    assert events[-1].payload["disposition"] == "blocked"
+
+
 def test_comment_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_comment({

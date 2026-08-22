@@ -1043,6 +1043,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     if ownership_err:
         return ownership_err
     note = args.get("note")
+    disposition = args.get("disposition")
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -1059,6 +1060,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
                 conn,
                 tid,
                 note=note,
+                disposition=disposition,
                 expected_run_id=_worker_run_id(tid),
             )
             if not ok:
@@ -1995,8 +1997,16 @@ KANBAN_HEARTBEAT_SCHEMA = {
             "note": {
                 "type": "string",
                 "description": (
-                    "Optional short note describing current progress. "
+                    "Optional short note describing current progress or blocker. "
                     "Shown in the event log."
+                ),
+            },
+            "disposition": {
+                "type": "string",
+                "enum": ["progressing", "blocked"],
+                "description": (
+                    "Structured liveness state. Use progressing while work is moving; "
+                    "use blocked when alive but parked on missing input/capability."
                 ),
             },
             "board": _board_schema_prop(),

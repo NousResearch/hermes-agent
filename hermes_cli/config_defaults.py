@@ -2674,6 +2674,15 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Blocked-disposition recovery: a running worker that heartbeats with
+        # disposition=blocked for this many seconds is moved to blocked so a
+        # worker slot is not parked for the much longer stale timeout. 0 disables.
+        "dispatch_blocked_disposition_timeout_seconds": 900,
+        # Stranded-review recovery: unclaimed review cards that cannot spawn
+        # because review dispatch is disabled, assignee is empty, or assignee
+        # profile is missing are moved to blocked after this many seconds.
+        # 0 disables.
+        "dispatch_stranded_review_timeout_seconds": 900,
         # Orphaned-card reconciliation: each dispatcher tick, requeue
         # 'running' cards whose claim bookkeeping is broken (claim_lock or
         # claim_expires NULL with a dead/gone worker) — zombies invisible

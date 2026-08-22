@@ -21,6 +21,11 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             description="How Hermes connects to Hindsight.",
             options=(
                 ProviderFieldOption(
+                    "local_embedded",
+                    "Local Embedded",
+                    "Run Hindsight locally with embedded PostgreSQL",
+                ),
+                ProviderFieldOption(
                     "cloud",
                     "Cloud",
                     "Hindsight Cloud API (lightweight, just needs an API key)",

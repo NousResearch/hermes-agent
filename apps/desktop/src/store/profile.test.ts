@@ -22,11 +22,15 @@ vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
 const {
   $activeGatewayProfile,
+  $gatewaySwapTarget,
+  $profileScope,
   $profiles,
+  $showAllProfiles,
   ensureGatewayProfile,
   invalidateProfileListFetches,
   prewarmProfileBackend,
-  refreshProfiles
+  refreshProfiles,
+  selectProfile
 } = await import('./profile')
 
 const { $connection } = await import('./session')
@@ -57,6 +61,8 @@ beforeEach(() => {
   openGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
+  $gatewaySwapTarget.set(null)
+  $showAllProfiles.set(false)
   $connection.set(localConn())
   $profiles.set([])
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
@@ -123,6 +129,44 @@ describe('profile-scoped cache invalidation', () => {
 
     expect(invalidateProfileScopedQueries).toHaveBeenCalled()
     expect(resetStarmapGraph).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('selectProfile foreground scope', () => {
+  it('rehomes the concrete profile scope before the gateway swap settles', () => {
+    getConnection.mockResolvedValue(localConn({ profile: 'work' }))
+
+    selectProfile('work')
+
+    // The renderer must stop painting the previous profile immediately. Waiting
+    // for the backend swap leaves a window where the old session tabs can still
+    // appear above the newly selected bot.
+    expect($profileScope.get()).toBe('work')
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('work')
+  })
+
+  it('rehomes the visible session tabs to the target profile synchronously', async () => {
+    const { $sessionTiles } = await import('@/store/session-states')
+
+    $sessionTiles.set([{ storedSessionId: 'default-tab' }, { storedSessionId: 'other-tab' }])
+
+    selectProfile('work')
+
+    // The previous profile's open tabs must not linger above the newly
+    // selected bot while its backend boots.
+    expect($sessionTiles.get()).toEqual([])
+  })
+
+  it('does not emit the old concrete scope while leaving All Profiles', () => {
+    $showAllProfiles.set(true)
+    const scopes: string[] = []
+    const stop = $profileScope.listen(scope => scopes.push(scope))
+
+    selectProfile('work')
+    stop()
+
+    expect(scopes).not.toContain('default')
+    expect($profileScope.get()).toBe('work')
   })
 })
 

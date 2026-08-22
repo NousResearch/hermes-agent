@@ -30,6 +30,14 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
+import {
+  $activeGatewayProfile,
+  $gatewaySwapTarget,
+  $profileScope,
+  ALL_PROFILES,
+  ensureGatewayProfile,
+  normalizeProfileKey
+} from '@/store/profile'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -76,6 +84,34 @@ import { startPaneDrag } from './drag-session'
 import { tabStripVisibleForZone } from './strip-visibility'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
+
+/** A pane with no owner is shared chrome; an owned pane is visible only in its
+ *  foreground profile. Kept pure so the strict profile boundary is directly
+ *  testable without mounting the whole layout tree. */
+export function paneMatchesForegroundProfile(data: unknown, profile: string): boolean {
+  const owner = (data as { profile?: unknown } | undefined)?.profile
+
+  return profile === ALL_PROFILES || typeof owner !== 'string' || normalizeProfileKey(owner) === normalizeProfileKey(profile)
+}
+
+/** In the explicit All Profiles view, selecting a session tab must route the
+ * foreground gateway to that tab's owner before the tile resumes. Concrete
+ * profile scopes never expose foreign-owned panes, so they do not route here. */
+export function profileToActivateForPane(data: unknown, scope: string, activeProfile: string): null | string {
+  if (scope !== ALL_PROFILES) {
+    return null
+  }
+
+  const owner = (data as { profile?: unknown } | undefined)?.profile
+
+  if (typeof owner !== 'string') {
+    return null
+  }
+
+  const key = normalizeProfileKey(owner)
+
+  return key === normalizeProfileKey(activeProfile) ? null : key
+}
 
 /** Right-click zone menu: the tab verbs (close this / others / to the right /
  *  all) plus the strip's own chrome toggles. Same items and icons as a session
@@ -228,6 +264,9 @@ export function TreeGroup({
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
+  const gatewaySwapTarget = useStore($gatewaySwapTarget)
+  const profileScope = useStore($profileScope)
   const newSessionTabAction = useStore($newSessionTabAction)
   const panesWithCloser = useStore($panesWithCloser)
   // Multi-tab selection (⌥/Ctrl-click, Shift-click) — null for every zone but
@@ -238,6 +277,8 @@ export function TreeGroup({
   const paneEpochs = useStore($treePaneEpochs)
 
   const paneFor = (id: string) => panes.find(p => p.id === id)
+  const foregroundProfile = profileScope === ALL_PROFILES ? ALL_PROFILES : normalizeProfileKey(profileScope)
+  const currentGatewayProfile = normalizeProfileKey(gatewaySwapTarget ?? activeGatewayProfile)
 
   // Unregistered (plugin not loaded), chrome-toggled-off, and narrow-collapsed
   // panes drop out of the header; the active pane falls back to the first
@@ -245,7 +286,10 @@ export function TreeGroup({
   // Edit mode forces toggle-hidden panes visible so they can be rearranged
   // (mirrors tree-split's paneGone) — restores itself on exit.
   const paneShown = (id: string) =>
-    Boolean(paneFor(id)) && (editMode || !hiddenPanes.has(id)) && !(narrow && paneChrome(paneFor(id)).collapsible)
+    Boolean(paneFor(id)) &&
+    paneMatchesForegroundProfile(paneFor(id)?.data, foregroundProfile) &&
+    (editMode || !hiddenPanes.has(id)) &&
+    !(narrow && paneChrome(paneFor(id)).collapsible)
 
   const shown = node.panes.filter(paneShown)
   const activeId = shown.includes(node.active) ? node.active : (shown[0] ?? node.active)
@@ -504,6 +548,12 @@ export function TreeGroup({
                     // selection back to the one tab (Chrome semantics).
                     const onTap = () => {
                       clearTabSelection()
+
+                      const owner = profileToActivateForPane(paneFor(paneId)?.data, profileScope, currentGatewayProfile)
+
+                      if (owner) {
+                        void ensureGatewayProfile(owner).catch(() => undefined)
+                      }
 
                       if (node.minimized) {
                         restoreTreePane(paneId)

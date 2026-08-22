@@ -36,13 +36,14 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $profileScope, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import { sessionAwaitingInput } from '@/store/prompts'
 import {
   $gatewayState,
   $selectedStoredSessionId,
   $sessions,
+  findSessionForProfile,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
@@ -61,6 +62,7 @@ import type { SessionDragPayload } from './composer/inline-refs'
 import { type ComposerScope, ComposerScopeProvider } from './composer/scope'
 import { useComposerActions } from './hooks/use-composer-actions'
 import { paneMirror } from './pane-mirror'
+import { ProfileTag } from './profile-tag'
 import { SessionDraftTitle } from './session-draft-title'
 import { startSessionDrag } from './session-drag'
 import { SessionStatusDot } from './session-status-dot'
@@ -236,8 +238,27 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
   const tile = tiles.find(t => t.storedSessionId === storedSessionId)
   const runtimeId = tile?.runtimeId ?? null
   const gatewayOpen = useStore($gatewayState) === 'open'
+  const activeGatewayProfile = useStore($activeGatewayProfile)
+  const gatewaySwapTarget = useStore($gatewaySwapTarget)
+  const profileScope = useStore($profileScope)
   const resumingRef = useRef(false)
   const view = useMemo(() => buildTileView(storedSessionId), [storedSessionId])
+
+  // A stale pane can survive one render while paneMirror removes it from the
+  // shared layout tree. It must not resume its old session against the new
+  // profile's socket during that hand-off. The pending target is the foreground
+  // profile; the gateway is ready for this tile only once both agree.
+  const foregroundProfile =
+    profileScope === ALL_PROFILES
+      ? normalizeProfileKey(activeGatewayProfile)
+      : normalizeProfileKey(gatewaySwapTarget ?? profileScope)
+
+  const tileProfile = normalizeProfileKey(tile?.profile ?? foregroundProfile)
+
+  const profileReady =
+    Boolean(tile) &&
+    tileProfile === foregroundProfile &&
+    tileProfile === normalizeProfileKey(activeGatewayProfile)
 
   // A tab-strip "+"/⌘T tab is created UNLISTED — its session stays out of
   // $sessions (no sidebar clutter) until it's actually used, so the tab shows
@@ -250,9 +271,10 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
   const hasMessages = useStore(view.$messagesEmpty) === false
 
   useEffect(() => {
-    const alreadyListed = () => $sessions.get().some(s => sessionMatchesStoredId(s, storedSessionId))
+    const alreadyListed = () =>
+      Boolean(tile && findSessionForProfile($sessions.get(), storedSessionId, tileProfile))
 
-    if (!runtimeId || !hasMessages || alreadyListed()) {
+    if (!runtimeId || !hasMessages || !profileReady || !tile || alreadyListed()) {
       return
     }
 
@@ -284,7 +306,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
         window.clearTimeout(timer)
       }
     }
-  }, [hasMessages, runtimeId, storedSessionId])
+  }, [hasMessages, profileReady, runtimeId, storedSessionId, tile, tileProfile])
 
   // Same gating as the primary's route resume (use-route-resume): never fire
   // session.resume before the gateway is OPEN. Persisted tiles mount at boot
@@ -292,7 +314,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
   // latched every restored tile into the error card.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (!gatewayOpen || runtimeId || tile?.error || resumingRef.current) {
+    if (!gatewayOpen || !profileReady || !tile || runtimeId || tile.error || resumingRef.current) {
       return
     }
 
@@ -303,11 +325,32 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
     }
 
     resumingRef.current = true
+    const resumeTile = tile
+    const resumeProfile = tileProfile
+
+    const isCurrentTile = () => {
+      const current = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+      const foreground = normalizeProfileKey($gatewaySwapTarget.get() ?? $activeGatewayProfile.get())
+
+      return (
+        current === resumeTile &&
+        foreground === resumeProfile &&
+        normalizeProfileKey($activeGatewayProfile.get()) === resumeProfile
+      )
+    }
 
     delegate
-      .resumeTile(storedSessionId)
-      .then(id => patchSessionTile(storedSessionId, { error: undefined, runtimeId: id }))
+      .resumeTile(storedSessionId, resumeProfile)
+      .then(id => {
+        if (isCurrentTile()) {
+          patchSessionTile(storedSessionId, { error: undefined, runtimeId: id })
+        }
+      })
       .catch((err: unknown) => {
+        if (!isCurrentTile()) {
+          return
+        }
+
         const message = err instanceof Error ? err.message : String(err)
 
         // A gone session (404 / "Session not found") is terminal — a stale or
@@ -322,7 +365,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
       .finally(() => {
         resumingRef.current = false
       })
-  }, [gatewayOpen, runtimeId, storedSessionId, tile?.error])
+  }, [gatewayOpen, profileReady, runtimeId, storedSessionId, tile, tile?.error, tileProfile])
 
   // The gateway (re)opening invalidates any latched error — it likely came
   // from a not-yet-open gateway or the previous connection. Clearing it
@@ -335,7 +378,11 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gatewayOpen, storedSessionId])
 
-  if (tile?.error) {
+  if (!tile) {
+    return null
+  }
+
+  if (tile.error) {
     return (
       <div className="grid h-full place-items-center p-4">
         <div className="max-w-[24rem] space-y-2 text-center font-mono text-[11px]">
@@ -370,12 +417,24 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
  *  tree. A session opened as a tab from a project group is often older than
  *  the paginated recents page, so it has no `$sessions` row at all until new
  *  activity lands it there — resolving through the tree keeps its tab titled
- *  and tinted instead of a grey "Session" placeholder. */
+ *  and tinted instead of a grey "Session" placeholder.
+ *
+ *  Ownership is part of the match: the tile list is per-profile, and during a
+ *  profile swap the shared renderer cache can still hold another profile's
+ *  rows. A tab must never be titled/tinted by a same-id row that belongs to a
+ *  different bot. */
 export function tileStoredRow(storedSessionId: string): SessionInfo | undefined {
-  const match = (s: SessionInfo) => sessionMatchesStoredId(s, storedSessionId)
+  const scope = $profileScope.get()
+  const tileOwner = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.profile
+  const profile = normalizeProfileKey(tileOwner ?? (scope === ALL_PROFILES ? $activeGatewayProfile.get() : scope))
+
+  const match = (s: SessionInfo) =>
+    sessionMatchesStoredId(s, storedSessionId) && normalizeProfileKey(s.profile) === profile
+
+  const matchByProfile = (rows: SessionInfo[]) => findSessionForProfile(rows, storedSessionId, profile)
 
   return (
-    $sessions.get().find(match) ??
+    matchByProfile($sessions.get()) ??
     $projectTree
       .get()
       .flatMap(p => [...p.repos.flatMap(r => r.groups.flatMap(g => g.sessions)), ...(p.previewSessions ?? [])])
@@ -593,15 +652,23 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   dir: t => t.dir,
   anchor: t => t.anchor,
   before: t => t.before,
+  profile: t => t.profile,
   minWidth: '20rem',
   title: tileTitle,
   // The tab's status dot — the SAME primitive the sidebar row renders, keyed by
   // the stored id, so a session's status/color can never disagree between the
   // two surfaces. Self-subscribing (live state + resolved color), so the strip
   // needn't re-sync when it changes.
-  tabLead: storedSessionId => (
-    <SessionStatusDot session={tileStoredRow(storedSessionId)} storedSessionId={storedSessionId} />
-  ),
+  tabLead: storedSessionId => {
+    const stored = tileStoredRow(storedSessionId)
+
+    return (
+      <>
+        {stored && <ProfileTag aria-hidden="true" className="mr-1" profile={stored.profile} />}
+        <SessionStatusDot session={stored} storedSessionId={storedSessionId} />
+      </>
+    )
+  },
   // Until the first turn lists a row there is no title to register, so the tab
   // takes its name from the composer instead — live, without re-registering.
   tabTitle: storedSessionId => (tileStoredRow(storedSessionId) ? null : <SessionDraftTitle scope={storedSessionId} />),

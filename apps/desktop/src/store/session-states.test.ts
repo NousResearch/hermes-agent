@@ -40,7 +40,7 @@ describe('resetTileRuntimeBindings', () => {
 
     expect(invalidateRuntimeBindings).toHaveBeenCalledTimes(1)
     expect($sessionTiles.get()).toEqual([
-      { anchor: undefined, before: undefined, dir: undefined, storedSessionId: 'stored-a' }
+      { anchor: undefined, before: undefined, dir: undefined, profile: 'default', storedSessionId: 'stored-a' }
     ])
   })
 

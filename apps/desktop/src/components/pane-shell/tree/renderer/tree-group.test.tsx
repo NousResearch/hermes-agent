@@ -3,10 +3,11 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { ALL_PROFILES } from '@/store/profile'
 
 import type { GroupNode } from '../model'
 
-import { TreeGroup } from './tree-group'
+import { paneMatchesForegroundProfile, profileToActivateForPane, TreeGroup } from './tree-group'
 
 let root: null | Root = null
 let container: HTMLDivElement | null = null
@@ -56,6 +57,19 @@ afterEach(() => {
 })
 
 describe('TreeGroup', () => {
+  it('hides a pane owned by another foreground profile but keeps shared chrome', () => {
+    expect(paneMatchesForegroundProfile({ profile: 'quill' }, 'default')).toBe(false)
+    expect(paneMatchesForegroundProfile({ profile: 'default' }, 'default')).toBe(true)
+    expect(paneMatchesForegroundProfile({ placement: 'main' }, 'default')).toBe(true)
+    expect(paneMatchesForegroundProfile({ profile: 'quill' }, ALL_PROFILES)).toBe(true)
+  })
+
+  it('routes a visible All Profiles tab to its owner before activation', () => {
+    expect(profileToActivateForPane({ profile: 'quill' }, ALL_PROFILES, 'default')).toBe('quill')
+    expect(profileToActivateForPane({ profile: 'default' }, ALL_PROFILES, 'default')).toBeNull()
+    expect(profileToActivateForPane({ profile: 'quill' }, 'default', 'default')).toBeNull()
+  })
+
   it('points the docked-zone chevron in the collapse or restore action direction', () => {
     disposePane = registry.register({
       area: 'panes',

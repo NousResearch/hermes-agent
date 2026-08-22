@@ -97,7 +97,7 @@ describe('session drop targeting across stacked tabs', () => {
 
     dragTo(row, 980, 400)
 
-    expect(openSessionTile).toHaveBeenCalledWith('dragged', 'right', 'session-tile:visible', undefined)
+    expect(openSessionTile).toHaveBeenCalledWith('dragged', 'right', 'session-tile:visible', undefined, 'default')
     expect(requestComposerInsertRefs).not.toHaveBeenCalled()
   })
 

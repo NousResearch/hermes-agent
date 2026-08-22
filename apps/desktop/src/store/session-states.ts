@@ -33,7 +33,14 @@ import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
-import { $activeGatewayProfile, normalizeProfileKey } from './profile'
+import {
+  $activeGatewayProfile,
+  $gatewaySwapTarget,
+  $profileScope,
+  ALL_PROFILES,
+  ensureGatewayProfile,
+  normalizeProfileKey
+} from './profile'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
   $activeSessionId,
@@ -522,6 +529,9 @@ export type TileDock = 'center' | SplitDir
 export interface SessionTile {
   /** Stored session id — the durable identity (runtime ids are ephemeral). */
   storedSessionId: string
+  /** Owning profile. Optional only for old in-memory/test values; persisted
+   *  tiles are normalized from their profile bucket on load. */
+  profile?: string
   /** Dock against `anchor` on adoption (default right; center = stack). */
   dir?: TileDock
   /** Pane to dock against (a drop's target zone) — default the workspace.
@@ -550,12 +560,13 @@ const TILE_PANE_PREFIX = 'session-tile:'
 /** Persisted placement — `dir` + strip slot (`before`) + dock `anchor` so a
  *  restart / profile swap re-adopts tiles in the same order, not all stacked
  *  right of workspace. */
-type StoredTile = Pick<SessionTile, 'anchor' | 'before' | 'dir' | 'storedSessionId'>
+type StoredTile = Pick<SessionTile, 'anchor' | 'before' | 'dir' | 'profile' | 'storedSessionId'>
 
 const toStored = (t: SessionTile): StoredTile => ({
   anchor: t.anchor,
   before: t.before,
   dir: t.dir,
+  profile: t.profile ?? profileKey(),
   storedSessionId: t.storedSessionId
 })
 
@@ -570,6 +581,7 @@ function parseTileList(value: unknown): StoredTile[] {
             anchor: typeof raw.anchor === 'string' ? raw.anchor : undefined,
             before: typeof raw.before === 'string' || raw.before === null ? raw.before : undefined,
             dir: raw.dir,
+            profile: typeof raw.profile === 'string' ? normalizeProfileKey(raw.profile) : undefined,
             storedSessionId: raw.storedSessionId
           }
         })
@@ -585,7 +597,8 @@ function loadTilesByProfile(): Record<string, StoredTile[]> {
       const tiles = parseTileList(list)
 
       if (tiles.length > 0) {
-        byProfile[normalizeProfileKey(profile)] = tiles
+        const key = normalizeProfileKey(profile)
+        byProfile[key] = tiles.map(tile => ({ ...tile, profile: key }))
       }
     }
   }
@@ -595,7 +608,7 @@ function loadTilesByProfile(): Record<string, StoredTile[]> {
 
   if (legacy.length > 0) {
     const key = normalizeProfileKey('default')
-    byProfile[key] = [...(byProfile[key] ?? []), ...legacy]
+    byProfile[key] = [...(byProfile[key] ?? []), ...legacy.map(tile => ({ ...tile, profile: key }))]
   }
 
   writeJson(LEGACY_TILES_KEY, null)
@@ -605,16 +618,33 @@ function loadTilesByProfile(): Record<string, StoredTile[]> {
 
 const tilesByProfile = loadTilesByProfile()
 // Keyed by the GATEWAY profile: the rail's profile switch is a soft swap
-// ($activeGatewayProfile moves, no reload) — $activeProfile mirrors the
-// window's primary backend and never changes on a rail switch, so keying on
-// it left the previous profile's tiles registered (phantom "Session" tabs).
-const profileKey = () => normalizeProfileKey($activeGatewayProfile.get())
+// ($activeGatewayProfile moves, no reload). While the swap is pending, the
+// foreground target wins so the previous profile's tabs disappear immediately.
+const profileKey = () => normalizeProfileKey($gatewaySwapTarget.get() ?? $activeGatewayProfile.get())
+
+function tilesForProfile(profile: string): SessionTile[] {
+  return [...(tilesByProfile[normalizeProfileKey(profile)] ?? [])]
+}
+
+/** Visible tile set for the current profile context. All Profiles is an
+ * explicit browse mode, so it is the only scope that aggregates every owner.
+ * Bucket keys supply ownership for legacy entries that predate the per-tile
+ * profile field. */
+function tilesForScope(scope: string): SessionTile[] {
+  if (scope === ALL_PROFILES) {
+    return Object.entries(tilesByProfile).flatMap(([owner, tiles]) =>
+      tiles.map(tile => ({ ...tile, profile: normalizeProfileKey(tile.profile ?? owner) }))
+    )
+  }
+
+  return tilesForProfile(scope)
+}
 
 // Runtime ids are process-scoped — never trust a persisted one, so the live
 // atom hydrates from the stored (runtime-less) tiles for the active profile.
 // A secondary window (single-chat pop-out) shows ONLY its routed session — no
 // tiles, and no repopulation on a profile switch.
-export const $sessionTiles = atom<SessionTile[]>(isSecondaryWindow() ? [] : [...(tilesByProfile[profileKey()] ?? [])])
+export const $sessionTiles = atom<SessionTile[]>(isSecondaryWindow() ? [] : tilesForScope($profileScope.get()))
 
 function persistTiles() {
   // Shares the origin's storage; a secondary window holds no tiles, so a write
@@ -628,25 +658,46 @@ function persistTiles() {
 
 function saveTiles(tiles: SessionTile[]) {
   $sessionTiles.set(tiles)
-  const stored = tiles.map(toStored)
 
-  if (stored.length > 0) {
-    tilesByProfile[profileKey()] = stored
+  if ($profileScope.get() === ALL_PROFILES) {
+    // In the aggregate view the atom contains every bucket. Rebuild the
+    // persisted buckets from the owner carried by each tile instead of writing
+    // all profiles under whichever gateway happens to be active.
+    for (const key of Object.keys(tilesByProfile)) {
+      delete tilesByProfile[key]
+    }
+
+    for (const tile of tiles) {
+      const owner = normalizeProfileKey(tile.profile ?? $activeGatewayProfile.get())
+
+      const stored = { ...toStored({ ...tile, profile: owner }), profile: owner }
+
+      ;(tilesByProfile[owner] ??= []).push(stored)
+    }
   } else {
-    delete tilesByProfile[profileKey()]
+    const owner = profileKey()
+    const stored = tiles.map(tile => ({ ...toStored({ ...tile, profile: owner }), profile: owner }))
+
+    if (stored.length > 0) {
+      tilesByProfile[owner] = stored
+    } else {
+      delete tilesByProfile[owner]
+    }
   }
 
   persistTiles()
 }
 
 // Profile switch: surface the new profile's tiles with runtime ids cleared so
-// they re-resume against the now-current gateway. (Fires immediately on
-// subscribe; harmless — the init value already matches.) A secondary window
-// never carries tiles, so it stays out of this entirely.
+// they re-resume against the now-current gateway. Subscribe to the pending
+// target as well as the settled gateway: the profile rail changes foreground
+// context before the pooled backend finishes booting, so old tabs must leave
+// the strip in the same synchronous turn. A secondary window never carries
+// tiles, so it stays out of this entirely.
 if (!isSecondaryWindow()) {
-  $activeGatewayProfile.subscribe(() => {
-    $sessionTiles.set([...(tilesByProfile[profileKey()] ?? [])])
-  })
+  const syncTilesForForegroundProfile = () => $sessionTiles.set(tilesForScope($profileScope.get()))
+
+  $profileScope.subscribe(syncTilesForForegroundProfile)
 }
 
 export function patchSessionTile(storedSessionId: string, patch: Partial<SessionTile>) {
@@ -712,8 +763,9 @@ export interface SessionTileDelegate {
    *  right pane" bug). Bindings re-record from live post-reconnect events. */
   invalidateRuntimeBindings?(): void
   /** Bind a live runtime id for a stored session (resume without touching
-   *  the main view). Returns the runtime id, or throws. */
-  resumeTile(storedSessionId: string): Promise<string>
+   *  the main view). Returns the runtime id, or throws. An optional owner
+   *  lets the delegate reject a late response after a profile switch. */
+  resumeTile(storedSessionId: string, profile?: string): Promise<string>
   /** Submit a prompt to a tile's live session. */
   submitToSession(runtimeId: string, text: string): Promise<void>
   /** THE session-state write path — routes through the wiring cache so the
@@ -795,8 +847,37 @@ export function openSessionTile(
   storedSessionId: string,
   dir: TileDock = 'right',
   anchor?: string,
-  before?: null | string
+  before?: null | string,
+  profile?: string
 ) {
+  const targetProfile = normalizeProfileKey(profile ?? profileKey())
+
+  // A session opened from an explicit All-profiles row carries its owner. Move
+  // the foreground to that owner before creating the tile; otherwise the tile
+  // would be stored under whichever profile happened to be active and resume
+  // against the wrong backend. The profile-swap atom makes the second call
+  // synchronous from the foreground's point of view, while the backend swap
+  // itself remains async and serialized by ensureGatewayProfile().
+  if (targetProfile !== profileKey() && $profileScope.get() !== ALL_PROFILES) {
+    void ensureGatewayProfile(targetProfile)
+      .then(() => {
+        if (profileKey() === targetProfile) {
+          openSessionTile(storedSessionId, dir, anchor, before, targetProfile)
+        }
+      })
+      .catch(() => undefined)
+
+    return
+  }
+
+  if (targetProfile !== profileKey()) {
+    // All Profiles is a browse context: make the owner-tagged pane visible now,
+    // then warm the owner gateway in the background. Clicking its tab will also
+    // route through profileToActivateForPane, but a restored/dragged tab must not
+    // disappear while that route is settling.
+    void ensureGatewayProfile(targetProfile).catch(() => undefined)
+  }
+
   const tiles = $sessionTiles.get()
 
   // Opening a session in a tab/tile is "reading" it — clear its unread dot
@@ -814,7 +895,7 @@ export function openSessionTile(
   const dock = anchor ?? focusedSessionTabAnchor() ?? undefined
 
   if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
-    saveTiles([...tiles, { anchor: dock, before, dir, storedSessionId }])
+    saveTiles([...tiles, { anchor: dock, before, dir, profile: targetProfile, storedSessionId }])
     // Adoption is async via the registry — order sync runs after the move path
     // below; a brand-new tile's strip slot is already in `before`.
 
@@ -959,12 +1040,31 @@ export function reuseBlankDraftTile(storedSessionId: string): boolean {
 // profile's session. The tile's placement is remembered so it returns in place.
 const closedTilesByProfile: Record<string, SessionTile[]> = {}
 const closedStack = (): SessionTile[] => (closedTilesByProfile[profileKey()] ??= [])
+const closedStackFor = (profile: string): SessionTile[] => (closedTilesByProfile[normalizeProfileKey(profile)] ??= [])
+
+function popClosedTile(): SessionTile | undefined {
+  if ($profileScope.get() === ALL_PROFILES) {
+    const stacks = Object.values(closedTilesByProfile).filter(stack => stack.length > 0)
+
+    return stacks.at(-1)?.pop()
+  }
+
+  return closedStack().pop()
+}
 
 export function closeSessionTile(storedSessionId: string) {
   const tile = $sessionTiles.get().find(t => t.storedSessionId === storedSessionId)
 
   if (tile) {
-    closedStack().push({ anchor: tile.anchor, before: tile.before, dir: tile.dir, storedSessionId })
+    const owner = normalizeProfileKey(tile.profile ?? $activeGatewayProfile.get())
+
+    closedStackFor(owner).push({
+      anchor: tile.anchor,
+      before: tile.before,
+      dir: tile.dir,
+      profile: owner,
+      storedSessionId
+    })
   }
 
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
@@ -1001,9 +1101,7 @@ export function discardSessionTile(storedSessionId: string) {
  *  front the pane explicitly. Skips ids that are live again (reopened / now
  *  the primary). */
 export function reopenLastClosedTile(): void {
-  const stack = closedStack()
-
-  for (let tile = stack.pop(); tile; tile = stack.pop()) {
+  for (let tile = popClosedTile(); tile; tile = popClosedTile()) {
     const { storedSessionId } = tile
 
     if (storedSessionId === $selectedStoredSessionId.get()) {
@@ -1011,7 +1109,7 @@ export function reopenLastClosedTile(): void {
     }
 
     if (!$sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
-      openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before)
+      openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before, tile.profile)
       focusOpenSession(storedSessionId)
 
       return

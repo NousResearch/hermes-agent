@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
 import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
 
+import { ProfileTag } from '@/app/chat/profile-tag'
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
@@ -59,6 +60,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
+import { $activeGatewayProfile, $profileScope, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import {
   $reviewOpen,
@@ -68,7 +70,13 @@ import {
   openReview,
   REVIEW_PANE_ID
 } from '@/store/review'
-import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
+import {
+  $currentCwd,
+  $selectedStoredSessionId,
+  $sessions,
+  $yoloActive,
+  findSessionForProfile
+} from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
@@ -131,7 +139,9 @@ const workspaceDragPayload = (): SessionDragPayload | null => {
     return null
   }
 
-  const stored = $sessions.get().find(s => sessionMatchesStoredId(s, selected))
+  const scope = $profileScope.get()
+  const profile = scope === ALL_PROFILES ? normalizeProfileKey($activeGatewayProfile.get()) : scope
+  const stored = findSessionForProfile($sessions.get(), selected, profile)
 
   return { id: selected, profile: stored?.profile ?? '', title: stored ? storedSessionTitle(stored) : '' }
 }
@@ -471,13 +481,33 @@ watchSessionPins()
 // Release unread-write guards once a list page confirms the value we wrote.
 watchUnreadWriteGuard()
 
+/** The main tab's lead glyph: the loaded session's OWNER glyph, so the top
+ *  strip carries the active bot's identity beside the status dot (strict
+ *  profile context — the ring on the rail and the glyph on the tab agree).
+ *  Null profile (fresh draft / full-page view) renders nothing. */
+function WorkspaceTabLead({ profile, visible }: { profile: null | string | undefined; visible: boolean }) {
+  if (!visible) {
+    return null
+  }
+
+  return <ProfileTag aria-hidden="true" className="mr-1" profile={profile} />
+}
+
 // The main tab reads as its SESSION (the loaded title, "New session" on a
 // fresh draft) — a stack of main + tiles is then just a row of session names.
 // register() replaces same-id in place; the render fn is the shared constant
 // above, so the pane content never remounts.
 const syncWorkspaceTitle = () => {
   const selected = $selectedStoredSessionId.get()
-  const stored = selected ? $sessions.get().find(s => sessionMatchesStoredId(s, selected)) : null
+  // The workspace tab is the primary surface of the CURRENT foreground
+  // profile. A shared-cache same-id row from another bot must never title it
+  // (strict profile context — the old profile's tabs disappear on switch).
+  const scope = $profileScope.get()
+
+  const activeProfile =
+    scope === ALL_PROFILES ? normalizeProfileKey($activeGatewayProfile.get()) : scope
+
+  const stored = selected ? findSessionForProfile($sessions.get(), selected, activeProfile) : null
 
   registry.register({
     id: 'workspace',
@@ -489,8 +519,14 @@ const syncWorkspaceTitle = () => {
       // The tab's status dot — the SAME primitive the sidebar row and session
       // tiles render, so the main tab never disagrees with its sidebar row. A
       // fresh draft has no session to key by, which IS its status: the dot
-      // resolves to `draft` and marks the tab rather than leaving a hole.
-      tabLead: () => <SessionStatusDot session={stored} storedSessionId={selected} />,
+      // resolves to `draft` and marks the tab rather than leaving a hole. The
+      // owner glyph leads it, so the active bot reads off the strip itself.
+      tabLead: () => (
+        <>
+          <WorkspaceTabLead profile={stored?.profile} visible={Boolean(stored)} />
+          <SessionStatusDot session={stored} storedSessionId={selected} />
+        </>
+      ),
       // A draft's name lives in its composer, not in any session row, so the
       // label subscribes to it directly — typing renames the tab without
       // re-registering the pane.
@@ -509,6 +545,7 @@ const syncWorkspaceTitle = () => {
 
 $selectedStoredSessionId.listen(syncWorkspaceTitle)
 $sessions.listen(syncWorkspaceTitle)
+$profileScope.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
 
 // Layout reset collapses every session tile into main as a tab (after the

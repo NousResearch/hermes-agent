@@ -486,8 +486,9 @@ $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY
 // gateway so opening/selecting a profile (which swaps the gateway) moves the
 // whole sidebar with it — a real context switch, not a separate filter to keep
 // in sync.
-export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile], (showAll, gateway) =>
-  showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
+export const $profileScope = computed(
+  [$showAllProfiles, $activeGatewayProfile, $gatewaySwapTarget],
+  (showAll, gateway, swapTarget) => (showAll ? ALL_PROFILES : normalizeProfileKey(swapTarget ?? gateway))
 )
 
 // Switch the active context to `name`: leave "All profiles" mode, point new
@@ -498,14 +499,21 @@ export function selectProfile(name: string): void {
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
   const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
-  $showAllProfiles.set(false)
   $newChatProfile.set(target)
 
   if (switching) {
+    // The foreground identity changes the moment the click lands — not when the
+    // pooled backend finishes booting. Re-home the visible session tabs now so
+    // the previous profile's conversations cannot linger above the new bot.
     requestFreshSession()
   }
 
-  void ensureGatewayProfile(target)
+  // Set the pending target before leaving All Profiles. Otherwise the computed
+  // scope briefly emits the old concrete gateway profile and can repaint its
+  // tabs for one render before the async swap begins.
+  const swap = ensureGatewayProfile(target)
+  $showAllProfiles.set(false)
+  void swap
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse

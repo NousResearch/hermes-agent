@@ -263,6 +263,25 @@ export const sessionMatchesStoredId = (
   storedSessionId: string
 ): boolean => session.id === storedSessionId || session._lineage_root_id === storedSessionId
 
+/**
+ * Resolve a stored session only when both its durable/lineage id and its owning
+ * profile match. The Desktop renderer can hold an all-profile cache, so an id
+ * alone is not a safe identity at this boundary.
+ */
+export function findSessionForProfile(
+  sessions: readonly SessionInfo[],
+  storedSessionId: string,
+  profile: string
+): SessionInfo | undefined {
+  const owner = profile.trim() || 'default'
+
+  return sessions.find(session => {
+    const sessionOwner = (session.profile ?? '').trim() || 'default'
+
+    return sessionOwner === owner && sessionMatchesStoredId(session, storedSessionId)
+  })
+}
+
 // Alias lookup, memoized per sessions-list reference. `lineageAliases` runs
 // per cached session state per status projection per message delta — an
 // O(sessions) scan there multiplies out to states × sessions × ~30Hz per busy

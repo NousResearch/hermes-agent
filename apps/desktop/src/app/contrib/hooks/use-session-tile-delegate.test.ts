@@ -106,7 +106,6 @@ describe('useSessionTileDelegate resumeTile', () => {
       omit_messages: true
     })
   })
-
   it('reuses a warm binding that still carries a transcript', async () => {
     const stateA = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-a' }
     const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-a', 'runtime-a']]) }
@@ -166,6 +165,26 @@ describe('useSessionTileDelegate resumeTile', () => {
     // The next resume goes cold instead of reusing the dead binding.
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-c')
     expect(runtimeId).toBe('runtime-fresh')
+  })
+
+  it('rejects a cold tile resume that lands after the foreground profile moved', async () => {
+    // The tile's owner is 'ai-engineer'. The resume RPC resolves only AFTER the
+    // foreground has already switched away (gateway settled on 'default'), so
+    // publishing the response would bind a runtime into the wrong profile.
+    setSessions([row({ id: 'stored-z', profile: 'ai-engineer' })])
+    const { $activeGatewayProfile, $gatewaySwapTarget } = await import('@/store/profile')
+
+    $activeGatewayProfile.set('default')
+    $gatewaySwapTarget.set(null)
+
+    const requestGateway = vi.fn(async (method: string) =>
+      method === 'session.resume' ? ({ session_id: 'runtime-3' } as never) : ({} as never)
+    )
+
+    renderTile(requestGateway)
+    await expect(sessionTileDelegate()!.resumeTile('stored-z', 'ai-engineer')).rejects.toThrow(
+      'profile changed during tile resume'
+    )
   })
 })
 

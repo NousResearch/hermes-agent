@@ -72,7 +72,8 @@ export function openSessionIntentFromModifiers(
 export function openSession(
   storedSessionId: string,
   navigate: OpenSessionNavigate,
-  intent: OpenSessionIntent = 'in-place'
+  intent: OpenSessionIntent = 'in-place',
+  profile?: string
 ): void {
   if (!storedSessionId) {
     return
@@ -132,7 +133,11 @@ export function openSession(
       return
     }
 
-    openSessionTile(storedSessionId, 'center')
+    if (profile) {
+      openSessionTile(storedSessionId, 'center', undefined, undefined, profile)
+    } else {
+      openSessionTile(storedSessionId, 'center')
+    }
 
     return
   }

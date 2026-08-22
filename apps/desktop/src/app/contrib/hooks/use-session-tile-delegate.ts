@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 
 import { getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { toChatMessages } from '@/lib/chat-messages'
+import { $activeGatewayProfile, $gatewaySwapTarget, normalizeProfileKey } from '@/store/profile'
 import { publishSessionState, setSessionTileDelegate } from '@/store/session-states'
 import type { SessionResumeResponse } from '@/types/hermes'
 
@@ -112,7 +113,7 @@ export function useSessionTileDelegate({
           }
         )
       },
-      resumeTile: async storedSessionId => {
+      resumeTile: async (storedSessionId, profileHint) => {
         const existing = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
 
@@ -133,7 +134,7 @@ export function useSessionTileDelegate({
         // reading messages) without a profile lets the gateway fall back to the
         // launch-profile DB and fork the conversation into the wrong profile —
         // the same cross-profile bleed the recovery resumes had (#67603).
-        const profile = await resolveSessionProfile(storedSessionId)
+        const profile = profileHint ?? (await resolveSessionProfile(storedSessionId))
 
         const [prefetch, resumed] = await Promise.all([
           getLatestSessionMessages(storedSessionId, profile).catch(() => null),
@@ -149,6 +150,20 @@ export function useSessionTileDelegate({
 
         if (!runtimeId) {
           throw new Error('resume returned no session id')
+        }
+
+        // The component refuses to start a resume while the gateway is on a
+        // different profile, but the swap can still happen while these two
+        // requests are in flight. Reject before publishing the response so an
+        // old profile cannot bind a runtime or patch a same-id tile in the new
+        // foreground context.
+        if (
+          profileHint &&
+          (normalizeProfileKey($activeGatewayProfile.get()) !== normalizeProfileKey(profileHint) ||
+            normalizeProfileKey($gatewaySwapTarget.get() ?? $activeGatewayProfile.get()) !==
+              normalizeProfileKey(profileHint))
+        ) {
+          throw new Error('profile changed during tile resume')
         }
 
         updateSessionState(

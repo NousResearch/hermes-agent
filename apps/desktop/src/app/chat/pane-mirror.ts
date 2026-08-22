@@ -28,6 +28,8 @@ export interface PaneMirror<T> {
   anchor?: (tile: T) => string | undefined
   /** Center docks: the strip slot (stack before this pane id). */
   before?: (tile: T) => null | string | undefined
+  /** Optional owner metadata for profile-scoped panes. */
+  profile?: (tile: T) => string | undefined
   minWidth: string
   title: (key: string) => string
   /** Custom lead NODE for the tile's tab (rendered before the label). A live,
@@ -81,6 +83,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
             pos: cfg.dir?.(tile) ?? 'right'
           },
           minWidth: cfg.minWidth,
+          profile: cfg.profile?.(tile),
           // Every mirrored tile is a full workspace surface docked beside main —
           // and closeable, which is what keeps its tab when it lands in a zone of
           // its own (see strip-visibility.ts).

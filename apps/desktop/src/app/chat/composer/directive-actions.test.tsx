@@ -86,7 +86,7 @@ describe('ComposerDirectiveActions', () => {
     fireEvent.click(screen.getByRole('button'))
     // openSessionRef lazy-imports the navigator, so the call lands a tick later.
     await vi.waitFor(() =>
-      expect(openSession).toHaveBeenCalledWith('20260722_204335_d62c16', expect.any(Function), 'tab')
+      expect(openSession).toHaveBeenCalledWith('20260722_204335_d62c16', expect.any(Function), 'tab', 'default')
     )
   })
 

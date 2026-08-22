@@ -27,6 +27,7 @@ import {
   _resetLegacyDiscardForTests,
   applyConfiguredDefaultProjectDir,
   commitWorkspaceCwdForSelectedSession,
+  findSessionForProfile,
   getRememberedRoute,
   getRememberedSessionId,
   mergeSessionPage,
@@ -95,6 +96,22 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+})
+
+describe('findSessionForProfile', () => {
+  it('does not let a same-id row from another profile win', () => {
+    const rows = [
+      session({ id: 'same-id', profile: 'work', title: 'Work chat' }),
+      session({ id: 'same-id', profile: 'default', title: 'Default chat' })
+    ]
+
+    expect(findSessionForProfile(rows, 'same-id', 'default')?.title).toBe('Default chat')
+    expect(findSessionForProfile(rows, 'same-id', 'work')?.title).toBe('Work chat')
+  })
+
+  it('treats an empty owner as the default profile', () => {
+    expect(findSessionForProfile([session({ id: 'default-id', profile: '' })], 'default-id', 'default')).toBeTruthy()
   })
 })
 

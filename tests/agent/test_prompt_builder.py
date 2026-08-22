@@ -281,7 +281,29 @@ class TestBuildSkillsSystemPrompt:
         yield
         clear_skills_system_prompt_cache(clear_snapshot=True)
 
+    def test_guidance_loads_only_directly_triggered_skills_once(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill = tmp_path / "skills" / "coding" / "router"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: router\ndescription: Route explicit coding-agent tasks\n---\n"
+        )
 
+        result = build_skills_system_prompt()
+
+        assert "## Skills (selective)" in result
+        assert "smallest directly triggered set" in result
+        assert "Start with one primary skill" in result
+        assert "contributes distinct procedure" in result
+        assert "router first" in result
+        assert "Do not call skill_view again" in result
+        assert "topical overlap" in result
+        assert "proceed without loading a skill" in result
+        assert "load the `hermes-agent` skill first" in result
+        assert "even partially relevant" not in result
+        assert "Err on the side of loading" not in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

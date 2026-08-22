@@ -2167,17 +2167,18 @@ def _build_skills_system_prompt_inner(
                     index_lines.append(f"    - {name}")
 
         result = (
-            "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
+            "## Skills (selective)\n"
+            "Before acting, scan the skill descriptions below and load the smallest directly "
+            "triggered set with skill_view(name). A skill is triggered only when the task matches "
+            "the concrete scope in its description; topical overlap or possible usefulness is not "
+            "enough. Start with one primary skill. Load another only when it contributes distinct "
+            "procedure required for the task. When an umbrella router and specialized skills could "
+            "apply, load the router first, then only the child skills it directs you to. Do not "
+            "preload adjacent skills as background context. Do not call skill_view again for a "
+            "skill whose full content is already present in the current conversation unless its "
+            "content was marked unavailable or stale, or a linked file is needed. If no description "
+            "directly matches, proceed without loading a skill. Skills contain specialized "
+            "procedures, tool guidance, and user conventions; follow the skills you do load.\n"
             "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
             "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
@@ -2190,9 +2191,7 @@ def _build_skills_system_prompt_inner(
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
-            "</available_skills>\n"
-            "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            "</available_skills>"
             + hidden_note
         )
 

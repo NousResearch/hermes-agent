@@ -8273,6 +8273,57 @@ def run_conversation(
                     final_response = None
                     continue
 
+                # Post-response grounding enforcement — the single host-side
+                # seam a grounding-aware context engine plugs into. This runs
+                # only here, past every continuation/nudge gate above
+                # (Codex ``incomplete`` ack-continuation, length-continuation
+                # join, dropped-tool-call recovery, verify-on-stop, pre_verify,
+                # kanban terminal-stop), so ``final_response`` is the TRULY
+                # FINAL assistant text about to be persisted and delivered —
+                # never an intermediate fragment or a turn that will continue.
+                #
+                # No-op unless the active context engine advertises an
+                # ``enforce_response`` capability via a ``capabilities()``
+                # method returning a dict with that key set; the built-in
+                # ContextCompressor and LCM do not, so they are entirely
+                # unaffected. A grounding-aware engine audits the final answer
+                # against its verbatim record and, if it is ungrounded, returns
+                # ``{"action": "replace", "text": ...}``. Duck-typed (getattr)
+                # so any engine lacking the API is silently skipped, and fully
+                # wrapped so enforcement can never break the turn. On replace we
+                # update both ``final_response`` (returned to the finalizer and
+                # delivered to the user) and ``final_msg["content"]`` (persisted
+                # to the durable transcript) so the two never diverge.
+                try:
+                    _eng = getattr(agent, "context_compressor", None)
+                    _caps = getattr(_eng, "capabilities", None)
+                    if (
+                        _eng is not None
+                        and not assistant_message.tool_calls
+                        and isinstance(final_response, str)
+                        and final_response.strip()
+                        and callable(_caps)
+                        and _caps().get("enforce_response")
+                    ):
+                        _verdict = _eng.enforce_response(
+                            final_response,
+                            messages,
+                            model=getattr(agent, "model", ""),
+                            final=True,
+                        )
+                        if (
+                            isinstance(_verdict, dict)
+                            and _verdict.get("action") == "replace"
+                        ):
+                            _replacement = _verdict.get("text", final_response)
+                            if isinstance(_replacement, str) and _replacement:
+                                final_response = _replacement
+                                final_msg["content"] = _replacement
+                except Exception:
+                    logger.debug(
+                        "grounding enforce_response hook failed", exc_info=True
+                    )  # enforcement must never break the turn
+
                 append_message(messages, final_msg)
                 # Make the completed answer durable before leaving the loop —
                 # a session torn down before finalize_turn's _persist_session

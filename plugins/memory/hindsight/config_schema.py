@@ -72,5 +72,25 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             ),
             inline=True,
         ),
+        ProviderField(
+            key="recall_query_strategy",
+            label="Recall query strategy",
+            kind=KIND_SELECT,
+            default="prefix",
+            description="Keep the legacy prefix cap or preserve both the start and trailing intent.",
+            options=(
+                ProviderFieldOption("prefix", "Prefix"),
+                ProviderFieldOption("head_tail", "Head + tail"),
+            ),
+            inline=True,
+        ),
+        ProviderField(
+            key="recall_query_head_chars",
+            label="Recall query head characters",
+            kind=KIND_TEXT,
+            default="200",
+            description="Characters reserved for the start; a newline separates it from the tail.",
+            inline=True,
+        ),
     ),
 )

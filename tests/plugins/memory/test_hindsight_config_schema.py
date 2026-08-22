@@ -18,6 +18,8 @@ def test_hindsight_is_declared():
         "api_url",
         "bank_id",
         "recall_budget",
+        "recall_query_strategy",
+        "recall_query_head_chars",
     }
 
 

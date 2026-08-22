@@ -72,6 +72,8 @@ Config file: `~/.hermes/hindsight/config.json`
 | `recall_prefetch_method` | `recall` | Auto-recall method: `recall` (raw facts) or `reflect` (LLM synthesis) |
 | `recall_max_tokens` | `4096` | Maximum tokens for recall results |
 | `recall_max_input_chars` | `800` | Maximum input query length for auto-recall |
+| `recall_query_strategy` | `prefix` | Long-query composition: `prefix` keeps the legacy prefix-only cap; opt-in `head_tail` preserves both the start and trailing intent |
+| `recall_query_head_chars` | `200` | Characters reserved for the start of a truncated `head_tail` query; a newline separates head and tail, and the remaining `recall_max_input_chars` budget comes from the end. Degenerate bounded values are warned about at initialization. |
 | `recall_prompt_preamble` | — | Custom preamble for recalled memories in context |
 | `recall_tags` | — | Tags to filter when searching memories |
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |
@@ -79,6 +81,20 @@ Config file: `~/.hermes/hindsight/config.json`
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 | `recall_sync` | `false` | Recall synchronously against the *current* message each turn (higher relevance, adds recall latency). Default off: recall runs in the background and is injected on the next turn. |
 | `recall_indicator` | `true` | Show a `👁️ Hindsight — recalled N memories` status line when auto-recall injects memory. Turn off for customer-facing agents. |
+
+For prompts that put logs or background before the actual request, opt in to
+intent-preserving composition without raising the hard query cap:
+
+```json
+{
+  "recall_max_input_chars": 800,
+  "recall_query_strategy": "head_tail",
+  "recall_query_head_chars": 200
+}
+```
+
+Queries at or below the cap are unchanged. The default `prefix` strategy keeps
+existing behavior for backward compatibility.
 
 > **Behavior change — `recall_types` defaults to `observation` only.**
 >

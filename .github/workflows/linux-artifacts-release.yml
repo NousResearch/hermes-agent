@@ -209,9 +209,9 @@ jobs:
         # snapcraft CLI from the snap store (snapcore/action-install does not exist)
         run: |
           sudo snap install snapcraft --classic
-          # wait for snapd seeding to finish — installing content snaps
-          # (mesa-2404 etc.) right after boot races with snapd refresh
-          sudo snap wait system seed.loaded || true
+          sudo snap install lxd
+          sudo lxd init --auto
+          sudo usermod -aG lxd "$USER"
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -236,7 +236,9 @@ jobs:
         working-directory: apps/desktop
         run: |
           node scripts/stage-snap.mjs
-          snapcraft --destructive-mode
+          # LXD container build: mesa-2404's install hook needs BPF mounts
+          # unavailable on the runner VM itself, so destructive mode fails
+          snapcraft
 
       - name: Verify Snap
         run: |

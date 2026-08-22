@@ -75,7 +75,7 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
     mcp_rm_p.add_argument("name", help="Server name to remove")
 
-    mcp_sub.add_parser("list", aliases=["ls"], help="List configured MCP servers")
+    mcp_sub.add_parser("list", aliases=["ls", "status"], help="List configured MCP servers")
 
     mcp_test_p = mcp_sub.add_parser("test", help="Test MCP server connection")
     mcp_test_p.add_argument("name", help="Server name to test")

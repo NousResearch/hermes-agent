@@ -579,7 +579,7 @@ def memory_command(args) -> None:
             cmd_setup_provider(provider)
         else:
             cmd_setup(args)
-    elif sub == "status":
+    elif sub in {"status", "list", "ls", "show"}:
         cmd_status(args)
     else:
         cmd_status(args)

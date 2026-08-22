@@ -1126,6 +1126,7 @@ def mcp_command(args):
         "rm": cmd_mcp_remove,
         "list": cmd_mcp_list,
         "ls": cmd_mcp_list,
+        "status": cmd_mcp_list,
         "test": cmd_mcp_test,
         "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure,

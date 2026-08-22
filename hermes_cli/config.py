@@ -5750,7 +5750,7 @@ def config_command(args):
     """Handle config subcommands."""
     subcmd = getattr(args, 'config_command', None)
     
-    if subcmd is None or subcmd == "show":
+    if subcmd is None or subcmd in {"show", "list", "ls"}:
         show_config()
     
     elif subcmd == "edit":

@@ -302,18 +302,22 @@ class TestSequentialPool:
             "workdir": str(tmp_path),  # makes it sequential
         }
 
+        done_event = threading.Event()
         barrier = threading.Barrier(2, timeout=5)
 
         def slow_run(j, *, defer_agent_teardown=None, **_kw):
             barrier.wait()
             return True, "out", "resp", None
 
+        def deliver_done(*_a, **_kw):
+            done_event.set()
+
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
         monkeypatch.setattr(sched, "claim_job_for_fire", lambda *_a, **_kw: True)
         monkeypatch.setattr(sched, "run_job", slow_run)
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
-        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "_deliver_result", deliver_done)
 
         start = time.monotonic()
         n = sched.tick(verbose=False, sync=False)
@@ -323,7 +327,7 @@ class TestSequentialPool:
         assert elapsed < 1.0  # did NOT block on the slow workdir job
 
         barrier.wait()
-        time.sleep(0.1)
+        assert done_event.wait(timeout=5)
         sched._shutdown_parallel_pool()
 
     def test_sequential_running_guard_prevents_double_dispatch(self, tmp_path, monkeypatch):

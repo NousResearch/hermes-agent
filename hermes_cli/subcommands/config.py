@@ -22,7 +22,9 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_subparsers = config_parser.add_subparsers(dest="config_command")
 
     # config show (default)
-    config_subparsers.add_parser("show", help="Show current configuration")
+    config_subparsers.add_parser(
+        "show", aliases=["list", "ls"], help="Show current configuration"
+    )
 
     # config edit
     config_subparsers.add_parser("edit", help="Open config file in editor")

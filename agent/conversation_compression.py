@@ -1902,20 +1902,35 @@ def conversation_history_after_compression(
     identities as history while allowing later same-turn appends to remain new.
 
     An aborted or no-op attempt after an earlier in-place compaction must retain
-    the pre-attempt baseline.  Treating all current messages as persisted would
+    the pre-attempt baseline. Treating all current messages as persisted would
     drop any later, unflushed turns on restart; clearing the baseline would
     append the already-persisted compacted rows a second time.
+
+    The returned baseline is also stored on the agent for direct mid-turn
+    recovery flushes that do not receive the loop-local variable (tool progress
+    and Codex projection paths).
     """
     if bool(getattr(agent, "_last_compression_attempt_recorded", False)):
         attempt_in_place = getattr(agent, "_last_compression_attempt_in_place", None)
         if attempt_in_place is True:
-            return list(messages)
-        if attempt_in_place is False:
-            return None
-        return previous_history
-    if bool(getattr(agent, "_last_compaction_in_place", False)):
-        return list(messages)
-    return None
+            baseline = list(messages)
+        elif attempt_in_place is False:
+            baseline = None
+        else:
+            baseline = previous_history
+    elif bool(getattr(agent, "_last_compaction_in_place", False)):
+        baseline = list(messages)
+    else:
+        baseline = None
+
+    try:
+        agent._turn_persistence_history = baseline
+    except Exception:
+        # Third-party/minimal agent shells may not allow dynamic attributes;
+        # the existing return-value contract remains sufficient for their
+        # ordinary flush callers.
+        pass
+    return baseline
 
 
 _SYNTHETIC_USER_PREFIXES = (

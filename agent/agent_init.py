@@ -1734,6 +1734,10 @@ def init_agent(
     # the race before the agent's normal early turn flush.
     agent._pending_cli_user_message = None
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
+    # Direct mid-turn flushes (tool progress / Codex projection) can run after
+    # the turn-start persist failed. Keep the caller's durable prefix so those
+    # recovery writes do not have to infer it from message position.
+    agent._turn_persistence_history = None
     agent._session_db_created = False  # DB row deferred to run_conversation()
     # Most agents own their session row and should finalize it on close().
     # Some temporary helper agents (manual compression / session-hygiene /

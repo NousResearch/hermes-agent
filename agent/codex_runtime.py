@@ -843,7 +843,18 @@ def run_codex_app_server_turn(
         # the already-flushed user turn). See gateway/run.py agent_persisted.
         if getattr(agent, "_session_db", None) is not None:
             try:
-                _codex_flush_ok = agent._flush_messages_to_session_db(messages)
+                persistence_history = getattr(
+                    agent, "_turn_persistence_history", None
+                )
+                if not isinstance(persistence_history, list):
+                    persistence_history = None
+                if persistence_history is None:
+                    _codex_flush_ok = agent._flush_messages_to_session_db(messages)
+                else:
+                    _codex_flush_ok = agent._flush_messages_to_session_db(
+                        messages,
+                        conversation_history=persistence_history,
+                    )
             except Exception:
                 _codex_flush_ok = False
                 logger.warning(

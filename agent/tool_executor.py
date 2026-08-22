@@ -210,7 +210,21 @@ def _flush_session_db_after_tool_progress(
     transcript survives destructive-but-valid tool calls.
     """
     try:
-        persisted = agent._flush_messages_to_session_db(messages) is not False
+        persistence_history = getattr(
+            agent, "_turn_persistence_history", None
+        )
+        if not isinstance(persistence_history, list):
+            persistence_history = None
+        if persistence_history is None:
+            persisted = agent._flush_messages_to_session_db(messages) is not False
+        else:
+            persisted = (
+                agent._flush_messages_to_session_db(
+                    messages,
+                    conversation_history=persistence_history,
+                )
+                is not False
+            )
         if not persisted:
             agent._incremental_persistence_failed = True
             # The flush caught its own exception and returned False; the

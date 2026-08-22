@@ -627,6 +627,11 @@ def build_turn_context(
 
     # Initialize conversation (copy to avoid mutating the caller's list).
     messages = list(conversation_history) if conversation_history else []
+    # Mid-turn direct flushes do not receive the local
+    # ``conversation_history`` variable as an argument. Preserve this exact
+    # object-identity baseline for recovery writes if the turn-start flush
+    # failed before it could stamp the live messages.
+    agent._turn_persistence_history = conversation_history
 
     # The CLI may already have staged this input outside the history passed to
     # ``run_conversation``. Reuse it only when its clean transcript text matches

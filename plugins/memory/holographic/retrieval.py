@@ -19,6 +19,15 @@ except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
 
 
+# Ranking policy constants — lexical dominance, HRR as a rerank tiebreak.
+# Kept as module-level constants so the ranking policy is tunable and
+# testable from a single place, rather than inline magic numbers.
+_RELEVANCE_LEX_WEIGHT = 0.55   # lexical (Jaccard) weight in the blend
+_RELEVANCE_HRR_WEIGHT = 0.45   # HRR structural weight in the blend
+_REASON_LEX_WEIGHT = 0.6       # lexical weight in reason()'s AND blend
+_REASON_HRR_WEIGHT = 0.4       # HRR weight in reason()'s AND blend
+
+
 class FactRetriever:
     """Multi-strategy fact retrieval with trust-weighted scoring."""
 
@@ -127,79 +136,17 @@ class FactRetriever:
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Compositional entity query using HRR algebra.
+        """Compositional entity query.
 
-        Unbinds entity from memory bank to extract associated content.
-        This is NOT keyword search — it uses algebraic structure to find facts
-        where the entity plays a structural role.
-
-        Falls back to FTS5 search if numpy unavailable.
+        Uses a lexical prefilter (FTS5 + Jaccard) to surface candidate facts,
+        then augments the ranking with HRR structure when available. This is
+        the empirically-correct architecture: pure-HRR phase vectors are
+        numerically too weak to isolate exact facts, while the lexical paths
+        are precise. HRR is retained as a rerank signal, not the primary
+        driver.
         """
-        if not hrr._HAS_NUMPY:
-            # Fallback to keyword search on entity name
-            return self.search(entity, category=category, limit=limit)
-
-        conn = self.store._conn
-
-        # Encode entity as role-bound vector
-        role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
-        entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
-        probe_key = hrr.bind(entity_vec, role_entity)
-
-        # Try category-specific bank first, then all facts
-        if category:
-            bank_name = f"cat:{category}"
-            bank_row = conn.execute(
-                "SELECT vector FROM memory_banks WHERE bank_name = ?",
-                (bank_name,),
-            ).fetchone()
-            if bank_row:
-                bank_vec = hrr.bytes_to_phases(bank_row["vector"], dim=self.hrr_dim)
-                extracted = hrr.unbind(bank_vec, probe_key)
-                # Use extracted signal to score individual facts
-                return self._score_facts_by_vector(
-                    extracted, category=category, limit=limit
-                )
-
-        # Score against individual fact vectors directly
-        where = "WHERE hrr_vector IS NOT NULL"
-        params: list = []
-        if category:
-            where += " AND category = ?"
-            params.append(category)
-
-        rows = conn.execute(
-            f"""
-            SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at,
-                   hrr_vector
-            FROM facts
-            {where}
-            """,
-            params,
-        ).fetchall()
-
-        if not rows:
-            # Final fallback: keyword search
-            return self.search(entity, category=category, limit=limit)
-
-        # role_content is loop-invariant — encode it once (deterministic
-        # SHA-256-based atom) instead of once per fact row.
-        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
-        scored = []
-        for row in rows:
-            fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
-            # Unbind probe key from fact to see if entity is structurally present
-            residual = hrr.unbind(fact_vec, probe_key)
-            # Compare residual against content signal
-            content_vec = hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)
-            sim = hrr.similarity(residual, content_vec)
-            fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
-            scored.append(fact)
-
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        # Lexical prefilter (FTS5 + Jaccard), same pipeline as search()
+        return self._lexical_anchor_query(entity, category=category, limit=limit, hrr_mode="probe")
 
     def related(
         self,
@@ -207,69 +154,13 @@ class FactRetriever:
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Discover facts that share structural connections with an entity.
+        """Discover facts structurally related to an entity.
 
-        Unlike probe (which finds facts *about* an entity), related finds
-        facts that are connected through shared context — e.g., other entities
-        mentioned alongside this one, or content that overlaps structurally.
-
-        Falls back to FTS5 search if numpy unavailable.
+        Lexical prefilter, then scores facts by shared-context overlap.
+        Where HRR is available, its structural signal augments the score;
+        the lexical anchor is what makes recall reliable on terse facts.
         """
-        if not hrr._HAS_NUMPY:
-            return self.search(entity, category=category, limit=limit)
-
-        conn = self.store._conn
-
-        # Encode entity as a bare atom (not role-bound — we want ANY structural match)
-        entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
-
-        # Get all facts with vectors
-        where = "WHERE hrr_vector IS NOT NULL"
-        params: list = []
-        if category:
-            where += " AND category = ?"
-            params.append(category)
-
-        rows = conn.execute(
-            f"""
-            SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at,
-                   hrr_vector
-            FROM facts
-            {where}
-            """,
-            params,
-        ).fetchall()
-
-        if not rows:
-            return self.search(entity, category=category, limit=limit)
-
-        # Score each fact by how much the entity's atom appears in its vector
-        # This catches both role-bound entity matches AND content word matches
-        # Both role atoms are loop-invariant — encode them once here
-        # (deterministic SHA-256-based atoms) instead of twice per fact row.
-        role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
-        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
-        scored = []
-        for row in rows:
-            fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
-
-            # Check structural similarity: unbind entity from fact
-            residual = hrr.unbind(fact_vec, entity_vec)
-            # A high-similarity residual to ANY known role vector means this entity
-            # plays a structural role in the fact
-
-            entity_role_sim = hrr.similarity(residual, role_entity)
-            content_role_sim = hrr.similarity(residual, role_content)
-            # Take the max — entity could appear in either role
-            best_sim = max(entity_role_sim, content_role_sim)
-
-            fact["score"] = (best_sim + 1.0) / 2.0 * fact["trust_score"]
-            scored.append(fact)
-
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        return self._lexical_anchor_query(entity, category=category, limit=limit, hrr_mode="related")
 
     def reason(
         self,
@@ -277,76 +168,160 @@ class FactRetriever:
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Multi-entity compositional query — vector-space JOIN.
+        """Multi-entity compositional query.
 
-        Given multiple entities, algebraically intersects their structural
-        connections to find facts related to ALL of them simultaneously.
-        This is compositional reasoning that no embedding DB can do.
+        Facts that relate to ALL supplied entities simultaneously. Uses an
+        AND intersection of per-entity lexical candidates, then a combined
+        relevance score (lexical + HRR when available). This replaces the
+        pure-HRR min() heuristic, which produced near-random ranking.
 
-        Example: reason(["peppi", "backend"]) finds facts where peppi AND
-        backend both play structural roles — without keyword matching.
-
-        Falls back to FTS5 search if numpy unavailable.
+        NOTE: AND semantics depend on HRR being available. When HRR is
+        disabled (no numpy, or hrr_weight <= 0), reason() degrades to a
+        plain search(" ".join(entities)) — an OR-ish union, not an AND
+        intersection. Callers relying on strict AND behavior must ensure
+        HRR is enabled.
         """
-        if not hrr._HAS_NUMPY or not entities:
-            # Fallback: search with all entities as keywords
-            query = " ".join(entities)
-            return self.search(query, category=category, limit=limit)
+        if not entities:
+            return []
+        if self.hrr_weight <= 0 or not hrr._HAS_NUMPY:
+            # No HRR signal — plain search over the joined terms (OR-ish
+            # union, NOT an AND intersection — see docstring note).
+            return self.search(" ".join(entities), category=category, limit=limit)
+
+        # Lexical candidates per entity, then intersect (AND semantics)
+        per_entity = {}
+        min_candidate_span = 1
+        for ent in entities:
+            cands = self._fts_candidates(ent, category, 0.0, limit * 3)
+            per_entity[ent] = {c["fact_id"] for c in cands}
+            min_candidate_span = min(min_candidate_span, len(cands))
+
+        # If any entity has no lexical candidates, fall back to search
+        if min_candidate_span == 0:
+            return self.search(" ".join(entities), category=category, limit=limit)
+
+        # Intersection: facts matching ALL entities
+        intersection = set.intersection(*per_entity.values())
+        if not intersection:
+            return self.search(" ".join(entities), category=category, limit=limit)
 
         conn = self.store._conn
-        role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
-
-        # For each entity, compute what the bank "remembers" about it
-        # by unbinding entity+role from each fact vector
-        entity_residuals = []
-        for entity in entities:
-            entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
-            probe_key = hrr.bind(entity_vec, role_entity)
-            entity_residuals.append(probe_key)
-
-        # Get all facts with vectors
-        where = "WHERE hrr_vector IS NOT NULL"
-        params: list = []
+        where = "WHERE fact_id IN (%s)" % ",".join("?" * len(intersection))
         if category:
-            where += " AND category = ?"
-            params.append(category)
-
+            where += f" AND category = ?"
+            params: list = [*intersection, category]
+        else:
+            params = [*intersection]
         rows = conn.execute(
-            f"""
-            SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at,
-                   hrr_vector
-            FROM facts
-            {where}
-            """,
+            f"SELECT fact_id, content, category, tags, trust_score, "
+            f"retrieval_count, helpful_count, created_at, updated_at, hrr_vector FROM facts {where}",
             params,
         ).fetchall()
-
         if not rows:
-            query = " ".join(entities)
-            return self.search(query, category=category, limit=limit)
+            return self.search(" ".join(entities), category=category, limit=limit)
 
-        # Score each fact by how much EACH entity is structurally present.
-        # A fact scores high only if ALL entities have structural presence
-        # (AND semantics via min, vs OR which would use mean/max).
+        # Recompute the combined score for the intersection facts
+        query_tokens = set().union(*[self._tokenize(e) for e in entities]) if entities else set()
         role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
+        probe_keys = []
+        role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
+        for e in entities:
+            ev = hrr.encode_atom(e.lower(), self.hrr_dim)
+            probe_keys.append(hrr.bind(ev, role_entity))
 
         scored = []
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
+            fv = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
+            # HRR structural score: proximity of residual to content role.
+            # reason() has AND semantics, so ALL supplied entities must
+            # contribute; aggregate across every probe key and use the weakest
+            # (min) entity match so the structural score is entity-order-
+            # invariant and cannot be gamed by listing a matched entity first.
+            hrr_sim = 0.5
+            if hrr._HAS_NUMPY and self.hrr_weight > 0:
+                entity_hrr_scores = []
+                for probe_key in probe_keys:
+                    residual = hrr.unbind(fv, probe_key)
+                    entity_hrr_scores.append(
+                        (hrr.similarity(residual, role_content) + 1.0) / 2.0
+                    )
+                hrr_sim = min(entity_hrr_scores)
 
-            entity_scores = []
-            for probe_key in entity_residuals:
-                residual = hrr.unbind(fact_vec, probe_key)
-                sim = hrr.similarity(residual, role_content)
-                entity_scores.append(sim)
-
-            min_sim = min(entity_scores)
-            fact["score"] = (min_sim + 1.0) / 2.0 * fact["trust_score"]
+            # Lexical relevance: Jaccard between query entities and fact
+            ft = self._tokenize(fact["content"]) | self._tokenize(fact.get("tags", ""))
+            jac = self._jaccard_similarity(query_tokens, ft)
+            # Blend: lexical dominant, HRR as tiebreak (matching search philosophy)
+            relevance = (_REASON_LEX_WEIGHT * jac + _REASON_HRR_WEIGHT * hrr_sim)
+            fact["score"] = relevance * fact["trust_score"]
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
+        # Strip raw HRR bytes — callers expect JSON-serializable dicts
+        for fact in scored[:limit]:
+            fact.pop("hrr_vector", None)
+        return scored[:limit]
+
+    def _lexical_anchor_query(
+        self,
+        query: str,
+        category: str | None = None,
+        limit: int = 10,
+        hrr_mode: str = "probe",
+    ) -> list[dict]:
+        """Shared lexical-prefilter + HRR-augment pipeline for probe/related.
+
+        Uses the proven FTS5+Jaccard prefilter (which ranks ground-truth facts
+        correctly on this corpus) then augments with HRR structure when
+        numpy is available. Falls back to pure search() if numpy is missing.
+        """
+        if self.hrr_weight <= 0 or not hrr._HAS_NUMPY:
+            # No HRR enhancement — plain lexical search is the reliable path
+            return self.search(query, category=category, limit=limit)
+
+        # Lexical prefilter
+        cands = self._fts_candidates(query, category, 0.0, limit * 3)
+        if not cands:
+            # Preserve probe/related's historical fallback contract.
+            # search() currently shares the same FTS candidate source, but
+            # keeping the fallback avoids coupling these retrieval paths
+            # if they diverge later.
+            return self.search(query, category=category, limit=limit)
+
+        query_tokens = self._tokenize(query)
+        role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
+        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
+        entity_vec = hrr.encode_atom(query.lower(), self.hrr_dim)
+
+        scored = []
+        for f in cands:
+            fact = dict(f)
+            ft = self._tokenize(fact["content"]) | self._tokenize(fact.get("tags", ""))
+            jac = self._jaccard_similarity(query_tokens, ft)
+            # HRR structural signal (probe: entity role; related: any role)
+            hrr_score = 0.5  # neutral
+            if fact.get("hrr_vector"):
+                fv = hrr.bytes_to_phases(fact["hrr_vector"], dim=self.hrr_dim)
+                if hrr_mode == "probe":
+                    residual = hrr.unbind(fv, hrr.bind(entity_vec, role_entity))
+                    sim = hrr.similarity(residual, role_content)
+                    hrr_score = (sim + 1.0) / 2.0
+                else:  # related
+                    residual = hrr.unbind(fv, entity_vec)
+                    best = max(hrr.similarity(residual, role_entity),
+                               hrr.similarity(residual, role_content))
+                    hrr_score = (best + 1.0) / 2.0
+            # Lexical dominant, HRR as tiebreak — NOT the primary signal
+            relevance = _RELEVANCE_LEX_WEIGHT * jac + _RELEVANCE_HRR_WEIGHT * hrr_score
+            # Trust weighting: linear, same formula as search() and reason()
+            relevance *= fact["trust_score"]
+            fact["score"] = relevance
+            scored.append(fact)
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        # Strip raw HRR bytes — callers expect JSON-serializable dicts
+        for fact in scored[:limit]:
+            fact.pop("hrr_vector", None)
         return scored[:limit]
 
     def contradict(

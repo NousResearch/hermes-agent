@@ -783,7 +783,7 @@ Manage dynamic webhook subscriptions for event-driven agent activation. Requires
 
 | Subcommand | Description |
 |------------|-------------|
-| `subscribe` / `add` | Create a webhook route. Returns the URL and HMAC secret to configure on your service. |
+| `subscribe` / `add` | Create a webhook route. Prints the URL and a masked HMAC secret by default; use `--show-secret` only when the full value must be copied to the sending service. |
 | `list` / `ls` | Show all agent-created subscriptions. |
 | `remove` / `rm` | Delete a dynamic subscription. Static routes from config.yaml are not affected. |
 | `test` | Send a test POST to verify a subscription is working. |
@@ -803,10 +803,11 @@ hermes webhook subscribe <name> [options]
 | `--deliver` | Delivery target: `log` (default), `telegram`, `discord`, `slack`, `github_comment`. |
 | `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery. |
 | `--secret` | Custom HMAC secret. Auto-generated if omitted. |
+| `--show-secret` | Print the full HMAC secret instead of the masked default. Use only when you intentionally need to copy it from terminal output. |
 | `--deliver-only` | Skip the agent — deliver the rendered `--prompt` as the literal message. Zero LLM cost, sub-second delivery. Requires `--deliver` to be a real target (not `log`). |
 | `--script` | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin; JSON stdout replaces the payload, and empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. See [Script Filters and Transforms](../user-guide/messaging/webhooks.md#script-filters-and-transforms). |
 
-Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-reloaded by the webhook adapter without a gateway restart.
+Subscriptions — including their full HMAC secrets — persist in the active profile's Hermes home as `webhook_subscriptions.json` (`~/.hermes/webhook_subscriptions.json` for the default profile on Linux/macOS; `%LOCALAPPDATA%\hermes\webhook_subscriptions.json` on Windows). On POSIX, the file is written with mode `0600` and is hot-reloaded by the webhook adapter without a gateway restart.
 
 ## `hermes doctor`
 

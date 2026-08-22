@@ -412,7 +412,9 @@ hermes webhook subscribe github-issues \
   --description "Triage new GitHub issues"
 ```
 
-This returns the webhook URL and an auto-generated HMAC secret. Configure your service to POST to that URL.
+This prints the webhook URL and a masked form of its HMAC secret by default. The full secret is stored in the active profile's Hermes home as `webhook_subscriptions.json` (`~/.hermes/webhook_subscriptions.json` for the default profile on Linux/macOS; `%LOCALAPPDATA%\hermes\webhook_subscriptions.json` on Windows). On POSIX, the file is written with mode `0600`. Add `--show-secret` to the original `subscribe` command only when you intentionally need the full value in terminal output to configure the sending service.
+
+Do not rerun `subscribe` only to reveal an existing secret: when `--secret` is omitted, a rerun generates a new value and replaces the stored subscription. If an agent is assisting, the user — not the agent — should retrieve only that route's stored secret locally; never print the whole subscription file or secret into agent logs.
 
 ### List subscriptions
 
@@ -435,7 +437,7 @@ hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "
 
 ### How dynamic subscriptions work
 
-- Subscriptions are stored in `~/.hermes/webhook_subscriptions.json`
+- Subscriptions — including their full HMAC secrets — are stored in the active profile's Hermes home as `webhook_subscriptions.json` (see the platform-specific paths and POSIX permissions above)
 - The webhook adapter hot-reloads this file on each incoming request (mtime-gated, negligible overhead)
 - Static routes from `config.yaml` always take precedence over dynamic ones with the same name
 - Dynamic subscriptions use the same route format and capabilities as static routes (events, prompt templates, skills, delivery)

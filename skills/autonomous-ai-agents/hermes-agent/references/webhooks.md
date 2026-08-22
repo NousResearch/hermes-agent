@@ -67,7 +67,9 @@ hermes webhook subscribe <name> \
   --secret "optional-custom-secret"
 ```
 
-Returns the webhook URL and HMAC secret. The user configures their service to POST to that URL.
+Prints the webhook URL and a masked HMAC secret by default. The full secret is stored in the active profile's Hermes home as `webhook_subscriptions.json` (`~/.hermes/webhook_subscriptions.json` for the default profile on Linux/macOS; `%LOCALAPPDATA%\hermes\webhook_subscriptions.json` on Windows). On POSIX, the file is written with mode `0600`. Add `--show-secret` to the original `subscribe` command only when the user intentionally needs the full value in terminal output.
+
+Do not rerun `subscribe` only to reveal an existing secret: when `--secret` is omitted, a rerun generates a new value and replaces the stored subscription. Have the user — not the agent — retrieve only that route's stored secret locally. Never read or print the subscription file or any secret into agent logs.
 
 ### Filter or transform payloads before the agent runs
 
@@ -126,7 +128,7 @@ hermes webhook subscribe github-issues \
 Then in GitHub repo Settings → Webhooks → Add webhook:
 - Payload URL: the returned webhook_url
 - Content type: application/json
-- Secret: the returned secret
+- Secret: the full value printed when the subscription was created with `--show-secret`, or the value stored for that route in the active profile's `webhook_subscriptions.json`
 - Events: "Issues"
 
 ### GitHub: PR reviews
@@ -189,13 +191,14 @@ Requires `--deliver` to be a real target (telegram, discord, slack, github_comme
 ## Security
 
 - Each subscription gets an auto-generated HMAC-SHA256 secret (or provide your own with `--secret`)
+- `subscribe` masks the secret in terminal output by default; `--show-secret` is the explicit opt-in for printing the full value
+- Full secrets persist in the active profile's Hermes home as `webhook_subscriptions.json` (`~/.hermes/webhook_subscriptions.json` for the default profile on Linux/macOS; `%LOCALAPPDATA%\hermes\webhook_subscriptions.json` on Windows); on POSIX, the file is written with mode `0600`
 - The webhook adapter validates signatures on every incoming POST
 - Static routes from config.yaml cannot be overwritten by dynamic subscriptions
-- Subscriptions persist to `~/.hermes/webhook_subscriptions.json`
 
 ## How It Works
 
-1. `hermes webhook subscribe` writes to `~/.hermes/webhook_subscriptions.json`
+1. `hermes webhook subscribe` writes the route and full HMAC secret to the active profile's `webhook_subscriptions.json`
 2. The webhook adapter hot-reloads this file on each incoming request (mtime-gated, negligible overhead)
 3. When a POST arrives matching a route, the adapter formats the prompt and triggers an agent run
 4. The agent's response is delivered to the configured target (Telegram, Discord, GitHub comment, etc.)
@@ -207,6 +210,6 @@ If webhooks aren't working:
 1. **Is the gateway running?** Check with `systemctl --user status hermes-gateway` or `ps aux | grep gateway`
 2. **Is the webhook server listening?** `curl http://localhost:8644/health` should return `{"status": "ok"}`
 3. **Check gateway logs:** `grep webhook ~/.hermes/logs/gateway.log | tail -20`
-4. **Signature mismatch?** Verify the secret in your service matches the one from `hermes webhook list`. GitHub sends `X-Hub-Signature-256`, GitLab sends `X-Gitlab-Token`.
+4. **Signature mismatch?** Have the user verify locally that the sending service uses the secret stored for that route. `hermes webhook list` does not print secrets, and the agent must not read or print the subscription file. GitHub sends `X-Hub-Signature-256`, GitLab sends `X-Gitlab-Token`.
 5. **Firewall/NAT?** The webhook URL must be reachable from the service. For local development, use a tunnel (ngrok, cloudflared).
 6. **Wrong event type?** Check `--events` filter matches what the service sends. Use `hermes webhook test <name>` to verify the route works.

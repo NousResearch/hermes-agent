@@ -1236,6 +1236,31 @@ class TestThinkingBlockSignatureManagement:
 
 
 
+    def test_third_party_deepseek_preserves_unsigned_thinking(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Response text.",
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Proxy reasoning."},
+                ],
+            },
+        ]
+
+        _, result = convert_messages_to_anthropic(
+            messages,
+            base_url="https://proxy.example.com/anthropic",
+            model="deepseek-ai/deepseek-v4",
+        )
+
+        assistant = next(m for m in result if m["role"] == "assistant")
+        thinking = [
+            block
+            for block in assistant["content"]
+            if block.get("type") == "thinking"
+        ]
+        assert thinking == [{"type": "thinking", "thinking": "Proxy reasoning."}]
+
     def test_redacted_thinking_with_data_preserved(self):
         """Redacted thinking with 'data' field is kept on last turn."""
         messages = [

@@ -552,6 +552,29 @@ def _model_name_is_kimi_family(model: str | None) -> bool:
     return m.startswith(_KIMI_FAMILY_MODEL_PREFIXES)
 
 
+_DEEPSEEK_THINKING_MODEL_PREFIXES = (
+    "deepseek-r",
+    "deepseek-v4",
+    "deepseek_v4",
+    "deepseek-pro",
+    "deepseek_pro",
+    "deepseek-flash",
+    "deepseek_flash",
+)
+
+
+def _model_name_is_deepseek_thinking(model: str | None) -> bool:
+    """Identify DeepSeek thinking models behind third-party Anthropic proxies."""
+    if not isinstance(model, str):
+        return False
+    normalized = model.strip().lower()
+    if not normalized:
+        return False
+    if "/" in normalized:
+        normalized = normalized.rsplit("/", 1)[-1]
+    return normalized.startswith(_DEEPSEEK_THINKING_MODEL_PREFIXES)
+
+
 def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> bool:
     """Return True for any Kimi / Moonshot Anthropic-Messages-speaking endpoint.
 
@@ -2595,8 +2618,12 @@ def _manage_thinking_signatures(
             # Kimi does not enforce thinking signatures — replay as-is
             # (shared cleanup below still strips cache markers + the internal flag).
             pass
-        elif _is_deepseek_anthropic_endpoint(base_url):
-            # DeepSeek: strip signed, preserve unsigned.
+        elif _is_deepseek_anthropic_endpoint(base_url) or (
+            _is_third_party and _model_name_is_deepseek_thinking(model)
+        ):
+            # DeepSeek: strip signed, preserve unsigned.  Third-party
+            # Anthropic proxies serving a DeepSeek thinking model have the
+            # same replay contract as DeepSeek's native /anthropic endpoint.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:

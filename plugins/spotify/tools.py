@@ -232,7 +232,12 @@ def _handle_spotify_playlists(args: dict, **kw) -> str:
             ))
         if action == "get":
             playlist_id = normalize_spotify_id(str(args.get("playlist_id") or ""), "playlist")
-            return tool_result(client.get_playlist(playlist_id=playlist_id, market=args.get("market")))
+            return tool_result(client.get_playlist_items(
+                playlist_id=playlist_id,
+                limit=_coerce_limit(args.get("limit"), default=20),
+                offset=max(0, int(args.get("offset") or 0)),
+                market=args.get("market"),
+            ))
         if action == "create":
             name = str(args.get("name") or "").strip()
             if not name:

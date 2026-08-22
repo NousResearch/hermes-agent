@@ -76,6 +76,10 @@ from agent.model_metadata import (
     estimate_request_tokens_rough,
 )
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
+from agent.user_turn import (
+    SYNTHETIC_USER_FLAGS as _SYNTHETIC_USER_FLAGS,
+    is_real_user_turn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1918,15 +1922,6 @@ def conversation_history_after_compression(
     return None
 
 
-_SYNTHETIC_USER_PREFIXES = (
-    "[System: Your previous response was truncated",
-    "[System: The previous response was cut off",
-    "[System: Your previous tool call",
-    "[Your active task list was preserved across context compression]",
-    "[IMPORTANT: Background process ",
-)
-
-
 def _message_text(message: Any) -> str:
     content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, str):
@@ -1940,15 +1935,6 @@ def _message_text(message: Any) -> str:
     return ""
 
 
-_SYNTHETIC_USER_FLAGS = (
-    "_todo_snapshot_synthetic",
-    "_empty_recovery_synthetic",
-    "_verification_stop_synthetic",
-    "_pre_verify_synthetic",
-    "_dropped_toolcall_nudge",
-)
-
-
 def _is_real_user_message(message: Any) -> bool:
     """Distinguish human intent from user-role runtime scaffolding.
 
@@ -1958,18 +1944,7 @@ def _is_real_user_message(message: Any) -> bool:
     short-circuit anchor restoration with a message the model is explicitly
     told NOT to act on.
     """
-    if not isinstance(message, dict) or message.get("role") != "user":
-        return False
-    if any(message.get(flag) for flag in _SYNTHETIC_USER_FLAGS):
-        return False
-    text = _message_text(message).strip()
-    if not text:
-        return False
-    if text.startswith(_SYNTHETIC_USER_PREFIXES):
-        return False
-    from agent.context_compressor import ContextCompressor
-
-    return not ContextCompressor._is_synthetic_compression_user_turn(message)
+    return is_real_user_turn(message)
 
 
 def _strip_stale_todo_snapshot(content: Any) -> Any:

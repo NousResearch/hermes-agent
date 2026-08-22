@@ -1109,6 +1109,17 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "ElevenLabs Scribe model",
         "options": ["scribe_v2", "scribe_v1"],
     },
+    "compression.mode": {
+        "type": "select",
+        "description": (
+            "Applies when context.engine=compressor (built-in ContextCompressor). "
+            "How compacted turns are represented: standard LLM summary, "
+            "extractive catalog (no summarizer), or hybrid (summary plus a "
+            "unique-handle index). Provider-native Codex compaction may bypass "
+            "this setting. Invalid values fall back to standard."
+        ),
+        "options": ["standard", "catalog", "hybrid"],
+    },
     "display.skin": {
         "type": "select",
         "description": "CLI visual theme",

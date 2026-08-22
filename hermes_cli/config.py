@@ -4745,6 +4745,12 @@ def show_config():
             except (TypeError, ValueError):
                 pass
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
+        from agent.catalog_residual import normalize_compression_mode
+        print(
+            f"  Mode:         {normalize_compression_mode(compression.get('mode', 'standard'))}"
+            "  (built-in compressor when context.engine=compressor; "
+            "Codex native compaction may bypass)"
+        )
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
         print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")
         _aux_comp = config.get('auxiliary', {}).get('compression', {})

@@ -38,3 +38,28 @@ def test_memory_schema_has_no_forbidden_top_level_combinators():
 
 def test_memory_schema_is_json_serializable():
     json.dumps(MEMORY_SCHEMA)
+
+
+def test_memory_schema_routes_facts_skills_and_history():
+    description = MEMORY_SCHEMA["description"]
+    assert "MEMORY/USER" in description
+    assert "skill_manage" in description
+    assert "session_search" in description
+    assert "create or patch" in description
+    assert "autonomous routing" in description
+    assert "explicit user-authored memory writes are still accepted" in description
+    assert "user_requested=true" in description
+    assert "Do not write those to memory" not in description
+    assert MEMORY_SCHEMA["parameters"]["properties"]["user_requested"]["default"] is False
+
+
+def test_memory_store_accepts_explicit_task_progress_writes(tmp_path, monkeypatch):
+    """Guidance routes autonomous writes; MemoryStore stays permissive."""
+    from tools.memory_tool import MemoryStore
+
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+    store = MemoryStore(memory_char_limit=2000, user_char_limit=1000)
+    store.load_from_disk()
+    result = store.add("memory", "Phase 3 done — submitted PR #4242 at abcdef123")
+    assert result["success"] is True
+    assert any("Phase 3 done" in entry for entry in store.memory_entries)

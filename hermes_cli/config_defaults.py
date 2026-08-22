@@ -761,6 +761,17 @@ DEFAULT_CONFIG = {
                                       #              tokens after compaction; costs a few
                                       #              extra summarizer calls at the
                                       #              compaction boundary.
+        "mode": "standard",           # compaction residual (orthogonal to tail_mode).
+                                      # Built-in ContextCompressor only — applies when
+                                      # context.engine=compressor. Provider-native
+                                      # Codex compaction may bypass this setting.
+                                      #   "standard" — current LLM summary (default)
+                                      #   "catalog"  — extractive redacted catalog of
+                                      #                files/tools/ids/topics/asks;
+                                      #                no auxiliary summarizer call
+                                      #   "hybrid"   — Standard summary plus one
+                                      #                compact unique-handle index
+                                      # Invalid values fall back to standard.
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "min_tail_user_messages": 1,  # REAL (actionable) user messages guaranteed to
                                       # survive in the uncompressed tail. 1 = existing

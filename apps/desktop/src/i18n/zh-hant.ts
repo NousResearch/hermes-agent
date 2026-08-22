@@ -607,6 +607,7 @@ export const zhHant = defineLocale({
       },
       compression: {
         enabled: '自動壓縮',
+        mode: '壓縮模式',
         threshold: '壓縮閾值',
         targetRatio: '壓縮目標',
         protectLastN: '保護最近訊息'
@@ -668,7 +669,8 @@ export const zhHant = defineLocale({
         engine: '長對話接近上下文上限時的管理策略。'
       },
       compression: {
-        enabled: '對話變大時摘要較早的上下文。'
+        enabled: '對話變大時摘要較早的上下文。',
+        mode: '僅在 context.engine=compressor（內建 ContextCompressor）時生效。標準 LLM 摘要、抽取式目錄或混合。提供方原生 Codex 壓縮可能略過此設定。'
       },
       voice: {
         autoTts: '自動朗讀助手回覆。'

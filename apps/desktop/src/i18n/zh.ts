@@ -781,6 +781,7 @@ export const zh: Translations = {
       },
       compression: {
         enabled: '自动压缩',
+        mode: '压缩模式',
         threshold: '压缩阈值',
         targetRatio: '压缩目标',
         protectLastN: '保护最近消息'
@@ -842,7 +843,8 @@ export const zh: Translations = {
         engine: '在接近上下文上限时管理长对话的策略。'
       },
       compression: {
-        enabled: '当对话变大时对较早的上下文进行摘要。'
+        enabled: '当对话变大时对较早的上下文进行摘要。',
+        mode: '仅在 context.engine=compressor（内置 ContextCompressor）时生效。标准 LLM 摘要、抽取式目录或混合。提供方原生 Codex 压缩可能绕过此设置。'
       },
       voice: {
         autoTts: '自动朗读助手回复。'

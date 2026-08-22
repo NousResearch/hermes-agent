@@ -16,6 +16,8 @@ import pytest
 
 from hermes_state import SessionDB
 from tools.session_search_tool import (
+    SESSION_SEARCH_DISCOVERY_CALL,
+    SESSION_SEARCH_DISCOVERY_HINT,
     SESSION_SEARCH_SCHEMA,
     _format_timestamp,
     _is_compacted_message,
@@ -84,6 +86,9 @@ class TestSchema:
         assert "role_filter" in params
         # Mode is inferred from which args are set — no explicit mode param
         assert "mode" not in params
+        description = SESSION_SEARCH_SCHEMA["description"]
+        assert SESSION_SEARCH_DISCOVERY_CALL in description
+        assert SESSION_SEARCH_DISCOVERY_HINT in description
 
     def test_detail_parameter_is_appended_for_positional_compatibility(self):
         parameters = list(inspect.signature(session_search).parameters)

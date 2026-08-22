@@ -234,6 +234,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'approvals.mode': ['manual', 'smart', 'off'],
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
+  'compression.mode': ['standard', 'catalog', 'hybrid'],
   // '' = inherit the agent's own effort; the rest is the shared scale.
   'delegation.reasoning_effort': ['', ...REASONING_EFFORTS],
   // NOTE: memory.provider is intentionally NOT listed here. Its options are
@@ -523,6 +524,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   },
   compression: {
     enabled: 'Auto-Compression',
+    mode: 'Compression Mode',
     threshold: 'Compression Threshold',
     targetRatio: 'Compression Target',
     protectLastN: 'Protected Recent Messages'
@@ -589,7 +591,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     engine: 'Strategy for managing long conversations near the context limit.'
   },
   compression: {
-    enabled: 'Summarize older context when conversations get large.'
+    enabled: 'Summarize older context when conversations get large.',
+    mode: 'Applies when context.engine=compressor (built-in ContextCompressor). Standard LLM summary, extractive catalog, or hybrid. Provider-native Codex compaction may bypass this setting.'
   },
   voice: {
     autoTts: 'Automatically speak assistant responses.'
@@ -684,6 +687,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'memory.provider',
       'context.engine',
       'compression.enabled',
+      'compression.mode',
       'compression.threshold',
       'compression.target_ratio',
       'compression.protect_last_n'

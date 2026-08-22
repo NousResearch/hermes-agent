@@ -583,6 +583,20 @@ compression:
   # Range: 0.10 - 0.80
   target_ratio: 0.20
 
+  # Tail retention for the built-in ContextCompressor (context.engine=compressor).
+  # Plugin engines ignore this. Provider-native Codex compaction may bypass it.
+  #   legacy — 0.20×window verbatim tail (default)
+  #   lean   — clamped 2.5%-of-window tail plus session_search recovery pointers
+  tail_mode: legacy
+
+  # Compaction residual for the built-in ContextCompressor only
+  # (context.engine=compressor). Provider-native Codex compaction may bypass
+  # this setting. Invalid values fall back to standard.
+  #   standard — LLM summary (default, backward-compatible)
+  #   catalog  — extractive redacted catalog; no auxiliary summarizer
+  #   hybrid   — Standard summary plus one unique-handle index
+  mode: standard
+
   # Number of most-recent messages to always preserve (default: 20 ≈ 10 full turns)
   # Higher values keep more recent conversation intact at the cost of more aggressive
   # compression of older turns.

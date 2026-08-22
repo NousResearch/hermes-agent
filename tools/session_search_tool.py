@@ -1125,12 +1125,25 @@ def check_session_search_requirements() -> bool:
         return False
 
 
+# Taught discovery form. Current-session context is implicit; passing
+# session_id enters READ and ignores query. Shared with compaction footers
+# so the tool definition and persisted residuals cannot drift.
+SESSION_SEARCH_DISCOVERY_CALL = (
+    "session_search(query='<keywords>', role_filter='user,assistant,tool')"
+)
+SESSION_SEARCH_DISCOVERY_HINT = (
+    "discovery form; current-session context is implicit. Do not pass "
+    "session_id because that enters READ and ignores query."
+)
+
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
         "Search past sessions stored in the local session DB, or scroll inside one. "
         "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
         "shape returns actual messages from the DB.\n\n"
+        f"DISCOVERY CALL: {SESSION_SEARCH_DISCOVERY_CALL}\n"
+        f"{SESSION_SEARCH_DISCOVERY_HINT}\n\n"
         "SOURCE-FIRST LIMIT\n\n"
         "  This tool searches Hermes conversation history only. It is not evidence "
         "about the current contents of external sources. If the user provided a "
@@ -1144,6 +1157,7 @@ SESSION_SEARCH_SCHEMA = {
         "was provided.\n\n"
         "FOUR CALLING SHAPES\n\n"
         "  1) DISCOVERY — pass `query`:\n"
+        f"     {SESSION_SEARCH_DISCOVERY_CALL}\n"
         "     session_search(query=\"auth refactor\", limit=3)\n"
         "     Runs FTS5, dedupes hits by session lineage, and returns the top N "
         "sessions. Adaptive detail is the default: the top-ranked result carries "

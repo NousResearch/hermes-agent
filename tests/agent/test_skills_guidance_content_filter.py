@@ -22,7 +22,13 @@ import re
 
 import pytest
 
-from agent.prompt_builder import SKILLS_GUIDANCE
+from agent.prompt_builder import (
+    MEMORY_GUIDANCE,
+    SKILLS_GUIDANCE,
+    USER_PROFILE_GUIDANCE,
+)
+from tools.memory_tool import MEMORY_SCHEMA
+from tools.skill_manager_tool import SKILL_MANAGE_SCHEMA
 
 
 # Substrings unique to the rejected sentence. The bisect showed the trigger
@@ -65,6 +71,11 @@ class TestBehaviourIsPreserved:
         assert "workflow" in first_line
         assert "reuse" in first_line
 
+    def test_routes_procedures_memory_and_history(self):
+        assert "skill_manage (create or patch)" in SKILLS_GUIDANCE
+        assert "session_search" in SKILLS_GUIDANCE
+        assert "MEMORY/USER" in SKILLS_GUIDANCE
+
     def test_patch_stale_skills_sentence_untouched(self):
         assert "skill_manage(action='patch')" in SKILLS_GUIDANCE
         assert "Skills that aren't maintained become liabilities." in SKILLS_GUIDANCE
@@ -81,6 +92,31 @@ class TestBehaviourIsPreserved:
         # not drop a line separator on its way past that bound.
         assert "\\n" not in SKILLS_GUIDANCE
         assert SKILLS_GUIDANCE.count("\n") >= 6
+
+
+ROUTING_SURFACES = {
+    "SKILLS_GUIDANCE": SKILLS_GUIDANCE,
+    "MEMORY_GUIDANCE": MEMORY_GUIDANCE,
+    "USER_PROFILE_GUIDANCE": USER_PROFILE_GUIDANCE,
+    "MEMORY_SCHEMA": MEMORY_SCHEMA["description"],
+    "SKILL_MANAGE_SCHEMA": SKILL_MANAGE_SCHEMA["description"],
+}
+
+
+class TestRoutingSurfacesStayFilterSafe:
+    @pytest.mark.parametrize("surface", sorted(ROUTING_SURFACES))
+    @pytest.mark.parametrize("fragment", REJECTED_FRAGMENTS)
+    def test_rejected_fragment_absent_on_every_surface(self, surface, fragment):
+        assert fragment not in ROUTING_SURFACES[surface], (
+            f"{fragment!r} must stay off {surface} (#82154)"
+        )
+
+    @pytest.mark.parametrize("surface", sorted(ROUTING_SURFACES))
+    def test_every_surface_routes_facts_skills_and_history(self, surface):
+        text = ROUTING_SURFACES[surface]
+        assert "session_search" in text
+        assert "skill_manage" in text
+        assert "MEMORY/USER" in text or "memory tool" in text
 
 
 class TestGuidanceReachesTheSystemPrompt:

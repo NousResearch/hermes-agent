@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
+import { ENUM_OPTIONS, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
   clearsEnabledToolsets,
@@ -29,6 +29,17 @@ describe('settings helpers', () => {
     )
     expect(fieldCopyForSchemaKey(FIELD_LABELS, 'desktop.repo_scan_enabled')).toBeTruthy()
     expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'desktop.repo_scan_exclude_paths')).toBeTruthy()
+  })
+
+  it('surfaces Compression Mode on Memory & Context with searchable enum options', () => {
+    const memory = SECTIONS.find(section => section.id === 'memory')
+
+    expect(memory?.keys).toEqual(expect.arrayContaining(['compression.mode']))
+    expect(ENUM_OPTIONS['compression.mode']).toEqual(['standard', 'catalog', 'hybrid'])
+    expect(fieldCopyForSchemaKey(FIELD_LABELS, 'compression.mode')).toBe('Compression Mode')
+    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'compression.mode')).toMatch(/catalog/i)
+    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'compression.mode')).toMatch(/context\.engine=compressor/)
+    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'compression.mode')).toMatch(/Codex/)
   })
 
   it('does not shadow the backend schema options for memory.provider', () => {

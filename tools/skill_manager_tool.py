@@ -1710,8 +1710,13 @@ def skill_manage(
 SKILL_MANAGE_SCHEMA = {
     "name": "skill_manage",
     "description": (
-        "Manage skills (create, update, delete). Skills are your procedural "
-        "memory — reusable approaches for recurring task types. "
+        "Manage skills (create, update, delete). Skills are reusable executable "
+        "workflows — create or patch a skill for procedures and corrections you "
+        "will reuse. Stable user, profile, and environment facts belong in the "
+        "memory tool (MEMORY/USER). Completed task progress and session history "
+        "are recovered with session_search. Route those autonomously via "
+        "session_search rather than inventing a skill; honor explicit user "
+        "requests to store a procedure. "
         f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live.\n\n"
         "Actions: create (full SKILL.md + optional category), "
         "patch (old_string/new_string — preferred for fixes), "
@@ -1724,9 +1729,8 @@ SKILL_MANAGE_SCHEMA = {
         "(cron jobs that reference the old skill name, etc.) get updated "
         "correctly. The target you name in `absorbed_into` must already "
         "exist — create/patch the umbrella first, then delete.\n\n"
-        "Create when: complex task succeeded (5+ calls), errors overcome, "
-        "user-corrected approach worked, non-trivial workflow discovered, "
-        "or user asks you to remember a procedure.\n"
+        "Create or patch when a reusable workflow should stick, a procedure "
+        "correction needs recording, or the user asks you to remember a procedure.\n"
         "Update when: instructions stale/wrong, OS-specific failures, "
         "missing steps or pitfalls found during use. "
         "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"

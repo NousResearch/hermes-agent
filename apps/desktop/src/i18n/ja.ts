@@ -621,6 +621,7 @@ export const ja = defineLocale({
       },
       compression: {
         enabled: '自動圧縮',
+        mode: '圧縮モード',
         threshold: '圧縮しきい値',
         targetRatio: '圧縮目標',
         protectLastN: '保護する直近メッセージ'
@@ -683,7 +684,8 @@ export const ja = defineLocale({
         engine: '長い会話がコンテキスト上限に近づいたときの管理戦略です。'
       },
       compression: {
-        enabled: '会話が大きくなったとき、古いコンテキストを要約します。'
+        enabled: '会話が大きくなったとき、古いコンテキストを要約します。',
+        mode: 'context.engine=compressor（組み込み ContextCompressor）のときだけ適用されます。標準 LLM 要約、抽出カタログ、またはハイブリッド。プロバイダーネイティブの Codex 圧縮はこの設定を迂回する場合があります。'
       },
       voice: {
         autoTts: 'アシスタントの応答を自動で読み上げます。'

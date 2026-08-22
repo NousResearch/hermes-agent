@@ -119,6 +119,12 @@ class TestMemoryStoreAdd:
         assert result["success"] is True
         assert result["target"] == "user"
 
+    def test_add_accepts_explicit_task_progress_memory(self, store):
+        """Explicit user-authored writes stay permissive — no text heuristics."""
+        result = store.add("memory", "Phase 3 done on PR #4242, submitted SHA abcdef123")
+        assert result["success"] is True
+        assert any("Phase 3 done on PR #4242" in entry for entry in store.memory_entries)
+
 
     def test_overflow_returns_consolidation_context(self, store):
         store.add("memory", "x" * 490)
@@ -329,6 +335,27 @@ class TestMemoryToolDispatcher:
         assert result["success"] is True
         assert "the real one" in store.memory_entries
         assert "ignored" not in store.memory_entries
+
+    def test_user_requested_add_increments_counter(self, store):
+        normal = json.loads(
+            memory_tool(action="add", content="autonomous note", store=store)
+        )
+        assert normal["success"] is True
+        assert store.user_requested_write_count == 0
+        assert "user_requested_write_count" not in normal
+
+        requested = json.loads(
+            memory_tool(
+                action="add",
+                content="User prefers dark mode",
+                store=store,
+                user_requested=True,
+            )
+        )
+        assert requested["success"] is True
+        assert store.user_requested_write_count == 1
+        assert requested["user_requested_write_count"] == 1
+        assert "User prefers dark mode" in store.memory_entries
 
 
 class TestMemoryBatch:

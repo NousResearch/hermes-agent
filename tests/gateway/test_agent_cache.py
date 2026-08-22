@@ -123,6 +123,8 @@ class TestExtractCacheBustingConfig:
                     "target_ratio": 0.3,
                     "protect_last_n": 25,
                     "codex_app_server_auto": "hermes",
+                    "mode": "catalog",
+                    "tail_mode": "lean",
                     "some_other_key": "ignored",
                 }
             }
@@ -133,6 +135,8 @@ class TestExtractCacheBustingConfig:
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
         assert out["compression.codex_app_server_auto"] == "hermes"
+        assert out["compression.mode"] == "catalog"
+        assert out["compression.tail_mode"] == "lean"
 
 
     def test_missing_keys_yield_none(self):

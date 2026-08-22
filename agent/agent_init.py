@@ -2125,6 +2125,12 @@ def init_agent(
     # 2.5%/10K-25K tail with recovery-pointer machinery (#87326). Unknown
     # values fall back to legacy inside the compressor.
     compression_tail_mode = str(_compression_cfg.get("tail_mode", "legacy")).strip().lower()
+    # Compaction residual mode (compression.mode). "standard" is the
+    # current LLM summary; "catalog" is an extractive replacement;
+    # "hybrid" is Standard plus one unique-handle index. Unknown values
+    # fall back to standard inside the compressor.
+    from agent.catalog_residual import normalize_compression_mode
+    compression_mode = normalize_compression_mode(_compression_cfg.get("mode", "standard"))
     # Minimum REAL (actionable) user messages guaranteed to survive in the
     # uncompressed tail (compression.min_tail_user_messages).  Default 1
     # preserves current behavior exactly — the existing single-user tail
@@ -2756,6 +2762,7 @@ def init_agent(
             proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
             min_tail_user_messages=compression_min_tail_users,
             tail_mode=compression_tail_mode,
+            mode=compression_mode,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

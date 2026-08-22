@@ -4092,6 +4092,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _discard_stale_stream_chunk(stream_attempt_id, chunk)
                 continue
 
+            if chunk is None:
+                # Some upstreams (e.g. agentrouter via New-API) emit bare
+                # `data: null` keep-alive events mid-stream; skip them.
+                continue
+
             if not chunk.choices:
                 if hasattr(chunk, "model") and chunk.model:
                     model_name = chunk.model

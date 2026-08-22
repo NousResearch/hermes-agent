@@ -9,7 +9,7 @@
  *   GET  /messages       - Long-poll for new incoming messages
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
- *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
+ *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName?, mentions? }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
  *   GET  /chat/:id       - Get chat info
@@ -825,7 +825,7 @@ app.post('/send', async (req, res) => {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
-  const { chatId, message, replyTo } = req.body;
+  const { chatId, message, replyTo, mentions } = req.body;
   if (!chatId || !message) {
     return res.status(400).json({ error: 'chatId and message are required' });
   }
@@ -837,6 +837,7 @@ app.post('/send', async (req, res) => {
       const { content: payload, options } = buildTextSendPayload(chunks[i], {
         chatId,
         replyTo: i === 0 ? replyTo : undefined,
+        mentions: i === 0 ? mentions : undefined,
         messageStore,
       });
       const sent = await sendWithTimeout(chatId, payload, options);
@@ -898,7 +899,7 @@ app.post('/send-media', async (req, res) => {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
-  const { chatId, filePath, mediaType, caption, fileName } = req.body;
+  const { chatId, filePath, mediaType, caption, fileName, mentions } = req.body;
   if (!chatId || !filePath) {
     return res.status(400).json({ error: 'chatId and filePath are required' });
   }
@@ -936,16 +937,16 @@ app.post('/send-media', async (req, res) => {
             };
           } catch (gifErr) {
             console.warn('[bridge] gif conversion failed, sending as image/gif:', gifErr.message);
-            msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName });
+            msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName, mentions });
           } finally {
             try { if (tmpGifMp4 && existsSync(tmpGifMp4)) unlinkSync(tmpGifMp4); } catch (_) {}
           }
         } else {
-          msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName });
+          msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName, mentions });
         }
         break;
       case 'video':
-        msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName });
+        msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName, mentions });
         break;
       case 'audio': {
         // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.
@@ -978,8 +979,12 @@ app.post('/send-media', async (req, res) => {
       }
       case 'document':
       default:
-        msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: 'document', caption, fileName });
+        msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: 'document', caption, fileName, mentions });
         break;
+    }
+
+    if (msgPayload && Array.isArray(mentions) && mentions.length > 0) {
+      msgPayload.mentions = mentions;
     }
 
     const sent = await sendWithTimeout(chatId, msgPayload);

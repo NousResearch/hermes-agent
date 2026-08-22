@@ -43,3 +43,39 @@ async def test_send_location_posts_to_bridge_location_endpoint():
     }
 
 
+@pytest.mark.asyncio
+async def test_send_forwards_metadata_mentions_on_first_chunk_only():
+    adapter = _make_adapter()
+    first = MagicMock(status=200)
+    first.json = AsyncMock(return_value={"success": True, "messageId": "msg-1"})
+    second = MagicMock(status=200)
+    second.json = AsyncMock(return_value={"success": True, "messageId": "msg-2"})
+    adapter._http_session.post = MagicMock(side_effect=[_AsyncCM(first), _AsyncCM(second)])
+
+    result = await adapter.send(
+        "15551234567",
+        "x" * (adapter.MAX_MESSAGE_LENGTH + 100),
+        metadata={"mentions": ["15550001111", "15550002222@s.whatsapp.net"]},
+    )
+
+    assert result.success
+    calls = adapter._http_session.post.call_args_list
+    assert calls[0].kwargs["json"]["mentions"] == [
+        "15550001111@s.whatsapp.net",
+        "15550002222@s.whatsapp.net",
+    ]
+    assert "mentions" not in calls[1].kwargs["json"]
+
+
+@pytest.mark.asyncio
+async def test_send_without_mentions_omits_the_field():
+    adapter = _make_adapter()
+    resp = MagicMock(status=200)
+    resp.json = AsyncMock(return_value={"success": True, "messageId": "msg-1"})
+    adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+    result = await adapter.send("15551234567", "hi")
+
+    assert result.success
+    payload = adapter._http_session.post.call_args.kwargs["json"]
+    assert "mentions" not in payload

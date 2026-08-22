@@ -157,8 +157,11 @@ export function pollUpdateForAggregation({
   return null;
 }
 
-export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
+export function buildTextSendPayload(text, { replyTo, messageStore, mentions } = {}) {
   const content = { text };
+  if (Array.isArray(mentions) && mentions.length > 0) {
+    content.mentions = mentions;
+  }
   const options = {};
   const quoted = messageStore?.get(replyTo);
   if (quoted?.key && quoted?.message) {
@@ -506,30 +509,39 @@ export function inboundReadReceiptKeys({ key, enabled }) {
   return [key];
 }
 
-export function mediaPayloadForFile({ buffer, filePath, mediaType, caption, fileName }) {
+export function mediaPayloadForFile({ buffer, filePath, mediaType, caption, fileName, mentions }) {
   const ext = filePath.toLowerCase().split('.').pop();
   const type = mediaType || inferMediaType(ext);
+  let payload;
   if (type === 'image' && ext === 'gif') {
     // Pure helper fallback: do not lie and label raw GIF bytes as mp4.
     // The live bridge tries ffmpeg conversion to WhatsApp gifPlayback video
     // before it falls back to this regular image payload.
-    return { image: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'image/gif' };
+    payload = { image: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'image/gif' };
+  } else {
+    switch (type) {
+      case 'image':
+        payload = { image: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'image/jpeg' };
+        break;
+      case 'video':
+        payload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
+        break;
+      case 'document':
+        payload = {
+          document: buffer,
+          fileName: fileName || path.basename(filePath),
+          caption: caption || undefined,
+          mimetype: MIME_MAP[ext] || 'application/octet-stream',
+        };
+        break;
+      default:
+        payload = null;
+    }
   }
-  switch (type) {
-    case 'image':
-      return { image: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'image/jpeg' };
-    case 'video':
-      return { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
-    case 'document':
-      return {
-        document: buffer,
-        fileName: fileName || path.basename(filePath),
-        caption: caption || undefined,
-        mimetype: MIME_MAP[ext] || 'application/octet-stream',
-      };
-    default:
-      return null;
+  if (payload && Array.isArray(mentions) && mentions.length > 0) {
+    payload.mentions = mentions;
   }
+  return payload;
 }
 
 export function buildPollPayload({ question, options, selectableCount = 1 }) {

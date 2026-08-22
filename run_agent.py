@@ -4450,6 +4450,18 @@ class AIAgent:
             return
         try:
             sync_kwargs = {"session_id": self.session_id or ""}
+            # Thread the session title into memory providers that store it
+            # (Hindsight banks otherwise surface every session as its raw id —
+            # #86824). Guarded: the title read must never block or break sync.
+            session_title = ""
+            try:
+                if self.session_id and self._session_db is not None:
+                    row = self._session_db.get_session(self.session_id)
+                    session_title = (row.get("title") or "").strip() if row else ""
+            except Exception:
+                pass
+            if session_title:
+                sync_kwargs["session_title"] = session_title
             if messages is not None:
                 sync_kwargs["messages"] = messages
             self._memory_manager.sync_all(

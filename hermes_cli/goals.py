@@ -2254,6 +2254,9 @@ def run_kanban_goal_loop(
         # via kanban_complete / kanban_block, not by parking), so a WAIT
         # verdict is treated as CONTINUE here.
         verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        if _transport_failed:
+            _log(f"kanban goal loop: judge transport failed on turn {turns_used}; stopping")
+            return {"outcome": "stopped", "turns_used": turns_used, "reason": "judge transport failure"}
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
@@ -2291,10 +2294,22 @@ def run_kanban_goal_loop(
 
         # Run another turn in the same session.
         try:
-            last_response = run_turn(prompt) or ""
+            result = run_turn(prompt)
+            if isinstance(result, dict):
+                last_response = result.get('response', '') or ""
+                failed = result.get('failed', False)
+                failure_reason = result.get('failure_reason')
+            else:
+                # backward compatibility: assume it's a string
+                last_response = result or ""
+                failed = False
+                failure_reason = None
         except Exception as exc:
             _log(f"kanban goal loop: run_turn failed ({exc}); stopping")
             return {"outcome": "stopped", "turns_used": turns_used, "reason": f"run_turn error: {type(exc).__name__}"}
+        if failed:
+            _log(f"kanban goal loop: worker failed on turn {turns_used} (reason={failure_reason}); stopping")
+            return {"outcome": "stopped", "turns_used": turns_used, "reason": f"worker failed: {failure_reason}"}
         turns_used += 1
 
 

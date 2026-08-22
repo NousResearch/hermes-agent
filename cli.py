@@ -20787,7 +20787,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
 
     max_turns = task.goal_max_turns or _DEF_TURNS
 
-    def _run_turn(prompt: str) -> str:
+    def _run_turn(prompt: str) -> dict:
         result = cli.agent.run_conversation(
             user_message=prompt,
             conversation_history=cli.conversation_history,
@@ -20801,7 +20801,11 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         resp = result.get("final_response", "") if isinstance(result, dict) else str(result)
         if resp:
             print(resp)
-        return resp or ""
+        return {
+            "response": resp or "",
+            "failed": result.get("failed", False) if isinstance(result, dict) else False,
+            "failure_reason": result.get("failure_reason") if isinstance(result, dict) else None,
+        }
 
     def _task_status() -> "str | None":
         c = _kb.connect()

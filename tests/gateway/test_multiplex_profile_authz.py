@@ -132,3 +132,84 @@ def test_secondary_open_policy_fails_startup_guard(monkeypatch):
     assert violation is not None
     assert "wecom" in violation
     assert "open policy" in violation
+
+
+# --- _auth_env scoped-miss fail-closed (#86905) -----------------------------
+#
+# In multiplex mode with a scope installed, a scoped miss must return the
+# default instead of leaking os.environ (which holds the DEFAULT profile's
+# allowlist). A leaked allowlist would skip the allow-all check and reject
+# every sender on a secondary profile's bot (Feishu open_ids are app-scoped).
+
+
+def test_auth_env_scoped_miss_does_not_leak_os_environ(tmp_path, monkeypatch):
+    from gateway.authz_mixin import _auth_env
+
+    import agent.secret_scope as ss
+
+    # Default profile's process env holds an allowlist the scoped profile
+    # does not have.
+    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_default_view")
+    (tmp_path / ".env").write_text(
+        "GATEWAY_ALLOW_ALL_USERS=true\n", encoding="utf-8"
+    )
+
+    ss.set_multiplex_active(True)
+    tok = ss.set_secret_scope(ss.build_profile_secret_scope(tmp_path))
+    try:
+        assert _auth_env("FEISHU_ALLOWED_USERS") == ""
+        assert _auth_env("GATEWAY_ALLOW_ALL_USERS") == "true"
+    finally:
+        ss.reset_secret_scope(tok)
+        ss.set_multiplex_active(False)
+
+
+def test_auth_env_unscoped_still_reads_os_environ(monkeypatch):
+    """Single-profile (multiplex off): legacy os.environ read unchanged."""
+    from gateway.authz_mixin import _auth_env
+
+    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_a,ou_b")
+    assert _auth_env("FEISHU_ALLOWED_USERS") == "ou_a,ou_b"
+
+
+def test_is_user_authorized_allow_all_not_skipped_by_leaked_allowlist(
+    tmp_path, monkeypatch
+):
+    """End-to-end shape of #86905: the secondary profile's scope has only
+    GATEWAY_ALLOW_ALL_USERS=true; the DEFAULT profile's FEISHU_ALLOWED_USERS
+    lives in os.environ. The sender carries the secondary app's open_id
+    (absent from the default allowlist) and must still be admitted via the
+    allow-all flag — a leaked allowlist must not hijack the decision."""
+    import agent.secret_scope as ss
+    from gateway.authz_mixin import _auth_env
+    from gateway.run import GatewayRunner
+
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_default_view")
+    (tmp_path / ".env").write_text(
+        "GATEWAY_ALLOW_ALL_USERS=true\n", encoding="utf-8"
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner.adapters = {}
+    runner._profile_adapters = {}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+
+    ss.set_multiplex_active(True)
+    tok = ss.set_secret_scope(ss.build_profile_secret_scope(tmp_path))
+    try:
+        assert _auth_env("FEISHU_ALLOWED_USERS") == ""  # no leak
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            user_id="ou_role_view",
+            chat_id="dm-chat",
+            user_name="owner",
+            chat_type="dm",
+            profile="role-codex",
+        )
+        assert runner._is_user_authorized(source) is True
+    finally:
+        ss.reset_secret_scope(tok)
+        ss.set_multiplex_active(False)

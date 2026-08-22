@@ -33,11 +33,20 @@ def _auth_env(name: str, default: str = "") -> str:
     if not name:
         return default
     try:
-        from agent.secret_scope import get_secret
+        from agent.secret_scope import current_secret_scope, get_secret, is_multiplex_active
 
         val = get_secret(name)
         if val is not None and str(val).strip():
             return str(val).strip()
+        # Multiplex + a scope installed: the scope is authoritative — a
+        # scoped miss must NOT fall through to os.environ, which in a
+        # multiplexer may hold another profile's allowlist (leaking it here
+        # would skip the allow-all check below with a foreign allowlist and
+        # reject every sender on a secondary profile's bot — #86905). Mirror
+        # of _platform_gate_env (#72348). Single-profile deployments (no
+        # scope, or multiplex off) keep the legacy os.environ read.
+        if current_secret_scope() is not None and is_multiplex_active():
+            return default
     except Exception:
         pass
     return (os.getenv(name) or default).strip()

@@ -566,3 +566,133 @@ def test_handle_message_event_data_forwards_sender_when_admitted():
     assert captured.get("sender_id") is sender.sender_id
     assert captured.get("is_bot") is True
     assert captured.get("message_id") == "om_bot_ok"
+
+
+# --- Profile-scoped admission config (#86905) -------------------------------
+#
+# In multiplex mode the adapter's admission config must come from the
+# profile's own .env (like app_secret), not from bare os.environ — Feishu
+# open_ids are app-scoped, so the default profile's allow-list can never
+# match senders on a secondary profile's bot.
+
+
+def test_allow_all_dm_resolves_from_profile_scope_not_os_environ(
+    tmp_path, monkeypatch
+):
+    """os.environ holds the default profile's view; the role profile's .env
+    sets GATEWAY_ALLOW_ALL_USERS=true — the adapter must admit DMs whose
+    sender carries the role app's open_id (absent from the default allow-list)."""
+    import agent.secret_scope as ss
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    # Default profile's process env: allow-list keyed on the DEFAULT app's
+    # open_id, no allow-all flag anywhere in os.environ.
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_role")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_role")
+    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_default_view")
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+
+    # Role profile's .env
+    (tmp_path / ".env").write_text(
+        "FEISHU_APP_ID=cli_role\nFEISHU_APP_SECRET=secret_role\n"
+        "GATEWAY_ALLOW_ALL_USERS=true\n",
+        encoding="utf-8",
+    )
+
+    ss.set_multiplex_active(True)
+    tok = ss.set_secret_scope(ss.build_profile_secret_scope(tmp_path))
+    try:
+        settings = FeishuAdapter._load_settings(extra={})
+        assert settings.allow_all_dm is True
+        # The scoped allow-list (profile .env has none) must not fall through
+        # to the default profile's os.environ list either.
+        assert settings.allowed_group_users == frozenset()
+
+        adapter = object.__new__(FeishuAdapter)
+        adapter._apply_settings(settings)
+        sender = make_sender(open_id="ou_role_view")  # role app's open_id
+        assert adapter._admit(sender, make_message(chat_type="p2p")) is None
+    finally:
+        ss.reset_secret_scope(tok)
+        ss.set_multiplex_active(False)
+
+
+def test_allowed_users_resolves_from_profile_scope(tmp_path, monkeypatch):
+    """A secondary profile's FEISHU_ALLOWED_USERS (its own app's open_ids)
+    must gate admission — the default profile's os.environ list must not
+    leak in."""
+    import agent.secret_scope as ss
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_role")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_role")
+    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_default_view")
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+
+    (tmp_path / ".env").write_text(
+        "FEISHU_APP_ID=cli_role\nFEISHU_APP_SECRET=secret_role\n"
+        "FEISHU_ALLOWED_USERS=ou_role_view\n",
+        encoding="utf-8",
+    )
+
+    ss.set_multiplex_active(True)
+    tok = ss.set_secret_scope(ss.build_profile_secret_scope(tmp_path))
+    try:
+        settings = FeishuAdapter._load_settings(extra={})
+        assert settings.allowed_group_users == frozenset({"ou_role_view"})
+
+        adapter = object.__new__(FeishuAdapter)
+        adapter._apply_settings(settings)
+        # Role app's view of the owner → admitted.
+        assert adapter._admit(make_sender(open_id="ou_role_view"), make_message(chat_type="p2p")) is None
+        # Default app's view of the owner → not in the scoped allow-list.
+        assert adapter._admit(make_sender(open_id="ou_default_view"), make_message(chat_type="p2p")) == "dm_policy_rejected"
+    finally:
+        ss.reset_secret_scope(tok)
+        ss.set_multiplex_active(False)
+
+
+def test_allow_all_dm_falls_back_to_os_environ_when_unscoped(monkeypatch):
+    """Non-multiplex behavior unchanged: FEISHU_ALLOW_ALL_USERS in the
+    process environment still opens DMs."""
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_a,ou_b")
+
+    settings = FeishuAdapter._load_settings(extra={})
+    assert settings.allow_all_dm is True
+    assert settings.allowed_group_users == frozenset({"ou_a", "ou_b"})
+
+    adapter = object.__new__(FeishuAdapter)
+    adapter._apply_settings(settings)
+    assert adapter._admit(make_sender(open_id="ou_anyone"), make_message(chat_type="p2p")) is None
+
+
+def test_require_mention_resolves_from_profile_scope(tmp_path, monkeypatch):
+    """FEISHU_REQUIRE_MENTION is a per-profile admission gate: a secondary
+    profile's .env value must win over the default profile's os.environ."""
+    import agent.secret_scope as ss
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+    monkeypatch.setenv("FEISHU_REQUIRE_MENTION", "true")  # default profile
+    (tmp_path / ".env").write_text(
+        "FEISHU_APP_ID=cli_test\nFEISHU_APP_SECRET=secret_test\n"
+        "FEISHU_REQUIRE_MENTION=false\n",
+        encoding="utf-8",
+    )
+
+    ss.set_multiplex_active(True)
+    tok = ss.set_secret_scope(ss.build_profile_secret_scope(tmp_path))
+    try:
+        settings = FeishuAdapter._load_settings(extra={})
+        assert settings.require_mention is False
+    finally:
+        ss.reset_secret_scope(tok)
+        ss.set_multiplex_active(False)

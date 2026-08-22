@@ -2702,12 +2702,33 @@ class APIServerAdapter(BasePlatformAdapter):
         return result
 
     @staticmethod
-    def _normalize_session_source(value: Any) -> str:
-        text = str(value or "").strip().lower()
-        allowed = {"api_server", "hermes_browser", "browser", "cli", "telegram", "discord", "slack", "desktop", "dashboard"}
+    def _normalize_session_source(
+        value: Any,
+        *,
+        default: str = "api_server",
+        session_id: str = "",
+    ) -> str:
+        """Accept the small public source taxonomy used by first-party clients.
+
+        Known sources pass through; an explicit unknown source normalizes to
+        an empty string so callers can reject it (or pass ``default`` to
+        coerce). When ``value`` is None, first-party sources are inferred
+        from the session-id prefix (``hermes-web-*`` / ``hermes-browser-*``)
+        so stale clients that predate explicit ``source`` still group
+        correctly; otherwise *default* is returned.
+        """
+        if value is None:
+            normalized_id = str(session_id or "").strip().lower()
+            if normalized_id.startswith("hermes-web-"):
+                return "hermes_web"
+            if normalized_id.startswith("hermes-browser-"):
+                return "hermes_browser"
+            return default
+        text = str(value).strip().lower()
+        allowed = {"api_server", "hermes_browser", "hermes_web", "browser", "cli", "telegram", "discord", "slack", "desktop", "dashboard"}
         if text in allowed:
             return "hermes_browser" if text == "browser" else text
-        return "api_server"
+        return ""
 
     def _session_model_override_for(self, session_key: Optional[str]) -> Optional[Dict[str, Any]]:
         """Return the gateway's session ``/model`` override for *session_key*, if any.
@@ -4255,7 +4276,12 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
-        source = self._normalize_session_source(body.get("source") or "api_server")
+        source = self._normalize_session_source(body.get("source"), session_id=session_id)
+        if not source:
+            return web.json_response(
+                _openai_error("Invalid session source", code="invalid_session_source"),
+                status=400,
+            )
         runtime_request = self._session_runtime_request_from_body(body)
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
@@ -4372,7 +4398,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # sweep). Rejecting them here was silently 400ing every pin the desktop
         # made, so pins only ever lived in that one app's localStorage.
         # `unread` is the read-state watermark toggle (same desktop owner).
-        allowed = {"title", "end_reason", "pinned", "archived", "hidden", "unread"}
+        # `source` is the client-facing source label correction (first-party
+        # clients can fix mislabeled sessions; validated below).
+        allowed = {"title", "end_reason", "source", "pinned", "archived", "hidden", "unread"}
         unknown = sorted(set(body) - allowed)
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
@@ -4384,6 +4412,14 @@ class APIServerAdapter(BasePlatformAdapter):
         db = await self._ensure_session_db_async()
         if db is None:
             return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+        if "source" in body:
+            source = self._normalize_session_source(body["source"], default="")
+            if not source:
+                return web.json_response(
+                    _openai_error("Invalid session source", code="invalid_session_source"),
+                    status=400,
+                )
+            await asyncio.to_thread(db.set_session_source, session_id, source)
         if "title" in body:
             try:
                 await asyncio.to_thread(db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))
@@ -4493,6 +4529,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if await asyncio.to_thread(db.get_session, fork_id):
             return web.json_response(_openai_error(f"Session already exists: {fork_id}", code="session_exists"), status=409)
 
+        fork_source = self._normalize_session_source(source.get("source")) or "api_server"
+
         # Match the CLI /branch semantics: mark the original as branched, then
         # create a child session that carries the transcript forward. This uses
         # SessionDB's native parent_session_id/end_reason visibility model rather
@@ -4500,7 +4538,7 @@ class APIServerAdapter(BasePlatformAdapter):
         await asyncio.to_thread(db.end_session, source_id, "branched")
         await asyncio.to_thread(db.create_session,
             fork_id,
-            "api_server",
+            fork_source,
             model=source.get("model"),
             system_prompt=source.get("system_prompt"),
             parent_session_id=source_id,

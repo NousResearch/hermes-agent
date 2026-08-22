@@ -207,6 +207,62 @@ async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_session_api_preserves_first_party_sources_and_rejects_invalid_sources(adapter, session_db):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        web_created = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-web-source-session", "source": "hermes_web", "title": "Hermes Web source"},
+        )
+        assert web_created.status == 201, await web_created.text()
+        web_payload = await web_created.json()
+        assert web_payload["session"]["source"] == "hermes_web"
+
+        browser_created = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-browser-source-session", "source": "hermes_browser"},
+        )
+        assert browser_created.status == 201, await browser_created.text()
+        browser_payload = await browser_created.json()
+        assert browser_payload["session"]["source"] == "hermes_browser"
+
+        stale_client = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-web-stale-client", "title": "Hermes Web stale client"},
+        )
+        assert stale_client.status == 201, await stale_client.text()
+        stale_payload = await stale_client.json()
+        assert stale_payload["session"]["source"] == "hermes_web"
+
+        invalid_create = await cli.post(
+            "/api/sessions",
+            json={"id": "invalid-source-session", "source": "bogus_source"},
+        )
+        assert invalid_create.status == 400
+        invalid_create_payload = await invalid_create.json()
+        assert invalid_create_payload["error"]["code"] == "invalid_session_source"
+
+        legacy_id = session_db.create_session("hermes-web-legacy-source", "api_server")
+        corrected = await cli.patch(
+            f"/api/sessions/{legacy_id}",
+            json={"source": "hermes_web"},
+        )
+        assert corrected.status == 200, await corrected.text()
+        corrected_payload = await corrected.json()
+
+        invalid_patch = await cli.patch(
+            f"/api/sessions/{legacy_id}",
+            json={"source": "bogus_source"},
+        )
+        assert invalid_patch.status == 400
+        invalid_patch_payload = await invalid_patch.json()
+        assert invalid_patch_payload["error"]["code"] == "invalid_session_source"
+
+    assert corrected_payload["session"]["source"] == "hermes_web"
+    assert session_db.get_session("hermes-web-legacy-source")["source"] == "hermes_web"
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_finishes(
     adapter, session_db
 ):
@@ -296,6 +352,42 @@ async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_
         await handler_task
 
     assert run_id not in adapter._active_run_agents
+
+
+@pytest.mark.asyncio
+async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, session_db):
+    source_id = session_db.create_session("source-session", "hermes_web", model="test-model")
+    session_db.set_session_title(source_id, "Original")
+    session_db.append_message(source_id, "user", "first path")
+    session_db.append_message(source_id, "assistant", "answer")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{source_id}/fork", json={"title": "Alternative"})
+        assert resp.status == 201
+        payload = await resp.json()
+
+    fork = payload["session"]
+    assert payload["object"] == "hermes.session"
+    assert fork["id"] != source_id
+    assert fork["parent_session_id"] == source_id
+    assert fork["source"] == "hermes_web"
+    assert fork["title"] == "Alternative"
+    assert [m["content"] for m in session_db.get_messages(fork["id"])] == ["first path", "answer"]
+    assert session_db.get_session(source_id)["end_reason"] == "branched"
+
+
+@pytest.mark.asyncio
+async def test_session_fork_falls_back_to_api_server_for_non_client_source(adapter, session_db):
+    source_id = session_db.create_session("legacy-source-session", "bogus_source")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{source_id}/fork", json={})
+        assert resp.status == 201
+        payload = await resp.json()
+
+    assert payload["session"]["source"] == "api_server"
 
 
 @pytest.mark.asyncio

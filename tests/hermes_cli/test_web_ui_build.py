@@ -28,6 +28,7 @@ from hermes_cli.main import (
     _web_toolchain_roots,
     _web_ui_stamp_path,
     _write_web_ui_build_stamp,
+    _is_electron_winstaller_unix_failure,
 )
 
 
@@ -427,3 +428,30 @@ class TestBuildRecoversFromMissingToolchain:
         assert mock_install.call_count == 1
         assert mock_build.call_count == 1
 
+
+class TestElectronWinstallerUnixFailure:
+    def _result(self, stderr="", returncode=1):
+        import subprocess
+
+        return subprocess.CompletedProcess([], returncode, stdout="", stderr=stderr)
+
+    def test_select_7z_arch_is_a_unix_failure(self):
+        err = "select-7z-arch.js failed"
+        assert _is_electron_winstaller_unix_failure(self._result(err)) is True
+
+    def test_missing_7z_binary_is_a_unix_failure(self):
+        err = "ENOENT copyfile vendor/7z-x64.exe"
+        assert _is_electron_winstaller_unix_failure(self._result(err)) is True
+
+    def test_network_error_is_not_this_failure(self):
+        err = "ECONNRESET"
+        assert _is_electron_winstaller_unix_failure(self._result(err)) is False
+
+    def test_success_returncode_is_not_this_failure(self):
+        err = "select-7z-arch.js failed"
+        assert _is_electron_winstaller_unix_failure(self._result(err, returncode=0)) is False
+
+    def test_windows_never_matches(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.npm_winstaller.sys.platform", "win32")
+        err = "select-7z-arch.js failed"
+        assert _is_electron_winstaller_unix_failure(self._result(err)) is False

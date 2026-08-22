@@ -11,6 +11,7 @@ the real ~/.hermes.
 """
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -332,6 +333,101 @@ class TestSecretsNeverImported:
         run_import("claude-code", claude_tree, hermes_home, execute=True)
         config = yaml.safe_load((hermes_home / "config.yaml").read_text())
         assert config["mcp_servers"]["remote"]["headers"] == {"X-Region": "us-east"}
+
+    # -- credential files INSIDE a skill directory -------------------------
+    #
+    # The cases above hold by accident: every fixture plants its credential
+    # file at the ROOT of the source tree, and no importer reads root-level
+    # files.  skills/ is the one destination that copies a whole subtree, and
+    # it copied every member verbatim -- so `_CREDENTIAL_FILENAMES`, the list
+    # the module docstring promises is "NEVER imported", was enforced nowhere.
+
+    SKILL_SECRETS = {
+        ".credentials.json": "sk-ant-INSIDE-SKILL",
+        "auth.json": "sk-oai-INSIDE-SKILL",
+        "credentials.json": "pw-INSIDE-SKILL",
+    }
+
+    @pytest.fixture()
+    def skill_with_credentials(self, claude_tree):
+        """A source skill the user keeps their agent credentials inside."""
+        skill = claude_tree / "skills" / "deploy-helper"
+        for name, secret in self.SKILL_SECRETS.items():
+            (skill / name).write_text(
+                json.dumps({"key": secret}), encoding="utf-8")
+        # ... and one a directory deeper, beside a file that must still copy.
+        nested = skill / "helpers"
+        nested.mkdir()
+        (nested / "auth.json").write_text(
+            json.dumps({"key": "sk-oai-NESTED"}), encoding="utf-8")
+        (nested / "run.sh").write_text("echo deploying\n", encoding="utf-8")
+        return skill
+
+    def test_skill_imports_without_its_credential_files(
+            self, claude_tree, skill_with_credentials, hermes_home):
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True)
+
+        assert [i["status"] for i in skill_items(report)] == ["imported"]
+        dest = hermes_home / "skills" / "claude-code-imports" / "deploy-helper"
+        # The skill itself lands, in full ...
+        assert "Deploy things." in (dest / "SKILL.md").read_text(encoding="utf-8")
+        assert (dest / "helpers" / "run.sh").exists()
+        # ... minus every credential file, at the top level ...
+        for name in self.SKILL_SECRETS:
+            assert not (dest / name).exists()
+        # ... and nested, which is what makes this a name match and not a
+        # top-level-only one.
+        assert not (dest / "helpers" / "auth.json").exists()
+
+    def test_no_skill_credential_values_anywhere(
+            self, claude_tree, skill_with_credentials, hermes_home):
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+        blob = "".join(
+            p.read_text(encoding="utf-8", errors="replace")
+            for p in hermes_home.rglob("*") if p.is_file()
+        )
+        for secret in self.SKILL_SECRETS.values():
+            assert secret not in blob
+        assert "sk-oai-NESTED" not in blob
+
+    def test_symlinked_credential_file_is_excluded_not_followed(
+            self, claude_tree, hermes_home, tmp_path):
+        """``symlinks=True`` reproduces links AS links, so a link named
+        ``auth.json`` would otherwise still resolve to the real secret."""
+        real = tmp_path / "real-auth.json"
+        real.write_text(json.dumps({"key": "sk-oai-BEHIND-LINK"}),
+                        encoding="utf-8")
+        (claude_tree / "skills" / "deploy-helper" / "auth.json").symlink_to(real)
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True)
+
+        dest = hermes_home / "skills" / "claude-code-imports" / "deploy-helper"
+        assert not (dest / "auth.json").is_symlink()
+        assert not (dest / "auth.json").exists()
+        blob = "".join(
+            p.read_text(encoding="utf-8", errors="replace")
+            for p in hermes_home.rglob("*") if p.is_file()
+        )
+        assert "sk-oai-BEHIND-LINK" not in blob
+
+    def test_skipped_skill_credentials_are_reported(
+            self, claude_tree, skill_with_credentials, hermes_home):
+        """Strip *and* tell the user -- the same contract the MCP env-var
+        stripper holds, so a file left behind can be moved across
+        deliberately if it was never a credential."""
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True)
+
+        item = skill_items(report)[0]
+        assert sorted(Path(p).name for p in item["skipped_credentials"]) == [
+            ".credentials.json", "auth.json", "auth.json", "credentials.json",
+        ]
+        assert (str(skill_with_credentials / "helpers" / "auth.json")
+                in item["skipped_credentials"])
+        # They surface in the same report section as the stripped env vars.
+        for name in self.SKILL_SECRETS:
+            assert str(skill_with_credentials / name) in report["stripped_secrets"]
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +768,193 @@ class TestExistingConfigPreserved:
             agent_import.dump_yaml_file(config_path, {"model": "replacement"})
 
         assert config_path.read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# skills/ durability (sibling of the MEMORY.md and config.yaml cases above)
+# ---------------------------------------------------------------------------
+
+SENTINEL = "keep me: hand-edited notes that exist nowhere else\n"
+
+
+def skill_items(report):
+    return [i for i in report["items"] if i["kind"] == "skill"]
+
+
+class TestImportSkillsDurability:
+    """An import must not destroy the skill directory it is replacing.
+
+    ``import_skills`` was the last of import-agent's four destinations with no
+    read-safety, no backup and no atomic swap: it called
+    ``shutil.rmtree(destination)`` and *then* ``shutil.copytree`` into the hole
+    it had just made.  Any failure in between left the user's skill deleted and
+    half-rebuilt, and the exception escaped past the per-item report — so the
+    user was not even told which items had already landed in config.yaml and
+    memories/MEMORY.md.
+    """
+
+    @pytest.fixture()
+    def dest_root(self, hermes_home):
+        root = hermes_home / "skills" / "claude-code-imports"
+        root.mkdir(parents=True)
+        return root
+
+    @pytest.fixture()
+    def seeded_skill(self, dest_root):
+        """A previously-imported skill the user has since edited."""
+        dest = dest_root / "deploy-helper"
+        dest.mkdir()
+        (dest / "SKILL.md").write_text("mine\n", encoding="utf-8")
+        (dest / "notes.md").write_text(SENTINEL, encoding="utf-8")
+        return dest
+
+    # -- destroy-then-copy: the copy fails, the skill is already gone ------
+
+    def test_failed_copy_leaves_the_existing_skill_intact(
+            self, claude_tree, hermes_home, seeded_skill, monkeypatch):
+        from hermes_cli import agent_import
+
+        def boom(*_args, **_kwargs):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(agent_import.shutil, "copytree", boom)
+
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True, overwrite=True)
+
+        # The user's skill survives, byte for byte.
+        assert (seeded_skill / "SKILL.md").read_text(encoding="utf-8") == "mine\n"
+        assert (seeded_skill / "notes.md").read_text(encoding="utf-8") == SENTINEL
+        # ... and the failure is reported per item rather than aborting the run.
+        assert [i["status"] for i in skill_items(report)] == ["error"]
+        assert "no space left on device" in skill_items(report)[0]["reason"]
+
+    def test_failed_copy_leaves_no_staging_directory_behind(
+            self, claude_tree, hermes_home, dest_root, seeded_skill,
+            monkeypatch):
+        from hermes_cli import agent_import
+
+        def boom(*_args, **_kwargs):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(agent_import.shutil, "copytree", boom)
+
+        run_import("claude-code", claude_tree, hermes_home,
+                   execute=True, overwrite=True)
+
+        assert sorted(p.name for p in dest_root.iterdir()) == ["deploy-helper"]
+
+    # -- symlinks in the SOURCE skill --------------------------------------
+
+    def test_source_skill_with_a_dangling_symlink_is_imported(
+            self, claude_tree, hermes_home):
+        """``copytree`` dereferenced source links, so one dangling link
+        aborted the copy — on a FIRST import, with no --overwrite involved."""
+        (claude_tree / "skills" / "deploy-helper" / "missing-link").symlink_to(
+            "does-not-exist.md")
+
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True)
+
+        assert [i["status"] for i in skill_items(report)] == ["imported"]
+        dest = hermes_home / "skills" / "claude-code-imports" / "deploy-helper"
+        assert (dest / "SKILL.md").exists()
+        # The link is reproduced as a link, still dangling — not dereferenced.
+        assert (dest / "missing-link").is_symlink()
+        assert not (dest / "missing-link").exists()
+
+    # -- symlinks at the DESTINATION ---------------------------------------
+
+    def test_symlinked_destination_is_written_through_not_clobbered(
+            self, claude_tree, hermes_home, dest_root, tmp_path):
+        """``rmtree`` refuses a symlink outright ("Cannot call rmtree on a
+        symbolic link"), so overwriting a symlinked skill always crashed."""
+        real = tmp_path / "external-deploy-helper"
+        real.mkdir()
+        (real / "SKILL.md").write_text("mine\n", encoding="utf-8")
+        link = dest_root / "deploy-helper"
+        link.symlink_to(real, target_is_directory=True)
+
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True, overwrite=True)
+
+        assert [i["status"] for i in skill_items(report)] == ["imported"]
+        # The link the user set up deliberately survives ...
+        assert link.is_symlink()
+        assert link.resolve() == real.resolve()
+        # ... and the skill behind it is the imported one.
+        assert "Deploy things." in (real / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_dangling_destination_symlink_is_a_conflict_without_overwrite(
+            self, claude_tree, hermes_home, dest_root):
+        """``exists()`` follows links, so a dangling one read as "nothing
+        here": no conflict was reported and ``copytree`` died on the link."""
+        link = dest_root / "deploy-helper"
+        link.symlink_to(dest_root / "gone")
+
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True)
+
+        assert [i["status"] for i in skill_items(report)] == ["conflict"]
+        assert link.is_symlink()
+
+    def test_dangling_destination_symlink_is_replaced_with_overwrite(
+            self, claude_tree, hermes_home, dest_root):
+        link = dest_root / "deploy-helper"
+        link.symlink_to(dest_root / "gone")
+
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True, overwrite=True)
+
+        assert [i["status"] for i in skill_items(report)] == ["imported"]
+        assert not link.is_symlink()
+        assert "Deploy things." in (link / "SKILL.md").read_text(encoding="utf-8")
+
+    # -- cleanup failures are reported, not swallowed ----------------------
+
+    def test_failed_cleanup_is_logged_rather_than_swallowed(
+            self, tmp_path, caplog):
+        """``rmtree(..., ignore_errors=True)`` would drop a permission problem
+        on the floor, leaving a hidden ``.import-*`` sibling with no signal."""
+        import os
+
+        if os.name != "posix":
+            pytest.skip("chmod-based permission denial is POSIX-only")
+        if getattr(os, "geteuid", lambda: 1)() == 0:
+            pytest.skip("root bypasses file permissions")
+
+        from hermes_cli import agent_import
+
+        stray = tmp_path / ".deploy-helper.import-abcd1234"
+        locked = stray / "locked"
+        locked.mkdir(parents=True)
+        (locked / "SKILL.md").write_text("staged\n", encoding="utf-8")
+        # r-x: the child is readable but the directory is not writable, so it
+        # cannot be unlinked.
+        locked.chmod(0o500)
+        try:
+            with caplog.at_level(logging.DEBUG, logger=agent_import.__name__):
+                agent_import.discard_path(stray)  # must not raise
+        finally:
+            locked.chmod(0o700)
+
+        assert "Could not remove temporary path" in caplog.text
+        assert "SKILL.md" in caplog.text
+
+    # -- the ordinary overwrite still works --------------------------------
+
+    def test_overwrite_replaces_the_skill_and_leaves_no_leftovers(
+            self, claude_tree, hermes_home, dest_root, seeded_skill):
+        report = run_import("claude-code", claude_tree, hermes_home,
+                            execute=True, overwrite=True)
+
+        assert [i["status"] for i in skill_items(report)] == ["imported"]
+        assert "Deploy things." in (
+            seeded_skill / "SKILL.md").read_text(encoding="utf-8")
+        # The stale member of the old skill is gone (a replace, not a merge) ...
+        assert not (seeded_skill / "notes.md").exists()
+        # ... and no staging/backup sibling is left behind.
+        assert sorted(p.name for p in dest_root.iterdir()) == ["deploy-helper"]
 
 
 # ---------------------------------------------------------------------------

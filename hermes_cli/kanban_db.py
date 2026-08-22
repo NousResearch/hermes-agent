@@ -89,6 +89,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
+from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
 
@@ -7629,6 +7630,148 @@ def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:
     return result.returncode == 0
 
 
+def _worktree_base_ref(repo_root: Path) -> str:
+    """Return a freshly fetched remote base for a new task branch."""
+    env = noninteractive_git_env()
+
+    def _is_commit(ref: str) -> bool:
+        try:
+            verified = subprocess.run(
+                [
+                    "git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet",
+                    f"{ref}^{{commit}}",
+                ],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=30,
+                check=False,
+            )
+        except Exception:
+            return False
+        return verified.returncode == 0
+
+    def _origin_is_configured() -> Optional[bool]:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repo_root), "remote"],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=30,
+                check=False,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        return "origin" in result.stdout.splitlines()
+
+    try:
+        fetched = subprocess.run(
+            ["git", "-C", str(repo_root), "fetch", "--prune", "origin"],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=60,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            env=env,
+        )
+    except Exception as exc:
+        if _origin_is_configured() is not False:
+            raise RuntimeError(
+                f"could not fetch origin for new Kanban worktree: {exc}"
+            ) from exc
+        _log.debug("kanban worktree has no fetchable origin: %s", exc)
+        return "HEAD"
+    if fetched.returncode != 0:
+        fetch_error = (fetched.stderr or fetched.stdout or "").strip()
+        if _origin_is_configured() is not False:
+            raise RuntimeError(
+                f"could not fetch origin for new Kanban worktree: {fetch_error}"
+            )
+        _log.debug("kanban worktree has no fetchable origin: %s", fetch_error)
+        return "HEAD"
+
+    def _fetch_remote_branch(branch: str) -> Optional[str]:
+        remote_ref = f"refs/remotes/origin/{branch}"
+        try:
+            targeted_fetch = subprocess.run(
+                [
+                    "git", "-C", str(repo_root), "fetch", "origin",
+                    f"+refs/heads/{branch}:{remote_ref}",
+                ],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=60,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                env=env,
+            )
+        except Exception as exc:
+            _log.debug("kanban remote branch fetch failed: %s", exc)
+            return None
+        if targeted_fetch.returncode == 0 and _is_commit(remote_ref):
+            return remote_ref
+        if targeted_fetch.returncode != 0:
+            _log.debug(
+                "kanban remote branch fetch failed: %s",
+                (targeted_fetch.stderr or targeted_fetch.stdout or "").strip(),
+            )
+        return None
+
+    try:
+        remote_head = subprocess.run(
+            [
+                "git", "-C", str(repo_root), "ls-remote", "--symref",
+                "origin", "HEAD",
+            ],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=30,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            env=env,
+        )
+        if remote_head.returncode == 0:
+            for line in remote_head.stdout.splitlines():
+                if line.startswith("ref: refs/heads/") and line.endswith("\tHEAD"):
+                    branch = line.removeprefix("ref: refs/heads/").removesuffix("\tHEAD")
+                    remote_default = _fetch_remote_branch(branch)
+                    if remote_default is None:
+                        raise RuntimeError(
+                            "could not fetch the live remote default branch "
+                            "for new Kanban worktree"
+                        )
+                    return remote_default
+
+        symbolic = subprocess.run(
+            [
+                "git", "-C", str(repo_root), "symbolic-ref", "--quiet",
+                "refs/remotes/origin/HEAD",
+            ],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=30,
+            check=False,
+        )
+        symbolic_target = symbolic.stdout.strip()
+        if symbolic.returncode == 0 and symbolic_target.startswith("refs/remotes/origin/"):
+            branch = symbolic_target.removeprefix("refs/remotes/origin/")
+            remote_default = _fetch_remote_branch(branch)
+            if remote_default is not None:
+                return remote_default
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        _log.debug("kanban remote default resolution failed: %s", exc)
+
+    remote_main = _fetch_remote_branch("main")
+    if remote_main is not None:
+        return remote_main
+    raise RuntimeError(
+        "could not resolve a fetched default branch for new Kanban worktree"
+    )
+
+
 def _git_common_dir(path: Path) -> Optional[Path]:
     try:
         result = subprocess.run(
@@ -7722,9 +7865,10 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     if _git_branch_exists(repo_root, branch_name):
         cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
     else:
+        base_ref = _worktree_base_ref(repo_root)
         cmd = [
             "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
-            str(target), "HEAD",
+            str(target), base_ref,
         ]
     result = subprocess.run(
         cmd,

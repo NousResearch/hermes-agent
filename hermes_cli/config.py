@@ -5193,6 +5193,11 @@ _DYNAMIC_TOP_LEVEL_KEYS = frozenset({
 # accepted because ``PlatformConfig`` carries an open ``extra`` mapping.
 _PLATFORM_CONTAINER_KEYS = frozenset({"platforms"})
 
+# ``platform_hints`` has dynamic platform names but a closed override shape.
+# Keep it separate from open dictionaries so typos in ``append`` / ``replace``
+# still receive the unknown-key warning instead of being silently accepted.
+_PLATFORM_HINT_OVERRIDE_FIELDS = frozenset({"append", "replace"})
+
 
 def _known_top_level_keys() -> set[str]:
     """Return the union of known top-level config keys for validation.
@@ -5276,6 +5281,29 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
             suggested_full = f"{suggestion}.{rest}" if rest else suggestion
             return False, suggested_full
 
+        return False, None
+
+    # ``platform_hints`` accepts any platform name, either as the documented
+    # string shorthand or followed by exactly one ``append`` / ``replace``
+    # field.  It is not an open dict: deeper or misspelled fields are ignored
+    # by prompt assembly and should keep the validator's warning.
+    if top == "platform_hints":
+        if len(segments) == 1:
+            return True, None
+        platform_name = segments[1]
+        if not platform_name:
+            return False, None
+        if len(segments) == 2:
+            return True, None
+        if len(segments) == 3:
+            field = segments[2]
+            if field in _PLATFORM_HINT_OVERRIDE_FIELDS:
+                return True, None
+            suggestion = _suggest_closest_key(
+                field, set(_PLATFORM_HINT_OVERRIDE_FIELDS)
+            )
+            if suggestion is not None:
+                return False, f"platform_hints.{platform_name}.{suggestion}"
         return False, None
 
     # ── Deeper validation ────────────────────────────────────────────

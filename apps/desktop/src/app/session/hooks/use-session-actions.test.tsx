@@ -29,6 +29,7 @@ import {
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessionStartedAt,
   $turnStartedAt,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -44,6 +45,7 @@ import {
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
   setSessions,
+  setSessionStartedAt,
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
@@ -705,6 +707,7 @@ describe('resumeSession failure recovery', () => {
     cleanup()
     setActiveSessionId(null)
     setResumeFailedSessionId(null)
+    setSessionStartedAt(null)
     setMessages([])
     setSessions([])
     vi.restoreAllMocks()
@@ -1075,6 +1078,57 @@ describe('resumeSession failure recovery', () => {
     expect(resumeParams).toMatchObject({ source: 'desktop', omit_messages: true })
   })
 
+  it('captures a cold runtime anchor before session.resume settles and stores it in the runtime cache', async () => {
+    const resumeStartedAt = 1_700_000_000_000
+    const afterResumeSettles = 1_800_000_000_000
+    const now = vi.spyOn(Date, 'now').mockReturnValue(resumeStartedAt)
+    const resumeDeferred = deferred<never>()
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return await resumeDeferred.promise
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={requestGateway}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    let resumePromise!: Promise<unknown>
+    act(() => {
+      resumePromise = resume!('stored-1', true)
+    })
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.any(Object)))
+
+    // The visible timer is anchored before the delayed RPC resolves.
+    expect($sessionStartedAt.get()).toBe(resumeStartedAt)
+    now.mockReturnValue(afterResumeSettles)
+    resumeDeferred.resolve({
+      session_id: 'runtime-1',
+      resumed: 'stored-1',
+      messages: [],
+      info: {}
+    } as never)
+
+    await act(async () => {
+      await resumePromise
+    })
+
+    // The cache must retain the pre-await anchor, not a completion-time value.
+    expect(sessionStateByRuntimeIdRef.current.get('runtime-1')?.runtimeStartedAt).toBe(resumeStartedAt)
+  })
+
   it('arms the failure latch when resume succeeds with an empty transcript for a non-empty stored session', async () => {
     setSessions([storedSession({ message_count: 4 })])
 
@@ -1120,6 +1174,7 @@ describe('resumeSession failure recovery', () => {
             personality: '',
             provider: '',
             reasoningEffort: '',
+            runtimeStartedAt: 0,
             sawAssistantPayload: false,
             serviceTier: '',
             storedSessionId: 'stored-1',
@@ -1246,6 +1301,7 @@ function BranchHarness({
   navigate = vi.fn(),
   onCurrentReady,
   onReady,
+  onStateUpdate,
   onRefs,
   requestGateway,
   selectedStoredSessionId = null
@@ -1254,6 +1310,7 @@ function BranchHarness({
   navigate?: ReturnType<typeof vi.fn>
   onCurrentReady?: (branchCurrentSession: (messageId?: string) => Promise<boolean>) => void
   onReady: (branchStoredSession: (storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) => void
+  onStateUpdate?: (sessionId: string, state: ClientSessionState) => void
   onRefs?: (refs: {
     activeSessionIdRef: MutableRefObject<string | null>
     selectedStoredSessionIdRef: MutableRefObject<string | null>
@@ -1283,7 +1340,12 @@ function BranchHarness({
     selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
-    updateSessionState: () => ({}) as ClientSessionState
+    updateSessionState: (sessionId, updater) => {
+      const next = updater(createClientSessionState(null))
+      onStateUpdate?.(sessionId, next)
+
+      return next
+    }
   })
 
   useEffect(() => {
@@ -1338,6 +1400,46 @@ describe('branchStoredSession desktop source tagging', () => {
     // ...without stealing the primary selection or navigating away from the parent.
     expect($selectedStoredSessionId.get()).toBe('stored-parent')
     expect(navigate).not.toHaveBeenCalledWith(sessionRoute('branch-stored'))
+  })
+
+  it('keeps the branch runtime elapsed anchor in its tile state without stealing the primary session', async () => {
+    const runtimeStartedAt = 1_700_000_000_000
+    vi.spyOn(Date, 'now').mockReturnValue(runtimeStartedAt)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    const stateUpdates: Array<{ sessionId: string; state: ClientSessionState }> = []
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
+    setSelectedStoredSessionId('stored-parent')
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    render(
+      <BranchHarness
+        onReady={branch => (branchStoredSession = branch)}
+        onStateUpdate={(sessionId, state) => stateUpdates.push({ sessionId, state })}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    expect(stateUpdates).toContainEqual(
+      expect.objectContaining({
+        sessionId: 'branch-runtime',
+        state: expect.objectContaining({ runtimeStartedAt })
+      })
+    )
+    expect($selectedStoredSessionId.get()).toBe('stored-parent')
   })
 
   it('tags desktop branch sessions as desktop sessions', async () => {
@@ -1689,6 +1791,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     cleanup()
     setActiveSessionId(null)
     setResumeFailedSessionId(null)
+    setSessionStartedAt(null)
     setMessages([])
     setSessions([])
     vi.restoreAllMocks()
@@ -2481,6 +2584,56 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(requestGateway.mock.calls.map(([method]) => method)).not.toContain('session.resume')
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
     expect(sessionStateByRuntimeIdRef.current.get('rt-A')?.messages[0]?.id).toBe('user-optimistic')
+  })
+
+  it('keeps the runtime elapsed anchor when a warm-cached session is reselected', async () => {
+    const runtimeStartedAt = 1_700_000_000_000
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', { ...clientState('stored-A'), runtimeStartedAt }]])
+    }
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-A' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: 0,
+          messages: [],
+          running: false,
+          info: {}
+        } as never
+      }
+
+      if (method === 'session.usage') {
+        return { input: 0, output: 0, total: 0 } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={r => (resume = r)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000)
+    await resume!('stored-A', true)
+
+    expect($sessionStartedAt.get()).toBe(runtimeStartedAt)
   })
 })
 

@@ -3898,6 +3898,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         role = "assistant"
         reasoning_parts: list = []
         usage_obj = None
+        # OpenCode Go terminates some successful streams with a final
+        # choices=[] chunk carrying only provider metadata (currently cost),
+        # without emitting the OpenAI-standard finish_reason or [DONE] event.
+        # Keep this scoped to that provider so a genuinely truncated stream
+        # from other OpenAI-compatible endpoints still enters the retry path.
+        opencode_go_cost_terminal = False
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         _writer_token = {"value": None}
@@ -4122,9 +4128,33 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         ),
                         raw_text=f"{_err_type}: {_err_msg}",
                     )
+                if agent.provider == "opencode-go":
+                    # OpenCode Go terminates some successful streams with a
+                    # final choices=[] chunk carrying only provider metadata
+                    # (currently cost) and no OpenAI-standard finish_reason
+                    # or [DONE].  The SDK may expose ``cost`` through
+                    # ``model_extra`` instead of a direct attribute,
+                    # depending on its version.
+                    extra = getattr(chunk, "model_extra", None)
+                    if (
+                        getattr(chunk, "cost", None) is not None
+                        or (isinstance(extra, dict) and "cost" in extra)
+                    ):
+                        opencode_go_cost_terminal = True
                 continue
 
             delta = chunk.choices[0].delta
+            # A cost-only chunk followed by real stream content was an
+            # incremental metadata update, not a terminator — re-arm the
+            # flag so a subsequent genuine truncation still enters the
+            # retry path instead of being masked as a clean stop.
+            if opencode_go_cost_terminal and (
+                getattr(delta, "content", None)
+                or getattr(delta, "reasoning_content", None)
+                or getattr(delta, "reasoning", None)
+                or getattr(delta, "tool_calls", None)
+            ):
+                opencode_go_cost_terminal = False
             if hasattr(chunk, "model") and chunk.model:
                 model_name = chunk.model
 
@@ -4269,6 +4299,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 usage_obj = chunk.usage
 
         _close_managed_stream()
+
+        if opencode_go_cost_terminal and finish_reason is None:
+            finish_reason = "stop"
 
         if _stream_attempt_was_cancelled(stream_attempt_id):
             raise _httpx.RemoteProtocolError(

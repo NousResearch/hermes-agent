@@ -2,7 +2,7 @@
 
 terminal_tool._get_env_config() reads ALL terminal settings from os.environ
 (TERMINAL_*).  config.yaml values therefore have to be bridged into env vars
-at startup, by THREE separate code paths:
+at startup or cron execution, by FOUR separate code paths:
 
   1. cli.py            -> ``env_mappings`` dict (CLI / TUI startup)
   2. gateway/run.py    -> ``_terminal_env_map`` dict (gateway / messaging
@@ -10,17 +10,21 @@ at startup, by THREE separate code paths:
   3. hermes_cli/config.py:set_config_value
                        -> bridges via the canonical ``TERMINAL_CONFIG_ENV_MAP``
                           (one-shot when the user runs ``hermes config set …``)
+  4. cron/scheduler.py -> calls the canonical bridge after its per-run .env
+                          reload (standalone run, tick, and provider fires)
 
 If any one of these is missing a key, the corresponding config.yaml setting
 silently does nothing for that entry-point.  This bug already shipped once
 for ``docker_run_as_host_user`` (gateway and CLI maps) and once for
 ``docker_mount_cwd_to_workspace`` (gateway map).
 
-This test guards against future drift by extracting all three maps via source
-inspection and asserting they all bridge the same set of writable
+This test guards against future drift by extracting the three map-bearing
+paths via source inspection and asserting they all bridge the same writable
 ``terminal.*`` keys.  Source inspection (rather than importing the live
 dicts) keeps the test independent of the user's ~/.hermes/config.yaml and
 mirrors the pattern used in tests/hermes_cli/test_config_drift.py.
+The fourth path's execution ordering is covered behaviorally in
+tests/cron/test_terminal_config_sync.py.
 """
 
 import ast

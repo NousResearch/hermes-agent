@@ -10,7 +10,7 @@
 
 <br/>
 
-[![Version](https://img.shields.io/badge/version-0.21.0-blue.svg)](https://github.com/FraN-arti/max-hermes-plugin)
+[![Version](https://img.shields.io/badge/version-0.22.0-blue.svg)](https://github.com/FraN-arti/max-hermes-plugin)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
 [![Hermes](https://img.shields.io/badge/Hermes-0.20+-7C3AED.svg)](https://hermes-agent.nousresearch.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -216,6 +216,13 @@ Done. Message the bot in MAX. 🎉
   replay old messages.
 - **Outbound** is `POST /messages` — `user_id` for DMs, `chat_id` for groups.
   MAX's 2 msg/sec rate limit is respected automatically.
+- **Formatting:** every reply goes out as MAX HTML: code blocks become a
+  `<pre>` inside a blockquote frame, inline code gets a `<mark>` highlight.
+  MAX Markdown supports neither multi-line code nor inline styling (raw
+  asterisks stay literal), so the conversion is always applied.
+- **Reasoning is hidden:** the 💭 thinking block is stripped from replies by
+  default (even with `display.show_reasoning: true`). Bring it back with
+  `MAX_SHOW_REASONING=true`.
 - **Typing indicator** works through `POST /chats/{id}/actions`.
 - **TLS** uses the Russian Trusted Root CA, auto-downloaded from
   [gu-st.ru](https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt)
@@ -308,6 +315,7 @@ instructions per group via `channel_prompts` in the plugin config.
 | `MAX_OWNER_USER_ID` | ❌ | Your MAX user_id. Full access; only owner can run `/approve` and `/deny` |
 | `MAX_APPROVED_CHATS` | ❌ | Pre-approved chat_ids. Empty = bot asks owner when added to a new group |
 | `MAX_MEMBERS_TTL` | ❌ | Seconds between member-role refreshes (default 300) |
+| `MAX_SHOW_REASONING` | ❌ | `true` = show the 💭 Reasoning block in bot replies (hidden by default) |
 | `MAX_BOT_ALIASES` | ❌ | Extra names the bot answers to, e.g. `kain,kai` |
 
 <br/>

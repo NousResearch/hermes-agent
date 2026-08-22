@@ -947,3 +947,100 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+class TestBackgroundReviewReadMarksSurviveToolThreads:
+    """Read marks must be visible across per-tool worker threads (#75618).
+
+    Tool dispatch snapshots the parent turn via ``copy_context()`` *before*
+    hopping to a worker (``propagate_context_to_thread``). A ContextVar set
+    inside one worker's private context is invisible to a later skill_manage
+    worker — the curator could never satisfy the read-before-write guard.
+    """
+
+    def test_mark_on_worker_thread_visible_to_other_worker(self, tmp_path):
+        import contextvars
+        import threading
+
+        from tools.skill_manager_tool import (
+            _background_review_has_read,
+            _reset_background_review_read_marks,
+            mark_background_review_skill_read,
+        )
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        target = tmp_path / "skill" / "SKILL.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("x", encoding="utf-8")
+        _reset_background_review_read_marks()
+
+        # Parent turn is background_review (set before tool dispatch).
+        parent_token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            errors: list[str] = []
+            # Snapshot on the parent — same as propagate_context_to_thread.
+            view_ctx = contextvars.copy_context()
+            manage_ctx = contextvars.copy_context()
+
+            def _skill_view_worker():
+                view_ctx.run(mark_background_review_skill_read, target)
+
+            def _skill_manage_worker():
+                def _run():
+                    if not _background_review_has_read(target):
+                        errors.append("read mark missing on manage worker")
+
+                manage_ctx.run(_run)
+
+            t1 = threading.Thread(target=_skill_view_worker)
+            t1.start()
+            t1.join(timeout=5)
+            assert t1.is_alive() is False
+            t2 = threading.Thread(target=_skill_manage_worker)
+            t2.start()
+            t2.join(timeout=5)
+            assert t2.is_alive() is False
+            assert not errors, errors
+            assert _background_review_has_read(target)
+        finally:
+            reset_current_write_origin(parent_token)
+            _reset_background_review_read_marks()
+
+    def test_read_marks_isolated_between_review_forks(self, tmp_path):
+        """A mark from review A must not authorize a write in review B (#75661)."""
+        import contextvars
+
+        from tools.skill_manager_tool import (
+            _background_review_has_read,
+            _reset_background_review_read_marks,
+            mark_background_review_skill_read,
+        )
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        target = tmp_path / "skill" / "SKILL.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("x", encoding="utf-8")
+
+        parent_token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            _reset_background_review_read_marks()
+            review_a = contextvars.copy_context()
+            _reset_background_review_read_marks()
+            review_b = contextvars.copy_context()
+
+            review_a.run(mark_background_review_skill_read, target)
+            assert review_a.run(_background_review_has_read, target) is True
+            assert review_b.run(_background_review_has_read, target) is False
+            # Parent holds review B's store after the second reset.
+            assert _background_review_has_read(target) is False
+        finally:
+            reset_current_write_origin(parent_token)
+            _reset_background_review_read_marks()

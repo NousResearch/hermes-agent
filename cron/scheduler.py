@@ -4081,7 +4081,23 @@ def _run_job_script(
                 return False, "Script cancelled because cron fire ownership was lost"
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                _terminate_cron_script_process(proc)
+                # Phase 4a (#85125): a script timeout must leave ZERO living
+                # descendants. killpg only reaches the script's own process
+                # group — a grandchild that called setsid (backgrounded
+                # shell jobs, watchdogs) escapes it and keeps running after
+                # the job reports failure (#71148 / #59549).
+                # agent.deadline.kill_process_tree snapshots the descendant
+                # set via psutil BEFORE signalling, so own-session
+                # grandchildren are reached too — the unified deadline
+                # layer's tree-kill (#85147, d6a5cb9725).
+                try:
+                    from agent.deadline import kill_process_tree
+
+                    kill_process_tree(proc.pid)
+                except Exception:
+                    # Never let the tree-kill failure re-wedge the script
+                    # path — fall back to the site-local group kill.
+                    _terminate_cron_script_process(proc)
                 _drain_script_pipes(proc)
                 return False, f"Script timed out after {script_timeout}s: {path}"
             try:

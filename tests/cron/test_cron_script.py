@@ -629,3 +629,66 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+class TestScriptTimeoutTreeKill:
+    """Phase 4a (#85125): a script timeout must leave zero living descendants."""
+
+    def test_timeout_leaves_no_setsid_grandchild(self, cron_env, monkeypatch):
+        """The script spawns a grandchild in its OWN session (start_new_session).
+        killpg alone cannot reach it; agent.deadline.kill_process_tree must —
+        after the timeout the grandchild pid must be gone."""
+        import time
+
+        import os as _os
+
+        from cron import scheduler as sched
+
+        scripts_dir = cron_env / "scripts"
+        pid_file = cron_env / "grandchild.pid"
+        (scripts_dir / "spawner.py").write_text(
+            "import subprocess, sys, time\n"
+            "p = subprocess.Popen(\n"
+            "    [sys.executable, '-c', 'import time; time.sleep(30)'],\n"
+            "    start_new_session=True,\n"
+            "    stdin=subprocess.DEVNULL,\n"
+            "    stdout=subprocess.DEVNULL,\n"
+            "    stderr=subprocess.DEVNULL,\n"
+            ")\n"
+            f"open({str(pid_file)!r}, 'w').write(str(p.pid))\n"
+            "time.sleep(30)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "1")
+        monkeypatch.setattr(sched, "_SCRIPT_TIMEOUT", sched._DEFAULT_SCRIPT_TIMEOUT)
+
+        ok, out = sched._run_job_script(str(scripts_dir / "spawner.py"), workdir=str(cron_env))
+        assert not ok, f"script should have timed out, got {out!r}"
+
+        deadline = time.monotonic() + 5
+        gpid = None
+        while time.monotonic() < deadline and gpid is None:
+            try:
+                gpid = int(pid_file.read_text().strip())
+            except (FileNotFoundError, ValueError):
+                time.sleep(0.05)
+        assert gpid is not None, "spawner never wrote the grandchild pid"
+
+        try:
+            alive = True
+            for _ in range(10):
+                try:
+                    _os.kill(gpid, 0)
+                except ProcessLookupError:
+                    alive = False
+                    break
+                time.sleep(0.2)
+            assert not alive, (
+                f"grandchild pid {gpid} survived the script timeout — the "
+                "timeout path orphaned an own-session descendant"
+            )
+        finally:
+            try:
+                _os.kill(gpid, 9)
+            except ProcessLookupError:
+                pass

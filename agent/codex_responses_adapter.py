@@ -11,8 +11,9 @@ in and return transformed results.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
+
+import orjson
 import re
 import unicodedata
 import uuid
@@ -680,7 +681,7 @@ def _chat_messages_to_responses_input(
 
                         arguments = fn.get("arguments", "{}")
                         if isinstance(arguments, dict):
-                            arguments = json.dumps(arguments, ensure_ascii=False)
+                            arguments = orjson.dumps(arguments).decode()
                         elif not isinstance(arguments, str):
                             arguments = str(arguments)
                         arguments = arguments.strip() or "{}"
@@ -804,7 +805,7 @@ def _preflight_codex_input_items(
 
             arguments = item.get("arguments", "{}")
             if isinstance(arguments, dict):
-                arguments = json.dumps(arguments, ensure_ascii=False)
+                arguments = orjson.dumps(arguments).decode()
             elif not isinstance(arguments, str):
                 arguments = str(arguments)
             arguments = sanitize_text(arguments.strip() or "{}")
@@ -1533,7 +1534,7 @@ def _normalize_codex_response(
             fn_name = getattr(item, "name", "") or ""
             arguments = getattr(item, "arguments", "{}")
             if not isinstance(arguments, str):
-                arguments = json.dumps(arguments, ensure_ascii=False)
+                arguments = orjson.dumps(arguments).decode()
             raw_call_id = getattr(item, "call_id", None)
             raw_item_id = getattr(item, "id", None)
             embedded_call_id, _ = _split_responses_tool_id(raw_item_id)
@@ -1554,7 +1555,7 @@ def _normalize_codex_response(
             fn_name = getattr(item, "name", "") or ""
             arguments = getattr(item, "input", "{}")
             if not isinstance(arguments, str):
-                arguments = json.dumps(arguments, ensure_ascii=False)
+                arguments = orjson.dumps(arguments).decode()
             raw_call_id = getattr(item, "call_id", None)
             raw_item_id = getattr(item, "id", None)
             embedded_call_id, _ = _split_responses_tool_id(raw_item_id)

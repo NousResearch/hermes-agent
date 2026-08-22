@@ -132,6 +132,9 @@ dependencies = [
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
   "Pillow==12.3.0",
+  # Fast JSON serialization for tool-call argument hot paths. Native wheels
+  # for all supported platforms; exact pin to avoid surprise abi3 drift.
+  "orjson==3.11.9",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on

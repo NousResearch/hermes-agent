@@ -1443,23 +1443,45 @@ def _resolve_endpoint_context_length(
 ) -> Optional[int]:
     """Resolve context length from an endpoint's live ``/models`` metadata."""
     endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    if not endpoint_metadata:
+        return None
+
+    # 1. Exact match
     matched = endpoint_metadata.get(model)
+
+    # 2. Match without rolling/namespace prefix '~' (e.g. ~moonshotai/kimi-latest -> moonshotai/kimi-latest)
+    if not matched and model and model.startswith("~"):
+        matched = endpoint_metadata.get(model.lstrip("~"))
+
+    # 3. Match bare model name (e.g. moonshotai/kimi-latest -> kimi-latest)
+    if not matched and model:
+        clean_model = model.lstrip("~")
+        bare_model = clean_model.split("/")[-1]
+        matched = endpoint_metadata.get(bare_model)
+
+    # 4. Search with vendor/suffix permutations
     if not matched:
         if len(endpoint_metadata) == 1:
             matched = next(iter(endpoint_metadata.values()))
         elif model:
-            # Substring fuzzy match — only meaningful with a non-empty model
-            # name.  An empty string is a substring of EVERY key, which would
-            # "match" whatever model the endpoint happens to list first (e.g.
-            # a 32K embedding model on the Nous portal) and poison the
-            # resolved context length for the whole agent.
+            clean_model = model.lstrip("~").lower()
+            clean_bare = clean_model.split("/")[-1]
             for key, entry in endpoint_metadata.items():
-                if model in key or key in model:
+                key_lower = str(key).lower()
+                key_bare = key_lower.split("/")[-1]
+                if (
+                    clean_model == key_lower
+                    or clean_bare == key_bare
+                    or clean_model in key_lower
+                    or key_lower in clean_model
+                    or clean_bare in key_lower
+                    or key_bare in clean_model
+                ):
                     matched = entry
                     break
     if matched:
         context_length = matched.get("context_length")
-        if isinstance(context_length, int):
+        if isinstance(context_length, int) and context_length > 0:
             return context_length
     return None
 

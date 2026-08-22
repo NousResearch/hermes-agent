@@ -63,6 +63,7 @@ _INFLIGHT: set[str] = set()
 _SAFE_SOURCES: dict[str, frozenset[str]] = {
     "openai-codex": frozenset({"usage_api"}),
     "google-antigravity": frozenset({"quota_summary"}),
+    "claude-p": frozenset({"oauth_usage_api"}),
 }
 _SAFE_WINDOW_LABELS: dict[str, frozenset[str]] = {
     "openai-codex": frozenset({"Session", "Weekly"}),
@@ -73,6 +74,9 @@ _SAFE_WINDOW_LABELS: dict[str, frozenset[str]] = {
             "Claude and GPT models (5h)",
             "Claude and GPT models (weekly)",
         }
+    ),
+    "claude-p": frozenset(
+        {"Current session", "Current week", "Opus week", "Sonnet week"}
     ),
 }
 
@@ -191,21 +195,70 @@ def store_snapshot(snapshot: Any) -> None:
     provider = record.get("provider")
     if not provider:
         return
+    record["refresh_attempted_at"] = record.get("fetched_at")
+    _merge_provider_record(provider, record)
+
+
+def _write_providers(providers: dict[str, Any]) -> None:
+    """Write provider records atomically; caller must hold ``_LOCK``."""
     from utils import atomic_write_text
 
+    payload = {"version": _SCHEMA_VERSION, "providers": providers}
+    try:
+        atomic_write_text(
+            _cache_path(),
+            json.dumps(payload, indent=2, sort_keys=True),
+            create_mode=0o600,
+        )
+    except OSError as exc:
+        logger.debug("delegation usage cache write failed: %s", type(exc).__name__)
+
+
+def _merge_provider_record(provider: str, record: dict[str, Any]) -> None:
     with _LOCK:
         data = read_raw()
         providers = dict(data.get("providers") or {})
         providers[provider] = record
-        payload = {"version": _SCHEMA_VERSION, "providers": providers}
-        try:
-            atomic_write_text(
-                _cache_path(),
-                json.dumps(payload, indent=2, sort_keys=True),
-                create_mode=0o600,
-            )
-        except OSError as exc:
-            logger.debug("delegation usage cache write failed: %s", type(exc).__name__)
+        _write_providers(providers)
+
+
+def _record_refresh_attempt(provider: str) -> None:
+    """Persist a secret-free attempt timestamp while retaining stale usage."""
+    normalized = normalize_provider(provider)
+    if not normalized:
+        return
+    attempted_at = _iso(_utc_now())
+    with _LOCK:
+        data = read_raw()
+        providers = dict(data.get("providers") or {})
+        existing = providers.get(normalized)
+        if isinstance(existing, dict):
+            record = dict(existing)
+        else:
+            # A negative snapshot: unknown usage with a fresh fetch attempt.
+            record = {
+                "provider": normalized,
+                "fetched_at": attempted_at,
+                "source": "",
+                "windows": [],
+            }
+        record["refresh_attempted_at"] = attempted_at
+        providers[normalized] = record
+        _write_providers(providers)
+
+
+def _refresh_attempt_due(provider: str, ttl_seconds: int) -> bool:
+    record = (read_raw().get("providers") or {}).get(normalize_provider(provider))
+    if not isinstance(record, dict):
+        return True
+    try:
+        attempted_at = datetime.fromisoformat(str(record.get("refresh_attempted_at")))
+    except (TypeError, ValueError):
+        return True
+    if attempted_at.tzinfo is None:
+        attempted_at = attempted_at.replace(tzinfo=timezone.utc)
+    age = max(0.0, (_utc_now() - attempted_at).total_seconds())
+    return age > ttl_seconds
 
 
 # ---------------------------------------------------------------------------
@@ -306,8 +359,15 @@ def build_usage_view(
         # A fresh negative snapshot (unsupported/unavailable usage) is a valid
         # cached probe result.  Keep usage "unknown", but do not hammer the
         # provider again until its TTL expires.
-        refresh_due = entry.age_seconds is None or entry.age_seconds > ttl_seconds
-        if refresh and entry.freshness != "fresh" and refresh_due:
+        refresh_due_by_age = (
+            entry.age_seconds is None or entry.age_seconds > ttl_seconds
+        )
+        if (
+            refresh
+            and entry.freshness != "fresh"
+            and refresh_due_by_age
+            and _refresh_attempt_due(normalized, ttl_seconds)
+        ):
             _spawn_refresh(normalized)
     return UsageView(entries)
 
@@ -327,18 +387,11 @@ def build_route_usage_view(
     """
     entries: dict[str, ProviderUsage] = {}
     refresh_providers: set[str] = set()
+    refresh_attempt_due: dict[str, bool] = {}
     for route in routes:
         provider = normalize_provider(getattr(route, "provider", None))
         route_id = str(getattr(route, "id", "") or "").strip()
         if not provider or not route_id:
-            continue
-        if str(getattr(route, "backend", "native")).strip().lower() == "claude-p":
-            # Claude Pro/Max exposes no supported machine-readable remaining
-            # allowance endpoint. Keep usage explicitly unknown without
-            # probing/scraping the CLI or fabricating a cache record.
-            entries[route_id] = ProviderUsage(
-                provider=provider, freshness="unknown"
-            )
             continue
         entry = read_provider_usage(
             provider,
@@ -347,9 +400,16 @@ def build_route_usage_view(
             window_prefixes=tuple(getattr(route, "usage_window_prefixes", ()) or ()),
         )
         entries[route_id] = entry
-        refresh_due = entry.age_seconds is None or entry.age_seconds > ttl_seconds
-        if refresh and entry.freshness != "fresh" and refresh_due:
-            refresh_providers.add(provider)
+        refresh_due_by_age = (
+            entry.age_seconds is None or entry.age_seconds > ttl_seconds
+        )
+        if refresh and entry.freshness != "fresh" and refresh_due_by_age:
+            if provider not in refresh_attempt_due:
+                refresh_attempt_due[provider] = _refresh_attempt_due(
+                    provider, ttl_seconds
+                )
+            if refresh_attempt_due[provider]:
+                refresh_providers.add(provider)
     for provider in sorted(refresh_providers):
         _spawn_refresh(provider)
     return UsageView(entries)
@@ -387,8 +447,10 @@ def refresh_provider_now(provider: str) -> None:
         logger.debug(
             "delegation usage refresh for %s failed: %s", normalized, type(exc).__name__
         )
+        _record_refresh_attempt(normalized)
         return
     if snapshot is None:
+        _record_refresh_attempt(normalized)
         return
     try:
         store_snapshot(snapshot)

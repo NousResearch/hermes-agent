@@ -903,14 +903,17 @@ class TestRouteSelection:
         assert decision.selected is True
         assert decision.route_id == "claude-sub"
         assert decision.provider == "claude-p"
-        # Claude exposes no machine-readable remaining allowance: usage stays
+        # No cached reading is supplied here (empty UsageView): usage stays
         # unknown and is never fabricated.
         assert decision.usage_freshness == "unknown"
         assert decision.usage_remaining_percent is None
 
-    def test_claude_usage_stays_unknown_without_refresh_probe(
+    def test_claude_usage_stays_unknown_and_schedules_one_background_refresh(
         self, monkeypatch, tmp_path
     ):
+        """With no cached reading yet, claude-p reports unknown (never fabricated)
+        but — like every other provider — schedules exactly one out-of-band
+        refresh rather than being permanently frozen at unknown."""
         catalog = self._catalog([CLAUDE_ROUTE])
         monkeypatch.setattr(duc, "_cache_path", lambda: tmp_path / "usage.json")
         refreshes = []
@@ -921,7 +924,9 @@ class TestRouteSelection:
             stale_seconds=1800,
         )
         assert view.for_route(catalog.routes[0]).freshness == "unknown"
-        assert refreshes == []
+        assert refreshes == ["claude-p"]
+        # Scheduling a refresh must not itself write anything inline — the
+        # selection/read path stays non-blocking.
         assert not (tmp_path / "usage.json").exists()
 
     def test_auto_routing_uses_fixed_priority_when_usage_unknown(self):

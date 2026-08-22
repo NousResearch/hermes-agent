@@ -1208,7 +1208,11 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
                 result = json.loads(resp.read().decode())
         except Exception as exc:
             last_error = exc
-            logger.debug("Anthropic token refresh failed at %s: %s", endpoint, exc)
+            logger.debug(
+                "Anthropic token refresh failed at %s (%s)",
+                endpoint,
+                type(exc).__name__,
+            )
             continue
 
         access_token = result.get("access_token", "")
@@ -1268,15 +1272,20 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
 
     try:
         refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
-        _write_claude_code_credentials(
+        persisted = _write_claude_code_credentials(
             refreshed["access_token"],
             refreshed["refresh_token"],
             refreshed["expires_at_ms"],
         )
+        if not persisted:
+            logger.debug("Refreshed Claude Code token could not be persisted")
+            return None
         logger.debug("Successfully refreshed Claude Code OAuth token")
         return refreshed["access_token"]
     except Exception as e:
-        logger.debug("Failed to refresh Claude Code token: %s", e)
+        logger.debug(
+            "Failed to refresh Claude Code token (%s)", type(e).__name__
+        )
         return None
 
 
@@ -1286,7 +1295,7 @@ def _write_claude_code_credentials(
     expires_at_ms: int,
     *,
     scopes: Optional[list] = None,
-) -> None:
+) -> bool:
     """Write refreshed credentials back to ~/.claude/.credentials.json.
 
     The optional *scopes* list (e.g. ``["user:inference", "user:profile", ...]``)
@@ -1338,14 +1347,19 @@ def _write_claude_code_credentials(
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(_tmp_cred, cred_path)
+            return True
         except OSError:
             try:
                 _tmp_cred.unlink(missing_ok=True)
             except OSError:
                 pass
             raise
-    except (OSError, IOError) as e:
-        logger.debug("Failed to write refreshed credentials: %s", e)
+    except (OSError, IOError) as exc:
+        logger.debug(
+            "Failed to write refreshed credentials (%s)",
+            type(exc).__name__,
+        )
+        return False
 
 
 def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] = None) -> Optional[str]:
@@ -1479,6 +1493,63 @@ def resolve_anthropic_token() -> Optional[str]:
     resolved_pool_token = _resolve_anthropic_pool_token()
     if resolved_pool_token:
         return resolved_pool_token
+
+    return None
+
+
+def _is_claude_subscription_token(token: str) -> bool:
+    """Return True only for token shapes used by Claude Code subscriptions.
+
+    ``_is_oauth_token`` is intentionally broader because native Anthropic API
+    paths also support managed keys. The ``claude-p`` backend must not accept
+    those API-billed credentials, so its usage resolver uses this narrower
+    predicate.
+    """
+    return token.startswith(("cc-", "eyJ", "sk-ant-oat"))
+
+
+def resolve_claude_subscription_token() -> Optional[str]:
+    """Resolve the Claude Code *subscription* OAuth token used by ``claude -p``.
+
+    Deliberately narrower than :func:`resolve_anthropic_token`: this is used
+    only to read Claude Pro/Max subscription usage on behalf of the
+    ``claude-p`` delegation backend, which must never fall back to API
+    billing. Priority:
+
+      1. Claude Code credentials (macOS Keychain or
+         ``~/.claude/.credentials.json``), refreshed if expired.
+      2. ``CLAUDE_CODE_OAUTH_TOKEN`` env var, but ONLY when its shape is
+         recognized as a Claude Code subscription OAuth token — an
+         unrecognized or ambiguous value is rejected rather than guessed at.
+
+    Never consults ``ANTHROPIC_API_KEY``, ``ANTHROPIC_TOKEN`` (ambiguous —
+    historically used for both OAuth and API-key values), or the shared
+    credential_pool (which can hold API-key entries). Returns ``None`` when
+    no subscription credential is available. The token is returned only to the
+    internal usage client and is never logged or written to the delegation
+    usage cache. Expired JSON-file credentials may be rotated through the
+    existing refresh helper. Expired macOS Keychain credentials are left for
+    Claude Code itself to rotate, avoiding consumption of a single-use refresh
+    token without an atomic Keychain write-back.
+    """
+    creds = read_claude_code_credentials()
+    if creds:
+        if is_claude_code_token_valid(creds):
+            stored = str(creds.get("accessToken") or "").strip()
+            if _is_claude_subscription_token(stored):
+                return stored
+        elif creds.get("source") != "macos_keychain":
+            # Claude Code owns Keychain rotation. Consuming its single-use
+            # refresh token here and writing only the JSON credential file can
+            # invalidate the authoritative Keychain entry. A later CLI run will
+            # refresh it; until then usage remains unknown/stale.
+            refreshed = _refresh_oauth_token(creds)
+            if refreshed and _is_claude_subscription_token(refreshed):
+                return refreshed
+
+    cc_token = _getenv("CLAUDE_CODE_OAUTH_TOKEN").strip()
+    if cc_token and _is_claude_subscription_token(cc_token):
+        return cc_token
 
     return None
 
@@ -1672,15 +1743,19 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
                 break
             except Exception as exc:
                 last_error = exc
-                logger.debug("Anthropic token exchange failed at %s: %s", endpoint, exc)
+                logger.debug(
+                    "Anthropic token exchange failed at %s (%s)",
+                    endpoint,
+                    type(exc).__name__,
+                )
                 continue
 
         if result is None:
             raise last_error if last_error is not None else ValueError(
                 "Anthropic token exchange failed"
             )
-    except Exception as e:
-        print(f"Token exchange failed: {e}")
+    except Exception as exc:
+        print(f"Token exchange failed ({type(exc).__name__}).")
         return None
 
     access_token = result.get("access_token", "")

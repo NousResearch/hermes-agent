@@ -377,6 +377,49 @@ class TestRefreshScheduling:
         cache.refresh_provider_now("openai-codex")  # must not raise
         assert "SECRET" not in json.dumps(cache.read_raw())
 
+    def test_failed_missing_refresh_is_negative_cached_until_ttl(
+        self, cache, monkeypatch
+    ):
+        monkeypatch.setattr(cache, "_fetch_account_usage", lambda _provider: None)
+        cache.refresh_provider_now("openai-codex")
+
+        scheduled = []
+        monkeypatch.setattr(cache, "_spawn_refresh", lambda p: scheduled.append(p))
+        view = cache.build_usage_view(
+            ["openai-codex"], ttl_seconds=300, stale_seconds=1800, refresh=True
+        )
+
+        assert view.entries["openai-codex"].freshness == "unknown"
+        assert view.entries["openai-codex"].age_seconds is not None
+        assert scheduled == []
+        blob = json.dumps(cache.read_raw())
+        assert "refresh_attempted_at" in blob
+
+    def test_failed_stale_refresh_preserves_numbers_and_backs_off(
+        self, cache, monkeypatch
+    ):
+        fetched = datetime.now(timezone.utc) - timedelta(seconds=900)
+        cache.store_snapshot(_snapshot(fetched_at=fetched))
+
+        def _boom(_provider):
+            raise RuntimeError("identity@example.com?token=SECRET")
+
+        monkeypatch.setattr(cache, "_fetch_account_usage", _boom)
+        cache.refresh_provider_now("openai-codex")
+
+        scheduled = []
+        monkeypatch.setattr(cache, "_spawn_refresh", lambda p: scheduled.append(p))
+        view = cache.build_usage_view(
+            ["openai-codex"], ttl_seconds=300, stale_seconds=1800, refresh=True
+        )
+
+        entry = view.entries["openai-codex"]
+        assert entry.freshness == "stale"
+        assert entry.remaining_percent == 60.0
+        assert scheduled == []
+        blob = json.dumps(cache.read_raw())
+        assert "SECRET" not in blob and "identity@example.com" not in blob
+
     def test_refresh_disabled_makes_no_calls(self, cache, monkeypatch):
         scheduled = []
         monkeypatch.setattr(cache, "_spawn_refresh", lambda p: scheduled.append(p))

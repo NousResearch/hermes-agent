@@ -1,6 +1,19 @@
-# Copy the `delegation` block into ~/.hermes/config.yaml when using the
-# feat/delegation-all-routes branch. Unauthenticated/uninstalled providers
-# are excluded before selection; no login or quota probe is triggered here.
+# Copy the `agent.orchestrator_usage_routing` and `delegation` blocks into
+# ~/.hermes/config.yaml when using the feat/delegation-all-routes branch.
+# No login or live quota probe is triggered here.
+agent:
+  orchestrator_usage_routing:
+    enabled: true
+    primary_provider: openai-codex
+    primary_model: gpt-5.6-sol
+    fallback_provider: google-antigravity
+    fallback_model: gemini-3.1-pro-high
+    switch_at_remaining_percent: 10
+    restore_above_remaining_percent: 10
+    usage_ttl_seconds: 900
+    usage_stale_seconds: 7200
+    primary_usage_window_prefixes: [Session, Weekly]
+
 delegation:
   # Legacy fallback when adaptive routing is disabled or routes are removed.
   provider: openai-codex
@@ -8,11 +21,26 @@ delegation:
 
   routing:
     enabled: true
-    usage_ttl_seconds: 300
-    usage_stale_seconds: 1800
+    usage_ttl_seconds: 900
+    usage_stale_seconds: 7200
     unknown_usage: fixed_priority
 
   routes:
+    - id: claude-fable-coding
+      backend: claude-p
+      provider: claude-p
+      model: claude-fable-5
+      model_class: frontier
+      task_difficulties: [complex, frontier]
+      capabilities: [coding, reasoning, tool_use, long_context]
+      tool_profile: coding
+      priority: 8
+      max_turns: 50
+      max_budget_usd: 7
+      timeout_seconds: 1500
+      cooldown_seconds: 180
+      usage_window_prefixes: [Current session, Current week]
+
     - id: codex-native
       backend: native
       provider: openai-codex
@@ -58,6 +86,7 @@ delegation:
       max_budget_usd: 6
       timeout_seconds: 1200
       cooldown_seconds: 120
+      usage_window_prefixes: [Current session, Current week, Opus week]
 
     - id: claude-coding
       backend: claude-p
@@ -72,3 +101,4 @@ delegation:
       max_budget_usd: 5
       timeout_seconds: 1200
       cooldown_seconds: 120
+      usage_window_prefixes: [Current session, Current week, Sonnet week]

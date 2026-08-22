@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
 
-from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
+from agent.anthropic_adapter import (
+    _is_oauth_token,
+    resolve_anthropic_token,
+    resolve_claude_subscription_token,
+)
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -748,17 +752,16 @@ def redeem_codex_reset_credit(
     )
 
 
-def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
-    token = (resolve_anthropic_token() or "").strip()
-    if not token:
-        return None
-    if not _is_oauth_token(token):
-        return AccountUsageSnapshot(
-            provider="anthropic",
-            source="oauth_usage_api",
-            fetched_at=_utc_now(),
-            unavailable_reason="Anthropic account limits are only available for OAuth-backed Claude accounts.",
-        )
+def _fetch_anthropic_oauth_usage_snapshot(
+    token: str, *, provider: str
+) -> Optional[AccountUsageSnapshot]:
+    """Fetch and map the Anthropic OAuth usage endpoint for *provider*.
+
+    Shared by the ``anthropic`` provider (resolver may return an API key —
+    callers check ``_is_oauth_token`` first) and the ``claude-p`` backend
+    (resolver is subscription-only by construction, see
+    :func:`agent.anthropic_adapter.resolve_claude_subscription_token`).
+    """
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
@@ -782,7 +785,12 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         util = window.get("utilization")
         if util is None:
             continue
-        used = float(util) * 100 if float(util) <= 1 else float(util)
+        try:
+            used = float(util)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(used) or not 0.0 <= used <= 100.0:
+            continue
         windows.append(
             AccountUsageWindow(
                 label=label,
@@ -801,12 +809,40 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
                 f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {currency}"
             )
     return AccountUsageSnapshot(
-        provider="anthropic",
+        provider=provider,
         source="oauth_usage_api",
         fetched_at=_utc_now(),
         windows=tuple(windows),
         details=tuple(details),
     )
+
+
+def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
+    token = (resolve_anthropic_token() or "").strip()
+    if not token:
+        return None
+    if not _is_oauth_token(token):
+        return AccountUsageSnapshot(
+            provider="anthropic",
+            source="oauth_usage_api",
+            fetched_at=_utc_now(),
+            unavailable_reason="Anthropic account limits are only available for OAuth-backed Claude accounts.",
+        )
+    return _fetch_anthropic_oauth_usage_snapshot(token, provider="anthropic")
+
+
+def _fetch_claude_p_account_usage() -> Optional[AccountUsageSnapshot]:
+    """Fetch subscription usage for the ``claude-p`` delegation backend.
+
+    Uses the narrow, subscription-only resolver — never
+    ``resolve_anthropic_token`` (which can return an ``ANTHROPIC_API_KEY``).
+    ``claude -p`` execution is subscription-only and must never be reported
+    against API billing.
+    """
+    token = (resolve_claude_subscription_token() or "").strip()
+    if not token:
+        return None
+    return _fetch_anthropic_oauth_usage_snapshot(token, provider="claude-p")
 
 
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
@@ -975,6 +1011,8 @@ def fetch_account_usage(
             return _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
         if normalized == "anthropic":
             return _fetch_anthropic_account_usage()
+        if normalized == "claude-p":
+            return _fetch_claude_p_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
         if normalized in {"google-antigravity", "antigravity", "agy", "google-agy"}:

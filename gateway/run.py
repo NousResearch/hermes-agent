@@ -5519,7 +5519,20 @@ class TurnRunner:
                 log_message="interim_assistant_callback scheduling error",
             )
 
-        turn_route = self._runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+        current_route_agent = self._runner._cached_agent_for_orchestrator_route(
+            ctx.session_key, ctx.session_id
+        )
+        if current_route_agent is None:
+            turn_route = self._runner._resolve_turn_agent_config(
+                ctx.message, model, runtime_kwargs
+            )
+        else:
+            turn_route = self._runner._resolve_turn_agent_config(
+                ctx.message,
+                model,
+                runtime_kwargs,
+                current_agent=current_route_agent,
+            )
 
         # Per-platform skip_context_files — messaging platforms can opt out
         # of filesystem-heavy context-file discovery (SOUL.md, AGENTS.md,
@@ -6575,6 +6588,12 @@ class TurnRunner:
                         exc_info=True,
                     )
             if _session_split_entry_persisted:
+                self._runner._rotate_cached_agent_session_id(
+                    ctx.session_key,
+                    ctx.session_id,
+                    agent_session_id,
+                    agent,
+                )
                 self._runner._sync_telegram_topic_binding(
                     ctx.source, entry, reason="agent-run-compression",
                 )
@@ -8193,7 +8212,69 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _cached_agent_for_orchestrator_route(
+        self, session_key: Optional[str], session_id: Optional[str]
+    ) -> Any:
+        """Return this session's cached agent without leaking across sessions."""
+        if not session_key:
+            return None
+        cache_lock = getattr(self, "_agent_cache_lock", None)
+        cache = getattr(self, "_agent_cache", None)
+        if cache_lock is None or cache is None:
+            return None
+        with cache_lock:
+            cached = cache.get(session_key)
+        if not cached:
+            return None
+        cached_session_id = cached[3] if len(cached) > 3 else None
+        if cached_session_id != session_id:
+            return None
+        return cached[0]
+
+    def _rotate_cached_agent_session_id(
+        self,
+        session_key: Optional[str],
+        expected_old_session_id: Optional[str],
+        new_session_id: Optional[str],
+        agent: Any,
+    ) -> bool:
+        """Move one live cached agent to its compression child session.
+
+        The agent identity and old session ID must both match, so a stale run
+        cannot retag a replacement agent or a different conversation sharing
+        the same gateway session key.
+        """
+        if not session_key or not expected_old_session_id or not new_session_id:
+            return False
+        cache_lock = getattr(self, "_agent_cache_lock", None)
+        cache = getattr(self, "_agent_cache", None)
+        if cache_lock is None or cache is None:
+            return False
+        with cache_lock:
+            cached = cache.get(session_key)
+            if (
+                not isinstance(cached, tuple)
+                or len(cached) < 4
+                or cached[0] is not agent
+                or cached[3] != expected_old_session_id
+            ):
+                return False
+            cache[session_key] = (
+                cached[0],
+                cached[1],
+                cached[2],
+                new_session_id,
+            )
+        return True
+
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        *,
+        current_agent: Any = None,
+    ) -> dict:
         """Build the effective model/runtime config for a single turn.
 
         Always uses the session's primary model/provider.  If `/fast` is
@@ -8213,7 +8294,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
+            "provider_project_id": runtime_kwargs.get("provider_project_id"),
         }
+        apply_routing = getattr(self, "_apply_orchestrator_usage_routing", None)
+        if callable(apply_routing):
+            model, runtime = apply_routing(
+                model, runtime, current_agent=current_agent
+            )
         route = {
             "model": model,
             "runtime": runtime,
@@ -8225,6 +8312,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                runtime.get("provider_project_id"),
             ),
         }
 
@@ -8239,6 +8327,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             overrides = None
         route["request_overrides"] = overrides or {}
         return route
+
+    def _apply_orchestrator_usage_routing(
+        self, model: str, runtime: dict, *, current_agent: Any = None
+    ) -> tuple[str, dict]:
+        """Apply cached usage routing at the safe pre-turn boundary."""
+        from agent.orchestrator_usage_runtime import (
+            apply_orchestrator_usage_routing,
+        )
+
+        if current_agent is None:
+            return apply_orchestrator_usage_routing(model=model, runtime=runtime)
+
+        current_provider = (
+            getattr(current_agent, "provider", None) or runtime.get("provider")
+        )
+        current_runtime = {
+            "api_key": getattr(current_agent, "api_key", None),
+            "base_url": getattr(current_agent, "base_url", None),
+            "provider": current_provider,
+            "requested_provider": getattr(
+                current_agent, "requested_provider", current_provider
+            ),
+            "api_mode": getattr(current_agent, "api_mode", None),
+            "command": getattr(current_agent, "acp_command", None),
+            "args": list(getattr(current_agent, "acp_args", None) or []),
+            "credential_pool": getattr(current_agent, "_credential_pool", None),
+            "provider_project_id": getattr(
+                current_agent,
+                "provider_project_id",
+                runtime.get("provider_project_id"),
+            ),
+            "max_tokens": getattr(
+                current_agent, "max_tokens", runtime.get("max_tokens")
+            ),
+        }
+        return apply_orchestrator_usage_routing(
+            model=model,
+            runtime=runtime,
+            current_model=getattr(current_agent, "model", None) or model,
+            current_runtime=current_runtime,
+        )
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
         """Persist the runtime model/provider actually used by a gateway turn.
@@ -26235,6 +26364,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime.get("provider", ""),
                 runtime.get("requested_provider", ""),
                 runtime.get("api_mode", ""),
+                runtime.get("provider_project_id", ""),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.

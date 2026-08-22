@@ -107,3 +107,31 @@ class TestFindFreeDebugPort:
             pytest.skip("successor port unavailable to bind in this environment")
         finally:
             blocker.close()
+
+    def test_ipv4_only_host_skips_occupied_successor(self, monkeypatch):
+        """Unavailable IPv6 must not force the occupied fallback port."""
+        import hermes_cli.browser_connect as bc
+
+        class _Socket:
+            def __init__(self, family, _socktype):
+                self.family = family
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def setsockopt(self, *_args):
+                return None
+
+            def bind(self, address):
+                _host, port = address
+                if self.family == socket.AF_INET6:
+                    raise OSError("IPv6 loopback is unavailable")
+                if port == 20001:
+                    raise OSError("IPv4 successor is occupied")
+
+        monkeypatch.setattr(socket, "socket", _Socket)
+
+        assert bc.find_free_debug_port(preferred=20000, attempts=3) == 20002

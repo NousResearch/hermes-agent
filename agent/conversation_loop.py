@@ -1763,6 +1763,79 @@ def _notify_context_engine_turn_complete(
         )
 
 
+#: Config key controlling the turn-boundary transcript checkpoint, in API
+#: calls. 0 disables it.
+_TRANSCRIPT_CHECKPOINT_KEY = "transcript_checkpoint_every"
+_TRANSCRIPT_CHECKPOINT_DEFAULT = 10
+
+
+def _transcript_checkpoint_interval(agent: Any) -> int:
+    """Resolve ``agent.transcript_checkpoint_every``, cached on the agent.
+
+    Read once per agent rather than per turn: this sits in the hot loop and
+    ``load_config`` is not free.
+    """
+    cached = getattr(agent, "_transcript_checkpoint_every", None)
+    if cached is not None:
+        return cached
+    interval = _TRANSCRIPT_CHECKPOINT_DEFAULT
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        agent_cfg = load_config_readonly().get("agent") or {}
+        raw = agent_cfg.get(_TRANSCRIPT_CHECKPOINT_KEY)
+        if raw is not None:
+            interval = max(0, int(raw))
+    except Exception:
+        # A malformed or unreadable config must not stop the conversation;
+        # fall back to the default rather than disabling protection silently.
+        logger.debug("transcript checkpoint: config unreadable, using default")
+    agent._transcript_checkpoint_every = interval
+    return interval
+
+
+def _write_transcript_checkpoint(agent: Any, messages: List[Dict[str, Any]],
+                                 api_call_count: int) -> None:
+    """Persist the live transcript so an abrupt exit does not lose it.
+
+    Hermes serializes ``messages`` only at clean session end, so SIGTERM,
+    SIGKILL, OOM or node loss export ``messages: []`` while ``api_call_count``
+    still records every request served. A signal handler cannot close that gap:
+    SIGKILL is uncatchable and OOM leaves no chance to run cleanup. A turn
+    boundary is the one place a checkpoint survives every termination mode.
+
+    Written to a temporary file and moved into place, so a termination during
+    the write leaves the previous checkpoint intact instead of truncated JSON.
+    One file per session, latest state wins, so disk stays bounded.
+    """
+    session_id = getattr(agent, "session_id", None)
+    if not session_id:
+        return
+    try:
+        from hermes_constants import get_hermes_home
+
+        dest_dir = get_hermes_home() / "transcripts"
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, f"transcript_{session_id}.json")
+        tmp = dest + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "session_id": str(session_id),
+                    "api_call_count": api_call_count,
+                    "message_count": len(messages),
+                    "messages": messages,
+                },
+                fh,
+            )
+        os.replace(tmp, dest)
+    except Exception as exc:
+        # Never let checkpointing break a conversation, but never fail
+        # silently either: a checkpoint that is quietly not being written
+        # produces a corpus that looks protected and is not.
+        logger.warning("transcript checkpoint failed: %s", exc)
+
+
 def run_conversation(
     agent,
     user_message: Any,
@@ -1981,6 +2054,10 @@ def run_conversation(
         api_call_count += 1
         agent._api_call_count = api_call_count
         agent._touch_activity(f"starting API call #{api_call_count}")
+
+        _ckpt_every = _transcript_checkpoint_interval(agent)
+        if _ckpt_every and api_call_count % _ckpt_every == 0:
+            _write_transcript_checkpoint(agent, messages, api_call_count)
 
         # Grace call: the budget is exhausted but we gave the model one
         # more chance.  Consume the grace flag so the loop exits after

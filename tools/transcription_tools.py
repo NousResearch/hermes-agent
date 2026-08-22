@@ -1133,9 +1133,7 @@ def _get_provider(stt_config: dict) -> str:
     #     local > groq > openai > mistral > xai > elevenlabs > deepinfra ---
     # DeepInfra is tried LAST so adding DEEPINFRA_API_KEY (commonly set for the
     # chat surface) never silently displaces an existing xAI/ElevenLabs STT
-    # auto-selection; a DeepInfra-only box still resolves to it. mistral is
-    # intentionally skipped while `mistralai` is quarantined on PyPI (malicious
-    # 2.4.6 release on 2026-05-12).
+    # auto-selection; a DeepInfra-only box still resolves to it.
 
     if _HAS_FASTER_WHISPER:
         return "local"

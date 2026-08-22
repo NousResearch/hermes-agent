@@ -5113,16 +5113,31 @@ class PluginManager:
         Returns a list of non-``None`` return values from callbacks.
 
         For ``pre_llm_call``, callbacks may return a dict describing
-        context to inject into the current turn's user message::
+        context to inject into the current turn's user message, and may
+        optionally also request a per-turn answerer-model route:::
 
             {"context": "recalled text..."}
             "recalled text..."          # plain string, equivalent
+            {"model": "claude-sonnet-4.6", "provider": "anthropic"}
+            {"context": "...", "model": "...", "provider": "..."}
 
         Context is ALWAYS injected into the user message, never the
         system prompt.  This preserves the prompt cache prefix — the
         system prompt stays identical across turns so cached tokens
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
+
+        When a callback includes a non-empty ``"model"`` key, the
+        answerer model is swapped for this turn only (plugin model
+        routing, see :func:`agent.turn_context.apply_plugin_routed_model`).
+        The optional ``"provider"`` key selects the target provider;
+        if it differs from the current provider, the provider's own
+        credentials are resolved through the same path the ``/model``
+        command uses (never paired with the old host's endpoint).  The
+        first callback in plugin order that carries a ``"model"`` key
+        wins; later routing requests are ignored.  If the requested
+        model already equals the current one, or resolution fails, the
+        agent keeps its current model — routing never throws.
         """
         # Most legacy observer hooks carry the shared telemetry marker. Gateway
         # platform events define event-local additive envelopes instead: injecting

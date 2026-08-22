@@ -968,6 +968,20 @@ return None
 
 Any non-None, non-empty return with a `"context"` key (or a plain non-empty string) is collected and appended to the user message for the current turn.
 
+#### Per-turn model routing
+
+A `pre_llm_call` callback may *also* request a per-turn swap of the **answerer model** by returning a `"model"` key (optionally with `"provider"`), in addition to or instead of `"context"`:
+
+```python
+# Route this turn to a smarter model on the current provider
+return {"context": "...", "model": "claude-sonnet-4.6"}
+
+# Select a different provider (its creds are resolved, not inherited)
+return {"model": "claude-sonnet-4.6", "provider": "anthropic"}
+```
+
+This lets an intent-router plugin send temporal/multi-hop questions ("when did I…", "how many days since…") to a stronger model and everything else to a cheaper default, without touching the gateway. Routing policy: the first callback in plugin order with a `"model"` key wins; a `"provider"` that differs from the current one resolves that provider's own `base_url`/`api_key`/`api_mode` through the same resolver the `/model` command uses (never paired with the old host's endpoint); a `"model"` equal to the current one (case-insensitive) is a no-op; a failed resolution fails open — the agent keeps its current model and the turn proceeds normally. See [Hooks → `pre_llm_call`](/user-guide/features/hooks#pre_llm_call) for the full reference.
+
 #### Oversized-context spill
 
 Per-hook context is capped at `10,000` characters by default. Anything above the cap is written to `$HERMES_HOME/hook_outputs/<session_id>/<uuid>.txt` and replaced with a head/tail preview plus the saved path. The model can read the full content via `read_file` or `terminal` if it genuinely needs it. This keeps a runaway plugin from inflating every subsequent turn's prompt and blowing out the prompt cache prefix. Tune in `config.yaml`:

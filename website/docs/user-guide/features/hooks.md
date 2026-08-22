@@ -688,6 +688,18 @@ return "Recalled memories:\n- User likes Python"
 return None
 ```
 
+**Per-turn model routing:** A callback that returns a dict with a non-empty `"model"` key additionally swaps the **answerer model for this turn only** — e.g. an intent-router plugin that sends temporal/multi-hop questions ("when did I…", "how many days since…") to a stronger model and everything else to a cheaper default:
+
+```python
+# Route this turn to a smarter model on the current provider
+return {"context": "...", "model": "claude-sonnet-4.6"}
+
+# Also select the target provider (resolved creds, like /model)
+return {"model": "claude-sonnet-4.6", "provider": "anthropic"}
+```
+
+Rules: the first callback in plugin order that returns a `"model"` key wins (later routing requests are ignored); a `"provider"` that differs from the current one resolves that provider's own `base_url`/`api_key`/`api_mode` through the same resolver the `/model` command uses (never paired with the old host's endpoint); a `"model"` equal to the current one (case-insensitive) is a no-op; and a failed resolution fails open — the agent keeps its current model and the turn proceeds normally.
+
 **Where context is injected:** Always the **user message**, never the system prompt. This preserves the prompt cache — the system prompt stays identical across turns, so cached tokens are reused. The system prompt is Hermes's territory (model guidance, tool enforcement, personality, skills). Plugins contribute context alongside the user's input.
 
 The clean user-message `content` remains unchanged. For replay and prompt-cache stability, Hermes may persist the exact API-bound message, including plugin-injected context, in the row's `api_content` sidecar.

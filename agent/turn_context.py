@@ -29,7 +29,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE,
@@ -426,6 +426,110 @@ class TurnContext:
     ext_prefetch_cache: str = ""
     # Turn-start preflight already proved an immediate retry ineffective.
     preflight_compression_blocked: bool = False
+
+
+def apply_plugin_routed_model(agent: Any, pre_results: Sequence[Any]) -> None:
+    """Apply a per-turn answerer-model route requested by pre_llm_call hooks.
+
+    Any ``pre_llm_call`` hook may optionally return a dict containing
+    ``{"model": ...., "provider": ....}`` (in addition to or instead of
+    ``"context"``).  This lets an intent-router plugin swap the answerer
+    model for a single turn — e.g. route temporal/multi-hop questions
+    ("when did I…", "how many days since…") to a stronger model and
+    everything else to a cheaper default — without touching the gateway.
+
+    Routing policy:
+
+    * **First match wins** — hooks are consulted in order and the first
+      dict that carries a non-empty ````model```` key is applied; later
+      hooks are ignored.
+    * **No-op on same model** — if the requested model equals the agent's
+      current one (compared case-insensitively), nothing happens, avoiding
+      a pointless client-rebuild on every non-routed turn.
+    * **Same-provider swap** — when the hook's ``provider`` matches the
+      agent's current provider (or is omitted), the route applies directly
+      using the current base_url/api_key/api_mode.
+    * **Provider change (#47828)** — when the hook routes to a different
+      provider, the resolved ``base_url``/``api_key``/``api_mode`` for the
+      *target* provider must be used (resolved through the same
+      :func:`hermes_cli.model_switch.switch_model` resolver the ``/model``
+      command uses), not the current provider's endpoint.  Passing the old
+      host pairs the new provider label with the wrong base_url and every
+      request 400s.
+    * **Fail open** — any resolve/switch error is logged and swallowed so a
+      broken router can never kill a turn; the agent keeps its current model.
+
+    This function is pure side-effect on ``agent``; it never returns a value.
+    """
+    _routed_model = ""
+    _routed_provider = ""
+    for r in pre_results:
+        if isinstance(r, dict) and r.get("model"):
+            _routed_model = str(r["model"]).strip()
+            _routed_provider = str(r.get("provider") or "").strip() or ""
+            break
+    if not _routed_model:
+        return
+    _cur_model = getattr(agent, "model", "") or ""
+    if _routed_model.lower() != _cur_model.lower():
+        _cur_provider = getattr(agent, "provider", "") or ""
+        _provider_changed = bool(_routed_provider) and (
+            _routed_provider.strip().lower() != _cur_provider.strip().lower()
+        )
+        try:
+            if _provider_changed:
+                from hermes_cli.model_switch import switch_model as _resolve_switch
+                from hermes_cli.config import load_config as _load_cfg
+                from hermes_cli.config import get_compatible_custom_providers as _compat_provs
+
+                _cfg = _load_cfg()
+                _res = _resolve_switch(
+                    raw_input=_routed_model,
+                    current_provider=_cur_provider,
+                    current_model=_cur_model,
+                    current_base_url=getattr(agent, "base_url", "") or "",
+                    current_api_key=getattr(agent, "api_key", "") or "",
+                    is_global=False,
+                    explicit_provider=_routed_provider,
+                    user_providers=_cfg.get("providers"),
+                    custom_providers=_compat_provs(_cfg),
+                )
+                if _res is None or not getattr(_res, "success", False):
+                    logger.warning(
+                        "pre_llm_call route resolve failed for %s/%s: %s",
+                        _routed_model, _routed_provider,
+                        getattr(_res, "error_message", "unknown error"),
+                    )
+                    _res = None
+                if _res is not None:
+                    agent.switch_model(
+                        _res.new_model or _routed_model,
+                        _res.target_provider or _routed_provider,
+                        api_key=_res.api_key,
+                        base_url=_res.base_url,
+                        api_mode=_res.api_mode,
+                    )
+                    logger.info(
+                        "pre_llm_call routed answerer to model=%s provider=%s (was %s; provider change)",
+                        _res.new_model or _routed_model,
+                        _res.target_provider or _routed_provider,
+                        _cur_model or "?",
+                    )
+            else:
+                agent.switch_model(
+                    _routed_model,
+                    _routed_provider or _cur_provider,
+                    api_key=getattr(agent, "api_key", "") or "",
+                    base_url=getattr(agent, "base_url", "") or "",
+                    api_mode=getattr(agent, "api_mode", "") or "",
+                )
+                logger.info(
+                    "pre_llm_call routed answerer to model=%s provider=%s (was %s; same provider)",
+                    _routed_model, _routed_provider or _cur_provider,
+                    _cur_model or "?",
+                )
+        except Exception as _route_exc:
+            logger.warning("pre_llm_call model route failed: %s", _route_exc)
 
 
 def build_turn_context(
@@ -1290,6 +1394,13 @@ def build_turn_context(
                 except Exception as _spill_exc:
                     logger.warning("hook context spill failed: %s", _spill_exc)
             _ctx_parts.append(_piece)
+
+        # Plugin-routed answerer model: any pre_llm_call hook may optionally
+        # return {"model": "...", "provider": "..."} (in addition to or instead
+        # of "context"), allowing an intent-router plugin to swap the answerer
+        # model per turn without touching the gateway.  See
+        # apply_plugin_routed_model() for the routing policy.
+        apply_plugin_routed_model(agent, _pre_results)
         if _ctx_parts:
             plugin_user_context = "\n\n".join(_ctx_parts)
     except Exception as exc:

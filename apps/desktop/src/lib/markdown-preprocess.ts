@@ -48,6 +48,27 @@ const RAW_URL_RE = /https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?]/g
 const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?[^\s<>"'`]*/gi
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
+// Autolink-shaped spans (bare or angle-bracketed http(s) URLs) that must be
+// skipped by lone-tilde escaping: `~` is legal in URL paths and must survive.
+const URL_LIKE_SPLIT_RE = /(<https?:\/\/[^>\s]+>|https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?])/g
+// A `~` that is neither part of `~~~` fence, part of `~~` strikethrough, nor
+// an already-escaped `\~`. Escaping it with `\~` makes `marked` render a
+// literal tilde, so CJK ranges (`1~10`) and approximation prefixes (`~¥0.089`)
+// no longer pair up into a GFM strikethrough span.
+const LONE_TILDE_RE = /(?<![\\~])~(?!~)/g
+// HTML-shaped prose tokens (`<tool_call>`, `<observation>`...) that are NOT
+// real inline elements get swallowed by the HTML-aware renderer (parse5 sees
+// an unclosed tag and consumes the rest of the message). Match unknown tag-like
+// runs and escape them to entities; known safe tags pass through untouched.
+const HTML_TAG_RE = /<\/?([A-Za-z][A-Za-z0-9:_-]*)(?:\s+[^<>]*?)?\/?>/g
+
+const SAFE_HTML_TAG_NAMES = new Set([
+  'a', 'abbr', 'b', 'blockquote', 'br', 'cite', 'code', 'data', 'del', 'details',
+  'div', 'em', 'figcaption', 'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr',
+  'i', 'img', 'ins', 'kbd', 'li', 'mark', 'ol', 'p', 'pre', 'q', 'rp', 'rt',
+  'ruby', 's', 'samp', 'small', 'span', 'strong', 'sub', 'summary', 'sup', 'table',
+  'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul', 'var', 'wbr'
+])
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
@@ -173,6 +194,23 @@ function autoLinkRawUrls(text: string): string {
   })
 }
 
+function escapeLoneTildes(text: string): string {
+  return text
+    .split(URL_LIKE_SPLIT_RE)
+    .map(part => (/^<?https?:\/\//i.test(part) ? part : part.replace(LONE_TILDE_RE, '\\~')))
+    .join('')
+}
+
+function escapeUnknownHtmlLikeTags(text: string): string {
+  return text.replace(HTML_TAG_RE, (tag: string, name: string) => {
+    if (SAFE_HTML_TAG_NAMES.has(name.toLowerCase())) {
+      return tag
+    }
+
+    return tag.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  })
+}
+
 // Rewrite filesystem-path links to the renderer's hash-href door (#82140).
 // A plain path/file: href names a file on the AGENT's machine: Streamdown's
 // URL hardening blocks `file:`/`~/` outright, and an absolute path renders
@@ -195,9 +233,13 @@ function routeFileLinksToPreview(text: string): string {
 
 function rewriteProseSegment(segment: string): string {
   return linkifySessionRefs(
-    autoLinkRawUrls(
-      routeFileLinksToPreview(
-        segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+    escapeLoneTildes(
+      autoLinkRawUrls(
+        routeFileLinksToPreview(
+          escapeUnknownHtmlLikeTags(
+            segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+          )
+        )
       )
     )
   )

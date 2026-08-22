@@ -59,14 +59,18 @@ def _recv_until(conn, frame_type: str, *, status: str | None = None) -> dict:
 
 
 def test_console_ws_rejects_missing_or_bad_token(console_client):
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with console_client.websocket_connect("/api/console"):
-            pass
+    # Since #88607 the rejection completes the handshake first
+    # (accept-then-close) so real clients see the 44xx code; under
+    # TestClient the disconnect therefore surfaces on receive, not on
+    # connect.
+    with console_client.websocket_connect("/api/console") as sock:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            sock.receive_text()
     assert exc.value.code == 4401
 
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with console_client.websocket_connect(_url(token="wrong")):
-            pass
+    with console_client.websocket_connect(_url(token="wrong")) as sock:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            sock.receive_text()
     assert exc.value.code == 4401
 
 

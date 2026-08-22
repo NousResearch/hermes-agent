@@ -5353,10 +5353,10 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                chunked API — the client uses the POST endpoint instead.
     """
     if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
+        await _ws_reject(ws, 4401)
         return
     if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
     await ws.accept()
 
@@ -16412,6 +16412,20 @@ def _forget_active_session_file(path: Path) -> None:
         pass
 
 
+async def _ws_reject(ws, code: int, reason: Optional[str] = None) -> None:
+    """Complete the handshake, then close with the rejection code+reason.
+
+    uvicorn answers a pre-accept ``ws.close`` with a bare HTTP 403 — no close
+    frame — so a real browser sees ``1006``/empty and every 44xx-keyed client
+    path (auth-failed banner, reconnect-stop, host-mismatch notice) never
+    fires. Accepting first makes uvicorn deliver the code+reason (#88607).
+    Starlette's TestClient surfaces both shapes as WebSocketDisconnect(code),
+    which is why the old form passed tests while failing in production.
+    """
+    await ws.accept()
+    await ws.close(code=code, reason=reason)
+
+
 def _ws_close_reason(text: str) -> str:
     """Clamp a WS close reason to the protocol's 123-byte UTF-8 limit.
 
@@ -16646,7 +16660,7 @@ async def console_ws(ws: WebSocket) -> None:
 
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         _log.info("console refused: embedded chat disabled peer=%s", peer)
-        await ws.close(code=4404, reason="embedded chat disabled")
+        await _ws_reject(ws, 4404, "embedded chat disabled")
         return
 
     auth_reason, cred = _ws_auth_reason(ws)
@@ -16656,19 +16670,19 @@ async def console_ws(ws: WebSocket) -> None:
             "console auth rejected reason=%s mode=%s cred=%s peer=%s",
             auth_reason, mode, cred, peer,
         )
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
+        await _ws_reject(ws, 4401, _ws_close_reason(f"auth: {auth_reason}"))
         return
 
     host_origin_reason = _ws_host_origin_reason(ws)
     if host_origin_reason is not None:
         _log.warning("console refused: %s peer=%s", host_origin_reason, peer)
-        await ws.close(code=4403, reason=_ws_close_reason(host_origin_reason))
+        await _ws_reject(ws, 4403, _ws_close_reason(host_origin_reason))
         return
 
     client_reason = _ws_client_reason(ws)
     if client_reason is not None:
         _log.warning("console refused: %s", client_reason)
-        await ws.close(code=4408, reason=_ws_close_reason(client_reason))
+        await _ws_reject(ws, 4408, _ws_close_reason(client_reason))
         return
 
     await ws.accept()
@@ -16692,7 +16706,7 @@ async def console_ws(ws: WebSocket) -> None:
                 "prompt": "",
             },
         )
-        await ws.close(code=4400, reason=_ws_close_reason(str(exc.detail)))
+        await _ws_reject(ws, 4400, _ws_close_reason(str(exc.detail)))
         return
     except Exception as exc:
         _log.exception("console failed to initialize")
@@ -16996,7 +17010,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         _log.info("pty refused: embedded chat disabled peer=%s", peer)
-        await ws.close(code=4404, reason="embedded chat disabled")
+        await _ws_reject(ws, 4404, "embedded chat disabled")
         return
 
     # --- auth + host/origin/peer check (before accept so we can close
@@ -17012,19 +17026,19 @@ async def pty_ws(ws: WebSocket) -> None:
             "pty auth rejected reason=%s mode=%s cred=%s peer=%s",
             auth_reason, mode, cred, peer,
         )
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
+        await _ws_reject(ws, 4401, _ws_close_reason(f"auth: {auth_reason}"))
         return
 
     host_origin_reason = _ws_host_origin_reason(ws)
     if host_origin_reason is not None:
         _log.warning("pty refused: %s peer=%s", host_origin_reason, peer)
-        await ws.close(code=4403, reason=_ws_close_reason(host_origin_reason))
+        await _ws_reject(ws, 4403, _ws_close_reason(host_origin_reason))
         return
 
     client_reason = _ws_client_reason(ws)
     if client_reason is not None:
         _log.warning("pty refused: %s", client_reason)
-        await ws.close(code=4408, reason=_ws_close_reason(client_reason))
+        await _ws_reject(ws, 4408, _ws_close_reason(client_reason))
         return
 
     await ws.accept()
@@ -17183,15 +17197,15 @@ async def pty_ws(ws: WebSocket) -> None:
 @app.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
 
     if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
+        await _ws_reject(ws, 4401)
         return
 
     if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
 
     from tui_gateway.ws import handle_ws
@@ -17222,20 +17236,20 @@ async def gateway_ws(ws: WebSocket) -> None:
 @app.websocket("/api/pub")
 async def pub_ws(ws: WebSocket) -> None:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
 
     if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
+        await _ws_reject(ws, 4401)
         return
 
     if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
 
     channel = _channel_or_close_code(ws)
     if not channel:
-        await ws.close(code=4400)
+        await _ws_reject(ws, 4400)
         return
 
     await ws.accept()
@@ -17250,20 +17264,20 @@ async def pub_ws(ws: WebSocket) -> None:
 @app.websocket("/api/events")
 async def events_ws(ws: WebSocket) -> None:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
 
     if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
+        await _ws_reject(ws, 4401)
         return
 
     if not _ws_request_is_allowed(ws):
-        await ws.close(code=4403)
+        await _ws_reject(ws, 4403)
         return
 
     channel = _channel_or_close_code(ws)
     if not channel:
-        await ws.close(code=4400)
+        await _ws_reject(ws, 4400)
         return
 
     await ws.accept()

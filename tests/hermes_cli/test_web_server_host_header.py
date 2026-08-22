@@ -106,15 +106,19 @@ class TestWebSocketHostOriginGuard:
 
         client = TestClient(ws.app)
         url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
-        with pytest.raises(WebSocketDisconnect) as exc:
-            with client.websocket_connect(
-                url,
-                headers={
-                    "Host": "evil.example",
-                    "Origin": "http://evil.example",
-                },
-            ):
-                pass
+        # Since #88607 the rejection completes the handshake first
+        # (accept-then-close) so real clients see the 44xx code; under
+        # TestClient the disconnect therefore surfaces on receive, not on
+        # connect.
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "evil.example",
+                "Origin": "http://evil.example",
+            },
+        ) as sock:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                sock.receive_text()
 
         assert exc.value.code == 4403
 

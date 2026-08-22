@@ -67,6 +67,18 @@ describe("shouldRetryEventsClose", () => {
     expect(shouldRetryEventsClose(4403)).toBe(false);
   });
 
+  it("treats the whole 4400-4499 application range as terminal (#88607)", () => {
+    // A bad-channel/keyed rejection (4400) and a disabled feed (4404) never
+    // get better by reconnecting — and each retry burns a ticket.
+    expect(shouldRetryEventsClose(4400)).toBe(false);
+    expect(shouldRetryEventsClose(4404)).toBe(false);
+    expect(shouldRetryEventsClose(4449)).toBe(false);
+    expect(isEventsAuthRejection(4400)).toBe(true);
+    expect(isEventsAuthRejection(4404)).toBe(true);
+    // 4500 is outside the application range: still retryable.
+    expect(shouldRetryEventsClose(4500)).toBe(true);
+  });
+
   it("retries when the code is missing", () => {
     expect(shouldRetryEventsClose(undefined)).toBe(true);
   });

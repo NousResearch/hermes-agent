@@ -14,8 +14,17 @@ export const EVENTS_CONNECT_TIMEOUT_MS = 15_000;
 
 /** Normal closure — the server said goodbye, don't chase it. */
 const WS_CLOSE_NORMAL = 1000;
-/** Ticket rejected / forbidden: retrying just burns tickets, user must reload. */
-const WS_CLOSE_AUTH_CODES = new Set([4401, 4403]);
+/**
+ * Ticket rejected / forbidden: retrying just burns tickets, user must reload.
+ * The whole 4400-4499 application range is terminal, not just auth: 4400 is
+ * a bad-channel/keyed rejection and 4404 means the feed is disabled — none
+ * of them get better by reconnecting (#88607).
+ */
+const WS_CLOSE_TERMINAL_RANGE = [4400, 4499];
+
+function isTerminalCloseCode(code: number): boolean {
+  return code >= WS_CLOSE_TERMINAL_RANGE[0] && code <= WS_CLOSE_TERMINAL_RANGE[1];
+}
 
 /**
  * Exponential backoff, 1s → 2s → 4s → … → 30s cap.
@@ -36,20 +45,21 @@ export function eventsReconnectDelayMs(attempt: number): number {
 /**
  * Whether a close code should trigger a retry.
  *
- * Auth rejections are terminal (the banner tells the user to reload) and a
- * normal 1000 close is intentional. Everything else — gateway restart,
- * network drop, 1005/1006, proxy timeout — is worth retrying.
+ * Application rejections (4400-4499) are terminal — the banner tells the
+ * user to reload — and a normal 1000 close is intentional. Everything else
+ * — gateway restart, network drop, 1005/1006, proxy timeout — is worth
+ * retrying.
  */
 export function shouldRetryEventsClose(code: number | undefined): boolean {
   if (code === undefined) {
     return true;
   }
 
-  return code !== WS_CLOSE_NORMAL && !WS_CLOSE_AUTH_CODES.has(code);
+  return code !== WS_CLOSE_NORMAL && !isTerminalCloseCode(code);
 }
 
 export function isEventsAuthRejection(code: number | undefined): boolean {
-  return code !== undefined && WS_CLOSE_AUTH_CODES.has(code);
+  return code !== undefined && isTerminalCloseCode(code);
 }
 
 // The sidebar's banner is shared with `info.credential_warning` and with the

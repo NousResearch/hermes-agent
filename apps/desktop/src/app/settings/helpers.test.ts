@@ -5,6 +5,7 @@ import type { HermesConfigRecord } from '@/types/hermes'
 import { FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
+  buildSparseRecord,
   clearsEnabledToolsets,
   enumOptionsFor,
   getNested,
@@ -403,5 +404,50 @@ describe('settings helpers', () => {
 
       expect(clearsEnabledToolsets(prev, next)).toBe(false)
     })
+  })
+})
+
+describe('buildSparseRecord', () => {
+  // #89184 residual: the config page seeds its draft ONCE and autosaved the
+  // WHOLE record — any key changed elsewhere while the page sat open (composer
+  // /model, Model page Apply, CLI) was stale in the draft and got re-asserted,
+  // reverting the newer change. The sparse payload contains ONLY session-edited
+  // paths, so unedited staleness can never ride a save.
+
+  it('contains only the edited paths at their nested positions', () => {
+    const config: HermesConfigRecord = {
+      model: 'stale/model-a',
+      display: { personality: 'fresh', show_reasoning: true },
+      agent: { max_turns: 500 }
+    }
+
+    const sparse = buildSparseRecord(config, ['display.personality'])
+
+    expect(sparse).toEqual({ display: { personality: 'fresh' } })
+    // The stale flattened model — the revert vector — is absent by construction.
+    expect('model' in sparse).toBe(false)
+    expect('agent' in sparse).toBe(false)
+  })
+
+  it('bundles model_context_length whenever model is edited (backend pair)', () => {
+    const config: HermesConfigRecord = { model: 'x/y', model_context_length: 32000 }
+
+    const sparse = buildSparseRecord(config, ['model'])
+
+    expect(sparse).toEqual({ model: 'x/y', model_context_length: 32000 })
+  })
+
+  it('skips undefined values and deep-copies edited subtrees', () => {
+    const config: HermesConfigRecord = { toolsets: ['memory', 'terminal'] }
+
+    const sparse = buildSparseRecord(config, ['toolsets', 'missing.path'])
+
+    expect(sparse).toEqual({ toolsets: ['memory', 'terminal'] })
+    ;(sparse.toolsets as string[]).push('mutated')
+    expect((config.toolsets as string[]).length).toBe(2)
+  })
+
+  it('returns an empty record when nothing was edited', () => {
+    expect(buildSparseRecord({ model: 'a' }, [])).toEqual({})
   })
 })

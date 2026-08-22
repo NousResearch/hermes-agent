@@ -200,6 +200,51 @@ export function setNested(obj: HermesConfigRecord, path: string, value: unknown)
   return clone
 }
 
+/** Build the sparse autosave payload: only the schema paths in `keys`, each
+ *  copied from `config` at its full nested position. The backend deep-merges
+ *  PUT /api/config, so a payload that omits everything the user did NOT edit
+ *  is the whole fix for the stale-draft revert class (#89184 residual): keys
+ *  changed elsewhere while the page sat open simply never appear.
+ *  `model_context_length` rides along whenever `model` is edited — the
+ *  backend's denormalizer treats the pair as one field. */
+export function buildSparseRecord(config: HermesConfigRecord, keys: string[]): HermesConfigRecord {
+  const sparse: HermesConfigRecord = {}
+  const expanded = new Set(keys)
+
+  if (expanded.has('model')) {
+    expanded.add('model_context_length')
+  }
+
+  for (const key of expanded) {
+    const value = getNested(config, key)
+
+    if (value === undefined) {
+      continue
+    }
+
+    const parts = configPathParts(key)
+    let cur: Record<string, unknown> = sparse
+
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const part = parts[i]
+
+      if (!isSafePart(part)) {
+        throw new Error(`Unsafe config path part: ${part}`)
+      }
+
+      if (cur[part] == null || typeof cur[part] !== 'object') {
+        safeSet(cur, part, {})
+      }
+
+      cur = cur[part] as Record<string, unknown>
+    }
+
+    safeSet(cur, parts[parts.length - 1], structuredClone(value))
+  }
+
+  return sparse
+}
+
 function personalityOptions(config: HermesConfigRecord): string[] {
   const custom = getNested(config, 'agent.personalities')
 

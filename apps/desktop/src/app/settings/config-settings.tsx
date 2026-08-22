@@ -33,6 +33,7 @@ import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
 import {
+  buildSparseRecord,
   clearsEnabledToolsets,
   enumOptionsFor,
   getNested,
@@ -118,6 +119,13 @@ function ConfigSettingsInner({
   const saveVersionRef = useRef(0)
   const savedDiscoverySignatureRef = useRef<string | undefined>(undefined)
   const [saveVersion, setSaveVersion] = useState(0)
+  // Sparse-save bookkeeping: the exact schema keys the user edited in THIS
+  // page session. The autosave payload is built from these alone (see the
+  // save effect) so stale unedited draft keys can never clobber changes made
+  // elsewhere while the page sat open. fullSaveRef flips on whole-record
+  // intents (JSON import) where sending everything IS the point.
+  const editedKeysRef = useRef<Set<string>>(new Set())
+  const fullSaveRef = useRef(false)
 
   // Seed the local draft once, the first time the shared record lands.
   // Background refetches thereafter must not clobber in-progress edits.
@@ -178,7 +186,20 @@ function ConfigSettingsInner({
     const t = window.setTimeout(() => {
       void (async () => {
         try {
-          const result = await saveHermesConfig(config, scopeProfile ?? undefined)
+          // Sparse save (#89184 residual): PUT only the paths edited THIS
+          // session, not the whole seeded draft. The draft is seeded ONCE and
+          // never refreshed (deliberately — background refetches must not
+          // clobber edits), so any key changed elsewhere after seeding
+          // (composer /model, Model page Apply, CLI) is stale in `config`;
+          // a whole-record PUT re-asserted it and the backend's model
+          // re-detection dutifully reverted the user's newer choice. The
+          // backend deep-merges, so keys absent from the payload are safe by
+          // construction. A JSON import is an explicit whole-record replace
+          // and keeps sending everything.
+          const payload = fullSaveRef.current
+            ? config
+            : buildSparseRecord(config, [...editedKeysRef.current])
+          const result = await saveHermesConfig(payload, scopeProfile ?? undefined)
 
           if (!result.ok) {
             throw new Error(c.autosaveFailed)
@@ -214,13 +235,21 @@ function ConfigSettingsInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; avoid re-scheduling autosave on locale change
   }, [config, onConfigSaved, saveVersion])
 
-  const applyConfig = (next: HermesConfigRecord) => {
+  const applyConfig = (next: HermesConfigRecord, editedKey?: string) => {
+    if (editedKey) {
+      editedKeysRef.current.add(editedKey)
+    } else {
+      // No key = whole-record intent (JSON import, toolsets-wipe confirm on
+      // an imported record): every subsequent autosave sends the full draft.
+      fullSaveRef.current = true
+    }
+
     saveVersionRef.current += 1
     setConfig(next)
     setSaveVersion(saveVersionRef.current)
   }
 
-  const updateConfig = (next: HermesConfigRecord) => {
+  const updateConfig = (next: HermesConfigRecord, editedKey?: string) => {
     // Guard the single most destructive config edit: clearing the entire
     // "Enabled Toolsets" list silently disables memory, terminal, web search,
     // delegation, and most tools, and a stray select-all + Backspace can do it.
@@ -229,14 +258,14 @@ function ConfigSettingsInner({
     if (config && clearsEnabledToolsets(config, next)) {
       void confirm({ destructive: true, title: c.toolsetsWipeConfirm }).then(ok => {
         if (ok) {
-          applyConfig(next)
+          applyConfig(next, editedKey)
         }
       })
 
       return
     }
 
-    applyConfig(next)
+    applyConfig(next, editedKey)
   }
 
   const sectionFields = useMemo(() => {
@@ -404,7 +433,7 @@ function ConfigSettingsInner({
                     ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
                     : enumOptionsFor(key, getNested(config, key), config)
                 }
-                onChange={value => updateConfig(setNested(config, key, value))}
+                onChange={value => updateConfig(setNested(config, key, value), key)}
                 optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
                 schema={field}
                 schemaKey={key}

@@ -1291,41 +1291,28 @@ class TestSanePathIncludesHomebrew:
 
 
     def test_make_run_env_appends_homebrew_on_minimal_path(self, monkeypatch):
-        """When PATH is minimal, _make_run_env appends missing sane entries.
-
-        POSIX: the sane-path merge appends the Homebrew dirs.  Windows:
-        _append_missing_sane_path_entries is a documented passthrough (the
-        native PATH must not be touched), so the assertion is the unchanged
-        input.  Git Bash dir prepending is neutralised so the merged PATH
-        layout is deterministic on every host.
-        """
+        """When PATH is minimal, _make_run_env appends missing sane entries."""
         from tools.environments import local as local_mod
         from tools.environments.local import _SANE_PATH, _make_run_env
-        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         minimal_env = {"PATH": "/some/custom/bin"}
         with patch.dict(os.environ, minimal_env, clear=True):
             result = _make_run_env({})
-        path_entries = result["PATH"].split(os.pathsep)
+        path_entries = result["PATH"].split(":")
         assert path_entries[0] == "/some/custom/bin"
-        if sys.platform == "win32":
-            assert result["PATH"] == "/some/custom/bin"
-        else:
-            for entry in _SANE_PATH.split(os.pathsep):
-                assert entry in path_entries
+        for entry in _SANE_PATH.split(":"):
+            assert entry in path_entries
 
 
-    @pytest.mark.macos_only
-    def test_make_run_env_real_launchd_path_gains_homebrew(self):
-        """The literal macOS launchd PATH is the production trigger for #35613.
-
-        macOS-only: the regression is the launchd environment on macOS, and
-        the sane-path merge is a documented passthrough on Windows.
-        """
+    def test_make_run_env_real_launchd_path_gains_homebrew(self, monkeypatch):
+        """The literal macOS launchd PATH is the production trigger for #35613."""
+        from tools.environments import local as local_mod
         from tools.environments.local import _make_run_env
-        launchd_env = {"PATH": os.pathsep.join(["/usr/bin", "/bin", "/usr/sbin", "/sbin"])}
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        launchd_env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
         with patch.dict(os.environ, launchd_env, clear=True):
             result = _make_run_env({})
-        path_entries = result["PATH"].split(os.pathsep)
+        path_entries = result["PATH"].split(":")
         assert "/opt/homebrew/bin" in path_entries
         assert "/opt/homebrew/sbin" in path_entries
         # Original entries keep their leading precedence.
@@ -1379,7 +1366,7 @@ class TestHermesBinDirOnPath:
         local_mod._HERMES_BIN_DIR = None
         assert local_mod._prepend_hermes_bin_dir("/usr/bin:/bin") == "/usr/bin:/bin"
 
-    def test_make_run_env_injects_hermes_bin_dir(self):
+    def test_make_run_env_injects_hermes_bin_dir(self, monkeypatch):
         """A gateway env missing the hermes dir gets it back in the subshell PATH.
 
         Platform-agnostic: ``_prepend_hermes_bin_dir`` uses ``os.pathsep`` on
@@ -1388,13 +1375,14 @@ class TestHermesBinDirOnPath:
         from tools.environments.local import _make_run_env
         self._reset_cache()
         local_mod._HERMES_BIN_DIR = "/opt/hermes/bin"
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         with patch.dict(
             os.environ,
-            {"PATH": os.pathsep.join(["/usr/bin", "/bin"])},
+            {"PATH": "/usr/bin:/bin"},
             clear=True,
         ):
             result = _make_run_env({})
-        entries = result["PATH"].split(os.pathsep)
+        entries = result["PATH"].split(":")
         assert entries[0] == "/opt/hermes/bin"
         assert "/usr/bin" in entries
 

@@ -261,7 +261,108 @@ class TestResolveTaskProviderModel:
         assert resolved_provider == "anthropic"
         assert model is None
 
+    def test_task_base_url_without_api_key_keeps_custom_endpoint(self):
+        """auxiliary.<task>.model + base_url (no provider, no api_key) must
+        still route to that endpoint.
 
+        #89445: local/OpenAI-compatible servers such as Ollama often have no
+        API key. The resolver currently requires *both* base_url and api_key
+        before returning custom, otherwise it falls through to auto and
+        *drops* the configured base_url. Requests then hit the main provider
+        (e.g. Nous Portal) instead of the documented custom endpoint.
+        """
+        task_config = {
+            "model": "qwen3.6:27b",
+            "base_url": "http://127.0.0.1:11434/v1",
+        }
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value=task_config,
+        ):
+            resolved_provider, model, base_url, api_key, api_mode = (
+                _resolve_task_provider_model(task="title_generation")
+            )
+
+        assert resolved_provider == "custom"
+        assert model == "qwen3.6:27b"
+        assert base_url == "http://127.0.0.1:11434/v1"
+        assert api_key is None
+        assert api_mode is None
+
+    def test_task_base_url_with_provider_auto_keeps_custom_endpoint(self):
+        """provider: auto plus a task-level base_url must not discard the URL.
+
+        #89445 variant 3: users set provider: auto hoping it means
+        \"auto-detect *except* honor my endpoint\". Today auto is treated as
+        \"inherit / auto-detect\" and the fallthrough returns
+        (auto, model, None, None).
+        """
+        task_config = {
+            "provider": "auto",
+            "model": "qwen3.6:27b",
+            "base_url": "http://127.0.0.1:11434/v1",
+        }
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value=task_config,
+        ):
+            resolved_provider, model, base_url, api_key, api_mode = (
+                _resolve_task_provider_model(task="title_generation")
+            )
+
+        assert resolved_provider == "custom"
+        assert model == "qwen3.6:27b"
+        assert base_url == "http://127.0.0.1:11434/v1"
+        assert api_key is None
+        assert api_mode is None
+
+    @pytest.mark.parametrize("provider", ["openrouter", "zai"])
+    def test_task_named_provider_with_base_url_preserves_provider(self, provider):
+        """A named provider's endpoint must retain provider-specific routing."""
+        task_config = {
+            "provider": provider,
+            "model": "provider-model",
+            "base_url": "https://provider.example/v1",
+        }
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value=task_config,
+        ):
+            resolved_provider, model, base_url, api_key, api_mode = (
+                _resolve_task_provider_model(task="title_generation")
+            )
+
+        assert resolved_provider == provider
+        assert resolved_provider != "custom"
+        assert model == "provider-model"
+        assert base_url == "https://provider.example/v1"
+        assert api_key is None
+        assert api_mode is None
+
+    @pytest.mark.parametrize("provider", [None, "auto"])
+    def test_task_base_url_with_api_key_uses_custom_endpoint(self, provider):
+        """A keyed endpoint without a named provider is explicitly custom."""
+        task_config = {
+            "model": "custom-model",
+            "base_url": "https://custom.example/v1",
+            "api_key": "custom-secret",
+        }
+        if provider is not None:
+            task_config["provider"] = provider
+
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value=task_config,
+        ):
+            resolved_provider, model, base_url, api_key, api_mode = (
+                _resolve_task_provider_model(task="title_generation")
+            )
+
+        assert resolved_provider == "custom"
+        assert model == "custom-model"
+        assert base_url == "https://custom.example/v1"
+        assert api_key == "custom-secret"
+        assert api_mode is None
 
 
 

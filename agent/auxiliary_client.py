@@ -8202,8 +8202,9 @@ def _resolve_task_provider_model(
 
     if task:
         # Config.yaml is the primary source for per-task overrides.
-        if cfg_base_url and cfg_api_key:
-            # Both base_url and api_key explicitly set → custom endpoint.
+        if cfg_base_url and (cfg_api_key or cfg_provider in (None, "auto")):
+            # A base_url without a named provider is a custom endpoint; local
+            # OpenAI-compatible servers may not require an API key.
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_base_url and cfg_provider and cfg_provider != "auto":
             # base_url set without api_key but with a known provider — use

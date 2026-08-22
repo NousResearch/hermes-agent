@@ -200,6 +200,12 @@ The **default** profile keeps the historical `agent:main:…` namespace
 byte-for-byte, so existing default-profile sessions are unaffected — no
 migration, no orphaned history.
 
+Peer fallback (recovering "the latest session for this chat" when the routing
+index misses) is fenced by that namespace. An `agent:owner:…` lookup cannot
+inherit an `agent:main:…` transcript for the same chat, and vice versa.
+Renaming a profile is not a migration path — sessions stay under the namespace
+they were created with.
+
 #### 5. One PID/lock and one status surface
 
 There is a single process-level PID and lock (the multiplexer, under the default

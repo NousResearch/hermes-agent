@@ -1912,10 +1912,25 @@ class SessionStore:
         requested_session_key: str,
         recovered: Dict[str, Any],
     ) -> bool:
-        """Prevent non-multiplexed gateways from reviving another profile's row."""
-        if getattr(self.config, "multiplex_profiles", False):
-            return True
+        """Fence peer-fallback so a session key cannot inherit another profile's row.
 
+        Session keys embed the profile namespace (``agent:<profile>:…``, with
+        the default profile using the historical ``agent:main:`` slot). Peer
+        fallback in ``find_latest_gateway_session_for_peer`` matches on
+        platform/chat/user and ignores that namespace, so without a fence a
+        newly routed ``agent:owner:telegram:dm:<chat>`` key can alias the
+        transcript created under ``agent:main:telegram:dm:<chat>``.
+
+        When multiplexing is on, compare the requested key's namespace to the
+        recovered row's. ``_active_profile_name()`` is the process default
+        (usually ``default``) and would wrongly reject same-namespace owner
+        rows — that is why this used to short-circuit to True under multiplex.
+
+        When multiplexing is off, keep the historical rule: the recovered
+        profile must match the process's active profile (a standalone
+        ``coder`` gateway may still resume its own namespaced rows via a
+        legacy ``agent:main:`` lookup).
+        """
         recovered_key = str(recovered.get("session_key") or "")
         if not recovered_key or recovered_key == requested_session_key:
             return True
@@ -1923,6 +1938,12 @@ class SessionStore:
         recovered_profile = self._profile_from_session_key(recovered_key)
         if recovered_profile is None:
             return True
+
+        if getattr(self.config, "multiplex_profiles", False):
+            requested_profile = self._profile_from_session_key(requested_session_key)
+            if requested_profile is None:
+                return True
+            return recovered_profile == requested_profile
 
         return recovered_profile == self._active_profile_name()
 
@@ -2130,8 +2151,7 @@ class SessionStore:
         ):
             logger.warning(
                 "Gateway session DB recovery ignored %s for %s because "
-                "multiplex_profiles is disabled and the row belongs to a "
-                "different profile",
+                "the row belongs to a different profile namespace",
                 recovered.get("session_key"),
                 session_key,
             )
@@ -2207,8 +2227,7 @@ class SessionStore:
         ):
             logger.warning(
                 "Gateway session DB recovery ignored %s for %s because "
-                "multiplex_profiles is disabled and the row belongs to a "
-                "different profile",
+                "the row belongs to a different profile namespace",
                 recovered.get("session_key"),
                 session_key,
             )

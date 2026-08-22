@@ -152,6 +152,25 @@ class TestSessionStoreUnmultiplexedRecovery:
         return store
 
 
+    def test_flag_off_rejects_other_profile_peer_fallback(self, tmp_path):
+        row = {
+            "id": "sess-coder",
+            "started_at": 1700000000,
+            "session_key": "agent:coder:telegram:dm:99",
+        }
+        store = self._store_with_row(tmp_path, row)
+        source = _src(chat_id="99", chat_type="dm")
+
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+            recovered = store._recover_session_from_db(
+                session_key="agent:main:telegram:dm:99",
+                source=source,
+                now=datetime.fromtimestamp(1700000001),
+            )
+
+        assert recovered is None
+        assert store._db.reopened == []
+
     def test_flag_off_allows_active_profile_peer_fallback(self, tmp_path):
         row = {
             "id": "sess-coder",
@@ -172,3 +191,95 @@ class TestSessionStoreUnmultiplexedRecovery:
         assert recovered.session_id == "sess-coder"
         assert recovered.session_key == "agent:main:telegram:dm:99"
         assert store._db.reopened == ["sess-coder"]
+
+
+class TestSessionStoreMultiplexedRecovery:
+    """Under multiplex, peer fallback must stay inside the requested key's
+    profile namespace. ``_active_profile_name()`` is the process default
+    (usually ``default``), so the unmultiplexed active-profile check cannot
+    be reused — that is why multiplex previously short-circuited to allow
+    every recovered row, including an owner-keyed lookup inheriting a
+    customer ``agent:main:`` transcript for the same chat."""
+
+    def _store_with_row(self, tmp_path, row, **cfg_kw):
+        config = GatewayConfig(multiplex_profiles=True, **cfg_kw)
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = _RecoveringDB(row)
+        store._loaded = True
+        return store
+
+    def _recover(self, store, session_key):
+        return store._recover_session_from_db(
+            session_key=session_key,
+            source=_src(chat_id="99", chat_type="dm"),
+            now=datetime.fromtimestamp(1700000001),
+        )
+
+    def test_multiplex_rejects_main_row_for_owner_key(self, tmp_path):
+        store = self._store_with_row(
+            tmp_path,
+            {
+                "id": "sess-customer",
+                "started_at": 1700000000,
+                "session_key": "agent:main:telegram:dm:99",
+            },
+        )
+
+        recovered = self._recover(store, "agent:owner:telegram:dm:99")
+
+        assert recovered is None
+        assert store._db.reopened == []
+
+    def test_multiplex_rejects_owner_row_for_main_key(self, tmp_path):
+        store = self._store_with_row(
+            tmp_path,
+            {
+                "id": "sess-owner",
+                "started_at": 1700000000,
+                "session_key": "agent:owner:telegram:dm:99",
+            },
+        )
+
+        recovered = self._recover(store, "agent:main:telegram:dm:99")
+
+        assert recovered is None
+        assert store._db.reopened == []
+
+    def test_multiplex_allows_same_profile_peer_fallback(self, tmp_path):
+        """Same-namespace peer fallback is allowed even when the durable
+        row's key string differs from the inbound key (the exact-key
+        short-circuit does not apply)."""
+        store = self._store_with_row(
+            tmp_path,
+            {
+                "id": "sess-owner",
+                "started_at": 1700000000,
+                "session_key": "agent:owner:telegram:dm:old-key",
+            },
+        )
+
+        recovered = self._recover(store, "agent:owner:telegram:dm:99")
+
+        assert recovered is not None
+        assert recovered.session_id == "sess-owner"
+        assert recovered.session_key == "agent:owner:telegram:dm:99"
+        assert store._db.reopened == ["sess-owner"]
+
+    def test_multiplex_does_not_use_process_active_profile(self, tmp_path):
+        """An owner-keyed lookup must resume the owner row even when the
+        multiplexer process's active profile is still ``default``."""
+        store = self._store_with_row(
+            tmp_path,
+            {
+                "id": "sess-owner",
+                "started_at": 1700000000,
+                "session_key": "agent:owner:telegram:dm:old-key",
+            },
+        )
+
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+            recovered = self._recover(store, "agent:owner:telegram:dm:99")
+
+        assert recovered is not None
+        assert recovered.session_id == "sess-owner"

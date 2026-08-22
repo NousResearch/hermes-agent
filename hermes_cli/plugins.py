@@ -1537,10 +1537,18 @@ class PluginContext:
         kind: str,
         key: str,
         release: Callable[[], None],
+        *,
+        persistent: bool = False,
     ) -> PluginRegistration:
-        """Record host-owned cleanup for a successful registration."""
+        """Record host-owned cleanup for a successful registration.
+
+        ``persistent`` registrations are returned as live handles but kept
+        out of the manager's reverse-order teardown, so a routine per-home
+        manager unload does not dispose them (see
+        :meth:`PluginManager._track_registration`).
+        """
         return self._manager._track_registration(
-            self.manifest, kind, key, release
+            self.manifest, kind, key, release, persistent=persistent
         )
 
     def _track_replacement(
@@ -2382,12 +2390,11 @@ class PluginContext:
         cannot crash the host. Same convention as
         ``register_image_gen_provider``.
         """
-        from hermes_cli.dashboard_auth import (
-            DashboardAuthProvider,
-            register_provider,
+        from hermes_cli.dashboard_auth import DashboardAuthProvider
+        from hermes_cli.dashboard_auth.registry import (
+            register_global_provider,
+            unregister_global_provider,
         )
-        from hermes_cli.dashboard_auth.registry import restore_registration
-        from hermes_cli.dashboard_auth.registry import snapshot_registration
 
         if not isinstance(provider, DashboardAuthProvider):
             logger.warning(
@@ -2397,10 +2404,19 @@ class PluginContext:
             )
             return
         registry_name = provider.name
-        scope = self._manager.scope_key
-        previous = snapshot_registration(registry_name, scope=scope)
+        # The dashboard auth registry is process-global — its lifetime is the
+        # web server, not this per-home plugin manager. A per-home manager is
+        # torn down routinely (profile-scoped dashboard activity, force
+        # re-discovery), and disposing this registration on that teardown
+        # emptied the auth registry for the WHOLE process, permanently
+        # disabling sign-in until restart (#91701). So register it in the
+        # global slot (upsert) and, crucially, keep it OUT of the manager's
+        # reverse-order teardown (``persistent=True``): a per-home unload can
+        # no longer clear it. The handle still disposes explicitly (identity-
+        # conditional), and a forced re-discovery rotates the provider in
+        # place via the upsert.
         try:
-            register_provider(provider, scope=scope)
+            register_global_provider(provider)
         except (TypeError, ValueError) as e:
             logger.warning(
                 "Plugin '%s' failed to register dashboard-auth provider "
@@ -2408,18 +2424,11 @@ class PluginContext:
                 self.manifest.name, getattr(provider, "name", "?"), e,
             )
             return
-        registered = snapshot_registration(registry_name, scope=scope)
-        if registered is not provider:
-            return None
-        handle = self._track_replacement(
+        handle = self._track(
             "dashboard_auth_provider",
             registry_name,
-            slot=("dashboard_auth_provider", scope, registry_name),
-            current=provider,
-            previous=previous,
-            restore=lambda replacement: restore_registration(
-                registry_name, provider, replacement, scope=scope
-            ),
+            lambda: unregister_global_provider(registry_name, provider),
+            persistent=True,
         )
         logger.info(
             "Plugin '%s' registered dashboard-auth provider: %s (%s)",
@@ -3478,8 +3487,18 @@ class PluginManager:
         kind: str,
         key: str,
         release: Callable[[], None],
+        *,
+        persistent: bool = False,
     ) -> PluginRegistration:
-        """Record one successful registration under its canonical plugin key."""
+        """Record one successful registration under its canonical plugin key.
+
+        ``persistent`` registrations (process-global host infrastructure such
+        as dashboard-auth providers, whose lifetime is the server rather than
+        a per-home plugin manager) are still tracked in the ownership ledger
+        for attribution, but are NOT enrolled in ``_registration_order`` — so
+        a routine per-home manager unload cannot dispose them (#91701). The
+        returned handle still releases on explicit ``dispose()``.
+        """
         plugin_key = manifest.key or manifest.name
         registration = PluginRegistration(
             kind=kind,
@@ -3491,7 +3510,8 @@ class PluginManager:
             [disposed]
         )
         self._ownership_ledger.setdefault(plugin_key, []).append(registration)
-        self._registration_order.append(registration)
+        if not persistent:
+            self._registration_order.append(registration)
         return registration
 
     @staticmethod
@@ -5685,6 +5705,18 @@ def _reset_plugin_managers_for_tests() -> None:
                 logger.debug("test plugin-manager unload failed", exc_info=True)
         _plugin_managers_by_home.clear()
         _plugin_manager = None
+    # Dashboard-auth providers are persistent host-owned registrations that
+    # deliberately survive a routine manager unload (#91701), so the "clean
+    # slate" reset must drop the process-global auth registry explicitly —
+    # otherwise a provider auto-registered during one test leaks into the next.
+    try:
+        from hermes_cli.dashboard_auth.registry import (
+            clear_providers as _clear_dashboard_auth_providers,
+        )
+
+        _clear_dashboard_auth_providers()
+    except Exception:
+        logger.debug("dashboard-auth registry clear failed", exc_info=True)
 
 
 def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:

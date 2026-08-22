@@ -214,6 +214,10 @@ class TestGeneratedSystemdUnits:
 
         assert str(local_bin) in unit
         assert str(profile_node_bin) not in unit
+        # EX_CONFIG (78) is a fatal config error — systemd must not
+        # auto-restart on it (issue #57474). RestartPreventExitStatus keeps
+        # Restart=always from respawning into a config-error death loop.
+        assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
 
     def test_launchd_plist_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
         # Same #48700 regression for the macOS twin generate_launchd_plist().
@@ -1132,6 +1136,10 @@ class TestGeneratedUnitIncludesLocalBin:
         unit = gateway_cli.generate_systemd_unit(system=True)
         # System unit uses the resolved home dir from _system_service_identity
         assert "/.local/bin" in unit
+        # EX_CONFIG (78) is a fatal config error — systemd must not
+        # auto-restart on it (issue #57474). RestartPreventExitStatus keeps
+        # Restart=always from respawning into a config-error death loop.
+        assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
 
 
 class TestSystemServiceIdentityRootHandling:

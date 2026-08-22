@@ -11101,8 +11101,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         LIVE REPLAY should pass it: a durable alternation violation (e.g. a
         ``user;user`` pair left by a turn that persisted no assistant row)
         otherwise re-triggers the pre-request defensive repair on every
-        single request for the rest of the session's life — the repair
-        mutates only the per-request list, never the stored transcript.
+        single request for the rest of the session's life. A repair-enabled
+        load reconciles the changed survivors and archived-away rows back to
+        the stored transcript before returning.
         Inspection/export consumers keep the default and see the transcript
         verbatim.
         """
@@ -11134,6 +11135,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             include_ancestors=include_ancestors,
             repair_alternation=repair_alternation,
             include_row_ids=include_row_ids,
+            reconcile_repair=not include_inactive,
         )
 
     # Columns every conversation projection decodes. Shared by
@@ -11154,6 +11156,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_ancestors: bool,
         repair_alternation: bool,
         include_row_ids: bool = False,
+        reconcile_repair: bool = True,
     ) -> List[Dict[str, Any]]:
         """Decode fetched message rows into the OpenAI conversation format.
 
@@ -11174,7 +11177,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # inspection) gets the transcript in its historical shape.
             # Underscore-prefixed so every transport's convert_messages()
             # strips it before the wire.
-            if include_row_ids and row["id"] is not None:
+            if (include_row_ids or repair_alternation) and row["id"] is not None:
                 msg["_row_id"] = row["id"]
             # api_content is the byte-fidelity sidecar: the exact string sent
             # to the API when it differed from the clean content. Returned
@@ -11263,6 +11266,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # to keep emitting the marker. No-op for unaffected sessions.
         messages = _strip_stale_tool_call_markers(messages)
         if repair_alternation and messages:
+            # Snapshot AFTER load-only sanitation so reconciliation covers
+            # only mutations made by repair_message_sequence. Surviving
+            # messages retain object/row identity; removed identities are the
+            # exact durable rows to archive.
+            pre_repair = {
+                msg["_row_id"]: dict(msg)
+                for msg in messages
+                if isinstance(msg, dict) and "_row_id" in msg
+            }
             # Lazy import: hermes_state already depends on agent.* (see
             # sanitize_context above), but keep this optional path from
             # widening the import surface at module load.
@@ -11270,14 +11282,125 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
             repaired = repair_message_sequence(None, messages)
             if repaired:
+                if reconcile_repair:
+                    self._reconcile_repaired_conversation(pre_repair, messages)
                 logger.info(
-                    "Repaired %d message-alternation violation(s) while "
-                    "restoring session %s — durable transcript kept them, "
-                    "see repair_message_sequence",
+                    "Repaired %d message-alternation violation(s) while restoring "
+                    "session %s%s",
                     repaired,
                     session_id,
+                    (
+                        " and reconciled the durable transcript"
+                        if reconcile_repair
+                        else " without changing inactive audit rows"
+                    ),
                 )
+        if not include_row_ids:
+            for msg in messages:
+                if isinstance(msg, dict):
+                    msg.pop("_row_id", None)
         return messages
+
+    def _reconcile_repaired_conversation(
+        self,
+        pre_repair: Dict[int, Dict[str, Any]],
+        repaired_messages: List[Dict[str, Any]],
+    ) -> None:
+        """Persist one identity-preserving alternation repair atomically.
+
+        Rows removed by the repair are soft-archived for audit. Surviving
+        rows keep their durable identity while repair-mutated provider fields
+        are updated in place. Updating content/tool_calls also drives the
+        existing FTS triggers, while an ``active``-only write deliberately
+        leaves archived text searchable only through inactive/audit paths.
+        """
+        survivors = {
+            msg["_row_id"]: msg
+            for msg in repaired_messages
+            if isinstance(msg, dict) and msg.get("_row_id") in pre_repair
+        }
+        # Verification candidates are collapsed only from MODEL replay; their
+        # substantive answer must remain active in the persisted DISPLAY
+        # transcript (#65919). repair_message_sequence deliberately replaces
+        # the candidate with the verified assistant without mutating either
+        # durable row, so do not treat that model-only replacement as archival.
+        verification_finish_reasons = {
+            "verification_required",
+            "verify_hook_continue",
+        }
+        removed_ids = sorted(
+            row_id
+            for row_id, original in pre_repair.items()
+            if row_id not in survivors
+            and original.get("finish_reason") not in verification_finish_reasons
+        )
+        updates = []
+
+        for row_id, msg in survivors.items():
+            original = pre_repair[row_id]
+            content_changed = msg.get("content") != original.get("content")
+            tool_calls_changed = msg.get("tool_calls") != original.get("tool_calls")
+            reasoning_changed = (
+                msg.get("reasoning_content") != original.get("reasoning_content")
+            )
+
+            # api_content is the exact wire form of the old content. Any
+            # content merge invalidates it even on assistant rows, whose
+            # direct repair path historically retained the stale sidecar.
+            if content_changed:
+                msg.pop("api_content", None)
+            api_content_changed = (
+                msg.get("api_content") != original.get("api_content")
+            )
+
+            if not (
+                content_changed
+                or tool_calls_changed
+                or reasoning_changed
+                or api_content_changed
+            ):
+                continue
+
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, str):
+                try:
+                    tool_calls = json.loads(tool_calls)
+                except (json.JSONDecodeError, TypeError):
+                    tool_calls = []
+            updates.append(
+                (
+                    self._encode_content(msg.get("content")),
+                    json.dumps(tool_calls) if tool_calls else None,
+                    _scrub_surrogates(msg.get("reasoning_content")),
+                    (
+                        _scrub_surrogates(msg.get("api_content"))
+                        if isinstance(msg.get("api_content"), str)
+                        else None
+                    ),
+                    row_id,
+                )
+            )
+
+        if not removed_ids and not updates:
+            return
+
+        def _do(conn):
+            if removed_ids:
+                placeholders = ",".join("?" for _ in removed_ids)
+                conn.execute(
+                    f"UPDATE messages SET active = 0 "
+                    f"WHERE active = 1 AND id IN ({placeholders})",
+                    removed_ids,
+                )
+            if updates:
+                conn.executemany(
+                    "UPDATE messages SET content = ?, tool_calls = ?, "
+                    "reasoning_content = ?, api_content = ? "
+                    "WHERE id = ? AND active = 1",
+                    updates,
+                )
+
+        self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def get_resume_conversations(
         self, session_id: str

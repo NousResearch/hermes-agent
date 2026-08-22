@@ -30,6 +30,8 @@ host ``_IS_WINDOWS`` is already False, so no patching is needed at all.
 """
 
 import os
+import shutil
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -288,6 +290,40 @@ class TestGitBashCoreutilsOnPath:
         run_env = _make_run_env({"PATH": "/usr/bin:/bin"})
         # No Windows git dirs injected on POSIX.
         assert "mingw64" not in run_env["PATH"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific regression")
+def test_login_snapshot_preserves_host_and_default_profile_path(tmp_path, monkeypatch):
+    """A Windows login profile may replace PATH; the host entry must survive."""
+    host_bin = tmp_path / "host-bin"
+    host_bin.mkdir()
+    shutil.copy2(os.environ["COMSPEC"], host_bin / "host-proof.exe")
+
+    home = tmp_path / "home"
+    home.mkdir()
+    profile_bin = tmp_path / "profile-bin"
+    profile_bin.mkdir()
+    shutil.copy2(os.environ["COMSPEC"], profile_bin / "profile-proof.exe")
+    profile_path = _windows_to_msys_path(str(profile_bin))
+    (home / ".bash_profile").write_text(
+        f'export PATH="/usr/bin:/bin:{profile_path}"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(host_bin) + os.pathsep + os.environ["PATH"])
+
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=20)
+    try:
+        assert env._snapshot_ready is True
+        result = env.execute(
+            "command -v host-proof >/dev/null && command -v profile-proof >/dev/null",
+            timeout=20,
+        )
+    finally:
+        env.cleanup()
+
+    assert result["returncode"] == 0, result.get("output")
 
 
 # ---------------------------------------------------------------------------

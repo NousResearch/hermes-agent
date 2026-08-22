@@ -1781,6 +1781,7 @@ class LocalEnvironment(BaseEnvironment):
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
+        run_env = _make_run_env(self.env)
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
         # custom init files so tools registered outside bash_profile
@@ -1789,10 +1790,27 @@ class LocalEnvironment(BaseEnvironment):
         # don't need this.
         if login:
             init_files = _resolve_shell_init_files()
+            if _IS_WINDOWS:
+                # Git for Windows login profiles may replace the inherited
+                # native PATH. Re-append that host PATH after both the default
+                # login profile and any explicitly sourced init files, while
+                # keeping ``bash -l`` semantics intact. Convert the Windows
+                # semicolon-separated list to Git Bash paths before embedding.
+                import shlex
+
+                path_key = _path_env_key(run_env)
+                inherited_path = run_env.get(path_key, "") if path_key else ""
+                bash_path = ":".join(
+                    _bash_safe_path(entry)
+                    for entry in inherited_path.split(";")
+                    if entry
+                )
+                if bash_path:
+                    restore_path = f'export PATH="$PATH":{shlex.quote(bash_path)}\n'
+                    cmd_string = restore_path + cmd_string
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
-        run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by
         # a previous tool call that ran ``rm -rf`` on its own working dir

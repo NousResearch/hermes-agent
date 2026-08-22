@@ -763,7 +763,11 @@ class MemoryStore:
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         if target == "user":
-            header = f"{MEMORY_BLOCK_HEADERS['user']} [{pct}% — {current:,}/{limit:,} chars]"
+            header = (
+                f"{MEMORY_BLOCK_HEADERS['user']} "
+                f"[{pct}% — {current:,}/{limit:,} chars] "
+                f"— preferences/profile, not factual evidence"
+            )
         else:
             header = f"{MEMORY_BLOCK_HEADERS['memory']} [{pct}% — {current:,}/{limit:,} chars]"
 

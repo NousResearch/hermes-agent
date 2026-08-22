@@ -137,9 +137,10 @@ SUMMARY_PREFIX = (
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
     "summary; do not re-surface it in later turns. "
-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
-    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
-    "memory content due to this compaction note. "
+    "Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt remains available after compaction — use it as background "
+    "context. Preferences are not factual evidence; for objective claims "
+    "prefer current verified evidence. "
     "None of the above restricts HOW you work: your tools remain fully "
     "active — keep calling them normally for the active task (edit files, "
     "run commands, search) instead of merely narrating what you would do. "
@@ -519,6 +520,35 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "task: even on similar topics, the latest user message WINS. Treat ONLY "
     "the latest message as the active task and discard stale items from "
     "'## Historical Task Snapshot' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "None of the above restricts HOW you work: your tools remain fully "
+    "active — keep calling them normally for the active task (edit files, "
+    "run commands, search) instead of merely narrating what you would do. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
+    # Pre-MemSyco (2607.01071): memory framed as ALWAYS authoritative.
+    # Summaries persisted before the sycophancy mitigation carry this
+    # exact text and must remain detectable/strippable on resume.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    f"'{HISTORICAL_TASK_HEADING}' entirely — do not 'wrap up' or "
     "'finish' work described there unless the latest message explicitly "
     "asks for it. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
@@ -7546,7 +7576,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             msg = _fresh_compaction_message_copy(messages[i])
             if i == 0 and msg.get("role") == "system":
                 existing = msg.get("content")
-                _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Your persistent memory (MEMORY.md, USER.md) remains fully authoritative regardless of compaction.]"
+                _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Your persistent memory (MEMORY.md, USER.md) remains available — use it as background context, not as factual evidence.]"
                 if _compression_note not in _content_text_for_contains(existing):
                     msg["content"] = _append_text_to_content(
                         existing,

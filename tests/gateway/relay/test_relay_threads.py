@@ -465,9 +465,24 @@ async def test_sibling_threads_in_one_channel_each_rename_to_own_thread():
     # Each renamed ITS OWN thread, via the connector-owned guard, passing the
     # parent channel id for tenant discriminator resolution.
     assert renames == [
-        ("th-A", "Sea Shanty Draft", True, "chan-parent"),
-        ("th-B", "Exotic Short Story", True, "chan-parent"),
+        ("th-A", "💬 Sea Shanty Draft", True, "chan-parent"),
+        ("th-B", "💬 Exotic Short Story", True, "chan-parent"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("source_title", "expected"),
+    [
+        ("Set up automatic Discord thread renaming", "⚙️ Discord thread renaming"),
+        ("Fix flaky auth test in log", "🛠️ Flaky auth test"),
+        ("Research current video production trends", "🔍 Video production trends"),
+    ],
+)
+def test_discord_thread_title_is_compact_semantic_emoji_topic(source_title, expected):
+    """Visible Discord names should scan as a compact topic, not prose."""
+    stub = _mk_runner_stub()(adapter=None)
+
+    assert stub._sanitize_discord_thread_title(source_title) == expected
 
 
 @pytest.mark.asyncio
@@ -523,7 +538,7 @@ async def test_title_rename_waits_for_feedback_that_arrives_late():
     # omitting it made the connector decline "target not routed to an onboarded
     # tenant" — the live failure on staging 2026-08-01).
     assert renames == [
-        ("th-9", "Debugging the flux capacitor", True, "chan-parent")
+        ("th-9", "🛠️ Debugging flux capacitor", True, "chan-parent")
     ]
 
 

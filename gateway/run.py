@@ -23051,18 +23051,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
 
     def _sanitize_discord_thread_title(self, title: str) -> str:
-        """Return a Discord-safe semantic thread title from a session title.
+        """Return a compact, semantic, Discord-safe visible thread name.
 
-        Discord thread names are capped at 100 characters measured in UTF-16
-        code units (emoji count double), so truncate with the UTF-16 helpers
-        rather than Python code-point slices.
+        Session titles are useful prose for local history, but Discord thread
+        names need to scan: one topic emoji plus up to three specific words.
+        Keep this deterministic because it runs without another model call.
         """
         cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
         if not cleaned:
-            return "Hermes Chat"
-        if utf16_len(cleaned) > 80:
-            cleaned = _prefix_within_utf16_limit(cleaned, 77).rstrip() + "..."
-        return cleaned
+            return "💬 Hermes chat"
+
+        lowered = cleaned.casefold()
+        emoji = "💬"
+        if any(word in lowered for word in ("research", "investigat", "audit")):
+            emoji = "🔍"
+        elif any(word in lowered for word in ("fix", "bug", "error", "fail", "test")):
+            emoji = "🛠️"
+        elif any(word in lowered for word in ("photo", "camera")):
+            emoji = "📷"
+        elif any(word in lowered for word in ("video", "film", "reel")):
+            emoji = "🎥"
+        elif any(word in lowered for word in ("config", "setup", "set up", "install")):
+            emoji = "⚙️"
+
+        filler = {
+            "a", "an", "and", "automatic", "build", "current", "do", "for",
+            "help", "in", "make", "of", "on", "set", "the", "to", "up",
+            "verify", "with", "fix", "research", "investigate", "audit", "log",
+        }
+        words = re.findall(r"[\w'-]+", cleaned, flags=re.UNICODE)
+        topic_words = [word for word in words if word.casefold() not in filler]
+        if not topic_words:
+            topic_words = words
+        topic = " ".join(topic_words[:3]).strip() or "Hermes chat"
+        topic = topic[:1].upper() + topic[1:]
+        visible = f"{emoji} {topic}"
+        if utf16_len(visible) > 80:
+            visible = _prefix_within_utf16_limit(visible, 77).rstrip() + "..."
+        return visible
 
     async def _rename_discord_auto_thread_for_session_title(
         self,

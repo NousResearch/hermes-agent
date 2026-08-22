@@ -1,65 +1,151 @@
-# Himalaya Configuration Reference
+# Himalaya v2 Configuration Reference
 
-Configuration file location: `~/.config/himalaya/config.toml`
+Authoritative source: https://github.com/pimalaya/himalaya/blob/master/config.sample.toml
 
-## Minimal IMAP + SMTP Setup
+This is a condensed v2 schema reference — covers the fields you'll actually
+touch on a daily basis. For the full annotated sample, follow the URL above.
+
+## Config file locations (first match wins)
+
+- `$XDG_CONFIG_HOME/himalaya/config.toml`
+- `$HOME/.config/himalaya/config.toml`
+- `$HOME/.himalayarc`
+
+Override with `himalaya -c <path>`. Multiple paths merge: `himalaya -c base:overlay`.
+
+## Global keys (top of file)
 
 ```toml
-[accounts.default]
-email = "user@example.com"
+# Default download directory for attachments. Falls back to $TMPDIR.
+downloads-dir = "~/downloads"
+
+# Table rendering
+table.preset = "││──╞═╪╡┆    ┬┴┌┐└┘"          # default
+table.arrangement = "dynamic"                 # or "dynamic-full-width", "disabled"
+
+# Envelope list formatting
+envelope.list.datetime-fmt = "%F %R%:z"       # ISO-ish; default
+envelope.list.datetime-local-tz = false       # convert to local TZ before render
+envelope.list.page-size = 50                  # default page size
+
+# Mailbox alias map (account-level entries override)
+mailbox.alias.inbox  = "INBOX"
+mailbox.alias.sent   = "[Gmail]/Sent Mail"
+mailbox.alias.drafts = "[Gmail]/Drafts"
+mailbox.alias.trash  = "[Gmail]/Trash"
+
+# Per-column colors (envelope list table)
+envelope.list.table.id-color = "red"
+envelope.list.table.flags-color = "reset"
+envelope.list.table.subject-color = "green"
+envelope.list.table.from-color = "blue"
+envelope.list.table.to-color = "blue"
+envelope.list.table.date-color = "dark_yellow"
+envelope.list.table.size-color = "reset"
+```
+
+## Account block
+
+```toml
+[accounts.NAME]
+default = true                        # only one account can be true
+email = "you@example.com"
 display-name = "Your Name"
-default = true
+downloads-dir = "~/downloads/NAME"    # per-account override
 
-# IMAP backend for reading emails
-backend.type = "imap"
-backend.host = "imap.example.com"
-backend.port = 993
-backend.encryption.type = "tls"
-backend.login = "user@example.com"
-backend.auth.type = "password"
-backend.auth.raw = "your-password"
+# Per-backend config (at least one of imap / smtp / jmap / gmail / msgraph / maildir)
+imap.server = "imaps://imap.example.com:993"
+imap.tls.provider = "rustls"          # or "native-tls"
+imap.tls.rustls.crypto = "ring"       # or "aws"
+imap.tls.cert = "/path/to/extra-ca.pem"
+imap.starttls = false                 # only valid with imap://
+imap.alpn = ["imap"]
 
-# SMTP backend for sending emails
-message.send.backend.type = "smtp"
-message.send.backend.host = "smtp.example.com"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
-message.send.backend.login = "user@example.com"
-message.send.backend.auth.type = "password"
-message.send.backend.auth.raw = "your-password"
+# Pick ONE SASL mechanism
+imap.sasl.anonymous.message = "himalaya"
+imap.sasl.plain.username   = "you@example.com"
+imap.sasl.plain.password.raw     = "raw-secret"           # dev only
+imap.sasl.plain.password.command = "pass show example"    # recommended
+imap.sasl.login.username   = "you@example.com"
+imap.sasl.login.password.raw     = "***"
+imap.sasl.login.password.command = ["pass", "show", "example"]
+imap.sasl.oauthbearer.username = "you@example.com"
+imap.sasl.oauthbearer.token.raw     = "***"
+imap.sasl.oauthbearer.token.command = ["ortie", "token", "show", "-a", "example"]
+imap.sasl.xoauth2.username = "you@example.com"
+imap.sasl.xoauth2.token.raw     = "***"
+imap.sasl.xoauth2.token.command = ["ortie", "token", "show", "-a", "example"]
+imap.sasl.scram-sha-256.username = "you@example.com"
+imap.sasl.scram-sha-256.password.raw     = "***"
+imap.sasl.scram-sha-256.password.command = "pass show example"
 
-# Folder aliases — required whenever server folder names differ
-# from himalaya's canonical names. See "Folder Aliases" below.
-folder.aliases.inbox = "INBOX"
-folder.aliases.sent = "Sent"
-folder.aliases.drafts = "Drafts"
-folder.aliases.trash = "Trash"
+# RFC 2971 ID extension (some servers require it after auth)
+imap.id.auto = false
+imap.id.fields = { name = true, version = true, vendor = true, support-url = true }
+
+# RFC 5256 SORT fallback
+imap.sort.fallback = false            # true = always client-side
+
+# SMTP — same flat schema as imap.*
+smtp.server = "smtps://smtp.example.com:465"
+smtp.starttls = false
+smtp.sasl.plain.username = "you@example.com"
+smtp.sasl.plain.password.command = "pass show example"
+
+# Gmail REST API backend (alternative to imap/smtp)
+gmail.user-id = "me"                  # default
+gmail.auth.token.raw     = "***"
+gmail.auth.token.command = ["ortie", "token", "show", "-a", "gmail"]
+
+# Microsoft Graph backend
+msgraph.user-id = "me"
+msgraph.auth.token.command = ["ortie", "token", "show", "-a", "msgraph"]
+
+# JMAP backend (Fastmail, Stalwart, etc.)
+jmap.server = "https://api.fastmail.com/jmap/session"
+jmap.auth.bearer.token.command = "pass show fastmail"
+jmap.identity-id = "I0123abc"          # optional: pin sender identity
+jmap.drafts-mailbox-id = "M0123abc"    # optional: pin drafts folder
+
+# Maildir backend
+maildir.root = "~/Mail/example"
+
+# Per-account mailbox aliases override global
+mailbox.alias.inbox  = "INBOX"
+mailbox.alias.sent   = "Sent"
+mailbox.alias.drafts = "Drafts"
+mailbox.alias.trash  = "Trash"
+mailbox.alias.junk   = "Junk"
+mailbox.alias.archive = "Archives"
 ```
 
-## Password Options
+## Server URL schemes
 
-### Raw password (testing only, not recommended)
+| Scheme | Meaning |
+|---|---|
+| `imaps://host:port` | Implicit TLS (typically port 993) |
+| `imap://host:port` | Cleartext, optionally upgraded via STARTTLS |
+| `smtps://host:port` | Implicit TLS (typically port 465) |
+| `smtp://host:port` | Cleartext, optionally upgraded via STARTTLS |
+| `unix:///path/to/sock` | Unix socket (for [sirup](https://github.com/pimalaya/sirup) reuse) |
+| Bare `host[:port]` | Defaults to `<scheme>s://` |
+
+## Secret storage
+
+Three forms, per-field:
 
 ```toml
-backend.auth.raw = "your-password"
+field.raw     = "literal-secret"            # dev / testing only
+field.command = "pass show path/to/secret"  # shell string form
+field.command = ["pass", "show", "secret"]  # argv array form (no shell interpolation)
 ```
 
-### Password from command (recommended)
+The `command` form is recommended. Native keyring was removed in v2; use a
+third-party tool (`pass`, `gopass`, `secret-tool`, `1password-cli`, `bitwarden`).
 
-```toml
-backend.auth.cmd = "pass show email/imap"
-# backend.auth.cmd = "security find-generic-password -a user@example.com -s imap -w"
-```
+## Provider examples
 
-### System keyring (requires keyring feature)
-
-```toml
-backend.auth.keyring = "imap-example"
-```
-
-Then run `himalaya account configure <account>` to store the password.
-
-## Gmail Configuration
+### Gmail (app password)
 
 ```toml
 [accounts.gmail]
@@ -67,161 +153,77 @@ email = "you@gmail.com"
 display-name = "Your Name"
 default = true
 
-backend.type = "imap"
-backend.host = "imap.gmail.com"
-backend.port = 993
-backend.encryption.type = "tls"
-backend.login = "you@gmail.com"
-backend.auth.type = "password"
-backend.auth.cmd = "pass show google/app-password"
+imap.server = "imaps://imap.gmail.com:993"
+imap.sasl.plain.username = "you@gmail.com"
+imap.sasl.plain.password.command = "pass show email/gmail-app"
 
-message.send.backend.type = "smtp"
-message.send.backend.host = "smtp.gmail.com"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
-message.send.backend.login = "you@gmail.com"
-message.send.backend.auth.type = "password"
-message.send.backend.auth.cmd = "pass show google/app-password"
+smtp.server = "smtps://smtp.gmail.com:465"
+smtp.sasl.plain.username = "you@gmail.com"
+smtp.sasl.plain.password.command = "pass show email/gmail-app"
+# STARTTLS alternative: smtp.server = "smtp://smtp.gmail.com:587" + smtp.starttls = true
 
-# Gmail folder mapping. Without these, save-to-Sent fails after
-# SMTP delivery succeeds (Gmail's Sent folder is `[Gmail]/Sent Mail`,
-# not `Sent`), and `himalaya message send` exits non-zero. Any
-# caller that retries on that error will re-run SMTP — duplicate
-# emails to recipients. Always include this block for Gmail.
-folder.aliases.inbox = "INBOX"
-folder.aliases.sent = "[Gmail]/Sent Mail"
-folder.aliases.drafts = "[Gmail]/Drafts"
-folder.aliases.trash = "[Gmail]/Trash"
+mailbox.alias.inbox  = "INBOX"
+mailbox.alias.sent   = "[Gmail]/Sent Mail"
+mailbox.alias.drafts = "[Gmail]/Drafts"
+mailbox.alias.trash  = "[Gmail]/Trash"
+mailbox.alias.archive = "[Gmail]/All Mail"
+mailbox.alias.junk   = "[Gmail]/Spam"
 ```
 
-**Note:** Gmail requires an App Password if 2FA is enabled.
+Generate the app password at https://myaccount.google.com/apppasswords (requires 2-Step Verification).
 
-## iCloud Configuration
+### Outlook / Microsoft 365 (OAuth)
+
+```toml
+[accounts.outlook]
+
+imap.server = "imaps://outlook.office365.com:993"
+imap.sasl.xoauth2.username = "you@outlook.com"
+imap.sasl.xoauth2.token.command = ["ortie", "token", "show", "-a", "outlook"]
+
+smtp.server = "smtp://smtp-mail.outlook.com:587"
+smtp.starttls = true
+smtp.sasl.xoauth2.username = "you@outlook.com"
+smtp.sasl.xoauth2.token.command = ["ortie", "token", "show", "-a", "outlook"]
+```
+
+Or use the Microsoft Graph REST API backend (`msgraph.auth.token.command = [...]`) — Graph has no separate SMTP block since sending also goes through Graph.
+
+### iCloud
 
 ```toml
 [accounts.icloud]
-email = "you@icloud.com"
-display-name = "Your Name"
+imap.server = "imaps://imap.mail.me.com:993"
+imap.sasl.plain.username = "johnappleseed"             # local-part only
+imap.sasl.plain.password.command = "pass show icloud"
 
-backend.type = "imap"
-backend.host = "imap.mail.me.com"
-backend.port = 993
-backend.encryption.type = "tls"
-backend.login = "you@icloud.com"
-backend.auth.type = "password"
-backend.auth.cmd = "pass show icloud/app-password"
+smtp.server = "smtp://smtp.mail.me.com:587"
+smtp.starttls = true
+smtp.sasl.plain.username = "johnappleseed@icloud.com"  # full address
+smtp.sasl.plain.password.command = "pass show icloud"
 
-message.send.backend.type = "smtp"
-message.send.backend.host = "smtp.mail.me.com"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
-message.send.backend.login = "you@icloud.com"
-message.send.backend.auth.type = "password"
-message.send.backend.auth.cmd = "pass show icloud/app-password"
+mailbox.alias.sent = "Sent Messages"
 ```
 
-**Note:** Generate an app-specific password at appleid.apple.com
+Generate the app-specific password at https://appleid.apple.com.
 
-## Folder Aliases
+## Common mistakes
 
-Map himalaya's canonical folder names (`inbox`, `sent`, `drafts`,
-`trash`) to whatever the server actually calls them. Use the
-v1.2.0 `folder.aliases.X` syntax (plural, dotted keys, directly
-under `[accounts.NAME]`):
-
-```toml
-[accounts.default]
-# ... other account config ...
-
-folder.aliases.inbox = "INBOX"
-folder.aliases.sent = "Sent"
-folder.aliases.drafts = "Drafts"
-folder.aliases.trash = "Trash"
-```
-
-The equivalent TOML sub-section form also works in v1.2.0:
-
-```toml
-[accounts.default.folder.aliases]
-inbox = "INBOX"
-sent = "Sent"
-drafts = "Drafts"
-trash = "Trash"
-```
-
-> **Don't use the singular `alias` form.** Pre-v1.2.0 docs showed
-> `[accounts.NAME.folder.alias]` (singular). v1.2.0 silently
-> ignores that sub-section — TOML parses without error, but the
-> alias resolver never reads it. Every lookup then falls through
-> to the canonical name. On Gmail (where `sent` is actually
-> `[Gmail]/Sent Mail`) this means save-to-Sent fails *after* SMTP
-> delivery succeeds, and `himalaya message send` exits non-zero.
-> Any caller (agent, script, user) that retries on that error
-> code will re-run the send — including SMTP — producing duplicate
-> emails to recipients. Always use `folder.aliases.X` (plural).
-
-## Multiple Accounts
-
-```toml
-[accounts.personal]
-email = "personal@example.com"
-default = true
-# ... backend config ...
-
-[accounts.work]
-email = "work@company.com"
-# ... backend config ...
-```
-
-Switch accounts with `--account`:
-
-```bash
-himalaya --account work envelope list
-```
-
-## Notmuch Backend (local mail)
-
-```toml
-[accounts.local]
-email = "user@example.com"
-
-backend.type = "notmuch"
-backend.db-path = "~/.mail/.notmuch"
-```
-
-## OAuth2 Authentication (for providers that support it)
-
-```toml
-backend.auth.type = "oauth2"
-backend.auth.client-id = "your-client-id"
-backend.auth.client-secret.cmd = "pass show oauth/client-secret"
-backend.auth.access-token.cmd = "pass show oauth/access-token"
-backend.auth.refresh-token.cmd = "pass show oauth/refresh-token"
-backend.auth.auth-url = "https://provider.com/oauth/authorize"
-backend.auth.token-url = "https://provider.com/oauth/token"
-```
-
-## Additional Options
-
-### Signature
-
-```toml
-[accounts.default]
-signature = "Best regards,\nYour Name"
-signature-delim = "-- \n"
-```
-
-### Downloads directory
-
-```toml
-[accounts.default]
-downloads-dir = "~/Downloads/himalaya"
-```
-
-### Editor for composing
-
-Set via environment variable:
-
-```bash
-export EDITOR="vim"
-```
+1. **`folder.alias.X`** (singular, sub-table) — that's v1.x. v2 silently
+   ignores it. Always use **`mailbox.alias.X`** (plural, dotted key under
+   the account block).
+2. **Passwords with trailing newline** — `pass show` may include one.
+   Add `| tr -d '\n'` if SASL auth fails mysteriously.
+3. **Gmail folder names with `[Gmail]/`** — must be quoted in shell:
+   `himalaya -m "[Gmail]/Sent Mail"`. Better: define `mailbox.alias.sent`.
+4. **Nested `[accounts.X] backend = { ... }` table** — that's v1.x TOML.
+   v2 uses flat per-backend keys like `imap.server`,
+   `imap.sasl.plain.username`, `imap.sasl.plain.password.command`.
+5. **`envelope list from alice`** — that's v1 positional. v2 uses
+   `envelope search "from alice"`.
+6. **Plain `password = "secret"`** — there's no such field in v2. Use
+   `.raw` or `.command`.
+7. **`--json` placement** — v2 made it a **global** flag. Both placements
+   work: `himalaya --json envelope list` (pre-subcommand, the documented
+   convention) and `himalaya envelope list --json` (post-subcommand,
+   accepted for ergonomics). Neither is silently mis-parsed.

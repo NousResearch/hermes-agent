@@ -1408,3 +1408,128 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Auto-decompose on every dispatch entry point (#87283)
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_ns(**overrides) -> argparse.Namespace:
+    ns = argparse.Namespace(
+        dry_run=False, max=None, json=True,
+        failure_limit=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
+    )
+    for k, v in overrides.items():
+        setattr(ns, k, v)
+    return ns
+
+
+def test_cmd_dispatch_decomposes_triage_card_outside_gateway(
+    kanban_home, monkeypatch, capsys,
+):
+    """`hermes kanban dispatch` must run the same auto-decompose pass the
+    gateway-embedded dispatcher runs (#87283): one CLI pass specifies a
+    fresh triage card (real decompose path, aux LLM mocked) AND dispatches
+    it — worker spawn stubbed — instead of the card silently stalling in
+    the triage column."""
+    import hermes_cli.kanban as kb_cli
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rough idea", triage=True)
+
+    fake_profiles = [
+        SimpleNamespace(
+            name="orchestrator", is_default=True, description="d",
+            description_auto=False, model="m", provider="p", skill_count=1,
+        ),
+    ]
+    monkeypatch.setattr("hermes_cli.profiles.list_profiles",
+                        lambda: fake_profiles)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profile_exists",
+        lambda x: x == "orchestrator",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name",
+        lambda: "orchestrator",
+    )
+    llm_payload = json.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Polished idea",
+        "body": "**Goal**\nDo it.",
+    })
+    resp = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=llm_payload))]
+    )
+    monkeypatch.setattr(
+        "agent.auxiliary_client.call_llm", lambda **kw: resp,
+    )
+    # Stub the worker spawner so the post-decompose dispatch_once can run
+    # its real claim path without launching a real `hermes -p` subprocess.
+    monkeypatch.setattr(kb, "_default_spawn", lambda *a, **k: 4242)
+
+    rc = kb_cli._cmd_dispatch(_dispatch_ns())
+    captured = capsys.readouterr()
+    assert rc == 0
+
+    # The tick fired BEFORE dispatch_once: the card was specified out of
+    # triage and then claimed+spawned in the same pass.
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.title == "Polished idea"
+    assert task.status == "running"
+    payload = json.loads(captured.out)
+    assert any(row["task_id"] == tid for row in payload["spawned"])
+
+
+def test_cmd_dispatch_dry_run_does_not_mutate_board(kanban_home, monkeypatch):
+    """--dry-run is an inspection mode: it must NOT create child tasks or
+    promote triage cards as a side effect."""
+    import hermes_cli.kanban as kb_cli
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="inspect me", triage=True)
+
+    called: list[int] = []
+    import hermes_cli.kanban_decompose as decomp_mod
+    monkeypatch.setattr(
+        decomp_mod, "run_auto_decompose_tick",
+        lambda *a, **kw: called.append(1) or 0,
+    )
+
+    rc = kb_cli._cmd_dispatch(_dispatch_ns(dry_run=True))
+    assert rc == 0
+    assert called == []
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_run_daemon_runs_auto_decompose_tick_before_dispatch_once(
+    kanban_home, monkeypatch,
+):
+    """The legacy standalone daemon loop must run the shared auto-decompose
+    tick ahead of each dispatch_once, in that order, like the gateway."""
+    sequence: list[str] = []
+
+    import hermes_cli.kanban_decompose as decomp_mod
+    monkeypatch.setattr(
+        decomp_mod, "run_auto_decompose_tick",
+        lambda *a, **kw: sequence.append("auto-decompose") or 0,
+    )
+
+    stop_event = threading.Event()
+
+    def _on_tick(_res):
+        sequence.append("dispatch")
+        stop_event.set()
+
+    kb.run_daemon(
+        interval=5.0,
+        stop_event=stop_event,
+        on_tick=_on_tick,
+    )
+    assert sequence == ["auto-decompose", "dispatch"], (
+        f"expected [auto-decompose, dispatch], got {sequence!r}"
+    )
+
+

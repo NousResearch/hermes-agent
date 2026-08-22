@@ -1226,6 +1226,122 @@ def test_specify_happy_path(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# POST /dispatch — auto-decompose + dispatcher-presence warning (#87283)
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_nudge_runs_auto_decompose_tick(client, monkeypatch):
+    """The nudge endpoint must run the shared auto-decompose tick before
+    its dispatch_once, like the gateway-embedded dispatcher does."""
+    import hermes_cli.kanban_decompose as decomp_mod
+
+    called: list[int] = []
+    monkeypatch.setattr(
+        decomp_mod, "run_auto_decompose_tick",
+        lambda *a, **kw: called.append(1) or 0,
+    )
+    r = client.post("/api/plugins/kanban/dispatch")
+    assert r.status_code == 200
+    assert called, "POST /dispatch must invoke the auto-decompose tick"
+
+
+def test_dispatch_nudge_decomposes_triage_card_without_gateway(
+    client, monkeypatch,
+):
+    """Dashboard-only install (no gateway): nudging dispatch decomposes a
+    fresh triage card instead of leaving it stalled forever (#87283 /
+    #90277). Real decompose path, aux LLM mocked."""
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "rough idea", "triage": True},
+    ).json()["task"]
+    assert t["status"] == "triage"
+
+    _patch_specifier_response(
+        monkeypatch,
+        content=json.dumps({
+            "fanout": False,
+            "rationale": "single unit",
+            "title": "Polished idea",
+            "body": "**Goal**\nDo the thing.",
+        }),
+    )
+
+    r = client.post("/api/plugins/kanban/dispatch")
+    assert r.status_code == 200
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
+    assert detail["status"] != "triage"
+    assert detail["title"] == "Polished idea"
+
+
+def test_dispatch_dry_run_does_not_auto_decompose(client, monkeypatch):
+    """dry_run is an inspection pass: no board mutation, no tick."""
+    import hermes_cli.kanban_decompose as decomp_mod
+
+    called: list[int] = []
+    monkeypatch.setattr(
+        decomp_mod, "run_auto_decompose_tick",
+        lambda *a, **kw: called.append(1) or 0,
+    )
+    r = client.post("/api/plugins/kanban/dispatch?dry_run=true&max=4")
+    assert r.status_code == 200
+    assert called == []
+
+
+def test_dispatch_nudge_warns_when_no_dispatcher(client, monkeypatch):
+    """With nothing long-lived to pick work up, the nudge response says so
+    instead of returning silence (#90277)."""
+    import hermes_cli.kanban as kb_cli
+
+    monkeypatch.setattr(
+        kb_cli, "_check_dispatcher_presence",
+        lambda hermes_home=None: (False, "No gateway is running — start it."),
+    )
+    r = client.post("/api/plugins/kanban/dispatch")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["warning"] == "No gateway is running — start it."
+
+
+def test_dispatch_nudge_no_warning_when_dispatcher_present(
+    client, monkeypatch,
+):
+    import hermes_cli.kanban as kb_cli
+
+    monkeypatch.setattr(
+        kb_cli, "_check_dispatcher_presence",
+        lambda hermes_home=None: (True, "gateway pid=42, dispatch enabled"),
+    )
+    r = client.post("/api/plugins/kanban/dispatch")
+    assert r.status_code == 200
+    assert "warning" not in r.json()
+
+
+def test_dispatch_nudge_survives_probe_and_tick_failures(
+    client, monkeypatch,
+):
+    """A crashing decomposer or presence probe must never turn the nudge
+    into a 500 — dispatch still runs."""
+    import hermes_cli.kanban as kb_cli
+    import hermes_cli.kanban_decompose as decomp_mod
+
+    def _boom(*a, **kw):
+        raise RuntimeError("decomposer down")
+
+    monkeypatch.setattr(decomp_mod, "run_auto_decompose_tick", _boom)
+    monkeypatch.setattr(kb_cli, "_check_dispatcher_presence", _boom)
+
+    client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "work", "assignee": "researcher"},
+    )
+    r = client.post("/api/plugins/kanban/dispatch")
+    assert r.status_code == 200
+    assert isinstance(r.json(), dict)
+
+
+# ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
 

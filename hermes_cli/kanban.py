@@ -2658,6 +2658,18 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_in_progress_per_profile = None
         max_in_progress = None
         max_spawn = getattr(args, "max", None)
+    if not getattr(args, "dry_run", False):
+        # Same auto-decompose pass the gateway-embedded dispatcher runs
+        # before every tick (#87283), so `hermes kanban dispatch` promotes
+        # fresh triage cards instead of silently skipping them. Skipped
+        # under --dry-run so an inspection pass never mutates the board.
+        # Best-effort: the tick never raises, but guard anyway so a broken
+        # decomposer can't fail the dispatch.
+        try:
+            from hermes_cli.kanban_decompose import run_auto_decompose_tick
+            run_auto_decompose_tick()
+        except Exception:
+            pass
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn,

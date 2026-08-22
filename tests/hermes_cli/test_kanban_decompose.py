@@ -8,6 +8,7 @@ and the assignee-fallback logic.
 from __future__ import annotations
 
 import json as jsonlib
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -159,5 +160,156 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
             p.stop()
     assert outcome.ok is False
     assert "not in triage" in outcome.reason
+
+
+# ---------------------------------------------------------------------------
+# Shared auto-decompose tick (#87283) — the pass every dispatch entry
+# point (gateway watcher, dashboard nudge, CLI dispatch, legacy daemon)
+# now runs before its dispatch_once.
+# ---------------------------------------------------------------------------
+
+
+def _tick_triage_task(title: str) -> str:
+    with kb.connect() as conn:
+        return kb.create_task(conn, title=title, triage=True)
+
+
+def _ok_outcome(tid: str, fanout: bool = False):
+    return decomp.DecomposeOutcome(tid, True, "ok", fanout=fanout)
+
+
+def test_tick_disabled_flag_is_a_noop(kanban_home, monkeypatch):
+    """kanban.auto_decompose=false must stop the shared tick everywhere,
+    not just in the gateway (#49638 contract, now enforced at the shared
+    choke point)."""
+    tid = _tick_triage_task("should stay put")
+    stub = MagicMock(return_value=_ok_outcome(tid))
+    monkeypatch.setattr(decomp, "decompose_task", stub)
+    monkeypatch.setattr(
+        decomp, "_load_config",
+        lambda: {"kanban": {"auto_decompose": False}},
+    )
+    assert decomp.run_auto_decompose_tick() == 0
+    stub.assert_not_called()
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_tick_enabled_by_default_and_counts_successes(kanban_home, monkeypatch):
+    _tick_triage_task("a")
+    _tick_triage_task("b")
+    monkeypatch.setattr(decomp, "_load_config", lambda: {"kanban": {}})
+    monkeypatch.setattr(
+        decomp, "decompose_task",
+        lambda tid, **kw: _ok_outcome(tid),
+    )
+    assert decomp.run_auto_decompose_tick() == 2
+
+
+def test_tick_respects_per_tick_cap(kanban_home, monkeypatch):
+    ids = [_tick_triage_task(f"bulk {i}") for i in range(5)]
+    calls: list[str] = []
+
+    def _stub(tid, **kw):
+        calls.append(tid)
+        return _ok_outcome(tid)
+
+    monkeypatch.setattr(
+        decomp, "_load_config",
+        lambda: {"kanban": {"auto_decompose_per_tick": 2}},
+    )
+    monkeypatch.setattr(decomp, "decompose_task", _stub)
+    assert decomp.run_auto_decompose_tick() == 2
+    assert len(calls) == 2
+    assert set(calls) <= set(ids)
+
+
+def test_tick_explicit_per_tick_overrides_config(kanban_home, monkeypatch):
+    for i in range(3):
+        _tick_triage_task(f"t{i}")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        decomp, "_load_config",
+        lambda: {"kanban": {"auto_decompose_per_tick": 1}},
+    )
+
+    def _stub(tid, **kw):
+        calls.append(tid)
+        return _ok_outcome(tid)
+
+    monkeypatch.setattr(decomp, "decompose_task", _stub)
+    assert decomp.run_auto_decompose_tick(per_tick=3) == 3
+    assert len(calls) == 3
+
+
+def test_tick_error_isolation_one_bad_card_doesnt_kill_the_rest(
+    kanban_home, monkeypatch,
+):
+    """One crashing card must never take down the tick or its siblings —
+    every triage card still gets attempted despite the first crash."""
+    bad = _tick_triage_task("crashes")
+    good = _tick_triage_task("survives")
+    attempted: list[str] = []
+
+    def _stub(tid, **kw):
+        attempted.append(tid)
+        if tid == bad:
+            raise RuntimeError("aux LLM exploded")
+        return _ok_outcome(tid)
+
+    monkeypatch.setattr(decomp, "_load_config", lambda: {"kanban": {}})
+    monkeypatch.setattr(decomp, "decompose_task", _stub)
+    assert decomp.run_auto_decompose_tick() == 1
+    # Both cards were attempted; the crash on `bad` didn't stop `good`.
+    assert sorted(attempted) == sorted([bad, good])
+
+
+def test_tick_restores_board_env_var(kanban_home, monkeypatch):
+    """The per-board HERMES_KANBAN_BOARD pinning must be undone after the
+    tick so a caller's active-board selection survives."""
+    _tick_triage_task("env probe")
+    monkeypatch.setattr(decomp, "_load_config", lambda: {"kanban": {}})
+    monkeypatch.setattr(
+        decomp, "decompose_task",
+        lambda tid, **kw: _ok_outcome(tid),
+    )
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    decomp.run_auto_decompose_tick()
+    assert os.environ["HERMES_KANBAN_BOARD"] == "default"
+
+
+def test_tick_end_to_end_specifies_triage_card_via_mocked_llm(
+    kanban_home, monkeypatch,
+):
+    """Real decompose path (only the aux LLM mocked): a triage card that
+    the LLM tightens into a single spec lands in ``todo`` — outside any
+    gateway."""
+    tid = _tick_triage_task("rough idea")
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        llm_payload = jsonlib.dumps({
+            "fanout": False,
+            "rationale": "single unit",
+            "title": "Polished idea",
+            "body": "**Goal**\nDo it.",
+        })
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=_fake_aux_response(llm_payload),
+        ):
+            assert decomp.run_auto_decompose_tick() == 1
+    finally:
+        for p in patches:
+            p.stop()
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    # specify_triage_task lands in `todo`; recompute_ready promotes a
+    # parent-free todo to `ready` in the same write — either way the card
+    # is out of triage and dispatchable.
+    assert task.status in {"todo", "ready"}
+    assert task.title == "Polished idea"
 
 

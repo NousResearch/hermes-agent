@@ -10967,6 +10967,18 @@ def run_daemon(
 
     while not stop_event.is_set():
         try:
+            # Auto-decompose fresh triage tasks before claiming/spawning —
+            # the same pass the gateway-embedded dispatcher runs every tick
+            # (#87283), so the standalone daemon doesn't strand triage
+            # cards the way the bare dispatch_once loop did. Lazy import:
+            # kanban_decompose imports this module at its own module level.
+            # The tick is best-effort and never raises; the guard keeps a
+            # broken decomposer from killing the daemon either.
+            try:
+                from hermes_cli.kanban_decompose import run_auto_decompose_tick
+                run_auto_decompose_tick()
+            except Exception:
+                pass
             # Resolve the global concurrency cap the same way the gateway
             # dispatcher and `hermes kanban dispatch` do (OOF-30): explicit
             # kanban.max_in_progress wins, otherwise the memory-derived

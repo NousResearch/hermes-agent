@@ -2287,14 +2287,44 @@ def dispatch(
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        if not dry_run:
+            # Same auto-decompose pass the gateway-embedded dispatcher runs
+            # before every tick (#87283): without it, a dashboard-only
+            # install (no gateway) leaves triage cards stalled forever.
+            # Skipped under dry_run so an inspection pass never mutates the
+            # board. Best-effort — never raises, and a failure here must
+            # not block the dispatch itself.
+            try:
+                from hermes_cli.kanban_decompose import run_auto_decompose_tick
+                run_auto_decompose_tick()
+            except Exception:
+                log.exception("kanban auto-decompose failed during dispatch nudge")
         result = kanban_db.dispatch_once(
             conn, dry_run=dry_run, max_spawn=max_n, board=board,
         )
         # DispatchResult is a dataclass.
         try:
-            return asdict(result)
+            body = asdict(result)
         except TypeError:
-            return {"result": str(result)}
+            body = {"result": str(result)}
+        # Dispatcher-presence probe, same helper create-time uses: when no
+        # long-lived dispatcher will pick work up after this one-off nudge,
+        # say so instead of leaving the user with silent nothingness
+        # (#87283 / #90277). Fails open internally — a broken probe adds
+        # no warning rather than a false one.
+        try:
+            from hermes_cli.kanban import _check_dispatcher_presence
+            from hermes_constants import get_hermes_home
+
+            running, message = _check_dispatcher_presence(
+                hermes_home=get_hermes_home()
+            )
+            if not running and message:
+                body["warning"] = message
+        except Exception:
+            # Probe failure must never break the nudge response.
+            pass
+        return body
     finally:
         conn.close()
 

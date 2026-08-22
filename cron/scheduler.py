@@ -1365,6 +1365,10 @@ def _apply_monitor_gate(
         # bookkeeping tail can commit it only after the agent succeeded AND delivery reported no
         # error; anything short of that leaves the old hash so this observation retries.
         pending_commit = {"new_hash": _mon.new_hash, "output": _mon.output}
+        # The defer list is the only channel that crosses the process boundary; the job-dict
+        # key is a same-process fallback for callers that don't pass `defer_monitor_commit`,
+        # popped by the decision point in the same execution. Never persist this key — it is
+        # scratch state for one run.
         job["_monitor_pending_commit"] = pending_commit
         if defer_monitor_commit is not None:
             defer_monitor_commit.append(pending_commit)
@@ -2827,7 +2831,7 @@ def _save_compose_deliver(
     requires_delivery = _monitor_event_requires_delivery(pending_monitor)
     if job.get("monitor_commit_policy") == "after_delivery" and pending_monitor and d.success:
         d.monitor_retry = (
-            deliver_content.strip().upper() == MONITOR_RETRY_MARKER
+            deliver_content.strip() == MONITOR_RETRY_MARKER
             or (
                 requires_delivery
                 and (

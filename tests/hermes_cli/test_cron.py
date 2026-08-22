@@ -36,15 +36,23 @@ class TestCronCommandLifecycle:
                 "--model",
                 "new-model",
                 "--provider",
-                "nous",
+                "custom",
+                "--base-url",
+                "https://inference.example/v1/",
+                "--terminal-timeout",
+                "900",
             ]
         )
         cron_command(args)
 
         updated = get_job(job["id"])
         assert updated["model"] == "new-model"
-        assert updated["provider"] == "nous"
-        assert "Updated job" in capsys.readouterr().out
+        assert updated["provider"] == "custom"
+        assert updated["base_url"] == "https://inference.example/v1"
+        assert updated["terminal_timeout"] == 900
+        out = capsys.readouterr().out
+        assert "Updated job" in out
+        assert "Terminal timeout: 900s" in out
 
     def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
         job = create_job(
@@ -228,6 +236,40 @@ def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Gateway is not running" in out
     assert "Nightly docs" in out
+
+
+def test_cron_list_surfaces_drift_before_first_missed_run(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "cron.jobs.list_jobs",
+        lambda include_disabled=False: [
+            {
+                "id": "job-drift",
+                "name": "Pinned expectation",
+                "schedule_display": "every hour",
+                "state": "scheduled",
+                "enabled": True,
+                "next_run_at": "2026-06-01T00:00:00Z",
+                "deliver": ["local"],
+                "provider": None,
+                "model": None,
+                "provider_snapshot": "openrouter",
+                "model_snapshot": "old/model",
+                "last_status": None,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        cron_cli,
+        "_current_cron_inference_defaults",
+        lambda: ({}, "nous", "new/model"),
+    )
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [123])
+
+    cron_cli.cron_list()
+
+    out = capsys.readouterr().out.lower()
+    assert "drift-blocked" in out
+    assert "--provider <provider> --model <model>" in out
 
 
 def test_cron_tick_invokes_scheduler_tick_with_verbose(monkeypatch):

@@ -2511,6 +2511,9 @@ DEFAULT_CONFIG = {
         # Inference provider paired with cron.model (NOT the scheduler
         # provider below). Empty string = resolve from global config.
         "model_provider": "",
+        # Default foreground terminal-command timeout for cron agents. null
+        # follows terminal.timeout. A per-job terminal_timeout pin wins.
+        "terminal_timeout": None,
         # Active cron SCHEDULER provider (Axis B — the trigger that decides
         # WHEN a due job fires). Empty string = the built-in in-process 60s
         # ticker (default). Name an installed provider (plugins/cron_providers/<name>/ or

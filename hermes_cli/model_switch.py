@@ -526,6 +526,50 @@ _BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {}
 DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
 
+def direct_aliases_from_config(cfg: dict[str, Any]) -> dict[str, DirectAlias]:
+    """Build direct aliases from an already-loaded config mapping."""
+    merged = dict(_BUILTIN_DIRECT_ALIASES)
+
+    # --- model_aliases (dict-based format) ---
+    user_aliases = cfg.get("model_aliases")
+    if isinstance(user_aliases, dict):
+        for name, entry in user_aliases.items():
+            if not isinstance(entry, dict):
+                continue
+            model = entry.get("model", "")
+            provider = entry.get("provider", "custom")
+            base_url = entry.get("base_url", "")
+            if model:
+                merged[name.strip().lower()] = DirectAlias(
+                    model=model, provider=provider, base_url=base_url,
+                )
+
+    # --- model.aliases (string-based format, from config set) ---
+    model_section = cfg.get("model", {})
+    if isinstance(model_section, dict):
+        simple_aliases = model_section.get("aliases")
+        if isinstance(simple_aliases, dict):
+            current_provider = model_section.get("provider", "")
+            for name, value in simple_aliases.items():
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                key = name.strip().lower()
+                if key in merged:
+                    continue
+                val = value.strip()
+                if "/" in val:
+                    provider, model = val.split("/", 1)
+                else:
+                    provider = current_provider
+                    model = val
+                merged[key] = DirectAlias(
+                    model=model.strip(),
+                    provider=provider.strip() or current_provider,
+                    base_url="",
+                )
+    return merged
+
+
 def _load_direct_aliases() -> dict[str, DirectAlias]:
     """Load direct aliases from config.yaml ``model_aliases:`` section.
 
@@ -546,51 +590,12 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
     into DirectAlias objects.  The provider is parsed from the ``provider/``
     prefix in the value; if no slash, the current provider is used.
     """
-    merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-
-        # --- model_aliases (dict-based format) ---
-        user_aliases = cfg.get("model_aliases")
-        if isinstance(user_aliases, dict):
-            for name, entry in user_aliases.items():
-                if not isinstance(entry, dict):
-                    continue
-                model = entry.get("model", "")
-                provider = entry.get("provider", "custom")
-                base_url = entry.get("base_url", "")
-                if model:
-                    merged[name.strip().lower()] = DirectAlias(
-                        model=model, provider=provider, base_url=base_url,
-                    )
-
-        # --- model.aliases (string-based format, from config set) ---
-        model_section = cfg.get("model", {})
-        if isinstance(model_section, dict):
-            simple_aliases = model_section.get("aliases")
-            if isinstance(simple_aliases, dict):
-                current_provider = model_section.get("provider", "")
-                for name, value in simple_aliases.items():
-                    if not isinstance(value, str) or not value.strip():
-                        continue
-                    key = name.strip().lower()
-                    if key in merged:
-                        continue  # don't override explicit model_aliases entries
-                    val = value.strip()
-                    if "/" in val:
-                        provider, model = val.split("/", 1)
-                    else:
-                        provider = current_provider
-                        model = val
-                    merged[key] = DirectAlias(
-                        model=model.strip(),
-                        provider=provider.strip() or current_provider,
-                        base_url="",
-                    )
+        return direct_aliases_from_config(cfg)
     except Exception:
-        pass
-    return merged
+        return dict(_BUILTIN_DIRECT_ALIASES)
 
 
 def _ensure_direct_aliases() -> None:

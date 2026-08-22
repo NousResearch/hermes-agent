@@ -2601,6 +2601,16 @@ def _resolve_command_cwd(
     return recorded or default_cwd
 
 
+def _resolve_command_timeout(config: Dict[str, Any], overrides: Dict[str, Any]) -> int:
+    """Return the session-scoped default command timeout."""
+    value = overrides.get("timeout", config["timeout"])
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError):
+        return int(config["timeout"])
+    return timeout if timeout > 0 else int(config["timeout"])
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -2714,7 +2724,7 @@ def terminal_tool(
                     cwd, env_type, remapped,
                 )
             cwd = remapped
-        default_timeout = config["timeout"]
+        default_timeout = _resolve_command_timeout(config, overrides)
 
         # Validate an explicit timeout before it flows into deadline math.
         # ``timeout or default`` silently turns 0 into the default (0 can't mean

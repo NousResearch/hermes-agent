@@ -110,6 +110,23 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Inference provider paired with --model (e.g. 'openrouter', 'nous').",
     )
     cron_create.add_argument(
+        "--base-url",
+        dest="base_url",
+        help=(
+            "Base URL paired with --provider for a custom/local endpoint. "
+            "Named providers may only use their configured endpoint host."
+        ),
+    )
+    cron_create.add_argument(
+        "--terminal-timeout",
+        dest="terminal_timeout",
+        type=int,
+        help=(
+            "Default foreground terminal timeout for this job in seconds. "
+            "Overrides cron.terminal_timeout and terminal.timeout."
+        ),
+    )
+    cron_create.add_argument(
         "--reasoning-effort",
         dest="reasoning_effort",
         help=(
@@ -244,6 +261,20 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--provider",
         dest="model_provider",
         help="Inference provider paired with --model. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--base-url",
+        dest="base_url",
+        help="Custom/local inference base URL. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--terminal-timeout",
+        dest="terminal_timeout",
+        type=int,
+        help=(
+            "Default foreground terminal timeout for this job in seconds. "
+            "Omit to preserve the current value."
+        ),
     )
     cron_edit.add_argument(
         "--reasoning-effort",

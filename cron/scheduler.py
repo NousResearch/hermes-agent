@@ -4713,6 +4713,140 @@ def _cron_preflight_enabled(cfg: dict) -> bool:
     return cron_cfg.get("preflight", True) is not False
 
 
+def _normalize_cron_custom_route_provider(
+    provider: Optional[str], base_url: Optional[str]
+) -> Optional[str]:
+    """Map an alias-only custom label to the bare custom runtime."""
+    if not (
+        base_url
+        and provider
+        and provider.lower().startswith("custom:")
+    ):
+        return provider
+    try:
+        from hermes_cli.runtime_provider import has_named_custom_provider
+
+        if not has_named_custom_provider(provider):
+            return "custom"
+    except Exception:
+        pass
+    return provider
+
+
+def _resolve_cron_inference_route(
+    *, model: Any, provider: Any, base_url: Any, config: Optional[dict] = None
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Dereference a configured model alias into one atomic cron route."""
+    resolved_model = str(model or "").strip()
+    resolved_provider = str(provider or "").strip() or None
+    resolved_base_url = str(base_url or "").strip().rstrip("/") or None
+    if not resolved_model:
+        return (
+            resolved_model,
+            _normalize_cron_custom_route_provider(
+                resolved_provider, resolved_base_url
+            ),
+            resolved_base_url,
+        )
+    try:
+        from hermes_cli import model_switch
+
+        aliases = (
+            model_switch.direct_aliases_from_config(config)
+            if config is not None
+            else model_switch._load_direct_aliases()
+        )
+        alias = aliases.get(resolved_model.lower())
+    except Exception:
+        alias = None
+    if alias is None:
+        return (
+            resolved_model,
+            _normalize_cron_custom_route_provider(
+                resolved_provider, resolved_base_url
+            ),
+            resolved_base_url,
+        )
+    resolved_model = str(alias.model).strip()
+    resolved_provider = resolved_provider or (str(alias.provider).strip() or None)
+    resolved_base_url = resolved_base_url or (
+        str(alias.base_url).strip().rstrip("/") or None
+    )
+
+    # A model alias may use ``custom:<label>`` only to identify its endpoint;
+    # unlike providers/custom_providers entries it owns no stored credential.
+    # Resolve that alias-only spelling through bare custom so runtime provider
+    # validation does not reject it as an unknown named provider. Configured
+    # named custom providers retain their identity and credential protections.
+    resolved_provider = _normalize_cron_custom_route_provider(
+        resolved_provider, resolved_base_url
+    )
+    return resolved_model, resolved_provider, resolved_base_url
+
+
+def _resolve_cron_terminal_timeout(job: dict, cfg: dict) -> int:
+    """Resolve job pin > cron fleet default > terminal default."""
+    cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
+    terminal_cfg = (
+        cfg.get("terminal") if isinstance(cfg.get("terminal"), dict) else {}
+    )
+    for value in (
+        job.get("terminal_timeout"),
+        cron_cfg.get("terminal_timeout"),
+        terminal_cfg.get("timeout"),
+        180,
+    ):
+        if value in {None, ""} or isinstance(value, bool):
+            continue
+        try:
+            timeout = int(value)
+        except (TypeError, ValueError):
+            continue
+        if timeout > 0:
+            return timeout
+    return 180
+
+
+def _cron_model_drift_axes_for_route(
+    job: dict,
+    *,
+    current_provider: str,
+    current_model: str,
+    config: dict,
+    alias_supplied_provider: bool,
+) -> list[str]:
+    """Apply the drift guard without splitting an alias's atomic route."""
+    drift_job = job
+    if alias_supplied_provider and not job.get("provider"):
+        drift_job = {**job, "provider": current_provider}
+    return cron_model_drift_axes(
+        drift_job,
+        current_provider=current_provider,
+        current_model=current_model,
+        config=config,
+    )
+
+
+def _run_cron_conversation(agent: Any, prompt: str, task_id: str) -> Any:
+    """Pass the cron task id when the agent implementation accepts it."""
+    try:
+        import inspect
+
+        target = agent.run_conversation
+        side_effect = getattr(target, "side_effect", None)
+        signature_target = side_effect if callable(side_effect) else target
+        parameters = inspect.signature(signature_target).parameters.values()
+        accepts_task_id = any(
+            p.name == "task_id" or p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in parameters
+        )
+    except (TypeError, ValueError):
+        accepts_task_id = True
+    if accepts_task_id:
+        return agent.run_conversation(prompt, task_id=task_id)
+    return agent.run_conversation(prompt)
+
+
 def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     """READ-ONLY probe: would provider resolution fail for lack of a key?
 
@@ -5492,6 +5626,7 @@ def run_job(
     _cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
     _cron_session_token = None
     _non_dispatcher_token = None
+    _terminal_override_registered = False
     try:
         if not _cwd_lock_acquired:
             # Fail closed (#79768): running without the lock would let a
@@ -5638,6 +5773,24 @@ def run_job(
                 "default with `hermes model <name>`."
             )
 
+        _effective_provider = job.get("provider") or _cron_default_provider or None
+        _provider_was_explicit = bool(_effective_provider)
+        model, _effective_provider, _effective_base_url = _resolve_cron_inference_route(
+            model=model,
+            provider=_effective_provider,
+            base_url=job.get("base_url"),
+            config=_cfg,
+        )
+        _effective_job = {
+            **job,
+            "model": model,
+            "provider": _effective_provider,
+            "base_url": _effective_base_url,
+        }
+        _alias_supplied_provider = (
+            not _provider_was_explicit and bool(_effective_provider)
+        )
+
         # Apply IPv4 preference if configured.
         try:
             from hermes_constants import apply_ipv4_preference
@@ -5700,7 +5853,7 @@ def run_job(
         # job persisted before that guard — or written directly to the jobs store
         # — reaches this sink unchecked. Fail closed before resolution so no
         # off-host call is ever made with a stored key.
-        _guard_job_credential_exfil(job)
+        _guard_job_credential_exfil(_effective_job)
 
         # ---------------------------------------------------------------
         # Pre-dispatch configuration validation (T1-26).
@@ -5720,7 +5873,7 @@ def run_job(
         _pf_reason = None
         try:
             if _cron_preflight_enabled(_cfg):
-                _pf_reason = _preflight_job_config(job, _cfg)
+                _pf_reason = _preflight_job_config(_effective_job, _cfg)
                 if not _pf_reason and job.get("preflight_alerted"):
                     # Configuration validates again — clear the alert-once
                     # marker so a FUTURE config break re-alerts.
@@ -5792,15 +5945,15 @@ def run_job(
                 # Per-job user pin wins; otherwise the cron-fleet default
                 # provider (cron.model_provider); otherwise resolve from
                 # persisted global config.
-                "requested": job.get("provider") or _cron_default_provider or None,
+                "requested": _effective_provider,
                 # Derive provider-specific api_mode from the model this job
                 # will actually run (per-job pin > env > config default), not
                 # the stale persisted default — mirrors the fallback path
                 # below, which already passes its fb_model.
                 "target_model": model,
             }
-            if job.get("base_url"):
-                runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            if _effective_base_url:
+                runtime_kwargs["explicit_base_url"] = _effective_base_url
             runtime = resolve_runtime_provider(**runtime_kwargs)
             primary_provider_for_drift = (
                 str(runtime.get("provider") or "").strip().lower()
@@ -5901,11 +6054,12 @@ def run_job(
                 primary_provider_for_drift or runtime.get("provider") or ""
             ).strip().lower()
             _current_model = str(primary_model_for_drift or "").strip().lower()
-            for _axis in cron_model_drift_axes(
+            for _axis in _cron_model_drift_axes_for_route(
                 job,
                 current_provider=_current_provider,
                 current_model=_current_model,
                 config=_cfg,
+                alias_supplied_provider=_alias_supplied_provider,
             ):
                 _snapshot = str(job.get(f"{_axis}_snapshot") or "").strip().lower()
                 _current = _current_provider if _axis == "provider" else _current_model
@@ -6045,6 +6199,17 @@ def run_job(
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+
+        from tools.terminal_tool import register_task_env_overrides
+
+        register_task_env_overrides(
+            _cron_session_id,
+            {
+                "timeout": _resolve_cron_terminal_timeout(job, _cfg),
+                **({"cwd": _job_workdir} if _job_workdir else {}),
+            },
+        )
+        _terminal_override_registered = True
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
@@ -6106,7 +6271,13 @@ def run_job(
         # Tag this fire and time the run_conversation call for the usage_audit.jsonl entry.
         _audit_fire_id = uuid.uuid4().hex
         _audit_t_start = time.monotonic()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        _cron_future = _cron_pool.submit(
+            _cron_context.run,
+            _run_cron_conversation,
+            agent,
+            prompt,
+            _cron_session_id,
+        )
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
@@ -6345,6 +6516,16 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
+        if _terminal_override_registered:
+            try:
+                from tools.terminal_tool import clear_task_env_overrides
+
+                clear_task_env_overrides(_cron_session_id)
+            except Exception:
+                logger.debug(
+                    "Job '%s': failed to clear terminal overrides", job_id,
+                    exc_info=True,
+                )
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
         # only ever mutate it when the job has a workdir AND actually held
         # the write lock — a fail-closed timeout raised before the env-set,

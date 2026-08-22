@@ -603,6 +603,11 @@ def _validate_cron_base_url(
             f"custom provider's stored credential may only be sent to its own "
             f"configured endpoint ({cfg_host or 'unknown'})."
         )
+    if prov.lower().startswith("custom:"):
+        # Alias-only custom labels carry no configured credential. The
+        # scheduler normalizes them to bare custom before runtime resolution,
+        # so they have the same BYOK trust boundary as provider="custom".
+        return None
     try:
         resolved = resolve_requested_provider(prov)
     except Exception:
@@ -675,6 +680,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "model": job.get("model"),
         "provider": job.get("provider"),
         "base_url": job.get("base_url"),
+        "terminal_timeout": job.get("terminal_timeout"),
         "schedule": job.get("schedule_display") or "?",
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
@@ -1237,6 +1243,7 @@ def cronjob(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    terminal_timeout: Optional[int] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
@@ -1346,6 +1353,7 @@ def cronjob(
                     model=_normalize_optional_job_value(model),
                     provider=_normalize_optional_job_value(provider),
                     base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                    terminal_timeout=terminal_timeout,
                     script=_normalize_optional_job_value(script),
                     context_from=context_from,
                     enabled_toolsets=enabled_toolsets or None,
@@ -1545,6 +1553,8 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if terminal_timeout is not None:
+                updates["terminal_timeout"] = terminal_timeout
             if reasoning_effort is not None:
                 # CLI-only lane (see create above): update_job validates
                 # against the canonical grammar; empty string clears the pin.

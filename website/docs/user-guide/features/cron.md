@@ -24,8 +24,9 @@ All of this is available to Hermes itself through the `cronjob` tool, so you can
 :::tip
 **Which model does a cron job run on?** Resolution at fire time is: per-job pin → `cron.model` in `config.yaml` → the global default from `hermes model`.
 
-- **Per-job pin** — set by *you* via the dashboard, `hermes cron create/edit --model … --provider …`, or by editing `~/.hermes/cron/jobs.json`. Once set, it sticks until you change it. The agent's `cronjob` tool cannot set or change per-job models — inference pins are user-owned.
+- **Per-job pin** — set by *you* via the dashboard or `hermes cron create/edit --model … --provider … [--base-url …]`. Once set, it sticks until you change it. The agent's `cronjob` tool cannot set or change per-job models — inference pins are user-owned. For local OpenAI-compatible servers, use `--provider custom --base-url http://127.0.0.1:8085/v1`; named `custom:<name>` providers resolve through the same configured-provider catalog as interactive sessions.
 - **`cron.model` / `cron.model_provider`** — a cron-fleet default: every unpinned job runs on this model, independent of your chat model. Set it once (`hermes config set cron.model <name>`) and switching your chat model with `hermes model` or `/model` never touches your cron fleet.
+- **Model aliases** — aliases from `model_aliases` or `model.aliases` are dereferenced at fire time as an atomic model/provider/base-URL route. Explicit per-job `--provider` or `--base-url` values still win over the alias fields.
 - **Global default** — only when neither of the above is set does a job follow `hermes model`. In this case Hermes **snapshots** the provider and model at creation, and if the global default later changes the job **fails closed**: it skips the run, makes no inference call, and alerts you **once** — the job stays skipped (and silent) on subsequent ticks until you act or the config is restored (#44585). For recurring or otherwise repeatable jobs, pin the provider/model explicitly (`hermes cron edit <job_id> --provider <provider> --model <model>`) to proceed. A consumed finite one-shot cannot be updated; create a new future one-shot with an explicit provider and model instead. This prevents an unattended job from silently inheriting a switch to a paid provider/model. Setting `cron.model` (or a per-job pin) is the deliberate way to route cron spend, and the drift guard does not engage for an axis covered by it. Operators who instead want unpinned jobs to track the changing global default can [disable the drift guard](#letting-unpinned-jobs-track-global-defaults).
 
 `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
@@ -189,6 +190,26 @@ When `workdir` is set:
 Jobs with a `workdir` run sequentially on the scheduler tick, not in the parallel pool. This is deliberate: the cron worker applies the job workdir through process-global terminal state, so two workdir jobs running at the same time would corrupt each other's cwd. Workdir-less jobs still run in parallel as before.
 :::
 
+### Long-running terminal commands
+
+Cron agents normally inherit `terminal.timeout`. For builds, migrations, and
+other foreground commands that need longer, pin a timeout on one job:
+
+```bash
+hermes cron edit <job_id> --terminal-timeout 900
+```
+
+Or set a fleet-wide cron default while leaving interactive sessions unchanged:
+
+```bash
+hermes config set cron.terminal_timeout 900
+```
+
+Resolution is per-job `terminal_timeout` → `cron.terminal_timeout` →
+`terminal.timeout`. The override is session-scoped, so concurrent chat and cron
+agents do not inherit each other's timeout. Commands longer than the foreground
+window should still use the terminal tool's managed background mode.
+
 ## Editing jobs
 
 You do not need to delete and recreate jobs just to change them.
@@ -212,6 +233,9 @@ The `<job_id>` placeholder below (and in [Lifecycle actions](#lifecycle-actions)
 ```bash
 hermes cron edit <job_id> --schedule "every 4h"
 hermes cron edit <job_id> --prompt "Use the revised task"
+hermes cron edit <job_id> --provider custom --model Ornith.gguf \
+  --base-url http://127.0.0.1:8085/v1
+hermes cron edit <job_id> --terminal-timeout 900
 hermes cron edit <job_id> --skill blogwatcher --skill maps
 hermes cron edit <job_id> --add-skill maps
 hermes cron edit <job_id> --remove-skill blogwatcher

@@ -1692,6 +1692,23 @@ def _normalize_job_optional_text(value: Any, *, strip_trailing_slash: bool = Fal
     return text or None
 
 
+def _normalize_terminal_timeout(value: Any) -> Optional[int]:
+    """Normalize an optional per-job terminal timeout in seconds."""
+    if value in {None, ""}:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("terminal_timeout must be a positive number of seconds")
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "terminal_timeout must be a positive number of seconds"
+        ) from exc
+    if timeout <= 0:
+        raise ValueError("terminal_timeout must be a positive number of seconds")
+    return timeout
+
+
 def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     """Validate a per-job reasoning effort against the canonical grammar.
 
@@ -1824,6 +1841,7 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    terminal_timeout: Optional[int] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
@@ -1850,6 +1868,9 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
+        terminal_timeout: Optional default timeout for foreground terminal
+                commands in this job. Overrides cron.terminal_timeout and
+                terminal.timeout without changing other concurrent sessions.
         script: Optional path to a script whose stdout feeds the job. With
                 ``no_agent=True`` the script IS the job — its stdout is
                 delivered verbatim. Without ``no_agent``, its stdout is
@@ -1925,6 +1946,7 @@ def create_job(
     normalized_model = _normalize_job_optional_text(model)
     normalized_provider = _normalize_job_optional_text(provider)
     normalized_base_url = _normalize_job_optional_text(base_url, strip_trailing_slash=True)
+    normalized_terminal_timeout = _normalize_terminal_timeout(terminal_timeout)
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
@@ -2046,6 +2068,8 @@ def create_job(
     # absent key = job follows config resolution (pre-feature behavior).
     if normalized_reasoning_effort is not None:
         job["reasoning_effort"] = normalized_reasoning_effort
+    if normalized_terminal_timeout is not None:
+        job["terminal_timeout"] = normalized_terminal_timeout
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -2159,6 +2183,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             if "reasoning_effort" in updates:
                 updates["reasoning_effort"] = _normalize_reasoning_effort(
                     updates["reasoning_effort"]
+                )
+
+            if "terminal_timeout" in updates:
+                updates["terminal_timeout"] = _normalize_terminal_timeout(
+                    updates["terminal_timeout"]
                 )
 
             previous_inference_axes = _normalized_inference_axes(job)

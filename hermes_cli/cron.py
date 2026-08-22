@@ -96,6 +96,22 @@ def _warn_if_gateway_not_running() -> None:
     print(color("     Check status:  hermes cron status", Colors.DIM))
 
 
+def _current_cron_inference_defaults():
+    """Return config plus the provider/model used by drift diagnostics."""
+    try:
+        from cron.scheduler import _resolve_cron_inference_route
+        from hermes_cli.config import load_config, resolve_cron_model_drift_defaults
+
+        cfg = load_config() or {}
+        provider, model = resolve_cron_model_drift_defaults(cfg)
+        _, resolved_provider, _ = _resolve_cron_inference_route(
+            model=model, provider=provider, base_url=None, config=cfg
+        )
+        return cfg, resolved_provider or provider, model
+    except Exception:
+        return {}, "", ""
+
+
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
     from cron.jobs import list_jobs
@@ -114,6 +130,12 @@ def cron_list(show_all: bool = False):
     print()
 
     from cron.jobs import effective_job_state
+    from cron.scheduler import (
+        _cron_model_drift_axes_for_route,
+        _resolve_cron_inference_route,
+    )
+
+    drift_cfg, current_provider, current_model = _current_cron_inference_defaults()
 
     for job in jobs:
         job_id = job.get("id", "?")
@@ -142,10 +164,31 @@ def cron_list(show_all: bool = False):
         deliver_str = ", ".join(deliver)
 
         skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
+        cron_cfg = drift_cfg.get("cron") if isinstance(drift_cfg.get("cron"), dict) else {}
+        route_provider = job.get("provider") or cron_cfg.get("model_provider") or None
+        route_model = job.get("model") or cron_cfg.get("model") or current_model
+        provider_was_explicit = bool(route_provider)
+        _, route_provider, _ = _resolve_cron_inference_route(
+            model=route_model,
+            provider=route_provider,
+            base_url=job.get("base_url"),
+            config=drift_cfg,
+        )
+        drifted_axes = _cron_model_drift_axes_for_route(
+            job,
+            current_provider=route_provider or current_provider,
+            current_model=current_model,
+            config=drift_cfg,
+            alias_supplied_provider=(
+                not provider_was_explicit and bool(route_provider)
+            ),
+        )
         if state == "paused":
             status = color("[paused]", Colors.YELLOW)
         elif state == "completed":
             status = color("[completed]", Colors.BLUE)
+        elif drifted_axes:
+            status = color("[drift-blocked]", Colors.RED)
         elif job.get("enabled", True):
             status = color("[active]", Colors.GREEN)
         else:
@@ -173,6 +216,15 @@ def cron_list(show_all: bool = False):
         workdir = job.get("workdir")
         if workdir:
             print(f"    Workdir:   {workdir}")
+        if drifted_axes:
+            print(
+                f"    {color('⚠ Inference drift:', Colors.RED)} "
+                f"{', '.join(drifted_axes)}"
+            )
+            print(
+                "      Pin the intended route with: hermes cron edit "
+                f"{job_id} --provider <provider> --model <model>"
+            )
 
         # Execution history
         last_status = job.get("last_status")
@@ -392,6 +444,8 @@ def cron_create(args):
         workdir=getattr(args, "workdir", None),
         model=getattr(args, "model", None),
         provider=getattr(args, "model_provider", None),
+        base_url=getattr(args, "base_url", None),
+        terminal_timeout=getattr(args, "terminal_timeout", None),
         no_agent=getattr(args, "no_agent", False) or None,
         monitor_script=getattr(args, "monitor_script", None),
         monitor_url=getattr(args, "monitor_url", None),
@@ -467,6 +521,8 @@ def cron_edit(args):
         workdir=getattr(args, "workdir", None),
         model=getattr(args, "model", None),
         provider=getattr(args, "model_provider", None),
+        base_url=getattr(args, "base_url", None),
+        terminal_timeout=getattr(args, "terminal_timeout", None),
         no_agent=getattr(args, "no_agent", None),
         monitor_script=getattr(args, "monitor_script", None),
         monitor_url=getattr(args, "monitor_url", None),
@@ -497,6 +553,8 @@ def cron_edit(args):
         print("  Continuity: on (each run sees the previous run's output)")
     if updated.get("workdir"):
         print(f"  Workdir: {updated['workdir']}")
+    if updated.get("terminal_timeout"):
+        print(f"  Terminal timeout: {updated['terminal_timeout']}s")
     return 0
 
 

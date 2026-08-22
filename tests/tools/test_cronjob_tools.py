@@ -387,6 +387,32 @@ class TestUnifiedCronjobTool:
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
 
+    def test_update_persists_unconfigured_custom_alias_route(self, monkeypatch):
+        import hermes_cli.runtime_provider as rp
+        from cron.jobs import get_job
+
+        monkeypatch.setattr(rp, "has_named_custom_provider", lambda n: False)
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 1h")
+        )
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                model="ornith-review",
+                provider="custom:ornith",
+                base_url="http://127.0.0.1:8085/v1",
+                terminal_timeout=5,
+            )
+        )
+
+        assert updated["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored["model"] == "ornith-review"
+        assert stored["provider"] == "custom:ornith"
+        assert stored["base_url"] == "http://127.0.0.1:8085/v1"
+        assert stored["terminal_timeout"] == 5
+
 
 # =========================================================================
 # Agent-facing surface: per-job model pins are user-owned
@@ -523,6 +549,12 @@ class TestValidateCronBaseUrl:
     def test_named_custom_lookalike_host_blocked(self, monkeypatch):
         self._patch_named_legit(monkeypatch)
         assert self._v("custom:legit", "https://legit.example.attacker.test/v1") is not None
+
+    def test_unconfigured_custom_alias_with_explicit_endpoint_allowed(self, monkeypatch):
+        import hermes_cli.runtime_provider as rp
+
+        monkeypatch.setattr(rp, "has_named_custom_provider", lambda n: False)
+        assert self._v("custom:ornith", "http://127.0.0.1:8085/v1") is None
 
 
     def test_named_registry_offhost_blocked(self):

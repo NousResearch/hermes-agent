@@ -6453,12 +6453,24 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     # gateway.startup_watchdog_timeout_seconds); the env vars are the
     # internal bridge, needed because the argv fast-path arms before config
     # can load. Explicit env values (operator override) are respected.
+    #
+    # The argv fast-path has ALREADY armed on the standard `hermes gateway
+    # run` path by the time this runs, and arm_startup_watchdog() is
+    # idempotent (returns the live handle without re-reading env). So the
+    # bridge alone is not enough: apply the config to the live handle —
+    # disarm when disabled, disarm+re-arm when a config timeout should
+    # replace the fast-path default. Re-arming is safe here: the heavy
+    # import graph the fast-path guards is behind us, and the fresh handle
+    # covers the remaining pre-loop startup with the configured deadline.
     try:
         from hermes_startup_watchdog import (
             ENV_STARTUP_WATCHDOG,
             ENV_STARTUP_WATCHDOG_TIMEOUT_S,
             arm_startup_watchdog,
+            disarm_startup_watchdog,
+            startup_watchdog_disabled,
         )
+        _sw_timeout_bridged = False
         try:
             from hermes_cli.config import load_config as _sw_load_config
             _gw_cfg = (_sw_load_config() or {}).get("gateway", {}) or {}
@@ -6472,9 +6484,17 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
                 and _sw_timeout is not None
             ):
                 os.environ[ENV_STARTUP_WATCHDOG_TIMEOUT_S] = str(_sw_timeout)
+                _sw_timeout_bridged = True
         except Exception:
             pass
-        arm_startup_watchdog()
+        if startup_watchdog_disabled():
+            disarm_startup_watchdog()
+        else:
+            if _sw_timeout_bridged:
+                # A config timeout must beat the fast-path default that an
+                # already-armed handle resolved before config was readable.
+                disarm_startup_watchdog()
+            arm_startup_watchdog()
     except Exception:
         pass
 

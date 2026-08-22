@@ -3226,10 +3226,12 @@ DEFAULT_CONFIG = {
         # Startup-liveness watchdog (OOF-298): plain daemon thread armed at
         # process entry for gateway runs, hard-exits 75 if the event loop is
         # not confirmed live within the deadline. The watchdog module itself
-        # is stdlib-only and armed before config can load, so these keys are
-        # BRIDGED to the internal HERMES_STARTUP_WATCHDOG /
-        # HERMES_STARTUP_WATCHDOG_TIMEOUT_S env vars by the gateway
-        # launchers — config.yaml is the user-facing surface.
+        # is stdlib-only and armed before config can load, so run_gateway()
+        # bridges these keys to the internal HERMES_STARTUP_WATCHDOG /
+        # HERMES_STARTUP_WATCHDOG_TIMEOUT_S env vars AND applies them to the
+        # already-armed handle (disarm on disable, disarm+re-arm on a config
+        # timeout) — config.yaml is the user-facing surface; explicit env
+        # values win as operator override.
         "startup_watchdog": True,
         "startup_watchdog_timeout_seconds": 300,
 

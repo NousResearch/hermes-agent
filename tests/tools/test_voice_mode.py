@@ -424,6 +424,60 @@ class TestAudioRecorder:
         mock_sd.InputStream.assert_called_once()
         mock_stream.start.assert_called_once()
 
+    def test_ensure_stream_reuses_active_stream(self, mock_sd):
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        active_stream = MagicMock()
+        active_stream.active = True
+        recorder._stream = active_stream
+
+        recorder._ensure_stream()
+
+        mock_sd.InputStream.assert_not_called()
+        active_stream.close.assert_not_called()
+        assert recorder._stream is active_stream
+
+    def test_ensure_stream_rebuilds_inactive_stream(self, mock_sd):
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        inactive_stream = MagicMock()
+        inactive_stream.active = False
+        inactive_stream.stop.side_effect = RuntimeError("stream already stopped")
+        replacement_stream = MagicMock()
+        mock_sd.InputStream.return_value = replacement_stream
+        recorder._stream = inactive_stream
+
+        recorder._ensure_stream()
+
+        inactive_stream.close.assert_called_once_with()
+        replacement_stream.start.assert_called_once_with()
+        assert recorder._stream is replacement_stream
+
+    def test_ensure_stream_rebuilds_when_liveness_probe_fails(self, mock_sd):
+        from tools.voice_mode import AudioRecorder
+
+        class BrokenStream:
+            stop = MagicMock()
+            close = MagicMock()
+
+            @property
+            def active(self):
+                raise RuntimeError("CoreAudio stream state unavailable")
+
+        recorder = AudioRecorder()
+        broken_stream = BrokenStream()
+        replacement_stream = MagicMock()
+        mock_sd.InputStream.return_value = replacement_stream
+        recorder._stream = broken_stream
+
+        recorder._ensure_stream()
+
+        broken_stream.close.assert_called_once_with()
+        replacement_stream.start.assert_called_once_with()
+        assert recorder._stream is replacement_stream
+
 class TestAudioRecorderStop:
     def test_stop_writes_wav_file(self, mock_sd, temp_voice_dir):
         np = pytest.importorskip("numpy")

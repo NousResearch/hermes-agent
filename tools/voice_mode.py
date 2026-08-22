@@ -887,15 +887,24 @@ class AudioRecorder:
     # -- public methods ------------------------------------------------------
 
     def _ensure_stream(self) -> None:
-        """Create the audio InputStream once and keep it alive.
+        """Create the audio InputStream and keep it alive while usable.
 
         The stream stays open for the lifetime of the recorder.  Between
         recordings the callback simply discards audio chunks (``_recording``
         is ``False``).  This avoids the CoreAudio bug where closing and
-        re-opening an ``InputStream`` hangs indefinitely on macOS.
+        re-opening an ``InputStream`` hangs indefinitely on macOS. CoreAudio
+        can still deactivate the stream when another input stream opens; in
+        that case the dead object must be closed and rebuilt before capture.
         """
         if self._stream is not None:
-            return  # already alive
+            try:
+                if self._stream.active:
+                    return
+            except Exception:
+                logger.debug("Audio input stream liveness probe failed", exc_info=True)
+
+            logger.debug("Rebuilding inactive audio input stream")
+            self._close_stream_with_timeout()
 
         sd, np = _import_audio()
 
@@ -1097,6 +1106,9 @@ class AudioRecorder:
         def _do_close():
             try:
                 stream.stop()
+            except Exception:
+                pass
+            try:
                 stream.close()
             except Exception:
                 pass

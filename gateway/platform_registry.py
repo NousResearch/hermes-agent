@@ -615,7 +615,9 @@ class PlatformRegistry:
                 or (None, name) in self._inflight
             )
 
-    def create_adapter(self, name: str, config: Any) -> Optional[Any]:
+    def create_adapter(
+        self, name: str, config: Any, skip_check_fn: bool = False
+    ) -> Optional[Any]:
         """Create an adapter instance for the given platform name.
 
         Returns None if:
@@ -624,46 +626,55 @@ class PlatformRegistry:
           (no ensure_deps_fn, or ensure_deps_fn() returned False)
         - validate_config() returns False (misconfigured)
         - The factory raises an exception
+
+        ``skip_check_fn`` is for callers that have already proven the
+        instance is configured (per-agent platform bindings resolve the
+        credential by name before asking for an adapter): plugin
+        ``check_fn`` hooks are no-arg and read PROCESS-WIDE env config, so
+        a platform configured only through per-agent bindings would fail
+        that gate despite being fully configured. ``validate_config`` still
+        runs — it receives the instance config and stays fail-closed.
         """
         entry = self.get(name)
         if entry is None:
             return None
 
-        deps_ok = False
-        try:
-            deps_ok = bool(entry.check_fn())
-        except Exception as e:
-            logger.warning(
-                "Platform '%s' check_fn raised: %s", entry.label, e
-            )
-        if not deps_ok and entry.ensure_deps_fn is not None:
-            # Deps missing but the platform can install them on demand.
-            # This is the ONE place the active installer runs in the adapter
-            # path: the platform is enabled+configured and the gateway is
-            # about to connect it, so an install is what the user wants
-            # (#79812 — Teams' installer previously lived behind this very
-            # gate inside connect(), which could never be reached).
-            logger.info(
-                "Platform '%s' dependencies missing — attempting install...",
-                entry.label,
-            )
+        if not skip_check_fn:
+            deps_ok = False
             try:
-                deps_ok = bool(entry.ensure_deps_fn())
+                deps_ok = bool(entry.check_fn())
             except Exception as e:
                 logger.warning(
-                    "Platform '%s' dependency install raised: %s",
-                    entry.label,
-                    e,
+                    "Platform '%s' check_fn raised: %s", entry.label, e
                 )
-                deps_ok = False
-        if not deps_ok:
-            hint = f" ({entry.install_hint})" if entry.install_hint else ""
-            logger.warning(
-                "Platform '%s' requirements not met%s",
-                entry.label,
-                hint,
-            )
-            return None
+            if not deps_ok and entry.ensure_deps_fn is not None:
+                # Deps missing but the platform can install them on demand.
+                # This is the ONE place the active installer runs in the adapter
+                # path: the platform is enabled+configured and the gateway is
+                # about to connect it, so an install is what the user wants
+                # (#79812 — Teams' installer previously lived behind this very
+                # gate inside connect(), which could never be reached).
+                logger.info(
+                    "Platform '%s' dependencies missing — attempting install...",
+                    entry.label,
+                )
+                try:
+                    deps_ok = bool(entry.ensure_deps_fn())
+                except Exception as e:
+                    logger.warning(
+                        "Platform '%s' dependency install raised: %s",
+                        entry.label,
+                        e,
+                    )
+                    deps_ok = False
+            if not deps_ok:
+                hint = f" ({entry.install_hint})" if entry.install_hint else ""
+                logger.warning(
+                    "Platform '%s' requirements not met%s",
+                    entry.label,
+                    hint,
+                )
+                return None
 
         if entry.validate_config is not None:
             try:

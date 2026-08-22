@@ -1227,6 +1227,15 @@ class SessionSchemaMixin:
         except sqlite3.OperationalError:
             pass  # Index already exists
 
+        # agent_id index — created after _reconcile_columns has ensured the
+        # column exists on legacy databases.
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id)"
+            )
+        except sqlite3.OperationalError:
+            pass
+
         if fts5_available:
             # FTS5 setup. Run the DDL even when the virtual table exists so
             # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from

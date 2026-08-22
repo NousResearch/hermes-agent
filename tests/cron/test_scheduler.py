@@ -194,6 +194,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1001",
             "thread_id": "17585",
+            "agent_id": None,
         }
 
 
@@ -214,6 +215,7 @@ class TestResolveDeliveryTarget:
             "platform": "discord",
             "chat_id": "home-parent",
             "thread_id": None,
+            "agent_id": None,
         }
 
     def test_telegram_cron_thread_id_overrides_home_thread_id(self, monkeypatch):
@@ -226,6 +228,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1001234567890",
             "thread_id": "42",
+            "agent_id": None,
         }
 
 
@@ -238,6 +241,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1003724596514",
             "thread_id": "17",
+            "agent_id": None,
         }
 
 
@@ -254,6 +258,7 @@ class TestResolveDeliveryTarget:
             "platform": "whatsapp",
             "chat_id": "12345678901234@lid",
             "thread_id": None,
+            "agent_id": None,
         }
 
 
@@ -269,6 +274,7 @@ class TestResolveDeliveryTarget:
             "platform": "whatsapp",
             "chat_id": "12345@lid",
             "thread_id": None,
+            "agent_id": None,
         }
 
     def test_unresolved_target_still_delivered_as_written(self):
@@ -287,6 +293,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "ops-room",
             "thread_id": None,
+            "agent_id": None,
         }
 
 
@@ -308,6 +315,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-4004",
             "thread_id": None,
+            "agent_id": None,
         }
 
 
@@ -2797,7 +2805,6 @@ class TestSetCronSessionTitle:
 
 
 
-
 class TestFailureStreakNudge:
     """Poke-inspired repeated-failure review nudge (_failure_streak_nudge)."""
 
@@ -2847,3 +2854,114 @@ class TestFailureStreakNudge:
         from cron.scheduler import _failure_streak_nudge
         with patch("cron.scheduler.load_config", side_effect=RuntimeError("boom")):
             assert "failed 3 runs" in _failure_streak_nudge(self._job(2))
+
+
+class TestDeliveryTargetAgentIdPropagation:
+    """The agent_id this PR exists to propagate: _resolve_single_delivery_target
+    must stamp each concrete target with the routing agent_id — preferring
+    ``job.agent_id`` and only then falling back to ``origin.get('agent_id')``.
+
+    The pre-existing suite only ever asserts ``agent_id: None`` (jobs with no
+    agent_id), so these cover the non-None propagation the PR added.
+    """
+
+    def _resolve(self, job, deliver_value):
+        from cron.scheduler import _resolve_single_delivery_target
+        return _resolve_single_delivery_target(job, deliver_value)
+
+    def test_origin_target_carries_job_agent_id(self):
+        job = {
+            "deliver": "origin",
+            "agent_id": "coder",
+            "origin": {"platform": "telegram", "chat_id": "-1001", "thread_id": "7"},
+        }
+        target = self._resolve(job, "origin")
+        assert target == {
+            "platform": "telegram",
+            "chat_id": "-1001",
+            "thread_id": "7",
+            "agent_id": "coder",
+        }
+
+    def test_origin_target_prefers_job_agent_id_over_origin_agent_id(self):
+        """job.agent_id wins when BOTH the job and the origin carry one."""
+        job = {
+            "deliver": "origin",
+            "agent_id": "coder",
+            "origin": {"platform": "telegram", "chat_id": "-1001", "agent_id": "legacy"},
+        }
+        target = self._resolve(job, "origin")
+        assert target["agent_id"] == "coder"
+
+    def test_origin_target_falls_back_to_origin_agent_id(self):
+        """With no top-level job.agent_id, the origin's agent_id is used."""
+        job = {
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "-1001", "agent_id": "legacy"},
+        }
+        target = self._resolve(job, "origin")
+        assert target["agent_id"] == "legacy"
+
+    def test_origin_missing_home_channel_fallback_carries_job_agent_id(self, monkeypatch):
+        """deliver=origin with no origin falls back to a home channel, and that
+        target still carries the job's agent_id."""
+        for var in (
+            "MATRIX_HOME_ROOM", "MATRIX_HOME_CHANNEL", "DISCORD_HOME_CHANNEL",
+            "SLACK_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL",
+            "SMS_HOME_CHANNEL", "EMAIL_HOME_ADDRESS", "DINGTALK_HOME_CHANNEL",
+            "FEISHU_HOME_CHANNEL", "WECOM_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL",
+            "BLUEBUBBLES_HOME_CHANNEL", "QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL",
+            "WHATSAPP_HOME_CHANNEL", "WHATSAPP_CLOUD_HOME_CHANNEL",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-4004")
+
+        job = {"deliver": "origin", "agent_id": "coder", "origin": None}
+        target = self._resolve(job, "origin")
+        assert target["platform"] == "telegram"
+        assert target["chat_id"] == "-4004"
+        assert target["agent_id"] == "coder"
+
+    def test_explicit_platform_target_carries_job_agent_id(self):
+        """deliver='telegram:chat:thread' explicit target propagates agent_id."""
+        job = {"agent_id": "coder", "deliver": "telegram:-1002:9"}
+        target = self._resolve(job, "telegram:-1002:9")
+        assert target == {
+            "platform": "telegram",
+            "chat_id": "-1002",
+            "thread_id": "9",
+            "agent_id": "coder",
+        }
+
+    def test_bare_platform_origin_match_carries_job_agent_id(self):
+        """A bare platform that matches the origin's platform propagates agent_id."""
+        job = {
+            "agent_id": "coder",
+            "deliver": "telegram",
+            "origin": {"platform": "telegram", "chat_id": "-1001", "thread_id": "7"},
+        }
+        target = self._resolve(job, "telegram")
+        assert target["agent_id"] == "coder"
+        assert target["chat_id"] == "-1001"
+
+    def test_bare_platform_home_channel_carries_job_agent_id(self, monkeypatch):
+        """A bare platform falling back to its home channel propagates agent_id."""
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-3003")
+        job = {"agent_id": "coder", "deliver": "telegram", "origin": None}
+        target = self._resolve(job, "telegram")
+        assert target == {
+            "platform": "telegram",
+            "chat_id": "-3003",
+            "thread_id": None,
+            "agent_id": "coder",
+        }
+
+    def test_absent_agent_id_still_resolves_to_none(self):
+        """Regression guard: a job with no agent_id still yields agent_id=None
+        (the pre-PR behaviour must not change for single-agent jobs)."""
+        job = {
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "-1001"},
+        }
+        target = self._resolve(job, "origin")
+        assert target["agent_id"] is None

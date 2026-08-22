@@ -619,6 +619,14 @@ def finalize_turn(
     if final_response and not interrupted:
         try:
             from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+            _agent_id = None
+            try:
+                from agent.profile import get_active_profile
+                _p = get_active_profile()
+                if _p:
+                    _agent_id = _p.id
+            except Exception:
+                pass
             _invoke_hook(
                 "post_llm_call",
                 session_id=agent.session_id,
@@ -629,6 +637,7 @@ def finalize_turn(
                 conversation_history=list(messages),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                agent_id=_agent_id,
             )
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
@@ -815,6 +824,14 @@ def finalize_turn(
     # Plugins can use this for cleanup, flushing buffers, etc.
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        _agent_id = None
+        try:
+            from agent.profile import get_active_profile
+            _p = get_active_profile()
+            if _p:
+                _agent_id = _p.id
+        except Exception:
+            pass
         _invoke_hook(
             "on_session_end",
             session_id=agent.session_id,
@@ -826,6 +843,7 @@ def finalize_turn(
             turn_exit_reason=_turn_exit_reason,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            agent_id=_agent_id,
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)

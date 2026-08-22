@@ -42,6 +42,7 @@ Requires:
 
 import asyncio
 import concurrent.futures
+import contextlib
 import errno
 import hashlib
 import hmac
@@ -117,10 +118,13 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE,
     BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
     SendResult,
     is_network_accessible,
     validate_media_delivery_path,
 )
+from gateway.session import SessionSource
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
@@ -1453,6 +1457,39 @@ class _ProviderAuthResolutionError(RuntimeError):
     """
 
 
+@contextlib.contextmanager
+def _use_profile_and_secret_scope(profile):
+    """Bind a routed agent profile's HOME **and** its fail-closed credential scope for one run.
+
+    ``use_profile`` alone routes the home (``get_hermes_home`` reads the profile ContextVar) but
+    does NOT install the credential scope.  Under ``gateway.multiplex_profiles`` that leaves
+    ``get_secret`` — reached in the agent run via ``credential_pool`` when resolving the LLM/provider
+    key — *unscoped*, so it fails closed (``UnscopedSecretError``) or reads another profile's
+    process-global value.  This mirrors the base adapter's ``_profile_runtime_scope``: install the
+    profile's ``.env`` secret scope alongside the home binding.  ``None`` is a no-op, so single-agent
+    installs pay nothing.  Bind inside the executor thread — ContextVars don't cross the boundary.
+    """
+    from agent.profile import use_profile
+
+    if profile is None:
+        with use_profile(None):
+            yield
+        return
+
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+
+    with use_profile(profile):
+        secret_token = set_secret_scope(build_profile_secret_scope(profile.resolved_home))
+        try:
+            yield
+        finally:
+            reset_secret_scope(secret_token)
+
+
 class APIServerAdapter(BasePlatformAdapter):
     """
     OpenAI-compatible HTTP API server adapter.
@@ -2305,6 +2342,112 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         return raw, None
+
+    # ------------------------------------------------------------------
+    # Multi-agent routing
+    # ------------------------------------------------------------------
+
+    # Routing identity headers.  These are optional and fully backward
+    # compatible — when absent, every request resolves to ``default_agent``
+    # just like before.  Header names mirror ``X-Hermes-Session-Id`` /
+    # ``X-Hermes-Session-Key`` already used by this adapter.
+    _AGENT_CHAT_ID_HEADER = "X-Hermes-Chat-Id"
+    _AGENT_USER_ID_HEADER = "X-Hermes-User-Id"
+    _AGENT_THREAD_ID_HEADER = "X-Hermes-Thread-Id"
+
+    def _read_routing_header(
+        self, request: "web.Request", name: str,
+    ) -> Optional[str]:
+        """Return a sanitised routing header value or ``None``.
+
+        Why: Reuses the same control-character and length caps as the
+        session headers so a malicious caller cannot inject CRLF or burn
+        memory by passing a multi-kilobyte chat id.
+        What: Strips whitespace, rejects CRLF/NUL, caps at
+        ``_MAX_SESSION_HEADER_LEN``.
+        Test: Pass headers with CRLF, overlong values, and valid values;
+        assert None / stripped string returned respectively.
+        """
+        raw = request.headers.get(name, "").strip()
+        if not raw:
+            return None
+        if re.search(r'[\r\n\x00]', raw):
+            return None
+        if len(raw) > self._MAX_SESSION_HEADER_LEN:
+            return None
+        return raw
+
+    def _resolve_agent_profile(self, request: "web.Request"):
+        """Resolve the routed ``AgentProfile`` for *request*.
+
+        Why: Bridges the inbound X-Hermes-* routing headers to the shared
+        ``_attach_agent_id`` hook (declarative routes + ``select_agent``
+        plugin) and the gateway's AgentProfile registry so every HTTP
+        endpoint can route to the correct per-agent home directory.
+        What: Builds a synthetic ``SessionSource`` from the routing
+        headers, stamps ``agent_id`` via ``_attach_agent_id``, then looks
+        up the resolved id in ``_gateway_ref._agent_registry``.  Returns
+        ``(profile, agent_id)``.  When no profile is registered (legacy
+        single-agent install) ``profile`` is ``None`` — callers should
+        simply skip the ``use_profile`` wrapper.
+        Test: Pass a request with ``X-Hermes-Chat-Id: calendar-propose``
+        where a route maps that chat_id → "calendar-propose" and the
+        registry has an AgentProfile for that id; assert the returned
+        profile is the expected object and agent_id matches.
+        """
+        chat_id = self._read_routing_header(request, self._AGENT_CHAT_ID_HEADER)
+        user_id = self._read_routing_header(request, self._AGENT_USER_ID_HEADER)
+        thread_id = self._read_routing_header(request, self._AGENT_THREAD_ID_HEADER)
+
+        source = SessionSource(
+            platform=Platform.API_SERVER,
+            # chat_id is non-optional on SessionSource; fall back to the
+            # empty string when no header was supplied so the resolver can
+            # still apply ``platform: api_server`` style routes.
+            chat_id=chat_id or "",
+            chat_type="dm",
+            user_id=user_id,
+            thread_id=thread_id,
+        )
+        event = MessageEvent(text="", message_type=MessageType.TEXT, source=source)
+        try:
+            self._attach_agent_id(event)
+        except Exception as exc:  # never break dispatch on a routing bug
+            logger.debug("[%s] route resolution failed: %s", self.name, exc)
+
+        agent_id = getattr(event.source, "agent_id", None) or (
+            self._default_agent_id or "main"
+        )
+
+        profile = None
+        registry = getattr(self._gateway_ref, "_agent_registry", None) if self._gateway_ref else None
+        if registry is not None:
+            profile = registry.get(agent_id)
+        logger.info(
+            "[%s] routed to agent: %s (chat_id=%r user_id=%r thread_id=%r)",
+            self.name, agent_id, chat_id, user_id, thread_id,
+        )
+        return profile, agent_id
+
+    def _profile_for_agent_id(self, agent_id: Optional[str]) -> Optional[Any]:
+        """Look up an AgentProfile by *agent_id* from the gateway registry.
+
+        Why: Stateful session turns need to resolve the persisted agent_id to
+        its AgentProfile so _run_agent can apply the correct home dir and
+        credential scope — without re-running header-based route resolution
+        (which would silently fall back to 'main' on requests with no headers).
+        What: Returns the AgentProfile registered under *agent_id*, or None if
+        the id is absent/None, not in the registry, or the registry is
+        unavailable (legacy single-agent install).  None is the no-op sentinel
+        that _run_agent/_use_profile_and_secret_scope treats as "use defaults".
+        Test: Pass a known agent_id with a wired registry and assert the
+        correct AgentProfile is returned; pass None or an unknown id and
+        assert None is returned.
+        """
+        if not agent_id:
+            return None
+        registry = getattr(self._gateway_ref, "_agent_registry", None) if self._gateway_ref else None
+        return registry.get(agent_id) if registry else None
 
     # ------------------------------------------------------------------
     # Session DB helper
@@ -4285,6 +4428,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     "updated_at": time.time(),
                 }
             }
+        # Resolve the routed agent at session creation time so the persisted
+        # agent_id is correct from the first write.  The first-writer-wins
+        # COALESCE in _insert_session_row means a later backfill cannot fix
+        # a row that was created with the DEFAULT 'main'.
+        _, resolved_agent_id = self._resolve_agent_profile(request)
         title = body.get("title")
 
         # Run the entire check-insert-title sequence inside a single
@@ -4302,14 +4450,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 import time as _time
                 conn.execute(
                     """INSERT INTO sessions (
-                       id, source, model, model_config, system_prompt, started_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)""",
+                       id, source, model, model_config, system_prompt, agent_id, started_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         source,
                         model_name,
                         json.dumps(model_config) if model_config else None,
                         system_prompt,
+                        resolved_agent_id,
                         _time.time(),
                     ),
                 )
@@ -4497,6 +4646,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # create a child session that carries the transcript forward. This uses
         # SessionDB's native parent_session_id/end_reason visibility model rather
         # than inventing a parallel fork store.
+        #
+        # agent_id is inherited from the source session, not re-resolved from
+        # routing headers.  A fork is a continuation of the parent conversation
+        # lineage and was already routed to a specific agent when it was first
+        # created; the fork endpoint carries no routing headers, so re-resolving
+        # would fall back to the default ('main') and break agent isolation.
         await asyncio.to_thread(db.end_session, source_id, "branched")
         await asyncio.to_thread(db.create_session,
             fork_id,
@@ -4504,6 +4659,7 @@ class APIServerAdapter(BasePlatformAdapter):
             model=source.get("model"),
             system_prompt=source.get("system_prompt"),
             parent_session_id=source_id,
+            agent_id=source.get("agent_id") or "main",
         )
         messages = await asyncio.to_thread(db.get_messages, source_id)
         await asyncio.to_thread(db.replace_messages, fork_id, messages)
@@ -4591,6 +4747,11 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             if selection_error:
                 return web.json_response(_openai_error(selection_error), status=400)
+        # Use the agent this session was originally routed to (first-writer-wins
+        # model set at creation time).  Re-resolving from request headers would
+        # silently fall back to 'main' when no routing headers are present.
+        session_agent_id = (session or {}).get("agent_id") if isinstance(session, dict) else None
+        agent_profile = self._profile_for_agent_id(session_agent_id)
         history = await self._conversation_history_for_session(session_id)
         result, usage = await self._run_agent(
             user_message=user_message,
@@ -4604,6 +4765,7 @@ class APIServerAdapter(BasePlatformAdapter):
             route_source=runtime_request.get("route_source") or "global",
             confirmed_runtime_lock=lock_active,
             **agent_overrides,
+            agent_profile=agent_profile,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -4706,6 +4868,10 @@ class APIServerAdapter(BasePlatformAdapter):
             route_source=runtime_request.get("route_source") or "global",
             model_lock=("accepted" if lock_active else ""),
         )
+        # Resolve the session's persisted agent so streaming turns honour the
+        # same routing decision made at session creation (first-writer-wins).
+        session_agent_id = (session or {}).get("agent_id") if isinstance(session, dict) else None
+        agent_profile = self._profile_for_agent_id(session_agent_id)
 
         loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
@@ -4777,6 +4943,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     route_source=runtime_request.get("route_source") or "global",
                     confirmed_runtime_lock=lock_active,
                     **agent_overrides,
+                    agent_profile=agent_profile,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -4968,6 +5135,11 @@ class APIServerAdapter(BasePlatformAdapter):
         limited = self._concurrency_limited_response()
         if limited is not None:
             return limited
+
+        # Resolve the routed agent profile from X-Hermes-Chat-Id / -User-Id /
+        # -Thread-Id headers.  Absent headers fall through to ``default_agent``,
+        # preserving backward compatibility for existing OpenAI-API callers.
+        agent_profile, _agent_id = self._resolve_agent_profile(request)
 
         # Parse request body
         try:
@@ -5195,6 +5367,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key=gateway_session_key,
                 **agent_overrides,
                 route=route,
+                agent_profile=agent_profile,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -5216,6 +5389,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key=gateway_session_key,
                 **agent_overrides,
                 route=route,
+                agent_profile=agent_profile,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -6136,6 +6310,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        # Resolve the routed agent profile from X-Hermes-Chat-Id headers
+        # (see _resolve_agent_profile).  No header → default_agent.
+        agent_profile, _agent_id = self._resolve_agent_profile(request)
+
         # Parse request body
         try:
             body = await request.json()
@@ -6306,6 +6484,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key=gateway_session_key,
                 **agent_overrides,
                 route=route,
+                agent_profile=agent_profile,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -6341,6 +6520,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key=gateway_session_key,
                 **agent_overrides,
                 route=route,
+                agent_profile=agent_profile,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -7141,6 +7321,7 @@ class APIServerAdapter(BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None,
         route_source: str = "global",
         confirmed_runtime_lock: bool = False,
+        agent_profile: Optional[Any] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -7170,6 +7351,13 @@ class APIServerAdapter(BasePlatformAdapter):
         If *active_run_id* is supplied, the same live agent is registered in
         ``_active_run_agents`` while the turn is running so API clients can
         call run-scoped control endpoints such as ``/v1/runs/{run_id}/steer``.
+
+        When *agent_profile* is set, the AgentProfile ContextVar is bound
+        for the duration of the run so SOUL.md, memory, skills, and
+        toolset resolution all resolve to the per-agent home directory.
+        Binding happens inside the executor thread because asyncio's
+        default executor does not propagate ContextVars across the
+        thread boundary.
         """
         loop = asyncio.get_running_loop()
         # Capture before hopping to the executor — ContextVars do not follow
@@ -7198,133 +7386,140 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 agent = None
                 try:
-                    agent = self._create_agent(
-                        ephemeral_system_prompt=ephemeral_system_prompt,
-                        session_id=session_id,
-                        stream_delta_callback=stream_delta_callback,
-                        tool_progress_callback=tool_progress_callback,
-                        tool_start_callback=tool_start_callback,
-                        tool_complete_callback=tool_complete_callback,
-                        gateway_session_key=gateway_session_key,
-                        requested_model=requested_model,
-                        requested_provider=requested_provider,
-                        model_options=model_options,
-                        route=route,
-                        session_model=session_model,
-                        confirmed_runtime_lock=confirmed_runtime_lock,
-                    )
-                    if agent_ref is not None:
-                        agent_ref[0] = agent
-                    if active_run_id:
-                        self._active_run_agents[active_run_id] = agent
-                    effective_task_id = session_id or str(uuid.uuid4())
-                    # Baseline for selective background-process reaping on
-                    # SSE client disconnect — mirrors gateway/run.py's
-                    # gateway-turn cleanup (#76115); this API-server surface
-                    # runs its own agent lifecycle and doesn't go through
-                    # TurnRunner, so it needs its own baseline.
-                    _publish_turn_process_ownership(agent, effective_task_id)
-                    # Shutdown interrupt coverage (#63529).  Registering here,
-                    # once, covers every _run_agent() caller — the same reason
-                    # the _ProviderAuthResolutionError handler below lives here
-                    # rather than in each route.  Only two callers pass
-                    # ``agent_ref``, and only /v1/runs has a run_id, so neither
-                    # is a usable hook for the rest.
-                    self._shutdown_interruptible_agents[id(agent)] = agent
-                    result = agent.run_conversation(
-                        user_message=user_message,
-                        conversation_history=conversation_history,
-                        task_id=effective_task_id,
-                    )
-                    usage = {
-                        "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                        "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                        "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-                    }
-                    # Include the effective session ID in the result so callers
-                    # (e.g. X-Hermes-Session-Id header) can track compression-
-                    # triggered session rotations. (#16938)
-                    _eff_sid = getattr(agent, "session_id", session_id)
-                    if isinstance(_eff_sid, str) and _eff_sid:
-                        result["session_id"] = _eff_sid
-                    # Signal whether context compression occurred during this turn
-                    # so _build_response_conversation_history can skip the
-                    # prior-concatenation path and store the compressed transcript
-                    # directly.  Rotation mode changes agent.session_id; in-place
-                    # mode sets _last_compaction_in_place (see #38763).
-                    _compacted_in_place = bool(getattr(agent, "_last_compaction_in_place", False))
-                    _session_rotated = (
-                        isinstance(_eff_sid, str) and isinstance(session_id, str)
-                        and _eff_sid != session_id
-                    )
-                    if _compacted_in_place or _session_rotated:
-                        result["_compressed"] = True
-                    include_runtime = bool(
-                        requested_runtime
-                        or route
-                        or confirmed_runtime_lock
-                        or (route_source and route_source != "global")
-                    )
-                    if include_runtime:
-                        runtime = dict(getattr(agent, "_hermes_api_runtime", {}) or {})
-                        raw_provider = getattr(agent, "provider", "")
-                        raw_model = getattr(agent, "model", "")
-                        actual_provider = (
-                            self._clean_runtime_id(raw_provider, max_len=80)
-                            if isinstance(raw_provider, str)
-                            else ""
+                    # Bind the routed agent profile inside the executor thread so
+                    # path getters (get_hermes_home, skills_dir, …) AND credential
+                    # reads (get_secret via credential_pool) resolve to this agent.
+                    # Home + secret scope together; None is a no-op.  Nested inside
+                    # the profile scope (which selects the multiplex profile home /
+                    # #61276 default) so the agent scope refines it.
+                    with _use_profile_and_secret_scope(agent_profile):
+                        agent = self._create_agent(
+                            ephemeral_system_prompt=ephemeral_system_prompt,
+                            session_id=session_id,
+                            stream_delta_callback=stream_delta_callback,
+                            tool_progress_callback=tool_progress_callback,
+                            tool_start_callback=tool_start_callback,
+                            tool_complete_callback=tool_complete_callback,
+                            gateway_session_key=gateway_session_key,
+                            requested_model=requested_model,
+                            requested_provider=requested_provider,
+                            model_options=model_options,
+                            route=route,
+                            session_model=session_model,
+                            confirmed_runtime_lock=confirmed_runtime_lock,
                         )
-                        actual_model = (
-                            self._clean_runtime_id(raw_model)
-                            if isinstance(raw_model, str)
-                            else ""
+                        if agent_ref is not None:
+                            agent_ref[0] = agent
+                        if active_run_id:
+                            self._active_run_agents[active_run_id] = agent
+                        effective_task_id = session_id or str(uuid.uuid4())
+                        # Baseline for selective background-process reaping on
+                        # SSE client disconnect — mirrors gateway/run.py's
+                        # gateway-turn cleanup (#76115); this API-server surface
+                        # runs its own agent lifecycle and doesn't go through
+                        # TurnRunner, so it needs its own baseline.
+                        _publish_turn_process_ownership(agent, effective_task_id)
+                        # Shutdown interrupt coverage (#63529).  Registering here,
+                        # once, covers every _run_agent() caller — the same reason
+                        # the _ProviderAuthResolutionError handler below lives here
+                        # rather than in each route.  Only two callers pass
+                        # ``agent_ref``, and only /v1/runs has a run_id, so neither
+                        # is a usable hook for the rest.
+                        self._shutdown_interruptible_agents[id(agent)] = agent
+                        result = agent.run_conversation(
+                            user_message=user_message,
+                            conversation_history=conversation_history,
+                            task_id=effective_task_id,
                         )
-                        if actual_provider:
-                            runtime["provider"] = actual_provider
-                        else:
-                            runtime.setdefault("provider", "")
-                        if actual_model:
-                            runtime["model"] = actual_model
-                        else:
-                            runtime.setdefault("model", "")
-                        if confirmed_runtime_lock:
-                            expected_provider = self._clean_runtime_id(
-                                (route or {}).get("provider")
-                                or (requested_runtime or {}).get("provider"),
-                                max_len=80,
+                        usage = {
+                            "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                            "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                            "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                        }
+                        # Include the effective session ID in the result so callers
+                        # (e.g. X-Hermes-Session-Id header) can track compression-
+                        # triggered session rotations. (#16938)
+                        _eff_sid = getattr(agent, "session_id", session_id)
+                        if isinstance(_eff_sid, str) and _eff_sid:
+                            result["session_id"] = _eff_sid
+                        # Signal whether context compression occurred during this turn
+                        # so _build_response_conversation_history can skip the
+                        # prior-concatenation path and store the compressed transcript
+                        # directly.  Rotation mode changes agent.session_id; in-place
+                        # mode sets _last_compaction_in_place (see #38763).
+                        _compacted_in_place = bool(getattr(agent, "_last_compaction_in_place", False))
+                        _session_rotated = (
+                            isinstance(_eff_sid, str) and isinstance(session_id, str)
+                            and _eff_sid != session_id
+                        )
+                        if _compacted_in_place or _session_rotated:
+                            result["_compressed"] = True
+                        include_runtime = bool(
+                            requested_runtime
+                            or route
+                            or confirmed_runtime_lock
+                            or (route_source and route_source != "global")
+                        )
+                        if include_runtime:
+                            runtime = dict(getattr(agent, "_hermes_api_runtime", {}) or {})
+                            raw_provider = getattr(agent, "provider", "")
+                            raw_model = getattr(agent, "model", "")
+                            actual_provider = (
+                                self._clean_runtime_id(raw_provider, max_len=80)
+                                if isinstance(raw_provider, str)
+                                else ""
                             )
-                            expected_model = self._clean_runtime_id(
-                                (route or {}).get("model")
-                                or (requested_runtime or {}).get("model")
+                            actual_model = (
+                                self._clean_runtime_id(raw_model)
+                                if isinstance(raw_model, str)
+                                else ""
                             )
-                            mismatched = (
-                                (expected_provider and actual_provider != expected_provider)
-                                or (expected_model and actual_model != expected_model)
-                            )
-                            if mismatched:
-                                raise RuntimeError(
-                                    "confirmed model lock runtime mismatch: "
-                                    f"expected provider={expected_provider or '<unspecified>'} "
-                                    f"model={expected_model or '<unspecified>'}; "
-                                    f"actual provider={actual_provider or '<unknown>'} "
-                                    f"model={actual_model or '<unknown>'}"
+                            if actual_provider:
+                                runtime["provider"] = actual_provider
+                            else:
+                                runtime.setdefault("provider", "")
+                            if actual_model:
+                                runtime["model"] = actual_model
+                            else:
+                                runtime.setdefault("model", "")
+                            if confirmed_runtime_lock:
+                                expected_provider = self._clean_runtime_id(
+                                    (route or {}).get("provider")
+                                    or (requested_runtime or {}).get("provider"),
+                                    max_len=80,
                                 )
-                        if requested_runtime:
-                            runtime["requested"] = {
-                                "provider": self._clean_runtime_id((requested_runtime or {}).get("provider"), max_len=80),
-                                "model": self._clean_runtime_id((requested_runtime or {}).get("model")),
-                            }
-                        runtime["route_source"] = route_source or runtime.get("route_source") or "global"
-                        runtime = self._sanitize_runtime_metadata(
-                            runtime=runtime,
-                            requested_runtime=requested_runtime,
-                            route_source=route_source or "global",
-                            model_lock=("confirmed" if confirmed_runtime_lock else ""),
-                        )
-                        if isinstance(result, dict):
-                            result["runtime"] = runtime
-                        usage["runtime"] = runtime
-                    return result, usage
+                                expected_model = self._clean_runtime_id(
+                                    (route or {}).get("model")
+                                    or (requested_runtime or {}).get("model")
+                                )
+                                mismatched = (
+                                    (expected_provider and actual_provider != expected_provider)
+                                    or (expected_model and actual_model != expected_model)
+                                )
+                                if mismatched:
+                                    raise RuntimeError(
+                                        "confirmed model lock runtime mismatch: "
+                                        f"expected provider={expected_provider or '<unspecified>'} "
+                                        f"model={expected_model or '<unspecified>'}; "
+                                        f"actual provider={actual_provider or '<unknown>'} "
+                                        f"model={actual_model or '<unknown>'}"
+                                    )
+                            if requested_runtime:
+                                runtime["requested"] = {
+                                    "provider": self._clean_runtime_id((requested_runtime or {}).get("provider"), max_len=80),
+                                    "model": self._clean_runtime_id((requested_runtime or {}).get("model")),
+                                }
+                            runtime["route_source"] = route_source or runtime.get("route_source") or "global"
+                            runtime = self._sanitize_runtime_metadata(
+                                runtime=runtime,
+                                requested_runtime=requested_runtime,
+                                route_source=route_source or "global",
+                                model_lock=("confirmed" if confirmed_runtime_lock else ""),
+                            )
+                            if isinstance(result, dict):
+                                result["runtime"] = runtime
+                            usage["runtime"] = runtime
+                        return result, usage
                 except _ProviderAuthResolutionError as exc:
                     # Only _ProviderAuthResolutionError — raised exclusively
                     # where _resolve_runtime_agent_kwargs() is called inside
@@ -7499,6 +7694,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        # Resolve the routed agent profile from X-Hermes-Chat-Id headers
+        # (see _resolve_agent_profile).  No header → default_agent.
+        agent_profile, _agent_id = self._resolve_agent_profile(request)
+
         # Enforce concurrency limit (shared across all agent-serving
         # endpoints; configurable via gateway.api_server.max_concurrent_runs).
         limited = self._concurrency_limited_response()
@@ -7638,6 +7837,11 @@ class APIServerAdapter(BasePlatformAdapter):
         async def _run_and_close():
             try:
                 self._set_run_status(run_id, "running")
+                # Upstream early-cancel guard: if the client already asked to
+                # stop this run before it started, emit run.cancelled and bail
+                # before spinning up an agent. Agent creation itself now lives
+                # inside _run_sync (below) so it can run under the routed agent
+                # profile in the executor thread.
                 if run_id in self._stopping_run_ids:
                     _put_event_if_active({
                         "event": "run.cancelled",
@@ -7650,19 +7854,6 @@ class APIServerAdapter(BasePlatformAdapter):
                         last_event="run.cancelled",
                     )
                     return
-                with self._profile_scope(request_profile):
-                    agent = self._create_agent(
-                        ephemeral_system_prompt=ephemeral_system_prompt,
-                        session_id=session_id,
-                        stream_delta_callback=_text_cb,
-                        tool_progress_callback=event_cb,
-                        gateway_session_key=gateway_session_key,
-                        requested_model=agent_overrides.get("requested_model"),
-                        requested_provider=agent_overrides.get("requested_provider"),
-                        model_options=agent_overrides.get("model_options"),
-                        route=route,
-                    )
-                self._active_run_agents[run_id] = agent
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
@@ -7705,6 +7896,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     effective_task_id = session_id or run_id
                     approval_token = None
                     session_tokens = []
+                    agent = None
                     with self._profile_scope(request_profile):
                         try:
                             # Bind approval/session identity for this API run via
@@ -7731,23 +7923,46 @@ class APIServerAdapter(BasePlatformAdapter):
                                 ),
                             )
                             register_gateway_notify(approval_session_key, _approval_notify)
-                            # /v1/runs runs its own agent lifecycle (no
-                            # TurnRunner, no _run_agent) — record turn process
-                            # ownership so stop/cancel can reap only the
-                            # background processes this run created (#76115).
-                            _publish_turn_process_ownership(agent, effective_task_id)
-                            r = agent.run_conversation(
-                                user_message=user_message,
-                                conversation_history=conversation_history,
-                                task_id=effective_task_id,
-                            )
+                            # Bind the routed agent profile (home + fail-closed secret scope)
+                            # inside the executor thread — asyncio's default executor does not
+                            # copy ContextVars.  Nested inside the profile scope so the agent
+                            # scope refines the multiplex profile home / #61276 default.
+                            with _use_profile_and_secret_scope(agent_profile):
+                                agent = self._create_agent(
+                                    ephemeral_system_prompt=ephemeral_system_prompt,
+                                    session_id=session_id,
+                                    stream_delta_callback=_text_cb,
+                                    tool_progress_callback=event_cb,
+                                    gateway_session_key=gateway_session_key,
+                                    requested_model=agent_overrides.get("requested_model"),
+                                    requested_provider=agent_overrides.get("requested_provider"),
+                                    model_options=agent_overrides.get("model_options"),
+                                    route=route,
+                                )
+                                self._active_run_agents[run_id] = agent
+                                # /v1/runs runs its own agent lifecycle (no
+                                # TurnRunner, no _run_agent) — record turn process
+                                # ownership so stop/cancel can reap only the
+                                # background processes this run created (#76115).
+                                _publish_turn_process_ownership(agent, effective_task_id)
+                                r = agent.run_conversation(
+                                    user_message=user_message,
+                                    conversation_history=conversation_history,
+                                    task_id=effective_task_id,
+                                )
                         finally:
                             # Worker finished (interrupted or complete) —
                             # clear turn ownership immediately so a later
                             # stop/cancel can't reap background work this
                             # run deliberately left running (same race-window
                             # guard as gateway/run.py and _run_agent above).
-                            _clear_turn_process_ownership(agent)
+                            # _create_agent() now runs inside this thread (it
+                            # needs the routed profile's ContextVars) and can
+                            # raise before `agent` is bound — guard it so the
+                            # cleanup can't mask a provider auth failure with
+                            # an UnboundLocalError.
+                            if agent is not None:
+                                _clear_turn_process_ownership(agent)
                             try:
                                 unregister_gateway_notify(approval_session_key)
                             finally:

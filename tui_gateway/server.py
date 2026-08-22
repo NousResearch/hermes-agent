@@ -572,16 +572,26 @@ def _notify_session_boundary(
     try:
         from hermes_cli.lifecycle import finalize_session, invoke_hook
 
+        _agent_id = None
+        try:
+            from agent.profile import get_active_profile
+            _p = get_active_profile()
+            if _p:
+                _agent_id = _p.id
+        except Exception:
+            pass
         if event_type == "on_session_finalize":
             finalize_session(
                 session_id=session_id,
                 platform=_resolve_agent_platform(platform),
+                agent_id=_agent_id,
             )
         else:
             invoke_hook(
                 event_type,
                 session_id=session_id,
                 platform=_resolve_agent_platform(platform),
+                agent_id=_agent_id,
             )
     except Exception:
         pass

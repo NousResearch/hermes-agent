@@ -28,6 +28,13 @@ from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
+def normalize_docker_host_cwd(cwd: str) -> str:
+    expanded = os.path.expanduser(cwd)
+    if expanded.startswith(("/Users/", "/home/")):
+        return expanded
+    return os.path.abspath(expanded)
+
+
 # Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
 # HERMES_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and
 # every is_interrupted() state change from _wait_for_process.  Off by default

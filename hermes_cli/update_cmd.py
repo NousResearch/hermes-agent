@@ -3548,7 +3548,11 @@ def _run_pre_update_backup(args) -> Optional[str]:
 
     Returns the quick-snapshot id (used by the post-update cron-jobs
     restore safety net), or ``None`` when mode is ``off`` or the snapshot
-    failed.
+    could not be created at all. An id can also come back for a snapshot
+    that captured only some of its files — it is kept as a forensic record,
+    with the uncaptured files named in the manifest's ``failed`` map and
+    printed as ``Snapshot INCOMPLETE``. Callers must not read an id as
+    "everything was captured".
     """
     mode = _resolve_pre_update_backup_mode(args)
 
@@ -3561,6 +3565,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
         return None
 
     snapshot_id = None
+    snapshot_error: Optional[Exception] = None
     try:
         from hermes_cli.backup import (
             _quick_snapshot_root,
@@ -3660,8 +3665,24 @@ def _run_pre_update_backup(args) -> Optional[str]:
                 "Sibling profile snapshots failed: %s", _sib_exc
             )
     except Exception as exc:
-        # Never let a snapshot failure block an update.
-        logging.getLogger(__name__).debug("Pre-update snapshot failed: %s", exc)
+        snapshot_error = exc
+        logging.getLogger(__name__).warning("Pre-update snapshot failed: %s", exc)
+
+    if not snapshot_id:
+        # The recovery snapshot was NOT created -- either create_quick_snapshot
+        # raised before it could report (e.g. snap_dir.mkdir on a full or
+        # read-only filesystem, which raises ahead of any per-file reporting) or
+        # it returned None with nothing captured. The pre-update snapshot is the
+        # recovery boundary before the updater mutates state, so this wrapper
+        # reports the missing snapshot loudly regardless of HOW the helper
+        # failed -- raise, internal report, or a silent None -- instead of
+        # letting the update proceed with no recovery point and no warning
+        # (#68907 review). It still does not block the update.
+        detail = f" ({snapshot_error})" if snapshot_error else ""
+        print(
+            f"  ⚠ Pre-update snapshot FAILED{detail}; the update will proceed "
+            f"WITHOUT a recovery snapshot."
+        )
 
     if mode != "full":
         if snapshot_id:
@@ -5584,8 +5605,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
-    # Returns the quick-snapshot id (or None when disabled/failed); the
-    # post-update cron-jobs safety net uses it to detect job loss.
+    # Returns the quick-snapshot id (or None when disabled, or when nothing
+    # could be captured); the post-update cron-jobs safety net uses it to
+    # detect job loss. An id does not by itself mean the snapshot is complete.
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
     try:
         from hermes_cli.update_receipt import record_step

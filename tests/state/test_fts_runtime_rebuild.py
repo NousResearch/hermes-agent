@@ -27,6 +27,7 @@ from hermes_state import (
     SCHEMA_SQL,
     SessionDB,
     _FTS_TRIGGERS,
+    _looks_like_hermes,
 )
 
 
@@ -87,6 +88,52 @@ def _base_fts_triggers(db_path):
 
 
 class TestRuntimeFtsRebuild:
+    @pytest.mark.parametrize(
+        "argv",
+        (
+            ("journalctl", "-u", "hermes-agent.service"),
+            ("grep", "hermes-agent", "/var/log/syslog"),
+            (
+                "/usr/sbin/tailscaled",
+                "be-child",
+                "ssh",
+                "--cmd=python -m hermes_cli.main gateway",
+            ),
+            ("tmux", "new-session", "/opt/hermes-agent/.venv/bin/hermes gateway"),
+            ("python3", "/opt/hermes-agent/tools/check_state.py"),
+            ("hermes-monitor", "gateway"),
+            ("hermesctl", "serve"),
+            ("python3", "worker.py", "hermes_cli.main"),
+            ("python3", "-m", "other.module", "hermes_cli.main"),
+            ("python3", "-c", "hermes_cli.main"),
+            ("python3", "-Icprint('hermes_cli.main')", "hermes_cli/main.py"),
+        ),
+    )
+    def test_uninspectable_non_hermes_process_is_not_a_holder(self, argv):
+        assert not _looks_like_hermes(argv)
+
+    @pytest.mark.parametrize(
+        "argv",
+        (
+            ("/usr/local/bin/hermes", "gateway"),
+            ("/usr/local/bin/hermes-agent", "serve"),
+            ("/usr/local/bin/hermes-acp", "--stdio"),
+            ("/usr/bin/python3", "-m", "hermes_cli.main", "gateway"),
+            ("/usr/bin/python3", "-Im", "hermes_cli.main", "gateway"),
+            ("/usr/bin/python3", "-mhermes_cli.main", "gateway"),
+            ("/usr/bin/python3", "-W", "ignore", "-m", "hermes_cli.main"),
+            ("/usr/bin/python3", "-Xdev", "-m", "hermes_cli.main"),
+            (
+                "/opt/hermes-agent/.venv/bin/python",
+                "/opt/hermes-agent/hermes_cli/main.py",
+                "gateway",
+            ),
+            ("python.exe", "--", "hermes_cli/main.py", "gateway"),
+        ),
+    )
+    def test_uninspectable_hermes_process_remains_a_holder(self, argv):
+        assert _looks_like_hermes(argv)
+
     def test_foreign_holder_detection_includes_deleted_wal(
         self, db, tmp_path, monkeypatch
     ):
@@ -188,7 +235,9 @@ class TestRuntimeFtsRebuild:
         os.chmod(proc_root / "222" / "fd", 0o000)
         # PID 222's cmdline is world-readable and looks like Hermes
         cmdline_path = proc_root / "222" / "cmdline"
-        cmdline_path.write_bytes(b"python3\x00hermes_cli.main\x00chat\x00")
+        cmdline_path.write_bytes(
+            b"python3\x00-m\x00hermes_cli.main\x00chat\x00"
+        )
 
         monkeypatch.setattr(hermes_state, "_IS_WINDOWS", False)
         monkeypatch.setattr(hermes_state.os, "getpid", lambda: 111)
@@ -196,22 +245,24 @@ class TestRuntimeFtsRebuild:
         real_listdir = os.listdir
         def _listdir(path):
             if isinstance(path, str):
+                if path == "/proc/222/fd":
+                    raise PermissionError(path)
                 path = path.replace("/proc", str(proc_root))
             return real_listdir(path)
         monkeypatch.setattr(hermes_state.os, "listdir", _listdir)
-        # _read_proc_cmdline opens /proc/<pid>/cmdline directly; redirect
+        # _read_proc_argv opens /proc/<pid>/cmdline directly; redirect
         # it to our fake proc tree.
-        def _fake_cmdline(pid):
+        def _fake_argv(pid):
             fake_path = str(proc_root / str(pid) / "cmdline")
             try:
                 with open(fake_path, "rb") as f:
                     raw = f.read()
                 if not raw:
                     return None
-                return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+                return raw.decode("utf-8", "replace").rstrip("\x00").split("\x00")
             except OSError:
                 return None
-        monkeypatch.setattr(hermes_state, "_read_proc_cmdline", _fake_cmdline)
+        monkeypatch.setattr(hermes_state, "_read_proc_argv", _fake_argv)
 
         holders = db._foreign_state_db_holders()
         # Should include PID 222 with the cmdline info

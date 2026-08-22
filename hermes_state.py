@@ -46,7 +46,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli.sqlite_runtime import (
     is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable,
 )
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, TypeVar
 
 from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _BRANCH_CHILD_SQL,
@@ -3511,35 +3511,106 @@ def count_db_holders(db_path: Path) -> Optional[int]:
         return None
 
 
-def _read_proc_cmdline(pid: int) -> Optional[str]:
-    """Read /proc/<pid>/cmdline, world-readable even when fd table is not.
-
-    Returns the cmdline as a space-joined string, or None when unreadable
-    (process exited, or hidepid mount).
-    """
+def _read_proc_argv(pid: int) -> Optional[List[str]]:
+    """Read /proc/<pid>/cmdline without losing argv boundaries."""
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             raw = f.read()
         if not raw:
             return None
-        return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+        argv = raw.decode("utf-8", "replace").split("\x00")
+        if argv[-1] == "":
+            argv.pop()
+        return argv or None
     except OSError:
         return None
 
 
-_HERMES_CMDLINE_MARKERS = ("hermes_cli.main", "hermes_cli/main", "hermes serve",
-                           "hermes-agent", "hermes gateway", "hermes chat")
+def _looks_like_python_executable(program: str) -> bool:
+    name = os.path.basename(program).lower().removesuffix(".exe")
+    for prefix in ("python", "pypy"):
+        if name.startswith(prefix):
+            suffix = name[len(prefix):]
+            return not suffix or all(char.isdigit() or char == "." for char in suffix)
+    return False
 
 
-def _looks_like_hermes(cmdline: str) -> bool:
-    """Heuristic: does this cmdline look like a Hermes process?
+_HERMES_EXECUTABLES = frozenset({"hermes", "hermes-agent", "hermes-acp"})
+_PYTHON_SHORT_OPTIONS_WITH_OPERANDS = frozenset({"Q", "W", "X"})
+_PYTHON_LONG_OPTIONS_WITH_OPERANDS = frozenset(
+    {"--check-hash-based-pycs", "--jit"}
+)
+
+
+def _python_execution_target(argv: Sequence[str]) -> Optional[Tuple[str, str]]:
+    """Return the Python module or script selected by interpreter options."""
+    index = 1
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--":
+            index += 1
+            return ("script", argv[index]) if index < len(argv) else None
+        if arg in _PYTHON_LONG_OPTIONS_WITH_OPERANDS:
+            index += 2
+            continue
+        if (
+            arg.startswith("--check-hash-based-pycs=")
+            or arg.startswith("--jit=")
+        ):
+            index += 1
+            continue
+        if arg.startswith("--"):
+            index += 1
+            continue
+        if arg.startswith("-") and arg != "-":
+            options = arg[1:]
+            option_index = 0
+            consumed_next = False
+            while option_index < len(options):
+                option = options[option_index]
+                attached = options[option_index + 1 :]
+                if option == "c":
+                    return None
+                if option == "m":
+                    if attached:
+                        return "module", attached
+                    index += 1
+                    return ("module", argv[index]) if index < len(argv) else None
+                if option in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
+                    consumed_next = not attached
+                    break
+                option_index += 1
+            index += 2 if consumed_next else 1
+            continue
+        return "script", arg
+    return None
+
+
+def _looks_like_hermes(argv: Sequence[str]) -> bool:
+    """Return whether argv identifies Hermes in the program position.
 
     Used to decide whether an uninspectable process (fd table unreadable
     due to different user) should be treated as a potential state.db holder.
-    We only flag processes that look like Hermes, not every system daemon.
+    Arguments that merely mention Hermes do not make wrappers or log readers
+    potential database holders.
     """
-    lower = cmdline.lower()
-    return any(marker in lower for marker in _HERMES_CMDLINE_MARKERS)
+    if not argv:
+        return False
+    program = os.path.basename(argv[0]).lower().removesuffix(".exe")
+    if program in _HERMES_EXECUTABLES:
+        return True
+    if not _looks_like_python_executable(program):
+        return False
+    target = _python_execution_target(argv)
+    if target is None:
+        return False
+    kind, value = target
+    normalized = value.lower().replace("\\", "/")
+    if kind == "module":
+        return normalized == "hermes_cli.main"
+    return normalized == "hermes_cli/main.py" or normalized.endswith(
+        "/hermes_cli/main.py"
+    )
 
 
 # Lifecycle statuses surfaced by session pickers. Classification looks ONLY at
@@ -4763,8 +4834,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         # so check whether this is a Hermes process —
                         # only flag uninspectable holders that look like
                         # another Hermes instance, not every system daemon.
-                        cmdline = _read_proc_cmdline(pid)
-                        if cmdline is not None and _looks_like_hermes(cmdline):
+                        argv = _read_proc_argv(pid)
+                        if argv is not None and _looks_like_hermes(argv):
+                            cmdline = " ".join(argv)
                             holders.append((pid, f"uninspectable holder: {cmdline[:80]}"))
                         continue
                     for fd in fds:

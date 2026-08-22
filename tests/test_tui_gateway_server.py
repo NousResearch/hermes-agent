@@ -6251,6 +6251,62 @@ def _configure_immediate_prompt_run(
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
 
+@pytest.mark.parametrize("failure_stage", ["context", "turn marker"])
+def test_run_prompt_submit_cleans_up_when_turn_setup_fails(
+    monkeypatch, tmp_path, failure_stage
+):
+    """A turn-start failure must still release the session for the next prompt."""
+    from tui_gateway.transport import bind_transport, current_transport, reset_transport
+
+    class _Transport:
+        def write(self, _obj):
+            return True
+
+        def close(self):
+            return None
+
+    previous_transport = _Transport()
+    previous_record = {"session_key": "previous"}
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    if failure_stage == "context":
+        monkeypatch.setattr(
+            server,
+            "_set_session_context",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("context setup failed")
+            ),
+        )
+        monkeypatch.setattr(server, "record_turn_start", lambda *_args, **_kwargs: None)
+    else:
+        monkeypatch.setattr(
+            server,
+            "record_turn_start",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("turn marker setup failed")
+            ),
+        )
+    monkeypatch.setattr(server, "_retire_turn_marker", lambda *_args, **_kwargs: None)
+
+    session = _session(agent=types.SimpleNamespace(), running=True)
+    server._sessions["sid-context-failure"] = session
+    transport_token = bind_transport(previous_transport)
+    record_token = server._current_runtime_session_record.set(previous_record)
+    try:
+        server._run_prompt_submit(
+            "rid-context-failure", "sid-context-failure", session, "hello"
+        )
+
+        assert session["running"] is False
+        assert session["inflight_turn"]["status"] == "error"
+        assert session["inflight_turn"]["error"] == f"{failure_stage} setup failed"
+        assert current_transport() is previous_transport
+        assert server._current_runtime_session_record.get() is previous_record
+    finally:
+        server._current_runtime_session_record.reset(record_token)
+        reset_transport(transport_token)
+        server._sessions.pop("sid-context-failure", None)
+
+
 def test_run_prompt_submit_binds_exact_steer_authority_and_resets_contextvars(
     monkeypatch, tmp_path
 ):

@@ -922,6 +922,11 @@ PLATFORM_HINTS = {
     ),
     "slack": (
         "You are in a Slack workspace communicating with your user. "
+        "Slack renders Markdown natively: *bold*, _italic_, ~strikethrough~, "
+        "`inline code`, ```code blocks```, > blockquotes, - bullet and "
+        "1. numbered lists, and [links](url). HTML tags are NOT rendered — "
+        "never emit <br>, <b>, <ul> or any HTML; they display as literal "
+        "text (#88623). "
         "You can send media files natively: include MEDIA:/absolute/path/to/file "
         "in your response. Images (.png, .jpg, .webp) are uploaded as photo "
         "attachments, audio as file attachments. You can also include image URLs "

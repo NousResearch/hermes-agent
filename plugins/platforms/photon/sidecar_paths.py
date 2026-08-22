@@ -3,8 +3,8 @@ Resolve where the Photon sidecar runs from and where its Node deps live.
 
 The sidecar source ships inside the installed plugin tree
 (``plugins/platforms/photon/sidecar/``). On dev/source installs that tree is
-writable and everything — ``npm ci``, the spectrum patch, the sidecar itself —
-happens in place. Hosted/managed images instead keep the whole install tree
+writable and everything — ``npm ci`` and the sidecar itself — happens in
+place. Hosted/managed images instead keep the whole install tree
 under an immutable ``/opt/hermes`` (read-only for the hermes user), which
 broke every install/self-heal path with EROFS (NS-606).
 
@@ -52,7 +52,10 @@ _MIRROR_FILES = (
     "index.mjs",
     "package.json",
     "package-lock.json",
-    "patch-spectrum-mixed-attachments.mjs",
+    "reply-content.mjs",
+    "send-format.mjs",
+    "spectrum-runtime.mjs",
+    "stream-staleness.mjs",
 )
 
 

@@ -1098,7 +1098,6 @@ def _parents_blocking_ready(
 def _invalidate_descendants_for_parent_reopen(
     conn: sqlite3.Connection,
     parent_id: str,
-    terminations: list[tuple[Optional[int], Optional[str]]],
 ) -> None:
     """Delegate to the domain-layer implementation in :mod:`kanban_db`.
 
@@ -1106,15 +1105,13 @@ def _invalidate_descendants_for_parent_reopen(
     invalidation (recursive-CTE discovery, per-descendant events + comments,
     run closing, failure-counter reset) lives in
     :func:`kanban_db.invalidate_descendants_for_parent_reopen` so every
-    reopen surface shares one implementation. We run inside the caller's
-    open transaction, so the domain function composes via a savepoint and
-    returns the worker terminations for us to perform post-commit (events
-    must be durable BEFORE the kill).
+    reopen surface shares one implementation. The caller has committed the
+    ancestor status change before this post-commit child invalidation runs, so
+    worker termination never holds the dashboard write transaction open.
     """
-    result = kanban_db.invalidate_descendants_for_parent_reopen(
+    kanban_db.invalidate_descendants_for_parent_reopen(
         conn, parent_id, author="dashboard",
     )
-    terminations.extend(result["terminations"])
 
 
 def _set_status_direct(
@@ -1130,12 +1127,12 @@ def _set_status_direct(
     orphaned. ``running -> ready`` via drag-drop is the common case
     (user yanking a stuck worker back to the queue).
     """
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
     effective_status = new_status
+    reopening_satisfied_parent = False
     with kanban_db.write_txn(conn):
         # Snapshot current state so we know whether to close a run.
         prev = conn.execute(
-            "SELECT status, current_run_id, worker_pid, claim_lock "
+            "SELECT status, current_run_id, worker_pid, worker_pgid, claim_lock "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -1174,13 +1171,46 @@ def _set_status_direct(
             and effective_status not in {"done", "archived"}
         )
 
+        termination = None
+        if was_running and effective_status != "running":
+            termination = kanban_db._terminate_reclaimed_worker(
+                prev["worker_pid"],
+                prev["claim_lock"],
+                pgid=prev["worker_pgid"],
+                task_id=task_id,
+                run_id=(
+                    int(prev["current_run_id"])
+                    if prev["current_run_id"] is not None
+                    else None
+                ),
+            )
+            if (
+                kanban_db._worker_identity_requires_defer(termination)
+                or kanban_db._worker_survived_termination(termination)
+            ):
+                kanban_db._defer_reclaim_for_live_worker(
+                    conn,
+                    task_id,
+                    prev["claim_lock"],
+                    int(time.time()),
+                    termination,
+                    reason=(
+                        "dashboard_status_worker_identity_unverified"
+                        if kanban_db._worker_identity_requires_defer(termination)
+                        else "dashboard_status_worker_alive"
+                    ),
+                )
+                return False
+
         cur = conn.execute(
             "UPDATE tasks SET status = ?, "
             "  claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
             "  claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
-            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
+            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END, "
+            "  worker_pgid = CASE WHEN ? = 'running' THEN worker_pgid ELSE NULL END "
             "WHERE id = ?",
             (
+                effective_status,
                 effective_status,
                 effective_status,
                 effective_status,
@@ -1196,8 +1226,8 @@ def _set_status_direct(
                 conn, task_id,
                 outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {effective_status} (dashboard/direct)",
+                metadata=termination,
             )
-            terminations.append((prev["worker_pid"], prev["claim_lock"]))
         conn.execute(
             "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
             "VALUES (?, ?, 'status', ?, ?)",
@@ -1213,14 +1243,8 @@ def _set_status_direct(
                 int(time.time()),
             ),
         )
-        if reopening_satisfied_parent:
-            _invalidate_descendants_for_parent_reopen(
-                conn,
-                task_id,
-                terminations,
-            )
-    for pid, claim_lock in terminations:
-        kanban_db._terminate_reclaimed_worker(pid, claim_lock)
+    if reopening_satisfied_parent:
+        _invalidate_descendants_for_parent_reopen(conn, task_id)
     # If we re-opened something, children may have gone stale.
     if effective_status in {"done", "ready", "review"}:
         kanban_db.recompute_ready(conn)
@@ -1701,6 +1725,7 @@ def inspect_run_endpoint(
 
 class TerminateRunBody(BaseModel):
     reason: Optional[str] = None
+    force_local: bool = False
 
 
 @router.post("/runs/{run_id}/terminate")
@@ -1737,7 +1762,12 @@ def terminate_run_endpoint(
                 status_code=409,
                 detail=f"run {run_id} already ended",
             )
-        ok = kanban_db.reclaim_task(conn, r.task_id, reason=payload.reason)
+        ok = kanban_db.reclaim_task(
+            conn,
+            r.task_id,
+            reason=payload.reason,
+            force_local=bool(payload.force_local),
+        )
         if not ok:
             raise HTTPException(
                 status_code=409,
@@ -1757,6 +1787,7 @@ def terminate_run_endpoint(
 
 class ReclaimBody(BaseModel):
     reason: Optional[str] = None
+    force_local: bool = False
 
 
 @router.post("/tasks/{task_id}/reclaim")
@@ -1770,12 +1801,19 @@ def reclaim_task_endpoint(
     Used by the dashboard recovery popover when an operator wants to
     abort a stuck worker (e.g. one that keeps hallucinating card ids)
     without waiting for the claim TTL. Maps 1:1 to
-    ``hermes kanban reclaim <task_id> --reason ...``.
+    ``hermes kanban reclaim <task_id> --reason ...``. ``force_local`` is an
+    explicit hostname-change recovery override; exact task/run/claim identity
+    is still required and survivor deferral is never bypassed.
     """
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        ok = kanban_db.reclaim_task(conn, task_id, reason=payload.reason)
+        ok = kanban_db.reclaim_task(
+            conn,
+            task_id,
+            reason=payload.reason,
+            force_local=bool(payload.force_local),
+        )
         if not ok:
             raise HTTPException(
                 status_code=409,

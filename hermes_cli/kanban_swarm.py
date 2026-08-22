@@ -100,7 +100,8 @@ def _activate_root_inline(
                completed_at = ?,
                claim_lock   = NULL,
                claim_expires= NULL,
-               worker_pid   = NULL
+               worker_pid   = NULL,
+               worker_pgid  = NULL
          WHERE id = ?
            AND status = 'blocked'
         """,

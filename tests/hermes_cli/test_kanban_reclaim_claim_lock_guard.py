@@ -15,7 +15,10 @@ computed for.
 
 from __future__ import annotations
 
+import json
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -111,3 +114,162 @@ def test_genuine_crash_still_reclaims(conn):
     assert tid in crashed
     final = conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()
     assert final["status"] in ("ready", "blocked", "todo")
+
+
+def test_manual_reclaim_defers_when_worker_survives_termination(conn, monkeypatch):
+    """Manual reclaim must not release a claim held by a live worker."""
+    host = kb._claimer_id().split(":", 1)[0]
+    tid = kb.create_task(conn, title="live manual reclaim", assignee="w")
+    claim_lock = f"{host}:manual-reclaim"
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+        "worker_pid=? WHERE id=?",
+        (claim_lock, now - 1, 12345, tid),
+    )
+    conn.execute(
+        "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+        "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+        (tid, claim_lock, now - 1, 12345, now),
+    )
+    run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, tid))
+    conn.commit()
+
+    signals = []
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(kb.time, "sleep", lambda _seconds: None)
+
+    result = kb.reclaim_task(
+        conn,
+        tid,
+        reason="operator retry",
+        signal_fn=lambda pid, sig: signals.append((pid, sig)),
+    )
+
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_pid, claim_expires "
+        "FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    events = [
+        (event["kind"], json.loads(event["payload"]))
+        for event in conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id",
+            (tid,),
+        )
+    ]
+
+    assert result is False
+    assert row["status"] == "running"
+    assert row["claim_lock"] == claim_lock
+    assert row["worker_pid"] == 12345
+    assert row["claim_expires"] >= now + kb.RECLAIM_DEFER_GRACE_SECONDS
+    assert [kind for kind, _payload in events].count("reclaim_deferred") == 1
+    assert not any(kind == "reclaimed" for kind, _payload in events)
+    deferred = next(payload for kind, payload in events if kind == "reclaim_deferred")
+    assert deferred["reason"] == "manual_reclaim_worker_alive"
+    assert deferred["termination_attempted"] is True
+    assert deferred["terminated"] is False
+    assert signals == [(12345, signal.SIGTERM), (12345, signal.SIGKILL)]
+
+
+def test_manual_reclaim_defers_foreign_live_pid_without_identity_proof(
+    conn, monkeypatch,
+):
+    """A hostname change must not make an arbitrary live PID killable."""
+    tid = kb.create_task(conn, title="foreign live worker", assignee="w")
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+        "worker_pid=? WHERE id=?",
+        ("old-host:claim", now - 1, 24680, tid),
+    )
+    conn.execute(
+        "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+        "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+        (tid, "old-host:claim", now - 1, 24680, now),
+    )
+    run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, tid))
+    conn.commit()
+
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+    signals = []
+    result = kb.reclaim_task(
+        conn,
+        tid,
+        signal_fn=lambda pid, sig: signals.append((pid, sig)),
+    )
+
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id=?", (tid,)
+    ).fetchone()
+    deferred = [
+        row for row in kb.list_events(conn, tid)
+        if row.kind == "reclaim_deferred"
+    ]
+    assert result is False
+    assert row["status"] == "running"
+    assert row["claim_lock"] == "old-host:claim"
+    assert row["worker_pid"] == 24680
+    assert signals == []
+    assert len(deferred) == 1
+    assert deferred[0].payload["reason"] == (
+        "manual_reclaim_worker_identity_unverified"
+    )
+
+
+def test_manual_reclaim_force_local_requires_exact_worker_identity(
+    conn, monkeypatch,
+):
+    """The explicit hostname override only permits an exact worker match."""
+    tid = kb.create_task(conn, title="exact worker", assignee="w")
+    now = int(time.time())
+    claim_lock = "old-host:exact"
+    conn.execute(
+        "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+        "worker_pid=? WHERE id=?",
+        (claim_lock, now - 1, 13579, tid),
+    )
+    conn.execute(
+        "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+        "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+        (tid, claim_lock, now - 1, 13579, now),
+    )
+    run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, tid))
+    conn.commit()
+
+    alive = {"value": True}
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: alive["value"])
+    monkeypatch.setattr(kb, "_pid_looks_like_hermes_worker", lambda _pid: True)
+    monkeypatch.setattr(
+        kb,
+        "_read_process_environ",
+        lambda _pid: {
+            "HERMES_KANBAN_TASK": tid,
+            "HERMES_KANBAN_RUN_ID": str(run_id),
+            "HERMES_KANBAN_CLAIM_LOCK": claim_lock,
+        },
+    )
+    monkeypatch.setattr(kb.time, "sleep", lambda _seconds: None)
+    signals = []
+
+    def signal(pid, sig):
+        signals.append((pid, sig))
+        if sig == signal_module.SIGKILL:
+            alive["value"] = False
+
+    import signal as signal_module
+
+    assert kb.reclaim_task(
+        conn, tid, force_local=True, signal_fn=signal,
+    ) is True
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id=?", (tid,)
+    ).fetchone()
+    assert row["status"] in {"ready", "todo", "review"}
+    assert row["claim_lock"] is None
+    assert row["worker_pid"] is None
+    assert signals == [(13579, signal_module.SIGTERM), (13579, signal_module.SIGKILL)]

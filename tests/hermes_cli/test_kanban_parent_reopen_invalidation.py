@@ -89,8 +89,8 @@ def test_reopen_demotes_done_descendants_with_events_and_comments(conn):
     assert result["terminations"] == []
 
 
-def test_running_descendant_event_precedes_termination_via_reclaim_helper(
-    conn, tmp_path, monkeypatch,
+def test_running_descendant_termination_uses_scope_metadata(
+    conn, monkeypatch,
 ):
     parent_id = kb.create_task(conn, title="ancestor", assignee="planner")
     assert kb.complete_task(conn, parent_id)
@@ -101,18 +101,10 @@ def test_running_descendant_event_precedes_termination_via_reclaim_helper(
     assert claimed is not None and claimed.status == "running"
     kb._set_worker_pid(conn, child_id, 424242)
 
-    kills: list[tuple] = []
+    calls: list[tuple] = []
 
     def fake_terminate(pid, claim_lock, **kwargs):
-        # The audit trail must already be durable when the kill fires:
-        # standalone calls commit before terminating.
-        side = kb.connect(tmp_path / "kanban.db")
-        try:
-            kinds = [e.kind for e in kb.list_events(side, child_id)]
-        finally:
-            side.close()
-        assert "descendant_invalidated" in kinds
-        kills.append((pid, claim_lock))
+        calls.append((pid, claim_lock, kwargs))
         return {"terminated": True}
 
     monkeypatch.setattr(kb, "_terminate_reclaimed_worker", fake_terminate)
@@ -122,14 +114,56 @@ def test_running_descendant_event_precedes_termination_via_reclaim_helper(
         conn, parent_id, author="operator",
     )
 
-    assert kills and kills[0][0] == 424242
-    assert result["terminations"] == kills
+    assert calls and calls[0][0:2] == (424242, claimed.claim_lock)
+    assert calls[0][2]["pgid"] == 424242
+    assert calls[0][2]["task_id"] == child_id
+    assert result["terminations"][0]["task_id"] == child_id
     child = kb.get_task(conn, child_id)
     assert child is not None
     assert child.status == "todo"
     assert child.current_run_id is None
     run = kb.latest_run(conn, child_id)
     assert run is not None and run.outcome == "reclaimed"
+
+
+def test_running_descendant_survivor_keeps_claim_and_defers(conn, monkeypatch):
+    parent_id = kb.create_task(conn, title="ancestor", assignee="planner")
+    assert kb.complete_task(conn, parent_id)
+    child_id = kb.create_task(
+        conn, title="surviving child", assignee="builder", parents=[parent_id],
+    )
+    claimed = kb.claim_task(conn, child_id)
+    assert claimed is not None
+    kb._set_worker_pid(conn, child_id, 424242)
+
+    monkeypatch.setattr(
+        kb,
+        "_terminate_reclaimed_worker",
+        lambda pid, claim_lock, **kwargs: {
+            "prev_pid": pid,
+            "prev_pgid": kwargs["pgid"],
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": False,
+            "identity_unverified": False,
+        },
+    )
+
+    _reopen_parent_directly(conn, parent_id)
+    result = kb.invalidate_descendants_for_parent_reopen(
+        conn, parent_id, author="operator",
+    )
+
+    child = kb.get_task(conn, child_id)
+    assert child is not None and child.status == "running"
+    assert child.current_run_id == claimed.current_run_id
+    assert child_id not in {entry["id"] for entry in result["invalidated"]}
+    deferred = [
+        event for event in kb.list_events(conn, child_id)
+        if event.kind == "reclaim_deferred"
+    ]
+    assert len(deferred) == 1
+    assert deferred[0].payload["reason"] == "ancestor_reopen_worker_alive"
 
 
 def test_counter_reset_on_invalidated_descendants(conn):

@@ -728,6 +728,65 @@ class TestTimestampPreservation:
         assert [m["timestamp"] for m in msgs_out] == [100.0, 200.0, 300.0]
         assert self._raw_timestamps(db, "s1") == [100.0, 200.0, 300.0]
 
+    def test_conditional_active_replace_rejects_stale_snapshot(self, db):
+        """A concurrent append must survive a stale transcript rewrite."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="first")
+        db.append_message("s1", role="assistant", content="first reply")
+        expected, _display = db.get_resume_conversations("s1")
+
+        db.append_message("s1", role="user", content="concurrent")
+        replaced = db.replace_active_messages_if_unchanged(
+            "s1",
+            expected,
+            [],
+            archive_dropped=True,
+        )
+
+        assert replaced is False
+        assert [
+            message["content"]
+            for message in db.get_messages_as_conversation("s1")
+        ] == ["first", "first reply", "concurrent"]
+        with db._lock:
+            archived_count = db._conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 0",
+                ("s1",),
+            ).fetchone()[0]
+        assert archived_count == 0
+
+    def test_conditional_active_replace_commits_matching_snapshot(self, db):
+        """An unchanged active projection may be rewritten atomically."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="first")
+        db.append_message("s1", role="assistant", content="first reply")
+        db.append_message("s1", role="user", content="second")
+        expected, _display = db.get_resume_conversations("s1")
+
+        replaced = db.replace_active_messages_if_unchanged(
+            "s1",
+            expected,
+            expected[:2],
+            archive_dropped=True,
+        )
+
+        assert replaced is True
+        assert [
+            message["content"]
+            for message in db.get_messages_as_conversation("s1")
+        ] == ["first", "first reply"]
+        with db._lock:
+            archived = db._conn.execute(
+                "SELECT content FROM messages "
+                "WHERE session_id = ? AND active = 0 ORDER BY id",
+                ("s1",),
+            ).fetchall()
+        assert [row["content"] for row in archived] == [
+            "first",
+            "first reply",
+            "second",
+        ]
+
 
 
 

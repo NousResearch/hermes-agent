@@ -10482,48 +10482,107 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         differs.
         """
 
-        active_clause = " AND active = 1" if active_only else ""
-
         def _do(conn):
-            session = conn.execute(
-                "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-            if (
-                session is not None
-                and session["ended_at"] is not None
-                and session["end_reason"] == "compression"
-            ):
-                raise CompressionSessionClosedError(session_id)
-            if archive_dropped:
-                # Content-preserving UPDATE: the rows keep their FTS entries
-                # (the messages_fts triggers fire on INSERT / DELETE / UPDATE
-                # of content columns, not on `active`), so the replaced turns
-                # stay readable via get_messages(include_inactive=True) and
-                # searchable with include_inactive=True after the rewrite.
-                conn.execute(
-                    "UPDATE messages SET active = 0 "
-                    "WHERE session_id = ? AND active = 1",
-                    (session_id,),
-                )
-            else:
-                conn.execute(
-                    f"DELETE FROM messages WHERE session_id = ?{active_clause}",
-                    (session_id,),
-                )
-            conn.execute(
-                "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
-                (session_id,),
-            )
-            total_messages, total_tool_calls = self._insert_message_rows(
-                conn, session_id, messages
-            )
-            conn.execute(
-                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
-                (total_messages, total_tool_calls, session_id),
+            self._replace_messages_in_transaction(
+                conn,
+                session_id,
+                messages,
+                active_only=active_only,
+                archive_dropped=archive_dropped,
             )
 
         self._execute_write(_do)
+
+    def _replace_messages_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        *,
+        active_only: bool,
+        archive_dropped: bool = False,
+    ) -> None:
+        """Replace a transcript using the caller's open write transaction."""
+        session = conn.execute(
+            "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if (
+            session is not None
+            and session["ended_at"] is not None
+            and session["end_reason"] == "compression"
+        ):
+            raise CompressionSessionClosedError(session_id)
+        if archive_dropped:
+            # Content-preserving UPDATE: the rows keep their FTS entries
+            # (the messages_fts triggers fire on INSERT / DELETE / UPDATE
+            # of content columns, not on `active`), so the replaced turns
+            # stay readable via get_messages(include_inactive=True) and
+            # searchable with include_inactive=True after the rewrite.
+            conn.execute(
+                "UPDATE messages SET active = 0 "
+                "WHERE session_id = ? AND active = 1",
+                (session_id,),
+            )
+        else:
+            active_clause = " AND active = 1" if active_only else ""
+            conn.execute(
+                f"DELETE FROM messages WHERE session_id = ?{active_clause}",
+                (session_id,),
+            )
+        conn.execute(
+            "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
+            (session_id,),
+        )
+        total_messages, total_tool_calls = self._insert_message_rows(
+            conn, session_id, messages
+        )
+        conn.execute(
+            "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+            (total_messages, total_tool_calls, session_id),
+        )
+
+    def replace_active_messages_if_unchanged(
+        self,
+        session_id: str,
+        expected_messages: List[Dict[str, Any]],
+        messages: List[Dict[str, Any]],
+        *,
+        archive_dropped: bool = False,
+    ) -> bool:
+        """Conditionally rewrite the active tip transcript.
+
+        The current model-fed projection is compared with ``expected_messages``
+        inside the same ``BEGIN IMMEDIATE`` transaction that performs the
+        rewrite. If another process appended or rewrote rows after the caller's
+        read, return ``False`` without deleting anything.
+        """
+
+        def _do(conn):
+            rows = conn.execute(
+                f"SELECT {self._CONVERSATION_ROW_COLUMNS} "
+                "FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            current_messages = self._rows_to_conversation(
+                rows,
+                session_id=session_id,
+                include_ancestors=False,
+                repair_alternation=True,
+                include_row_ids=True,
+            )
+            if current_messages != expected_messages:
+                return False
+            self._replace_messages_in_transaction(
+                conn,
+                session_id,
+                messages,
+                active_only=True,
+                archive_dropped=archive_dropped,
+            )
+            return True
+
+        return bool(self._execute_write(_do))
 
     def has_archived_messages(self, session_id: str) -> bool:
         """Return True if the session has any soft-archived (``active = 0``) rows.

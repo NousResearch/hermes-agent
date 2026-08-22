@@ -1484,6 +1484,96 @@ def remove_pid_file() -> None:
         pass
 
 
+def _foreign_lock_record_is_stale(existing: dict[str, Any]) -> bool:
+    """Return True when a foreign scoped-lock record should be reclaimed.
+
+    ``existing`` must name a PID other than ours (callers short-circuit the
+    same-PID self-reacquire before calling this — see #81468, where requiring
+    ``start_time`` equality for our own PID falsely rejected reconnects).
+    Applies the full PID-liveness / PID-reuse / cmdline staleness cascade:
+
+    - a record with no usable PID (old writer, truncated write) is stale;
+    - a PID that no longer exists (or is a reaped zombie) is stale;
+    - a PID whose live ``start_time`` disagrees with the record (PID reuse) is
+      stale;
+    - when ``start_time`` is unavailable on either side (macOS / Windows have
+      no ``/proc``; psutil may fail to read ``create_time`` for recycled
+      PIDs), fall back to the live process command line — and, when cmdline is
+      also unreadable (Windows has no ``ps``), to the record's own ``argv``.
+      Both oracles must indicate "not a gateway" to mark stale;
+    - a stopped (Ctrl+Z / SIGTSTP) process still looks alive to ``_pid_exists``
+      but is not running — treat it as stale so takeover/reclaim proceeds.
+    """
+    try:
+        existing_pid = int(existing["pid"])
+    except (KeyError, TypeError, ValueError):
+        existing_pid = None
+
+    if existing_pid is None:
+        # Record with no usable PID (old writer, truncated write) is stale.
+        return True
+
+    pid: int = existing_pid
+    stale = False
+    if not _pid_exists(pid):
+        return True
+    current_start = _get_process_start_time(pid)
+    if (
+        existing.get("start_time") is not None
+        and current_start is not None
+        and current_start != existing.get("start_time")
+    ):
+        stale = True
+    # When start_time comparison is unavailable on either side
+    # (macOS / Windows have no /proc, so the lock record's
+    # start_time may be None; psutil may also fail to read
+    # create_time for recycled PIDs), fall back to checking the
+    # live process command line.  When cmdline is also unreadable
+    # (Windows has no ps), consult the lock record's own argv —
+    # the record writer stores it at startup and it's the only
+    # identity signal on platforms without ps.  Both oracles must
+    # indicate "not a gateway" to mark stale.
+    if (
+        not stale
+        and (existing.get("start_time") is None or current_start is None)
+        and not _looks_like_gateway_process(pid)
+    ):
+        live_cmdline = _read_process_cmdline(pid)
+        if live_cmdline is not None or not _record_looks_like_gateway(existing):
+            stale = True
+    # Secondary defence against boot-time PID+start_time collisions:
+    # systemd spawns core services deterministically, so an unrelated
+    # process (e.g. cron) can land on the exact same PID and jiffy
+    # count as a previous gateway. If both start_times are known and
+    # match but the live process is not a gateway, and we can confirm
+    # that by reading its cmdline, the lock is stale.
+    if (
+        not stale
+        and existing.get("start_time") is not None
+        and current_start is not None
+        and not _looks_like_gateway_process(pid)
+    ):
+        live_cmdline = _read_process_cmdline(pid)
+        if live_cmdline is not None:
+            stale = True
+    # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
+    # processes still appear alive to _pid_exists but are not
+    # actually running. Treat them as stale so --replace works.
+    if not stale:
+        try:
+            _proc_status = Path(f"/proc/{pid}/status")
+            if _proc_status.exists():
+                for _line in _proc_status.read_text(encoding="utf-8").splitlines():
+                    if _line.startswith("State:"):
+                        _state = _line.split()[1]
+                        if _state in {"T", "t"}:  # stopped or tracing stop
+                            stale = True
+                        break
+        except (OSError, PermissionError):
+            pass
+    return stale
+
+
 def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, Any]] = None) -> tuple[bool, Optional[dict[str, Any]]]:
     """Acquire a machine-local lock keyed by scope + identity.
 
@@ -1537,66 +1627,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
             _write_json_file(lock_path, record)
             return True, existing
 
-        stale = existing_pid is None
-        if not stale:
-            if not _pid_exists(existing_pid):
-                stale = True
-            else:
-                current_start = _get_process_start_time(existing_pid)
-                if (
-                    existing.get("start_time") is not None
-                    and current_start is not None
-                    and current_start != existing.get("start_time")
-                ):
-                    stale = True
-                # When start_time comparison is unavailable on either side
-                # (macOS / Windows have no /proc, so the lock record's
-                # start_time may be None; psutil may also fail to read
-                # create_time for recycled PIDs), fall back to checking the
-                # live process command line.  When cmdline is also unreadable
-                # (Windows has no ps), consult the lock record's own argv —
-                # the gateway writes it at startup and it's the only identity
-                # signal on platforms without ps.  Both oracles must indicate
-                # "not a gateway" to mark stale.
-                if (
-                    not stale
-                    and (existing.get("start_time") is None or current_start is None)
-                    and not _looks_like_gateway_process(existing_pid)
-                ):
-                    live_cmdline = _read_process_cmdline(existing_pid)
-                    if live_cmdline is not None or not _record_looks_like_gateway(existing):
-                        stale = True
-                # Secondary defence against boot-time PID+start_time collisions:
-                # systemd spawns core services deterministically, so an unrelated
-                # process (e.g. cron) can land on the exact same PID and jiffy
-                # count as a previous gateway. If both start_times are known and
-                # match but the live process is not a gateway, and we can confirm
-                # that by reading its cmdline, the lock is stale.
-                if (
-                    not stale
-                    and existing.get("start_time") is not None
-                    and current_start is not None
-                    and not _looks_like_gateway_process(existing_pid)
-                ):
-                    live_cmdline = _read_process_cmdline(existing_pid)
-                    if live_cmdline is not None:
-                        stale = True
-                # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
-                # processes still appear alive to _pid_exists but are not
-                # actually running. Treat them as stale so --replace works.
-                if not stale:
-                    try:
-                        _proc_status = Path(f"/proc/{existing_pid}/status")
-                        if _proc_status.exists():
-                            for _line in _proc_status.read_text(encoding="utf-8").splitlines():
-                                if _line.startswith("State:"):
-                                    _state = _line.split()[1]
-                                    if _state in {"T", "t"}:  # stopped or tracing stop
-                                        stale = True
-                                    break
-                    except (OSError, PermissionError):
-                        pass
-        if stale:
+        if _foreign_lock_record_is_stale(existing):
             # Remove the stale lock ATOMICALLY by renaming it to a tombstone
             # instead of unlinking. With unlink()+O_EXCL, two racing starters
             # could both observe "removed" (the second unlink() silently
@@ -1649,6 +1680,127 @@ def release_scoped_lock(scope: str, identity: str) -> None:
     # start_time equality: on-disk null vs a live fingerprint (macOS/psutil
     # timing) would otherwise leave the lock stuck across Discord/Telegram
     # reconnects (#81468). start_time only guards PID reuse for *other* PIDs.
+    try:
+        lock_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+# ── inter-process crypto-store lease ──────────────────────────────────
+#
+# OlmMachine is not safe to run concurrently against the same crypto DB: two
+# MatrixAdapter instances in separate gateway processes would split-brain on
+# the store and corrupt the account's keys.  The crypto lease is a
+# machine-local lock keyed to the resolved crypto DB path + account/device
+# identity — NOT process-level HERMES_HOME — so two processes racing on the
+# same store + account collide regardless of which HERMES_HOME spawned them.
+# Fail-closed: unlike ``acquire_scoped_lock`` (whose success path returns
+# ``(True, None)`` after a fresh create), the success path here always returns
+# the winning record, and any acquisition that cannot be confirmed returns
+# ``(False, existing)``.
+
+_CRYPTO_LEASE_SCOPE = "matrix-crypto"
+
+
+def acquire_crypto_lease(
+    store_path: str, identity: str, metadata: Optional[dict] = None
+) -> tuple[bool, Optional[dict]]:
+    """Acquire an inter-process lease on a Matrix crypto store.
+
+    Keyed to the resolved crypto DB path + account/device identity (not
+    process-level HERMES_HOME). Returns (True, existing_record) on success,
+    (False, existing_record) when another live process holds the lease.
+    Fail-closed: if the lock file is corrupted or the PID record is stale,
+    reclaim it; if acquisition cannot be confirmed, return False.
+
+    ``store_path`` is the caller's resolved crypto DB path, stamped into the
+    lease record for diagnostics.  ``identity`` should encode ``store_path`` +
+    ``account_id`` + ``device_id``; it is hashed via :func:`_scope_hash` to
+    form the on-disk key.  This is a pure lock primitive: it does not resolve
+    HERMES_HOME or crypto paths itself.
+    """
+    lock_path = _get_scope_lock_path(_CRYPTO_LEASE_SCOPE, identity)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        **_build_pid_record(),
+        "scope": _CRYPTO_LEASE_SCOPE,
+        "identity_hash": _scope_hash(identity),
+        "store_path": store_path,
+        "metadata": metadata or {},
+        "updated_at": _utc_now_iso(),
+    }
+
+    existing = _read_json_file(lock_path)
+    if existing is None and lock_path.exists():
+        # Lock file exists but is empty or contains invalid JSON — treat as
+        # stale (a previous process was killed between O_CREAT|O_EXCL and the
+        # subsequent json.dump()).
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    if existing:
+        try:
+            existing_pid = int(existing["pid"])
+        except (KeyError, TypeError, ValueError):
+            existing_pid = None
+
+        # Same live PID as this process: always self-reacquire (see #81468).
+        if existing_pid == os.getpid():
+            _write_json_file(lock_path, record)
+            return True, existing
+
+        if _foreign_lock_record_is_stale(existing):
+            # Reclaim the stale lease ATOMICALLY via a tombstone rename so two
+            # racing starters cannot both win (same guard as acquire_scoped_lock).
+            tombstone = lock_path.with_name(lock_path.name + ".stale")
+            try:
+                os.replace(lock_path, tombstone)
+            except FileNotFoundError:
+                # Another racer already claimed the stale file — let O_EXCL below
+                # decide the winner.
+                pass
+            except OSError:
+                pass
+            else:
+                try:
+                    tombstone.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        else:
+            # A live foreign process holds the lease — fail closed.
+            return False, existing
+
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        # Unconfirmable: another process won the create race.
+        return False, _read_json_file(lock_path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(record, handle)
+    except Exception:
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return True, record
+
+
+def release_crypto_lease(store_path: str, identity: str) -> None:
+    """Release a previously-acquired crypto lease owned by this process.
+
+    ``store_path`` is accepted for API symmetry with :func:`acquire_crypto_lease`;
+    the lease is keyed by ``identity`` alone, so it is not consulted here.
+    Only a record whose ``pid`` matches this process is removed.
+    """
+    lock_path = _get_scope_lock_path(_CRYPTO_LEASE_SCOPE, identity)
+    existing = _read_json_file(lock_path)
+    if not existing:
+        return
+    if existing.get("pid") != os.getpid():
+        return
     try:
         lock_path.unlink(missing_ok=True)
     except OSError:

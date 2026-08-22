@@ -181,7 +181,7 @@ jobs:
       - name: Verify Flatpak
         run: |
           flatpak install --user --noninteractive \
-            --bundle release/com.nousresearch.Hermes.flatpak
+            --bundle apps/desktop/release/com.nousresearch.Hermes.flatpak
           flatpak run --command=sh com.nousresearch.Hermes -c '
             test -x /app/bin/hermes-desktop && echo "OK: Flatpak" || exit 1
           ' || exit 1

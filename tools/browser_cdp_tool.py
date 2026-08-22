@@ -375,6 +375,11 @@ def _browser_cdp_via_supervisor(
                 "CDP call via supervisor failed: loop unavailable",
                 cdp_docs=CDP_DOCS_URL,
             )
+        # The inner _cdp call enforces `timeout` itself; the +2 margin only
+        # covers loop-dispatch overhead so the inner, more specific CDP
+        # timeout error surfaces instead of a generic future timeout. Both
+        # routing paths receive the same clamped safe_timeout from the tool
+        # entrypoint, so their latency contracts stay symmetric.
         result_msg = fut.result(timeout=timeout + 2)
     except Exception as exc:
         return tool_error(
@@ -392,6 +397,99 @@ def _browser_cdp_via_supervisor(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _browser_cdp_target_via_supervisor(
+    task_id: str,
+    target_id: Optional[str],
+    method: str,
+    params: Optional[Dict[str, Any]],
+    timeout: float,
+) -> Optional[str]:
+    """Route a CDP call through the task's live supervisor connection.
+
+    Two shapes, one WebSocket:
+
+    * ``target_id`` set — dispatch ``method`` on the supervisor session
+      already attached to that target (the top-level page from
+      ``browser_snapshot``'s ``page_target_id``, an OOPIF frame, or an
+      auto-attached child target).
+    * ``target_id`` ``None`` — dispatch ``method`` as a browser-level
+      command (no ``sessionId``) on the same connection. Discovery calls
+      like ``Target.getTargets`` MUST ride the supervisor's WebSocket too:
+      Browserless-style backends spawn a private browser per CDP
+      connection (#32685), so a stateless discovery call would enumerate a
+      *different* browser than the one a follow-up
+      ``target_id``-routed call executes in.
+
+    Returns ``None`` when routing isn't possible — no live supervisor for
+    the task, or a ``target_id`` the supervisor has no session for — so the
+    caller falls back to the legacy stateless attach flow (plain Chrome
+    shares targets across connections, so statelessness keeps working
+    there).
+    """
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+    except Exception:  # pragma: no cover — defensive
+        return None
+
+    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    if supervisor is None:
+        return None
+
+    session_id: Optional[str] = None
+    if target_id:
+        session_id = supervisor.resolve_target_session(target_id)
+        if not session_id:
+            return None
+
+    loop = supervisor._loop  # type: ignore[attr-defined]
+    if loop is None or not loop.is_running():
+        return None
+
+    async def _do_cdp():
+        return await supervisor._cdp(  # type: ignore[attr-defined]
+            method,
+            params or {},
+            session_id=session_id,
+            timeout=timeout,
+        )
+
+    try:
+        from agent.async_utils import safe_schedule_threadsafe
+
+        fut = safe_schedule_threadsafe(_do_cdp(), loop)
+        if fut is None:
+            return tool_error(
+                "CDP call via supervisor failed: loop unavailable",
+                cdp_docs=CDP_DOCS_URL,
+            )
+        # The inner _cdp call enforces `timeout` itself; the +2 margin only
+        # covers loop-dispatch overhead so the inner, more specific CDP
+        # timeout error surfaces instead of a generic future timeout. Both
+        # routing paths receive the same clamped safe_timeout from the tool
+        # entrypoint, so their latency contracts stay symmetric.
+        result_msg = fut.result(timeout=timeout + 2)
+    except Exception as exc:
+        return tool_error(
+            f"CDP call via supervisor failed: {type(exc).__name__}: {exc}",
+            cdp_docs=CDP_DOCS_URL,
+        )
+
+    payload: Dict[str, Any] = {
+        "success": True,
+        "method": method,
+        # Lets callers (and tests) see the call rode the supervisor's
+        # persistent connection rather than a stateless one.
+        "connection": "supervisor",
+        # Same force-redaction boundary as the stateless payload below —
+        # supervisor routing must not become the unredacted sibling path.
+        "result": _redact_cdp_output(result_msg.get("result", {})),
+    }
+    if target_id:
+        payload["target_id"] = target_id
+        payload["session_id"] = session_id
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def browser_cdp(
     method: str,
     params: Optional[Dict[str, Any]] = None,
@@ -405,10 +503,13 @@ def browser_cdp(
     Args:
         method: CDP method name, e.g. ``"Target.getTargets"``.
         params: Method-specific parameters; defaults to ``{}``.
-        target_id: Optional target/tab ID for page-level methods.  When set,
-            we first attach to the target (``flatten=True``) and send
-            ``method`` with the resulting ``sessionId``.  Uses a fresh
-            stateless CDP connection.
+        target_id: Optional target/tab ID for page-level methods.  When the
+            target is already attached to the task's CDP supervisor (e.g.
+            ``page_target_id`` from ``browser_snapshot``), the call reuses
+            the supervisor's persistent WebSocket session.  Otherwise we
+            attach to the target (``flatten=True``) over a fresh stateless
+            CDP connection and send ``method`` with the resulting
+            ``sessionId``.
         frame_id: Optional cross-origin (OOPIF) iframe ``frame_id`` from
             ``browser_snapshot.frame_tree.children[]``.  When set (and the
             frame is an OOPIF with a live session tracked by the CDP
@@ -496,6 +597,28 @@ def browser_cdp(
         safe_timeout = 30.0
     safe_timeout = max(1.0, min(safe_timeout, 300.0))
 
+    # --- Reuse the live supervisor connection when one exists ------------
+    # Runs after validation and the private-page guard above so supervisor
+    # routing cannot become the sibling bypass for either (the frame_id
+    # route follows the same boundary).  Covers both shapes: target-scoped
+    # calls ride the supervisor session attached to that target, and
+    # browser-level calls (no target_id — e.g. Target.getTargets
+    # discovery) ride the same WebSocket as browser commands, so a
+    # discovery → target_id chain observes ONE browser even on
+    # Browserless-style backends that give every connection a private
+    # browser.  Falls through to the stateless attach when there is no
+    # live supervisor (plain Chrome shares targets across connections) or
+    # the supervisor has no session for a requested target.
+    routed = _browser_cdp_target_via_supervisor(
+        task_id=effective_task_id,
+        target_id=target_id,
+        method=method,
+        params=call_params,
+        timeout=safe_timeout,
+    )
+    if routed is not None:
+        return routed
+
     try:
         result = _run_async(
             _cdp_call(endpoint, method, call_params, target_id, safe_timeout)
@@ -568,16 +691,22 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
         "- Browser-level methods (Target.*, Browser.*, Storage.*): omit "
         "target_id and frame_id.\n"
         "- Page-level methods (Page.*, Runtime.*, DOM.*, Emulation.*, "
-        "Network.* scoped to a tab): pass target_id from Target.getTargets.\n"
+        "Network.* scoped to a tab): pass target_id from Target.getTargets "
+        "or browser_snapshot's page_target_id. When the target belongs to "
+        "the live CDP supervisor session, the call reuses that persistent "
+        "WebSocket automatically (required on Browserless-style backends "
+        "that spawn a browser per connection); otherwise it falls back to "
+        "a fresh stateless attach.\n"
         "- **Cross-origin iframe scope** (Runtime.evaluate inside an OOPIF, "
         "Page.* targeting a frame target, etc.): pass frame_id from the "
         "browser_snapshot frame_tree output. This routes through the CDP "
         "supervisor's live connection — the only reliable way on "
         "Browserbase where stateless CDP calls hit signed-URL expiry.\n"
-        "- Each stateless call (without frame_id) is independent — sessions "
-        "and event subscriptions do not persist between calls. For stateful "
-        "workflows, prefer the dedicated browser tools or use frame_id "
-        "routing."
+        "- Each stateless call (without frame_id or a supervisor-tracked "
+        "target_id) is independent — sessions and event subscriptions do "
+        "not persist between calls. For stateful workflows, prefer the "
+        "dedicated browser tools or supervisor-routed target_id/frame_id "
+        "calls."
     ),
     "parameters": {
         "type": "object",

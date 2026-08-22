@@ -271,6 +271,11 @@ class SupervisorSnapshot:
     active: bool  # False if supervisor is detached/stopped
     cdp_url: str
     task_id: str
+    # CDP target id of the attached top-level page. Public discovery path for
+    # ``browser_cdp(target_id=...)`` session reuse — surfaced in
+    # ``browser_snapshot`` output via ``to_dict`` so agents never need to
+    # read supervisor internals.
+    page_target_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for inclusion in ``browser_snapshot`` output."""
@@ -280,6 +285,8 @@ class SupervisorSnapshot:
         }
         if self.recent_dialogs:
             out["recent_dialogs"] = [d.to_dict() for d in self.recent_dialogs]
+        if self.page_target_id:
+            out["page_target_id"] = self.page_target_id
         return out
 
 
@@ -340,6 +347,7 @@ class CDPSupervisor:
         self._next_call_id = 1
         self._pending_calls: Dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
+        self._page_target_id: Optional[str] = None
         self._page_session_id: Optional[str] = None
         self._child_sessions: Dict[str, Dict[str, Any]] = {}  # session_id -> info
 
@@ -432,6 +440,7 @@ class CDPSupervisor:
             frames_tree = self._build_frame_tree_locked()
             console = tuple(self._console_events[-CONSOLE_HISTORY_MAX:])
             active = self._active
+            page_target_id = self._page_target_id
         return SupervisorSnapshot(
             pending_dialogs=dialogs,
             recent_dialogs=recent,
@@ -440,7 +449,35 @@ class CDPSupervisor:
             active=active,
             cdp_url=self.cdp_url,
             task_id=self.task_id,
+            page_target_id=page_target_id,
         )
+
+    def resolve_target_session(self, target_id: str) -> Optional[str]:
+        """Return the live CDP session id for a target attached to this supervisor.
+
+        Public lookup backing ``browser_cdp(target_id=...)`` session reuse:
+        checks the attached top-level page, OOPIF frame sessions (OOPIF
+        frame ids equal their target ids), and auto-attached child targets.
+        Returns ``None`` when this supervisor does not track the target —
+        callers fall back to a stateless attach.
+        """
+        if not target_id:
+            return None
+        with self._state_lock:
+            # Partial attach: _page_target_id is known but _page_session_id
+            # is not yet (mid-attach/reconnect). Falling through to None is
+            # deliberate — the caller's stateless fallback handles the call
+            # rather than racing the half-attached session.
+            if target_id == self._page_target_id and self._page_session_id:
+                return self._page_session_id
+            frame = self._frames.get(target_id)
+            if frame is not None and frame.cdp_session_id:
+                return frame.cdp_session_id
+            for session_id, meta in self._child_sessions.items():
+                info = meta.get("info") if isinstance(meta, dict) else None
+                if isinstance(info, dict) and info.get("targetId") == target_id:
+                    return session_id
+        return None
 
     def respond_to_dialog(
         self,
@@ -679,6 +716,7 @@ class CDPSupervisor:
             try:
                 # Reset per-connection session state so stale ids don't hang
                 # around after a reconnect.
+                self._page_target_id = None
                 self._page_session_id = None
                 self._child_sessions.clear()
                 # We deliberately keep `_pending_dialogs` and `_frames` —
@@ -753,6 +791,7 @@ class CDPSupervisor:
             "Target.attachToTarget",
             {"targetId": target_id, "flatten": True},
         )
+        self._page_target_id = target_id
         self._page_session_id = attach["result"]["sessionId"]
         await self._cdp("Page.enable", session_id=self._page_session_id)
         await self._cdp("Runtime.enable", session_id=self._page_session_id)

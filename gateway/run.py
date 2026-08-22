@@ -832,10 +832,35 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         return ""
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = _sanitize_dsml_gateway_text(_redact_gateway_user_facing_secrets(str(text)))
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
+
+
+# DSML (DeepSeek markup language) control tags — <｜DSML｜tool_calls>, <｜DSML｜invoke …>,
+# <｜DSML｜parameter …>, </｜DSML｜invoke>, </｜DSML｜tool_calls>, or an orphaned opener with
+# no closer. These are literal UTF-8 markers (NOT special tokens), so
+# skip_special_tokens / clean_special_tokens never remove them; only successful
+# parse_tool_calls() strips them. If the tool-call envelope is truncated
+# (max_tokens cut-off mid-serialization), the server's content recovery emits the
+# withheld bytes as visible text and the tags leak to the UI. This is a permanent
+# guard: regardless of upstream regressions, DSML markers never reach a chat
+# surface. See DSML-leakage fix (2026-08-04). Marker literals from omlx
+# patches/deepseek_v4/tool_parser_v4.py.
+def _sanitize_dsml_gateway_text(text: str) -> str:
+    """Strip DSML control-tag leakage from model text before chat delivery.
+
+    Thin wrapper over the shared :func:`gateway.response_filters.sanitize_dsml_markers`
+    (single source of truth). Removes every <｜DSML｜…> tag. If an orphaned
+    <｜DSML｜tool_calls> opener is present with no matching closer, drops
+    everything from that opener to the end of the string (the stream was cut
+    off mid-envelope — the trailing content is a partial tool call, not
+    user-facing prose).
+    """
+    from gateway.response_filters import sanitize_dsml_markers
+
+    return sanitize_dsml_markers(text)
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:

@@ -36,6 +36,7 @@ from gateway.config import (
 from gateway.response_filters import (
     is_intentional_silence_response as _is_intentional_silence_response,
     is_partial_silence_marker as _is_partial_silence_marker,
+    sanitize_dsml_markers as _sanitize_dsml_markers,
 )
 
 logger = logging.getLogger("gateway.stream_consumer")
@@ -1430,7 +1431,7 @@ class GatewayStreamConsumer:
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
-        """Strip MEDIA: directives and internal markers from text before display.
+        """Strip MEDIA: directives, internal markers, and DSML tags from text before display.
 
         The streaming path delivers raw text chunks that may include
         ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
@@ -1438,8 +1439,17 @@ class GatewayStreamConsumer:
         delivered separately via ``_deliver_media_from_response()`` after the
         stream finishes — we just need to hide the raw directives from the
         user.
+
+        DSML tool-call markers (`<｜DSML｜…>`) are ALSO stripped here, because the
+        streaming path progressive-edits this text onto Telegram BEFORE the
+        final-response sanitizer runs. Without this, a truncated tool-call
+        envelope leaks `</invoke>`/`</tool_calls>` as visible text. This is
+        the single chokepoint for all streamed delivery (progressive edits,
+        new chunks, continuations, fallback tails).
         """
-        return _BasePlatformAdapter.strip_media_directives_for_display(text)
+        return _sanitize_dsml_markers(
+            _BasePlatformAdapter.strip_media_directives_for_display(text)
+        )
 
     async def _send_new_chunk(
         self,

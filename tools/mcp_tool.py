@@ -4699,9 +4699,10 @@ def _handle_auth_error_and_retry(
       2. If yes, set the server's ``_reconnect_event`` so the server task
          tears down the current MCP session and rebuilds it with fresh
          credentials. Wait briefly for ``_ready`` to re-fire.
-      3. Retry the operation once. Return the retry result if it produced
-         a non-error JSON payload. Otherwise return the ``needs_reauth``
-         error dict so the model stops hallucinating manual refresh.
+      3. Retry the operation once. Any completed result proves auth and
+         transport recovery, including a tool/domain error payload. Return
+         it unchanged. If the retry raises, return the ``needs_reauth`` error
+         dict so the model stops hallucinating manual refresh.
       4. Return None if ``exc`` is not an auth error, signalling the
          caller to use the generic error path.
 
@@ -4758,14 +4759,11 @@ def _handle_auth_error_and_retry(
 
         try:
             result = retry_call()
-            try:
-                parsed = json.loads(result)
-                if "error" not in parsed:
-                    _reset_server_error(server_name)
-                    return result
-            except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)
-                return result
+            # A returned result means the RPC round-trip completed. The
+            # payload may still be a tool/domain error, but it is not an auth
+            # or connectivity failure and must not become needs_reauth.
+            _reset_server_error(server_name)
+            return result
         except Exception as retry_exc:
             logger.warning(
                 "MCP %s/%s retry after auth recovery failed: %s",
@@ -4952,14 +4950,11 @@ def _handle_session_expired_and_retry(
 
     try:
         result = retry_call()
-        try:
-            parsed = json.loads(result)
-            if "error" not in parsed:
-                _reset_server_error(server_name)
-                return result
-        except (json.JSONDecodeError, TypeError):
-            _reset_server_error(server_name)
-            return result
+        # A returned result proves the fresh transport completed the RPC.
+        # Preserve tool/domain errors instead of reclassifying them as another
+        # session failure.
+        _reset_server_error(server_name)
+        return result
     except Exception as retry_exc:
         logger.warning(
             "MCP %s/%s retry after session reconnect failed: %s",
@@ -5965,15 +5960,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             result = _call_once()
-            # Check if the MCP tool itself returned an error
-            try:
-                parsed = json.loads(result)
-                if "error" in parsed:
-                    _bump_server_error(server_name)
-                else:
-                    _reset_server_error(server_name)  # success — reset
-            except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)  # non-JSON = success
+            # A completed CallToolResult, including isError=True, proves the
+            # server transport is reachable. Tool/domain errors must not trip
+            # the server-connectivity circuit breaker.
+            _reset_server_error(server_name)
             return result
         except InterruptedError:
             return _interrupted_call_result()

@@ -330,6 +330,41 @@ def test_session_expired_handler_returns_none_without_server_record():
     assert out is None
 
 
+def test_session_retry_returns_completed_tool_error(monkeypatch):
+    """A tool error after reconnect must not become a transport failure."""
+    from tools import mcp_tool
+
+    loop = MagicMock()
+    loop.is_running.return_value = True
+    monkeypatch.setattr(mcp_tool, "_mcp_loop", loop)
+    monkeypatch.setattr(
+        mcp_tool,
+        "_signal_reconnect_and_wait",
+        lambda *args, **kwargs: True,
+    )
+
+    server = MagicMock()
+    server._reconnect_event = MagicMock()
+    mcp_tool._servers["srv-domain-error"] = server
+    mcp_tool._server_error_counts["srv-domain-error"] = 2
+    tool_error_result = json.dumps({"error": "domain validation failed"})
+
+    try:
+        result = mcp_tool._handle_session_expired_and_retry(
+            "srv-domain-error",
+            RuntimeError("Invalid or expired session"),
+            lambda: tool_error_result,
+            "tools/call example",
+        )
+
+        assert result == tool_error_result
+        assert mcp_tool._server_error_counts.get("srv-domain-error", 0) == 0
+    finally:
+        mcp_tool._servers.pop("srv-domain-error", None)
+        mcp_tool._server_error_counts.pop("srv-domain-error", None)
+        mcp_tool._server_breaker_opened_at.pop("srv-domain-error", None)
+
+
 # ---------------------------------------------------------------------------
 # Parallel coverage for resources/list, resources/read, prompts/list,
 # prompts/get — all four handlers share the same exception path.

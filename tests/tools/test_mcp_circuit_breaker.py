@@ -11,6 +11,7 @@ tripped for the lifetime of the process. These tests lock in the
 half-open / cooldown / reconnect-resets-breaker behavior that fixes
 that.
 """
+import asyncio
 import json
 from unittest.mock import MagicMock
 
@@ -99,6 +100,48 @@ def _cleanup(mcp_tool_module, name: str) -> None:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def test_tool_level_errors_do_not_trip_server_connectivity_breaker(
+    monkeypatch, tmp_path
+):
+    """A completed isError response proves the MCP transport is reachable."""
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from mcp.types import CallToolResult, TextContent
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    call_count = {"n": 0}
+
+    async def _call_tool_domain_error(*args, **kwargs):
+        call_count["n"] += 1
+        return CallToolResult(
+            isError=True,
+            content=[
+                TextContent(type="text", text="only changed files may be read")
+            ],
+        )
+
+    def _run_immediately(coroutine_factory, timeout=None):
+        return asyncio.run(coroutine_factory())
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_domain_error)
+    monkeypatch.setattr(mcp_tool, "_run_on_mcp_loop", _run_immediately)
+
+    try:
+        handler = _make_tool_handler("srv", "get_file", 10.0)
+        attempts = mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 1
+
+        for _ in range(attempts):
+            parsed = json.loads(handler({}))
+            assert "only changed files may be read" in parsed.get("error", "")
+
+        assert call_count["n"] == attempts
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+    finally:
+        _cleanup(mcp_tool, "srv")
 
 
 def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):

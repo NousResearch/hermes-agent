@@ -317,6 +317,10 @@ hermes sessions list --source telegram
 
 # Show more sessions
 hermes sessions list --limit 50
+
+# List sessions that started in an explicit date/time window.
+# --after is inclusive; --before is exclusive.
+hermes sessions list --after "2026-08-01" --before "2026-08-08"
 ```
 
 When sessions have titles, the output shows titles, previews, and relative timestamps:

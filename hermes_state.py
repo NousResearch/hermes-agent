@@ -9276,6 +9276,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_pinned: bool = False,
         session_key: str = None,
         include_hidden: bool = False,
+        started_after: Optional[float] = None,
+        started_before: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -9330,6 +9332,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Pass ``session_key`` to restrict results to one stable gateway
         conversation scope (DM, group, channel, or thread, including the
         configured per-user isolation policy).
+
+        ``started_after`` is inclusive and ``started_before`` is exclusive.
+        Both are applied in SQL before ``LIMIT``/``OFFSET``.
         """
         # Rows carry token/cost totals — drain queued deltas first so
         # listings (sidebar, /resume, dashboards) show exact counters.
@@ -9371,6 +9376,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             clause, clause_params = _cwd_prefix_clause(cwd_prefix)
             where_clauses.append(clause)
             params.extend(clause_params)
+        if started_after is not None:
+            where_clauses.append("s.started_at >= ?")
+            params.append(started_after)
+        if started_before is not None:
+            where_clauses.append("s.started_at < ?")
+            params.append(started_before)
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)

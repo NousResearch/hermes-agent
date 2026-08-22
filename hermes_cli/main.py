@@ -13312,6 +13312,18 @@ def main():
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).",
     )
+    sessions_list.add_argument(
+        "--after",
+        metavar="TIME",
+        help="Only sessions started at/after TIME "
+        "(duration ago like '5h', or ISO timestamp)",
+    )
+    sessions_list.add_argument(
+        "--before",
+        metavar="TIME",
+        help="Only sessions started before TIME "
+        "(duration ago like '5h', or ISO timestamp like '2026-07-05 14:30')",
+    )
 
     def _add_session_filter_args(p, default_older_help):
         p.add_argument(

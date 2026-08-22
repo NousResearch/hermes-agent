@@ -327,10 +327,21 @@ def cmd_sessions(args, sessions_parser=None):
     _exclude = None if _source else ["tool"]
 
     if action == "list":
+        from hermes_cli.session_filters import build_prune_filters
         from hermes_state import workspace_key as _ws_key
 
+        try:
+            _time_filters = build_prune_filters(args)
+        except ValueError as e:
+            print(f"Error: {e}")
+            db.close()
+            return 1
         sessions = db.list_sessions_rich(
-            source=args.source, exclude_sources=_exclude, limit=args.limit
+            source=args.source,
+            exclude_sources=_exclude,
+            limit=args.limit,
+            started_after=_time_filters["started_after"],
+            started_before=_time_filters["started_before"],
         )
 
         # Workspace filter: match a session by its workspace key (git repo

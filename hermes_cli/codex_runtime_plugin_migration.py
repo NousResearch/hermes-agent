@@ -730,27 +730,18 @@ def migrate(
 
     try:
         codex_home.mkdir(parents=True, exist_ok=True)
-        # Atomic write: write to a temp file in the same directory then
-        # rename. Same-directory rename is atomic on POSIX and ReplaceFile
-        # on Windows. Avoids leaving a half-written config.toml that
-        # codex would refuse to load if we crash mid-write.
-        import tempfile
-        tmp_fd, tmp_path_str = tempfile.mkstemp(
-            prefix=".config.toml.", dir=str(codex_home)
-        )
-        tmp_path = Path(tmp_path_str)
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
-                fh.write(new_text)
-            tmp_path.replace(target)
-        except Exception:
-            # Clean up the temp file if the rename didn't happen.
-            try:
-                if tmp_path.exists():
-                    tmp_path.unlink()
-            except Exception:
-                pass
-            raise
+        # Atomic write via the shared helper: temp file in the same
+        # directory, flush + fsync, then rename. Avoids leaving a
+        # half-written config.toml that codex would refuse to load if we
+        # crash mid-write.
+        #
+        # This must go through atomic_replace rather than a bare rename:
+        # config.toml is the user's own hand-maintained codex config, and
+        # renaming onto the path would replace a symlink with a regular
+        # file, detaching dotfiles/chezmoi/stow deployments and stranding
+        # the real file on stale content (GitHub #16743).
+        from utils import atomic_write_text
+        atomic_write_text(target, new_text)
         report.written = True
     except Exception as exc:
         report.errors.append(f"could not write {target}: {exc}")

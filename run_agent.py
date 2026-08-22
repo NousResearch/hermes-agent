@@ -3649,9 +3649,17 @@ class AIAgent:
                         mgr.record_agent_write(_p)
                     except Exception:
                         pass
+        changed = getattr(self, "_turn_file_mutation_paths", None)
         if is_error and not landed:
             preview = _extract_error_preview(result)
             for path in targets:
+                # If this exact target already landed earlier in the turn, a
+                # later failed edit attempt is not proof the file was unchanged.
+                # Avoid a stale turn-end warning for common recovery flows like
+                # write_file success -> follow-up patch no-op/failure.
+                if changed is not None and path in changed:
+                    state.pop(path, None)
+                    continue
                 # Keep the FIRST error we saw for a given path unless we
                 # later see success.  A repeated failure with a different
                 # message shouldn't silently overwrite the original.
@@ -3751,9 +3759,9 @@ class AIAgent:
             return ""
         lines = [
             "⚠️ File-mutation verifier: "
-            f"{len(failed)} file(s) were NOT modified this turn despite any "
-            "wording above that may suggest otherwise. Run `git status` or "
-            "`read_file` to confirm."
+            f"{len(failed)} tracked file mutation attempt(s) did not land. "
+            "The file may still have changed by another operation; run "
+            "`git status` or `read_file` to confirm."
         ]
         shown = 0
         for path, info in failed.items():

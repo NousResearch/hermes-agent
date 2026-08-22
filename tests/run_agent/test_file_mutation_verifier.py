@@ -151,6 +151,31 @@ class TestRecordFileMutationResult:
         assert agent._turn_file_mutation_paths == {"/tmp/a.md"}
 
 
+    def test_later_failure_skipped_when_path_already_landed(self):
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "write_file",
+            {"path": "/tmp/a.md", "content": "done"},
+            json.dumps({"bytes_written": 4, "verified": True}),
+            is_error=False,
+        )
+        assert agent._turn_file_mutation_paths == {"/tmp/a.md"}
+
+        agent._record_file_mutation_result(
+            "patch",
+            {
+                "mode": "replace",
+                "path": "/tmp/a.md",
+                "old_string": "missing",
+                "new_string": "done",
+            },
+            json.dumps({"error": "Could not find old_string"}),
+            is_error=True,
+        )
+
+        assert agent._turn_failed_file_mutations == {}
+
+
     def test_landed_paths_prefer_resolved_tool_result(self):
         paths = _extract_landed_file_mutation_paths(
             "patch",
@@ -244,7 +269,8 @@ class TestFormatFooter:
         out = AIAgent._format_file_mutation_failure_footer(
             {"/tmp/a.md": {"tool": "patch", "error_preview": "Could not find old_string"}},
         )
-        assert "1 file(s) were NOT modified" in out
+        assert "1 tracked file mutation attempt(s) did not land" in out
+        assert "may still have changed by another operation" in out
         assert "/tmp/a.md" in out
         assert "Could not find old_string" in out
         assert "git status" in out  # user-actionable hint
@@ -255,7 +281,7 @@ class TestFormatFooter:
             for i in range(15)
         }
         out = AIAgent._format_file_mutation_failure_footer(failed)
-        assert "15 file(s) were NOT modified" in out
+        assert "15 tracked file mutation attempt(s) did not land" in out
         assert "… and 5 more" in out
         # Ten file bullets + header + "and X more" line
         lines = out.split("\n")

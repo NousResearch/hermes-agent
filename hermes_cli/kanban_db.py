@@ -10876,14 +10876,14 @@ def _default_spawn(
     cmd.extend([
         "chat",
         "-q", prompt,
+        # Every worker must take the fully-quiet single-query path. Besides
+        # suppressing interactive output, this is the only CLI path that maps
+        # provider quota/rate-limit failures to KANBAN_RATE_LIMIT_EXIT_CODE;
+        # without -Q a failed non-goal worker returns rc=0 and the dispatcher
+        # misclassifies it as a protocol violation. Goal-mode workers also need
+        # this path for the _run_kanban_goal_loop_q hook.
+        "-Q",
     ])
-    if task.goal_mode:
-        # Goal-mode workers must take the fully-quiet single-query path:
-        # the kanban goal-loop hook (_run_kanban_goal_loop_q) only runs in
-        # cli.py's quiet branch. Without -Q the worker gets exactly one
-        # turn, prints text, exits rc=0, and the dispatcher records a
-        # protocol violation (incident 2026-06-09 t_d9cbe312).
-        cmd.append("-Q")
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and

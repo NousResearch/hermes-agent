@@ -184,6 +184,17 @@ DEFAULT_CONFIG = {
         # the model ends its turn saying it will continue but takes no action.
         # Set False to disable both.
         "stall_guards": True,
+        # Opt-in dev invariant: before each LLM request, compare the outgoing
+        # history portion of the request against the live session transcript
+        # after known wire transforms; warn on silent loss / content drift.
+        # Default false — zero cost when disabled (single bool guard).
+        # Does not mutate context or the system prompt. For debugging
+        # transcript/request desync only; not for production traffic.
+        "log_reconstruction_check": False,
+        # When log_reconstruction_check is on, also raise
+        # LogReconstructionDesyncError (hard-fail the turn). Default false so
+        # flipping the dev check on can never take down a live session.
+        "log_reconstruction_check_raise": False,
         # Universal "finish the job" guidance — short prompt block applied to
         # all models that targets two cross-family failure modes: (1) stopping
         # after a stub instead of finishing the artifact, (2) fabricating

@@ -2002,6 +2002,20 @@ def init_agent(
     # Single boolean gate, default True. Notice-only — never blocks a call.
     agent._stall_guards = bool(_agent_section.get("stall_guards", True))
 
+    # Opt-in dev invariant: before each LLM request, compare the outgoing
+    # history portion of api_messages against the live session transcript
+    # after known wire transforms; soft-warn on silent loss / content drift.
+    # Default False — zero cost when disabled (single bool guard). Must NOT
+    # mutate context or touch the system prompt. See agent/log_reconstruction.py.
+    # Hard raise is a second flag so enabling the check never takes down a
+    # live session by default.
+    agent.log_reconstruction_check = bool(
+        _agent_section.get("log_reconstruction_check", False)
+    )
+    agent.log_reconstruction_check_raise = bool(
+        _agent_section.get("log_reconstruction_check_raise", False)
+    )
+
     # Universal task-completion guidance toggle.  Default True.  Surfaced
     # as a separate flag from tool_use_enforcement because the guidance
     # applies to ALL models, not just the model families enforcement

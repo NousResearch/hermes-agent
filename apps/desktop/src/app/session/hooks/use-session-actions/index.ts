@@ -220,6 +220,7 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
 }
 
 interface FreshSessionDraftOptions {
+  closeActiveRuntime?: boolean
   preserveRoute?: boolean
   replaceRoute?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
@@ -295,6 +296,13 @@ export function useSessionActions({
   const copy = t.desktop
   const resumeRequestRef = useRef(0)
 
+  const closeRuntimeForSessionBoundary = useCallback(
+    async (runtimeId: string) => {
+      await requestGateway('session.close', { session_id: runtimeId })
+    },
+    [requestGateway]
+  )
+
   // Follow auto-compression's stored-id rotation only while the exact runtime,
   // selection, and route intent still belong to the rotating conversation.
   // The previous implementation carried only the next stored id and navigated
@@ -358,8 +366,10 @@ export function useSessionActions({
   const startFreshSessionDraft = useCallback(
     (options: boolean | FreshSessionDraftOptions = false) => {
       const draftOptions = typeof options === 'boolean' ? { replaceRoute: options } : options
+      const closeActiveRuntime = draftOptions.closeActiveRuntime ?? true
       const preserveRoute = draftOptions.preserveRoute ?? false
       const replaceRoute = draftOptions.replaceRoute ?? false
+      const closingRuntimeId = activeSessionIdRef.current
 
       const hasWorkspaceTarget =
         Object.hasOwn(draftOptions, 'workspaceTarget') && draftOptions.workspaceTarget !== undefined
@@ -437,8 +447,28 @@ export function useSessionActions({
       setCurrentBranch('')
       // Never clear the composer here — ChatBar's per-thread draft swap owns it.
       setFreshDraftReady(true)
+
+      // A desktop "New Chat" is a real session boundary, just like the TUI's
+      // /new path. Retire the old live runtime so the gateway finalizer can
+      // persist its tail and notify memory providers (notably OpenViking).
+      // Start the RPC after the local reset so a slow provider cannot make the
+      // button feel stuck; requestGateway preserves outbound RPC ordering if
+      // the user immediately sends the first prompt in the new draft.
+      if (closeActiveRuntime && closingRuntimeId) {
+        void closeRuntimeForSessionBoundary(closingRuntimeId).catch(error => {
+          console.warn('Failed to finalize the previous desktop session boundary', error)
+        })
+      }
     },
-    [activeSessionIdRef, busyRef, navigate, onFreshDraftRouteIntent, resetViewSync, selectedStoredSessionIdRef]
+    [
+      activeSessionIdRef,
+      busyRef,
+      closeRuntimeForSessionBoundary,
+      navigate,
+      onFreshDraftRouteIntent,
+      resetViewSync,
+      selectedStoredSessionIdRef
+    ]
   )
 
   const createBackendSessionForSend = useCallback(
@@ -1734,7 +1764,9 @@ export function useSessionActions({
         removedFromMain ?? $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
       const wasSelected = selectedStoredSessionId === storedSessionId
-      const closingRuntimeId = wasSelected ? activeSessionId : null
+      const closingRuntimeId = wasSelected ? activeSessionIdRef.current : null
+      const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+      const runtimeIdsToClose = new Set([closingRuntimeId, tiledRuntimeId].filter((id): id is string => Boolean(id)))
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
       const previousArchived = $archivedSessions.get()
@@ -1756,13 +1788,23 @@ export function useSessionActions({
       // Tear down before awaiting so the route effect can't resume the
       // doomed session via the stale /<sid> URL.
       if (wasSelected) {
-        startFreshSessionDraft(true)
+        // removeSession awaits its own close below before deleting the durable
+        // row; do not launch a duplicate fire-and-forget close here.
+        startFreshSessionDraft({ closeActiveRuntime: false, replaceRoute: true })
       }
 
       try {
-        if (closingRuntimeId) {
-          await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
-        }
+        await Promise.all(
+          [...runtimeIdsToClose].map(async runtimeId => {
+            try {
+              await closeRuntimeForSessionBoundary(runtimeId)
+            } catch (error) {
+              // Deletion remains best-effort when the gateway/runtime is already
+              // unavailable, but a skipped memory finalization must not be silent.
+              console.warn('Failed to finalize a desktop session before deletion', error)
+            }
+          })
+        )
 
         await deleteSession(storedSessionId, removed?.profile)
         // A deleted session's cached tail must not resurrect on a recycled id.
@@ -1779,7 +1821,6 @@ export function useSessionActions({
         // A tiled copy of this session must not outlive it: collapse the pane
         // and evict its mirrored runtime state so nothing submits to (or renders)
         // a deleted session.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         closeSessionTile(storedSessionId)
 
         if (tiledRuntimeId) {
@@ -1826,11 +1867,10 @@ export function useSessionActions({
       }
     },
     [
-      activeSessionId,
       activeSessionIdRef,
+      closeRuntimeForSessionBoundary,
       copy,
       navigate,
-      requestGateway,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionId,
       selectedStoredSessionIdRef,
@@ -1845,6 +1885,7 @@ export function useSessionActions({
 
       const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
       const wasSelected = selectedStoredSessionId === storedSessionId
+      const closingRuntimeId = wasSelected ? activeSessionIdRef.current : null
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
@@ -1858,16 +1899,21 @@ export function useSessionActions({
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
 
       if (wasSelected) {
-        startFreshSessionDraft(true)
+        // Archive owns the close below so it can also cover an unselected tiled
+        // runtime without sending the selected runtime twice.
+        startFreshSessionDraft({ closeActiveRuntime: false, replaceRoute: true })
       }
 
       try {
+        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+        const runtimeIds = new Set([closingRuntimeId, tiledRuntimeId].filter((id): id is string => Boolean(id)))
+
+        await Promise.all([...runtimeIds].map(runtimeId => closeRuntimeForSessionBoundary(runtimeId)))
         await setSessionArchived(storedSessionId, true, archived?.profile)
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
         forgetSessionUnread(archivedIds, archived?.profile)
         // An archived session is hidden from the sidebar; its tile must go too.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         closeSessionTile(storedSessionId)
 
         if (tiledRuntimeId) {
@@ -1884,12 +1930,30 @@ export function useSessionActions({
 
         untombstoneSessions(archivedIds)
         $pinnedSessionIds.set(previousPinned)
+
+        // Closing the runtime is irreversible, but the durable transcript is
+        // still authoritative. If the archive write fails after a successful
+        // close, restore the selected row by resuming it instead of leaving the
+        // user on an unrelated empty draft.
+        if (wasSelected) {
+          await resumeSession(storedSessionId, true)
+        }
+
         notifyError(err, copy.archiveFailed)
       } finally {
         endSessionMutation(archivedIds)
       }
     },
-    [copy, runtimeIdByStoredSessionIdRef, selectedStoredSessionId, sessionStateByRuntimeIdRef, startFreshSessionDraft]
+    [
+      activeSessionIdRef,
+      closeRuntimeForSessionBoundary,
+      copy,
+      resumeSession,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionId,
+      sessionStateByRuntimeIdRef,
+      startFreshSessionDraft
+    ]
   )
 
   return {

@@ -153,7 +153,21 @@ def enrich_model_switch_warnings_for_gateway(
     custom_providers: list | None = None,
     load_gateway_config: Callable[[], dict] | None = None,
 ) -> None:
-    """Gateway helper: cached agent + session DB messages."""
+    """Gateway helper: cached agent + session DB messages.
+
+    Synchronous, and dispatched via ``asyncio.to_thread`` by both gateway
+    ``/model`` call sites, because ``merge_preflight_compression_warning``
+    runs the blocking ``resolve_display_context_length`` provider probe.
+
+    The session DB is read through its **synchronous** handle. The gateway
+    holds it as ``AsyncSessionDB``, whose generic ``__getattr__`` forwarder
+    returns an awaitable for every method call. Reading through that wrapper
+    from this thread produced a coroutine instead of the message list, which
+    raised ``TypeError: object of type 'coroutine' has no len()`` inside
+    ``_estimate_tokens``. Both callers swallow that at debug level, so the
+    preflight-compression warning was silently dead on every gateway
+    ``/model`` switch (#70966).
+    """
     lock = getattr(runner, "_agent_cache_lock", None)
     cache = getattr(runner, "_agent_cache", None)
     agent = None
@@ -187,9 +201,15 @@ def enrich_model_switch_warnings_for_gateway(
     if db is not None and store is not None:
         try:
             entry = store.get_or_create_session(source)
-            messages = db.get_messages_as_conversation(entry.session_id)
+            # The gateway wraps its SessionDB in AsyncSessionDB, whose
+            # __getattr__ forwards every method as a coroutine. This helper
+            # runs on a worker thread, so unwrap to the synchronous handle
+            # (the established pattern at gateway/run.py:4658, :5538, :16260,
+            # :16328, :18814) and read the list directly.
+            sync_db = getattr(db, "_db", db)
+            messages = sync_db.get_messages_as_conversation(entry.session_id)
         except Exception:
-            pass
+            messages = None
 
     merge_preflight_compression_warning(
         result,

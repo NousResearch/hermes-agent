@@ -1392,6 +1392,7 @@ def _normalize_custom_provider_entry(
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
+        "server_tools",
         "ssl_ca_cert", "ssl_verify",
     }
     for camel, snake in _CAMEL_ALIASES.items():
@@ -1537,6 +1538,20 @@ def _normalize_custom_provider_entry(
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
 
+    # Provider-executed (server-side) tools to declare instead of the
+    # same-named client function — e.g. ``["web_search"]`` on an
+    # anthropic_messages-compatible endpoint that implements Anthropic's
+    # native ``web_search_20250305`` server tool. Shape-checked only; the
+    # consumer (agent/anthropic_adapter.py) knows the valid tool names.
+    server_tools = entry.get("server_tools")
+    if isinstance(server_tools, list) and server_tools:
+        names = [
+            str(t).strip() for t in server_tools
+            if isinstance(t, str) and t.strip()
+        ]
+        if names:
+            normalized["server_tools"] = names
+
     # Per-provider extra HTTP headers (proxies, gateways, custom auth).
     # Values may carry credentials (e.g. CF-Access-Client-Secret) — never
     # log them anywhere downstream.
@@ -1583,6 +1598,7 @@ def _custom_provider_entry_to_provider_config(
         "discover_models",
         "extra_body",
         "extra_headers",
+        "server_tools",
         "ssl_ca_cert",
         "ssl_verify",
     ):
@@ -2020,6 +2036,7 @@ _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay", "extra_body",
+    "server_tools",
     "ssl_ca_cert", "ssl_verify",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.

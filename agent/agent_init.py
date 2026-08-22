@@ -471,6 +471,66 @@ def _custom_provider_extra_body_for_agent(
     return fallback
 
 
+def _custom_provider_server_tools_for_agent(
+    *,
+    provider: str,
+    base_url: str,
+    custom_providers: List[Dict[str, Any]],
+) -> Optional[List[str]]:
+    """Resolve the ``server_tools`` list for the active custom-provider route.
+
+    ``server_tools`` (``providers.<name>.server_tools: ["web_search"]``)
+    declares provider-executed tools — e.g. the native ``web_search`` server
+    tool on Anthropic-compatible endpoints — that Hermes should swap in
+    instead of the same-named client function. Same matching semantics as
+    ``_custom_provider_extra_body_for_agent`` (provider key when routed by
+    ``custom:<name>``, otherwise base_url + provider-key/name), but without
+    the model filter: the toggle is endpoint-scoped, not per-model.
+    """
+    provider_norm = (provider or "").strip().lower()
+    if provider_norm == "custom":
+        provider_key_filter = ""
+    elif provider_norm.startswith("custom:"):
+        provider_key_filter = provider_norm.split(":", 1)[1].strip()
+    else:
+        return None
+
+    target_url = _normalized_custom_base_url(base_url)
+    if not target_url:
+        return None
+
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        if provider_key_filter:
+            entry_keys = {
+                str(entry.get("provider_key", "") or "").strip().lower(),
+                str(entry.get("name", "") or "").strip().lower(),
+            }
+            if provider_key_filter not in entry_keys:
+                continue
+        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
+            continue
+        server_tools = entry.get("server_tools")
+        if isinstance(server_tools, list) and server_tools:
+            return [str(t) for t in server_tools]
+    return None
+
+
+def _merge_custom_provider_server_tools(agent, custom_providers: List[Dict[str, Any]]) -> None:
+    server_tools = _custom_provider_server_tools_for_agent(
+        provider=agent.provider,
+        base_url=agent.base_url,
+        custom_providers=custom_providers,
+    )
+    if server_tools:
+        # Keep this a plain assignment, NOT an extra_body merge — Hermes'
+        # own extra_body (e.g. the OpenAI ``service_tier`` flow) is routed
+        # through the OpenAI-wire transports and would leak
+        # ``server_tools`` into chat-completions payloads on api-mode flips.
+        agent._anthropic_server_tools = server_tools
+
+
 def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, Any]]) -> None:
     extra_body = _custom_provider_extra_body_for_agent(
         provider=agent.provider,
@@ -2567,6 +2627,7 @@ def init_agent(
     # compression model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
+    _merge_custom_provider_server_tools(agent, _custom_providers)
 
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:

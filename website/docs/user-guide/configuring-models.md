@@ -183,6 +183,19 @@ providers:
 
 Header values routinely carry credentials — Hermes never logs them. `extra_headers` applies to OpenAI-compatible routes; the `anthropic_messages` and `bedrock_converse` API modes do not use it.
 
+**`server_tools`** — (anthropic_messages routes) a list of provider-executed Anthropic tools to declare instead of the same-named client function. Several Anthropic-compatible endpoints (Zhipu `open.bigmodel.cn/api/anthropic`, Kimi `api.kimi.com/coding`, DeepSeek `api.deepseek.com/anthropic`, MiniMax `api.minimax.io/anthropic`) implement Anthropic's native server-side web search; this knob swaps Hermes' client-side `web_search` function for the endpoint's own `web_search_20250305` declaration so the search runs (and is billed) server-side:
+
+```yaml
+providers:
+  zhipu:
+    api: https://open.bigmodel.cn/api/anthropic
+    transport: anthropic_messages
+    server_tools:
+      - web_search
+```
+
+The swap is 1:1 — the server tool is declared only when the client-side `web_search` function is already in the session's toolset, so toolsets without web search stay untouched. Any turn the endpoint answers with server-tool blocks (`server_tool_use` / `web_search_tool_result`) is stored in session history and replayed as plain text, keeping later turns valid on endpoints that reject those block types as input.
+
 **`discover_models`** — set to `false` (default `true`) to skip querying the endpoint's `/models` listing and use only the `models` you configured on the entry. Handy for gateways whose model listing is slow, unreliable, or noisy:
 
 ```yaml

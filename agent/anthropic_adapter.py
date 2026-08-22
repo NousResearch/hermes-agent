@@ -1861,6 +1861,53 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     return result
 
 
+# Anthropic server-executed (provider-side) tool declarations.  Same wire
+# shape the Messages API itself uses — ``type`` is the versioned server tool
+# type, ``name`` is what the model calls it by.  max_uses and the filtered
+# variants stay client-side knobs a caller can layer on top if a provider
+# ever needs them; Hermes only injects the plain declaration.
+_ANTHROPIC_SERVER_TOOL_DEFS: Dict[str, Dict[str, Any]] = {
+    "web_search": {"type": "web_search_20250305", "name": "web_search"},
+}
+
+
+def _apply_server_tools_to_anthropic(
+    anthropic_tools: List[Dict[str, Any]],
+    server_tools: Optional[List[str]],
+) -> List[Dict[str, Any]]:
+    """Swap client-side functions for provider-executed Anthropic server tools.
+
+    ``server_tools`` names tools the endpoint runs itself (declared via
+    ``providers.<name>.server_tools`` — e.g. ``["web_search"]`` on the
+    Zhipu / Kimi / DeepSeek / MiniMax Anthropic-compatible endpoints, which
+    all implement Anthropic's native ``web_search_20250305`` server tool).
+    For each name, the client-side function of the same name is dropped and
+    the server-tool declaration injected in its place — a 1:1 swap only,
+    never an additive grant (mirrors the xAI Responses web_search handling
+    in agent/transports/codex.py).  Unknown names are ignored with a warning
+    so a typo in config cannot mint an invalid ``tools`` entry.
+    """
+    if not server_tools:
+        return anthropic_tools
+    tools = list(anthropic_tools)
+    for name in server_tools:
+        if name not in _ANTHROPIC_SERVER_TOOL_DEFS:
+            logger.warning(
+                "server_tools: no Anthropic server tool named '%s' "
+                "(known: %s) — ignoring",
+                name, ", ".join(sorted(_ANTHROPIC_SERVER_TOOL_DEFS)),
+            )
+            continue
+        # 1:1 swap only — the server declaration replaces a same-named
+        # client function and is never granted additively (mirrors xAI
+        # Responses: "never an additive grant", agent/transports/codex.py).
+        if not any(t.get("name") == name for t in tools):
+            continue
+        tools = [t for t in tools if t.get("name") != name]
+        tools.append(dict(_ANTHROPIC_SERVER_TOOL_DEFS[name]))
+    return tools
+
+
 def _image_source_from_openai_url(url: str) -> Dict[str, str]:
     """Convert an OpenAI-style image URL/data URL into Anthropic image source."""
     url = str(url or "").strip()
@@ -1910,6 +1957,13 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
         url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
         block = {"type": "image", "source": _image_source_from_openai_url(url)}
     else:
+        if ptype in ("server_tool_use", "web_search_tool_result"):
+            # Same server-tool replay treatment as _sanitize_replay_block —
+            # a stored web_search turn arrives here when session history
+            # keeps list-shaped assistant content.
+            sanitized = _sanitize_replay_block(part)
+            if sanitized is not None:
+                return sanitized
         block = dict(part)
 
     if isinstance(part.get("cache_control"), dict) and "cache_control" not in block:
@@ -2108,6 +2162,32 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if btype == "image":
         src = b.get("source")
         return {"type": "image", "source": src} if isinstance(src, dict) else None
+    if btype in ("server_tool_use", "web_search_tool_result"):
+        # Provider-executed server-tool blocks (Anthropic web_search et al.).
+        # The Messages input schema has no equivalent block type, so a stored
+        # search turn cannot be replayed verbatim.  Synthesize a text carrier
+        # from the fields the server tool populates — the model loses only the
+        # raw result payload it already consumed, and the replay stays
+        # schema-valid on endpoints that don't tolerate unknown block types.
+        # Returns None for a block with no extractable text so a bare marker
+        # is dropped rather than replayed as a blank text block (#69512).
+        if btype == "server_tool_use":
+            name = str(b.get("name") or "").strip()
+            if not name:
+                return None
+            return {"type": "text", "text": f"[server tool: {name}]"}
+        content = b.get("content")
+        if not isinstance(content, list) or not content:
+            return None
+        texts = [
+            str(part.get("text"))
+            for part in content
+            if isinstance(part, dict)
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+            and part.get("text").strip()
+        ]
+        return {"type": "text", "text": "\n\n".join(texts)} if texts else None
     # Unknown/unsupported block type on the input path — drop rather than risk
     # another "Extra inputs are not permitted".
     return None
@@ -2917,6 +2997,7 @@ def build_anthropic_kwargs(
     base_url: str | None = None,
     fast_mode: bool = False,
     drop_context_1m_beta: bool = False,
+    server_tools: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -2955,11 +3036,17 @@ def build_anthropic_kwargs(
     fast-mode beta header for ~2.5x faster output throughput on Opus 4.6.
     Currently only supported on native Anthropic endpoints (not third-party
     compatible ones).
+
+    When *server_tools* names provider-executed Anthropic tools (e.g.
+    ``["web_search"]``), the same-named client functions are swapped for the
+    native server-tool declarations — 1:1, never additive.  See
+    ``_apply_server_tools_to_anthropic``.
     """
     system, anthropic_messages = convert_messages_to_anthropic(
         messages, base_url=base_url, model=model
     )
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
+    anthropic_tools = _apply_server_tools_to_anthropic(anthropic_tools, server_tools)
 
     # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``);
     # normalizing to the bare Anthropic slug would make the model unresolvable

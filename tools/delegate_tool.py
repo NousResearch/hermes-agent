@@ -1953,6 +1953,12 @@ def _build_child_agent(
                 ephemeral_system_prompt=child_prompt,
                 log_prefix=f"[subagent-{task_index}]",
                 platform="subagent",
+                gateway_session_key=(
+                    getattr(parent_agent, "_gateway_session_key", None) or None
+                ),
+                gateway_session_source=dict(
+                    getattr(parent_agent, "_gateway_session_source", None) or {}
+                ),
                 skip_context_files=True,
                 skip_memory=True,
                 clarify_callback=None,

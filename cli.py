@@ -550,11 +550,12 @@ def load_cli_config() -> Dict[str, Any]:
         },
     }
     
-    # Track whether the config file explicitly set terminal config.
-    # When using defaults (no config file / no terminal section), we should NOT
-    # overwrite env vars that were already set by .env -- only a user's config
-    # file should be authoritative.
-    _file_has_terminal_config = False
+    # Track which terminal keys were explicitly set (config file or managed
+    # scope). A key that only exists as a hardcoded default must NOT overwrite
+    # an env var that was already set by .env or the parent process -- only
+    # explicitly configured keys are authoritative. Same presence-sensitive
+    # rule as gateway/run.py's config bridge (raw keys, not the merged dict).
+    _explicit_terminal_keys: set = set()
 
     # Load from file if exists
     if config_path.exists():
@@ -564,7 +565,8 @@ def load_cli_config() -> Dict[str, Any]:
 
                 file_config = _normalize_root_model_keys(fast_safe_load(f) or {})
             
-            _file_has_terminal_config = "terminal" in file_config
+            if isinstance(file_config.get("terminal"), dict):
+                _explicit_terminal_keys = set(file_config["terminal"])
 
             # Handle model config - can be string (new format) or dict (old format)
             if "model" in file_config:
@@ -629,14 +631,25 @@ def load_cli_config() -> Dict[str, Any]:
 
     defaults = managed_scope.apply_managed_overlay(defaults)
 
+    # Managed-pinned terminal keys are explicit too: admin values must stay
+    # authoritative over inherited env, exactly like user-written file keys.
+    try:
+        _managed_cfg = managed_scope.load_managed_config() or {}
+        if isinstance(_managed_cfg.get("terminal"), dict):
+            _explicit_terminal_keys |= set(_managed_cfg["terminal"])
+    except Exception:
+        pass
+
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
-    
+
     # Normalize config key: the new config system (hermes_cli/config.py) and all
     # documentation use "backend", the legacy cli-config.yaml uses "env_type".
     # Accept both, with "backend" taking precedence (it's the documented key).
     if "backend" in terminal_config:
         terminal_config["env_type"] = terminal_config["backend"]
+        if "backend" in _explicit_terminal_keys:
+            _explicit_terminal_keys.add("env_type")
     
     # CWD resolution for CLI/TUI. The gateway has its own config bridge in
     # gateway/run.py but may lazily import cli.py (triggering this code).
@@ -703,7 +716,7 @@ def load_cli_config() -> Dict[str, Any]:
                 # CLI: always export (overrides stale .env or inherited values)
                 os.environ[env_var] = str(terminal_config[config_key])
                 continue
-            if _file_has_terminal_config or env_var not in os.environ:
+            if config_key in _explicit_terminal_keys or env_var not in os.environ:
                 val = terminal_config[config_key]
                 if isinstance(val, (list, dict)):
                     os.environ[env_var] = json.dumps(val)

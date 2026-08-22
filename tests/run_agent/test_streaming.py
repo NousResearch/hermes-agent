@@ -312,6 +312,111 @@ class TestStreamingAccumulator:
 # ── Test: Streaming Callbacks ────────────────────────────────────────────
 
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_streamed_refusal_accumulated(self, mock_close, mock_create):
+        """delta.refusal streams assemble onto message.refusal (opencode#43343).
+
+        A refusal-only stream must not raise EmptyStreamError, and the
+        assembled message must expose ``refusal`` so the transport's
+        normalize_response promotes it to content + content_filter.
+        """
+        from run_agent import AIAgent
+
+        def _refusal_chunk(refusal, finish_reason=None):
+            delta = SimpleNamespace(
+                content=None,
+                tool_calls=None,
+                reasoning_content=None,
+                reasoning=None,
+                refusal=refusal,
+            )
+            choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
+            return SimpleNamespace(choices=[choice], model="test-model", usage=None)
+
+        chunks = [
+            _refusal_chunk("I can't"),
+            _refusal_chunk(" help with that."),
+            _refusal_chunk(None, finish_reason="stop"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        message = response.choices[0].message
+        assert message.refusal == "I can't help with that."
+        assert message.content is None
+
+        # The transport promotes a sole-payload refusal to a terminal
+        # content_filter (same contract as the non-streaming path, #46013).
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        normalized = ChatCompletionsTransport().normalize_response(response)
+        assert normalized.content == "I can't help with that."
+        assert normalized.finish_reason == "content_filter"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_streamed_refusal_alongside_content_not_terminal(self, mock_close, mock_create):
+        """A refusal note next to real content stays a normal usable turn."""
+        from run_agent import AIAgent
+
+        def _chunk(content=None, refusal=None, finish_reason=None):
+            delta = SimpleNamespace(
+                content=content,
+                tool_calls=None,
+                reasoning_content=None,
+                reasoning=None,
+                refusal=refusal,
+            )
+            choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
+            return SimpleNamespace(choices=[choice], model="test-model", usage=None)
+
+        chunks = [
+            _chunk(content="Partial answer."),
+            _chunk(refusal="But I won't do the rest."),
+            _chunk(finish_reason="stop"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        normalized = ChatCompletionsTransport().normalize_response(response)
+        assert normalized.content == "Partial answer."
+        assert normalized.finish_reason == "stop"
+        assert normalized.provider_data["refusal"] == "But I won't do the rest."
+
+
 class TestStreamingCallbacks:
     """Verify that delta callbacks fire correctly."""
 

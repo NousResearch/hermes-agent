@@ -840,6 +840,55 @@ def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkey
     assert response.output_text == ""
 
 
+def test_consume_codex_stream_collects_refusal_deltas_as_text(monkeypatch):
+    """A refusal-only Responses stream yields usable text, not RuntimeError.
+
+    Port of anomalyco/opencode#43343: the model declines and streams the
+    explanation via ``response.refusal.delta`` with no output_text and (on
+    some compatible backends) no output_item.done — without collecting the
+    refusal the consumer sees zero usable content.
+    """
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.refusal.delta", delta="I can't"),
+            SimpleNamespace(type="response.refusal.delta", delta=" help with that."),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+    )
+
+    assert response.output_text == "I can't help with that."
+    # Synthesized message item so downstream normalization has content.
+    assert response.output and response.output[0].type == "message"
+
+
+def test_extract_responses_message_text_reads_refusal_parts():
+    """Refusal content parts inside a message item surface as text."""
+    from agent.codex_responses_adapter import _extract_responses_message_text
+
+    item = SimpleNamespace(
+        type="message",
+        role="assistant",
+        content=[
+            SimpleNamespace(type="refusal", refusal="I must decline."),
+        ],
+    )
+    assert _extract_responses_message_text(item) == "I must decline."
+
+    mixed = SimpleNamespace(
+        type="message",
+        role="assistant",
+        content=[
+            SimpleNamespace(type="output_text", text="Hello. "),
+            SimpleNamespace(type="refusal", refusal="But no more."),
+        ],
+    )
+    assert _extract_responses_message_text(mixed) == "Hello. But no more."
+
+
 def test_consume_codex_stream_separates_commentary_from_analysis(monkeypatch):
     from agent.codex_runtime import _consume_codex_event_stream
 

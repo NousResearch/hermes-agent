@@ -1252,9 +1252,25 @@ def _extract_responses_message_text(item: Any) -> str:
     chunks: List[str] = []
     for part in content:
         ptype = getattr(part, "type", None)
+        if ptype is None and isinstance(part, dict):
+            ptype = part.get("type")
+        if ptype == "refusal":
+            # OpenAI structured refusal part — the explanation lives in
+            # ``refusal`` instead of ``text``. Surface it as message text so
+            # a refusal-only turn isn't misread as an empty response
+            # (sibling of the chat_completions ``message.refusal`` handling;
+            # port of anomalyco/opencode#43343).
+            refusal = getattr(part, "refusal", None)
+            if refusal is None and isinstance(part, dict):
+                refusal = part.get("refusal")
+            if isinstance(refusal, str) and refusal:
+                chunks.append(refusal)
+            continue
         if ptype not in {"output_text", "text"}:
             continue
         text = getattr(part, "text", None)
+        if text is None and isinstance(part, dict):
+            text = part.get("text")
         if isinstance(text, str) and text:
             chunks.append(text)
     return "".join(chunks).strip()

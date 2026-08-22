@@ -3897,6 +3897,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         model_name = None
         role = "assistant"
         reasoning_parts: list = []
+        # OpenAI structured-refusal deltas (``delta.refusal``). When a model
+        # declines mid-stream the SDK streams the explanation here and leaves
+        # ``delta.content`` empty, so without accumulating it the assembled
+        # message is empty and the turn falls into the empty/invalid-response
+        # retry loops — the exact bug class the non-streaming path fixed in
+        # #46013. Port of anomalyco/opencode#43343 (streamed refusals).
+        refusal_parts: list = []
         usage_obj = None
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
@@ -3979,6 +3986,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "role": role,
                             "content": "".join(content_parts) or None,
                             "reasoning_content": "".join(reasoning_parts) or None,
+                            "refusal": "".join(refusal_parts) or None,
                             "tool_calls": tool_calls or None,
                         },
                         "finish_reason": finish_reason or "stop",
@@ -4176,6 +4184,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     except Exception:
                         pass
 
+            # Accumulate structured refusal deltas.  Not routed to the live
+            # stream display — the loop's content_filter handler surfaces the
+            # assembled refusal terminally (mirrors the non-streaming path).
+            delta_refusal = getattr(delta, "refusal", None)
+            if delta_refusal is None and hasattr(delta, "model_extra"):
+                _delta_extra = getattr(delta, "model_extra", None) or {}
+                if isinstance(_delta_extra, dict):
+                    delta_refusal = _delta_extra.get("refusal")
+            if isinstance(delta_refusal, str) and delta_refusal:
+                refusal_parts.append(delta_refusal)
+
             # Accumulate tool call deltas — notify display on first name
             delta_tool_calls = getattr(delta, "tool_calls", None)
             if delta_tool_calls:
@@ -4366,6 +4385,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             finish_reason is None
             and not content_parts
             and not reasoning_parts
+            and not refusal_parts
             and not tool_calls_acc
         ):
             raise EmptyStreamError(
@@ -4452,6 +4472,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             content=full_content,
             tool_calls=mock_tool_calls,
             reasoning_content=full_reasoning,
+            # Assembled ``delta.refusal`` stream, if any.  The transport's
+            # ``normalize_response`` reads ``message.refusal`` and promotes a
+            # sole-payload refusal to content + ``content_filter`` — same
+            # contract as the non-streaming response object (#46013).
+            refusal="".join(refusal_parts) or None,
         )
         mock_choice = SimpleNamespace(
             index=0,

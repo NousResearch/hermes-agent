@@ -1183,6 +1183,19 @@ def _consume_codex_event_stream(
             has_tool_calls = True
             # fall through — function_call items still get added on output_item.done
 
+        # Structured refusal deltas (``response.refusal.delta``). The model
+        # declined and streams the explanation on the refusal channel instead
+        # of output_text; collect it as answer text so a refusal-only stream
+        # doesn't end with zero usable content and a RuntimeError. The final
+        # ``output_item.done`` carries a ``refusal`` content part which the
+        # normalizer also reads — deltas here cover backends that omit the
+        # done item. Port of anomalyco/opencode#43343.
+        if event_type == "response.refusal.delta":
+            refusal_text = _event_field(event, "delta", "")
+            if isinstance(refusal_text, str) and refusal_text:
+                collected_text_deltas.append(refusal_text)
+            continue
+
         if "reasoning" in event_type and "delta" in event_type:
             reasoning_text = _event_field(event, "delta", "")
             if reasoning_text and on_reasoning_delta is not None:

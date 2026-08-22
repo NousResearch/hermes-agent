@@ -321,9 +321,7 @@ def install_modify_other_keys_aliases() -> int:
     # combo is broken" symptom (#87711).
     # Map Shift+letter to the uppercase character so typing works normally.
     # This is safe across all Latin keyboard layouts: Shift always uppercases
-    # letters.  Shift+digit symbols are layout-specific (US: '!', AZERTY: '¹',
-    # etc.) so they are NOT mapped here — if the terminal sends those under
-    # modifyOtherKeys, they will leak, but that's better than wrong input.
+    # letters.
     # Map both the lowercase and uppercase codepoints — some terminals send
     # the already-shifted codepoint (65 for 'A') with modifier=2.
     shift_map: dict[int, str] = {}
@@ -332,6 +330,34 @@ def install_modify_other_keys_aliases() -> int:
         shift_map[ch] = upper_char
         shift_map[ch - 32] = upper_char
     _install_paired(2, shift_map)
+
+    # -- Shift+<printable symbol> → that symbol ----
+    # Same leak as Shift+letter above, for every non-letter printable: on
+    # Ghostty 1.3.x, Shift+/ arrives as ESC[27;2;63~ and lands in the prompt
+    # buffer as literal "^[[27;2;63~" instead of "?". Same for ! : " _ + < >
+    # ( ) etc. — i.e. most punctuation is untypeable while modifyOtherKeys=2
+    # is active, which is exactly the mode _enable_extended_enter_keys()
+    # pushes to Ghostty/iTerm2/WezTerm/VS Code/tmux/Windows Terminal.
+    #
+    # These were previously left unmapped on the grounds that shifted symbols
+    # are layout-specific (US Shift+1 = '!', AZERTY = '¹'). That is true when
+    # deriving the shifted character from an UNSHIFTED codepoint — but the
+    # xterm modifyOtherKeys encoding reports the codepoint ALREADY SHIFTED by
+    # the terminal, which has applied the user's real keymap. Echoing
+    # chr(codepoint) is therefore not a layout guess; it is what the terminal
+    # says was typed, and is correct on every layout.
+    #
+    # Only the modifyOtherKeys (tilde) spelling is registered here — NOT the
+    # CSI-u one. The Kitty protocol reports the UNSHIFTED codepoint plus a
+    # shift bit, so mapping ESC[47;2u to chr(47) would type '/' for Shift+/.
+    # Kitty-protocol terminals deliver printable keys as plain text anyway.
+    # Letters and Space are already registered above and are skipped by the
+    # membership check, so this only fills genuinely unmapped codepoints.
+    for codepoint in range(0x20, 0x7F):
+        seq = f"\x1b[27;2;{codepoint}~"
+        if seq not in ANSI_SEQUENCES:
+            ANSI_SEQUENCES[seq] = chr(codepoint)
+            changed += 1
 
     # -- Multi-modifier letters: Shift+Alt (4), Ctrl+Shift (6),
     # Ctrl+Alt (7), Ctrl+Alt+Shift (8) ----

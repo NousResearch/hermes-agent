@@ -38,8 +38,8 @@ const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
 // Last active profile, recorded so the boot-time paint can pick that profile's
 // theme before the gateway reports which profile actually launched.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
-// Skins that no longer exist. A profile still pointing at one falls back to
-// DEFAULT_SKIN_NAME rather than painting a name nothing resolves.
+// Skins that no longer exist. Preserve every other stored name because custom
+// backend skins register after the renderer performs its boot-time paint.
 const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
 
 export type ThemeMode = 'light' | 'dark' | 'system'
@@ -50,7 +50,7 @@ const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
 const normalizeSkin = (name: string | null): string =>
-  name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
+  name && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
 
 /**
  * A stored mode, or `system` when there isn't one.

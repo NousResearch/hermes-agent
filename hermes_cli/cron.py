@@ -6,6 +6,7 @@ pause/resume/run/remove, status, and tick.
 """
 
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -14,6 +15,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli.colors import Colors, color
+
+logger = logging.getLogger(__name__)
 
 # Gateway-lifecycle command detection lives in ``cron.lifecycle_guard`` so it
 # can be shared across every job-creation path (CLI + the agent's ``cronjob``
@@ -372,7 +375,143 @@ def _print_active_jobs_summary(jobs) -> None:
         print("  No active jobs")
 
 
+def _confirm_pinned_model(args, existing_job: Optional[dict] = None) -> bool:
+    """Run the selection-guard registry over a ``--model``/``--provider`` pin.
+
+    ``hermes cron create/edit --model`` is a model-selection surface, but it is
+    the one surface the unified registry never reached. ``hermes_cli.
+    model_selection_guards`` enumerates its call sites as "CLI picker, TUI,
+    dashboard, gateway ``/model``, Telegram/Discord pickers, TUI-gateway RPC" —
+    cron is on neither that list nor in the registry's callers. The pin flag
+    predates the registry, so the same model id that prints a cost or
+    data-training block and demands ``[y/N]`` as ``hermes -m <id>`` is stored
+    here in silence.
+
+    Create/edit time is also the ONLY moment a confirm is possible. The
+    scheduler resolves ``job["model"]`` and constructs the ``AIAgent``
+    in-process inside the gateway (``cron/scheduler.py``); it never re-enters
+    ``hermes_cli/main.py``, so ``_confirm_startup_expensive_model_override``
+    structurally cannot fire for a scheduled run — and a scheduled run has no
+    human at the terminal in any case. An unconfirmed pin therefore keeps
+    spending, or keeps shipping prompts to a training tier, on every tick.
+
+    Returns ``True`` when the pin may proceed (nothing pinned, no guard fired,
+    or the user confirmed) and ``False`` when the caller must abort. Evaluation
+    is fail-open: the registry's own contract is that "a misbehaving guard must
+    never break model selection", so any failure in here lets the job through.
+    """
+    raw_model = getattr(args, "model", None)
+    raw_provider = getattr(args, "model_provider", None)
+    explicit_model = str(raw_model or "").strip()
+    explicit_provider = str(raw_provider or "").strip()
+    if not explicit_model and not explicit_provider:
+        # Nothing is being pinned on this invocation. This also covers
+        # ``--model ""`` / ``--provider ""``, which CLEAR an existing pin —
+        # de-escalating back to the fleet default never needs a confirm.
+        return True
+
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.model_selection_guards import combined_selection_warning
+    except Exception as exc:
+        logger.warning("cron model selection guard unavailable: %s", exc)
+        return True
+
+    try:
+        cfg = load_config_readonly()
+    except Exception as exc:
+        logger.warning("cron model selection guard could not load config: %s", exc)
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    model_cfg = cfg.get("model")
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    cron_cfg = cfg.get("cron")
+    if not isinstance(cron_cfg, dict):
+        cron_cfg = {}
+    job = existing_job if isinstance(existing_job, dict) else {}
+
+    # An axis passed as "" is CLEARED by this very command, so the stored row
+    # must not supply it: `cron edit --model "" --provider <p>` leaves the job
+    # following cron.model / model.default, and that is the pair to judge — not
+    # the pin being removed. An axis that was not passed at all (``None``) does
+    # still inherit from the job.
+    job_model = (
+        "" if (raw_model is not None and not explicit_model)
+        else str(job.get("model") or "").strip()
+    )
+    job_provider = (
+        "" if (raw_provider is not None and not explicit_provider)
+        else str(job.get("provider") or "").strip()
+    )
+
+    # Mirror the scheduler's documented precedence ("per-job override >
+    # cron.model > HERMES_MODEL env > config.yaml ``model:``") so the guard
+    # sees the model the job will actually run on when only ``--provider`` is
+    # pinned. ``HERMES_MODEL`` is deliberately not consulted: it belongs to the
+    # gateway process's environment, not this CLI's, and it can only decide the
+    # outcome when there is no explicit pin and no ``cron.model`` — i.e. when
+    # nothing is being pinned here anyway.
+    model = (
+        explicit_model
+        or job_model
+        or str(cron_cfg.get("model") or "").strip()
+        or str(model_cfg.get("default") or "").strip()
+    )
+    if not model:
+        return True
+    provider = (
+        explicit_provider
+        or job_provider
+        or str(cron_cfg.get("model_provider") or "").strip()
+        or str(model_cfg.get("provider") or "").strip()
+    )
+
+    try:
+        warning = combined_selection_warning(
+            model,
+            provider=provider,
+            base_url=str(model_cfg.get("base_url") or ""),
+            api_key=str(model_cfg.get("api_key") or ""),
+        )
+    except Exception as exc:
+        logger.warning(
+            "cron model selection guard failed for %s/%s: %s", provider, model, exc
+        )
+        return True
+    if warning is None:
+        return True
+
+    sys.stderr.write(warning.message + "\n")
+    if not sys.stdin.isatty():
+        # A scheduled job outlives this shell, so an unconfirmed pin cannot be
+        # walked back the way an interactive `hermes -m` invocation can. Refuse
+        # rather than store it. Nothing changes for a job whose model fires no
+        # guard, which is the overwhelmingly common case.
+        sys.stderr.write(
+            "Refusing to pin this model on a scheduled job in non-interactive "
+            "mode. Run interactively and confirm if you intend to use it.\n"
+        )
+        return False
+
+    try:
+        reply = input("Pin this model for every scheduled run? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        reply = ""
+    if reply in {"y", "yes"}:
+        return True
+    sys.stderr.write("Model pin cancelled.\n")
+    return False
+
+
 def cron_create(args):
+    # Selection-time guards run BEFORE the job is stored: once written, the job
+    # fires unattended inside the gateway, where no confirm prompt is possible.
+    # No-ops unless --model/--provider was passed and a guard actually fires.
+    if not _confirm_pinned_model(args):
+        return 1
+
     # The gateway-lifecycle guard lives in cron.jobs.create_job so it fires on
     # every job-creation path (this CLI subcommand AND the agent's `cronjob`
     # model tool, which calls create_job directly). When it blocks, create_job
@@ -436,6 +575,12 @@ def cron_edit(args):
         return 1
     if not job:
         print(color(f"Job not found: {args.job_id}", Colors.RED))
+        return 1
+
+    # Same guard as `cron create`, but the job already exists, so hand the
+    # stored row over: `cron edit --provider <p>` with no --model re-routes the
+    # job's CURRENT pin, and that is the pair the guard has to judge.
+    if not _confirm_pinned_model(args, existing_job=job):
         return 1
 
     existing_skills = list(job.get("skills") or ([] if not job.get("skill") else [job.get("skill")]))

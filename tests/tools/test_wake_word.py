@@ -781,3 +781,157 @@ def test_feed_audio_rejects_wrong_owner(monkeypatch, tmp_path):
     ww.start_listening(lambda: None, owner=owner, config={}, external_audio=True)
     assert ww.feed_audio(owner=object(), pcm_int16=b"\x00\x00") is False
     assert ww.stop_listening(owner=owner) is True
+
+# --- #91987: a halt that times out must not report success ----------------
+#
+# The capture thread owns the PortAudio stream and closes it in its own
+# `finally`, so "the thread exited" and "the microphone was released" are the
+# same statement. `_halt_thread` used to clear `self._thread` after a join
+# timeout regardless, which split them: the caller was told the mic was free
+# while a live thread still held it, and the next `start()` -- seeing no
+# thread handle -- opened a SECOND stream on the same device. On Windows/MME
+# that second open succeeds and then delivers nothing but silence, which is
+# why the reported symptom is a permanently deaf wake word rather than an
+# error.
+#
+# `stream.read()` blocks, and a device the browser's WebRTC capture is
+# releasing at the same moment can hold it past the grace period. That is
+# exactly the pause/resume a hands-free voice turn performs.
+
+
+class _WedgedStream(_FakeStream):
+    """A stream whose `read()` blocks until the test lets it go.
+
+    Stands in for a PortAudio device that will not return promptly while it is
+    being contended -- the condition the halt's join timeout exists for.
+    """
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.release = threading.Event()
+
+    def read(self, n):
+        # Long enough to outlast the (monkeypatched) join grace period.
+        self.release.wait(timeout=10.0)
+        return [0] * n, False
+
+
+def _wedged_audio(monkeypatch):
+    """Fake sounddevice that records every stream it is asked to open."""
+    opened: list[_WedgedStream] = []
+
+    def _open(**kw):
+        stream = _WedgedStream(**kw)
+        opened.append(stream)
+        return stream
+
+    monkeypatch.setattr(ww, "_import_audio", lambda: (types.SimpleNamespace(InputStream=_open), None))
+    # Keep the timeout paths fast; the bug is about how a timeout is
+    # interpreted, not about how long it is.
+    monkeypatch.setattr(ww, "_HALT_JOIN_SECONDS", 0.05)
+    return opened
+
+
+def test_a_halt_that_cannot_stop_the_thread_says_so(monkeypatch):
+    opened = _wedged_audio(monkeypatch)
+    det = ww.WakeWordDetector(_FakeEngine(fire=False), lambda: None)
+    det.start()
+    try:
+        assert det._halt_thread() is False
+        assert det._thread is not None and det._thread.is_alive(), (
+            "the thread handle must survive a failed halt -- dropping it is "
+            "what lets the next start() open a second stream"
+        )
+    finally:
+        opened[0].release.set()
+        det.stop()
+
+
+def test_resume_over_a_wedged_thread_does_not_open_a_second_stream(monkeypatch):
+    """The #91987 failure in one assertion.
+
+    Two live streams on one device is the wedge. Refusing is the fix; the
+    caller side already treats a raise as transient and retries.
+    """
+    opened = _wedged_audio(monkeypatch)
+    det = ww.WakeWordDetector(_FakeEngine(fire=False), lambda: None)
+    det.start()
+    try:
+        det.pause()
+        assert len(opened) == 1
+
+        with pytest.raises(TimeoutError):
+            det.resume()
+
+        assert len(opened) == 1, (
+            f"opened {len(opened)} streams; the first one is still held by the "
+            "capture thread that has not exited"
+        )
+    finally:
+        opened[0].release.set()
+        det.stop()
+
+
+def test_the_microphone_reopens_once_the_stale_thread_finally_exits(monkeypatch):
+    """Refusing must not be permanent -- the retry has to have something to win."""
+    opened = _wedged_audio(monkeypatch)
+    det = ww.WakeWordDetector(_FakeEngine(fire=False), lambda: None)
+    det.start()
+    try:
+        det.pause()
+        with pytest.raises(TimeoutError):
+            det.resume()
+
+        # The contended device lets go; the stale thread leaves its read, sees
+        # the stop flag and closes the stream on its way out.
+        opened[0].release.set()
+        for _ in range(200):
+            if not opened[0].closed:
+                time.sleep(0.01)
+        assert opened[0].closed, "the stale thread must close the stream it owns"
+
+        det.resume()
+        assert len(opened) == 2, "a resume after a clean exit must reopen the mic"
+        assert det._thread is not None and det._thread.is_alive()
+    finally:
+        for stream in opened:
+            stream.release.set()
+        det.stop()
+
+
+def test_stop_leaves_the_engine_open_while_a_thread_is_still_processing(monkeypatch):
+    """`engine.close()` under a live capture thread feeds a closed engine.
+
+    The read loop swallows the exception that follows, so this degrades
+    silently rather than crashing -- worth pinning for that reason.
+    """
+    opened = _wedged_audio(monkeypatch)
+    engine = _FakeEngine(fire=False)
+    det = ww.WakeWordDetector(engine, lambda: None)
+    det.start()
+    try:
+        det.stop()
+        assert engine.closed is False, (
+            "the capture thread is still calling engine.process() every frame"
+        )
+    finally:
+        opened[0].release.set()
+
+
+def test_a_clean_pause_resume_cycle_is_unchanged(monkeypatch):
+    """Guardrail: the ordinary path must keep releasing and reclaiming the mic."""
+    opened = _wedged_audio(monkeypatch)
+    det = ww.WakeWordDetector(_FakeEngine(fire=False), lambda: None)
+    det.start()
+    try:
+        opened[0].release.set()  # a healthy device returns from read()
+        det.pause()
+        assert det._thread is None, "a successful halt clears the thread handle"
+
+        det.resume()
+        assert len(opened) == 2
+        assert det._thread is not None and det._thread.is_alive()
+    finally:
+        for stream in opened:
+            stream.release.set()
+        det.stop()

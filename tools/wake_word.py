@@ -49,6 +49,14 @@ SAMPLE_RATE = 16000
 _FIRE_COOLDOWN_SECONDS = 2.0
 _START_TIMEOUT_SECONDS = 5.0
 
+# How long a halt waits for the capture thread to leave its blocking
+# ``stream.read()`` and close the microphone. Deliberately short: the halt runs
+# on the ``wake.pause``/``wake.stop`` RPC path, and the desktop is holding a
+# voice turn open behind it. What matters is not the length of this window but
+# that a timeout is reported as a failure rather than assumed to be a success
+# -- see :meth:`WakeWordDetector._halt_thread`.
+_HALT_JOIN_SECONDS = 2.0
+
 # Ambient-speech rejection: openWakeWord scores one ~80ms frame at a time, and a
 # stray phoneme in background conversation can spike a single frame over the
 # threshold. A real utterance of the phrase holds the score high across several
@@ -1073,10 +1081,38 @@ class WakeWordDetector:
                     pass
 
     def start(self) -> None:
-        """Open the mic (or client feeder) and begin listening. Idempotent."""
+        """Open the mic (or client feeder) and begin listening. Idempotent.
+
+        Raises :class:`TimeoutError` when a previous capture thread is still
+        holding the microphone. That is a transient condition and the callers
+        that matter already treat it as one: the gateway's
+        ``_wake_resume_if_owner`` retries a raising resume in the background
+        for 15s, and the desktop's ``resumeWakeAfterVoice`` falls through to
+        its next spaced attempt. Both are better outcomes than the alternative
+        below.
+        """
         with self._lock:
-            if self._thread is not None and self._thread.is_alive():
-                return
+            t = self._thread
+            if t is not None and t.is_alive():
+                if not self._stop.is_set():
+                    return
+                # A halt timed out and this thread is still on its way out of
+                # a blocking read. It owns the PortAudio stream and closes it
+                # in its own ``finally``, so until it exits the microphone is
+                # taken. Opening a second stream on that device is what wedges
+                # it until the app restarts (#91987): on Windows/MME the
+                # second open succeeds and then delivers nothing but silence,
+                # which is why the symptom is "mic delivers only silence"
+                # forever rather than an error. Give the old thread the rest
+                # of its grace period, then refuse rather than double-open.
+                t.join(timeout=_HALT_JOIN_SECONDS)
+                if t.is_alive():
+                    raise TimeoutError(
+                        "The previous wake-word capture thread still holds the "
+                        "microphone; refusing to open a second stream on it."
+                    )
+                if self._thread is t:
+                    self._thread = None
             self._stop.clear()
             ready = threading.Event()
             startup_errors: list[BaseException] = []
@@ -1102,17 +1138,54 @@ class WakeWordDetector:
         self.start()
 
     def stop(self) -> None:
-        self._halt_thread()
-        self.engine.close()
+        # Only close the engine once the capture thread is provably gone: it
+        # calls ``engine.process()`` every frame, and closing underneath it
+        # feeds a closed engine (the loop swallows the resulting exception, so
+        # this would degrade silently rather than crash).
+        if self._halt_thread():
+            self.engine.close()
+        else:
+            logger.warning(
+                "wake word: leaving the engine open -- the capture thread is "
+                "still running and would be processing frames against it. "
+                "A later stop() closes it, once that thread has exited."
+            )
 
-    def _halt_thread(self) -> None:
+    def _halt_thread(self) -> bool:
+        """Stop the capture thread. ``True`` only when it actually exited.
+
+        The thread owns the PortAudio stream and closes it in its own
+        ``finally``, so "the thread is gone" and "the microphone is released"
+        are the same statement. This used to clear ``self._thread``
+        unconditionally after a join timeout, which made them different
+        statements: the caller was told the mic was free while a live thread
+        still held it, and the next ``start()`` -- seeing no thread handle --
+        opened a second stream on the same device (#91987).
+
+        The join can time out for an ordinary reason. ``stream.read()`` is
+        blocking, and on Windows/MME a device that the browser's WebRTC
+        capture is releasing at the same moment can hold it well past the
+        grace period. That is exactly the pause/resume cycle a hands-free
+        voice turn performs, which is why the report is intermittent and
+        follows a barge-in.
+        """
         with self._lock:
             self._stop.set()
             t = self._thread
             if t is not None and t is not threading.current_thread():
-                t.join(timeout=2.0)
+                t.join(timeout=_HALT_JOIN_SECONDS)
+                if t.is_alive():
+                    logger.warning(
+                        "wake word: capture thread did not exit within %.1fs; "
+                        "the microphone is still held. Keeping the thread "
+                        "handle so a resume cannot open a second stream over "
+                        "it.",
+                        _HALT_JOIN_SECONDS,
+                    )
+                    return False
             if self._thread is t:
                 self._thread = None
+            return True
 
     def _dispatch_wake(self) -> None:
         try:

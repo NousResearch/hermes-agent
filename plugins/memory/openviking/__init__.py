@@ -1356,6 +1356,33 @@ def _status_code_from_error(error: Exception) -> Optional[int]:
     return getattr(response, "status_code", None)
 
 
+def _is_unavailability_error(error: Exception) -> bool:
+    """True when *error* means the OpenViking server could not be reached.
+
+    Connection-level failures (refused, timeout, protocol reset) — as opposed
+    to an HTTP answer the server did return — are the ones that can persist
+    silently for days (#88868): the builtin memory provider keeps working, so
+    nothing else looks broken. Callers log these at ERROR (visible in
+    errors.log) while genuine per-call HTTP failures stay at WARNING.
+    """
+    if _status_code_from_error(error) is not None:
+        return False
+    httpx = _get_httpx()
+    if httpx is not None and isinstance(
+        error,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.PoolTimeout,
+            httpx.RemoteProtocolError,
+        ),
+    ):
+        return True
+    return isinstance(error, (ConnectionError, OSError)) and not isinstance(
+        error, _OpenVikingHTTPError
+    )
+
+
 def _admin_probe_means_regular_key(error: Exception) -> bool:
     return _status_code_from_error(error) in {401, 403, 404}
 
@@ -2957,6 +2984,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
             )
         except Exception as e:
             logger.warning("OpenViking system_prompt_block failed: %s", e)
+            if _is_unavailability_error(e):
+                # Surface the degraded knowledge base at ERROR: the model
+                # silently loses the viking_* tool guidance for as long as the
+                # server is down (#88868).
+                logger.error(
+                    "OpenViking unavailable — knowledge-base prompt block "
+                    "degraded (server unreachable): %s", e,
+                )
             return (
                 "# OpenViking Knowledge Base\n"
                 f"Active. Endpoint: {self._endpoint}\n"
@@ -3507,6 +3542,15 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 logger.debug("OpenViking pending session %s no longer exists; dropped marker", sid)
                 return False
             logger.warning("OpenViking session commit failed for %s: %s", sid, e)
+            if _is_unavailability_error(e):
+                # The server is unreachable — memory writes for this session
+                # are being lost until it comes back. ERROR so the outage is
+                # visible in errors.log instead of rotting at WARNING while
+                # the builtin provider masks the degradation (#88868).
+                logger.error(
+                    "OpenViking unavailable — session %s memory not committed "
+                    "(server unreachable): %s", sid, e,
+                )
             return False
 
     def _finalize_session_async(self, sid: str, turn_count: int, *, context: str) -> None:

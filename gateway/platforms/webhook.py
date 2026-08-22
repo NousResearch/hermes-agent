@@ -213,6 +213,9 @@ class WebhookAdapter(BasePlatformAdapter):
         self._delivery_info: Dict[str, dict] = {}
         self._delivery_info_created: Dict[str, float] = {}
         self._delivery_info_order: Deque[tuple[float, str]] = deque()
+        # Exactly-once guard for identical content on the same webhook session
+        # key (retry / duplicate send paths). Values are content digests.
+        self._delivered_content_hashes: Dict[str, str] = {}
 
         # Reference to gateway runner for cross-platform delivery (set externally)
         self.gateway_runner = None
@@ -350,6 +353,41 @@ class WebhookAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[webhook] Disconnected")
 
+    @staticmethod
+    def _route_name_from_session_chat_id(chat_id: str) -> Optional[str]:
+        """Extract ``route`` from ``webhook:{route}:{delivery_id}`` session keys."""
+        if not isinstance(chat_id, str) or not chat_id.startswith("webhook:"):
+            return None
+        rest = chat_id[len("webhook:") :]
+        route, sep, _delivery = rest.partition(":")
+        if not sep or not route:
+            return None
+        return route
+
+    def _claim_exactly_once_delivery(self, chat_id: str, content: str) -> bool:
+        """Return True when this ``chat_id``+content pair should be delivered.
+
+        Webhook sessions are one-shot, but ``_send_with_retry`` and interim
+        status paths can invoke ``send()`` more than once with the same body.
+        Identical successful deliveries must not fan out again.
+        """
+        digest = hashlib.sha256(
+            f"{chat_id}\0{content}".encode("utf-8", errors="replace")
+        ).hexdigest()
+        prior = self._delivered_content_hashes.get(chat_id)
+        if prior == digest:
+            return False
+        # Reserve the claim optimistically; callers clear it on failure.
+        self._delivered_content_hashes[chat_id] = digest
+        if len(self._delivered_content_hashes) > 4096:
+            # Bound memory: drop arbitrary old entries (insertion order on 3.7+).
+            for stale in list(self._delivered_content_hashes)[:1024]:
+                self._delivered_content_hashes.pop(stale, None)
+        return True
+
+    def _clear_exactly_once_claim(self, chat_id: str) -> None:
+        self._delivered_content_hashes.pop(chat_id, None)
+
     async def send(
         self,
         chat_id: str,
@@ -365,6 +403,12 @@ class WebhookAdapter(BasePlatformAdapter):
         — fallback-model notifications, context-pressure warnings, etc. —
         do not consume the entry and silently downgrade the final response
         to the ``log`` deliver type.  TTL cleanup happens on POST.
+
+        When the route configures a real ``deliver`` target (discord, …),
+        final output is bridged to that adapter/channel — never treated as
+        a successful webhook-transport reply solely because the source
+        platform is webhook.  Plain ``deliver: log`` routes keep logging
+        the response (HTTP already returned 202 on accept).
         """
         if _is_webhook_silence_response(content):
             logger.info(
@@ -375,12 +419,47 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
 
+        # Missing per-delivery state: if the route itself still declares a
+        # non-log deliver target, refuse the silent log fallback — that is
+        # exactly the "looks delivered / never reached Discord" failure mode.
+        if not delivery:
+            route_name = self._route_name_from_session_chat_id(chat_id)
+            route = self._routes.get(route_name or "", {}) if route_name else {}
+            route_deliver = (route or {}).get("deliver", "log") or "log"
+            if route_deliver != "log":
+                logger.error(
+                    "[webhook] Missing delivery_info for %s but route '%s' "
+                    "deliver=%s — refusing silent log fallback (not delivered)",
+                    chat_id,
+                    route_name,
+                    route_deliver,
+                )
+                return SendResult(
+                    success=False,
+                    error=(
+                        f"delivery_info missing for route '{route_name}' "
+                        f"with deliver={route_deliver}"
+                    ),
+                )
+
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
             return SendResult(success=True)
 
+        if not self._claim_exactly_once_delivery(chat_id, content):
+            logger.info(
+                "[webhook] Skipping duplicate deliver to %s for identical content "
+                "(%d chars) — already delivered",
+                chat_id,
+                len(content),
+            )
+            return SendResult(success=True)
+
         if deliver_type == "github_comment":
-            return await self._deliver_github_comment(content, delivery)
+            result = await self._deliver_github_comment(content, delivery)
+            if not result.success:
+                self._clear_exactly_once_claim(chat_id)
+            return result
 
         # Cross-platform delivery — any platform with a gateway adapter.
         # Check both built-in names and plugin-registered platforms.
@@ -392,10 +471,14 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception:
                 pass
         if self.gateway_runner and _is_known_platform:
-            return await self._deliver_cross_platform(
+            result = await self._deliver_cross_platform(
                 deliver_type, content, delivery
             )
+            if not result.success:
+                self._clear_exactly_once_claim(chat_id)
+            return result
 
+        self._clear_exactly_once_claim(chat_id)
         logger.warning("[webhook] Unknown deliver type: %s", deliver_type)
         return SendResult(
             success=False, error=f"Unknown deliver type: {deliver_type}"
@@ -856,12 +939,12 @@ class WebhookAdapter(BasePlatformAdapter):
         # to a user's chat with zero LLM cost.  Reuses the same HMAC auth,
         # rate limiting, idempotency, and template rendering as agent mode.
         if route_config.get("deliver_only"):
+            raw_extra = dict(route_config.get("deliver_extra") or {})
             delivery = {
                 "deliver": route_config.get("deliver", "log"),
-                "deliver_extra": self._render_delivery_extra(
-                    route_config.get("deliver_extra", {}), payload
-                ),
-                "payload": payload,
+                "route": route_name,
+                "explicit_chat_id": bool(str(raw_extra.get("chat_id") or "").strip()),
+                "deliver_extra": self._render_delivery_extra(raw_extra, payload),
             }
             logger.info(
                 "[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s",
@@ -914,11 +997,14 @@ class WebhookAdapter(BasePlatformAdapter):
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),
         # so we do NOT pop on send.  TTL-based cleanup keeps the dict bounded.
+        raw_extra = dict(route_config.get("deliver_extra") or {})
         deliver_config = {
             "deliver": route_config.get("deliver", "log"),
-            "deliver_extra": self._render_delivery_extra(
-                route_config.get("deliver_extra", {}), payload
-            ),
+            "route": route_name,
+            # True when the route configured an explicit chat_id — never fall
+            # back to home/DM if rendering somehow blanks it.
+            "explicit_chat_id": bool(str(raw_extra.get("chat_id") or "").strip()),
+            "deliver_extra": self._render_delivery_extra(raw_extra, payload),
         }
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
@@ -1289,11 +1375,26 @@ class WebhookAdapter(BasePlatformAdapter):
     def _render_delivery_extra(
         self, extra: dict, payload: dict
     ) -> dict:
-        """Render delivery_extra template values with payload data."""
+        """Render delivery_extra template values with payload data.
+
+        Literal delivery-target fields (no ``{…}`` template tokens) are kept
+        verbatim so a hostile/noisy payload cannot rewrite the configured
+        ``chat_id`` / thread / github target via coincidental key names.
+        """
+        _LITERAL_TARGET_KEYS = {
+            "chat_id",
+            "thread_id",
+            "message_thread_id",
+            "repo",
+            "pr_number",
+        }
         rendered: Dict[str, Any] = {}
-        for key, value in extra.items():
+        for key, value in (extra or {}).items():
             if isinstance(value, str):
-                rendered[key] = self._render_prompt(value, payload, "", "")
+                if key in _LITERAL_TARGET_KEYS and "{" not in value:
+                    rendered[key] = value
+                else:
+                    rendered[key] = self._render_prompt(value, payload, "", "")
             else:
                 rendered[key] = value
         return rendered
@@ -1410,6 +1511,10 @@ class WebhookAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Route response to another platform (telegram, discord, etc.)."""
         if not self.gateway_runner:
+            logger.error(
+                "[webhook] Cross-platform deliver=%s failed: no gateway runner",
+                platform_name,
+            )
             return SendResult(
                 success=False,
                 error="No gateway runner for cross-platform delivery",
@@ -1418,6 +1523,10 @@ class WebhookAdapter(BasePlatformAdapter):
         try:
             target_platform = Platform(platform_name)
         except ValueError:
+            logger.error(
+                "[webhook] Cross-platform deliver failed: unknown platform %s",
+                platform_name,
+            )
             return SendResult(
                 success=False, error=f"Unknown platform: {platform_name}"
             )
@@ -1435,19 +1544,45 @@ class WebhookAdapter(BasePlatformAdapter):
                     adapter = cand
                     break
         if not adapter:
+            logger.error(
+                "[webhook] Cross-platform deliver=%s failed: platform not connected",
+                platform_name,
+            )
             return SendResult(
                 success=False,
                 error=f"Platform {platform_name} not connected",
             )
 
-        # Use home channel if no specific chat_id in deliver_extra
-        extra = delivery.get("deliver_extra", {})
-        chat_id = extra.get("chat_id", "")
+        # Resolve target chat. Explicit route chat_id always wins; never let
+        # a missing/blank rendered id fall through to origin/DM. Home channel
+        # is only used when the route did not configure chat_id at all.
+        extra = delivery.get("deliver_extra", {}) or {}
+        chat_id = str(extra.get("chat_id") or "").strip()
+        explicit = bool(delivery.get("explicit_chat_id"))
         if not chat_id:
+            if explicit:
+                logger.error(
+                    "[webhook] deliver=%s has explicit chat_id that resolved empty "
+                    "— refusing home/DM fallback (not delivered)",
+                    platform_name,
+                )
+                return SendResult(
+                    success=False,
+                    error=f"Explicit chat_id missing for {platform_name}",
+                )
             home = self.gateway_runner.config.get_home_channel(target_platform)
             if home:
-                chat_id = home.chat_id
+                chat_id = str(home.chat_id)
+                logger.info(
+                    "[webhook] deliver=%s using home channel %s (no deliver_chat_id)",
+                    platform_name,
+                    chat_id,
+                )
             else:
+                logger.error(
+                    "[webhook] deliver=%s failed: no chat_id or home channel",
+                    platform_name,
+                )
                 return SendResult(
                     success=False,
                     error=f"No chat_id or home channel for {platform_name}",
@@ -1459,4 +1594,35 @@ class WebhookAdapter(BasePlatformAdapter):
         if thread_id:
             metadata = {"thread_id": thread_id}
 
-        return await adapter.send(chat_id, content, metadata=metadata)
+        route = delivery.get("route") or "?"
+        logger.info(
+            "[webhook] Delivering response (%d chars) to %s:%s (route=%s)",
+            len(content),
+            platform_name,
+            chat_id,
+            route,
+        )
+        result = await adapter.send(chat_id, content, metadata=metadata)
+        if getattr(result, "success", False):
+            # Mirror the evidence operators look for on native Discord sends:
+            # platform + destination channel id (not the webhook session key).
+            logger.info(
+                "[%s] Sending response (%d chars) to %s",
+                platform_name.capitalize() if platform_name != "github_comment" else "Webhook",
+                len(content),
+                chat_id,
+            )
+            logger.info(
+                "[webhook] Delivered response to %s:%s message_id=%s",
+                platform_name,
+                chat_id,
+                getattr(result, "message_id", None) or "",
+            )
+        else:
+            logger.error(
+                "[webhook] Delivery failed to %s:%s error=%s",
+                platform_name,
+                chat_id,
+                getattr(result, "error", None) or "unknown",
+            )
+        return result

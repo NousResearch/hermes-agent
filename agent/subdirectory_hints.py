@@ -82,7 +82,8 @@ class SubdirectoryHintTracker:
             tool_result += hints  # append to the tool result string
     """
 
-    def __init__(self, working_dir: Optional[str] = None):
+    def __init__(self, working_dir: Optional[str] = None, enabled: bool = True):
+        self.enabled = enabled
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
         self._loaded_dirs: Set[Path] = set()
         # Content digests already injected — prevents re-sending the same file
@@ -90,7 +91,8 @@ class SubdirectoryHintTracker:
         self._loaded_digests: Set[str] = set()
         # Pre-mark the working dir as loaded (startup context handles it)
         self._loaded_dirs.add(self.working_dir)
-        self._seed_working_dir_digest()
+        if self.enabled:
+            self._seed_working_dir_digest()
 
     def _seed_working_dir_digest(self) -> None:
         """Record the CWD context file's digest so it is never re-injected.
@@ -123,6 +125,9 @@ class SubdirectoryHintTracker:
 
         Returns formatted hint text to append to the tool result, or None.
         """
+        if not self.enabled:
+            return None
+
         dirs = self._extract_directories(tool_name, tool_args)
         if not dirs:
             return None

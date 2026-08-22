@@ -1,10 +1,19 @@
 """Tests for progressive subdirectory hint discovery."""
 
+import sys
+import types
+
 import pytest
 from pathlib import Path
 from unittest.mock import patch
 
 from agent.subdirectory_hints import SubdirectoryHintTracker
+
+
+# Stub optional heavy imports so run_agent imports cleanly in isolation.
+sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
+sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
+sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 
 @pytest.fixture
@@ -114,6 +123,50 @@ class TestSubdirectoryHintTracker:
         assert tracker.check_tool_call("read_file", {}) is None
         assert tracker.check_tool_call("terminal", {"command": ""}) is None
 
+
+class TestDisabledTracker:
+    """Disabled trackers must not discover or read context files."""
+
+    def test_disabled_tracker_does_not_read_or_inject_context(self, project):
+        """Disabling discovery prevents startup seeding and progressive reads."""
+        with patch.object(Path, "is_file", autospec=True) as is_file:
+            with patch.object(Path, "read_text", autospec=True) as read_text:
+                tracker = SubdirectoryHintTracker(
+                    working_dir=str(project),
+                    enabled=False,
+                )
+                result = tracker.check_tool_call(
+                    "read_file",
+                    {"path": str(project / "backend" / "src" / "main.py")},
+                )
+
+        assert result is None
+        is_file.assert_not_called()
+        read_text.assert_not_called()
+
+    def test_aiagent_skip_context_files_disables_tracker(
+        self, tmp_path, monkeypatch
+    ):
+        """AIAgent's context-file opt-out also disables progressive hints."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="gpt-5.5",
+            provider="openai-codex",
+            api_key="test-api-key",
+            base_url="https://chatgpt.com/backend-api/codex",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            platform="cli",
+        )
+
+        assert agent._subdirectory_hints.enabled is False
 
 
 class TestPermissionErrorHandling:

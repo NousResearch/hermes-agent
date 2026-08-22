@@ -429,3 +429,119 @@ class TestDoctorVersionIdentity:
         payload = json.loads(out.getvalue())
         assert payload["hermes_identity"]["version_mismatch"] is False
 
+
+# ── daemon_autostart probe ─────────────────────────────────────────────────
+
+
+def _fake_autostart_output(text: str, rc: int = 0) -> MagicMock:
+    """A subprocess.CompletedProcess stand-in with the shape we read."""
+    completed = MagicMock()
+    completed.stdout = text
+    completed.stderr = ""
+    completed.returncode = rc
+    return completed
+
+
+class TestDaemonAutostartProbe:
+    """``doctor._autostart_probe`` maps ``cua-driver autostart status``
+    output to a pass/fail/skip check. The negative state must win over the
+    positive substring ("not-registered" contains "registered")."""
+
+    def _probe(self, text: str, rc: int = 0):
+        from tools.computer_use import doctor
+
+        with patch.object(doctor, "_resolve_driver_binary", return_value="/fake/cua-driver"), \
+             patch("subprocess.run", return_value=_fake_autostart_output(text, rc)):
+            return doctor._autostart_probe()
+
+    def test_not_registered_is_fail(self):
+        status, msg = self._probe("not-registered\n")
+        assert status == "fail"
+        assert "manual" in msg.lower() or "autostart" in msg.lower()
+
+    def test_registered_running_is_pass(self):
+        status, msg = self._probe("registered (running)\n")
+        assert status == "pass"
+        assert "running" in msg
+
+    def test_registered_idle_is_pass_but_noted(self):
+        status, msg = self._probe("registered (not running)\n")
+        assert status == "pass"
+        assert "not running" in msg
+
+    def test_windows_only_stub_is_skip(self):
+        status, _ = self._probe(
+            "cua-driver autostart is currently Windows-only.\n", rc=1
+        )
+        assert status == "skip"
+
+    def test_not_implemented_stub_is_skip(self):
+        status, _ = self._probe("not implemented yet\n", rc=1)
+        assert status == "skip"
+
+    def test_empty_output_is_skip(self):
+        status, _ = self._probe("")
+        assert status == "skip"
+
+    def test_binary_unresolved_is_skip(self):
+        from tools.computer_use import doctor
+
+        with patch.object(doctor, "_resolve_driver_binary", return_value=None):
+            status, msg = doctor._autostart_probe()
+        assert status == "skip"
+        assert "not resolved" in msg
+
+
+class TestVersionGate:
+    """version_gate check — flags drivers too old for structuredContent frames."""
+
+    def _gate(self, version: str):
+        from tools.computer_use import doctor
+
+        return doctor._version_gate_check(version, doctor._MIN_SUPPORTED_CUA_VERSION)
+
+    def test_new_version_passes(self):
+        check = self._gate("cua-driver 0.19.1")
+        assert check["status"] == "pass"
+        assert "structuredContent" in check["message"]
+
+    def test_old_version_fails_with_hint(self):
+        check = self._gate("cua-driver 0.2.0")
+        assert check["status"] == "fail"
+        assert "install --upgrade" in check["hint"]
+
+    def test_exactly_minimum_passes(self):
+        check = self._gate("cua-driver 0.10.0")
+        assert check["status"] == "pass"
+
+    def test_below_minimum_fails(self):
+        check = self._gate("cua-driver 0.9.5")
+        assert check["status"] == "fail"
+
+    def test_unparseable_skips(self):
+        check = self._gate("garbage")
+        assert check["status"] == "skip"
+        assert "could not parse" in check["message"]
+
+    def test_prerelease_version_comparable(self):
+        # 0.16.0-rc1 parses as 0.16.0 → passes the 0.10 gate.
+        check = self._gate("cua-driver 0.16.0-rc1")
+        assert check["status"] == "pass"
+
+
+class TestParseVersionTuple:
+    def test_full(self):
+        from tools.computer_use import doctor
+
+        assert doctor._parse_version_tuple("cua-driver 0.19.1") == (0, 19, 1)
+
+    def test_two_part(self):
+        from tools.computer_use import doctor
+
+        assert doctor._parse_version_tuple("cua-driver 0.10") == (0, 10, 0)
+
+    def test_none_for_garbage(self):
+        from tools.computer_use import doctor
+
+        assert doctor._parse_version_tuple("garbage") is None
+

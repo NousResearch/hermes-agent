@@ -117,8 +117,10 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        cat .github/patches/89461/part-* | base64 --decode | gzip --decompress > /tmp/apply_89461_review_fixes.py
-        python3 /tmp/apply_89461_review_fixes.py
+        script=.github/patches/apply_89461_review_fixes.py
+        cat .github/patches/89461/part-* | base64 --decode | gzip --decompress > "$script"
+        python3 "$script"
+        rm -f "$script"
 
     - name: Compile and structurally verify transformed security surfaces
       shell: bash

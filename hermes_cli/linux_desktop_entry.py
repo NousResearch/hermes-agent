@@ -57,16 +57,42 @@ def icon_path(project_root: Path) -> Path:
     return project_root / "apps" / "desktop" / "assets" / "icon.png"
 
 
-def resolve_exec_command() -> str:
-    """Build the absolute ``Exec=`` command line for ``hermes desktop``.
+def _is_raw_checkout_wrapper(path: str) -> bool:
+    """True if *path* is the raw ``$HERMES_HOME/hermes`` Python wrapper.
 
-    Prefer the real ``hermes`` executable (argv[0] or PATH). When Hermes
-    runs as a module with no launcher installed, use the current
-    interpreter, also absolute.
+    That file starts ``#!/usr/bin/env python3`` and breaks when launched
+    from the app menu (system Python has no venv deps → ``ModuleNotFoundError:
+    dotenv``). The installed launcher ``~/.local/bin/hermes`` is a bash
+    wrapper that execs the venv Python and works everywhere.
     """
+    try:
+        return Path(path).read_bytes()[:32].startswith(b"#!/usr/bin/env python3")
+    except OSError:
+        return False
+
+
+def resolve_exec_command() -> str:
+    """Build the absolute ``Exec=`` command line for ``hermes desktop``."""
     from hermes_cli.relaunch import resolve_hermes_bin
 
     bin_path = resolve_hermes_bin()
+
+    # Never use the raw checkout wrapper for the desktop entry — it fails
+    # outside a terminal. Prefer the installed launcher on PATH.
+    if bin_path and _is_raw_checkout_wrapper(bin_path):
+        alt = shutil.which("hermes")
+        if alt and Path(alt).resolve() != Path(bin_path).resolve() and not _is_raw_checkout_wrapper(alt):
+            bin_path = alt
+        else:
+            bin_path = None
+
+    # Also prefer a good PATH entry over a bad argv[0] even when which()
+    # and resolve_hermes_bin() disagree — whichever is non-raw wins.
+    if not bin_path or _is_raw_checkout_wrapper(bin_path):
+        alt = shutil.which("hermes")
+        if alt and not _is_raw_checkout_wrapper(alt):
+            bin_path = alt
+
     if bin_path:
         resolved = Path(bin_path).resolve()
         if _needs_interpreter(resolved):

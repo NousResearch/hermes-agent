@@ -39,6 +39,7 @@ from agent.deadline import (
 # clamp_timeout
 # ---------------------------------------------------------------------------
 
+
 class TestClampTimeout:
     def test_none_stays_none(self):
         assert clamp_timeout(None) is None
@@ -75,23 +76,33 @@ class TestClampTimeout:
 # resolve_timeout
 # ---------------------------------------------------------------------------
 
+
 class TestResolveTimeout:
     def test_default_wins_when_nothing_configured(self, monkeypatch):
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
         monkeypatch.delenv("HERMES_TEST_DEADLINE_X", raising=False)
-        assert resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X") == 42.0
+        assert (
+            resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
+            == 42.0
+        )
 
     def test_env_var_beats_default(self, monkeypatch):
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
         monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "17.5")
-        assert resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X") == 17.5
+        assert (
+            resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
+            == 17.5
+        )
 
     def test_config_beats_env_var(self, monkeypatch):
         monkeypatch.setattr(
             "agent.deadline._timeouts_section", lambda: {"a": {"b": 99}}
         )
         monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "17.5")
-        assert resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X") == 99.0
+        assert (
+            resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
+            == 99.0
+        )
 
     def test_dotted_key_walks_nested_maps(self, monkeypatch):
         monkeypatch.setattr(
@@ -109,16 +120,24 @@ class TestResolveTimeout:
             "agent.deadline._timeouts_section", lambda: {"a": {"b": "soon"}}
         )
         monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "17.5")
-        assert resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X") == 17.5
+        assert (
+            resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
+            == 17.5
+        )
 
     def test_invalid_env_value_falls_through_to_default(self, monkeypatch):
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
         monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "banana")
-        assert resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X") == 42.0
+        assert (
+            resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
+            == 42.0
+        )
 
     def test_bool_config_value_rejected(self, monkeypatch):
         # YAML `true` must not silently become a 1-second deadline.
-        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {"a": {"b": True}})
+        monkeypatch.setattr(
+            "agent.deadline._timeouts_section", lambda: {"a": {"b": True}}
+        )
         assert resolve_timeout("a.b", default=42.0) == 42.0
 
     def test_nan_config_value_falls_through(self, monkeypatch):
@@ -144,6 +163,7 @@ class TestResolveTimeout:
 # ---------------------------------------------------------------------------
 # run_bounded_sync
 # ---------------------------------------------------------------------------
+
 
 class TestRunBoundedSync:
     def test_completion_returns_value(self):
@@ -213,6 +233,7 @@ class TestRunBoundedSync:
 # ---------------------------------------------------------------------------
 # run_bounded_async
 # ---------------------------------------------------------------------------
+
 
 class TestRunBoundedAsync:
     def test_completion_returns_value(self):
@@ -296,9 +317,7 @@ class TestRunBoundedAsync:
             async def op():
                 await asyncio.sleep(30)
 
-            result = await run_bounded_async(
-                op(), 0.1, label="t", on_abandon=_cleanup
-            )
+            result = await run_bounded_async(op(), 0.1, label="t", on_abandon=_cleanup)
             await asyncio.wait_for(cleaned.wait(), timeout=5.0)
             return result
 
@@ -332,9 +351,7 @@ class TestRunBoundedAsync:
                     inner_cancelled.set()
                     raise
 
-            outer = asyncio.ensure_future(
-                run_bounded_async(op(), 25.0, label="t")
-            )
+            outer = asyncio.ensure_future(run_bounded_async(op(), 25.0, label="t"))
             await started.wait()
             outer.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -348,6 +365,7 @@ class TestRunBoundedAsync:
 # ---------------------------------------------------------------------------
 # kill_process_tree
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group semantics")
 class TestKillProcessTree:
@@ -441,6 +459,7 @@ class TestKillProcessTree:
 # tool_executor migration contract
 # ---------------------------------------------------------------------------
 
+
 class TestConcurrentToolTimeoutMigration:
     """_resolve_concurrent_tool_timeout keeps its exact legacy contract."""
 
@@ -519,3 +538,115 @@ class TestSequentialToolTimeoutResolver:
             lambda: {"tools": {"concurrent_batch": 0}},
         )
         assert self._resolver()() is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 3a (#85125): SuspectableBackend — poisoned-state contract.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingBackend:
+    """Minimal SuspectableBackend: records mark_suspect calls."""
+
+    def __init__(self) -> None:
+        self.reasons: list[str] = []
+
+    def mark_suspect(self, reason: str) -> None:
+        self.reasons.append(reason)
+
+    def ensure_healthy(self) -> bool:
+        return not self.reasons
+
+
+def test_async_timeout_marks_backend_once():
+    from agent.deadline import run_bounded_async
+
+    async def never():
+        await asyncio.Event().wait()
+
+    async def drive():
+        backend = _RecordingBackend()
+        result = await run_bounded_async(
+            never(), 0.05, label="phase3a", backend=backend
+        )
+        assert result.timed_out
+        return backend
+
+    backend = asyncio.run(drive())
+    assert len(backend.reasons) == 1
+    assert "phase3a" in backend.reasons[0]
+    assert "0.1" in backend.reasons[0]  # rounded timeout present
+
+
+def test_async_completion_never_marks_backend():
+    from agent.deadline import run_bounded_async
+
+    async def quick():
+        return "done"
+
+    async def drive():
+        backend = _RecordingBackend()
+        result = await run_bounded_async(
+            quick(), 5.0, label="phase3a-ok", backend=backend
+        )
+        assert not result.timed_out and result.value == "done"
+        return backend
+
+    backend = asyncio.run(drive())
+    assert backend.reasons == []
+
+
+def test_sync_timeout_marks_backend_once():
+    from agent.deadline import run_bounded_sync
+
+    def block():
+        time.sleep(10)
+
+    backend = _RecordingBackend()
+    result = run_bounded_sync(block, 0.05, label="phase3a-sync", backend=backend)
+    assert result.timed_out
+    assert len(backend.reasons) == 1
+    assert "phase3a-sync" in backend.reasons[0]
+
+
+def test_non_adopting_backend_cannot_weaken_the_bound():
+    """A backend without mark_suspect still gets a real timeout result."""
+
+    class PlainBackend:
+        pass
+
+    async def never():
+        await asyncio.Event().wait()
+
+    async def drive():
+        from agent.deadline import run_bounded_async
+
+        return await run_bounded_async(
+            never(), 0.05, label="phase3a-plain", backend=PlainBackend()
+        )
+
+    result = asyncio.run(drive())
+    assert result.timed_out
+    assert result.label == "phase3a-plain"
+
+
+def test_mark_suspect_raising_never_corrupts_the_result():
+    """A broken mark_suspect must not eat the timeout or the reason."""
+
+    class ExplodingBackend:
+        def mark_suspect(self, reason: str) -> None:
+            raise RuntimeError("backend is broken")
+
+    async def never():
+        await asyncio.Event().wait()
+
+    async def drive():
+        from agent.deadline import run_bounded_async
+
+        return await run_bounded_async(
+            never(), 0.05, label="phase3a-boom", backend=ExplodingBackend()
+        )
+
+    result = asyncio.run(drive())
+    assert result.timed_out
+    assert result.label == "phase3a-boom"

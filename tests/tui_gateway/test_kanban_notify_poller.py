@@ -360,3 +360,60 @@ class TestNotificationPollerLoopKanbanWiring:
         assert any(tid in text for text in submits), submits
         assert session["_kanban_pending"] == []
         assert session["running"] is True
+
+    def test_rejected_dispatch_keeps_batch_for_retry(self, monkeypatch):
+        """A rejected turn must not consume the batch.
+
+        ``_collect_kanban_notifications`` advances the subscription cursor when
+        it claims the events, so once they are buffered the batch is the only
+        remaining copy — the DB will never hand them out again. When
+        ``_run_prompt_submit`` returns False (session closing / queued-prompt
+        generation mismatch) without starting a turn, dropping the batch loses
+        the notification permanently.
+        """
+        import threading
+        import tui_gateway.server as server
+
+        tid = _create_subscribed_task()
+        _complete(tid, summary="rejected then retried")
+        session = self._poller_session(running=False)
+
+        submits: list = []
+        rejected = threading.Event()
+
+        def _submit(rid, sid, sess, text):
+            submits.append(text)
+            if len(submits) == 1:
+                # First dispatch is refused before any turn starts.
+                rejected.set()
+                return False
+            return True
+
+        monkeypatch.setattr(server, "_KANBAN_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+        monkeypatch.setattr(server, "_run_prompt_submit", _submit)
+
+        stop = threading.Event()
+        thread = threading.Thread(
+            target=server._notification_poller_loop,
+            args=(stop, "sid-kanban-reject", session),
+            daemon=True,
+        )
+        thread.start()
+        try:
+            assert self._wait_for(rejected.is_set), "dispatch was never attempted"
+            # Retained for retry, and the retry actually happens.
+            assert self._wait_for(lambda: len(submits) >= 2), (
+                f"rejected batch was never retried (pending="
+                f"{session.get('_kanban_pending')!r})"
+            )
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+
+        # The retry carries the same notification — not a truncated or
+        # duplicated one — and the accepted dispatch clears the buffer.
+        assert tid in submits[0]
+        assert submits[1] == submits[0]
+        assert submits.count(submits[0]) == 2, submits
+        assert session["_kanban_pending"] == []

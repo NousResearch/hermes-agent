@@ -604,6 +604,11 @@ class ComputeHost:
                     cwd=str(frame.get("cwd") or "") or None,
                     session_db=session_db,
                     source=frame.get("source"),
+                    # _init_session starts the notification poller, which binds
+                    # its HERMES_HOME from the session's profile_home. Set it
+                    # here rather than only on the assignment below, which lands
+                    # after that thread is already running.
+                    profile_home=profile_home or None,
                 )
             finally:
                 reset_transport(token)

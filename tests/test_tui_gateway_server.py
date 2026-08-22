@@ -6040,6 +6040,76 @@ def test_completion_ownership_lineage_lookup_failure_fails_closed(monkeypatch):
     assert isolated_queue.get_nowait() is event
 
 
+@pytest.mark.parametrize("drain_only", [False, True])
+def test_notification_poller_releases_claim_when_dispatch_is_rejected(
+    monkeypatch, drain_only
+):
+    """A rejected turn must stay pending instead of being acknowledged.
+
+    ``_run_prompt_submit`` returns False without starting a turn when the
+    session is closing or has been re-registered. Calling
+    ``complete_event_delivery`` anyway consumes the only copy of the event, so
+    the notification is lost. Both the live loop and the shutdown drain must
+    release the claim and hand the event back to the queue instead.
+    """
+    import queue as _queue_mod
+
+    from tools import async_delegation
+    from tools.process_registry import process_registry
+
+    session = _session(session_key="closing-notification-owner")
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "delegation-close-race",
+        "session_key": "closing-notification-owner",
+        "goal": "return the completed result",
+        "summary": "done",
+        "status": "completed",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    completed = []
+    released = []
+
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        async_delegation,
+        "claim_event_delivery",
+        lambda _event, _consumer: "close-race-claim",
+    )
+    monkeypatch.setattr(
+        async_delegation,
+        "complete_event_delivery",
+        lambda claimed_event, claim: completed.append((claimed_event, claim)),
+    )
+    monkeypatch.setattr(
+        async_delegation,
+        "release_event_delivery",
+        lambda claimed_event, claim: released.append((claimed_event, claim)),
+    )
+    server._sessions["sid-closing-notification"] = session
+    stop = threading.Event() if drain_only else _StopAfterOneNotificationPoll()
+    if drain_only:
+        stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid-closing-notification", session)
+
+        assert completed == []
+        assert released == [(event, "close-race-claim")]
+        assert session["running"] is False
+        # Handed back to the queue exactly once, for a later delivery.
+        assert isolated_queue.qsize() == 1
+        assert isolated_queue.get_nowait() is event
+    finally:
+        server._sessions.pop("sid-closing-notification", None)
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
 @pytest.mark.parametrize(
     "routing",
     [
@@ -6214,6 +6284,115 @@ def test_notification_poller_delivers_owned_events(
         server._sessions.pop("sid_a", None)
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
+
+
+def _delegation_delivery_row(home, delegation_id):
+    """Read one delegation's delivery columns out of *home*'s state.db."""
+    token = set_hermes_home_override(home)
+    try:
+        with ad._DB_LOCK, ad._transaction() as conn:
+            return conn.execute(
+                """SELECT delivery_state, delivery_attempts, delivered_at
+                   FROM async_delegations WHERE delegation_id=?""",
+                (delegation_id,),
+            ).fetchone()
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_notification_poller_thread_acks_routed_profile_db(monkeypatch, tmp_path):
+    """The real poller thread must claim and ack in the session's profile store.
+
+    The HERMES_HOME override is a ContextVar, so a bare poller thread resolves
+    async_delegation._db_path() against the LAUNCH profile — the claim finds no
+    row there, returns None, and the completion is silently never delivered.
+    """
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    launch_home = tmp_path / "launch"
+    profile_home = tmp_path / "profiles" / "routed"
+    launch_home.mkdir()
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_profile_ack",
+        "session_key": "session-a",
+        "origin_ui_session_id": "sid-profile",
+        "origin_session_id": "",
+        "status": "success",
+        "summary": "done",
+    }
+    now = time.time()
+    token = set_hermes_home_override(profile_home)
+    try:
+        with ad._DB_LOCK, ad._transaction() as conn:
+            conn.execute(
+                """INSERT INTO async_delegations
+                   (delegation_id, origin_session, origin_ui_session_id, state,
+                    dispatched_at, completed_at, updated_at, event_json,
+                    delivery_state, delivery_attempts)
+                   VALUES (?, ?, ?, 'success', ?, ?, ?, ?, 'pending', 0)""",
+                (
+                    event["delegation_id"],
+                    event["session_key"],
+                    event["origin_ui_session_id"],
+                    now,
+                    now,
+                    now,
+                    json.dumps(event),
+                ),
+            )
+    finally:
+        reset_hermes_home_override(token)
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    turns = []
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text, **kwargs: turns.append((text, kwargs)),
+    )
+    session = _session(
+        session_key="session-a",
+        profile_home=str(profile_home),
+    )
+    server._sessions["sid-profile"] = session
+
+    # Spawn through the real entry point so the registry/reap bookkeeping and
+    # the thread's home binding are both exercised as production wires them.
+    stop = server._start_notification_poller("sid-profile", session)
+    worker = server._notification_pollers[-1][1]
+    assert worker.name == "tui-notif-poller-sid-profile"
+    try:
+        deadline = time.time() + 5
+        row = _delegation_delivery_row(profile_home, event["delegation_id"])
+        while row[0] != "delivered" and time.time() < deadline:
+            time.sleep(0.01)
+            row = _delegation_delivery_row(profile_home, event["delegation_id"])
+
+        assert row[0] == "delivered"
+        assert row[1] == 1
+        assert row[2] is not None
+        # The launch profile must be untouched: a claim that landed there is
+        # the bug, and it would leave the session's own row pending forever.
+        assert _delegation_delivery_row(launch_home, event["delegation_id"]) is None
+        assert len(turns) == 1
+        assert turns[0][1]["display_kind"] == "async_delegation_complete"
+        assert isolated_queue.empty()
+    finally:
+        stop.set()
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        server._sessions.pop("sid-profile", None)
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
 
 
 def _configure_immediate_prompt_run(

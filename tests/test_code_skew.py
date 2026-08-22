@@ -45,6 +45,42 @@ class TestShort:
         assert code_skew._short("git:HEAD:abc1234") == "abc1234"
 
 
+class TestModelCommandEntryGuard:
+    """Regression: the guard must fire at /model entry, before the handler's
+    lazy ``hermes_cli.model_switch`` import. On a stale process that import
+    loads a newer module whose signatures no longer match the in-memory
+    caller — the post-update ``too many values to unpack (expected 4)`` crash
+    from the old tuple-returning ``parse_model_flags``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_model_command_refuses_on_skew_before_parsing(self, monkeypatch):
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        monkeypatch.setattr(
+            code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890")
+        )
+
+        # A bare runner with no attributes set: if the guard is truly the
+        # first thing the handler does, nothing else is ever touched.
+        runner = object.__new__(GatewayRunner)
+        event = MessageEvent(
+            text="/model gpt-5.5",
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"
+            ),
+        )
+
+        result = await runner._handle_model_command(event)
+
+        assert result is not None
+        assert "hermes gateway restart" in result
+
+
 class TestModelSwitchSkewGuard:
     def test_guard_returns_none_without_skew(self, monkeypatch):
         from gateway import slash_commands

@@ -1760,6 +1760,16 @@ class GatewaySlashCommandsMixin:
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
+        # Guard here — before the lazy hermes_cli.model_switch import below —
+        # not only at switch time. On a stale process that import can load a
+        # newer module whose call signatures no longer match this in-memory
+        # caller, so even displaying the picker crashes (e.g. the post-update
+        # "too many values to unpack (expected 4)" from the old tuple-returning
+        # parse_model_flags).
+        skew_error = _model_switch_skew_guard()
+        if skew_error:
+            return skew_error
+
         from gateway.run import _hermes_home, _load_gateway_config
         from hermes_cli.model_switch import (
             switch_model as _switch_model, parse_model_switch_args,

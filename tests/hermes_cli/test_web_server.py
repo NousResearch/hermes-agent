@@ -1123,18 +1123,189 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["session_id"] == "cyc-b"
 
+    def test_latest_descendant_skips_delegate_branch_tool_children(self):
+        """Branch/delegate/tool children carry parent_session_id but are not
+        resume continuations: resuming a chat that spawned a subagent must
+        reload the chat, not the subagent transcript (same guards as
+        SessionDB.resolve_resume_session_id)."""
+        from hermes_state import SessionDB
 
+        db = SessionDB()
+        try:
+            db.create_session(session_id="chat-root", source="cli")
+            db.create_session(
+                session_id="delegate-child",
+                source="subagent",
+                parent_session_id="chat-root",
+                model_config={"_delegate_from": "chat-root"},
+            )
+            db.create_session(
+                session_id="branch-child",
+                source="cli",
+                parent_session_id="chat-root",
+                model_config={"_branched_from": "chat-root"},
+            )
+            db.create_session(
+                session_id="tool-child",
+                source="tool",
+                parent_session_id="chat-root",
+            )
+            # The excluded child's own subtree must be unreachable too: the
+            # walk must never enroll descendants of a skipped child.
+            db.create_session(
+                session_id="delegate-grandchild",
+                source="cli",
+                parent_session_id="delegate-child",
+            )
+            base = 1_700_000_000
+            ordered = [
+                "chat-root",
+                "delegate-child",
+                "branch-child",
+                "tool-child",
+                "delegate-grandchild",
+            ]
+            for i, sid in enumerate(ordered):
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=? WHERE id=?",
+                    (base + i * 100, sid),
+                )
+            db._conn.commit()
+        finally:
+            db.close()
 
+        resp = self.client.get("/api/sessions/chat-root/latest-descendant")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["session_id"] == "chat-root"
+        assert body["changed"] is False
 
+    def test_latest_descendant_still_follows_plain_children(self):
+        """Positive control for the lineage guard: a plain continuation child
+        (e.g. created by /model) is still followed to the newest leaf, even
+        when a newer delegate sibling exists."""
+        from hermes_state import SessionDB
 
+        db = SessionDB()
+        try:
+            db.create_session(session_id="plain-root", source="cli")
+            db.create_session(
+                session_id="plain-tip",
+                source="cli",
+                parent_session_id="plain-root",
+            )
+            db.create_session(
+                session_id="delegate-decoy",
+                source="subagent",
+                parent_session_id="plain-root",
+                model_config={"_delegate_from": "plain-root"},
+            )
+            base = 1_700_000_000
+            for i, sid in enumerate(["plain-root", "plain-tip", "delegate-decoy"]):
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=? WHERE id=?",
+                    (base + i * 100, sid),
+                )
+            db._conn.commit()
+        finally:
+            db.close()
 
+        resp = self.client.get("/api/sessions/plain-root/latest-descendant")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["session_id"] == "plain-tip"
+        assert body["path"] == ["plain-root", "plain-tip"]
 
+    def test_latest_descendant_survives_malformed_model_config(self):
+        """One corrupt legacy row must not abort the walk: json_extract
+        raises 'malformed JSON' on non-JSON text, which un-gated aborts the
+        whole recursive CTE. Malformed lineage is unknowable, so the row is
+        excluded — never followed — while healthy siblings still resolve."""
+        from hermes_state import SessionDB
 
+        db = SessionDB()
+        try:
+            db.create_session(session_id="mal-root", source="cli")
+            db.create_session(
+                session_id="mal-plain-child",
+                source="cli",
+                parent_session_id="mal-root",
+            )
+            db.create_session(
+                session_id="mal-corrupt-child",
+                source="cli",
+                parent_session_id="mal-root",
+            )
+            base = 1_700_000_000
+            for i, sid in enumerate(
+                ["mal-root", "mal-plain-child", "mal-corrupt-child"]
+            ):
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=? WHERE id=?",
+                    (base + i * 100, sid),
+                )
+            # Corrupt the NEWER sibling so a walk that failed to exclude it
+            # would pick it first.
+            db._conn.execute(
+                "UPDATE sessions SET model_config='not json' WHERE id=?",
+                ("mal-corrupt-child",),
+            )
+            db._conn.commit()
+        finally:
+            db.close()
 
+        resp = self.client.get("/api/sessions/mal-root/latest-descendant")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["session_id"] == "mal-plain-child"
+        assert body["path"] == ["mal-root", "mal-plain-child"]
 
+    def test_latest_descendant_fallback_pins_lineage_semantics(self):
+        """The compact-rows fallback (db exposes no raw connection) mirrors
+        the CTE guard: delegate children and malformed model_config rows are
+        excluded, while rows that omit source/model_config entirely are
+        followed — pinning the documented rare-path divergence."""
+        from hermes_cli import web_server
 
+        rows = [
+            {"id": "fb-root", "parent_session_id": None, "started_at": 1},
+            # No source/model_config keys at all — followed (documented).
+            {
+                "id": "fb-bare-child",
+                "parent_session_id": "fb-root",
+                "started_at": 2,
+            },
+            # Malformed string model_config — excluded, like the CTE.
+            {
+                "id": "fb-corrupt-child",
+                "parent_session_id": "fb-root",
+                "started_at": 3,
+                "model_config": "not json",
+            },
+            # Delegate child — excluded.
+            {
+                "id": "fb-delegate-child",
+                "parent_session_id": "fb-root",
+                "started_at": 4,
+                "model_config": '{"_delegate_from": "fb-root"}',
+            },
+        ]
 
+        class FallbackDB:
+            def resolve_session_id(self, session_id):
+                return session_id
 
+            def get_session(self, sid):
+                return {"id": sid}
+
+            def list_sessions_rich(self, limit, offset, compact_rows):
+                return rows
+
+        tip, path = web_server._session_latest_descendant(
+            "fb-root", FallbackDB()
+        )
+        assert tip == "fb-bare-child"
+        assert path == ["fb-root", "fb-bare-child"]
 
 
     def test_update_hermes_returns_docker_guidance_without_spawning(self, monkeypatch):

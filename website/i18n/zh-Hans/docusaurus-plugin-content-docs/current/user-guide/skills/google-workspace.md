@@ -96,6 +96,27 @@ $GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
 
 自动将回复归入同一会话（设置 `In-Reply-To` 和 `References` 头），并使用原始消息的 thread ID。
 
+### 草稿
+
+将邮件先暂存到 Gmail 草稿中，供人工审阅后再发送——当代理代你撰写邮件时，这比直接发送更安全。
+
+```bash
+# 创建草稿（--to/--subject/--body 可任意提供其一即可，至少需要一个）
+$GAPI gmail draft create --to user@example.com --subject "Hello" --body "Message text"
+$GAPI gmail draft create --subject "WIP" --body "still drafting…"   # 部分草稿，暂无收件人
+
+# --cc、--from 和 --html 的用法与 gmail send 相同
+$GAPI gmail draft create --to user@example.com --subject "Q4" --body "<h1>Q4</h1>" --html
+
+# 列出草稿（用于查找要发送的 DRAFT_ID）
+$GAPI gmail draft list --max 10
+
+# 发送已有草稿
+$GAPI gmail draft send DRAFT_ID
+```
+
+`draft create` 会拒绝完全为空的草稿（未提供 `--to`/`--subject`/`--body`）。如需将回复归入会话，请使用 `gmail reply` 而非草稿——草稿不会设置 `In-Reply-To`/`References` 头。
+
 ### 标签
 
 ```bash
@@ -174,6 +195,9 @@ $GAPI contacts list --max 20
 | `gmail search` | `id`、`threadId`、`from`、`to`、`subject`、`date`、`snippet`、`labels` |
 | `gmail get` | `id`、`threadId`、`from`、`to`、`subject`、`date`、`labels`、`body` |
 | `gmail send/reply` | `status`、`id`、`threadId` |
+| `gmail draft create` | `status`、`draftId`、`messageId`、`threadId` |
+| `gmail draft list` | `draftId`、`messageId`、`to`、`subject`、`date`、`snippet` |
+| `gmail draft send` | `status`、`id`、`threadId` |
 | `calendar list` | `id`、`summary`、`start`、`end`、`location`、`description`、`htmlLink` |
 | `calendar create` | `status`、`id`、`summary`、`htmlLink` |
 | `drive search` | `id`、`name`、`mimeType`、`modifiedTime`、`webViewLink` |

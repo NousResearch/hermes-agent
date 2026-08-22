@@ -578,11 +578,10 @@ class ProfileCreate(BaseModel):
     # create (the user can fix it from the relevant dashboard page afterward).
     # MCP servers to write into the new profile's config.yaml.
     mcp_servers: List["MCPServerCreate"] = []
-    # Built-in / optional skills to KEEP active. When this list is non-empty,
-    # the builder uses "replace" semantics: the bundle is seeded, then every
-    # seeded skill NOT in this list is added to the profile's disabled list.
-    # Empty list = leave the seeded bundle untouched (legacy behaviour).
-    keep_skills: List[str] = []
+    # Built-in / optional skills to KEEP active. Omission preserves the seeded
+    # bundle; an explicitly supplied list uses replace semantics, including []
+    # to disable every seeded skill.
+    keep_skills: Optional[List[str]] = None
     # Skills-hub identifiers to install into the new profile. Installed async
     # via a subprocess scoped to the profile (`hermes -p <name> skills install`)
     # because skills_hub.SKILLS_DIR is import-time-bound and the HERMES_HOME

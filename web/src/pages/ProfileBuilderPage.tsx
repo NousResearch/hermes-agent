@@ -22,6 +22,10 @@ import {
   type McpServerDraft,
   type McpTransport,
 } from "@/lib/mcp-server-create";
+import {
+  buildKeepSkillsPayload,
+  profileSkillSelectionSummary,
+} from "@/lib/profile-builder-skills";
 import { cn } from "@/lib/utils";
 
 // Profile name rule mirrors the backend (`^[a-z0-9][a-z0-9_-]{0,63}$`).
@@ -230,6 +234,11 @@ export default function ProfileBuilderPage() {
     );
   }, [skills, skillFilter]);
 
+  const skillSelectionSummary = useMemo(
+    () => profileSkillSelectionSummary(skills ?? [], keptSkills),
+    [skills, keptSkills],
+  );
+
   const pickedModel = useMemo(
     () =>
       modelChoice
@@ -256,7 +265,7 @@ export default function ProfileBuilderPage() {
         provider: pickedModel?.provider,
         model: pickedModel?.model,
         mcp_servers: mcpServers.length ? mcpServers : undefined,
-        keep_skills: keepAll ? undefined : Array.from(keptSkills),
+        keep_skills: buildKeepSkillsPayload(keepAll, keptSkills),
         hub_skills: hubSkills.length
           ? hubSkills.map((s) => s.identifier)
           : undefined,
@@ -416,6 +425,26 @@ export default function ProfileBuilderPage() {
                       setSkillFilter(e.target.value)
                     }
                   />
+                  {skills !== null && skills.length > 0 && (
+                    <div className="flex items-center justify-between">
+                      <span
+                        className="text-xs text-muted-foreground"
+                        aria-live="polite"
+                      >
+                        {skillSelectionSummary.selected} of{" "}
+                        {skillSelectionSummary.total} selected
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        ghost
+                        onClick={() => setKeptSkills(new Set<string>())}
+                        disabled={skillSelectionSummary.selected === 0}
+                      >
+                        Deselect all
+                      </Button>
+                    </div>
+                  )}
                   {skills === null ? (
                     <p className="text-sm text-muted-foreground">
                       Loading skills…

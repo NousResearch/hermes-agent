@@ -93,6 +93,42 @@ def prepare_send_message_platforms() -> None:
     discover_plugins()
 
 
+# Native send paths that are genuinely usable from an out-of-process
+# ``hermes send`` invocation even though they do not register a plugin
+# ``standalone_sender_fn``. Keep this intentionally narrow: transports that
+# require a live adapter/persistent gateway connection (for example Yuanbao)
+# must not be advertised as standalone-capable.
+_NATIVE_STANDALONE_SEND_PLATFORMS = frozenset(
+    {"signal", "weixin", "bluebubbles", "qqbot"}
+)
+
+
+def supports_standalone_send(platform_name: str) -> bool:
+    """Return whether ``hermes send`` can deliver without a live gateway.
+
+    This is the capability boundary for out-of-process callers such as cron
+    delivery brokers. Plugin platforms opt in with ``standalone_sender_fn``;
+    a small number of native direct transports are listed above because their
+    send path is implemented in this module rather than the platform registry.
+    """
+    name = str(platform_name or "").strip().lower()
+    if not name:
+        return False
+    if name in _NATIVE_STANDALONE_SEND_PLATFORMS:
+        return True
+    try:
+        prepare_send_message_platforms()
+        from gateway.platform_registry import platform_registry
+
+        entry = platform_registry.get(name)
+        return bool(entry is not None and entry.standalone_sender_fn is not None)
+    except Exception:
+        logger.debug(
+            "standalone send capability lookup failed for %s", name, exc_info=True
+        )
+        return False
+
+
 def _media_caption_split(text, media_files, *, max_caption_len):
     """Decide whether the accompanying text should ride on the media bubble.
 

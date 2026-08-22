@@ -105,13 +105,13 @@ const $lastSources = atom([])
 /** Desktop-only display preferences keyed by `connectionId::profile`. */
 const $botRosterPrefs = atom({})
 
-/** Bots with chat activity the user hasn't seen yet (name -> true).
+/** Bots with chat activity the user hasn't seen yet (connectionId::profile -> true).
  *  Fed by the roster poll's activity watermark, so it catches EVERY
  *  delivery path: RPC, CLI (bot-to-bot), cron runs, other machines. */
 const $botUnread = atom({})
 
-// last_active watermark per bot, seeded on first poll so a fresh mount
-// doesn't mark ancient history unread.
+// last_active watermark per source-qualified bot, seeded on first poll so a
+// fresh mount doesn't mark ancient history unread.
 const rosterWatermarks = new Map()
 let watermarksSeeded = false
 
@@ -141,22 +141,23 @@ function trackInboundActivity(roster) {
   watermarksSeeded = true
 
   for (const bot of roster) {
+    const key = botRosterKey(bot)
     const activity = botActivitySession(bot)
     const ts = activity?.last_active || 0
-    const prev = rosterWatermarks.get(bot.name) || 0
-    rosterWatermarks.set(bot.name, Math.max(prev, ts))
+    const prev = rosterWatermarks.get(key) || 0
+    rosterWatermarks.set(key, Math.max(prev, ts))
 
     if (seeding || ts <= prev) {
       continue
     }
 
-    // Activity in the bot the user is currently looking at is already
-    // visible — never badge the open chat.
-    if ($selectedBot.get() === bot.name) {
+    // Activity in the exact bot owner the user is currently looking at is
+    // already visible — never badge the open chat or its same-named twin.
+    if ($selectedRosterKey.get() === key) {
       continue
     }
 
-    $botUnread.set({ ...$botUnread.get(), [bot.name]: true })
+    $botUnread.set({ ...$botUnread.get(), [key]: true })
 
     // Roster-hidden bots stay quiet: the unread flag above accumulates
     // silently (unhiding reveals the badge) but a hidden bot never toasts.
@@ -1738,9 +1739,9 @@ async function deleteBot(bot) {
   }
 
   const unread = { ...$botUnread.get() }
-  delete unread[bot.name]
+  delete unread[botRosterKey(bot)]
   $botUnread.set(unread)
-  rosterWatermarks.delete(bot.name)
+  rosterWatermarks.delete(botRosterKey(bot))
   avatarFetchInflight.delete(bot.name)
   avatarPushInflight.delete(bot.name)
 
@@ -6446,7 +6447,7 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
   // Subscribe on every render. A source switch turns the same keyed row from
   // thin to rich; conditionally calling useValue here breaks React hook order.
   const unreadByName = useValue($botUnread)
-  const unread = !bot.remoteSource && Boolean(unreadByName[bot.name])
+  const unread = Boolean(unreadByName[botRosterKey(bot)])
   // WHO sent the last message (bot-to-bot DM vs human) — shown in the row
   // preview; the conversation itself lives in the bot's one canonical chat.
   const { fromBot } = previewKind(previewSession?.preview)
@@ -11931,7 +11932,7 @@ function BotsPane() {
     }
     mergeServerMeta(activeSourceRoster, data?.fetchedAt || 0)
     pullServerAvatars(activeSourceRoster)
-    trackInboundActivity(activeSourceRoster)
+    trackInboundActivity(roster)
     backfillMessagingProtocol(activeSourceRoster)
   }
 

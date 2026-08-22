@@ -11,7 +11,7 @@ function loadFilter() {
 
   assert.ok(start >= 0 && end > start, 'bot identity helper block must remain extractable')
 
-  const context = { botActivitySession: bot => bot?.preferred_session || bot?.last_session || null }
+  const context = { botActivitySession: bot => bot?.canonical_session || bot?.last_session || null }
   vm.runInNewContext(
     `${source.slice(start, end)}\nglobalThis.__filterBots = filterBots;`,
     context

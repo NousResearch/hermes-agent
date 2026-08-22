@@ -134,7 +134,7 @@ test('hidden activity still accumulates unread but never emits an activity toast
   t.trackInboundActivity(rosterAt(100))
   t.trackInboundActivity(rosterAt(200))
 
-  assert.equal(t.$botUnread.get().writer, true)
+  assert.equal(t.$botUnread.get()['local::writer'], true)
   assert.equal(t.notifications.length, 0)
 })
 
@@ -142,7 +142,7 @@ test('shape: visible and hidden display lists are derived without shrinking the 
   assert.match(pluginSource, /const hiddenBots = roster\.filter\(bot => isBotHidden\(bot, allMeta\)\)/)
   assert.match(pluginSource, /const visibleRoster = roster\.filter\(bot => !isBotHidden\(bot, allMeta\)\)/)
   assert.match(pluginSource, /const activeSourceRoster = roster\.filter\(bot => !bot\.remoteSource\)/)
-  assert.match(pluginSource, /trackInboundActivity\(activeSourceRoster\)/)
+  assert.match(pluginSource, /trackInboundActivity\(roster\)/)
 })
 
 test('shape: hidden bots recover from a folded section instead of a global reveal mode', () => {

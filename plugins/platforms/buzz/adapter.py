@@ -92,6 +92,9 @@ _CHAT_KIND = 9
 _FETCH_LIMIT = 50
 # Bound on the per-channel de-dupe set (events, not bytes).
 _SEEN_CAP = 500
+# Bound on the inbound-event -> thread-root map used to keep threaded replies
+# in their thread. Only recent messages can still be awaiting a reply.
+_THREAD_CONTEXT_MAX = 500
 # Re-run DM discovery (``dms list`` plus the channels-list fallback) every
 # N poll sweeps to pick up conversations opened mid-run.
 _DM_DISCOVERY_EVERY = 5
@@ -392,6 +395,18 @@ class BuzzAdapter(BasePlatformAdapter):
             _rm_cfg = _rm_raw
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
 
+        # Force every reply to thread off its triggering message (legacy
+        # behaviour). Default False: replies follow the incoming message —
+        # threaded when it came from a thread, at the channel root otherwise.
+        # See _resolve_reply_anchor(). Env (BUZZ_REPLY_IN_THREAD) overrides
+        # config.yaml.
+        _rit_raw = os.getenv("BUZZ_REPLY_IN_THREAD")
+        if _rit_raw is None:
+            _rit_cfg = extra.get("reply_in_thread", False)
+        else:
+            _rit_cfg = _rit_raw
+        self.reply_in_thread = str(_rit_cfg).strip().lower() in ("true", "1", "yes", "on")
+
         # Inbound transport: "auto" (WebSocket with poll fallback, default),
         # "websocket" (require WS; fail connect when it can't authenticate),
         # or "poll" (CLI polling only). Env (BUZZ_TRANSPORT) overrides
@@ -431,6 +446,11 @@ class BuzzAdapter(BasePlatformAdapter):
         # channel_id -> {"chat_type", "last_ts", "seen": OrderedDict[event_id, None]}
         self._channel_state: Dict[str, dict] = {}
         self._channel_names: Dict[str, str] = {}
+        # inbound event_id -> thread root event id, recorded only for messages
+        # that arrived *inside* a thread. send() consults this so a reply stays
+        # in its thread while a root-level message is answered at root level.
+        # Bounded FIFO; threading context is only useful for recent messages.
+        self._thread_of: "OrderedDict[str, str]" = OrderedDict()
         # channel_id -> raw ``channels list`` entry; drives DM-vs-channel
         # classification (see _may_reclassify_as_dm).
         self._channel_meta: Dict[str, dict] = {}
@@ -599,6 +619,47 @@ class BuzzAdapter(BasePlatformAdapter):
 
     # ── Sending ───────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _thread_root_from_tags(event: dict) -> Optional[str]:
+        """Return the thread root id when *event* sits inside a thread.
+
+        NIP-10 marks the anchor with an ``["e", <id>, <relay>, "root"]`` tag;
+        older clients emit positional ``e`` tags with no marker, so the first
+        ``e`` tag is used as a fallback. Returns None for a root-level message.
+        """
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return None
+        fallback: Optional[str] = None
+        for tag in tags:
+            if not (isinstance(tag, (list, tuple)) and len(tag) > 1 and tag[0] == "e"):
+                continue
+            marker = str(tag[3]).lower() if len(tag) > 3 else ""
+            if marker == "root":
+                return str(tag[1])
+            if fallback is None:
+                fallback = str(tag[1])
+        return fallback
+
+    def _resolve_reply_anchor(self, reply_target: Optional[str]) -> Optional[str]:
+        """Map the gateway's reply anchor onto Buzz's threading model.
+
+        The gateway's ``_reply_anchor_for_event()`` falls through to
+        ``event.message_id`` for platforms with no special case, so every reply
+        arrives anchored and Buzz renders it as a thread. Instead:
+
+        * message arrived inside a thread -> anchor to that thread's root, so
+          the reply stays in the thread the human is reading;
+        * message arrived at the channel root -> no anchor, so the reply posts
+          to the root rather than opening a new thread nobody asked for.
+
+        ``reply_in_thread`` / ``BUZZ_REPLY_IN_THREAD`` restores the previous
+        always-thread behaviour.
+        """
+        if not reply_target or self.reply_in_thread:
+            return reply_target
+        return self._thread_of.get(str(reply_target))
+
     async def send(
         self,
         chat_id: str,
@@ -609,7 +670,9 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
-        reply_target = reply_to or (metadata or {}).get("thread_id")
+        reply_target = self._resolve_reply_anchor(
+            reply_to or (metadata or {}).get("thread_id")
+        )
         if reply_target:
             args += ["--reply-to", str(reply_target)]
         code, out, err = await self._run_cli(args, input_text=content)
@@ -681,8 +744,9 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
-            if reply_to:
-                args += ["--reply-to", str(reply_to)]
+            image_reply_target = self._resolve_reply_anchor(reply_to)
+            if image_reply_target:
+                args += ["--reply-to", str(image_reply_target)]
             code, out, err = await self._run_cli(args, input_text=caption or "")
             if code != 0:
                 return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
@@ -1047,6 +1111,14 @@ class BuzzAdapter(BasePlatformAdapter):
         # open with "@Chip" even though no mention is required there, so the
         # strip applies to both chat types.
         dispatch_text = self._strip_mention(content)
+
+        # Remember whether this message arrived inside a thread, so the reply
+        # can stay there instead of being flattened to the channel root.
+        thread_root = self._thread_root_from_tags(event)
+        if thread_root and event_id:
+            self._thread_of[str(event_id)] = thread_root
+            while len(self._thread_of) > _THREAD_CONTEXT_MAX:
+                self._thread_of.popitem(last=False)
 
         await self._dispatch_message(
             text=dispatch_text,

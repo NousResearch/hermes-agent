@@ -1,0 +1,73 @@
+# CodeQL security analysis for hermes-agent.
+#
+# Scope:
+#   - queries: security-extended, ADDED ON TOP OF CodeQL's default query
+#     suite (that's how `queries: security-extended` behaves — it augments
+#     the default suite, it does not replace it). We do NOT additionally
+#     enable security-and-quality because the "quality" set is FP-heavy on
+#     a single-maintainer Python codebase (e.g. it flags standard library
+#     trust-boundary patterns the project explicitly relies on) — that's
+#     the query-set boundary this workflow actually draws.
+#   - languages: python + javascript (the two source ecosystems on this
+#     side; TypeScript is bundled into the JS analysis per CodeQL docs).
+#     We do not analyze GitHub Actions workflows — actions are pinned
+#     to full commit SHAs, and supply-chain-audit.yml already covers
+#     that surface.
+#
+# Triggers:
+#   - push to main (PR-critical findings)
+#   - weekly cron on Monday 06:00 UTC (one slow scan per week, catches
+#     findings between push events without blocking every PR)
+#
+# Minutes cost (rough, depends on repo size):
+#   - per-push: ~3-6 min
+#   - weekly scheduled: ~3-6 min
+# Branch protections: the per-push block can be skipped on a docs-only
+# change via `[skip ci]` in the commit message.
+
+name: "CodeQL"
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v4
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@a2983b8bed1923f44751c5c43237f479442827b3  # v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@a2983b8bed1923f44751c5c43237f479442827b3  # v3
+        with:
+          category: "/language:${{ matrix.language }}"

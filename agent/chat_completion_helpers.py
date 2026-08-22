@@ -2620,6 +2620,18 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 # the same way determine_api_mode() and _detect_api_mode_for_url()
                 # do on the primary path. (#32243, #49247)
                 fb_api_mode = "anthropic_messages"
+            elif (
+                base_url_hostname(fb_base_url) == "api.kimi.com"
+                and "/coding" in fb_base_url.rstrip("/").lower()
+            ):
+                # Kimi Code's /coding endpoint only speaks the Anthropic
+                # Messages protocol — POST /coding/chat/completions returns
+                # HTTP 404 ("resource_not_found_error"). The primary path
+                # already maps this host via _detect_api_mode_for_url() in
+                # hermes_cli/runtime_provider.py; mirror it here so a
+                # kimi-coding entry in fallback_providers doesn't 404 on every
+                # call while the same provider works fine as a primary.
+                fb_api_mode = "anthropic_messages"
             elif _fb_is_azure:
                 # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
                 # support the Responses API. Stay on chat_completions.

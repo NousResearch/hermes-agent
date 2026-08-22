@@ -1476,7 +1476,7 @@ class MatrixAdapter(BasePlatformAdapter):
         return True
 
     async def _reset_crypto_store_if_device_changed(
-        self, crypto_store: Any, device_id: str
+        self, crypto_store: Any, crypto_db: Any, device_id: str
     ) -> bool:
         """Reset the local Olm account when the access token's device changed.
 
@@ -1504,6 +1504,16 @@ class MatrixAdapter(BasePlatformAdapter):
             device_id,
         )
         await crypto_store.delete()
+        # mautrix 0.21's PgCryptoStore.delete() removes the account, Olm
+        # sessions and outbound Megolm sessions, but leaves inbound Megolm
+        # sessions behind. Those rows are pickled with the old device-derived
+        # key and raise BAD_ACCOUNT_KEY after a device change, including while
+        # sending to an encrypted room. They belong to the old device and must
+        # be removed as part of the same reset.
+        await crypto_db.execute(
+            "DELETE FROM crypto_megolm_inbound_session WHERE account_id=$1",
+            crypto_store.account_id,
+        )
         return True
 
     async def _migrate_legacy_crypto_pickle(
@@ -1938,7 +1948,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
                     if client.device_id:
                         _store_was_reset = await self._reset_crypto_store_if_device_changed(
-                            crypto_store, client.device_id
+                            crypto_store, crypto_db, client.device_id
                         )
                         await crypto_store.put_device_id(client.device_id)
                     else:

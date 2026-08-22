@@ -227,6 +227,7 @@ def _make_fake_mautrix():
             db = MagicMock()
             db.start = AsyncMock()
             db.stop = AsyncMock()
+            db.execute = AsyncMock()
             return db
 
     mautrix_util_async_db.Database = Database
@@ -2944,18 +2945,27 @@ class TestMatrixDispatchSyncIsolation:
 
 class TestCryptoStoreResetOnDeviceChange:
     @pytest.mark.asyncio
-    async def test_reset_when_device_id_changed(self, caplog):
+    async def test_resets_store_when_device_changed(self, caplog):
         import logging
         adapter = _make_adapter()
         store = MagicMock()
+        store.account_id = "@bot:example.org"
         store.get_device_id = AsyncMock(return_value="OLDDEVICE")
         store.delete = AsyncMock()
+        crypto_db = MagicMock()
+        crypto_db.execute = AsyncMock()
 
         with caplog.at_level(logging.WARNING):
-            reset = await adapter._reset_crypto_store_if_device_changed(store, "NEWDEVICE")
+            reset = await adapter._reset_crypto_store_if_device_changed(
+                store, crypto_db, "NEWDEVICE"
+            )
 
         assert reset is True
         store.delete.assert_awaited_once()
+        crypto_db.execute.assert_awaited_once_with(
+            "DELETE FROM crypto_megolm_inbound_session WHERE account_id=$1",
+            "@bot:example.org",
+        )
         assert "OLDDEVICE" in caplog.text and "NEWDEVICE" in caplog.text
 
     @pytest.mark.asyncio
@@ -2964,9 +2974,14 @@ class TestCryptoStoreResetOnDeviceChange:
         store = MagicMock()
         store.get_device_id = AsyncMock(return_value="SAMEDEVICE")
         store.delete = AsyncMock()
+        crypto_db = MagicMock()
+        crypto_db.execute = AsyncMock()
 
-        assert await adapter._reset_crypto_store_if_device_changed(store, "SAMEDEVICE") is False
+        assert await adapter._reset_crypto_store_if_device_changed(
+            store, crypto_db, "SAMEDEVICE"
+        ) is False
         store.delete.assert_not_awaited()
+        crypto_db.execute.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_reset_on_fresh_store(self):
@@ -2974,9 +2989,14 @@ class TestCryptoStoreResetOnDeviceChange:
         store = MagicMock()
         store.get_device_id = AsyncMock(return_value=None)
         store.delete = AsyncMock()
+        crypto_db = MagicMock()
+        crypto_db.execute = AsyncMock()
 
-        assert await adapter._reset_crypto_store_if_device_changed(store, "NEWDEVICE") is False
+        assert await adapter._reset_crypto_store_if_device_changed(
+            store, crypto_db, "NEWDEVICE"
+        ) is False
         store.delete.assert_not_awaited()
+        crypto_db.execute.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_reset_without_device_id(self):
@@ -2984,9 +3004,14 @@ class TestCryptoStoreResetOnDeviceChange:
         store = MagicMock()
         store.get_device_id = AsyncMock(return_value="OLDDEVICE")
         store.delete = AsyncMock()
+        crypto_db = MagicMock()
+        crypto_db.execute = AsyncMock()
 
-        assert await adapter._reset_crypto_store_if_device_changed(store, "") is False
+        assert await adapter._reset_crypto_store_if_device_changed(
+            store, crypto_db, ""
+        ) is False
         store.delete.assert_not_awaited()
+        crypto_db.execute.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_connect_resets_store_when_token_device_differs_from_config(

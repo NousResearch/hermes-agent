@@ -238,7 +238,9 @@ jobs:
           node scripts/stage-snap.mjs
           # LXD container build: mesa-2404's install hook needs BPF mounts
           # unavailable on the runner VM itself, so destructive mode fails
-          snapcraft
+          # sg lxd: fresh group membership requires a new session; also
+          # give LXD time to finish first-time init
+          sg lxd -c "snapcraft"
 
       - name: Verify Snap
         run: |

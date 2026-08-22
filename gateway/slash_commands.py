@@ -145,8 +145,15 @@ class GatewaySlashCommandsMixin:
         """Handle /new or /reset command."""
         source = event.source
         
-        # Get existing session key
+        # Get existing session key and invalidate the resolved-session lease
+        # domain before releasing the holder. This catches blocked alias-key
+        # waiters whose routing-key generation is independent.
         session_key = self._session_key_for_source(source)
+        old_entry = self.session_store._entries.get(session_key)
+        self._invalidate_turn_lease_waiters(
+            session_key=session_key,
+            session_id=str(getattr(old_entry, "session_id", "") or ""),
+        )
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped. The
         # in-flight run's own guarded release (run_generation=old) will return
@@ -154,10 +161,6 @@ class GatewaySlashCommandsMixin:
         # from becoming a zombie that silently drops all later messages (#28686).
         # Idempotent, so the run's finally calling it again is harmless.
         self._release_running_agent_state(session_key)
-
-        # Snapshot the old entry so on_session_finalize can report the
-        # expiring session id before reset_session() rotates it.
-        old_entry = self.session_store._entries.get(session_key)
 
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.

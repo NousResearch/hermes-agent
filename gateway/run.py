@@ -18251,7 +18251,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
             # inside _run_agent returns False, and the old sentinel-only check here
             # missed the leftover real agent — locking the session out forever (#28686).
-            self._release_running_agent_state(_quick_key)
+            # A turn rejected as stale before transcript load is different: a
+            # newer generation may already own this routing-key slot, so its
+            # unwind must use the generation guard and preserve that successor.
+            if getattr(event, "_stale_turn_before_history", False):
+                self._release_running_agent_state(
+                    _quick_key,
+                    run_generation=_run_generation,
+                )
+            else:
+                self._release_running_agent_state(_quick_key)
             # Turn lease (#64934): release THIS turn's lease token — keyed by
             # (routing key, run generation) so this unwind can only ever free
             # the lease its own turn acquired, never a newer turn's.
@@ -19360,27 +19369,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # to prevent. Released in _handle_message's finally via
         # _release_turn_lease — granted per (routing key, run generation) so a
         # stale unwind can't release a newer turn's lease.
-        _lease_registry = getattr(self, "_turn_leases", None)
-        if _lease_registry is not None:
-            try:
-                _lease_token = await _lease_registry.acquire(
-                    session_entry.session_id,
-                    owner_key=_quick_key,
-                    generation=run_generation,
-                    timeout=_float_env(
-                        "HERMES_TURN_LEASE_TIMEOUT", DEFAULT_LEASE_WAIT
-                    ),
-                )
-            except TurnLeaseTimeoutError:
-                # The broad session-context cleanup finally starts later in this
-                # method. Restore the tokens here before propagating the rejection
-                # to outer dispatch, or this early exit leaks task-local identity.
-                self._clear_session_env(_session_env_tokens)
-                raise
-            if _lease_token is not None:
-                _lease_state = self._session_state(_quick_key).turn
-                _lease_state.lease_token = _lease_token
-                _lease_state.lease_generation = run_generation
+        try:
+            _lease_is_current = await self._acquire_turn_lease_for_run(
+                _quick_key,
+                session_entry.session_id,
+                run_generation,
+                timeout=_float_env(
+                    "HERMES_TURN_LEASE_TIMEOUT", DEFAULT_LEASE_WAIT
+                ),
+            )
+        except TurnLeaseTimeoutError:
+            # The broad session-context cleanup finally starts later in this
+            # method. Restore the tokens here before propagating the rejection
+            # to outer dispatch, or this early exit leaks task-local identity.
+            self._clear_session_env(_session_env_tokens)
+            raise
+        # /stop and /new invalidate both the routing-key generation and the
+        # resolved-session lease epoch before releasing the active slot. A turn
+        # waiting under an alias key can wake afterward; drop it before history.
+        if not _lease_is_current:
+            # /stop and /new invalidate the generation before releasing the
+            # active slot. A turn already waiting on the old holder can wake
+            # afterward; stop it before transcript load or compression. Mark
+            # this event so the outer finally preserves any newer owner. This
+            # early return also precedes the broad session-context cleanup.
+            setattr(event, "_stale_turn_before_history", True)
+            self._clear_session_env(_session_env_tokens)
+            return {"final_response": "", "api_calls": 0, "interrupted": True}
 
         # A turn only becomes durable recovery work after it owns (or has
         # explicitly degraded past) the per-session lease.  Marking before the
@@ -26635,6 +26650,66 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._persist_active_agents()
         return True
 
+    async def _acquire_turn_lease_for_run(
+        self,
+        session_key: str,
+        session_id: str,
+        run_generation: int,
+        *,
+        timeout: float,
+    ) -> bool:
+        """Acquire the resolved-session lease and reject stale waiters.
+
+        A waiter may claim its routing-key slot before /stop invalidates the
+        generation, then resume only after the interrupted turn releases the
+        lease. Re-checking after the await closes that stale-waiter race. The
+        token is registered first so the dispatch finally releases it normally.
+        """
+        registry = getattr(self, "_turn_leases", None)
+        token = None
+        if registry is not None:
+            token = await registry.acquire(
+                session_id,
+                owner_key=session_key,
+                generation=run_generation,
+                timeout=timeout,
+            )
+            if token is not None:
+                turn = self._session_state(session_key).turn
+                turn.lease_token = token
+                turn.lease_generation = run_generation
+
+        token_is_current = True
+        if registry is not None and token is not None:
+            token_is_current = registry.is_current(token)
+        if (
+            not token_is_current
+            or not self._is_session_run_current(session_key, run_generation)
+        ):
+            logger.info(
+                "Dropping stale turn before transcript load for %s — "
+                "generation %s or resolved-session epoch is no longer current",
+                session_key or "?",
+                run_generation,
+            )
+            return False
+        return True
+
+    def _invalidate_turn_lease_waiters(
+        self, session_key: str = "", session_id: str = ""
+    ) -> bool:
+        """Invalidate pre-existing waiters in one resolved-session lease domain."""
+        registry = getattr(self, "_turn_leases", None)
+        if registry is None:
+            return False
+        if not session_id and session_key:
+            state = self._peek_session_state(session_key)
+            token = state.turn.lease_token if state is not None else None
+            session_id = str(getattr(token, "session_id", "") or "")
+        if not session_id:
+            return False
+        return registry.invalidate(session_id)
+
     def _release_turn_lease(self, session_key: str, run_generation: int) -> bool:
         """Release the turn lease acquired by (``session_key``, ``run_generation``).
 
@@ -26854,6 +26929,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not session_key:
             return
         _iac_state = self._peek_session_state(session_key)
+        # Invalidate the resolved-session lease domain before releasing the
+        # holder. This rejects alias-key waiters that have independent routing-
+        # key generations but target the same durable transcript.
+        self._invalidate_turn_lease_waiters(session_key=session_key)
         running_agent = _iac_state.turn.agent if _iac_state else None
         _process_task_id = ""
         _process_baseline = None

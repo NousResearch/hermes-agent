@@ -102,23 +102,26 @@ class TurnLeaseToken:
     release idempotent.
     """
 
-    __slots__ = ("session_id", "owner_key", "generation", "released")
+    __slots__ = ("session_id", "owner_key", "generation", "epoch", "released")
 
     def __init__(
         self,
         session_id: str,
         owner_key: str,
         generation: int,
+        epoch: int,
     ) -> None:
         self.session_id = session_id
         self.owner_key = owner_key
         self.generation = generation
+        self.epoch = epoch
         self.released = False
 
     def __repr__(self) -> str:  # pragma: no cover - debug aid
         return (
             f"TurnLeaseToken(session_id={self.session_id!r}, "
             f"owner_key={self.owner_key!r}, generation={self.generation}, "
+            f"epoch={self.epoch}, "
             f"released={self.released})"
         )
 
@@ -130,6 +133,7 @@ class _SessionLease:
         "acquired_at",
         "last_used",
         "pending_acquires",
+        "epoch",
     )
 
     def __init__(self) -> None:
@@ -138,6 +142,7 @@ class _SessionLease:
         self.acquired_at = 0.0
         self.last_used = time.time()
         self.pending_acquires = 0
+        self.epoch = 0
 
     @property
     def idle(self) -> bool:
@@ -206,8 +211,12 @@ class SessionTurnLeaseRegistry:
         if not session_id:
             return None
         wait = float(timeout) if timeout and timeout > 0 else DEFAULT_LEASE_WAIT
-        token = TurnLeaseToken(session_id, owner_key, int(generation))
         lease = self._get_or_create(session_id)
+        # Snapshot before waiting: /stop or /new can invalidate the resolved
+        # session while this acquire is blocked behind an alias-key holder.
+        token = TurnLeaseToken(
+            session_id, owner_key, int(generation), epoch=lease.epoch
+        )
 
         if lease.lock.locked():
             holder = lease.holder
@@ -262,6 +271,22 @@ class SessionTurnLeaseRegistry:
         lease.acquired_at = time.time()
         lease.last_used = lease.acquired_at
         return token
+
+    def invalidate(self, session_id: str) -> bool:
+        """Invalidate acquires already waiting in this resolved-session domain."""
+        lease = self._leases.get(session_id)
+        if lease is None:
+            return False
+        lease.epoch += 1
+        lease.last_used = time.time()
+        return True
+
+    def is_current(self, token: Optional[TurnLeaseToken]) -> bool:
+        """Return whether ``token`` survived resolved-session invalidation."""
+        if token is None or token.released:
+            return False
+        lease = self._leases.get(token.session_id)
+        return lease is not None and token.epoch == lease.epoch
 
     def rebind(self, token: Optional[TurnLeaseToken], new_session_id: str) -> bool:
         """Alias a HELD lease onto ``new_session_id`` after mid-turn rotation.

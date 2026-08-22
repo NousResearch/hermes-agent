@@ -717,6 +717,246 @@ def test_concurrent_dispatch_respects_capacity():
     gate.set()
 
 
+def test_prune_retains_stalling_record_so_late_result_is_delivered(monkeypatch):
+    """Retention prune must not drop stalling records as if they were done.
+
+    If a stalling id is popped from _records, a late runner return hits
+    _begin_finalization's missing-record path and silently drops the result.
+    """
+    monkeypatch.setattr(ad, "_MAX_RETAINED_COMPLETED", 3)
+    gate = threading.Event()
+
+    def stall_runner():
+        gate.wait(timeout=30)
+        return {
+            "status": "completed",
+            "summary": "late",
+            "api_calls": 1,
+            "duration_seconds": 1,
+        }
+
+    stalled = ad.dispatch_async_delegation(
+        goal="stall", context=None, toolsets=None, role="leaf", model="m",
+        session_key="s1", runner=stall_runner, max_async_children=8,
+        progress_fn=lambda: (0, False),
+    )
+    assert stalled["status"] == "dispatched"
+    sid = stalled["delegation_id"]
+
+    with ad._records_lock:
+        rec = ad._records[sid]
+        rec["status"] = "stalling"
+        rec["_interrupted_at"] = time.time()
+
+    for i in range(4):
+        done = ad.dispatch_async_delegation(
+            goal=f"g{i}", context=None, toolsets=None, role="leaf",
+            model="m", session_key="s1",
+            runner=lambda idx=i: {
+                "status": "completed",
+                "summary": f"ok{idx}",
+                "api_calls": 1,
+                "duration_seconds": 0.01,
+            },
+            max_async_children=8,
+        )
+        assert done["status"] == "dispatched"
+        assert _drain_for(done["delegation_id"], timeout=5.0) is not None
+
+    with ad._records_lock:
+        assert sid in ad._records
+        assert ad._records[sid].get("status") == "stalling"
+
+    gate.set()
+    evt = _drain_for(sid, timeout=5.0)
+    assert evt is not None
+    assert evt["status"] == "completed"
+    assert evt["summary"] == "late"
+
+
+def test_persist_failure_still_finishes_and_enqueues(monkeypatch):
+    """Durable persist errors must not leave finalizing zombies or drop the queue event."""
+
+    def boom(_evt, _result):
+        raise RuntimeError("simulated sqlite failure")
+
+    monkeypatch.setattr(ad, "_persist_completion", boom)
+
+    res = ad.dispatch_async_delegation(
+        goal="g", context=None, toolsets=None, role="leaf", model="m",
+        session_key="s1",
+        runner=lambda: {
+            "status": "completed",
+            "summary": "ok",
+            "api_calls": 1,
+            "duration_seconds": 0.01,
+        },
+        max_async_children=3,
+    )
+    assert res["status"] == "dispatched"
+    did = res["delegation_id"]
+
+    evt = _drain_for(did, timeout=5.0)
+    assert evt is not None
+    assert evt["status"] == "completed"
+    assert evt["summary"] == "ok"
+
+    with ad._records_lock:
+        status = ad._records.get(did, {}).get("status")
+    assert status == "completed"
+    assert ad.active_count() == 0
+
+
+def _read_durable_row(delegation_id: str):
+    with ad._DB_LOCK, ad._transaction() as conn:
+        return conn.execute(
+            """SELECT state, event_json, result_json, delivery_state
+               FROM async_delegations WHERE delegation_id=?""",
+            (delegation_id,),
+        ).fetchone()
+
+
+def test_persist_failure_converges_durable_row_against_restart_unknown(monkeypatch):
+    """Primary persist failure must still write the terminal outcome before enqueue.
+
+    Without converge, the durable row stays ``running``; gateway ack only flips
+    ``delivery_state``, and ``recover_abandoned_delegations`` later invents a
+    contradictory ``unknown`` completion after restart.
+    """
+
+    def boom(_evt, _result):
+        raise RuntimeError("simulated sqlite failure")
+
+    monkeypatch.setattr(ad, "_persist_completion", boom)
+
+    res = ad.dispatch_async_delegation(
+        goal="g", context=None, toolsets=None, role="leaf", model="m",
+        session_key="s-restart",
+        parent_session_id="parent-1",
+        runner=lambda: {
+            "status": "completed",
+            "summary": "survived persist failure",
+            "api_calls": 2,
+            "duration_seconds": 0.02,
+        },
+        max_async_children=3,
+    )
+    assert res["status"] == "dispatched"
+    did = res["delegation_id"]
+
+    evt = _drain_for(did, timeout=5.0)
+    assert evt is not None
+    assert evt["status"] == "completed"
+    assert evt["summary"] == "survived persist failure"
+
+    row = _read_durable_row(did)
+    assert row is not None
+    state, event_json, result_json, delivery_state = row
+    assert state == "completed"
+    assert delivery_state == "pending"
+    durable_evt = json.loads(event_json)
+    assert durable_evt["status"] == "completed"
+    assert durable_evt["summary"] == "survived persist failure"
+    durable_result = json.loads(result_json)
+    assert durable_result["summary"] == "survived persist failure"
+
+    # Simulate owner process gone so recovery would rewrite any still-live row.
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: False)
+    recovered = ad.recover_abandoned_delegations()
+    assert recovered == 0
+
+    row_after = _read_durable_row(did)
+    assert row_after is not None
+    state2, event_json2, _, _ = row_after
+    assert state2 == "completed"
+    assert json.loads(event_json2)["summary"] == "survived persist failure"
+    assert json.loads(event_json2)["status"] == "completed"
+
+    # Fresh-process restore must replay the same terminal outcome, not unknown.
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+    restored = ad.restore_undelivered_completions(process_registry.completion_queue)
+    assert restored == 1
+    replay = _drain_for(did, timeout=2.0)
+    assert replay is not None
+    assert replay["status"] == "completed"
+    assert replay["summary"] == "survived persist failure"
+    assert replay.get("restored") is True
+
+
+def test_dual_durable_write_failure_delivers_and_shields_restart_unknown(monkeypatch):
+    """Persistent payload-write failure must still enqueue and not invent unknown.
+
+    When both ``_persist_completion`` and ``_write_durable_terminal`` raise,
+    in-memory delivery continues (strategy B) and a last-ditch shield must
+    clear the recoverable ``running``/``finalizing`` row so restart recovery
+    cannot contradict the delivered success with ``unknown``.
+    """
+
+    def boom(_evt, _result):
+        raise RuntimeError("simulated persistent sqlite failure")
+
+    monkeypatch.setattr(ad, "_persist_completion", boom)
+    monkeypatch.setattr(ad, "_write_durable_terminal", boom)
+
+    res = ad.dispatch_async_delegation(
+        goal="g", context=None, toolsets=None, role="leaf", model="m",
+        session_key="s-dual-fail",
+        parent_session_id="parent-dual",
+        runner=lambda: {
+            "status": "completed",
+            "summary": "delivered despite durable io failure",
+            "api_calls": 1,
+            "duration_seconds": 0.01,
+        },
+        max_async_children=3,
+    )
+    assert res["status"] == "dispatched"
+    did = res["delegation_id"]
+
+    evt = _drain_for(did, timeout=5.0)
+    assert evt is not None
+    assert evt["status"] == "completed"
+    assert evt["summary"] == "delivered despite durable io failure"
+
+    with ad._records_lock:
+        status = ad._records.get(did, {}).get("status")
+    assert status == "completed"
+    assert ad.active_count() == 0
+
+    row = _read_durable_row(did)
+    if row is not None:
+        state, event_json, _, delivery_state = row
+        assert state not in {"running", "finalizing"}
+        assert state != "unknown"
+        assert delivery_state == "pending"
+        # Minimal shield may leave payloads empty; never rewrite to unknown.
+        if event_json:
+            assert json.loads(event_json).get("status") != "unknown"
+
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: False)
+    recovered = ad.recover_abandoned_delegations()
+    assert recovered == 0
+
+    row_after = _read_durable_row(did)
+    if row_after is not None:
+        state2, event_json2, _, _ = row_after
+        assert state2 != "unknown"
+        assert state2 not in {"running", "finalizing"}
+        if event_json2:
+            assert json.loads(event_json2).get("status") != "unknown"
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+    restored = ad.restore_undelivered_completions(process_registry.completion_queue)
+    # Shielded minimal mark has no event_json -> not restored; delete -> not restored.
+    # Either way, never a contradictory unknown completion.
+    for _ in range(restored):
+        replay = process_registry.completion_queue.get_nowait()
+        assert replay.get("status") != "unknown"
+        assert replay.get("delegation_id") != did or replay.get("status") == "completed"
+
+
 # ---------------------------------------------------------------------------
 # Gateway routing: session_key -> platform/chat_id, rich formatting, injection
 # ---------------------------------------------------------------------------

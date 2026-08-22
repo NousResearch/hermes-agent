@@ -76,6 +76,9 @@ _records: Dict[str, Dict[str, Any]] = {}
 _DEFAULT_MAX_ASYNC_CHILDREN = 3
 # How many completed records to retain for status queries before pruning.
 _MAX_RETAINED_COMPLETED = 50
+# In-memory statuses that are still live work (must not be retention-pruned).
+# Matches active_count(); stalling is in-memory-only until force/normal finalize.
+_ACTIVE_RECORD_STATUSES = frozenset({"running", "stalling", "finalizing"})
 _DURABLE_RETENTION_SECONDS = 7 * 24 * 60 * 60
 _MAX_DURABLE_PENDING = 1000
 # A pending completion whose delivery keeps failing is retried across claim
@@ -312,7 +315,15 @@ def _prune_durable_records() -> None:
             )
 
 
-def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
+def _write_durable_terminal(event: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Write the terminal outcome onto the durable row (state + payloads).
+
+    Shared by the primary persist path and the persist-failure converge
+    fallback so both leave the same ``state`` / ``event_json`` /
+    ``result_json``. Leaving the row in ``running``/``finalizing`` after an
+    in-process delivery lets ``recover_abandoned_delegations`` invent a
+    contradictory ``unknown`` completion on the next process start.
+    """
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
@@ -322,6 +333,91 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
             (event.get("status", "completed"), event.get("completed_at", now), now,
              json.dumps(event), json.dumps(result), event["delegation_id"]),
         )
+
+
+def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Primary durable completion write (monkeypatch seam for tests)."""
+    _write_durable_terminal(event, result)
+
+
+def _shield_unconverged_durable_row(event: Dict[str, Any]) -> bool:
+    """Keep restart recovery from inventing ``unknown`` after payload writes fail.
+
+    In-memory queue delivery still proceeds (strategy B). Full
+    ``event_json`` / ``result_json`` writes already failed, so this last
+    ditch either marks the row terminal with a minimal UPDATE (no payload
+    dependency on ``_write_durable_terminal``) or deletes it. Either way
+    ``recover_abandoned_delegations`` no longer selects a live
+    ``running``/``finalizing`` row and cannot contradict the delivered result.
+    """
+    delegation_id = event.get("delegation_id")
+    if not delegation_id:
+        return False
+    status = event.get("status", "completed")
+    now = time.time()
+    completed_at = event.get("completed_at", now)
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            conn.execute(
+                """UPDATE async_delegations
+                   SET state=?, completed_at=?, updated_at=?, delivery_state='pending'
+                   WHERE delegation_id=? AND state IN ('running', 'finalizing')""",
+                (status, completed_at, now, delegation_id),
+            )
+        return True
+    except Exception as exc:
+        logger.error(
+            "Async delegation %s: minimal terminal shield failed; "
+            "deleting durable row before in-memory delivery: %s",
+            delegation_id, exc,
+        )
+    try:
+        _delete_durable_delegation(delegation_id)
+        return True
+    except Exception as exc:
+        logger.error(
+            "Async delegation %s: durable restart shield failed; "
+            "in-memory delivery may diverge from state.db on restart: %s",
+            delegation_id, exc,
+        )
+        return False
+
+
+def _converge_durable_completion(event: Dict[str, Any], result: Dict[str, Any]) -> bool:
+    """Ensure state.db will not contradict the in-process terminal outcome.
+
+    Returns True when the durable row carries the same terminal status and
+    payloads. On primary-persist failure, retries via ``_write_durable_terminal``.
+    If both payload writes fail, still shields the row (minimal terminal mark
+    or delete) so in-memory delivery remains restart-safe, then returns False
+    to signal payloads were not fully converged.
+    """
+    delegation_id = event.get("delegation_id")
+    try:
+        _persist_completion(event, result)
+        return True
+    except Exception as exc:
+        logger.error(
+            "Async delegation %s: durable completion persist failed; "
+            "retrying terminal converge: %s",
+            delegation_id, exc,
+        )
+    try:
+        _write_durable_terminal(event, result)
+        return True
+    except Exception as exc:
+        logger.error(
+            "Async delegation %s: durable terminal converge failed; "
+            "shielding restart recovery before in-memory delivery: %s",
+            delegation_id, exc,
+        )
+    if not _shield_unconverged_durable_row(event):
+        logger.error(
+            "Async delegation %s: durable shield failed; "
+            "in-memory delivery may diverge from state.db",
+            delegation_id,
+        )
+    return False
 
 
 def _note_delivery_attempt(delegation_id: str) -> None:
@@ -620,7 +716,7 @@ def active_count() -> int:
     with _records_lock:
         return sum(
             1 for r in _records.values()
-            if r.get("status") in {"running", "stalling", "finalizing"}
+            if r.get("status") in _ACTIVE_RECORD_STATUSES
         )
 
 
@@ -707,12 +803,13 @@ def _new_delegation_id() -> str:
 def _prune_completed_locked() -> None:
     """Drop the oldest completed records beyond the retention cap.
 
-    Caller must hold ``_records_lock``.
+    Caller must hold ``_records_lock``. Only terminal statuses are eligible —
+    stalling/finalizing are still live and must survive until they finish.
     """
     completed = [
         (rid, r)
         for rid, r in _records.items()
-        if r.get("status") != "running"
+        if r.get("status") not in _ACTIVE_RECORD_STATUSES
     ]
     if len(completed) <= _MAX_RETAINED_COMPLETED:
         return
@@ -904,8 +1001,12 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
         return
     event_record, _interrupt_fn = claimed
 
-    _push_completion_event(event_record, result, status)
-    _finish_finalization(delegation_id, status)
+    try:
+        _push_completion_event(event_record, result, status)
+    finally:
+        # Persist/enqueue failures must not leave the record stuck in
+        # finalizing (capacity/active_count zombies until process exit).
+        _finish_finalization(delegation_id, status)
 
 
 def _begin_finalization(
@@ -1001,7 +1102,16 @@ def _push_completion_event(
     ):
         if _k in result:
             evt[_k] = result[_k]
-    _persist_completion(evt, result)
+    # Converge durable state first (including persist-failure fallback +
+    # last-ditch restart shield) so a later gateway ack / process restart
+    # cannot invent a contradictory ``unknown`` over a still-``running`` row
+    # after this in-memory delivery. Payload converge failure still enqueues.
+    if not _converge_durable_completion(evt, result):
+        logger.error(
+            "Async delegation %s: continuing with in-memory delivery after "
+            "durable terminal converge failure (restart shield attempted)",
+            record.get("delegation_id"),
+        )
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -1154,8 +1264,10 @@ def _finalize_batch(
         return
     event_record, _interrupt_fn = claimed
 
-    _push_batch_completion_event(event_record, combined, status)
-    _finish_finalization(delegation_id, status)
+    try:
+        _push_batch_completion_event(event_record, combined, status)
+    finally:
+        _finish_finalization(delegation_id, status)
 
 
 def _push_batch_completion_event(
@@ -1215,7 +1327,12 @@ def _push_batch_completion_event(
     ):
         if _k in combined:
             evt[_k] = combined[_k]
-    _persist_completion(evt, combined)
+    if not _converge_durable_completion(evt, combined):
+        logger.error(
+            "Async delegation batch %s: continuing with in-memory delivery "
+            "after durable terminal converge failure (restart shield attempted)",
+            event_record.get("delegation_id"),
+        )
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -1380,32 +1497,34 @@ def _finalize_stalled(delegation_id: str) -> None:
         ),
         "stall_grace_seconds": _STALL_GRACE_SECONDS,
     }
-    if event_record.get("is_batch"):
-        _push_batch_completion_event(
-            event_record,
-            {
-                "results": [],
-                "error": error,
-                "total_duration_seconds": duration,
-                **stall_meta,
-            },
-            "stalled",
-        )
-    else:
-        _push_completion_event(
-            event_record,
-            {
-                "status": "stalled",
-                "summary": None,
-                "error": error,
-                "api_calls": 0,
-                "duration_seconds": duration,
-                "exit_reason": "stalled",
-                **stall_meta,
-            },
-            "stalled",
-        )
-    _finish_finalization(delegation_id, "stalled")
+    try:
+        if event_record.get("is_batch"):
+            _push_batch_completion_event(
+                event_record,
+                {
+                    "results": [],
+                    "error": error,
+                    "total_duration_seconds": duration,
+                    **stall_meta,
+                },
+                "stalled",
+            )
+        else:
+            _push_completion_event(
+                event_record,
+                {
+                    "status": "stalled",
+                    "summary": None,
+                    "error": error,
+                    "api_calls": 0,
+                    "duration_seconds": duration,
+                    "exit_reason": "stalled",
+                    **stall_meta,
+                },
+                "stalled",
+            )
+    finally:
+        _finish_finalization(delegation_id, "stalled")
 
 
 def _children_activity_from_token(token: Any, now: float) -> Optional[List]:

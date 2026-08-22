@@ -500,6 +500,11 @@ def _strip_mdv2(text: str) -> str:
     """
     # Remove escape backslashes before special characters
     cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
+    # Remove blockquote / expandable blockquote markers (> or **> at line start)
+    # before bold conversion so that **> is not eaten by **bold** regex.
+    cleaned = re.sub(r'(?m)^(?:\*\*)?>{1,3}\s?', '', cleaned)
+    # Remove standalone trailing || from expandable blockquote closer
+    cleaned = re.sub(r'(?m)\|\|$', '', cleaned)
     # Remove standard markdown bold (**text** → text) BEFORE MarkdownV2 bold
     cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
     # Remove MarkdownV2 bold markers that format_message converted from **bold**
@@ -8476,37 +8481,7 @@ class TelegramAdapter(BasePlatformAdapter):
             r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE
         )
 
-        # 5) Convert bold: **text** → *text* (MarkdownV2 bold)
-        text = re.sub(
-            r'\*\*(.+?)\*\*',
-            lambda m: _ph(f'*{_escape_mdv2(m.group(1))}*'),
-            text,
-        )
-
-        # 6) Convert italic: *text* (single asterisk) → _text_ (MarkdownV2 italic)
-        #    [^*\n]+ prevents matching across newlines (which would corrupt
-        #    bullet lists using * markers and multi-line content).
-        text = re.sub(
-            r'\*([^*\n]+)\*',
-            lambda m: _ph(f'_{_escape_mdv2(m.group(1))}_'),
-            text,
-        )
-
-        # 7) Convert strikethrough: ~~text~~ → ~text~ (MarkdownV2)
-        text = re.sub(
-            r'~~(.+?)~~',
-            lambda m: _ph(f'~{_escape_mdv2(m.group(1))}~'),
-            text,
-        )
-
-        # 8) Convert spoiler: ||text|| → ||text|| (protect from | escaping)
-        text = re.sub(
-            r'\|\|(.+?)\|\|',
-            lambda m: _ph(f'||{_escape_mdv2(m.group(1))}||'),
-            text,
-        )
-
-        # 9) Convert blockquotes: > at line start → protect > from escaping
+        # 5) Convert blockquotes: > at line start → protect > and **> from escaping & bold conversion
         #    Handle both regular blockquotes (> text) and expandable blockquotes
         #    (Telegram MarkdownV2: **> for expandable start, || to end the quote)
         def _convert_blockquote(m):
@@ -8515,14 +8490,44 @@ class TelegramAdapter(BasePlatformAdapter):
             # Check if content ends with || (expandable blockquote end marker)
             # In this case, preserve the trailing || unescaped for Telegram
             if prefix.startswith('**') and content.endswith('||'):
-                return _ph(f'{prefix} {_escape_mdv2(content[:-2])}||')
-            return _ph(f'{prefix} {_escape_mdv2(content)}')
+                return f"{_ph(prefix)} {content[:-2]}{_ph('||')}"
+            return f"{_ph(prefix)} {content}"
 
         text = re.sub(
             r'^((?:\*\*)?>{1,3}) (.+)$',
             _convert_blockquote,
             text,
             flags=re.MULTILINE,
+        )
+
+        # 6) Convert bold: **text** → *text* (MarkdownV2 bold)
+        text = re.sub(
+            r'\*\*(.+?)\*\*',
+            lambda m: _ph(f'*{_escape_mdv2(m.group(1))}*'),
+            text,
+        )
+
+        # 7) Convert italic: *text* (single asterisk) → _text_ (MarkdownV2 italic)
+        #    [^*\n]+ prevents matching across newlines (which would corrupt
+        #    bullet lists using * markers and multi-line content).
+        text = re.sub(
+            r'\*([^*\n]+)\*',
+            lambda m: _ph(f'_{_escape_mdv2(m.group(1))}_'),
+            text,
+        )
+
+        # 8) Convert strikethrough: ~~text~~ → ~text~ (MarkdownV2)
+        text = re.sub(
+            r'~~(.+?)~~',
+            lambda m: _ph(f'~{_escape_mdv2(m.group(1))}~'),
+            text,
+        )
+
+        # 9) Convert spoiler: ||text|| → ||text|| (protect from | escaping)
+        text = re.sub(
+            r'\|\|(.+?)\|\|',
+            lambda m: _ph(f'||{_escape_mdv2(m.group(1))}||'),
+            text,
         )
 
         # 10) Escape remaining special characters in plain text

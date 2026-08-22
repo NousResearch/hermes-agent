@@ -288,6 +288,15 @@ class TestFormatMessageBlockquote:
         assert "\\|" in result
         assert "\\>" not in result
 
+    def test_expandable_blockquote_with_nested_bold_at_start(self, adapter):
+        """Regression for #90773: **> expandable blockquote with nested **bold**."""
+        text = "**> **Action Plan for Health** 1. **Health Shag Area Skill** - do the thing||"
+        result = adapter.format_message(text)
+        assert result.startswith("**>")
+        assert result.endswith("||")
+        assert "*Action Plan for Health*" in result
+        assert "*Health Shag Area Skill*" in result
+
 
 # =========================================================================
 # format_message - mixed/complex
@@ -334,6 +343,12 @@ class TestStripMdv2:
 
     def test_plain_text_unchanged(self):
         assert _strip_mdv2("plain text") == "plain text"
+
+    def test_strips_blockquote_and_expandable_markers(self):
+        """Regression for #90773: _strip_mdv2 removes > and **> prefixes and trailing ||."""
+        assert _strip_mdv2("> standard blockquote") == "standard blockquote"
+        assert _strip_mdv2("**> expandable blockquote||") == "expandable blockquote"
+        assert _strip_mdv2("**> **Bold Title** content||") == "Bold Title content"
 
 
 # =========================================================================

@@ -1056,6 +1056,7 @@ class BuzzAdapter(BasePlatformAdapter):
             user_name=await self._resolve_user_name(pubkey),
             message_id=event_id,
             created_at=created_at,
+            thread_id=self._thread_id_from_event(event),
         )
 
     # ── DM classification (issue #68871) ──────────────────────────────────
@@ -1204,6 +1205,41 @@ class BuzzAdapter(BasePlatformAdapter):
         while len(seen) > _SEEN_CAP:
             seen.popitem(last=False)
 
+    @staticmethod
+    def _thread_id_from_event(event: dict) -> Optional[str]:
+        """Extract the Buzz thread root id from a message's ``e`` tags.
+
+        Buzz threads are keyed by their ROOT event id (``buzz messages
+        thread --event <root>``). A message inside a thread carries
+        ``["e", <root>, "", "root"]`` (thread root) plus optionally
+        ``["e", <parent>, "", "reply"]`` (immediate parent). A direct reply
+        to a top-level message carries only the ``reply`` tag, whose target
+        IS the root. Top-level messages carry no ``e`` tags at all. Some
+        relays/clients emit the older 3-element form ``["e", <id>, "root"]``
+        (marker in position 2, no relay URL) — both shapes are accepted.
+
+        Returning the ROOT (not the parent) keeps every message in one
+        thread on the same session key — the reply-only fallback covers the
+        depth-2 case where root == parent. Without this, all threads in a
+        channel collapse into ONE session key (thread_id is None) and the
+        gateway's busy interrupt/queue machinery crosses events between
+        threads (reply A lands in thread B and vice versa).
+        """
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return None
+        root_id = None
+        reply_id = None
+        for tag in tags:
+            if not isinstance(tag, (list, tuple)) or len(tag) < 2 or tag[0] != "e":
+                continue
+            marker = str(tag[3]) if len(tag) > 3 else (str(tag[2]) if len(tag) > 2 else "")
+            if marker == "root" and not root_id:
+                root_id = str(tag[1])
+            elif marker == "reply" and not reply_id:
+                reply_id = str(tag[1])
+        return root_id or reply_id
+
     def _mark_seen(self, channel_id: str, event_id: str) -> None:
         state = self._channel_state.get(channel_id)
         if state is not None:
@@ -1219,6 +1255,7 @@ class BuzzAdapter(BasePlatformAdapter):
         user_name: str,
         message_id: str,
         created_at: int,
+        thread_id: Optional[str] = None,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
@@ -1230,6 +1267,7 @@ class BuzzAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
+            thread_id=thread_id,
         )
 
         event = MessageEvent(

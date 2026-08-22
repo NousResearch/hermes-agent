@@ -1,5 +1,5 @@
 import path from 'path';
-import { mkdirSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';
 
 export const MIME_MAP = {
@@ -594,18 +594,65 @@ export function createReconnectScheduler(startFn, {
   return scheduleReconnect;
 }
 
+// A WhatsApp Web version is a short tuple of integers ([2, 3000, 1023223821]).
+// Anything else on disk is treated as absent rather than trusted.
+function isValidWAVersion(value) {
+  return Array.isArray(value)
+    && value.length >= 2
+    && value.length <= 4
+    && value.every(part => Number.isInteger(part));
+}
+
 /**
  * Version resolution guard. fetchLatestBaileysVersion() is a plain fetch to
  * raw.githubusercontent.com with no AbortSignal; a stalled connection can
  * pend forever and wedge the reconnect path (the scheduler above cannot
  * retry past an await that never settles). Bound the fetch and fall back to
  * the last known-good version, or the Baileys default before first success.
+ *
+ * The in-memory fallback dies with the process, which is exactly when it is
+ * needed most: during the GitHub outage of 2026-08-17 the fetch timed out,
+ * the resolver handed back the Baileys library default, and WhatsApp refused
+ * the handshake with stream error 405 on an endless reconnect loop. A bridge
+ * restart in that window had no memory of the version it had been happily
+ * connected with minutes earlier. `cacheFile` persists the last successfully
+ * fetched version so a cold start still has a known-good tier to fall back
+ * to while the version endpoint is unreachable.
  */
 export function createVersionResolver(fetchVersionFn, {
   timeoutMs = 15000,
   log = console.log,
+  cacheFile = null,
 } = {}) {
   let cachedVersion = null;
+  let warnedWriteFailure = false;
+
+  function persistVersion(version) {
+    if (!cacheFile) return;
+    try {
+      mkdirSync(path.dirname(cacheFile), { recursive: true });
+      writeFileSync(cacheFile, JSON.stringify({
+        version,
+        fetched_at: new Date().toISOString(),
+      }));
+    } catch (err) {
+      if (!warnedWriteFailure) {
+        warnedWriteFailure = true;
+        log(`⚠️  Could not persist the WhatsApp version cache to ${cacheFile} (${err?.message || err}); continuing without it.`);
+      }
+    }
+  }
+
+  function readPersistedVersion() {
+    if (!cacheFile) return null;
+    try {
+      const parsed = JSON.parse(readFileSync(cacheFile, 'utf8'));
+      return isValidWAVersion(parsed?.version) ? parsed.version : null;
+    } catch {
+      return null;
+    }
+  }
+
   return async function resolveVersion() {
     let timer = null;
     try {
@@ -616,8 +663,19 @@ export function createVersionResolver(fetchVersionFn, {
         }),
       ]);
       cachedVersion = version;
+      persistVersion(version);
     } catch (err) {
-      log(`⚠️  Baileys version fetch failed (${err?.message || err}); using ${cachedVersion ? 'cached version' : 'library default'}.`);
+      let tier = 'library default';
+      if (cachedVersion) {
+        tier = 'cached version';
+      } else {
+        const persisted = readPersistedVersion();
+        if (persisted) {
+          cachedVersion = persisted;
+          tier = `last known-good version from disk (${persisted.join('.')})`;
+        }
+      }
+      log(`⚠️  Baileys version fetch failed (${err?.message || err}); using ${tier}.`);
     } finally {
       if (timer) clearTimeout(timer);
     }

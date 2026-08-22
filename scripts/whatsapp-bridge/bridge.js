@@ -396,7 +396,9 @@ function emitPairEvent(event) {
 }
 
 const scheduleReconnect = createReconnectScheduler(() => startSocket());
-const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
+const getWAVersion = createVersionResolver(fetchLatestBaileysVersion, {
+  cacheFile: path.join(SESSION_DIR, 'wa-version-cache.json'),
+});
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);

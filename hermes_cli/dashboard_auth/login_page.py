@@ -40,34 +40,37 @@ _LOGIN_HTML_TEMPLATE = """\
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in — Hermes Agent</title>
 <style>
-  /* Brand fonts shipped by @nous-research/ui — same files the SPA loads. */
+  /* Brand fonts shipped by @nous-research/ui — same files the SPA loads.
+     ``{base_prefix}`` = the reverse-proxy path prefix (empty at root),
+     spliced by ``render_login_html`` so the page also loads its fonts
+     from the proxy-served dashboard under a sub-path mount. */
   @font-face {{
     font-family: 'Collapse';
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/Collapse-Regular.woff2') format('woff2');
+    src: url('{base_prefix}/fonts/Collapse-Regular.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Collapse';
     font-style: normal;
     font-weight: 700;
     font-display: swap;
-    src: url('/fonts/Collapse-Bold.woff2') format('woff2');
+    src: url('{base_prefix}/fonts/Collapse-Bold.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Rules Compressed';
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/RulesCompressed-Regular.woff2') format('woff2');
+    src: url('{base_prefix}/fonts/RulesCompressed-Regular.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Rules Compressed';
     font-style: normal;
     font-weight: 600;
     font-display: swap;
-    src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
+    src: url('{base_prefix}/fonts/RulesCompressed-Medium.woff2') format('woff2');
   }}
 
   :root {{
@@ -402,13 +405,20 @@ auth gate (not recommended on untrusted networks).</p>
 
 
 # Inline script that wires every password provider form to POST JSON to
-# ``/auth/password-login`` and navigate on success. Emitted ONLY when at
-# least one ``supports_password`` provider is listed (OAuth-only login
-# pages stay script-free, preserving the no-JS contract for that case).
+# ``{prefix}/auth/password-login`` and navigate on success. Emitted ONLY
+# when at least one ``supports_password`` provider is listed (OAuth-only
+# login pages stay script-free, preserving the no-JS contract for that case).
 #
 # Plain string (NOT run through ``str.format``), so braces are literal —
 # do not double them. A single delegated submit handler covers all forms;
 # the provider name is read from the form's ``data-provider`` attribute.
+#
+# Reverse-proxy prefix: the two root-absolute URLs are spliced with the
+# proxy prefix in ``render_login_html`` (``_js_safe_prefix``). Behind a
+# ``/hermes`` mount the raw ``/auth/password-login`` would resolve against
+# the *proxy* origin and silently fail — the classic "login works on
+# Firefox, not Chrome" bug, since the two browsers may serve the login
+# page from different cache/cookie states.
 _PASSWORD_FORM_SCRIPT = """\
 <script>
 (function () {
@@ -425,7 +435,7 @@ _PASSWORD_FORM_SCRIPT = """\
         password: (form.querySelector('input[name=password]') || {}).value || '',
         next: (form.querySelector('input[name=next]') || {}).value || ''
       };
-      fetch('/auth/password-login', {
+      fetch('__HERMES_PREFIX__/auth/password-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -433,7 +443,13 @@ _PASSWORD_FORM_SCRIPT = """\
       }).then(function (resp) {
         if (resp.ok) {
           return resp.json().then(function (data) {
-            window.location.assign((data && data.next) || '/');
+            // ``data.next`` is a dashboard-relative path — the backend
+            // returns it unprefixed — so re-prefix it here; a native-app
+            // loopback (absolute ``http://127.0.0.1:…``) is left alone.
+            var next = (data && data.next) || '/';
+            window.location.assign(
+              next.charAt(0) === '/' ? '__HERMES_PREFIX__' + next : next
+            );
           });
         }
         var msg = resp.status === 429
@@ -455,7 +471,19 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
-def render_login_html(*, next_path: str = "") -> str:
+def _js_safe_prefix(prefix: str) -> str:
+    """Escape a normalised prefix for embedding in a JS single-quoted
+    string literal.
+
+    ``normalise_prefix`` already rejects quotes, angle brackets,
+    whitespace, ``..`` and non-printable bytes, so this is defence in
+    depth against a future loosening of the normaliser — never trust a
+    header value near a code sink without a second check.
+    """
+    return prefix.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
     ``next_path`` — when set, the post-login landing path the user
@@ -464,7 +492,20 @@ def render_login_html(*, next_path: str = "") -> str:
     end-to-end. The caller (``routes.login_page``) is responsible for
     validating ``next_path`` against the same-origin rules before we
     emit it; we still HTML-escape it as defence in depth.
+
+    ``prefix`` — the reverse-proxy path prefix (normalised, e.g.
+    ``/hermes`` or ``""`` at root). The page is served *through* the
+    proxy, so every URL it emits must be prefixed too: the password
+    form's fetch target, the post-login navigation, the OAuth button
+    hrefs, and the font ``@font-face`` URLs. A root-absolute
+    ``/auth/password-login`` under a ``/hermes`` mount resolves
+    against the *proxy* origin (a dead 200) instead of the dashboard,
+    which is why phone logins can fail on a sub-path deployment while
+    a root deployment works.
     """
+    from hermes_cli.dashboard_auth.prefix import normalise_prefix
+
+    prefix = normalise_prefix(prefix)
     providers = list_session_providers()
     if not providers:
         return _EMPTY_HTML
@@ -488,13 +529,22 @@ def render_login_html(*, next_path: str = "") -> str:
         else:
             buttons.append(
                 f'      <a class="provider-btn" '
-                f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
+                f'href="{prefix}/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
                 f'Sign in with {html.escape(p.display_name)}</a>'
             )
-    script = _PASSWORD_FORM_SCRIPT if needs_password_script else ""
+    # Splice the proxy prefix into the script's two root-absolute URLs.
+    # The script is a plain (non-format) string, so a simple replace is
+    # safe; the value is JS-escaped as defence in depth.
+    js_prefix = _js_safe_prefix(prefix)
+    script = (
+        _PASSWORD_FORM_SCRIPT.replace("__HERMES_PREFIX__", js_prefix)
+        if needs_password_script
+        else ""
+    )
     return _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
         password_script=script,
+        base_prefix=prefix,
     )
 
 

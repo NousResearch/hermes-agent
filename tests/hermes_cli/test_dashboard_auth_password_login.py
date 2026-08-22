@@ -373,3 +373,112 @@ class TestLoginPageRender:
         finally:
             clear_providers()
 
+
+# ---------------------------------------------------------------------------
+# Reverse-proxy prefix (X-Forwarded-Prefix) contract
+# ---------------------------------------------------------------------------
+
+
+class TestProxiedPasswordLogin:
+    """The password-login JSON ``next`` stays dashboard-relative
+    (unprefixed) behind a proxy: the login page's inline script is the
+    one responsible for re-prefixing it client-side. The wire contract
+    is pinned here so a future "helpful" server-side prefixing of
+    ``next`` (which would double-prefix after the client re-prefixes)
+    fails loudly, and so direct deploys stay byte-identical.
+    """
+
+    def _login(self, client, *, next_path, proxied=False):
+        headers = {"X-Forwarded-Prefix": "/hermes"} if proxied else {}
+        return client.post(
+            "/auth/password-login",
+            json={
+                "provider": "testpw",
+                "username": "admin",
+                "password": "hunter2",
+                "next": next_path,
+            },
+            headers=headers,
+        )
+
+    def test_proxied_empty_next_stays_root_unprefixed(self, gated_app):
+        # Behind /hermes the JSON next must remain "/" — NOT "/hermes/" —
+        # because the login page's script prepends the prefix client-side.
+        resp = self._login(gated_app, next_path="", proxied=True)
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "next": "/"}
+
+    def test_proxied_next_sessions_stays_relative_unprefixed(self, gated_app):
+        # The proxied header must NOT make the backend prefix the JSON
+        # next — re-prefixing is the client's job. A future server-side
+        # prefixing would double-prefix and fail here.
+        resp = self._login(
+            gated_app,
+            next_path="/sessions",
+            proxied=True,
+        )
+        assert resp.status_code == 200
+        # Unprefixed: the client-side script turns this into /hermes/sessions.
+        assert resp.json() == {"ok": True, "next": "/sessions"}
+
+    def test_direct_deploy_invariant_matches(self, gated_app):
+        # No X-Forwarded-Prefix header at all (direct deploy): the
+        # responses are identical to the proxied ones — prefixing is a
+        # client-side concern, so the wire contract does not change.
+        no_next = self._login(gated_app, next_path="")
+        sessions = self._login(gated_app, next_path="/sessions")
+        assert no_next.json() == {"ok": True, "next": "/"}
+        assert sessions.json() == {"ok": True, "next": "/sessions"}
+
+    def test_proxied_login_page_splices_prefix_into_fetch_and_fonts(
+        self, gated_app
+    ):
+        # The served /login page (behind /hermes) must point its fetch
+        # and its @font-face urls at the prefixed dashboard, not the
+        # proxy origin.
+        resp = gated_app.get(
+            "/login", headers={"X-Forwarded-Prefix": "/hermes"}
+        )
+        assert resp.status_code == 200
+        html = resp.text
+        # The password form's fetch target is spliced with the prefix.
+        assert "fetch('/hermes/auth/password-login'" in html
+        # The raw placeholder must not survive splicing.
+        assert "__HERMES_PREFIX__" not in html
+        # Font @font-face urls are prefixed too.
+        assert "url('/hermes/fonts/Collapse-Regular.woff2')" in html
+        assert "url('/hermes/fonts/RulesCompressed-Regular.woff2')" in html
+        # Root-absolute (unprefixed) forms of these must be gone.
+        assert "url('/fonts/" not in html
+
+    def test_direct_deploy_login_page_is_unprefixed(self, gated_app):
+        # No prefix header → the page is byte-identical to the root
+        # deploy (no accidental "/hermes" leakage, no leftover
+        # placeholder).
+        resp = gated_app.get("/login")
+        assert resp.status_code == 200
+        html = resp.text
+        assert "fetch('/auth/password-login'" in html
+        assert "url('/fonts/Collapse-Regular.woff2')" in html
+        assert "__HERMES_PREFIX__" not in html
+
+
+class TestProxiedLoginPagePrefixEscaping:
+    """Defence-in-depth: the prefix is normalised AND JS-escaped before
+    it is embedded in a single-quoted JS string literal. The normaliser
+    already rejects quotes, so this pins the second line — a future
+    loosening of ``normalise_prefix`` cannot become a JS injection.
+    """
+
+    def test_js_safe_prefix_escapes_quotes_and_backslash(self):
+        from hermes_cli.dashboard_auth.login_page import _js_safe_prefix
+
+        assert _js_safe_prefix("/hermes") == "/hermes"
+        # A quote (if it ever survived the normaliser) is escaped so it
+        # cannot terminate the JS string literal.
+        assert _js_safe_prefix("/a'b") == "/a\\'b"
+        # A backslash is doubled.
+        assert _js_safe_prefix("/a\\b") == "/a\\\\b"
+        # Combined.
+        assert _js_safe_prefix("/a\\'b") == "/a\\\\\\'b"
+

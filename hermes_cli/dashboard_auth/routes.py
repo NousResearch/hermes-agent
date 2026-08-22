@@ -139,7 +139,7 @@ async def login_page(request: Request) -> HTMLResponse:
         request.query_params.get("next", "")
     )
     return HTMLResponse(
-        render_login_html(next_path=next_path),
+        render_login_html(next_path=next_path, prefix=_prefix(request)),
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
 
@@ -588,6 +588,14 @@ async def auth_callback(
     # that lets attacker-controlled bytes into the cookie would otherwise
     # produce an open redirect.
     landing = _validate_post_login_target(next_from_cookie) or "/"
+    # ``landing`` is a dashboard-relative same-origin path; the redirect is
+    # followed by the *browser* (not a fetch), so it must carry the
+    # reverse-proxy prefix — a root-absolute ``/sessions`` under a
+    # ``/hermes`` mount would land on the proxy origin, not the dashboard.
+    # (The password-login JSON twin is intentionally left unprefixed: the
+    # login page's script re-prefixes it client-side.)
+    if landing.startswith("/") and not landing.startswith("//"):
+        landing = f"{_prefix(request)}{landing}"
     resp = RedirectResponse(url=landing, status_code=302)
     set_session_cookies(
         resp,

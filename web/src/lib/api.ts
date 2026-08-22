@@ -366,7 +366,11 @@ export const api = {
       // /auth/logout returns 302 → /login. Follow that with a full-page
       // navigation rather than letting fetch() opaquely consume the
       // redirect — the SPA needs to leave the protected area.
-      window.location.assign("/login");
+      // Honour the reverse-proxy prefix: behind ``/hermes`` this must be
+      // ``/hermes/login`` (root-absolute ``/login`` would land on the
+      // proxy's own /login, not the dashboard's). ``HERMES_BASE_PATH``
+      // is "" at root, so local/root deploys are unchanged.
+      window.location.assign(`${HERMES_BASE_PATH}/login`);
       return r;
     }),
   getSessions: (

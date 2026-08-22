@@ -153,6 +153,34 @@ def _normalize_server_url(raw: str) -> str:
     return value.rstrip("/")
 
 
+def _stable_chat_id(
+    chat_guid: str,
+    chat_identifier: str,
+    sender: str,
+    is_group: object = False,
+) -> str:
+    """Return a service-independent session key for an inbound chat.
+
+    A BlueBubbles chat GUID embeds the service: the same 1:1 conversation is
+    ``iMessage;-;+15551230001`` while iMessage is available and
+    ``SMS;-;+15551230001`` when it falls back to SMS. Keying DM sessions on the
+    raw GUID means a mid-conversation service flip silently changes the session
+    key, so the gateway starts a fresh session and all context is lost.
+
+    DMs therefore key on the service-independent ``chatIdentifier`` (the bare
+    handle), falling back to the sender address, then the GUID. Groups keep the
+    GUID (detected via the ``isGroup`` flag or the ``;+;`` group marker in the
+    GUID): an MMS group and an iMessage group genuinely are different chats,
+    and group identifiers are far less reliable than the GUID.
+
+    Handle formatting is intentionally not normalized: the value must match
+    ``chatIdentifier`` exactly for outbound GUID resolution to find the chat.
+    """
+    guid = (chat_guid or "").strip()
+    identifier = (chat_identifier or "").strip()
+    if bool(is_group) or ";+;" in guid:
+        return guid or identifier
+    return identifier or (sender or "").strip() or guid
 
 
 
@@ -502,6 +530,30 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         except Exception:
             pass
         return None
+
+    def _remember_chat_guid(self, chat_identifier: str, chat_guid: str) -> None:
+        """Warm the GUID cache from an inbound webhook's own chat mapping.
+
+        ``_resolve_chat_guid`` otherwise populates the cache from a single
+        un-paginated ``/api/v1/chat/query`` page capped at 100 chats. Past that
+        cap a handle-addressed outbound reply misses the query and falls
+        through to ``_create_chat_for_handle``, silently starting a new thread
+        instead of replying in the existing one. Every inbound webhook already
+        carries the ``chatIdentifier -> chatGuid`` mapping authoritatively, so
+        recording it here makes resolution exact and free for any conversation
+        the adapter has heard from — and re-points replies at the current
+        service after an iMessage/SMS flip.
+        """
+        identifier = (chat_identifier or "").strip()
+        guid = (chat_guid or "").strip()
+        # Skip blanks and GUID-shaped identifiers: cache keys must be bare
+        # handles, matching what _resolve_chat_guid is asked to look up.
+        if not identifier or not guid or ";" in identifier:
+            return
+        self._guid_cache[identifier] = guid
+        self._guid_cache.move_to_end(identifier)
+        while len(self._guid_cache) > _GUID_CACHE_SIZE:
+            self._guid_cache.popitem(last=False)
 
     async def _create_chat_for_handle(
         self, address: str, message: str
@@ -1026,8 +1078,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
-        session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        self._remember_chat_guid(chat_identifier, chat_guid)
+        session_chat_id = _stable_chat_id(chat_guid, chat_identifier, sender, is_group)
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug(

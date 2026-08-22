@@ -438,3 +438,79 @@ class TestBlueBubblesWebhookRegistration:
         assert len(deleted_ids) == 2
 
 
+class TestBlueBubblesStableChatId:
+    """DM session keys must survive an iMessage <-> SMS service flip."""
+
+    def test_imessage_and_sms_dm_collapse_to_one_session(self):
+        from gateway.platforms.bluebubbles import _stable_chat_id
+
+        imsg = _stable_chat_id(
+            "iMessage;-;+15551230001", "+15551230001", "+15551230001", False
+        )
+        sms = _stable_chat_id(
+            "SMS;-;+15551230001", "+15551230001", "+15551230001", False
+        )
+        assert imsg == sms
+        assert imsg == "+15551230001"
+
+    def test_group_keeps_guid(self):
+        # An MMS group and an iMessage group are genuinely different chats.
+        from gateway.platforms.bluebubbles import _stable_chat_id
+
+        guid = "iMessage;+;chat9876543210"
+        assert _stable_chat_id(guid, "chat9876543210", "+15551230001", True) == guid
+
+    def test_group_detected_from_guid_without_flag(self):
+        from gateway.platforms.bluebubbles import _stable_chat_id
+
+        guid = "iMessage;+;chat9876543210"
+        assert _stable_chat_id(guid, "chat9876543210", "+15551230001", False) == guid
+
+    def test_dm_falls_back_to_sender_then_guid(self):
+        from gateway.platforms.bluebubbles import _stable_chat_id
+
+        assert _stable_chat_id("iMessage;-;x", "", "+15551230002", False) == "+15551230002"
+        assert _stable_chat_id("iMessage;-;x", "", "", False) == "iMessage;-;x"
+
+    def test_email_handle_dm(self):
+        from gateway.platforms.bluebubbles import _stable_chat_id
+
+        assert (
+            _stable_chat_id("iMessage;-;a@example.com", "a@example.com", "a@example.com", False)
+            == "a@example.com"
+        )
+
+
+class TestBlueBubblesGuidCacheWarming:
+    """Inbound webhooks must warm the GUID cache so replies never depend on
+    the 100-chat /api/v1/chat/query page."""
+
+    def test_records_identifier_to_guid(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._remember_chat_guid("+15551230001", "iMessage;-;+15551230001")
+        assert adapter._guid_cache["+15551230001"] == "iMessage;-;+15551230001"
+
+    def test_service_flip_updates_mapping(self, monkeypatch):
+        # After a flip, replies must target the CURRENT service's chat.
+        adapter = _make_adapter(monkeypatch)
+        adapter._remember_chat_guid("+15551230001", "iMessage;-;+15551230001")
+        adapter._remember_chat_guid("+15551230001", "SMS;-;+15551230001")
+        assert adapter._guid_cache["+15551230001"] == "SMS;-;+15551230001"
+
+    def test_ignores_blank_and_guid_shaped_identifiers(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._remember_chat_guid("", "iMessage;-;x")
+        adapter._remember_chat_guid("+1555", "")
+        adapter._remember_chat_guid("iMessage;-;+1555", "iMessage;-;+1555")
+        assert len(adapter._guid_cache) == 0
+
+    def test_evicts_oldest_past_cap(self, monkeypatch):
+        import gateway.platforms.bluebubbles as bb
+
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(bb, "_GUID_CACHE_SIZE", 3)
+        for i in range(5):
+            adapter._remember_chat_guid(f"+1555000000{i}", f"iMessage;-;{i}")
+        assert len(adapter._guid_cache) == 3
+        assert "+15550000000" not in adapter._guid_cache
+        assert "+15550000004" in adapter._guid_cache

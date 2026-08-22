@@ -2314,6 +2314,27 @@ def _default_hermes_root_is_opt_data() -> bool:
     return root == _HOSTED_MANAGED_FILES_ROOT
 
 
+def _dashboard_stable_update_settings() -> Optional[Dict[str, str]]:
+    """Return stable-tag update settings when the install opts into that channel.
+
+    Returns the resolved stable-tag settings dict (pattern/remote/command) when
+    ``updates.check_strategy: stable-tags`` (or ``updates.stable_tags: true``)
+    is configured, otherwise ``None``. Read defensively: any failure (missing
+    config, import error) reports "not stable mode" so the branch-based updater
+    behaves exactly as before for the default configuration.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.stable_update import stable_update_config, stable_updates_enabled
+
+        cfg = load_config()
+        if stable_updates_enabled(cfg):
+            return stable_update_config(cfg)
+    except Exception:
+        return None
+    return None
+
+
 def _dashboard_local_update_managed_externally() -> bool:
     """Return true when the dashboard should not offer ``hermes update``.
 
@@ -4814,6 +4835,31 @@ async def update_hermes():
             "update_command": "managed outside dashboard",
         }
 
+    # Stable-tags mode pins the checkout to a release tag and may carry local
+    # overlay commits. `hermes update` is branch-based (moves toward origin/main)
+    # and would clobber that pinned/customized state, so refuse the generic
+    # apply here and point the user at their own stable-tag update workflow.
+    stable_settings = _dashboard_stable_update_settings()
+    if stable_settings is not None:
+        stable_cmd = stable_settings.get("command") or ""
+        message = (
+            f"This install uses the stable-tag update channel; run `{stable_cmd}`."
+            if stable_cmd
+            else (
+                "This install uses the stable-tag update channel. The branch-based "
+                "in-dashboard updater is disabled; run your stable-tag update workflow."
+            )
+        )
+        _record_completed_action("hermes-update", message, exit_code=1)
+        return {
+            "ok": False,
+            "pid": None,
+            "name": "hermes-update",
+            "error": "stable_tags_update_channel",
+            "message": message,
+            "update_command": stable_cmd or "stable-tag update workflow",
+        }
+
     install_method = detect_install_method(PROJECT_ROOT)
     if install_method == "docker":
         message = format_docker_update_message()
@@ -5006,6 +5052,60 @@ async def check_hermes_update(force: bool = False):
         behind = None
 
     payload["behind"] = behind
+
+    # Preserve stable-tags metadata through the dashboard endpoint. When the
+    # update check ran in stable-tags mode (updates.check_strategy: stable-tags),
+    # a non-zero result advertises a stable RELEASE, not commits behind
+    # origin/main. The generic apply action (POST /api/hermes/update) always
+    # runs `hermes update`, which is branch-based and would move a release-
+    # pinned checkout onto moving main. So disable the in-dashboard apply for
+    # stable mode and surface the stable metadata + the user's own update
+    # command instead of the origin/main commit changelog.
+    stable_ctx: Dict[str, Any] = {}
+    try:
+        from hermes_cli.banner import get_update_context
+
+        ctx = get_update_context()
+        if isinstance(ctx, dict) and ctx.get("mode") == "stable-tags":
+            stable_ctx = ctx
+    except Exception:
+        stable_ctx = {}
+
+    if stable_ctx:
+        payload["update_mode"] = "stable-tags"
+        payload["stable"] = {
+            "current_tag": stable_ctx.get("current_tag"),
+            "latest_tag": stable_ctx.get("latest_tag"),
+            "target_tag": stable_ctx.get("target_tag") or stable_ctx.get("latest_tag"),
+            "up_to_date": stable_ctx.get("up_to_date"),
+        }
+        # The generic branch-based apply must not run against a stable-pinned
+        # checkout; redirect users to their configured stable-tag workflow.
+        payload["can_apply"] = False
+        stable_cmd = stable_ctx.get("update_command")
+        if stable_cmd:
+            payload["update_command"] = stable_cmd
+        if behind is None:
+            payload["message"] = "Couldn't reach the update source — try again later."
+        elif behind == 0:
+            payload["message"] = "You're on the latest stable release."
+        else:
+            payload["update_available"] = True
+            target_tag = payload["stable"]["target_tag"]
+            if stable_cmd:
+                payload["message"] = (
+                    f"Stable release {target_tag} available — run `{stable_cmd}`."
+                    if target_tag
+                    else f"A newer stable release is available — run `{stable_cmd}`."
+                )
+            else:
+                payload["message"] = (
+                    f"Stable release {target_tag} available — run your stable-tag update workflow."
+                    if target_tag
+                    else "A newer stable release is available — run your stable-tag update workflow."
+                )
+        return payload
+
     if behind is None:
         payload["message"] = "Couldn't reach the update source — try again later."
     elif behind == 0:

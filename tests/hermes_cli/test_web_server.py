@@ -1231,6 +1231,83 @@ class TestWebServerEndpoints:
         assert check_data["update_command"] == "pkg upgrade hermes-agent"
         assert "Termux APT" in check_data["message"]
 
+    def test_update_hermes_refuses_in_stable_tags_mode(self, monkeypatch):
+        """Stable-tags mode must not launch the branch-based updater."""
+        import hermes_cli.web_server as web_server
+
+        spawned = False
+
+        def fail_spawn(*_args, **_kwargs):
+            nonlocal spawned
+            spawned = True
+            raise AssertionError("stable-tags guard should not spawn hermes update")
+
+        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
+        monkeypatch.setattr(
+            web_server,
+            "_dashboard_stable_update_settings",
+            lambda: {"pattern": "v20*", "remote": "origin", "command": "stable-update switch"},
+        )
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+
+        resp = self.client.post("/api/hermes/update")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["pid"] is None
+        assert data["error"] == "stable_tags_update_channel"
+        assert data["update_command"] == "stable-update switch"
+        assert "stable-update switch" in data["message"]
+        assert spawned is False
+
+    def test_update_check_preserves_stable_metadata_and_disables_apply(self, monkeypatch):
+        """Stable-tags check preserves tag metadata and turns off in-dashboard apply."""
+        import hermes_cli.web_server as web_server
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "git")
+        # check_for_updates() runs in stable-tags mode and returns the no-count
+        # sentinel; get_update_context() carries the stable metadata.
+        monkeypatch.setattr(
+            web_server,
+            "recommended_update_command_for_method",
+            lambda _m: "git pull",
+        )
+        monkeypatch.setattr(
+            banner, "check_for_updates", lambda: banner.UPDATE_AVAILABLE_NO_COUNT
+        )
+        monkeypatch.setattr(
+            banner,
+            "get_update_context",
+            lambda: {
+                "mode": "stable-tags",
+                "current_tag": "v2026.5.7",
+                "latest_tag": "v2026.5.16",
+                "target_tag": "v2026.5.16",
+                "up_to_date": False,
+                "update_command": "stable-update switch",
+            },
+        )
+
+        resp = self.client.get("/api/hermes/update/check")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["update_mode"] == "stable-tags"
+        assert data["update_available"] is True
+        # Generic branch-based apply is disabled for stable mode.
+        assert data["can_apply"] is False
+        assert data["stable"]["target_tag"] == "v2026.5.16"
+        assert data["stable"]["current_tag"] == "v2026.5.7"
+        assert data["update_command"] == "stable-update switch"
+        assert "v2026.5.16" in data["message"]
+        # It must NOT surface the origin/main commit changelog in stable mode.
+        assert "commits" not in data
+
     def test_update_hermes_spawns_with_action_id(self, monkeypatch):
         import hermes_cli.web_server as web_server
 

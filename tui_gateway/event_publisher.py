@@ -23,6 +23,7 @@ import json
 import logging
 import queue
 import threading
+import time
 from typing import Optional
 
 try:
@@ -35,10 +36,11 @@ _log = logging.getLogger(__name__)
 _DRAIN_STOP = object()
 
 _QUEUE_MAX = 256
+_CONNECT_RETRY_DELAYS_S = (0.0, 0.05, 0.1, 0.25, 0.5, 1.0)
 
 
 class WsPublisherTransport:
-    __slots__ = ("_url", "_lock", "_ws", "_dead", "_q", "_worker")
+    __slots__ = ("_url", "_lock", "_ws", "_dead", "_q", "_worker", "_connect_timeout")
 
     def __init__(self, url: str, *, connect_timeout: float = 2.0) -> None:
         self._url = url
@@ -47,27 +49,57 @@ class WsPublisherTransport:
         self._dead = False
         self._q: queue.Queue[object] = queue.Queue(maxsize=_QUEUE_MAX)
         self._worker: Optional[threading.Thread] = None
+        self._connect_timeout = connect_timeout
 
         if ws_connect is None:
             self._dead = True
 
             return
 
-        try:
-            self._ws = ws_connect(url, open_timeout=connect_timeout, max_size=None)
-        except Exception as exc:
-            _log.debug("event publisher connect failed: %s", exc)
-            self._dead = True
-            self._ws = None
-
-            return
-
         self._worker = threading.Thread(
-            target=self._drain,
+            target=self._run,
             name="hermes-ws-pub",
             daemon=True,
         )
         self._worker.start()
+
+    def _run(self) -> None:
+        if not self._connect():
+            self._dead = True
+
+            return
+
+        self._drain()
+
+    def _connect(self) -> bool:
+        attempts = len(_CONNECT_RETRY_DELAYS_S)
+
+        for idx, delay in enumerate(_CONNECT_RETRY_DELAYS_S, start=1):
+            if self._dead:
+                return False
+
+            if delay:
+                time.sleep(delay)
+                if self._dead:
+                    return False
+
+            try:
+                self._ws = ws_connect(
+                    self._url,
+                    open_timeout=self._connect_timeout,
+                    max_size=None,
+                )
+
+                return True
+            except Exception as exc:
+                _log.debug(
+                    "event publisher connect failed (attempt %d/%d): %s",
+                    idx,
+                    attempts,
+                    exc,
+                )
+
+        return False
 
     def _drain(self) -> None:
         while True:
@@ -86,9 +118,10 @@ class WsPublisherTransport:
                 _log.debug("event publisher write failed: %s", exc)
                 self._dead = True
                 self._ws = None
+                return
 
     def write(self, obj: dict) -> bool:
-        if self._dead or self._ws is None or self._worker is None:
+        if self._dead or self._worker is None:
             return False
 
         line = json.dumps(obj, ensure_ascii=False)

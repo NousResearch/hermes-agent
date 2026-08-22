@@ -3183,7 +3183,8 @@ def _blank_slate_minimal_toolsets(config: dict):
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
 
     try:
-        from toolsets import TOOLSETS
+        from toolsets import TOOLSETS, resolve_toolset
+
         from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
 
         all_keys = set()
@@ -3204,7 +3205,26 @@ def _blank_slate_minimal_toolsets(config: dict):
                 # minimal Blank Slate surface (#57315).
             all_keys.add(k)
 
-        disabled = sorted(all_keys - keep)
+        # ``disabled_toolsets`` is applied at *tool* granularity, so a toolset
+        # that shares any tool with a kept one would silently strip that shared
+        # tool from the blank-slate surface. Drop such overlapping candidates —
+        # this covers read-only subsets like ``file_readonly`` (read_file +
+        # search_files ⊂ ``file``) the same way the posture skip above covers
+        # ``coding`` (#57315, #58281).
+        kept_tools: set = set()
+        for ts in keep:
+            try:
+                kept_tools.update(resolve_toolset(ts))
+            except Exception:
+                pass
+
+        def _overlaps_kept(ts: str) -> bool:
+            try:
+                return bool(set(resolve_toolset(ts)) & kept_tools)
+            except Exception:
+                return False  # unresolvable → keep it disabled (true blank slate)
+
+        disabled = sorted(k for k in (all_keys - keep) if not _overlaps_kept(k))
         if disabled:
             config.setdefault("agent", {})["disabled_toolsets"] = disabled
     except Exception as exc:

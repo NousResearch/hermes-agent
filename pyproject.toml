@@ -206,13 +206,21 @@ voice = [
 # [wake]+[voice] so the ear works instantly; CLI-only installs lazy-install on
 # first /wake; mirrored in tools/lazy_deps.py.
 wake = [
-  "openwakeword==0.6.0",
+  # Linux uses ONNX, but openWakeWord 0.6.0's PyPI metadata still requires
+  # tflite-runtime there. It has no CPython 3.12/3.13 wheels, so the official
+  # installers and lazy_deps install openwakeword with --no-deps on Linux after
+  # this resolver-safe runtime set is installed.
+  "openwakeword==0.6.0; platform_system != 'Linux'",
   "onnxruntime==1.27.0",
   "sherpa-onnx==1.13.4",
   "sentencepiece==0.2.2",
   "pvporcupine==4.0.3",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
+  "scipy>=1.3,<2",
+  "scikit-learn>=1,<2",
+  "requests>=2,<3",
+  "tqdm>=4,<5",
   # openWakeWord's onnx embedding model scores near-zero on macOS ARM64
   # (dscripka/openWakeWord#336), so the wake word runs on tflite there.
   # Upstream declares tflite-runtime for Linux only; ai-edge-litert is the

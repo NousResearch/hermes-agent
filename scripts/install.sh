@@ -3104,7 +3104,17 @@ install_desktop_voice_deps() {
         return 0
     fi
     log_info "Installing voice + wake-word dependencies (onnxruntime, faster-whisper — 1-3min)..."
-    if (cd "$INSTALL_DIR" && $UV_CMD pip install -e ".[wake,voice]") ; then
+    local wake_ok=true
+    if ! (cd "$INSTALL_DIR" && $UV_CMD pip install -e ".[wake,voice]") ; then
+        wake_ok=false
+    fi
+    # openWakeWord 0.6.0 incorrectly requires tflite-runtime on every Linux
+    # install, although Hermes uses ONNX there. PyPI has no tflite-runtime
+    # wheels for CPython 3.12/3.13, so install the parent wheel separately.
+    if [ "$(uname -s)" = "Linux" ] && ! $UV_CMD pip install --no-deps "openwakeword==0.6.0"; then
+        wake_ok=false
+    fi
+    if [ "$wake_ok" = true ]; then
         log_success "Voice + wake-word dependencies installed"
     else
         log_warn "Voice/wake dependency install failed — they will lazy-install at first use"

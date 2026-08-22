@@ -170,6 +170,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "onnxruntime==1.27.0",
         "sounddevice==0.5.5",
         "numpy==2.4.3",
+        "scipy>=1.3,<2",
+        "scikit-learn>=1,<2",
+        "requests>=2,<3",
+        "tqdm>=4,<5",
     ),
     # Open-vocabulary keyword spotting: any typed phrase, zero training.
     # sentencepiece is required by sherpa_onnx.text2token (runtime phrase
@@ -323,6 +327,16 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.trace_upload": ("huggingface-hub==1.24.0",),
 }
 
+# Specs whose upstream dependency metadata must be bypassed on Linux. The
+# openWakeWord 0.6.0 wheel requires tflite-runtime there even when Hermes uses
+# its ONNX backend. PyPI only publishes tflite-runtime for CPython 3.11, so
+# normal resolution fails on supported Python 3.12/3.13. Install the universal
+# parent wheel with --no-deps, then install the explicit ONNX runtime set above.
+# This remains feature-scoped: arbitrary callers cannot suppress resolution.
+NO_DEPS_SPECS: dict[str, tuple[str, ...]] = {
+    "wake.openwakeword": ("openwakeword==0.6.0",),
+}
+
 
 # Conservative regex for spec validation — package name plus optional
 # version range. Reject anything that looks like a URL, file path, or shell
@@ -349,11 +363,17 @@ class FeatureUnavailable(RuntimeError):
         super().__init__(self._format())
 
     def _format(self) -> str:
-        spec_list = " ".join(repr(s) for s in self.missing)
+        command = _feature_install_command(self.feature, self.missing)
+        if command is None:
+            spec_list = " ".join(repr(s) for s in self.missing)
+            command = f"uv pip install {spec_list}"
+        pip_command = _feature_install_command(
+            self.feature, self.missing, installer=f"{sys.executable} -m pip"
+        )
         return (
             f"Feature {self.feature!r} unavailable: {self.reason}. "
-            f"To enable manually: uv pip install {spec_list}  "
-            f"(or: pip install {spec_list})."
+            f"To enable manually: {command}"
+            + (f"  (or: {pip_command})." if pip_command else ".")
         )
 
 
@@ -699,7 +719,9 @@ def _core_constraints_file() -> Optional[Path]:
         return None
 
 
-def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
+def _venv_pip_install(
+    specs: tuple[str, ...], *, timeout: int = 300, no_deps: bool = False
+) -> _InstallResult:
     """Install ``specs`` using the uv → pip → ensurepip ladder.
 
     Two modes:
@@ -734,6 +756,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
     constraint_args: list[str] = []
     if constraints is not None:
         constraint_args = ["--constraint", str(constraints)]
+    dependency_args = ["--no-deps"] if no_deps else []
 
     try:
         venv_root = Path(sys.executable).parent.parent
@@ -757,7 +780,10 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         if uv_bin:
             try:
                 r = subprocess.run(
-                    [uv_bin, "pip", "install", *target_args, *constraint_args, *specs],
+                    [
+                        uv_bin, "pip", "install", *target_args,
+                        *constraint_args, *dependency_args, *specs,
+                    ],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout, env=uv_env,
                     stdin=subprocess.DEVNULL,
                     creationflags=windows_hide_flags(),
@@ -805,7 +831,10 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
 
         try:
             r = subprocess.run(
-                pip_cmd + ["install", *target_args, *constraint_args, *specs],
+                pip_cmd + [
+                    "install", *target_args, *constraint_args,
+                    *dependency_args, *specs,
+                ],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
                 stdin=subprocess.DEVNULL,
                 creationflags=windows_hide_flags(),
@@ -840,6 +869,35 @@ def feature_specs(feature: str) -> tuple[str, ...]:
 def feature_missing(feature: str) -> tuple[str, ...]:
     """Return the subset of specs for ``feature`` not currently installed."""
     return tuple(s for s in feature_specs(feature) if not _is_satisfied(s))
+
+
+def _feature_no_deps_specs(feature: str, specs: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the feature-approved subset that bypasses dependency metadata."""
+    if not sys.platform.startswith("linux"):
+        return ()
+    approved = set(NO_DEPS_SPECS.get(feature, ()))
+    return tuple(spec for spec in specs if spec in approved)
+
+
+def _feature_install_command(
+    feature: str, specs: tuple[str, ...], *, installer: str = "uv pip"
+) -> Optional[str]:
+    """Build an executable manual uv command for the requested feature specs."""
+    if feature not in LAZY_DEPS:
+        return None
+    no_deps = _feature_no_deps_specs(feature, specs)
+    regular = tuple(spec for spec in specs if spec not in set(no_deps))
+    commands = []
+    if no_deps:
+        commands.append(
+            f"{installer} install --no-deps "
+            + " ".join(repr(spec) for spec in no_deps)
+        )
+    if regular:
+        commands.append(
+            f"{installer} install " + " ".join(repr(spec) for spec in regular)
+        )
+    return "; ".join(commands)
 
 
 def ensure(feature: str, *, prompt: bool = True) -> None:
@@ -942,7 +1000,22 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             )
 
     logger.info("Lazy-installing %s for feature %r", " ".join(missing), feature)
-    result = _venv_pip_install(missing)
+    no_deps = _feature_no_deps_specs(feature, missing)
+    regular = tuple(spec for spec in missing if spec not in set(no_deps))
+    batches = []
+    if no_deps:
+        batches.append((no_deps, True))
+    if regular:
+        batches.append((regular, False))
+
+    result = _InstallResult(True, "", "")
+    for batch, bypass_dependencies in batches:
+        if bypass_dependencies:
+            result = _venv_pip_install(batch, no_deps=True)
+        else:
+            result = _venv_pip_install(batch)
+        if not result.success:
+            break
     if not result.success:
         # Surface the actual pip error so the user can debug PyPI-side
         # issues (404 quarantine, network down, etc.).
@@ -982,6 +1055,9 @@ def is_available(feature: str) -> bool:
     return not feature_missing(feature)
 
 
+
+
+
 def feature_install_command(feature: str, *, venv_pip: bool = False) -> Optional[str]:
     """Return the ``pip install`` command a user could run manually, or None.
 
@@ -994,11 +1070,8 @@ def feature_install_command(feature: str, *, venv_pip: bool = False) -> Optional
     """
     if feature not in LAZY_DEPS:
         return None
-    specs = LAZY_DEPS[feature]
-    joined = " ".join(repr(s) for s in specs)
-    if venv_pip:
-        return f"{sys.executable} -m pip install {joined}"
-    return "uv pip install " + joined
+    installer = f"{sys.executable} -m pip" if venv_pip else "uv pip"
+    return _feature_install_command(feature, LAZY_DEPS[feature], installer=installer)
 
 
 @dataclass

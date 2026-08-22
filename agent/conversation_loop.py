@@ -7069,7 +7069,26 @@ def run_conversation(
                         )
                         agent._invalid_json_retries = 0
                         agent._cleanup_task_resources(effective_task_id)
-                        _final_response = "Response truncated due to output length limit"
+                        # Only call it an output-length truncation when the
+                        # model actually reported one. This branch is the
+                        # secondary detector for the case where the length
+                        # handler above was bypassed: an upstream router
+                        # rewrote finish_reason away from "length" (e.g.
+                        # OpenRouter) or a transport/stream break left the tool
+                        # arguments cut off mid-JSON after a timeout+retry. In
+                        # those cases the real cause is transport/router
+                        # corruption, not max_output_tokens — say so instead of
+                        # the misleading "output length limit" (#91717).
+                        if finish_reason == "length":
+                            _final_response = "Response truncated due to output length limit"
+                        else:
+                            _final_response = (
+                                "Tool call arguments were truncated mid-JSON, but the model "
+                                f"did not report an output-length limit (finish_reason="
+                                f"{finish_reason!r}). This usually means a transport/stream "
+                                "interruption or an upstream router rewriting finish_reason "
+                                "(e.g. OpenRouter). The tool was not executed."
+                            )
                         # Same tool-tail close as interrupt / invalid-tool
                         # exhaustion — this path never reaches finalize_turn.
                         close_interrupted_tool_sequence(messages, _final_response)

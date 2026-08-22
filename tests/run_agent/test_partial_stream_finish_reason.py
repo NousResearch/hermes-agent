@@ -789,3 +789,121 @@ class TestSendTimePadMultimodalSafety:
         assert out[2]["content"] == ""
         # input list untouched (repair is copy-on-write)
         assert api_messages[1]["content"] == ""
+
+
+class TestRouterRewriteTruncationMessageIsHonest:
+    """Regression for #91717: the invalid-JSON truncation detector (the
+    secondary path that fires when the primary finish_reason='length' handler
+    was bypassed) must NOT blame the output-length limit when the model never
+    reported one.
+
+    Scenario: after a transport timeout, OpenRouter's router delivers a retry
+    whose finish_reason is rewritten from 'length' to 'tool_calls', and whose
+    tool-call arguments are cut off mid-JSON. The old code hardcoded
+    'Response truncated due to output length limit', misleading operators into
+    tuning max_tokens / switching models when the real cause is transport /
+    router corruption.
+    """
+
+    def _router_rewrite_response(self):
+        # finish_reason='tool_calls' (NOT 'length') + truncated JSON args
+        # ('{"cmd": "ls' — no closing brace), on a normal generation id (not
+        # the partial-stream stub). This bypasses the length handler and lands
+        # in the invalid-JSON truncation detector.
+        msg = SimpleNamespace(
+            role="assistant",
+            content="",
+            tool_calls=[SimpleNamespace(
+                id="call_1", type="function",
+                function=SimpleNamespace(name="terminal", arguments='{"cmd": "ls'),
+            )],
+            reasoning_content=None,
+        )
+        return SimpleNamespace(
+            id="gen-router-rewrite-xyz",
+            model="deepseek/deepseek-v4-flash",
+            choices=[SimpleNamespace(
+                index=0, message=msg, finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+
+    def test_router_rewrite_truncation_does_not_claim_output_length_limit(
+        self, loop_agent,
+    ):
+        loop_agent.valid_tool_names = {"terminal"}
+        loop_agent.client.chat.completions.create.side_effect = (
+            lambda *a, **kw: self._router_rewrite_response()
+        )
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("list the files")
+
+        final = result["final_response"] or ""
+        error = result["error"] or ""
+
+        # The misleading output-length-limit label must be gone: finish_reason
+        # was 'tool_calls', never 'length'.
+        assert "output length limit" not in final, (
+            "Router-rewrite / transport truncation must not be reported as an "
+            "output-length limit (#91717)."
+        )
+        assert "output length limit" not in error
+        # The honest message names the real suspect and surfaces finish_reason.
+        assert "finish_reason='tool_calls'" in final
+        assert (
+            "transport" in final or "router" in final
+        ), "Honest message must point at transport/router corruption."
+        # Recovery invariants preserved: incomplete tool args never execute.
+        assert result["completed"] is False
+        assert result["partial"] is True
+
+    def _genuine_length_truncated_tool_call(self):
+        # finish_reason='length' (the model truly hit its output cap) with a
+        # tool call whose JSON args are cut off. On a normal generation id, so
+        # it is NOT treated as a partial-stream network stub. After the loop
+        # exhausts its truncated-tool-call retries this lands on the primary
+        # length handler's tool-call path (scenario 1 in the issue's table).
+        msg = SimpleNamespace(
+            role="assistant",
+            content="",
+            tool_calls=[SimpleNamespace(
+                id="call_1", type="function",
+                function=SimpleNamespace(name="terminal", arguments='{"cmd": "ls'),
+            )],
+            reasoning_content=None,
+        )
+        return SimpleNamespace(
+            id="gen-real-length",
+            model="test/model",
+            choices=[SimpleNamespace(index=0, message=msg, finish_reason="length")],
+            usage=None,
+        )
+
+    def test_genuine_length_truncation_keeps_output_limit_wording(self, loop_agent):
+        """The primary length handler (finish_reason='length', real
+        output-cap exhaustion) must keep the accurate 'output length limit'
+        wording — scenario 1 in the issue's table is correct and must not
+        regress from the honest-message fix."""
+        loop_agent.valid_tool_names = {"terminal"}
+        loop_agent.client.chat.completions.create.side_effect = (
+            lambda *a, **kw: self._genuine_length_truncated_tool_call()
+        )
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("run a long command")
+
+        blob = (result.get("final_response") or "") + (result.get("error") or "")
+        assert "output length limit" in blob, (
+            "A genuine finish_reason='length' truncation must still reference "
+            "the output length limit — the honest-message fix must not blank "
+            "out the accurate case (#91717 scenario 1)."
+        )

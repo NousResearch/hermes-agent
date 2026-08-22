@@ -106,6 +106,104 @@ logger = logging.getLogger(__name__)
 # in the api_messages loop. Module-level so both sites can never drift.
 _INTERRUPT_SCAFFOLD_MARKER = "[This response was interrupted by a user correction.]"
 
+# Providers whose 401 path already does a one-shot Codex/xAI OAuth refresh.
+# Lingering token_expired recovery must use the same set so a generic
+# Responses 401 does not strip replay.
+_CODEX_401_REPLAY_PROVIDERS = frozenset({"openai-codex", "xai-oauth"})
+
+
+def _messages_have_codex_reasoning_cache(messages: Any) -> bool:
+    if not isinstance(messages, list):
+        return False
+    return any(
+        isinstance(msg, dict)
+        and msg.get("role") == "assistant"
+        and isinstance(msg.get("codex_reasoning_items"), list)
+        and msg.get("codex_reasoning_items")
+        for msg in messages
+    )
+
+
+def _is_codex_token_expired_signature(error: BaseException | None) -> bool:
+    """True when the provider labeled this failure ``token_expired``."""
+    from agent.error_classifier import _extract_error_body, _extract_error_code
+
+    if error is None:
+        return False
+    body = _extract_error_body(error) if isinstance(error, Exception) else {}
+    code = (_extract_error_code(body) or "").lower()
+    if code == "token_expired":
+        return True
+    text = str(error).lower()
+    return "token_expired" in text or "authentication token is expired" in text
+
+
+def should_strip_codex_replay_after_lingering_401(
+    *,
+    api_mode: str = "",
+    provider: str = "",
+    status_code: Any = None,
+    error: BaseException | None = None,
+    auth_retry_attempted: bool = False,
+    replay_strip_attempted: bool = False,
+    replay_enabled: bool = True,
+    messages: Any = None,
+) -> bool:
+    """Return True only after Codex 401 refresh, when replay cache remains.
+
+    HTTP 401 stays ``FailoverReason.auth``. This predicate never reclassifies
+    the error; it only gates the existing strip+retry used for 400
+    ``invalid_encrypted_content``.
+    """
+    if (api_mode or "") != "codex_responses":
+        return False
+    if (provider or "") not in _CODEX_401_REPLAY_PROVIDERS:
+        return False
+    try:
+        status = int(status_code) if status_code is not None else None
+    except (TypeError, ValueError):
+        return False
+    if status != 401:
+        return False
+    if not auth_retry_attempted or replay_strip_attempted:
+        return False
+    if not replay_enabled:
+        return False
+    if not _is_codex_token_expired_signature(error):
+        return False
+    return _messages_have_codex_reasoning_cache(messages)
+
+
+def recover_codex_replay_after_lingering_401(
+    agent: Any,
+    retry: TurnRetryState,
+    messages: Any,
+    *,
+    status_code: Any,
+    error: BaseException | None,
+) -> bool:
+    """One-shot strip of cached Codex reasoning after a lingering 401.
+
+    Reuses ``invalid_encrypted_content_retry_attempted`` so a later 400
+    replay rejection in the same attempt cannot strip twice.
+    """
+    if not should_strip_codex_replay_after_lingering_401(
+        api_mode=getattr(agent, "api_mode", "") or "",
+        provider=getattr(agent, "provider", "") or "",
+        status_code=status_code,
+        error=error,
+        auth_retry_attempted=bool(getattr(retry, "codex_auth_retry_attempted", False)),
+        replay_strip_attempted=bool(
+            getattr(retry, "invalid_encrypted_content_retry_attempted", False)
+        ),
+        replay_enabled=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
+        messages=messages,
+    ):
+        return False
+    retry.invalid_encrypted_content_retry_attempted = True
+    agent._disable_codex_reasoning_replay(messages)
+    return True
+
 
 # One-time wrap-up notice appended when a wall-clock run budget crosses its
 # 80% threshold (agent.run_budget_seconds / --run-budget). Mirrors the Codex
@@ -4801,7 +4899,7 @@ def run_conversation(
 
                 if (
                     agent.api_mode == "codex_responses"
-                    and agent.provider in {"openai-codex", "xai-oauth"}
+                    and agent.provider in _CODEX_401_REPLAY_PROVIDERS
                     and status_code == 401
                     and not _retry.codex_auth_retry_attempted
                 ):
@@ -4810,6 +4908,28 @@ def run_conversation(
                         _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
                         agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
                         continue
+                # After the one-shot Codex/xAI OAuth refresh, a persisted
+                # session can still 401 with token_expired while the same
+                # bearer works on a fresh transcript (#88510). Reuse the
+                # 400 invalid_encrypted_content strip — do not reclassify 401.
+                if recover_codex_replay_after_lingering_401(
+                    agent,
+                    _retry,
+                    messages,
+                    status_code=status_code,
+                    error=api_error,
+                ):
+                    agent._vprint(
+                        f"{agent.log_prefix}⚠️  Encrypted reasoning replay was rejected "
+                        f"as token_expired after auth refresh — disabled replay and retrying...",
+                        force=True,
+                    )
+                    logger.warning(
+                        "%sLingering Codex token_expired recovery: disabled "
+                        "encrypted reasoning replay after auth refresh",
+                        agent.log_prefix,
+                    )
+                    continue
                 if (
                     agent.api_mode == "chat_completions"
                     and agent.provider == "vertex"

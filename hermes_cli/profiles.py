@@ -726,6 +726,42 @@ def _read_config_model(profile_dir: Path) -> tuple:
         return None, None
 
 
+def _gateway_multiplex_enabled(default_home: Path) -> bool:
+    """Return whether the root gateway is configured to serve named profiles.
+
+    Runtime status records written by current multiplex gateways carry an
+    explicit ``served_profiles`` list. Older records do not, so consult the
+    same environment/config switches used by gateway startup before treating
+    a live root gateway as shared.
+    """
+    override = os.environ.get("GATEWAY_MULTIPLEX_PROFILES")
+    if override is not None:
+        token = override.strip().lower()
+        if token in {"1", "true", "yes", "on"}:
+            return True
+        if token in {"0", "false", "no", "off"}:
+            return False
+
+    try:
+        from hermes_cli.config import read_user_config_raw
+
+        config = read_user_config_raw(default_home / "config.yaml")
+        value = config.get("multiplex_profiles")
+        if value is None:
+            gateway_config = config.get("gateway")
+            if isinstance(gateway_config, dict):
+                value = gateway_config.get("multiplex_profiles")
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        if isinstance(value, (int, float)):
+            return bool(value)
+    except Exception:
+        pass
+    return False
+
+
 def _check_gateway_running(profile_dir: Path) -> bool:
     """Check if a gateway is running for a given profile directory.
 
@@ -737,7 +773,9 @@ def _check_gateway_running(profile_dir: Path) -> bool:
     no live PID file.  In those cases fall back to validating the PID recorded
     in the profile's own ``gateway_state.json`` against the live process table,
     mirroring the ``/api/status`` sidebar's liveness logic so the two surfaces
-    agree.  Parameterized by ``profile_dir`` so it never mutates ``HERMES_HOME``.
+    agree. When a named profile has no private runtime state, the root status
+    record is also checked for a live multiplex gateway. Parameterized by
+    ``profile_dir`` so it never mutates ``HERMES_HOME``.
     """
     try:
         from gateway.status import get_running_pid
@@ -754,7 +792,38 @@ def _check_gateway_running(profile_dir: Path) -> bool:
             read_runtime_status,
         )
         runtime = read_runtime_status(profile_dir / "gateway_state.json")
-        return get_runtime_status_running_pid(runtime, expected_home=profile_dir) is not None
+        if get_runtime_status_running_pid(runtime, expected_home=profile_dir) is not None:
+            return True
+
+        default_home = _get_default_hermes_home().resolve()
+        profile_path = profile_dir.resolve()
+        if profile_path == default_home:
+            return False
+        try:
+            relative = profile_path.relative_to(_get_profiles_root().resolve())
+        except ValueError:
+            return False
+        if len(relative.parts) != 1:
+            return False
+        profile_name = relative.parts[0]
+        if profile_name == "default" or not _PROFILE_ID_RE.fullmatch(profile_name):
+            return False
+
+        shared_runtime = read_runtime_status(default_home / "gateway_state.json")
+        if (
+            get_runtime_status_running_pid(shared_runtime, expected_home=default_home)
+            is None
+        ):
+            return False
+
+        served_profiles = shared_runtime.get("served_profiles") if isinstance(
+            shared_runtime, dict
+        ) else None
+        if isinstance(served_profiles, list):
+            return profile_name in {
+                entry for entry in served_profiles if isinstance(entry, str)
+            }
+        return _gateway_multiplex_enabled(default_home)
     except Exception:
         return False
 

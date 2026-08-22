@@ -1002,10 +1002,112 @@ class TestEdgeCases:
         # line to a bare ``gateway run`` (this is the default/root home, which
         # runs the gateway with no profile flag).
         with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._pid_exists", return_value=True
+        ), patch(
             "gateway.status._read_process_cmdline",
             return_value="hermes gateway run --replace",
         ):
             assert _check_gateway_running(default_home) is True
+
+
+    def test_named_profile_uses_shared_gateway_runtime_status(self, profile_env):
+        """A multiplex gateway reports served named profiles as running."""
+        import gateway.status as gw_status
+
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        named_home = default_home / "profiles" / "collector"
+        named_home.mkdir(parents=True)
+        live_pid = os.getpid()
+        (default_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": live_pid,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "start_time": gw_status._get_process_start_time(live_pid),
+                    "gateway_state": "running",
+                    "served_profiles": ["default", "collector"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._pid_exists", return_value=True
+        ), patch(
+            "gateway.status._read_process_cmdline",
+            return_value="hermes gateway run --replace",
+        ):
+            assert profiles._check_gateway_running(named_home) is True
+
+
+    def test_shared_gateway_status_does_not_cover_unserved_profile(self, profile_env):
+        """A multiplex allowlist must not mark an excluded profile running."""
+        import gateway.status as gw_status
+
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        named_home = default_home / "profiles" / "collector"
+        named_home.mkdir(parents=True)
+        live_pid = os.getpid()
+        (default_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": live_pid,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "start_time": gw_status._get_process_start_time(live_pid),
+                    "gateway_state": "running",
+                    "served_profiles": ["default", "other"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._pid_exists", return_value=True
+        ), patch(
+            "gateway.status._read_process_cmdline",
+            return_value="hermes gateway run --replace",
+        ):
+            assert profiles._check_gateway_running(named_home) is False
+
+
+    def test_legacy_shared_gateway_status_uses_multiplex_config(self, profile_env):
+        """Older root status records still work when config enables multiplexing."""
+        import gateway.status as gw_status
+
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        named_home = default_home / "profiles" / "collector"
+        named_home.mkdir(parents=True)
+        (default_home / "config.yaml").write_text(
+            "gateway:\n  multiplex_profiles: true\n",
+            encoding="utf-8",
+        )
+        live_pid = os.getpid()
+        (default_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": live_pid,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "start_time": gw_status._get_process_start_time(live_pid),
+                    "gateway_state": "running",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._pid_exists", return_value=True
+        ), patch(
+            "gateway.status._read_process_cmdline",
+            return_value="hermes gateway run --replace",
+        ):
+            assert profiles._check_gateway_running(named_home) is True
+
 
 
 
@@ -1123,5 +1225,4 @@ class TestResolveProfileEnvSpelling:
         # No HERMES_HOME: the platform default root applies (existing contract).
         monkeypatch.delenv("HERMES_HOME", raising=False)
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
-
 

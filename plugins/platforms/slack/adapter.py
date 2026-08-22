@@ -7074,6 +7074,13 @@ class SlackAdapter(BasePlatformAdapter):
         Open-ended mode (``choices`` empty): delegates to the base
         implementation, which renders the plain question and arms the same
         text-intercept.
+
+        When any choice label exceeds Slack's 75-char button-text limit,
+        a numbered text list of the full options is included in the section
+        block above the buttons so users can always read the complete
+        choice text.  Button labels are still truncated for Slack's limit,
+        but the full text is visible above and the buttons remain as
+        quick shortcuts.
         """
         # Open-ended prompts have no buttons — the base implementation renders
         # the plain question and arms the gateway text-intercept for us.
@@ -7107,13 +7114,29 @@ class SlackAdapter(BasePlatformAdapter):
             if len(body) > budget:
                 body = body[:budget] + "..."
 
+            # When any choice label exceeds Slack's 75-char button-text limit,
+            # the truncated button text can be impossible to read.  Prepend a
+            # numbered text list of the full options to the section so users
+            # can always read the complete choice text; buttons remain as
+            # quick shortcuts below (their labels are truncated for Slack's
+            # limit, but the full text is visible above).
+            labels = [str(c).strip() or f"Option {i + 1}" for i, c in enumerate(choices)]
+            _BUTTON_LABEL_MAX = 75
+            _has_truncated = any(len(lbl) > _BUTTON_LABEL_MAX for lbl in labels)
+            if _has_truncated:
+                lines = [body, ""]
+                for i, lbl in enumerate(labels, start=1):
+                    lines.append(f"  {i}. {lbl}")
+                body = "\n".join(lines)
+                if len(body) > budget:
+                    body = body[:budget] + "..."
+
             # One button per choice + a free-text "Other" button.  Slack caps
             # an actions block at 5 elements; the clarify tool caps choices at
             # 4 (+ Other = 5) so this is normally one block, but chunk anyway
             # so a larger choice list degrades gracefully instead of 400ing.
             elements = []
-            for idx, choice in enumerate(choices):
-                label = str(choice).strip() or f"Option {idx + 1}"
+            for idx, label in enumerate(labels):
                 elements.append({
                     "type": "button",
                     "text": {"type": "plain_text", "text": label[:75], "emoji": True},

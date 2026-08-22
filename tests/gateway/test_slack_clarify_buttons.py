@@ -135,6 +135,59 @@ class TestSlackSendClarify:
 
 
     @pytest.mark.asyncio
+    async def test_truncated_choices_show_full_text_in_section(self):
+        """When a choice label exceeds 75 chars, the full text appears in the
+        section block above the buttons (#78115)."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "99.99"})
+
+        long_choice = "Deploy to the staging environment and run the full integration test suite before promoting to production"
+        result = await adapter.send_clarify(
+            chat_id="C1",
+            question="Which plan?",
+            choices=[long_choice, "Skip tests"],
+            clarify_id="cid_trunc",
+            session_key="sk_trunc",
+        )
+
+        assert result.success is True
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        blocks = kwargs["blocks"]
+        section_text = blocks[0]["text"]["text"]
+        # Full text of the long choice is in the section
+        assert long_choice in section_text
+        assert "1." in section_text
+        # Short choice also visible
+        assert "Skip tests" in section_text
+        # Buttons are still present with truncated labels
+        action_block = blocks[1]
+        assert action_block["type"] == "actions"
+        button_label = action_block["elements"][0]["text"]["text"]
+        assert len(button_label) <= 75
+        assert button_label != long_choice  # truncated
+
+    @pytest.mark.asyncio
+    async def test_short_choices_no_numbered_list(self):
+        """When all choice labels fit in 75 chars, no numbered list is added."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "88.88"})
+
+        await adapter.send_clarify(
+            chat_id="C1",
+            question="Pick one",
+            choices=["short", "also short"],
+            clarify_id="cid_short",
+            session_key="sk_short",
+        )
+
+        section_text = mock_client.chat_postMessage.call_args[1]["blocks"][0]["text"]["text"]
+        # No numbered options in the section for short choices
+        assert "1." not in section_text
+        assert "2." not in section_text
+
+    @pytest.mark.asyncio
     async def test_mrkdwn_escapes_question(self):
         adapter = _make_adapter()
         mock_client = adapter._team_clients["T1"]

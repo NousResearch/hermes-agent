@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesModule from '@/hermes'
 import { getSession } from '@/hermes'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
+import { $removedSessionIds, tombstoneSessions, untombstoneSessions } from '@/store/projects'
 import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -23,6 +24,7 @@ describe('resolveStoredSession profile ownership', () => {
   beforeEach(() => {
     $cronSessions.set([])
     $messagingSessions.set([])
+    $removedSessionIds.set(new Set())
     $sessions.set([])
     $profiles.set(profiles('default', 'meta'))
     $activeGatewayProfile.set('meta')
@@ -32,6 +34,7 @@ describe('resolveStoredSession profile ownership', () => {
   afterEach(() => {
     $cronSessions.set([])
     $messagingSessions.set([])
+    $removedSessionIds.set(new Set())
     $sessions.set([])
     $profiles.set([])
     $activeGatewayProfile.set('default')
@@ -135,6 +138,93 @@ describe('resolveStoredSession profile ownership', () => {
     expect(resolved?.profile).toBe('default')
     // the cached row is owned too — no unowned row is ever re-cached
     expect($sessions.get().find(s => s.id === 's1')?.profile).toBe('default')
+  })
+
+  it('does not recache a by-id row while its session is tombstoned', async () => {
+    let resolveRequest!: (value: SessionInfo) => void
+    mockGetSession.mockReturnValueOnce(
+      new Promise<SessionInfo>(resolve => {
+        resolveRequest = resolve
+      })
+    )
+
+    const pending = resolveStoredSession('s1')
+    tombstoneSessions(['s1'])
+    resolveRequest(session({ archived: false, id: 's1' }))
+
+    await expect(pending).resolves.toMatchObject({ id: 's1' })
+    expect($sessions.get()).toEqual([])
+    untombstoneSessions(['s1'])
+  })
+
+  it('does not recache a stale by-id row when its tombstone clears before the response', async () => {
+    let resolveRequest!: (value: SessionInfo) => void
+    mockGetSession.mockReturnValueOnce(
+      new Promise<SessionInfo>(resolve => {
+        resolveRequest = resolve
+      })
+    )
+    tombstoneSessions(['s1'])
+
+    const pending = resolveStoredSession('s1')
+    untombstoneSessions(['s1'])
+    resolveRequest(session({ archived: false, id: 's1' }))
+
+    await expect(pending).resolves.toMatchObject({ id: 's1' })
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('does not recache a stale by-id row after an in-flight tombstone ABA cycle', async () => {
+    let resolveRequest!: (value: SessionInfo) => void
+    mockGetSession.mockReturnValueOnce(
+      new Promise<SessionInfo>(resolve => {
+        resolveRequest = resolve
+      })
+    )
+
+    const pending = resolveStoredSession('s1')
+    tombstoneSessions(['s1'])
+    untombstoneSessions(['s1'])
+    expect($removedSessionIds.get()).toEqual(new Set())
+    resolveRequest(session({ archived: false, id: 's1' }))
+
+    await expect(pending).resolves.toMatchObject({ id: 's1' })
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('does not recache a stale cross-profile by-id row after an in-flight tombstone ABA cycle', async () => {
+    let resolveProbe!: (value: SessionInfo) => void
+    mockGetSession.mockRejectedValueOnce(new Error('404: Session not found'))
+    mockGetSession.mockReturnValueOnce(
+      new Promise<SessionInfo>(resolve => {
+        resolveProbe = resolve
+      })
+    )
+
+    const pending = resolveStoredSession('s1')
+    await vi.waitFor(() => expect(mockGetSession).toHaveBeenCalledTimes(2))
+    tombstoneSessions(['s1'])
+    untombstoneSessions(['s1'])
+    resolveProbe(session({ archived: false, id: 's1' }))
+
+    await expect(pending).resolves.toMatchObject({ id: 's1', profile: 'default' })
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('returns an archived by-id row for explicit resume without adding it to sidebar caches', async () => {
+    mockGetSession.mockResolvedValueOnce(session({ archived: true, id: 's1' }))
+
+    await expect(resolveStoredSession('s1')).resolves.toMatchObject({ id: 's1' })
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('recaches a later by-id row after a completed archive rollback', async () => {
+    tombstoneSessions(['s1'])
+    untombstoneSessions(['s1'])
+    mockGetSession.mockResolvedValueOnce(session({ archived: false, id: 's1' }))
+
+    await expect(resolveStoredSession('s1')).resolves.toMatchObject({ id: 's1' })
+    expect($sessions.get()).toEqual([expect.objectContaining({ id: 's1', profile: 'meta' })])
   })
 
   it('resolveSessionProfile routes a default-profile session from a non-default gateway', async () => {

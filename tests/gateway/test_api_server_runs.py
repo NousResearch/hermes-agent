@@ -798,5 +798,172 @@ class TestRunsProviderAuthFailure:
                     await asyncio.sleep(0.05)
 
                 assert status["status"] == "failed"
-                assert status["error"] == "⚠️ Provider authentication failed: No credentials found for provider 'nous'"
+                assert (
+                    status["error"]
+                    == "⚠️ Provider authentication failed: No credentials found for provider 'nous'"
+                )
                 assert status["last_event"] == "run.failed"
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/runs idempotency
+# ---------------------------------------------------------------------------
+
+
+def _use_idempotency_db(adapter, path):
+    from gateway.platforms.api_server import RunIdempotencyStore
+
+    adapter._run_idempotency_store.close()
+    adapter._run_idempotency_store = RunIdempotencyStore(str(path))
+
+
+class TestRunIdempotency:
+    @pytest.mark.asyncio
+    async def test_sequential_duplicate_reuses_original(self, adapter, tmp_path):
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        app = _create_runs_app(adapter)
+        calls = 0
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as create:
+                agent = MagicMock()
+
+                def run(**kwargs):
+                    nonlocal calls
+                    calls += 1
+                    return {"final_response": "done"}
+
+                agent.run_conversation.side_effect = run
+                agent.session_prompt_tokens = agent.session_completion_tokens = (
+                    agent.session_total_tokens
+                ) = 0
+                create.return_value = agent
+                headers = {"Idempotency-Key": "retry-1"}
+                first = await cli.post(
+                    "/v1/runs", json={"input": "hello"}, headers=headers
+                )
+                second = await cli.post(
+                    "/v1/runs", json={"input": "hello"}, headers=headers
+                )
+                assert first.status == second.status == 202
+                assert (await first.json())["run_id"] == (await second.json())["run_id"]
+                assert second.headers["Idempotency-Replayed"] == "true"
+                await asyncio.sleep(0.1)
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_changed_payload_conflicts(self, adapter, tmp_path):
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as create:
+                agent = MagicMock()
+                agent.run_conversation.return_value = {"final_response": "done"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = (
+                    agent.session_total_tokens
+                ) = 0
+                create.return_value = agent
+                headers = {"Idempotency-Key": "same-key"}
+                assert (
+                    await cli.post("/v1/runs", json={"input": "one"}, headers=headers)
+                ).status == 202
+                conflict = await cli.post(
+                    "/v1/runs", json={"input": "two"}, headers=headers
+                )
+                assert conflict.status == 409
+                assert (await conflict.json())["error"][
+                    "code"
+                ] == "idempotency_key_conflict"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_duplicate_starts_once(self, adapter, tmp_path):
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        app = _create_runs_app(adapter)
+        calls = 0
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as create:
+                agent = MagicMock()
+
+                def run(**kwargs):
+                    nonlocal calls
+                    calls += 1
+                    time.sleep(0.05)
+                    return {"final_response": "done"}
+
+                agent.run_conversation.side_effect = run
+                agent.session_prompt_tokens = agent.session_completion_tokens = (
+                    agent.session_total_tokens
+                ) = 0
+                create.return_value = agent
+
+                async def post():
+                    response = await cli.post(
+                        "/v1/runs",
+                        json={"input": "race"},
+                        headers={"Idempotency-Key": "race-key"},
+                    )
+                    return response.status, await response.json()
+
+                results = await asyncio.gather(*[post() for _ in range(8)])
+                assert {status for status, _ in results} == {202}
+                assert len({body["run_id"] for _, body in results}) == 1
+                await asyncio.sleep(0.15)
+        assert calls == 1
+
+    def test_restart_durability_and_terminal_semantics(self, tmp_path):
+        from gateway.platforms.api_server import RunIdempotencyStore
+
+        path = tmp_path / "idem.db"
+        for terminal in ("completed", "failed", "cancelled"):
+            first = RunIdempotencyStore(str(path))
+            run_id = f"run_{terminal}"
+            assert (
+                first.reserve(
+                    "tenant",
+                    terminal,
+                    "fp",
+                    run_id,
+                    {"run_id": run_id, "status": terminal},
+                )[0]
+                == "created"
+            )
+            first.close()
+            restarted = RunIdempotencyStore(str(path))
+            outcome, record = restarted.reserve(
+                "tenant", terminal, "fp", "run_new", {"status": "queued"}
+            )
+            assert outcome == "reused"
+            assert record["run_id"] == run_id
+            assert record["status"]["status"] == terminal
+            restarted.close()
+
+    def test_tenant_isolation_and_retention(self, tmp_path):
+        from gateway.platforms.api_server import RunIdempotencyStore
+
+        store = RunIdempotencyStore(str(tmp_path / "idem.db"))
+        assert (
+            store.reserve("tenant-a", "key", "fp-a", "run_a", {"status": "queued"})[0]
+            == "created"
+        )
+        assert (
+            store.reserve("tenant-b", "key", "fp-b", "run_b", {"status": "queued"})[0]
+            == "created"
+        )
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_missing_key_preserves_legacy_new_run_behavior(
+        self, adapter, tmp_path
+    ):
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as create:
+                agent = MagicMock()
+                agent.run_conversation.return_value = {"final_response": "done"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = (
+                    agent.session_total_tokens
+                ) = 0
+                create.return_value = agent
+                first = await cli.post("/v1/runs", json={"input": "hello"})
+                second = await cli.post("/v1/runs", json={"input": "hello"})
+                assert (await first.json())["run_id"] != (await second.json())["run_id"]

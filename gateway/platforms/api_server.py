@@ -918,6 +918,134 @@ def check_api_server_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+class RunIdempotencyStore:
+    """Durable, tenant-scoped reservations for ``POST /v1/runs``.
+
+    A unique ``(scope, key)`` row is inserted inside ``BEGIN IMMEDIATE`` so
+    separate gateway workers/processes cannot both admit the same request.
+    Only request fingerprints and public run status are stored; request bodies
+    and credentials are deliberately excluded.
+    """
+
+    RETENTION_SECONDS = 24 * 60 * 60
+
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            try:
+                from hermes_cli.config import get_hermes_home
+
+                db_path = str(get_hermes_home() / "runs_idempotency.db")
+            except Exception:
+                db_path = ":memory:"
+        self._db_path = None if db_path == ":memory:" else db_path
+        try:
+            self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
+        except Exception:
+            self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+            self._db_path = None
+        from hermes_state import apply_wal_with_fallback
+
+        apply_wal_with_fallback(self._conn, db_label="runs_idempotency.db")
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS run_idempotency (
+                scope TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                status_json TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (scope, idempotency_key)
+            )"""
+        )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS run_idempotency_run_id ON run_idempotency(run_id)"
+        )
+        self._conn.commit()
+        self._lock = threading.Lock()
+        self._tighten_permissions()
+
+    def _tighten_permissions(self) -> None:
+        if not self._db_path:
+            return
+        for candidate in (
+            Path(self._db_path),
+            Path(self._db_path + "-wal"),
+            Path(self._db_path + "-shm"),
+        ):
+            try:
+                if candidate.exists():
+                    candidate.chmod(0o600)
+            except OSError:
+                logger.debug(
+                    "Failed to restrict run idempotency store permissions",
+                    exc_info=True,
+                )
+
+    def reserve(
+        self,
+        scope: str,
+        key: str,
+        fingerprint: str,
+        run_id: str,
+        status: Dict[str, Any],
+    ):
+        """Atomically reserve a key; return ``(outcome, stored_record)``."""
+        now = time.time()
+        encoded = json.dumps(status, sort_keys=True, separators=(",", ":"))
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute(
+                    "DELETE FROM run_idempotency WHERE updated_at < ?",
+                    (now - self.RETENTION_SECONDS,),
+                )
+                row = self._conn.execute(
+                    "SELECT fingerprint, run_id, status_json FROM run_idempotency WHERE scope=? AND idempotency_key=?",
+                    (scope, key),
+                ).fetchone()
+                if row is not None:
+                    self._conn.commit()
+                    outcome = (
+                        "reused"
+                        if hmac.compare_digest(row[0], fingerprint)
+                        else "conflict"
+                    )
+                    return outcome, {"run_id": row[1], "status": json.loads(row[2])}
+                self._conn.execute(
+                    "INSERT INTO run_idempotency(scope,idempotency_key,fingerprint,run_id,status_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                    (scope, key, fingerprint, run_id, encoded, now, now),
+                )
+                self._conn.commit()
+                return "created", {"run_id": run_id, "status": status}
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def owns_run(self, scope: str, run_id: str) -> bool:
+        with self._lock:
+            return (
+                self._conn.execute(
+                    "SELECT 1 FROM run_idempotency WHERE scope=? AND run_id=?",
+                    (scope, run_id),
+                ).fetchone()
+                is not None
+            )
+
+    def update_status(self, run_id: str, status: Dict[str, Any]) -> None:
+        encoded = json.dumps(status, sort_keys=True, separators=(",", ":"))
+        with self._lock:
+            self._conn.execute(
+                "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
+                (encoded, time.time(), run_id),
+            )
+            self._conn.commit()
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+
 class ResponseStore:
     """
     SQLite-backed LRU store for Responses API state.
@@ -1523,6 +1651,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+        self._run_idempotency_store = RunIdempotencyStore()
+        self._run_idempotency_ids: set[str] = set()
+        self._run_owners: Dict[str, str] = {}
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -5222,23 +5353,41 @@ class APIServerAdapter(BasePlatformAdapter):
         if idempotency_key:
             fp = _make_request_fingerprint(
                 body,
-                keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+                keys=[
+                    "model",
+                    "provider",
+                    "model_options",
+                    "messages",
+                    "tools",
+                    "tool_choice",
+                    "stream",
+                ],
             )
             try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
+                result, usage = await _idem_cache.get_or_set(
+                    idempotency_key, fp, _compute_completion
+                )
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                logger.error(
+                    "Error running agent for chat completions: %s", e, exc_info=True
+                )
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(
+                        f"Internal server error: {e}", err_type="server_error"
+                    ),
                     status=500,
                 )
         else:
             try:
                 result, usage = await _compute_completion()
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                logger.error(
+                    "Error running agent for chat completions: %s", e, exc_info=True
+                )
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(
+                        f"Internal server error: {e}", err_type="server_error"
+                    ),
                     status=500,
                 )
 
@@ -6359,11 +6508,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 ],
             )
             try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
+                result, usage = await _idem_cache.get_or_set(
+                    idempotency_key, fp, _compute_response
+                )
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(
+                        f"Internal server error: {e}", err_type="server_error"
+                    ),
                     status=500,
                 )
         else:
@@ -7396,10 +7549,18 @@ class APIServerAdapter(BasePlatformAdapter):
         current.setdefault("created_at", fields.pop("created_at", now))
         current.update(fields)
         self._run_statuses[run_id] = current
+        if run_id in self._run_idempotency_ids:
+            try:
+                self._run_idempotency_store.update_status(run_id, current)
+            except Exception:
+                logger.exception(
+                    "[api_server] failed to persist idempotent run status %s", run_id
+                )
         return current
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
+
         def _push(event: Dict[str, Any]) -> None:
             self._set_run_status(
                 run_id,
@@ -7491,6 +7652,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return _callback
 
+    def _run_idempotency_scope(self, request: "web.Request") -> str:
+        """Opaque auth/profile namespace; never persist bearer credentials."""
+        profile = _api_request_profile.get() or "default"
+        expected_key = self._expected_api_key()
+        identity = expected_key or "unauthenticated-test-listener"
+        return hashlib.sha256(f"{profile}\0{identity}".encode()).hexdigest()
+
     @_admit_api_agent_request
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
@@ -7510,13 +7678,46 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
 
+        idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+        if idempotency_key and (
+            len(idempotency_key) > 255
+            or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key)
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Idempotency-Key must be 1-255 visible ASCII characters",
+                    code="invalid_idempotency_key",
+                ),
+                status=400,
+            )
+        idempotency_scope = (
+            self._run_idempotency_scope(request) if idempotency_key else ""
+        )
+        idempotency_fingerprint = (
+            hashlib.sha256(
+                json.dumps(
+                    body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                ).encode()
+            ).hexdigest()
+            if idempotency_key
+            else ""
+        )
+
         raw_input = body.get("input")
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
-        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
+        user_message = (
+            raw_input
+            if isinstance(raw_input, str)
+            else (
+                raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
+            )
+        )
         if not user_message:
-            return web.json_response(_openai_error("No user message found in input"), status=400)
+            return web.json_response(
+                _openai_error("No user message found in input"), status=400
+            )
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
@@ -7579,6 +7780,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error(selection_error), status=400)
 
         run_id = f"run_{uuid.uuid4().hex}"
+        self._run_owners[run_id] = self._run_idempotency_scope(request)
         session_id = session_id or run_id
         # Approval queues gate host-side tool execution and must be isolated
         # per API run.  Client-provided session IDs and memory session keys are
@@ -7617,13 +7819,40 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-        self._set_run_status(
+        initial_status = self._set_run_status(
             run_id,
             "queued",
             created_at=created_at,
             session_id=session_id,
             model=body.get("model", self._model_name),
         )
+        if idempotency_key:
+            outcome, record = self._run_idempotency_store.reserve(
+                idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status
+            )
+            if outcome != "created":
+                self._run_streams.pop(run_id, None)
+                self._run_streams_created.pop(run_id, None)
+                self._run_approval_sessions.pop(run_id, None)
+                self._run_statuses.pop(run_id, None)
+                self._run_owners.pop(run_id, None)
+                if outcome == "conflict":
+                    return web.json_response(
+                        _openai_error(
+                            "Idempotency-Key was already used with a different request payload",
+                            code="idempotency_key_conflict",
+                        ), status=409,
+                    )
+                original_id = record["run_id"]
+                self._run_statuses.setdefault(original_id, record["status"])
+                self._run_idempotency_ids.add(original_id)
+                self._run_owners[original_id] = idempotency_scope
+                return web.json_response(
+                    {"run_id": original_id, "status": "started"},
+                    status=202,
+                    headers={"Idempotency-Replayed": "true"},
+                )
+            self._run_idempotency_ids.add(run_id)
 
         # Background task outlives the HTTP response (and thus the middleware
         # profile scope). Capture now and re-enter inside the task/executor.
@@ -7919,6 +8148,17 @@ class APIServerAdapter(BasePlatformAdapter):
             headers=response_headers,
         )
 
+    def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
+        scope = self._run_idempotency_scope(request)
+        owner = self._run_owners.get(run_id)
+        if owner is None and run_id in self._run_statuses:
+            # Backward compatibility for statuses created by older/in-process
+            # integrations before ownership tracking was introduced.
+            return True
+        return owner == scope or (
+            owner is None and self._run_idempotency_store.owns_run(scope, run_id)
+        )
+
     async def _handle_get_run(self, request: "web.Request") -> "web.Response":
         """GET /v1/runs/{run_id} — return pollable run status for external UIs."""
         auth_err = self._check_auth(request)
@@ -7926,6 +8166,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
+        if not self._request_owns_run(request, run_id):
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
         status = self._run_statuses.get(run_id)
         if status is None:
             return web.json_response(
@@ -7941,6 +8186,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
+        if not self._request_owns_run(request, run_id):
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
 
         # Allow subscribing slightly before the run is registered (race condition window)
         for _ in range(20):
@@ -7993,6 +8243,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
+        if not self._request_owns_run(request, run_id):
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
         status = self._run_statuses.get(run_id)
         if status is None:
             return web.json_response(
@@ -8081,9 +8336,17 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
+        if not self._request_owns_run(request, run_id):
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
         status = self._run_statuses.get(run_id)
         if status is None:
-            return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
         # Only genuinely running runs are steerable.  /stop retains agent/task
         # refs during cooperative shutdown, so the status gate (not the mere
         # presence of an agent ref) is what rejects stop-then-steer.
@@ -8141,11 +8404,19 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
+        if not self._request_owns_run(request, run_id):
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
         agent = self._active_run_agents.get(run_id)
         task = self._active_run_tasks.get(run_id)
 
         if agent is None and task is None:
-            return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
 
         self._set_run_status(run_id, "stopping", last_event="run.stopping")
         self._stopping_run_ids.add(run_id)
@@ -8436,6 +8707,13 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 logger.debug(
                     "Failed to close response store for %s", self.name, exc_info=True,
+                )
+        if self._run_idempotency_store is not None:
+            try:
+                self._run_idempotency_store.close()
+            except Exception:
+                logger.debug(
+                    "Failed to close run idempotency store for %s", self.name, exc_info=True,
                 )
         try:
             if self._site:

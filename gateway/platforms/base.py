@@ -3008,6 +3008,34 @@ class BasePlatformAdapter(ABC):
     # routing is platform-generic instead of Discord-only.
     gateway_runner = None  # type: ignore[assignment]  # set by gateway/run.py
 
+    def _event_session_key(self, event: "MessageEvent") -> str:
+        """Session key for batching, matching the gateway's routed namespace.
+
+        Prefer ``runner._session_key_for_source`` so an unset
+        ``source.profile`` is stamped from ``profile_routes`` instead of
+        collapsing into ``agent:main``. When the runner is not attached
+        (reconnect / unit tests), fall back to ``build_session_key`` with
+        whatever stamp is already on the source.
+        """
+        runner = getattr(self, "gateway_runner", None)
+        resolve = getattr(runner, "_session_key_for_source", None)
+        if callable(resolve):
+            try:
+                key = resolve(event.source)
+            except Exception:
+                key = None
+            if isinstance(key, str) and key:
+                return key
+        from gateway.session import build_session_key
+
+        extra = getattr(self.config, "extra", None) or {}
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
+            profile=getattr(event.source, "profile", None),
+        )
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform

@@ -8553,19 +8553,12 @@ class DiscordAdapter(BasePlatformAdapter):
     def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped key for text message batching.
 
-        Passes ``event.source.profile`` through so routed messages batch
-        under the same namespace the agent run will use (e.g.
-        ``agent:crypto-trader`` instead of ``agent:main``). Without this,
-        the batch key would always land in ``agent:main`` even when the
-        routed profile differs.
+        Routes through ``_event_session_key`` so an unset ``source.profile``
+        is stamped from ``profile_routes`` and batches under the same
+        namespace the agent run will use (e.g. ``agent:crypto-trader``
+        instead of ``agent:main``).
         """
-        from gateway.session import build_session_key
-        return build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(event.source),
-        )
+        return self._event_session_key(event)
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.

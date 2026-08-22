@@ -260,7 +260,7 @@ class TestSendDingtalk:
         client.post.assert_awaited_once()
         call_kwargs = client.post.await_args
         assert call_kwargs[0][0] == "https://oapi.dingtalk.com/robot/send?access_token=abc"
-        assert call_kwargs[1]["json"] == {"msgtype": "text", "text": {"content": "hello dingtalk"}}
+        assert call_kwargs[1]["json"] == {"msgtype": "markdown", "markdown": {"title": "Hermes", "text": "hello dingtalk"}}
 
 
     def test_http_error_redacts_access_token_in_exception_text(self):

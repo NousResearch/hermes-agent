@@ -1807,6 +1807,36 @@ class TestSystemdCgroupIsolation:
         # The session must record the unit name so kill_process can stop it.
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (None, None),
+            ("0", "MemorySwapMax=0"),
+            ("64", f"MemorySwapMax={64 * 1024 * 1024}"),
+        ],
+    )
+    def test_systemd_scope_swap_limit_is_explicit_and_tri_state(
+        self, monkeypatch, raw, expected
+    ):
+        from tools.process_registry import _build_systemd_scope_argv
+
+        if raw is None:
+            monkeypatch.delenv("TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB", raising=False)
+        else:
+            monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB", raw)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        argv = _build_systemd_scope_argv(["/bin/true"], "swap-test")
+        properties = [
+            argv[index + 1]
+            for index, value in enumerate(argv[:-1])
+            if value == "--property"
+        ]
+        swap_properties = [
+            value for value in properties if value.startswith("MemorySwapMax=")
+        ]
+        assert swap_properties == ([] if expected is None else [expected])
+
     def test_falls_back_when_systemd_run_unavailable(self, registry, monkeypatch, _gateway_identity):
         """Under a supervisor but without systemd-run, fall back to the
         legacy ``start_new_session=True`` path (worker shares the gateway

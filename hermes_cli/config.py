@@ -3508,6 +3508,8 @@ TERMINAL_CONFIG_ENV_MAP = {
     "container_memory": "TERMINAL_CONTAINER_MEMORY",
     "container_disk": "TERMINAL_CONTAINER_DISK",
     "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+    "local_memory_max_mb": "TERMINAL_LOCAL_MEMORY_MAX_MB",
+    "local_memory_swap_max_mb": "TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB",
     "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
     "docker_env": "TERMINAL_DOCKER_ENV",
     "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",

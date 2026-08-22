@@ -167,6 +167,30 @@ def _worker_memory_max_bytes() -> int:
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 
+def _worker_memory_swap_max_bytes() -> Optional[int]:
+    """Return an explicit worker swap cap, or ``None`` when unspecified.
+
+    Swap policy is tri-state: unset preserves upstream systemd behavior,
+    explicit zero disables swap, and a positive integer sets a MiB allowance.
+    Invalid or negative values fail closed to "unspecified" with a warning.
+    """
+    raw = os.getenv("TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB", "").strip()
+    if not raw:
+        return None
+    try:
+        parsed_mb = int(raw)
+    except ValueError:
+        parsed_mb = -1
+    if parsed_mb < 0:
+        logger.warning(
+            "Ignoring invalid TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB=%r; "
+            "expected a non-negative integer MiB value",
+            raw,
+        )
+        return None
+    return parsed_mb * 1024 * 1024
+
+
 def _systemd_run_user_scope_available() -> bool:
     """Return True if ``systemd-run --user --scope`` can create a cgroup.
 
@@ -290,7 +314,7 @@ def _build_systemd_scope_argv(
         return shell_argv
     unit_name = f"hermes-worker-{unit_suffix}"
     memory_max = _worker_memory_max_bytes()
-    return [
+    argv = [
         binary,
         "--user",
         "--scope",
@@ -304,9 +328,12 @@ def _build_systemd_scope_argv(
         f"MemoryMax={memory_max}",
         "--property",
         "OOMPolicy=kill",
-        "--",
-        *shell_argv,
     ]
+    swap_max = _worker_memory_swap_max_bytes()
+    if swap_max is not None:
+        argv.extend(["--property", f"MemorySwapMax={swap_max}"])
+    argv.extend(["--", *shell_argv])
+    return argv
 
 
 def _stop_systemd_unit(unit_name: str) -> bool:

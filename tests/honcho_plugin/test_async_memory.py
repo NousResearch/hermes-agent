@@ -459,6 +459,9 @@ class TestMemoryFileMigrationTargets:
         mgr._peers_cache[session.user_peer_id] = user_peer
         mgr._peers_cache[session.assistant_peer_id] = ai_peer
 
+        marker_session = MagicMock()
+        mgr._honcho.session.return_value = marker_session
+
         (tmp_path / "MEMORY.md").write_text("memory facts", encoding="utf-8")
         (tmp_path / "USER.md").write_text("user profile", encoding="utf-8")
         (tmp_path / "SOUL.md").write_text("ai identity", encoding="utf-8")
@@ -466,10 +469,10 @@ class TestMemoryFileMigrationTargets:
         uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
 
         assert uploaded is True
-        assert honcho_session.upload_file.call_count == 3
+        assert marker_session.upload_file.call_count == 3
 
         peer_by_upload_name = {}
-        for call_args in honcho_session.upload_file.call_args_list:
+        for call_args in marker_session.upload_file.call_args_list:
             payload = call_args.kwargs["file"]
             peer_by_upload_name[payload[0]] = call_args.kwargs["peer"]
 
@@ -523,16 +526,18 @@ class TestMemoryFileMigrationOwnerGate:
         """No peerName and no runtime identity is the plain CLI install —
         the only person who exists is the operator the files describe."""
         mgr = make_manager(write_frequency="turn")
-        session, honcho_session = _prime_migration_session(mgr, "cli:test", "cli-test")
+        session, _ = _prime_migration_session(mgr, "cli:test", "cli-test")
         mgr._peers_cache[session.user_peer_id] = MagicMock()
         mgr._peers_cache[session.assistant_peer_id] = MagicMock()
+        marker_session = MagicMock()
+        mgr._honcho.session.return_value = marker_session
 
         (tmp_path / "MEMORY.md").write_text("memory facts", encoding="utf-8")
 
         uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
 
         assert uploaded is True
-        assert honcho_session.upload_file.call_count == 1
+        assert marker_session.upload_file.call_count == 1
 
     def test_aliased_owner_identity_migrates(self, tmp_path, make_manager):
         """An alias mapping the owner's platform ID onto peerName makes that
@@ -543,19 +548,21 @@ class TestMemoryFileMigrationOwnerGate:
             user_peer_aliases={"discord-999": "owner-user"},
             runtime_user_peer_name="discord-999",
         )
-        session, honcho_session = _prime_migration_session(
+        session, _ = _prime_migration_session(
             mgr, "discord:dm", "discord-dm"
         )
         assert session.user_peer_id == "owner-user"
         mgr._peers_cache[session.user_peer_id] = MagicMock()
         mgr._peers_cache[session.assistant_peer_id] = MagicMock()
+        marker_session = MagicMock()
+        mgr._honcho.session.return_value = marker_session
 
         (tmp_path / "USER.md").write_text("user profile", encoding="utf-8")
 
         uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
 
         assert uploaded is True
-        assert honcho_session.upload_file.call_count == 1
+        assert marker_session.upload_file.call_count == 1
 
     def test_pinned_peer_name_migrates(self, tmp_path, make_manager):
         """pinPeerName collapses every identity onto the owner peer by
@@ -566,19 +573,21 @@ class TestMemoryFileMigrationOwnerGate:
             pin_peer_name=True,
             runtime_user_peer_name="anyone-at-all",
         )
-        session, honcho_session = _prime_migration_session(
+        session, _ = _prime_migration_session(
             mgr, "discord:shared", "shared-chan"
         )
         assert session.user_peer_id == "owner-user"
         mgr._peers_cache[session.user_peer_id] = MagicMock()
         mgr._peers_cache[session.assistant_peer_id] = MagicMock()
+        marker_session = MagicMock()
+        mgr._honcho.session.return_value = marker_session
 
         (tmp_path / "MEMORY.md").write_text("memory facts", encoding="utf-8")
 
         uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
 
         assert uploaded is True
-        assert honcho_session.upload_file.call_count == 1
+        assert marker_session.upload_file.call_count == 1
 
 
 # ---------------------------------------------------------------------------

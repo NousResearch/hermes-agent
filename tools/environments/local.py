@@ -1718,6 +1718,7 @@ class LocalEnvironment(BaseEnvironment):
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         cwd = _resolve_local_initial_cwd(cwd)
         super().__init__(cwd=cwd, timeout=timeout, env=env)
+        self._staged_command_scripts: set[str] = set()
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -1777,6 +1778,52 @@ class LocalEnvironment(BaseEnvironment):
         """Rewrite native/mixed Windows paths before quoting for Git Bash."""
         return _quote_bash_path(path)
 
+    def _stage_command_script(self, cmd_string: str) -> str:
+        """Write a generated Bash program without putting it in Windows argv."""
+        fd, path = tempfile.mkstemp(
+            prefix="hermes-command-",
+            suffix=".sh",
+            dir=self.get_temp_dir(),
+        )
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(cmd_string.encode("utf-8", "surrogateescape"))
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise
+
+        scripts = getattr(self, "_staged_command_scripts", None)
+        if scripts is None:
+            scripts = self._staged_command_scripts = set()
+        scripts.add(path)
+        return path
+
+    def _discard_staged_command_script(self, path: str | None) -> None:
+        """Release one staged command script owned by this environment."""
+        if not path:
+            return
+        scripts = getattr(self, "_staged_command_scripts", None)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.debug(
+                "Failed to remove staged terminal script %s",
+                os.path.basename(path),
+                exc_info=True,
+            )
+            return
+        if scripts is not None:
+            scripts.discard(path)
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
@@ -1791,7 +1838,6 @@ class LocalEnvironment(BaseEnvironment):
             init_files = _resolve_shell_init_files()
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
-        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by
@@ -1823,19 +1869,34 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
-        proc = subprocess.Popen(
-            args,
-            text=True,
-            env=run_env,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=_popen_cwd,
-            **_popen_kwargs,
-        )
+        staged_script = None
+        if _IS_WINDOWS:
+            staged_script = self._stage_command_script(cmd_string)
+            script_arg = _bash_safe_path(staged_script)
+            args = [bash, "-l", script_arg] if login else [bash, script_arg]
+        else:
+            args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
+
+        try:
+            proc = subprocess.Popen(
+                args,
+                text=True,
+                env=run_env,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                start_new_session=True,
+                cwd=_popen_cwd,
+                **_popen_kwargs,
+            )
+        except BaseException:
+            self._discard_staged_command_script(staged_script)
+            raise
+
+        if staged_script is not None:
+            proc._hermes_staged_command_script = staged_script
         if not _IS_WINDOWS:
             try:
                 proc._hermes_pgid = os.getpgid(proc.pid)
@@ -1846,6 +1907,21 @@ class LocalEnvironment(BaseEnvironment):
             _pipe_stdin(proc, stdin_data)
 
         return proc
+
+    def _wait_for_process(
+        self, proc, timeout: int = 120, *, bounded_capture: bool = False
+    ) -> dict:
+        """Wait for a command and always release its staged Windows script."""
+        try:
+            return super()._wait_for_process(
+                proc,
+                timeout=timeout,
+                bounded_capture=bounded_capture,
+            )
+        finally:
+            self._discard_staged_command_script(
+                getattr(proc, "_hermes_staged_command_script", None)
+            )
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
@@ -1982,3 +2058,5 @@ class LocalEnvironment(BaseEnvironment):
                     pass
         except Exception:
             pass
+        for path in tuple(getattr(self, "_staged_command_scripts", ())):
+            self._discard_staged_command_script(path)

@@ -584,6 +584,109 @@ def _jittered(seconds: float) -> float:
 _DEFAULT_KEEPALIVE_INTERVAL = 180  # seconds between liveness pings
 _MIN_KEEPALIVE_INTERVAL = 5        # clamp floor for configured intervals
 
+
+class _HTTPNotificationStreamTracker:
+    """Escalate an unreplaced Streamable HTTP GET stream to a reconnect.
+
+    The MCP SDK retries the optional GET/SSE notification channel itself. If
+    those retries are exhausted, its GET task returns normally while the POST
+    writer remains alive. Hermes' POST-based keepalive can then keep passing,
+    leaving a half-dead session with no notification channel and no failure
+    visible to the outer transport context.
+
+    A closed GET gets a grace period for the SDK's own cheap reconnect. A new
+    GET response cancels the timer; if none arrives, ``on_stalled`` asks Hermes
+    to rebuild the complete transport.
+    """
+
+    __slots__ = (
+        "_grace_seconds", "_on_stalled", "_generation",
+        "_closed_generation", "_timer", "_closed", "_owner_task",
+    )
+
+    def __init__(self, *, grace_seconds: float, on_stalled: Callable[[], None]):
+        self._grace_seconds = grace_seconds
+        self._on_stalled = on_stalled
+        self._generation = 0
+        self._closed_generation: Optional[int] = None
+        self._timer: Optional[asyncio.TimerHandle] = None
+        self._closed = False
+        self._owner_task: Optional[asyncio.Task] = None
+
+    async def response_hook(self, response: Any) -> None:
+        """Track the lifecycle of a GET response carrying an SSE stream."""
+        request = getattr(response, "request", None)
+        if str(getattr(request, "method", "")).upper() != "GET":
+            return
+        content_type = str(getattr(response, "headers", {}).get("content-type", ""))
+        if not content_type.lower().startswith("text/event-stream"):
+            return
+
+        current_task = asyncio.current_task()
+        if self._owner_task is None:
+            request_headers = getattr(request, "headers", {})
+            if any(
+                str(name).lower() == "last-event-id"
+                for name in request_headers
+            ):
+                # A finite request-resumption GET may complete before the
+                # long-lived notification response arrives. It must not claim
+                # ownership of notification-channel health.
+                return
+            self._owner_task = current_task
+        elif current_task is not self._owner_task:
+            # The SDK uses the same client for finite request-resumption GETs.
+            # Its notification retries stay in one owner task, so only that
+            # task's response family represents notification-channel health.
+            return
+
+        self._generation += 1
+        generation = self._generation
+        self._closed_generation = None
+        self._cancel_timer()
+
+        original_close = response.aclose
+
+        async def tracked_close(*args, **kwargs):
+            try:
+                return await original_close(*args, **kwargs)
+            finally:
+                self._stream_closed(generation)
+
+        response.aclose = tracked_close
+
+    def _stream_closed(self, generation: int) -> None:
+        if (
+            self._closed
+            or generation != self._generation
+            or self._closed_generation == generation
+        ):
+            return
+        self._closed_generation = generation
+        self._timer = asyncio.get_running_loop().call_later(
+            self._grace_seconds, self._fire_if_unreplaced, generation
+        )
+
+    def _fire_if_unreplaced(self, generation: int) -> None:
+        self._timer = None
+        if (
+            self._closed
+            or generation != self._generation
+            or self._closed_generation != generation
+        ):
+            return
+        self._on_stalled()
+
+    def _cancel_timer(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def close(self) -> None:
+        """Disarm delayed callbacks when the owning transport exits."""
+        self._closed = True
+        self._cancel_timer()
+
 # Final shutdown gives pending MCP-loop tasks one bounded cancellation cycle
 # before closing their owning loop. Cooperative parked/reconnect waiters finish
 # immediately; cancellation-resistant tasks must not hang process exit.
@@ -3560,11 +3663,33 @@ class MCPServerTask:
                 configured_header_names=_configured_header_names,
             )
 
+            notification_reconnect_grace = max(5.0, float(connect_timeout))
+
+            def _reconnect_stalled_notification_stream() -> None:
+                logger.warning(
+                    "MCP server '%s': HTTP notification stream closed and was "
+                    "not restored within %.0fs; rebuilding the full session "
+                    "(state: connected → degraded)",
+                    self.name, notification_reconnect_grace,
+                )
+                self._reconnect_event.set()
+
+            # Give the SDK's built-in GET reconnect loop one normal connection
+            # timeout to replace the stream before escalating to a full-session
+            # rebuild. POST pings cannot detect this half-dead state (#91670).
+            notification_tracker = _HTTPNotificationStreamTracker(
+                grace_seconds=notification_reconnect_grace,
+                on_stalled=_reconnect_stalled_notification_stream,
+            )
+
             client_kwargs: dict = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                 "verify": ssl_verify,
-                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                "event_hooks": {"response": [
+                    _strip_auth_on_cross_origin_redirect,
+                    notification_tracker.response_hook,
+                ]},
             }
             if headers:
                 client_kwargs["headers"] = headers
@@ -3607,6 +3732,8 @@ class MCPServerTask:
                 # Streamable-HTTP transport TaskGroup dropped: reconnect
                 # immediately instead of backoff/park (#66092).
                 reason = self._reconnect_or_reraise_group(_eg)
+            finally:
+                notification_tracker.close()
             return reason
         else:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.

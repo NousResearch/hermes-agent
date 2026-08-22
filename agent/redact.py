@@ -1423,5 +1423,11 @@ class RedactingFormatter(logging.Formatter):
         super().__init__(fmt, datefmt, style, **kwargs)
 
     def format(self, record: logging.LogRecord) -> str:
-        original = super().format(record)
-        return redact_sensitive_text(original)
+        try:
+            original = super().format(record)
+            return redact_sensitive_text(original)
+        except Exception:
+            # Formatting is a security boundary: never let logging's default
+            # ``handleError`` path print the original record and arguments to
+            # stderr when the redactor itself is unavailable or raises.
+            return "[log content suppressed: redaction failed]"

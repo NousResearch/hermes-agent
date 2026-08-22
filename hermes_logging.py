@@ -180,13 +180,22 @@ def clear_session_context() -> None:
 # Record factory — injects session_tag and sanitizes every LogRecord at creation
 # ---------------------------------------------------------------------------
 
+_LOG_REDACTION_FAILURE_TEXT = "[log content suppressed: redaction failed]"
+
+
 def _redact_log_record_text(text: str) -> str:
-    """Redact a log text value without letting redactor failures break logging."""
+    """Redact a log text value, suppressing it if the redactor fails.
+
+    This helper sits on a process-wide security boundary. Returning ``text``
+    from the exception path would turn a transient import or validator failure
+    into a credential leak through every plain logging handler in the process.
+    Logging remains available, but the unsafe payload is deliberately lost.
+    """
     try:
         from agent.redact import redact_sensitive_text
         return redact_sensitive_text(text)
     except Exception:
-        return text
+        return _LOG_REDACTION_FAILURE_TEXT
 
 
 _LOG_PRIMITIVE_TYPES = (type(None), bool, int, float, complex)

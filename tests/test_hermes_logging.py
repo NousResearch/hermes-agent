@@ -278,6 +278,49 @@ class TestSessionContext:
         assert secret not in output
         assert "..." in output
 
+    @pytest.mark.parametrize("use_redacting_formatter", [False, True])
+    def test_redactor_failure_suppresses_log_content(
+        self,
+        capsys,
+        use_redacting_formatter,
+    ):
+        """Validator failures fail closed for plain and Hermes handlers."""
+        from agent.redact import RedactingFormatter
+
+        secret = "sk-" + "z" * 32
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        formatter_cls = RedactingFormatter if use_redacting_formatter else logging.Formatter
+        handler.setFormatter(formatter_cls("%(message)s %(payload)s"))
+
+        logger = logging.getLogger("_test_redactor_failure_suppression")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        try:
+            with patch(
+                "agent.redact.redact_sensitive_text",
+                side_effect=RuntimeError("redactor unavailable"),
+            ):
+                logger.info(
+                    "provider token %s",
+                    secret,
+                    extra={"payload": {"Authorization": f"Bearer {secret}"}},
+                )
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        captured = capsys.readouterr()
+        combined = stream.getvalue() + captured.err
+        assert secret not in combined
+        assert "redaction failed" in stream.getvalue()
+        assert "--- Logging error ---" not in captured.err
+
     def test_plain_formatter_redacts_args_without_breaking_numeric_formatting(self):
         """Non-Hermes handlers receive sanitized record.args values."""
         github_token = "ghp_" + "b" * 36

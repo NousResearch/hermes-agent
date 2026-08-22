@@ -1,9 +1,12 @@
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $rightRailActiveTabId, type RightRailTabId } from '@/store/layout'
+import { $previewTabs } from '@/store/preview'
 import { $connection } from '@/store/session'
 
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
+import { activePreviewInput } from './preview-input'
 import { PreviewPane } from './preview-pane'
 
 function stubPdfObjectUrls() {
@@ -34,6 +37,8 @@ describe('PreviewPane console state', () => {
   afterEach(() => {
     cleanup()
     $connection.set(null)
+    $previewTabs.set([])
+    $rightRailActiveTabId.set(null)
     vi.unstubAllGlobals()
   })
 
@@ -556,5 +561,106 @@ describe('PreviewPane console state', () => {
       path: `/api/fs/read-data-url?path=${encodeURIComponent(filePath)}`,
       profile: 'macmini'
     })
+  })
+})
+
+describe('PreviewPane input funnel DPR compensation', () => {
+  // Issue #91130: Chromium divides sendInputEvent coordinates by the guest's
+  // devicePixelRatio when it is ≠ 1, so clicks on fractional-DPR displays land
+  // short. The pane caches the guest DPR on navigation and the funnel
+  // multiplies pointer coordinates by it before sending. DPR 1 stays a no-op.
+
+  const urlTarget = {
+    kind: 'url' as const,
+    label: 'Preview',
+    source: 'http://localhost:5174',
+    url: 'http://localhost:5174'
+  }
+
+  const renderWebPreview = async (dpr: number) => {
+    const tabId: RightRailTabId = `url:${urlTarget.url}`
+
+    $previewTabs.set([{ id: tabId, target: urlTarget }])
+    $rightRailActiveTabId.set(tabId)
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(<PreviewPane tabId={tabId} target={urlTarget} />)
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & {
+      executeJavaScript?: (code: string) => Promise<unknown>
+      sendInputEvent?: (event: unknown) => void
+    }
+
+    const sendInputEvent = vi.fn()
+    const executeJavaScript = vi.fn(async () => dpr)
+
+    Object.assign(webview, { executeJavaScript, sendInputEvent })
+
+    // did-navigate is what makes the pane re-read the guest DPR (both the
+    // initial load and every later navigation go through it).
+    act(() => {
+      webview.dispatchEvent(Object.assign(new Event('did-navigate'), { url: urlTarget.url }))
+    })
+
+    // The refreshGuestDpr promise resolves on a microtask.
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    return { sendInputEvent, tabId }
+  }
+
+  it('multiplies click coordinates by a fractional guest DPR', async () => {
+    const { sendInputEvent, tabId } = await renderWebPreview(1.5)
+
+    await act(async () => {
+      activePreviewInput()?.send({ button: 'left', clickCount: 1, type: 'mouseDown', x: 100, y: 100 })
+    })
+
+    expect(sendInputEvent).toHaveBeenCalledWith({
+      button: 'left',
+      clickCount: 1,
+      type: 'mouseDown',
+      x: 150,
+      y: 150
+    })
+  })
+
+  it('multiplies wheel position but keeps wheel deltas', async () => {
+    const { sendInputEvent } = await renderWebPreview(1.25)
+
+    await act(async () => {
+      activePreviewInput()?.send({ deltaX: 0, deltaY: -120, type: 'mouseWheel', x: 400, y: 300 })
+    })
+
+    expect(sendInputEvent).toHaveBeenCalledWith({
+      deltaX: 0,
+      deltaY: -120,
+      type: 'mouseWheel',
+      x: 500,
+      y: 375
+    })
+  })
+
+  it('leaves coordinates untouched at DPR 1', async () => {
+    const { sendInputEvent } = await renderWebPreview(1)
+
+    await act(async () => {
+      activePreviewInput()?.send({ type: 'mouseMove', x: 200, y: 150 })
+    })
+
+    expect(sendInputEvent).toHaveBeenCalledWith({ type: 'mouseMove', x: 200, y: 150 })
+  })
+
+  it('does not scale keyboard events', async () => {
+    const { sendInputEvent } = await renderWebPreview(2)
+
+    await act(async () => {
+      activePreviewInput()?.send({ keyCode: 'a', type: 'keyDown' })
+    })
+
+    expect(sendInputEvent).toHaveBeenCalledWith({ keyCode: 'a', type: 'keyDown' })
   })
 })

@@ -32,7 +32,7 @@ import {
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
-import { type PreviewInputEvent, registerPreviewInput } from './preview-input'
+import { type PreviewInputEvent, registerPreviewInput, scalePreviewInputForDpr } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
 import { registerPreviewScriptRunner } from './preview-script-runner'
@@ -205,6 +205,13 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const consoleBodyRef = useRef<HTMLDivElement | null>(null)
   const consoleShouldStickRef = useRef(true)
   const hostRef = useRef<HTMLDivElement | null>(null)
+  // The guest page's `devicePixelRatio`, cached per page load. Chromium's
+  // input router divides `sendInputEvent` coordinates by this scale factor on
+  // displays where it is ≠ 1, so the input funnel multiplies by it before
+  // sending (see scalePreviewInputForDpr). Default 1 = the multiply is a no-op
+  // on standard displays; refreshed on navigation, when the value can change
+  // (monitor move, scale change).
+  const guestDprRef = useRef(1)
   const lastReloadRequestRef = useRef(reloadRequest)
   const lastRestartEventRef = useRef('')
   const previewContentRef = useRef<HTMLDivElement | null>(null)
@@ -501,7 +508,13 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
           throw new Error('preview webview cannot take input events')
         }
 
-        webview.sendInputEvent(event)
+        // The guest's CSS-pixel coordinates (measured by the act engine via
+        // getBoundingClientRect) must be converted into the physical widget
+        // space Chromium's input router expects for a scaled guest — it divides
+        // sendInputEvent coordinates by the guest's devicePixelRatio when that
+        // is ≠ 1, which would otherwise land every click short on fractional-
+        // DPR displays. No-op at DPR 1 and for keyboard events.
+        webview.sendInputEvent(scalePreviewInputForDpr(event, guestDprRef.current))
       }
     })
   }, [isRemoteHtml, isWebPreview, tabId])
@@ -746,6 +759,30 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     const syncHistory = () =>
       setHistory({ back: webview.canGoBack?.() ?? false, forward: webview.canGoForward?.() ?? false })
 
+    // Cache the guest page's devicePixelRatio for the input funnel. Chromium
+    // divides sendInputEvent coordinates by this scale, so the funnel must
+    // know it exactly; the value can change across navigations (monitor move,
+    // scale change), so re-read it whenever the page changes. A failed read
+    // keeps the previous value — worst case the funnel behaves as before this
+    // fix (DPR 1 default = no-op).
+    const refreshGuestDpr = () => {
+      if (typeof webview.executeJavaScript !== 'function') {
+        return
+      }
+
+      void webview
+        .executeJavaScript('window.devicePixelRatio || 1')
+        .then(value => {
+          if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+            guestDprRef.current = value
+          }
+        })
+        .catch(() => {
+          // Keep the last known DPR; a transient read failure must not break
+          // the input funnel.
+        })
+    }
+
     const onNavigate = (event: Event) => {
       const detail = event as Event & { url?: string }
 
@@ -759,6 +796,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       // so it is the only thing that knows what its history holds. Wired to
       // `did-navigate-in-page` too, or SPA route changes never update it.
       syncHistory()
+      refreshGuestDpr()
     }
 
     const onFail = (event: Event) => {

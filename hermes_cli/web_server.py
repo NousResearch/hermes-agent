@@ -4938,8 +4938,9 @@ async def check_hermes_update(force: bool = False):
         install_method: 'apt' | 'git' | 'docker' | 'nix' | 'nixos' | 'unknown'
         current_version: installed Hermes version string
         behind: commits behind upstream (>=1), 0 if up to date,
-                -1 if behind by an unknown count, or null if the
-                check could not run (offline, no remote, etc.)
+                -1 if behind by an unknown count, -2 if HEAD diverged
+                from origin/main, or null if the check could not run
+                (offline, no remote, etc.)
         update_available: convenience bool (behind is non-zero and not null)
         can_apply: True when the dashboard's update button can apply it
                    in place (git); False for other install methods where the
@@ -4992,7 +4993,7 @@ async def check_hermes_update(force: bool = False):
     # caches the result for 6h. ``force`` busts the cache so the "Check now"
     # button reflects reality immediately.
     try:
-        from hermes_cli.banner import check_for_updates
+        from hermes_cli.banner import UPDATE_DIVERGED, check_for_updates
 
         if force:
             try:
@@ -5010,6 +5011,13 @@ async def check_hermes_update(force: bool = False):
         payload["message"] = "Couldn't reach the update source — try again later."
     elif behind == 0:
         payload["message"] = "You're on the latest version."
+    elif behind == UPDATE_DIVERGED:
+        # UPDATE_DIVERGED from banner.check_for_updates (#68484)
+        payload["update_available"] = True
+        payload["message"] = (
+            "Branch diverged from origin/main (not a fast-forward). "
+            "Review local WIP before updating."
+        )
     else:
         payload["update_available"] = True
         # Enrich with the actual commits we're behind by, so the desktop's

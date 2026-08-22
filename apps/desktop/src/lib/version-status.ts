@@ -75,7 +75,9 @@ export function resolveVersionStatus({
   // SSH-official presence-only checks, and pip installs. It applies to BOTH
   // targets — the client statusbar item is how a shallow desktop install
   // learns it's stale at all.
-  const available = behind > 0 || !!updateAvailable
+  // UPDATE_DIVERGED from backend is -2 (#68484) — not a fast-forward count.
+  const diverged = behind === -2
+  const available = behind > 0 || diverged || !!updateAvailable
 
   // A client with no version still identifies itself by sha; a backend can't.
   const named = version ?? (client ? sha : null) ?? copy.unknown
@@ -88,12 +90,21 @@ export function resolveVersionStatus({
 
   // Commits behind is the precise diff; `(update)` is the fallback for a
   // backend that knows it's stale but can't count (pip, non-git checkout).
-  const hint = busy ? '' : behind > 0 ? ` (+${behind})` : available ? ` (${copy.update})` : ''
+  const hint = busy
+    ? ''
+    : behind > 0
+      ? ` (+${behind})`
+      : diverged
+        ? ` (diverged)`
+        : available
+          ? ` (${copy.update})`
+          : ''
 
   const tooltip = [
     busy && (applyMessage || copy.updateInProgress),
     !busy && behind > 0 && copy.commitsBehind(behind, (client ? branch : 'main') || '...'),
-    !busy && behind <= 0 && available && copy.update,
+    !busy && diverged && 'branch diverged from origin/main (not a fast-forward)',
+    !busy && behind <= 0 && !diverged && available && copy.update,
     version && (client ? copy.desktopVersion(version) : copy.backendVersion(version)),
     client && sha && copy.commit(sha),
     client && branch && copy.branch(branch)

@@ -481,6 +481,19 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         </Text>
       )}
 
+      {info.update_behind === -2 && (
+        <Text bold color={t.color.warn}>
+          ! branch diverged from origin/main
+          <Text bold={false} color={t.color.warn} dimColor>
+            {' '}
+            - not a fast-forward; review before{' '}
+          </Text>
+          <Text bold color={t.color.warn}>
+            {info.update_command || 'hermes update'}
+          </Text>
+        </Text>
+      )}
+
       {info.install_warning && (
         <Text bold color={t.color.warn} wrap="wrap">
           ! {info.install_warning}

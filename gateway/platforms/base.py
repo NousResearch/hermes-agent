@@ -269,6 +269,68 @@ def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
     return lo
 
 
+# MarkdownV2 inline formatting delimiters, longest first so ``||`` is matched
+# before a bare ``|``.  These are the markers ``format_message`` emits: bold
+# ``*``, italic ``_``, strikethrough ``~`` and spoiler ``||``.  Code spans and
+# fenced blocks are handled separately (their contents are literal).
+_INLINE_MARKERS = ("||", "*", "_", "~")
+
+
+def _open_inline_entities(text: str, initial: "Optional[List[str]]" = None) -> "List[str]":
+    """Return the MarkdownV2 inline markers left unclosed at the end of *text*.
+
+    Walks *text* honouring backslash escapes (``\\*`` is a literal asterisk,
+    not a delimiter) and skipping fenced blocks and inline code spans, where
+    these characters carry no formatting meaning.
+
+    The result is ordered outermost-first, so closing it in reverse order and
+    reopening it in forward order round-trips the original nesting.  Used by
+    :meth:`BasePlatformAdapter.truncate_message` to keep every emitted chunk
+    independently parseable: an unpaired delimiter makes Telegram reject the
+    whole message with "can't parse entities" and fall back to plain text,
+    silently stripping all formatting.
+
+    Note: ``__underline__`` is seen as two ``_`` toggles and therefore nets to
+    balanced, which is correct for a whole span.  ``format_message`` never
+    emits underline, so a split inside one is not reachable in practice.
+    """
+    stack = list(initial or [])
+    i, n = 0, len(text)
+    in_fence = False
+    in_code = False
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2                       # escaped delimiter: not formatting
+            continue
+        if text.startswith("```", i):
+            in_fence = not in_fence
+            in_code = False
+            i += 3
+            continue
+        if in_fence:
+            i += 1
+            continue
+        if ch == "`":
+            in_code = not in_code
+            i += 1
+            continue
+        if in_code:
+            i += 1
+            continue
+        for mark in _INLINE_MARKERS:
+            if text.startswith(mark, i):
+                if stack and stack[-1] == mark:
+                    stack.pop()
+                else:
+                    stack.append(mark)
+                i += len(mark)
+                break
+        else:
+            i += 1
+    return stack
+
+
 def is_network_accessible(host: str) -> bool:
     """Return True if *host* would expose the server beyond loopback.
 
@@ -7255,12 +7317,20 @@ class BasePlatformAdapter(ABC):
         len_fn: Optional["Callable[[str], int]"] = None,
     ) -> List[str]:
         """
-        Split a long message into chunks, preserving code block boundaries.
+        Split a long message into chunks, preserving formatting boundaries.
 
         When a split falls inside a triple-backtick code block, the fence is
         closed at the end of the current chunk and reopened (with the original
         language tag) at the start of the next chunk.  Multi-chunk responses
         receive indicators like ``(1/3)``.
+
+        MarkdownV2 inline entities (``*bold*``, ``_italic_``, ``~strike~``,
+        ``||spoiler||``) are carried the same way: any delimiter still open at
+        a boundary is closed on the current chunk and reopened on the next, so
+        every chunk is independently parseable.  A chunk containing an
+        unpaired delimiter is rejected by Telegram with "can't parse entities"
+        and falls back to plain text, which strips formatting from the entire
+        response.
 
         Args:
             content: The full message content
@@ -7279,21 +7349,41 @@ class BasePlatformAdapter(ABC):
 
         INDICATOR_RESERVE = 10   # room for " (XX/XX)"
         FENCE_CLOSE = "\n```"
+        # Room to close a nested run of inline delimiters at a boundary
+        # (``||`` + ``*`` + ``_`` + ``~`` is 5 units; 8 leaves margin).
+        INLINE_RESERVE = 8
 
         chunks: List[str] = []
         remaining = content
         # When the previous chunk ended mid-code-block, this holds the
         # language tag (possibly "") so we can reopen the fence.
         carry_lang: Optional[str] = None
+        # Inline MarkdownV2 delimiters left open by the previous chunk,
+        # outermost-first, so they can be reopened here.  Mutually exclusive
+        # with carry_lang: inside a fence these characters are literal.
+        carry_inline: List[str] = []
 
         while remaining:
+            # A delimiter we closed at the end of the previous chunk may be
+            # followed immediately by its original closer.  Reopening only to
+            # close again would emit an empty entity (e.g. ``**``), which
+            # Telegram rejects, so drop the redundant closer instead.
+            while carry_inline and remaining.startswith(carry_inline[-1]):
+                remaining = remaining[len(carry_inline.pop()):]
+            if not remaining:
+                break
+
             # If we're continuing a code block from the previous chunk,
             # prepend a new opening fence with the same language tag.
             prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
+            # Reopen any inline entities the previous chunk had to close.
+            prefix += "".join(carry_inline)
 
             # How much body text we can fit after accounting for the prefix,
-            # a potential closing fence, and the chunk indicator.
-            headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
+            # a potential closing fence, the inline closers we may need to
+            # append, and the chunk indicator.
+            headroom = (max_length - INDICATOR_RESERVE - _len(prefix)
+                        - _len(FENCE_CLOSE) - INLINE_RESERVE)
             if headroom < 1:
                 # Floor at 1 so a pathologically small max_length (0 or 1 —
                 # e.g. a relay capability descriptor whose max_message_length
@@ -7321,6 +7411,13 @@ class BasePlatformAdapter(ABC):
                                 _final_lang = _tag.split()[0] if _tag else ""
                     if _final_in_code:
                         final_chunk += FENCE_CLOSE
+                else:
+                    # Close anything still open so the last chunk is valid on
+                    # its own too.  Balanced input closes itself here; this
+                    # only fires when the source text was already unbalanced.
+                    _final_open = _open_inline_entities(final_chunk)
+                    if _final_open:
+                        final_chunk += "".join(reversed(_final_open))
                 chunks.append(final_chunk)
                 break
 
@@ -7405,8 +7502,19 @@ class BasePlatformAdapter(ABC):
                 # Close the orphaned fence so the chunk is valid on its own
                 full_chunk += FENCE_CLOSE
                 carry_lang = lang
+                carry_inline = []
             else:
                 carry_lang = None
+                # Close any inline entities left open at this boundary and
+                # remember them so the next chunk reopens them.  Without this
+                # the chunk carries an unpaired delimiter, Telegram rejects it
+                # with "can't parse entities", and the adapter falls back to
+                # plain text — silently stripping formatting from the whole
+                # response.  Closing and reopening (rather than rewinding the
+                # split) also handles an entity longer than a single chunk.
+                carry_inline = _open_inline_entities(full_chunk)
+                if carry_inline:
+                    full_chunk += "".join(reversed(carry_inline))
 
             chunks.append(full_chunk)
 

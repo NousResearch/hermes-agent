@@ -700,6 +700,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'integrations/index',
+        'integrations/revelata',
         'integrations/nous-portal',
         'integrations/providers',
         'integrations/buzz',

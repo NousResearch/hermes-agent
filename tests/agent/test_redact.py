@@ -113,6 +113,53 @@ class TestEnvAssignments:
         assert "SECRET_TOKEN=" in result
         assert "mypassword" not in result
 
+    def test_shell_command_substitution_not_matched(self):
+        # Regression: shell $(command) and `backtick` substitutions must not
+        # be mistaken for secret values in env assignments.
+        text = "TOKEN=$(grep HASS_TOKEN ~/.hermes/.env | cut -d= -f2)"
+        result = redact_sensitive_text(text)
+        assert result == text  # unchanged — $(...) is not a secret
+
+    def test_shell_backtick_substitution_not_matched(self):
+        text = "SECRET=`cat /run/secrets/db_password`"
+        result = redact_sensitive_text(text)
+        assert result == text  # unchanged — `...` is not a secret
+
+    def test_quoted_shell_substitutions_not_matched(self):
+        texts = [
+            'TOKEN="$(grep HASS_TOKEN ~/.hermes/.env)"',
+            "SECRET='`cat /run/secrets/db_password`'",
+            'TOKEN="$(id)"',
+            "SECRET='`hostname`'",
+        ]
+        for text in texts:
+            assert redact_sensitive_text(text) == text
+
+    def test_unterminated_shell_substitution_still_matched(self):
+        # Fail-closed: a value starting with `$(` / backtick but with no
+        # closing delimiter is a literal, not a substitution — must redact.
+        for text in (
+            "TOKEN=$(not-a-substitution",
+            "SECRET=`not-a-substitution",
+        ):
+            result = redact_sensitive_text(text)
+            assert "not-a-substitution" not in result
+
+    def test_literal_secret_still_matched_after_shell_substitution_carveout(self):
+        text = "TOKEN=ordinary-literal-secret"
+        result = redact_sensitive_text(text)
+        assert "ordinary-literal-secret" not in result
+
+    def test_literal_secret_containing_dollar_still_matched(self):
+        text = "TOKEN=ordinary$literal-secret"
+        result = redact_sensitive_text(text)
+        assert "ordinary$literal-secret" not in result
+
+    def test_literal_secret_containing_backtick_still_matched(self):
+        text = "TOKEN=ordinary`literal-secret"
+        result = redact_sensitive_text(text)
+        assert "ordinary`literal-secret" not in result
+
 
 class TestBareSecretEnvSuffixes:
     """Bare *_KEY / *_PASS / *_PW env suffixes mask, incl. lowercase — #77484."""
@@ -613,6 +660,29 @@ class TestLowercaseDottedConfigKeys:
 
 
 
+    def test_shell_substitutions_in_config_assignments_unchanged(self):
+        texts = [
+            "password=$(cat /run/secrets/db_password)",
+            "app.token=`cat /run/secrets/app_token`",
+            'password="$(cat /run/secrets/db_password)"',
+            "app.token='`cat /run/secrets/app_token`'",
+            'password="$(id)"',
+            "app.token='`hostname`'",
+        ]
+        for text in texts:
+            assert redact_sensitive_text(text) == text
+
+    def test_unterminated_config_substitution_still_redacted(self):
+        # Fail-closed: unterminated `$(` / backtick values are literals.
+        for secret in ("$(not-a-substitution", "`not-a-substitution"):
+            assert secret not in redact_sensitive_text(f"password={secret}")
+            assert secret not in redact_sensitive_text(f"app.token={secret}")
+
+    def test_config_literals_with_shell_metacharacters_still_redacted(self):
+        secrets = ["literal$secret", "literal`secret"]
+        for secret in secrets:
+            assert secret not in redact_sensitive_text(f"password={secret}")
+            assert secret not in redact_sensitive_text(f"app.token={secret}")
 
 
     def test_properties_file_dump(self):

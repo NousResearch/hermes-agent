@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
+import { api } from "@/lib/api";
 import { en } from "./en";
 import { zh } from "./zh";
 import { zhHant } from "./zh-hant";
@@ -117,6 +118,37 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     document.documentElement.lang = locale;
     document.documentElement.dir = RTL_LOCALES.has(locale) ? "rtl" : "ltr";
   }, [locale]);
+
+  // Fallback: if no explicit UI choice exists in localStorage (e.g. a fresh
+  // install or a desktop update that wiped the Electron partition), honor the
+  // configured `display.language` from config.yaml instead of silently defaulting
+  // to English. An explicit user pick in the UI (which writes to localStorage)
+  // always wins over config.
+  useEffect(() => {
+    let cancelled = false;
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored && isLocale(stored)) return; // explicit choice already present
+    } catch {
+      /* SSR/privacy mode */
+    }
+    api
+      .getConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        const lang = (cfg as { display?: { language?: unknown } })?.display?.language;
+        if (typeof lang === "string" && isLocale(lang) && lang !== "en") {
+          setLocale(lang);
+        }
+      })
+      .catch(() => {
+        /* ignore — keep default */
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const value: I18nContextValue = {
     locale,

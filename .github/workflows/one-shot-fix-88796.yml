@@ -36,19 +36,21 @@ jobs:
               raise SystemExit(f'expected one run block, found {len(starts)}')
           start = starts[0]
           key_indent = len(lines[start]) - len(lines[start].lstrip())
-          content_indent = key_indent + 2
-          prefix = ' ' * content_indent
-          body = []
-          for line in lines[start + 1:]:
-              if line.strip():
-                  indent = len(line) - len(line.lstrip())
-                  if indent <= key_indent:
-                      break
-                  if indent < content_indent:
-                      raise SystemExit(f'invalid block indentation: {line!r}')
-                  body.append(line[len(prefix):])
-              else:
-                  body.append('')
+          prefix = ' ' * (key_indent + 2)
+          end = len(lines)
+          for index in range(start + 1, len(lines)):
+              line = lines[index]
+              stripped = line.lstrip()
+              indent = len(line) - len(stripped)
+              if indent == 6 and stripped.startswith('- '):
+                  end = index
+                  break
+          body = [
+              line[len(prefix):] if line.startswith(prefix) else line
+              for line in lines[start + 1:end]
+          ]
+          while body and not body[-1].strip():
+              body.pop()
 
           opens = [i for i, line in enumerate(body) if line.strip() == "python3 - <<'PY'"]
           if len(opens) != 1:

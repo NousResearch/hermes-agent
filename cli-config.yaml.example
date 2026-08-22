@@ -494,6 +494,14 @@ browser:
   extension_control:
     enabled: false
 
+  # Refuse a cold local Chromium start (roughly 300 to 400 MB) when host
+  # MemAvailable is below this many MB; the agent is steered to web_extract or
+  # web_search instead. 0 disables the guard (default). Reusing an already-open
+  # local session is never blocked. Cloud browsers and CDP overrides are not
+  # checked. The check fails open on hosts without /proc/meminfo. Recommended
+  # on small single-box hosts (for example, a 1 GB VPS): 350
+  min_available_mb: 0
+
 # =============================================================================
 # Tool Loop Guardrails
 # =============================================================================

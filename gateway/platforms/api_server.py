@@ -6929,18 +6929,57 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message: Any,
         result: Dict[str, Any],
     ) -> int:
-        """Detect transcript-shaped result["messages"] and return turn start."""
+        """Detect transcript-shaped result["messages"] and return turn start.
+
+        Uses role+content matching (ignoring metadata fields like timestamp,
+        finish_reason, etc.) because the agent modifies messages during the
+        conversation loop — timestamps are added, content may be truncated,
+        and fields like finish_reason/reasoning are stamped on. Full dict
+        equality (``==``) fails on these modifications, causing the prefix
+        match to return 0 and the full history to be returned instead of just
+        the current turn. See #89891.
+        """
         agent_messages = result.get("messages") if isinstance(result, dict) else None
         if not isinstance(agent_messages, list) or not agent_messages:
             return 0
 
+        def _match(expected: Dict[str, Any], actual: Dict[str, Any]) -> bool:
+            """Compare role + content, ignoring metadata fields."""
+            if expected.get("role") != actual.get("role"):
+                return False
+            # Compare content (may be str, list, or None)
+            exp_content = expected.get("content")
+            act_content = actual.get("content")
+            if exp_content != act_content:
+                # Handle string content that may be truncated by agent
+                if isinstance(exp_content, str) and isinstance(act_content, str):
+                    # Allow prefix match for content (agent may truncate)
+                    if not act_content.startswith(exp_content[:100]):
+                        return False
+                else:
+                    return False
+            return True
+
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}
         expected_prefix = prior + [current_user]
-        if agent_messages[:len(expected_prefix)] == expected_prefix:
-            return len(expected_prefix)
-        if prior and agent_messages[:len(prior)] == prior:
-            return len(prior)
+
+        # Try matching with current user message
+        if len(agent_messages) >= len(expected_prefix):
+            if all(
+                _match(expected, actual)
+                for expected, actual in zip(expected_prefix, agent_messages[:len(expected_prefix)])
+            ):
+                return len(expected_prefix)
+
+        # Try matching without current user message (edge case)
+        if prior and len(agent_messages) >= len(prior):
+            if all(
+                _match(expected, actual)
+                for expected, actual in zip(prior, agent_messages[:len(prior)])
+            ):
+                return len(prior)
+
         return 0
 
     @classmethod

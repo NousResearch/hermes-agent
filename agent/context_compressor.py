@@ -5225,6 +5225,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
             _LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
+            _LENGTH_CONTINUATION_REPETITION_STUB,
         )
 
         return text in {
@@ -5237,6 +5238,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             _EMPTY_TOOL_RESPONSE_NUDGE,
             _LENGTH_CONTINUATION_NETWORK_STUB,
             _LENGTH_CONTINUATION_OUTPUT_LIMIT,
+            _LENGTH_CONTINUATION_REPETITION_STUB,
         } or text.startswith(
             _BACKGROUND_PROCESS_NOTIFICATION_PREFIX
         ) or text.startswith(

@@ -26,6 +26,11 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.stream_repetition_guard import (
+    FAILED_REPETITION_LOOP,
+    find_repeated_line_from_env,
+    truncate_at_repetition,
+)
 from agent.conversation_compression import (
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
@@ -294,6 +299,26 @@ def _join_truncated_parts(parts: List[str]) -> str:
             joined += "\n"
         joined += part
     return joined
+
+
+_REPETITION_MARKER_RE = re.compile(
+    r"[ \t]*\[" + re.escape(FAILED_REPETITION_LOOP) + r":[^\]]*\][ \t]*"
+)
+
+
+def _strip_repetition_markers(text: str) -> str:
+    """Drop repetition-guard marker blocks from a stitched response.
+
+    The ``[FAILED_REPETITION_LOOP: ...]`` marker is stream-time guidance for
+    the platform user; once the turn settles, persisting it inside the final
+    assistant content would re-inject the poisoned-tail narrative into every
+    later turn's context (and stitched multi-fragment turns accumulated one
+    marker per killed attempt).  The gateway log keeps the evidence.
+    """
+    if FAILED_REPETITION_LOOP not in text:
+        return text
+    stripped = _REPETITION_MARKER_RE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", stripped).strip()
 
 
 def _moa_reference_metrics_for_hook(agent: Any) -> Any:
@@ -1121,13 +1146,35 @@ _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
     "length limit. Continue exactly where you left off. Do not "
     "restart or repeat prior text. Finish the answer directly.]"
 )
+# Repetition-guard kills used to fall through to the network-error stub above,
+# whose "Continue exactly where you left off" instruction is the one thing a
+# degenerating model must NOT do — observed (telegram 2026-08-16, Qwen3.6-35B
+# fallback): each nudge resumed the same repeated tail, the guard killed the
+# stream again, and the turn burned all 4 continuation retries accumulating
+# FAILED_REPETITION_LOOP markers in the transcript.  This stub tells the truth
+# and asks for a pivot instead.
+_LENGTH_CONTINUATION_REPETITION_STUB = (
+    "[System: Your previous response was stopped because it degenerated "
+    "into repeating the same line. Do NOT continue that text and do NOT "
+    "repeat any earlier line. Change approach: state your conclusion in "
+    "one or two short sentences, or make your next tool call directly.]"
+)
 # The dropped-tools variant interpolates the tool name list right after this
 # prefix, so it can't be exact-matched — this stable prefix is what
 # _is_synthetic_compression_user_turn checks with str.startswith instead.
 _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
 
 
-def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
+def _get_continuation_prompt(
+    is_partial_stub: bool,
+    dropped_tools: Optional[List[str]] = None,
+    repetition_loop: bool = False,
+) -> str:
+    # Repetition wins over the dropped-tools chunking advice: when the guard
+    # killed the stream, the problem is the degenerating output, not the tool
+    # argument size.
+    if repetition_loop:
+        return _LENGTH_CONTINUATION_REPETITION_STUB
     if is_partial_stub and dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
         return (
@@ -1401,6 +1448,17 @@ def _content_policy_blocked_result(
         "failed": True,
         "error": f"content_policy_blocked: {error_detail}",
     }
+
+
+def _replace_assistant_content(assistant_message, content: str) -> None:
+    """Best-effort content replacement across message shapes (obj or dict)."""
+    try:
+        setattr(assistant_message, "content", content)
+        return
+    except Exception:
+        pass
+    if isinstance(assistant_message, dict):
+        assistant_message["content"] = content
 
 
 def _compression_deferred_result(
@@ -1896,6 +1954,7 @@ def run_conversation(
     failed = False
     codex_ack_continuations = 0
     length_continue_retries = 0
+    repetition_continue_kills = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
@@ -3643,6 +3702,100 @@ def run_conversation(
                     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
                     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
 
+                    # ── Degenerate-truncation gate ─────────────────────
+                    # A response that hit the output-length cap by REPEATING
+                    # ITSELF (content or reasoning channel) must not be
+                    # continued: the synthetic "[System: … continue]" prompt
+                    # re-runs generation on the poisoned context and the model
+                    # loops again, burning full output budgets.  Detect it
+                    # here, cut the degenerate tail from what gets stored, and
+                    # fail the turn cleanly instead.  (Incident 2026-07-02:
+                    # 3 successive 8K-token repetition loops, each blindly
+                    # continued.  Re-ported 2026-08-04 after the v0.20 reset.)
+                    if assistant_message is not None:
+                        _degen_reasoning_text = (
+                            getattr(_trunc_msg, "reasoning_content", None)
+                            or getattr(_trunc_msg, "reasoning", None)
+                            or ""
+                        )
+                        _degen_exc = find_repeated_line_from_env(
+                            _trunc_content
+                        ) or find_repeated_line_from_env(
+                            _degen_reasoning_text
+                        )
+                        if _degen_exc is not None:
+                            agent._vprint(
+                                f"{agent.log_prefix}🔁 Truncated response "
+                                f"degenerated into repetition "
+                                f"(line repeated "
+                                f"{_degen_exc.repeat_count}x) — cutting "
+                                f"instead of continuing.",
+                                force=True,
+                            )
+                            if isinstance(_trunc_content, str) and _trunc_content:
+                                _replace_assistant_content(
+                                    assistant_message,
+                                    truncate_at_repetition(
+                                        _trunc_content,
+                                        _degen_exc.repeated_line,
+                                    ),
+                                )
+                            # Degenerate reasoning is poison too: it is
+                            # replayed to reasoning-hungry providers on later
+                            # turns.  Drop it from the stored turn.  NB: on
+                            # NormalizedResponse, ``reasoning_content``/
+                            # ``reasoning_details`` are read-only properties
+                            # backed by provider_data — purge the dict, don't
+                            # setattr the property.
+                            try:
+                                setattr(_trunc_msg, "reasoning", None)
+                            except Exception:
+                                pass
+                            _degen_pd = getattr(
+                                _trunc_msg, "provider_data", None
+                            )
+                            if isinstance(_degen_pd, dict):
+                                _degen_pd.pop("reasoning_content", None)
+                                _degen_pd.pop("reasoning_details", None)
+                            _degen_msg = agent._build_assistant_message(
+                                assistant_message, finish_reason
+                            )
+                            # If this was a tool-call response, never persist
+                            # executable tool_calls from a response we just
+                            # classified as a repetition loop.
+                            _degen_msg.pop("tool_calls", None)
+                            _degen_msg.pop("reasoning", None)
+                            _degen_msg.pop("reasoning_content", None)
+                            _degen_msg.pop("reasoning_details", None)
+                            messages.append(_degen_msg)
+                            partial_response = agent._strip_think_blocks(
+                                getattr(assistant_message, "content", "")
+                                or ""
+                            ).strip()
+                            detail = (
+                                f"{FAILED_REPETITION_LOOP}: output-length "
+                                f"truncation was a repetition loop "
+                                f"({_degen_exc}); continuation suppressed"
+                            )
+                            final_response = partial_response or (
+                                f"{FAILED_REPETITION_LOOP}: the model "
+                                "repeated itself until the output limit; "
+                                "no usable response was produced."
+                            )
+                            agent._cleanup_task_resources(effective_task_id)
+                            agent._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": final_response,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "failed": True,
+                                "partial": True,
+                                "error": detail,
+                                "failure_reason": FAILED_REPETITION_LOOP,
+                                "guardrail_code": FAILED_REPETITION_LOOP,
+                            }
+
                     # ── Detect thinking-budget exhaustion ──────────────
                     # When the model spends ALL output tokens on reasoning
                     # and has none left for the response, continuation
@@ -3801,6 +3954,7 @@ def run_conversation(
                                         _frag.pop("_length_continuation_nudge", None)
                                 agent._session_messages = messages
                                 length_continue_retries = 0
+                                repetition_continue_kills = 0
                                 truncated_response_parts = []
                                 retry_count = 0
                                 compression_attempts = 0
@@ -3841,7 +3995,19 @@ def run_conversation(
                                 if assistant_message.content:
                                     truncated_response_parts.append(assistant_message.content)
 
-                            if length_continue_retries < 4:
+                            _is_repetition_stub = bool(
+                                getattr(response, "_repetition_terminated", False)
+                            )
+                            if _is_repetition_stub:
+                                repetition_continue_kills += 1
+                            # One pivot nudge is a fair shot; a SECOND guard
+                            # kill in the same turn means the model cannot
+                            # break the loop — keep the partial instead of
+                            # feeding it more poisoned context.
+                            if (
+                                length_continue_retries < 4
+                                and repetition_continue_kills < 2
+                            ):
                                 _is_partial_stream_stub = (
                                     getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
                                 )
@@ -3849,7 +4015,13 @@ def run_conversation(
                                     response, "_dropped_tool_names", None
                                 )
 
-                                if _is_partial_stream_stub and _dropped_tools:
+                                if _is_repetition_stub:
+                                    agent._vprint(
+                                        f"{agent.log_prefix}↻ Repetition guard "
+                                        f"stopped the stream — requesting a "
+                                        f"pivot ({length_continue_retries}/4)..."
+                                    )
+                                elif _is_partial_stream_stub and _dropped_tools:
                                     _tool_list = ", ".join(_dropped_tools[:3])
                                     agent._vprint(
                                         f"{agent.log_prefix}↻ Stream interrupted mid "
@@ -3870,7 +4042,9 @@ def run_conversation(
                                     )
 
                                 _continue_content = _get_continuation_prompt(
-                                    _is_partial_stream_stub, _dropped_tools
+                                    _is_partial_stream_stub,
+                                    _dropped_tools,
+                                    repetition_loop=_is_repetition_stub,
                                 )
                                 continue_msg = {
                                     "role": "user",
@@ -3882,7 +4056,11 @@ def run_conversation(
                                 _retry.restart_with_length_continuation = True
                                 break
 
-                            partial_response = agent._strip_think_blocks(_join_truncated_parts(truncated_response_parts)).strip()
+                            partial_response = _strip_repetition_markers(
+                                agent._strip_think_blocks(
+                                    _join_truncated_parts(truncated_response_parts)
+                                )
+                            ).strip()
                             if partial_response:
                                 agent._vprint(
                                     f"{agent.log_prefix}⚠️  Response still truncated "
@@ -8018,9 +8196,12 @@ def run_conversation(
                 codex_ack_continuations = 0
 
                 if truncated_response_parts:
-                    final_response = _join_truncated_parts([*truncated_response_parts, final_response])
+                    final_response = _strip_repetition_markers(
+                        _join_truncated_parts([*truncated_response_parts, final_response])
+                    )
                     truncated_response_parts = []
                     length_continue_retries = 0
+                    repetition_continue_kills = 0
                     # The continuation recovered, so the fragments stay in the transcript.
                     for _frag in messages:
                         if isinstance(_frag, dict):

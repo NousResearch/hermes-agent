@@ -30,6 +30,7 @@ def test_skill_review_prompt_treats_null_as_valid_outcome():
     assert "null review" in lower and "valid outcome" in lower
     assert "verified reusable method" in lower
     assert "demonstrated skill defect" in lower
+    assert "when the durable gate above is met, use the preference order" in lower
 
 
 def test_skill_review_prompt_treats_user_corrections_as_skill_signal():
@@ -44,6 +45,9 @@ def test_skill_review_prompt_treats_user_corrections_as_skill_signal():
     assert "FIRST-CLASS" in prompt or "first-class" in prompt, (
         "must explicitly label user-preference corrections as first-class skill signals"
     )
+    assert "not an automatic write" in lower
+    assert "explicitly corrects" in lower
+    assert "pattern repeats" in lower
     # Must mention the correction-type phrases to tune the model's ear
     assert "stop doing" in lower or "don't" in lower or "hate" in lower or "frustrat" in lower, (
         "must give concrete phrasing examples so the model recognizes corrections"

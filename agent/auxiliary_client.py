@@ -4293,6 +4293,17 @@ def _is_connection_error(exc: Exception) -> bool:
     return False
 
 
+def _title_timeout_should_stop(task: Optional[str], exc: Exception) -> bool:
+    """Title generation is cosmetic; a timeout should not amplify load.
+
+    Other auxiliary tasks may need provider retries or fallback to preserve
+    work. A session title already has a deterministic derived fallback, so a
+    full-budget timeout means "keep the derived title" rather than "send more
+    requests, possibly to the main model."
+    """
+    return task == "title_generation" and _is_timeout_error(exc)
+
+
 def _is_transient_transport_error(exc: Exception) -> bool:
     """Return True for a one-off transport blip worth retrying ON the
     same provider before any provider/model fallback.
@@ -8623,6 +8634,7 @@ def _build_call_kwargs(
             or base_url_host_matches(_effective_base, "integrate.api.nvidia.com")
         )
         _is_moa = bool(task) and str(task) == "moa_reference"
+        _is_title_generation = bool(task) and str(task) == "title_generation"
         # Gemini's native generateContent maps max_tokens → maxOutputTokens and,
         # when it is omitted, applies a fixed 65,535-token ceiling rather than
         # "the model's full budget" (see gemini_native_adapter.build_gemini_request).
@@ -8648,6 +8660,7 @@ def _build_call_kwargs(
             or _nous_on_messages
             or _is_nvidia_nim
             or _is_moa
+            or _is_title_generation
             or _is_gemini_native
         ):
             # Use auxiliary_max_tokens_param() so models that require
@@ -9603,15 +9616,18 @@ def _call_llm_impl(
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
-            # Compression is on the critical preflight path: a user cannot
-            # continue or resume an oversized session until it compacts. A
-            # same-provider retry on a timeout means another full ``timeout``-
-            # long wall-clock block before the except-chain below can fall
-            # back — doubling the user-visible stall (issue #54465). Skip the
-            # same-provider retry for compression on a full-budget timeout and
-            # fall straight through to provider/model fallback; fast blips (a
-            # streaming-close or a 5xx) still retry, since those are cheap.
-            if task == "compression" and _is_timeout_error(transient_err):
+            # Full-budget timeouts are different from fast transport blips.
+            # Compression falls through to fallback because it is required for
+            # progress; title generation stops because it already has a
+            # deterministic derived title and must not amplify local load.
+            if task in {"compression", "title_generation"} and _is_timeout_error(transient_err):
+                if task == "title_generation":
+                    logger.info(
+                        "Auxiliary title_generation: timeout; skipping "
+                        "same-provider retry and fallback: %s",
+                        transient_err,
+                    )
+                    raise
                 logger.info(
                     "Auxiliary compression: timeout on the critical path; "
                     "skipping same-provider retry and falling back: %s",
@@ -9751,6 +9767,17 @@ def _call_llm_impl(
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
                     raise
                 first_err = retry_err
+
+        if _title_timeout_should_stop(task, first_err):
+            if _is_connection_error(first_err):
+                try:
+                    _evict_cached_client_instance(client)
+                except Exception:
+                    logger.debug(
+                        "Auxiliary title_generation: cache eviction after timeout failed",
+                        exc_info=True,
+                    )
+            raise
 
         # ── Stale-model self-heal (Nous Portal recommendation drift) ───
         # A long-lived process can pin a Portal-recommended model that has
@@ -10378,10 +10405,16 @@ async def _async_call_llm_impl(
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
-            # See call_llm(): compression is on the critical preflight path,
-            # so skip the same-provider retry on a full-budget timeout and
-            # fall straight through to fallback (issue #54465).
-            if task == "compression" and _is_timeout_error(transient_err):
+            # See call_llm(): full-budget timeouts are not cheap blips. For
+            # title generation, stop immediately; the derived title remains.
+            if task in {"compression", "title_generation"} and _is_timeout_error(transient_err):
+                if task == "title_generation":
+                    logger.info(
+                        "Auxiliary title_generation (async): timeout; "
+                        "skipping same-provider retry and fallback: %s",
+                        transient_err,
+                    )
+                    raise
                 logger.info(
                     "Auxiliary compression (async): timeout on the critical "
                     "path; skipping same-provider retry and falling back: %s",
@@ -10497,6 +10530,17 @@ async def _async_call_llm_impl(
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
                     raise
                 first_err = retry_err
+
+        if _title_timeout_should_stop(task, first_err):
+            if _is_connection_error(first_err):
+                try:
+                    _evict_cached_client_instance(client)
+                except Exception:
+                    logger.debug(
+                        "Auxiliary title_generation (async): cache eviction after timeout failed",
+                        exc_info=True,
+                    )
+            raise
 
         # ── Stale-model self-heal (Nous Portal recommendation drift) ───
         # See the sync call_llm() path for the rationale: a long-lived process

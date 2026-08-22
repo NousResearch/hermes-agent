@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+import time
 from typing import Optional
 
 USAGE_HINT = "Usage: !<command> — run a shell command without spending a model turn (e.g. !git status)"
@@ -27,6 +29,15 @@ USAGE_HINT = "Usage: !<command> — run a shell command without spending a model
 # well under the terminal tool's foreground cap: a user watching output can
 # Ctrl+C, and an accidental `!sleep 999` should not wedge the composer.
 DEFAULT_TIMEOUT = 120
+
+# How long to keep draining once the shell itself has exited. A backgrounded
+# grandchild (`!npm run dev &`) inherits the write end of our stdout pipe via
+# fork(), so the pipe can stay open long after the shell is gone — waiting for
+# EOF there is waiting for the grandchild. Flush whatever is still arriving,
+# then stop. Mirrors the terminal tool's drain in tools/environments/base.py,
+# which stops ~300ms after bash exits for exactly this reason.
+_DRAIN_IDLE_GRACE = 0.3
+_DRAIN_MAX_TAIL = 2.0
 
 
 def is_bang_command(text: Optional[str]) -> bool:
@@ -154,6 +165,14 @@ def run_bang_command(
     ``print``) as they arrive, so long-running commands show progress instead
     of buffering to the end. Nothing is returned to a caller for insertion
     into conversation history — the output exists only on the user's terminal.
+
+    ``timeout`` is a wall-clock ceiling, enforced by waiting on the shell while
+    a daemon thread drains the pipe. Draining inline instead — ``for line in
+    proc.stdout`` — cannot enforce it: that reads to EOF, and EOF only arrives
+    once the shell *and every descendant that inherited its write end* have
+    closed stdout, so the deadline was only ever applied after the work was
+    already over. It is the hang ``tools/environments/base.py`` documents for
+    the terminal tool (issue #8340).
     """
     emit = writer or (lambda line: print(line, end="" if line.endswith("\n") else "\n"))
 
@@ -162,15 +181,25 @@ def run_bang_command(
         run_cwd = os.path.expanduser(run_cwd)
 
     try:
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_cli._subprocess_compat import (
+            windows_detach_flags_without_breakaway,
+            windows_hide_flags,
+        )
 
-        creationflags = windows_hide_flags()
+        # OR the new-process-group bit INTO the hide flags rather than
+        # replacing them — the child still needs CREATE_NO_WINDOW.
+        creationflags = windows_hide_flags() | windows_detach_flags_without_breakaway()
     except Exception:
         creationflags = 0
 
     try:
         # shell=True is intentional and matches quick_commands: this is a
         # command the human typed into their own composer, not model output.
+        #
+        # start_new_session (POSIX) / CREATE_NEW_PROCESS_GROUP (Windows) give
+        # the command its own process group so a timeout or Ctrl+C can take
+        # down the whole tree, matching how tools/environments/local.py spawns
+        # the terminal tool's commands.
         proc = subprocess.Popen(
             command,
             shell=True,
@@ -181,32 +210,135 @@ def run_bang_command(
             errors="replace",
             cwd=run_cwd,
             env=_bang_env(),
+            start_new_session=True,
             creationflags=creationflags,
         )
     except Exception as exc:
         emit(f"!: failed to run command: {exc}")
         return 127
 
-    try:
-        if proc.stdout is not None:
-            for line in proc.stdout:
+    stop = threading.Event()
+    last_output = time.monotonic()
+
+    def _drain(stream) -> None:
+        nonlocal last_output
+        try:
+            for line in stream:
+                if stop.is_set():
+                    # Control has already returned to the composer, so this
+                    # line must not be printed into it. Keep draining anyway
+                    # rather than closing the read end: a descendant the user
+                    # deliberately left running (`!npm run dev &`) would take
+                    # EPIPE on its next write, or block once the pipe filled.
+                    # Discarding costs one blocked daemon thread, released as
+                    # soon as that descendant exits.
+                    continue
+                last_output = time.monotonic()
                 emit(line.rstrip("\n"))
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        emit(f"!: command timed out after {timeout}s")
-        return 124
+        except Exception:
+            pass
+        finally:
+            # This thread owns the stream and closes it once the last writer
+            # is gone — see the note in the outer finally.
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    reader: Optional[threading.Thread] = None
+    if proc.stdout is not None:
+        reader = threading.Thread(
+            target=_drain, args=(proc.stdout,), name="bang-shell-drain", daemon=True
+        )
+        reader.start()
+
+    def _flush_tail() -> None:
+        """Drain what the shell already wrote, then stop draining.
+
+        Keeps waiting while output is still arriving, so an ordinary tail is
+        delivered in full, but gives up once the pipe has gone idle for
+        ``_DRAIN_IDLE_GRACE`` — an EOF that depends on a backgrounded
+        grandchild may never come at all. ``_DRAIN_MAX_TAIL`` is a hard cap on
+        top of that: output still streaming that long after the shell exited
+        is coming from a descendant, not the command, and is dropped rather
+        than allowed to hold the composer indefinitely.
+
+        The idle window is measured from whichever is later: the last line
+        seen, or entry to this function. A command that is silent for a minute
+        and then prints on its way out must still get a full grace window, or
+        its final line would be raced away.
+        """
+        if reader is None:
+            return
+        entered = time.monotonic()
+        hard_stop = entered + _DRAIN_MAX_TAIL
+        while reader.is_alive():
+            now = time.monotonic()
+            quiet_since = max(last_output, entered)
+            wait = min(_DRAIN_IDLE_GRACE - (now - quiet_since), hard_stop - now)
+            if wait <= 0:
+                break
+            reader.join(timeout=wait)
+        stop.set()
+
+    try:
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_bang_process_tree(proc)
+            _flush_tail()
+            try:
+                proc.wait(timeout=_DRAIN_MAX_TAIL)
+            except Exception:
+                pass
+            emit(f"!: command timed out after {timeout}s")
+            return 124
+        _flush_tail()
     except KeyboardInterrupt:
-        # Ctrl+C interrupts the command, not the Hermes session.
-        proc.kill()
+        # Ctrl+C interrupts the command, not the Hermes session. The command
+        # leads its own process group, so signalling only the shell would
+        # leave its descendants running as orphans — the same reason
+        # tools/environments/base.py kills the group before re-raising.
+        _kill_bang_process_tree(proc)
+        stop.set()
         emit("!: interrupted")
         return 130
     finally:
         try:
-            if proc.stdout is not None:
+            # The drain thread closes the stream on its way out. Closing it
+            # here while that thread is blocked inside read() would deadlock
+            # on the buffered reader's lock — the very hang being removed.
+            if (reader is None or not reader.is_alive()) and proc.stdout is not None:
                 proc.stdout.close()
         except Exception:
             pass
 
     return int(proc.returncode or 0)
+
+
+def _kill_bang_process_tree(proc: subprocess.Popen[str]) -> None:
+    """Best-effort kill of *proc* and every descendant it spawned.
+
+    ``proc.kill()`` alone signals only the shell wrapper, leaving the
+    grandchildren the user actually launched still running — and, because they
+    inherited the write end of our stdout pipe, still holding it open. The
+    command is spawned into its own process group precisely so the whole group
+    can be taken down here, which is also what
+    ``tools/environments/local.py::_kill_process`` already does for the
+    terminal tool's commands.
+    """
+    try:
+        from hermes_cli._subprocess_compat import _kill_git_process_tree
+
+        # Platform-generic despite the name: ``os.killpg`` on POSIX (only when
+        # the child leads its own group, so a shared group is never blasted)
+        # and ``taskkill /T /F`` on Windows.
+        _kill_git_process_tree(proc)
+        return
+    except Exception:
+        pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
 

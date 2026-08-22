@@ -351,6 +351,124 @@ _managed_node_heal_attempted = False
 _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
 
 
+def _managed_node_roots(home: Path | None = None) -> list[Path]:
+    """Return unique managed Node tree roots (``$HERMES_HOME/node``), resolved."""
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for directory in iter_hermes_node_dirs(home):
+        root = directory if directory.name != "bin" else directory.parent
+        try:
+            resolved = root.resolve()
+        except OSError:
+            continue
+        if resolved in seen or resolved.name != "node":
+            continue
+        seen.add(resolved)
+        roots.append(resolved)
+    return roots
+
+
+def _is_within_managed_node_root(path: Path, root: Path) -> bool:
+    """True if *path* resolves inside *root*; never follows a symlink escape."""
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _managed_node_entrypoint_names() -> set[str]:
+    names: set[str] = set()
+    for command in ("node", "npm", "npx"):
+        names.update(_candidate_node_command_names(command))
+    return names
+
+
+def _iter_managed_node_entrypoints(home: Path | None = None):
+    """Yield ``(root, candidate)`` for each managed node/npm/npx name."""
+    names = _managed_node_entrypoint_names()
+    for root in _managed_node_roots(home):
+        for directory in (root, root / "bin"):
+            if not directory.is_dir():
+                continue
+            for name in names:
+                yield root, directory / name
+
+
+def _managed_node_has_nonexecutable_entrypoints(home: Path | None = None) -> bool:
+    """True when a managed node/npm/npx file exists but lacks owner execute."""
+    if sys.platform == "win32":
+        return False
+    for root, candidate in _iter_managed_node_entrypoints(home):
+        try:
+            st = candidate.lstat()
+        except OSError:
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            if not _is_within_managed_node_root(candidate, root):
+                continue
+            try:
+                mode = candidate.resolve().stat().st_mode
+            except OSError:
+                continue
+        elif stat.S_ISREG(st.st_mode):
+            if not _is_within_managed_node_root(candidate, root):
+                continue
+            mode = st.st_mode
+        else:
+            continue
+        if not (mode & stat.S_IXUSR):
+            return True
+    return False
+
+
+def repair_managed_node_executable_modes(home: Path | None = None) -> bool:
+    """POSIX: restore execute bits on managed node/npm/npx entrypoints.
+
+    Only touches regular files that resolve inside a managed node root.
+    Never chmods a symlink whose target is outside the managed root.
+    Returns True if any mode was repaired.
+    """
+    if sys.platform == "win32":
+        return False
+
+    repaired = False
+    for root, candidate in _iter_managed_node_entrypoints(home):
+        try:
+            st = candidate.lstat()
+        except OSError:
+            continue
+
+        if stat.S_ISLNK(st.st_mode):
+            if not _is_within_managed_node_root(candidate, root):
+                continue
+            try:
+                path_to_chmod = candidate.resolve()
+            except OSError:
+                continue
+            if not _is_within_managed_node_root(path_to_chmod, root):
+                continue
+        elif stat.S_ISREG(st.st_mode):
+            if not _is_within_managed_node_root(candidate, root):
+                continue
+            path_to_chmod = candidate
+        else:
+            continue
+
+        try:
+            mode = path_to_chmod.stat().st_mode
+        except OSError:
+            continue
+        if mode & stat.S_IXUSR:
+            continue
+        try:
+            os.chmod(path_to_chmod, (mode & 0o777) | 0o111)
+        except OSError:
+            continue
+        repaired = True
+    return repaired
+
+
 def node_tool_runnable(path: str | None) -> bool:
     """Return True only when *path* is a Node/npm/npx binary that actually runs.
 
@@ -391,16 +509,27 @@ def node_tool_runnable(path: str | None) -> bool:
 
 
 def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
-    """Return True when any Hermes-managed node/npm/npx shim exists on disk."""
-    names = set()
-    for command in ("node", "npm", "npx"):
-        names.update(_candidate_node_command_names(command))
+    """Return True when any Hermes-managed node/npm/npx shim exists on disk.
+
+    Presence does not require the execute bit: a mode-stripped (0644) tree is
+    still a managed tree so mode-repair or heal can run. Matches the shell
+    ``[ -f ]`` check in ``_nb_managed_tool_broken``.
+    """
+    names = _managed_node_entrypoint_names()
     for directory in iter_hermes_node_dirs(home):
         for name in names:
             candidate = directory / name
-            if candidate.is_file() and (
-                sys.platform == "win32" or os.access(candidate, os.X_OK)
-            ):
+            if sys.platform == "win32":
+                if candidate.is_file():
+                    return True
+                continue
+            try:
+                st = candidate.lstat()
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode):
+                return True
+            if stat.S_ISLNK(st.st_mode) and candidate.exists():
                 return True
     return False
 
@@ -703,6 +832,8 @@ def bootstrap_hermes_managed_node() -> str | None:
     if not ok:
         return None
 
+    repair_managed_node_executable_modes()
+
     for directory in iter_hermes_node_dirs():
         for name in _candidate_node_command_names("npm"):
             candidate = directory / name
@@ -728,6 +859,7 @@ def heal_hermes_managed_node() -> bool:
     global _managed_node_heal_attempted
     if _managed_node_heal_attempted:
         return False
+    repair_managed_node_executable_modes()
     if not hermes_managed_node_tree_present():
         return False
 
@@ -824,7 +956,14 @@ def find_hermes_node_executable(command: str) -> str | None:
                     broken = True
         return None, broken
 
+    repair_managed_node_executable_modes()
     resolved, broken_present = _first_runnable()
+    if resolved is None and not broken_present:
+        if _managed_node_has_nonexecutable_entrypoints():
+            broken_present = True
+            repair_managed_node_executable_modes()
+            resolved, broken2 = _first_runnable()
+            broken_present = broken_present or broken2
     needs_heal = broken_present or (
         resolved is not None and _managed_node_tree_outdated()
     )

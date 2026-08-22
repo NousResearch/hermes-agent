@@ -168,6 +168,23 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 },
                 "description": "Modifier keys held during the action.",
             },
+            "dispatch": {
+                "type": "string",
+                "enum": ["background", "foreground", "auto"],
+                "description": (
+                    "Optional input delivery mode for mutating actions "
+                    "(click, drag, scroll, type, key, set_value). "
+                    "`background` (default) preserves the normal co-work "
+                    "model and does not steal focus. `foreground` uses real "
+                    "foreground input where supported, which can be more "
+                    "reliable for Windows Explorer desktop icons and Qt apps "
+                    "such as Telegram/WeChat but may disrupt the user. "
+                    "`auto` is passed through to the cua-driver, which "
+                    "chooses an input-delivery mode on the agent's behalf; "
+                    "the agent does not resolve it locally, so the resulting "
+                    "mode (and any fallback) is driver-dependent."
+                ),
+            },
             # ── drag ───────────────────────────────────────────────
             "from_element": {"type": "integer",
                               "description": "Source element index (drag)."},

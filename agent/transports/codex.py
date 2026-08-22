@@ -654,6 +654,33 @@ class ResponsesApiTransport(ProviderTransport):
         if request_overrides:
             kwargs.update(request_overrides)
 
+        # Custom / local Responses backends (vLLM, SGLang, Unsloth, LM Studio,
+        # llama.cpp, ...) serve reasoning-capable models whose chat templates
+        # default to thinking ON. `include: []` alone is silently ignored by
+        # those servers — the model keeps thinking even though the user
+        # disabled reasoning. Honor the OFF request by disabling thinking at
+        # the template layer. Runs AFTER request_overrides merge so this
+        # overrides any provider-configured `enable_thinking: true` (which
+        # must only apply while reasoning is ON). Never touches first-party
+        # OpenAI / Azure / xAI / GitHub surfaces.
+        if not reasoning_enabled and not is_github_responses and not is_xai_responses:
+            provider_name = str(params.get("provider") or "").strip().lower()
+            if provider_name.startswith("custom:") or provider_name in {
+                "lmstudio", "llamacpp", "llama-cpp", "ollama", "vllm",
+                "sglang", "unsloth", "local", "opencode", "deepseek",
+                "groq", "together", "fireworks", "openrouter",
+            }:
+                existing_extra_body = kwargs.get("extra_body")
+                merged_extra_body: Dict[str, Any] = {}
+                if isinstance(existing_extra_body, dict):
+                    merged_extra_body.update(existing_extra_body)
+                chat_template_kwargs = merged_extra_body.get("chat_template_kwargs")
+                if not isinstance(chat_template_kwargs, dict):
+                    chat_template_kwargs = {}
+                chat_template_kwargs["enable_thinking"] = False
+                merged_extra_body["chat_template_kwargs"] = chat_template_kwargs
+                kwargs["extra_body"] = merged_extra_body
+
         if "prompt_cache_key" in kwargs:
             bounded_cache_key = _bounded_prompt_cache_key(kwargs["prompt_cache_key"])
             if bounded_cache_key:

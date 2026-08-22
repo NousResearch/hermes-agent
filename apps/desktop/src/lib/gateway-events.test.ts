@@ -92,11 +92,9 @@ describe('gateway event routing', () => {
     })
   })
 
-  it('attributes an unpinned stream event to the active session without the pin flag', () => {
-    // A late straggler (no pin left after the previous turn completed) falls
-    // back to the active session. The handler drops this case when the target
-    // session has no live turn — the straggler belongs to a turn that already
-    // ended elsewhere (#43142 family).
+  it('drops an unpinned stream event after the previous turn completed', () => {
+    // A late straggler has no pin left after the previous turn completed, so
+    // attributing it to the active session would attach it to the wrong chat.
     const routed = resolveGatewayEventSessionId({
       activeSessionId: 'session-b',
       eventType: 'thinking.delta',
@@ -105,10 +103,10 @@ describe('gateway event routing', () => {
     })
 
     expect(routed).toEqual({
-      drop: false,
+      drop: true,
       nextUnscopedStreamSessionId: null,
       pinned: false,
-      sessionId: 'session-b'
+      sessionId: null
     })
   })
 
@@ -126,5 +124,31 @@ describe('gateway event routing', () => {
       pinned: true,
       sessionId: 'session-a'
     })
+  })
+
+  it('drops late unscoped stream events after the pin clears (no active fallback)', () => {
+    const lateDelta = resolveGatewayEventSessionId({
+      activeSessionId: 'session-b',
+      eventType: 'message.delta',
+      explicitSessionId: '',
+      unscopedStreamSessionId: null
+    })
+
+    expect(lateDelta).toEqual({
+      drop: true,
+      nextUnscopedStreamSessionId: null,
+      pinned: false,
+      sessionId: null
+    })
+
+    const lateTool = resolveGatewayEventSessionId({
+      activeSessionId: 'session-b',
+      eventType: 'tool.start',
+      explicitSessionId: '',
+      unscopedStreamSessionId: null
+    })
+
+    expect(lateTool.drop).toBe(true)
+    expect(lateTool.sessionId).toBeNull()
   })
 })

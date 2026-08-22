@@ -1017,6 +1017,18 @@ class TestSaveJobOutput:
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
 
+    def test_repeated_saves_with_a_frozen_clock_do_not_overwrite(self, tmp_cron_dir, monkeypatch):
+        """A same-second builtin/direct collision must preserve both reports."""
+        fixed = datetime(2026, 8, 13, 12, 30, 14, 123456, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: fixed)
+
+        builtin = save_job_output("same-second", "builtin artifact")
+        direct = save_job_output("same-second", "direct artifact")
+
+        assert builtin != direct
+        assert builtin.read_text() == "builtin artifact"
+        assert direct.read_text() == "direct artifact"
+
 
 class TestCronOutputRetention:
     """Per-run cron output must self-prune so long deploys don't fill the disk (#52383)."""

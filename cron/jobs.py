@@ -3585,8 +3585,11 @@ def save_job_output(job_id: str, output: str):
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
 
-    timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_file = job_output_dir / f"{timestamp}.md"
+    # Use actual save time (never next_run_at) and a collision suffix.
+    # Microseconds distinguish normal rapid runs; the suffix also protects the
+    # rare identical-clock case so builtin/direct artifacts can never overwrite.
+    timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+    output_file = job_output_dir / f"{timestamp}_{uuid.uuid4().hex[:8]}.md"
 
     fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')
     try:

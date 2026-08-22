@@ -1556,6 +1556,9 @@ class FeishuAdapter(BasePlatformAdapter):
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        # Model picker state contains only server-configured model choices.
+        self._model_picker_state: Dict[int, Dict[str, Any]] = {}
+        self._model_picker_counter = itertools.count(1)
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
@@ -2047,7 +2050,92 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
-    # Template attrs for the shared _format_exec_approval core. The card
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a picker that exposes only configured server-side model choices."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        picker_config = (self.config.extra or {}).get("model_picker", {})
+        if not isinstance(picker_config, dict) or not picker_config.get("enabled"):
+            return SendResult(success=False, error="Model picker is disabled")
+        configured_models = picker_config.get("models", [])
+        if not isinstance(configured_models, list):
+            return SendResult(success=False, error="Model picker has no configured models")
+        models = [
+            {
+                "label": str(entry.get("label") or entry.get("model") or "").strip(),
+                "model": str(entry.get("model") or "").strip(),
+                "provider": str(entry.get("provider") or "").strip(),
+            }
+            for entry in configured_models
+            if isinstance(entry, dict) and str(entry.get("model") or "").strip()
+        ]
+        if not models:
+            return SendResult(success=False, error="Model picker has no configured models")
+        picker_id = next(self._model_picker_counter)
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "Select model", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": f"Current: `{current_model}` via `{current_provider}`"},
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": entry["label"]},
+                            "type": "primary" if entry["model"] == current_model else "default",
+                            "value": {
+                                "hermes_model_picker_action": "select",
+                                "model_picker_id": picker_id,
+                                "choice": index,
+                            },
+                        }
+                        for index, entry in enumerate(models)
+                    ],
+                },
+            ],
+        }
+        try:
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=json.dumps(card, ensure_ascii=False),
+                reply_to=None,
+                metadata=metadata,
+            )
+            result = self._finalize_send_result(response, "send_model_picker failed")
+            if result.success:
+                self._model_picker_state[picker_id] = {
+                    "chat_id": chat_id,
+                    "session_key": session_key,
+                    "models": [{"model": entry["model"], "provider": entry["provider"]} for entry in models],
+                }
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_model_picker failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    @staticmethod
+    def _build_model_picker_selection_card(*, model: str) -> Dict[str, Any]:
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "Model selection received", "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [{"tag": "markdown", "content": f"Switching this session to `{model}`…"}],
+        }
+
     # header carries the title, so the text core starts at the code fence.
     _EA_HEADER = ""
     _EA_REASON_LABEL = "**Reason:** "
@@ -2734,11 +2822,21 @@ class FeishuAdapter(BasePlatformAdapter):
             action_value.get("hermes_update_prompt_action")
             if isinstance(action_value, dict) else None
         )
+        model_picker_action = (
+            action_value.get("hermes_model_picker_action")
+            if isinstance(action_value, dict) else None
+        )
 
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
         if update_prompt_action:
             return self._handle_update_prompt_card_action(
+                event=event,
+                action_value=action_value,
+                loop=loop,
+            )
+        if model_picker_action:
+            return self._handle_model_picker_card_action(
                 event=event,
                 action_value=action_value,
                 loop=loop,
@@ -2833,6 +2931,87 @@ class FeishuAdapter(BasePlatformAdapter):
             card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
             response.card = card
         return response
+
+    def _handle_model_picker_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Validate a configured model choice and route its session switch to the gateway."""
+        picker_id = action_value.get("model_picker_id")
+        choice = action_value.get("choice")
+        if not isinstance(picker_id, int) or not isinstance(choice, int):
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        state = self._model_picker_state.get(picker_id)
+        if not state:
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        models = state.get("models", [])
+        if choice < 0 or choice >= len(models):
+            logger.warning("[Feishu] Invalid model picker choice for %s", picker_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        if (
+            not self._allow_group_message(sender_id, expected_chat_id, is_bot=False)
+            or (self._admins and "*" not in self._admins and open_id not in self._admins)
+            or (callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id)
+        ):
+            logger.warning("[Feishu] Unauthorized or mismatched model picker click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        selected = models[choice]
+        if not isinstance(selected, dict) or not selected.get("model"):
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        state = self._model_picker_state.pop(picker_id, None)
+        if not state or not self._submit_on_loop(
+            loop,
+            self._dispatch_model_picker_selection(
+                event=event,
+                model=str(selected["model"]),
+                provider=str(selected.get("provider") or ""),
+            ),
+        ):
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = self._build_model_picker_selection_card(model=str(selected["model"]))
+            response.card = card
+        return response
+
+    async def _dispatch_model_picker_selection(self, *, event: Any, model: str, provider: str) -> None:
+        """Dispatch a selected configured model through the gateway's normal session switch."""
+        context = getattr(event, "context", None)
+        chat_id = str(getattr(context, "open_chat_id", "") or "")
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        if not chat_id or not open_id:
+            return
+        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""), union_id=None)
+        sender_profile = await self._resolve_sender_profile(sender_id)
+        chat_info = await self.get_chat_info(chat_id)
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
+            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type="group"),
+            user_id=sender_profile["user_id"],
+            user_name=sender_profile["user_name"],
+            thread_id=None,
+            user_id_alt=sender_profile["user_id_alt"],
+        )
+        command = f"/model {model} --session"
+        if provider:
+            command += f" --provider {provider}"
+        await self._handle_message_with_guards(MessageEvent(
+            text=command,
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=event,
+            message_id=str(getattr(event, "token", "") or uuid.uuid4()),
+            channel_prompt=self._resolve_channel_prompt(chat_id),
+            timestamp=datetime.now(),
+        ))
 
     def _handle_update_prompt_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule update prompt resolution and build the synchronous callback response."""

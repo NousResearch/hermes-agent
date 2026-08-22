@@ -447,3 +447,68 @@ class TestResolveUpdatePrompt:
         assert 1 not in adapter._update_prompt_state
 
 
+# ===========================================================================
+# Feishu model picker — server-configured choices and callback validation
+# ===========================================================================
+
+class TestFeishuModelPicker:
+    @pytest.mark.asyncio
+    async def test_sends_only_configured_models_and_records_opaque_picker_state(self):
+        config = PlatformConfig(
+            enabled=True,
+            extra={
+                "model_picker": {
+                    "enabled": True,
+                    "models": [
+                        {"label": "GPT-5.6 Terra", "model": "gpt-5.6-terra", "provider": "openai"},
+                        {"model": "claude-sonnet-4-6"},
+                    ],
+                },
+            },
+        )
+        adapter = FeishuAdapter(config)
+        adapter._client = MagicMock()
+        response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="msg_model_1"))
+
+        with patch.object(adapter, "_feishu_send_with_retry", new_callable=AsyncMock, return_value=response) as send:
+            result = await adapter.send_model_picker(
+                chat_id="oc_12345",
+                current_model="old-model",
+                current_provider="old-provider",
+                session_key="session-1",
+            )
+
+        assert result.success is True
+        card = json.loads(send.call_args.kwargs["payload"])
+        actions = card["elements"][1]["actions"]
+        assert [action["text"]["content"] for action in actions] == ["GPT-5.6 Terra", "claude-sonnet-4-6"]
+        assert "model" not in actions[0]["value"]
+        picker_id = actions[0]["value"]["model_picker_id"]
+        assert adapter._model_picker_state[picker_id]["models"] == [
+            {"model": "gpt-5.6-terra", "provider": "openai"},
+            {"model": "claude-sonnet-4-6", "provider": ""},
+        ]
+
+    def test_callback_rejects_tampered_choice_before_gateway_dispatch(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_admin"}
+        adapter._model_picker_state[7] = {
+            "chat_id": "oc_12345",
+            "session_key": "session-1",
+            "models": [{"model": "gpt-5.6-terra", "provider": "openai"}],
+        }
+        data = _make_card_action_data(
+            {"hermes_model_picker_action": "select", "model_picker_id": 7, "choice": 99},
+            open_id="ou_admin",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response.card is None
+        assert 7 in adapter._model_picker_state
+        submit.assert_not_called()
+
+

@@ -1850,12 +1850,36 @@ class GatewaySlashCommandsMixin:
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
 
-        # No args: show interactive picker (Telegram/Discord) or text list
+        # No args: Feishu can present a server-configured picker without
+        # retaining a gateway callback closure in adapter state.
+        if not model_input and not explicit_provider:
+            adapter = getattr(self, "_adapter_for_source")(source)
+            if (
+                getattr(source, "platform", None).value == "feishu"
+                and adapter is not None
+                and getattr(type(adapter), "send_model_picker", None) is not None
+            ):
+                metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                result = await adapter.send_model_picker(
+                    chat_id=source.chat_id,
+                    current_model=current_model,
+                    current_provider=current_provider,
+                    session_key=session_key,
+                    metadata=metadata,
+                )
+                if result.success:
+                    return None
+
+        # No args: show an interactive picker (Telegram/Discord) or text list.
+        # Feishu was handled above through its server-configured allowlist card.
+        # Do not fall through to the generic picker: its callback signature and
+        # dynamic provider list deliberately differ from the Feishu surface.
         if not model_input and not explicit_provider:
             # Try interactive picker if the platform supports it
             adapter = getattr(self, "_adapter_for_source")(source)
             has_picker = (
-                adapter is not None
+                getattr(source, "platform", None) != Platform.FEISHU
+                and adapter is not None
                 and getattr(type(adapter), "send_model_picker", None) is not None
             )
 

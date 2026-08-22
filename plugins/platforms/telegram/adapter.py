@@ -2076,7 +2076,16 @@ class TelegramAdapter(BasePlatformAdapter):
             and content.strip()
             and self._needs_rich_rendering(content)
             and not self._has_telegram_desktop_details_math_crash_shape(content)
-            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            # CJK rich gate (#47653): Telegram Mac/Desktop clients garbled CJK
+            # rich-message drafts. Clients fixed this in 2026-07/08 updates
+            # (verified on macOS — Chinese tables render natively & cleanly),
+            # so the gate is now opt-out via extra.rich_cjk: true for users
+            # whose clients are up to date. Default keeps the gate for clients
+            # that still exhibit the garble.
+            and (
+                self._coerce_bool_extra("rich_cjk", False)
+                or not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            )
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )

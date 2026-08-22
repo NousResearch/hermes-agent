@@ -30,6 +30,7 @@ import {
   systemPreferences
 } from 'electron'
 
+import { buildAboutPanelVersionOptions } from './about-version'
 import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
@@ -1217,15 +1218,9 @@ if (IS_WINDOWS) {
   app.setAppUserModelId('com.nousresearch.hermes')
 }
 
-// Seed the native About panel with the live Hermes version. This is refreshed
-// on every open via the explicit "About" menu handler (refreshAboutPanel), so
-// an in-place `hermes update` mid-session is reflected without an app restart;
-// the seed here just covers the first open and any non-menu invocation path.
-app.setAboutPanelOptions({
-  applicationName: APP_NAME,
-  applicationVersion: resolveHermesVersion(),
-  copyright: 'Copyright © 2026 Nous Research'
-})
+// Seed the native About panel before app readiness. The menu handler refreshes
+// the live runtime version and renderer-skew warning before every open.
+app.setAboutPanelOptions(currentAboutPanelOptions())
 
 // Custom scheme for streaming audio/video into the renderer. Local paths read
 // from this machine; remote paths are proxied through the configured gateway
@@ -14635,19 +14630,24 @@ async function detectRendererSkew() {
   return detectBundleSkew(INSTALL_STAMP, runGit, resolveUpdateRoot())
 }
 
-// Re-resolve the live Hermes version and push it into the native About panel
-// just before showing it, so an in-place `hermes update` is reflected without
-// an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
-// other platforms don't use this menu item.
+function currentAboutPanelOptions(bundleOutOfSync = false) {
+  return {
+    applicationName: APP_NAME,
+    ...buildAboutPanelVersionOptions({
+      applicationVersion: resolveHermesVersion(),
+      installCommit: INSTALL_STAMP?.commit,
+      installDirty: INSTALL_STAMP?.dirty,
+      bundleOutOfSync
+    }),
+    copyright: 'Copyright © 2026 Nous Research'
+  }
+}
+
+// Refresh the live Hermes version and renderer-skew warning before opening.
+// macOS only — `showAboutPanel()` is a no-op elsewhere.
 function showAboutPanelFresh() {
   void detectRendererSkew().then(skew => {
-    app.setAboutPanelOptions({
-      applicationName: APP_NAME,
-      applicationVersion: skew.outOfSync
-        ? `${resolveHermesVersion()} — app build out of date, update the desktop app`
-        : resolveHermesVersion(),
-      copyright: 'Copyright © 2026 Nous Research'
-    })
+    app.setAboutPanelOptions(currentAboutPanelOptions(skew.outOfSync))
     app.showAboutPanel()
   })
 }

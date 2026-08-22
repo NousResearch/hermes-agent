@@ -255,6 +255,70 @@ def test_manifest_goal_is_redacted():
     assert "deploy using" in goal, "redaction must not blank the goal entirely"
 
 
+# ---------------------------------------------------------------------------
+# Explicit profile home (#91996)
+# ---------------------------------------------------------------------------
+
+def test_explicit_home_pins_transcripts_across_raw_thread_boundary(tmp_path, monkeypatch):
+    """Ambient resolve falls through to process HERMES_HOME when the session's
+    ContextVar override is dropped by a raw threading.Thread boundary; an
+    explicit home keeps transcripts + manifest under the originating profile."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    process_home = tmp_path / "process-default"
+    session_home = tmp_path / "session-profile"
+    process_home.mkdir()
+    session_home.mkdir()
+
+    monkeypatch.setenv("HERMES_HOME", str(process_home))
+    token = set_hermes_home_override(session_home)
+    out = {}
+    try:
+        def worker():
+            _id, _writers, paths = create_live_transcripts(
+                [{"goal": "profile-pinned repro"}], home=session_home,
+            )
+            out["paths"] = paths
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+    finally:
+        reset_hermes_home_override(token)
+
+    expected_root = session_home / "cache" / "delegation" / "live"
+    assert out["paths"], "transcripts were created"
+    for p in out["paths"]:
+        assert Path(p).is_relative_to(expected_root), p
+    deleg_dir = Path(out["paths"][0]).parent
+    manifest = json.loads((deleg_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["task_count"] == 1
+
+
+def test_manifest_update_uses_same_explicit_home(tmp_path, monkeypatch):
+    """update_manifest_statuses must resolve the manifest through the same
+    explicit home create used, or the status write is silently lost."""
+    ambient_home = tmp_path / "other-profile"
+    ambient_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(ambient_home))
+
+    home = tmp_path / "own-profile"
+    home.mkdir()
+
+    deleg_id, writers, paths = create_live_transcripts(
+        [{"goal": "pin me"}], home=home,
+    )
+    update_manifest_statuses(
+        deleg_id,
+        [{"task_index": 0, "status": "completed"}],
+        home=home,
+    )
+    manifest = json.loads(
+        (Path(paths[0]).parent / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["tasks"][0]["status"] == "completed"
+
+
 def test_manifest_includes_model_and_provider():
     """The manifest.json should record the model and provider used for the delegation."""
     delegation_id, _writers, _paths = create_live_transcripts(

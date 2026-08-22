@@ -58,11 +58,19 @@ _KICKOFF_MAX = 500
 _STREAM_BUFFER_FLUSH_CHARS = 4000
 
 
-def live_transcript_root() -> Path:
-    """Root directory for live transcripts (profile-safe, never ~/.hermes)."""
+def live_transcript_root(home: Optional[Path] = None) -> Path:
+    """Root directory for live transcripts (profile-safe, never ~/.hermes).
+
+    Pass ``home`` when the caller holds stable parent-owned profile state
+    (e.g. the parent agent's SessionDB path). Ambient ``get_hermes_home()``
+    consults a ContextVar that raw ``threading.Thread`` boundaries drop, so
+    in a multi-profile process an ambient resolve can land transcripts under
+    whatever profile the process-wide ``HERMES_HOME`` names at that moment
+    (#91996).
+    """
     from hermes_constants import get_hermes_dir
 
-    return get_hermes_dir("cache/delegation", "delegation_cache") / "live"
+    return get_hermes_dir("cache/delegation", "delegation_cache", home=home) / "live"
 
 
 def new_live_delegation_id() -> str:
@@ -315,12 +323,17 @@ def create_live_transcripts(
     delegation_id: Optional[str] = None,
     model: Optional[str] = None,
     provider: Optional[str] = None,
+    home: Optional[Path] = None,
 ) -> tuple[Optional[str], List[Optional[LiveTranscriptWriter]], List[str]]:
     """Create one pre-headered writer per task + a manifest.json.
 
     Returns ``(delegation_id, writers, paths)``. On any top-level failure
     returns ``(None, [None]*n, [])`` so delegation proceeds untouched.
     Also opportunistically prunes stale live dirs (retention).
+
+    ``home`` pins every transcript and the manifest to one explicit profile
+    home instead of an ambient resolve that raw thread boundaries can strip
+    of its ContextVar override (#91996).
     """
     n = len(task_list)
     try:
@@ -329,32 +342,35 @@ def create_live_transcripts(
         pass
     try:
         deleg_id = delegation_id or new_live_delegation_id()
+        root = live_transcript_root(home)
         writers: List[Optional[LiveTranscriptWriter]] = []
         paths: List[str] = []
         for i, t in enumerate(task_list):
             w = LiveTranscriptWriter(
                 deleg_id, i, str(t.get("goal", "")),
                 context=t.get("context") or context,
+                root=root,
             )
             writers.append(w if w.path is not None else None)
             if w.path is not None:
                 paths.append(str(w.path))
         if not paths:
             return None, [None] * n, []
-        _write_manifest(deleg_id, task_list, paths, model=model, provider=provider)
+        _write_manifest(deleg_id, task_list, paths, model=model, provider=provider, home=home)
         return deleg_id, writers, paths
     except Exception as exc:
         logger.debug("Live transcript creation failed: %s", exc)
         return None, [None] * n, []
 
 
-def _manifest_path(delegation_id: str) -> Path:
-    return live_transcript_root() / delegation_id / "manifest.json"
+def _manifest_path(delegation_id: str, home: Optional[Path] = None) -> Path:
+    return live_transcript_root(home) / delegation_id / "manifest.json"
 
 
 def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
                     paths: List[str], model: Optional[str] = None,
-                    provider: Optional[str] = None) -> None:
+                    provider: Optional[str] = None,
+                    home: Optional[Path] = None) -> None:
     try:
         manifest = {
             "delegation_id": delegation_id,
@@ -377,7 +393,7 @@ def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
                 for i, t in enumerate(task_list)
             ],
         }
-        _manifest_path(delegation_id).write_text(
+        _manifest_path(delegation_id, home).write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
         )
     except Exception as exc:
@@ -385,12 +401,13 @@ def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
 
 
 def update_manifest_statuses(delegation_id: Optional[str],
-                             results: List[Dict[str, Any]]) -> None:
+                             results: List[Dict[str, Any]],
+                             home: Optional[Path] = None) -> None:
     """Best-effort per-task status update once the batch has aggregated."""
     if not delegation_id:
         return
     try:
-        mp = _manifest_path(delegation_id)
+        mp = _manifest_path(delegation_id, home)
         manifest = json.loads(mp.read_text(encoding="utf-8"))
         by_index = {r.get("task_index"): r for r in results if isinstance(r, dict)}
         for task in manifest.get("tasks", []):

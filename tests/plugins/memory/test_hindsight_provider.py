@@ -267,6 +267,7 @@ class TestConfig:
         # aggregate facts that often crowd out concrete-event signal during
         # auto-recall. Users opt back in via the recall_types config key.
         assert provider._recall_types == ["observation"]
+        assert provider._prefer_observations is False
         assert provider._bank_mission == ""
         assert provider._bank_retain_mission is None
         assert provider._retain_context == "conversation between Hermes Agent and the User"
@@ -296,6 +297,7 @@ class TestConfig:
             bank_retain_mission="Extract key facts",
             recall_max_tokens=2048,
             recall_types=["world", "experience"],
+            prefer_observations=True,
             recall_prompt_preamble="Custom preamble:",
             recall_max_input_chars=500,
             bank_mission="Test agent mission",
@@ -314,6 +316,7 @@ class TestConfig:
         assert p._bank_retain_mission == "Extract key facts"
         assert p._recall_max_tokens == 2048
         assert p._recall_types == ["world", "experience"]
+        assert p._prefer_observations is True
         assert p._recall_prompt_preamble == "Custom preamble:"
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
@@ -462,6 +465,12 @@ class TestToolHandlers:
         assert "Memory 1" in result["result"]
         assert "Memory 2" in result["result"]
 
+    def test_recall_tool_forwards_prefer_observations(self, provider_with_config):
+        p = provider_with_config(prefer_observations=True)
+        p.handle_tool_call("hindsight_recall", {"query": "dark mode"})
+        kwargs = p._client.arecall.call_args.kwargs
+        assert kwargs["prefer_observations"] is True
+
 
     def test_reflect_success(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -532,6 +541,19 @@ class TestPrefetch:
         assert captured["query"] == "fix tests"       # current query, not ignored
         assert "fresh memory" in result
         p._client.arecall.assert_called_once()
+
+    def test_sync_recall_forwards_prefer_observations(self, provider_with_config):
+        p = provider_with_config(recall_sync=True, prefer_observations=True)
+        captured = {}
+
+        def _capture_recall(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(results=[SimpleNamespace(text="fresh memory")])
+
+        p._client.arecall = AsyncMock(side_effect=_capture_recall)
+        result = p.prefetch("fix tests")
+        assert "fresh memory" in result
+        assert captured["prefer_observations"] is True
 
     def test_recall_sync_skips_background_queue(self, provider_with_config):
         # With sync recall there's nothing to prime in the background.

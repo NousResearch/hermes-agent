@@ -4,11 +4,133 @@ Handler bodies are byte-identical to their pre-split server.py form; they
 are rebound onto server.py's globals at install time — see method_ctx.py.
 """
 
+import re
+import types
+
 from .method_ctx import HandlerRegistry
 
 _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
+
+# A leading Windows drive specifier, e.g. ``C:\`` or ``d:/``. Matching any
+# letter (and both separators, either case) matters: secondary data disks and
+# removable drives routinely sit outside C–F, and paths assembled by tooling
+# arrive lowercased.
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+# Fallback container directory when no configured mount covers the host path.
+# The Docker backend always has /workspace available (persistent sandbox or the
+# auto-mounted cwd), so it is a safe landing spot — but it is a guess, not a
+# translation, hence the log line at the call site.
+_DEFAULT_CONTAINER_WORKSPACE = "/workspace"
+
+
+def _docker_volume_host_container_pairs(docker_volumes) -> list[tuple[str, str]]:
+    """Parse ``docker_volumes`` specs into ``(host_prefix, container_root)`` pairs.
+
+    Accepts the ``host:container[:mode]`` form used by ``terminal.docker_volumes``.
+    Windows hosts are the point of this function, so the host half is split off
+    by locating the container half's leading ``/`` *after* any drive letter —
+    ``D:/projects:/projects:rw`` must not split at the drive colon.
+
+    Named volumes (no absolute host path) are skipped: they cannot correspond to
+    a host cwd. Returned host prefixes are normalized to forward slashes and
+    lowercased for case-insensitive comparison, matching Windows semantics.
+    """
+    pairs: list[tuple[str, str]] = []
+    if not isinstance(docker_volumes, (list, tuple)):
+        return pairs
+
+    for entry in docker_volumes:
+        if not isinstance(entry, str):
+            continue
+        spec = entry.strip()
+        if not spec:
+            continue
+        # Skip a leading drive specifier before hunting for the ``:/`` that
+        # introduces the container path.
+        search_from = 2 if _WINDOWS_DRIVE_RE.match(spec) else 0
+        sep = spec.find(":/", search_from)
+        if sep <= 0:
+            continue
+        host_raw = spec[:sep].strip()
+        container_raw = spec[sep + 1 :].split(":", 1)[0].strip()
+        if not host_raw or not container_raw.startswith("/"):
+            continue
+        # Named volumes have neither a POSIX-absolute nor a drive-qualified host.
+        if not (host_raw.startswith(("/", "~")) or _WINDOWS_DRIVE_RE.match(host_raw)):
+            continue
+        host_norm = host_raw.replace("\\", "/").rstrip("/").lower()
+        container_norm = container_raw.rstrip("/") or "/"
+        if host_norm:
+            pairs.append((host_norm, container_norm))
+
+    return pairs
+
+
+def _normalize_docker_session_cwd(
+    raw_cwd: str, terminal_backend: str, docker_volumes=None
+) -> str:
+    """Translate a Windows host path to its container path for the Docker backend.
+
+    A session created from the desktop app carries a Windows host path (e.g.
+    ``D:\\projects``). That path does not exist inside a Linux container, so
+    terminal commands fail with ``cd: D:\\projects: No such file or directory``.
+
+    The translation follows the configured ``terminal.docker_volumes`` mounts,
+    using the longest matching host prefix so nested mounts win over broader
+    ones, and preserving the subpath below that prefix — a session opened at
+    ``D:\\projects\\api`` under ``D:/projects:/projects`` belongs in
+    ``/projects/api``, not at the mount root. When no mount covers the path, it
+    falls back to ``/workspace``.
+
+    Only Windows drive paths are rewritten: POSIX and relative paths are already
+    usable container-side and pass through untouched, as does every non-Docker
+    backend.
+
+    Args:
+        raw_cwd: The resolved working directory for the session.
+        terminal_backend: The ``terminal.backend`` config value.
+        docker_volumes: The ``terminal.docker_volumes`` config value, if any.
+
+    Returns:
+        The container-side path, or ``raw_cwd`` unchanged when no translation
+        applies.
+    """
+    if not raw_cwd or not terminal_backend:
+        return raw_cwd
+
+    if terminal_backend.strip().lower() != "docker":
+        return raw_cwd
+
+    if not _WINDOWS_DRIVE_RE.match(raw_cwd):
+        return raw_cwd
+
+    cwd_norm = raw_cwd.replace("\\", "/").rstrip("/")
+    cwd_cmp = cwd_norm.lower()
+
+    best: tuple[str, str] | None = None
+    for host_prefix, container_root in _docker_volume_host_container_pairs(docker_volumes):
+        if cwd_cmp == host_prefix or cwd_cmp.startswith(host_prefix + "/"):
+            if best is None or len(host_prefix) > len(best[0]):
+                best = (host_prefix, container_root)
+
+    if best is None:
+        logger.info(
+            "docker backend: no docker_volumes mount covers session cwd %r; "
+            "falling back to %s",
+            raw_cwd,
+            _DEFAULT_CONTAINER_WORKSPACE,
+        )
+        return _DEFAULT_CONTAINER_WORKSPACE
+
+    host_prefix, container_root = best
+    relative = cwd_norm[len(host_prefix) :].lstrip("/")
+    translated = f"{container_root.rstrip('/')}/{relative}" if relative else container_root
+    logger.info("docker backend: mapped session cwd %r -> %r", raw_cwd, translated)
+
+    return translated
 
 
 @method("session.create")
@@ -31,7 +153,34 @@ def _(rid, params: dict) -> dict:
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     except Exception:
         explicit_cwd = False
+    
+    # The Docker backend runs commands inside a Linux container, where a
+    # Windows host cwd does not exist. Read the backend and the configured
+    # mounts so the cwd can be translated to its container-side path below.
+    terminal_backend = "local"
+    docker_volumes = []
+    try:
+        terminal_cfg = _load_cfg().get("terminal", {})
+        if isinstance(terminal_cfg, dict):
+            terminal_backend = str(terminal_cfg.get("backend") or "local").strip()
+            cfg_volumes = terminal_cfg.get("docker_volumes")
+            if isinstance(cfg_volumes, (list, tuple)):
+                docker_volumes = list(cfg_volumes)
+    except Exception:
+        terminal_backend = "local"
+        docker_volumes = []
+
     resolved_cwd = _completion_cwd(params)
+
+    # Translate the host cwd to its container path so terminal commands don't
+    # fail with "cd: D:\projects: No such file or directory". The host path is
+    # kept for the git/project enrichment below, which shells out on THIS
+    # machine and would report nothing for a container path.
+    host_resolved_cwd = resolved_cwd
+    resolved_cwd = _normalize_docker_session_cwd(
+        resolved_cwd, terminal_backend, docker_volumes
+    )
+    
     source = _resolve_session_source(str(params.get("source") or "").strip() or None)
     _enable_gateway_prompts()
 
@@ -150,8 +299,10 @@ def _(rid, params: dict) -> dict:
                 "tools": {},
                 "skills": {},
                 "cwd": _sessions[sid]["cwd"],
-                "branch": _git_branch_for_cwd(_sessions[sid]["cwd"]),
-                "project": _project_info_for_cwd(_sessions[sid]["cwd"]),
+                # Git/project lookups shell out on the host, so they read the
+                # host path even when the session's cwd is container-side.
+                "branch": _git_branch_for_cwd(host_resolved_cwd),
+                "project": _project_info_for_cwd(host_resolved_cwd),
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                 "profile_name": _response_profile_name(profile),
@@ -3544,3 +3695,32 @@ def _(rid, params: dict) -> dict:
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
     _registry.install(server)
+    # Module-level helpers aren't @method handlers, so install() doesn't see
+    # them. Rebind onto server globals so handler bodies resolve the same free
+    # names after the split — and so the helpers themselves see server.py's
+    # ``logger``. Mirrors methods_prompt.register.
+    #
+    # The module-level names these helpers close over have to travel with them:
+    # rebinding __globals__ to server.py's namespace means anything left behind
+    # here raises NameError at call time.
+    g = vars(server)
+    for name, value in (
+        ("_WINDOWS_DRIVE_RE", _WINDOWS_DRIVE_RE),
+        ("_DEFAULT_CONTAINER_WORKSPACE", _DEFAULT_CONTAINER_WORKSPACE),
+    ):
+        setattr(server, name, value)
+    for helper in (
+        _docker_volume_host_container_pairs,
+        _normalize_docker_session_cwd,
+    ):
+        setattr(
+            server,
+            helper.__name__,
+            types.FunctionType(
+                helper.__code__,
+                g,
+                helper.__name__,
+                helper.__defaults__,
+                helper.__closure__,
+            ),
+        )

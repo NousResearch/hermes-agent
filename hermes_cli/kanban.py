@@ -2598,6 +2598,20 @@ def _cmd_archive(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _coerce_positive_int(value):
+    """Coerce a config value to a positive int (``None`` when absent or
+    invalid), or ``None`` for values <= 0. Shared by the dispatch and
+    daemon commands so the \"invalid => unlimited\" semantics stay uniform
+    across both entry points."""
+    if value is None:
+        return None
+    try:
+        ival = int(value)
+    except (TypeError, ValueError):
+        return None
+    return ival if ival >= 1 else None
+
+
 def _cmd_tail(args: argparse.Namespace) -> int:
     last_id = 0
     print(f"Tailing events for {args.task_id}. Ctrl-C to stop.")
@@ -2629,15 +2643,6 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         _cfg = load_config()
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
         default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
-
-        def _coerce_positive_int(value):
-            if value is None:
-                return None
-            try:
-                ival = int(value)
-            except (TypeError, ValueError):
-                return None
-            return ival if ival >= 1 else None
 
         max_in_progress_per_profile = _coerce_positive_int(
             _kanban_cfg.get("max_in_progress_per_profile")
@@ -2852,9 +2857,18 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             return False
 
     try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+        _max_in_progress = _coerce_positive_int(_kanban_cfg.get("max_in_progress"))
+    except Exception:
+        _max_in_progress = None
+
+    try:
         kb.run_daemon(
             interval=args.interval,
             max_spawn=args.max,
+            max_in_progress=_max_in_progress,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             on_tick=_on_tick,
         )

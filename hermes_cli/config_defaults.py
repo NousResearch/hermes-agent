@@ -2618,6 +2618,11 @@ DEFAULT_CONFIG = {
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
+        # Global cap on concurrently running workers. This is a live
+        # concurrency limit, not a per-tick spawn budget. A bounded default
+        # prevents a backlog from spawning an unbounded process/model burst.
+        # Set to None only when intentionally allowing unlimited dispatch.
+        "max_in_progress": 3,
         # Auto-block after this many consecutive non-success attempts for the
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.

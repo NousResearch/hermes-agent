@@ -963,6 +963,13 @@ def test_config_default_dispatch_in_gateway_is_true():
     )
 
 
+def test_config_default_limits_global_kanban_workers():
+    """The dispatcher must have a bounded default worker concurrency."""
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["kanban"]["max_in_progress"] == 3
+
+
 
 
 

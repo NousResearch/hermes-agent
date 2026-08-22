@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
+import { $paneStates } from '@/store/panes'
 
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
@@ -95,6 +96,10 @@ beforeEach(() => {
   // Single profile by default → the scope selector stays hidden (>1 gate),
   // so existing tests see unchanged single-profile behavior.
   getProfiles.mockResolvedValue({ profiles: [{ name: 'default', is_default: true }] })
+  // The hub picker's collapsed-by-default seed only fires once per pane id
+  // (no saved state) — reset it so every test sees a fresh "never touched
+  // this pane" user, regardless of what an earlier test left behind.
+  $paneStates.set({})
 })
 
 afterEach(() => {
@@ -266,13 +271,54 @@ describe('SkillsView toolset management', () => {
     expect(await screen.findByText(/Deep research steps/)).toBeTruthy()
   })
 
+  it('hub picker starts collapsed — no iframe until the user opens it', async () => {
+    const { EmbeddedHubPicker } = await import('./embedded-hub-picker')
+
+    await act(async () => {
+      render(<EmbeddedHubPicker installedNames={new Set()} profile={null} />)
+    })
+
+    // A profile that has never touched this pane sees the full-height
+    // installed list, not the hub iframe stacked underneath it.
+    expect(document.querySelector('iframe')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Browse the full hub' })).toBeTruthy()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Browse the full hub' }))
+    })
+
+    // Opening is a real, persisted choice — the iframe mounts once asked for.
+    expect(document.querySelector('iframe')).toBeTruthy()
+  })
+
+  it('hub picker leaves an existing pane preference alone — no re-collapse on mount', async () => {
+    // A profile that already expanded the hub (persisted height override)
+    // must NOT get silently re-collapsed by the seed-once effect — only a
+    // pane with NO saved state at all gets the collapsed default.
+    $paneStates.set({ 'capabilities-hub': { open: true, heightOverride: 400 } })
+    const { EmbeddedHubPicker } = await import('./embedded-hub-picker')
+
+    await act(async () => {
+      render(<EmbeddedHubPicker installedNames={new Set()} profile={null} />)
+    })
+
+    expect(document.querySelector('iframe')).toBeTruthy()
+    expect($paneStates.get()['capabilities-hub']?.heightOverride).toBe(400)
+  })
+
   it('hub picker refuses to reinstall an already-installed skill', async () => {
     const { notify } = await import('@/store/notifications')
     const { EmbeddedHubPicker } = await import('./embedded-hub-picker')
 
-    render(<EmbeddedHubPicker installedNames={new Set(['web-research'])} profile={null} />)
+    await act(async () => {
+      render(<EmbeddedHubPicker installedNames={new Set(['web-research'])} profile={null} />)
+    })
 
-    // The picker is expanded by default — the hub iframe is live on mount.
+    // Open the hub explicitly — it starts collapsed — before it can post any
+    // pick messages.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Browse the full hub' }))
+    })
     expect(document.querySelector('iframe')).toBeTruthy()
 
     await act(async () => {
@@ -311,6 +357,13 @@ describe('SkillsView toolset management', () => {
           </MemoryRouter>
         </QueryClientProvider>
       )
+    })
+
+    // Collapsed by default — the hub section is there but no iframe yet.
+    expect(document.querySelector('iframe')).toBeNull()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Browse the full hub' }))
     })
 
     const iframe = document.querySelector('iframe')

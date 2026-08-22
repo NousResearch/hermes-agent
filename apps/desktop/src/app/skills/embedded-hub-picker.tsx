@@ -9,7 +9,7 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $hubActions, installHubSkill, UPDATE_ALL_KEY, updateHubSkills } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
-import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
+import { $paneHeightOverride, $paneState, setPaneHeightOverride } from '@/store/panes'
 
 // The REAL Skills Hub page (docs site) embedded as a one-click picker — the
 // same trick the Bot Mode agent editor uses. `?embed=picker` hides the docs
@@ -58,10 +58,10 @@ interface EmbeddedHubPickerProps {
 }
 
 /** The Skills Hub browser for the Skills tab: a resizable iframe of the live
- *  hub where every card installs with one click. Expanded by default —
- *  discovery IS the point — with a collapse toggle (persisted, like every
- *  other pane) and an update-all action. Memoized: the iframe must not sit in
- *  the parent's keystroke/re-render path. */
+ *  hub where every card installs with one click. Collapsed by default — the
+ *  installed list gets the full page until the user opts in — with an expand
+ *  toggle (persisted, like every other pane) and an update-all action.
+ *  Memoized: the iframe must not sit in the parent's keystroke/re-render path. */
 export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
   hidden = false,
   installedNames,
@@ -73,9 +73,20 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
   // $hubActions churns on every tailed log line during an install.
   const updating = useStoreSelector($hubActions, actions => actions[UPDATE_ALL_KEY]?.running ?? false)
   // Collapse state rides the same persisted height override the sash writes
-  // (0 = collapsed to the header), so "Hide the hub browser" survives tab
-  // switches and restarts instead of re-expanding — and re-loading the docs
-  // site — on every visit. Same contract as DetailPane.
+  // (0 = collapsed to the header), so "Hide"/"Browse" survives tab switches
+  // and restarts instead of resetting — and re-loading the docs site — on
+  // every visit. Same contract as DetailPane, including the "seed collapsed
+  // once, then the user's own choice always wins" defaultCollapsed pattern:
+  // only a profile that has NEVER touched this pane gets the collapsed seed.
+  // Safe against a returning user's expanded choice only because $paneStates
+  // (store/panes.ts) hydrates from localStorage synchronously at module load,
+  // not in an effect — the check below always sees the real persisted value,
+  // never a pre-hydration placeholder.
+  useEffect(() => {
+    if ($paneState(HUB_PANE_ID).get() === undefined) {
+      setPaneHeightOverride(HUB_PANE_ID, 0)
+    }
+  }, [])
   const heightOverride = useStore($paneHeightOverride(HUB_PANE_ID))
   const height = heightOverride ?? HUB_DEFAULT_PX
   const open = height > HUB_COLLAPSED_PX

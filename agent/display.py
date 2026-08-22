@@ -18,7 +18,10 @@ from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import (
+    classify_web_extract_failure,
+    file_mutation_result_landed,
+)
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
@@ -1369,6 +1372,17 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         err = data.get("error") or data.get("message")
         if err and (data.get("success") is False or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
+
+        # web_extract returns an ``error`` field for every URL, including an
+        # empty one on success. Judge the result values instead of matching
+        # the serialized key name below.
+        if tool_name == "web_extract":
+            classification = classify_web_extract_failure(data)
+            if classification is not None:
+                failed, error = classification
+                if failed:
+                    return True, f" [{_trim_error(error)}]"
+                return False, ""
 
     # Generic heuristic for non-terminal tools
     # Multimodal tool results (dicts with _multimodal=True) are not strings —

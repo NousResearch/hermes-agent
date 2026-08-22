@@ -327,6 +327,20 @@ class TestConfig:
         meta = provider._build_metadata(message_count=2, turn_index=1)
         assert "source" not in meta
 
+    def test_session_title_lands_in_retain_metadata(self, provider):
+        """#86824: core already passes session_title; retain metadata dropped it."""
+        provider.initialize(
+            session_id="s1",
+            platform="cli",
+            session_title="Creative Skills Overview",
+        )
+        meta = provider._build_metadata(message_count=2, turn_index=1)
+        assert meta.get("title") == "Creative Skills Overview"
+
+    def test_missing_session_title_omitted_from_metadata(self, provider):
+        meta = provider._build_metadata(message_count=2, turn_index=1)
+        assert "title" not in meta
+
     def test_retain_source_user_override_wins(self, provider_with_config):
         # Users can still opt in explicitly (config key / env var).
         p = provider_with_config(retain_source="cogoport")

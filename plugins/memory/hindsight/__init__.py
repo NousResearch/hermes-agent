@@ -762,6 +762,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._thread_id = ""
         self._agent_identity = ""
         self._agent_workspace = ""
+        self._session_title = ""
         self._turn_index = 0
         self._client = None
         self._timeout = _DEFAULT_TIMEOUT
@@ -1612,6 +1613,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._thread_id = str(kwargs.get("thread_id") or "").strip()
         self._agent_identity = str(kwargs.get("agent_identity") or "").strip()
         self._agent_workspace = str(kwargs.get("agent_workspace") or "").strip()
+        self._session_title = str(
+            kwargs.get("session_title") or kwargs.get("title") or ""
+        ).strip()
         self._turn_index = 0
         self._session_turns = []
         self._last_retained_turn_count = 0
@@ -2015,6 +2019,8 @@ class HindsightMemoryProvider(MemoryProvider):
             metadata["thread_id"] = self._thread_id
         if self._agent_identity:
             metadata["agent_identity"] = self._agent_identity
+        if self._session_title:
+            metadata["title"] = self._session_title
         return metadata
 
     def _build_retain_kwargs(
@@ -2363,6 +2369,9 @@ class HindsightMemoryProvider(MemoryProvider):
         if parent_session_id:
             self._parent_session_id = str(parent_session_id).strip()
         self._session_id = new_id
+        title = str(kwargs.get("session_title") or kwargs.get("title") or "").strip()
+        if title:
+            self._session_title = title
         start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self._document_id = f"{self._session_id}-{start_ts}"
         self._session_turns = []

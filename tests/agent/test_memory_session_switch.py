@@ -179,6 +179,7 @@ def _make_hindsight_provider():
     provider._thread_id = ""
     provider._agent_identity = ""
     provider._agent_workspace = ""
+    provider._session_title = ""
     provider._retain_tags = []
     provider._retain_context = "test-context"
     provider._retain_async = False

@@ -501,6 +501,39 @@ class TestWaitForGatewayExit:
         assert calls == [(11, True), (22, True)]
 
 
+class TestWaitForTcpPortFree:
+    def test_returns_true_once_connect_fails(self):
+        attempts = {"n": 0}
+
+        def connect(_host, _port):
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                return True
+            raise OSError("refused")
+
+        times = iter([0.0, 0.0, 0.1, 0.2, 0.3])
+        assert gateway._wait_for_tcp_port_free(
+            "127.0.0.1",
+            8642,
+            timeout=1.0,
+            clock=lambda: next(times),
+            sleeper=lambda _: None,
+            connect=connect,
+        )
+        assert attempts["n"] == 3
+
+    def test_times_out_while_port_stays_busy(self):
+        times = iter([0.0, 0.0, 0.5, 1.5])
+        assert gateway._wait_for_tcp_port_free(
+            "127.0.0.1",
+            8642,
+            timeout=1.0,
+            clock=lambda: next(times),
+            sleeper=lambda _: None,
+            connect=lambda _h, _p: True,
+        ) is False
+
+
 class TestStopProfileGateway:
     def test_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
         calls = {"kill": 0, "alive_probes": 0, "remove": 0, "reap_calls": 0}

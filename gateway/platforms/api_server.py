@@ -8375,7 +8375,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 reuse_address=False if sys.platform == "darwin" else None,
             )
             try:
-                await self._site.start()
+                last_exc: OSError | None = None
+                for attempt in range(5):
+                    try:
+                        await self._site.start()
+                        last_exc = None
+                        break
+                    except OSError as exc:
+                        last_exc = exc
+                        if (
+                            getattr(exc, "errno", None) != errno.EADDRINUSE
+                            or attempt == 4
+                        ):
+                            break
+                        await asyncio.sleep(0.2 * (attempt + 1))
+                if last_exc is not None:
+                    raise last_exc
             except OSError as exc:
                 await self._runner.cleanup()
                 self._runner = None

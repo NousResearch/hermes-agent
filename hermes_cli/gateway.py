@@ -12,6 +12,7 @@ import os
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import textwrap
@@ -5324,6 +5325,53 @@ def _wait_for_gateway_exit(
     return True
 
 
+def _wait_for_tcp_port_free(
+    host: str,
+    port: int,
+    *,
+    timeout: float = 10.0,
+    clock=time.monotonic,
+    sleeper=time.sleep,
+    connect=None,
+) -> bool:
+    """Wait until nothing accepts TCP connections on host:port.
+
+    PID exit is not enough on macOS: api_server disables SO_REUSEADDR, so a
+    restart that wins the race logs EADDRINUSE and keeps running with no API.
+    Connection-refused means the listener is gone.
+    """
+    probe = connect
+    if probe is None:
+        def probe(target_host: str, target_port: int) -> bool:
+            with socket.create_connection((target_host, target_port), timeout=0.2):
+                return True
+
+    deadline = clock() + timeout
+    while clock() < deadline:
+        try:
+            probe(host, port)
+        except OSError:
+            return True
+        sleeper(0.1)
+    return False
+
+
+def _wait_for_api_server_port_free(*, timeout: float = 10.0) -> bool:
+    """Wait for the configured api_server listen address to stop accepting."""
+    host = os.getenv("API_SERVER_HOST", "127.0.0.1") or "127.0.0.1"
+    try:
+        port = int(os.getenv("API_SERVER_PORT", "8642"))
+    except ValueError:
+        port = 8642
+    freed = _wait_for_tcp_port_free(host, port, timeout=timeout)
+    if not freed:
+        print(
+            f"⚠ {host}:{port} still accepting connections — "
+            "new api_server may fail to bind"
+        )
+    return freed
+
+
 def _launchd_kickstart(label: str, domain: str) -> None:
     """Hard-restart ``domain/label`` via ``launchctl kickstart -k``.
 
@@ -5408,6 +5456,7 @@ def launchd_restart():
                     print(
                         f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
                     )
+        _wait_for_api_server_port_free()
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()
@@ -8137,6 +8186,7 @@ def _gateway_command_inner(args):
             if total:
                 print(f"✓ Stopped {total} gateway process(es) across all profiles")
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+            _wait_for_api_server_port_free()
 
             # Start the current profile's service fresh
             print("Starting gateway...")
@@ -8231,6 +8281,7 @@ def _gateway_command_inner(args):
                 print("✓ Stopped gateway for this profile")
 
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+            _wait_for_api_server_port_free()
 
             # Start fresh
             print("Starting gateway...")

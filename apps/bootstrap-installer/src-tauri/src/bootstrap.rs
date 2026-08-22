@@ -365,8 +365,11 @@ fn write_bootstrap_complete_marker(install_root: &Path, pin: &Pin) -> Result<ser
 
 /// Spawn the already-built desktop app, detached. Returns Err if no built app
 /// exists or the spawn fails, so the caller can fall back to showing the
-/// installer UI.
-pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io::Result<()> {
+/// installer UI. The caller owns the bounded hand-off poll and decides whether
+/// an observed child exit represents a successful launch.
+pub(crate) fn spawn_installed_desktop(
+    install_root: &std::path::Path,
+) -> std::io::Result<std::process::Child> {
     let exe = resolve_hermes_desktop_exe(install_root).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "no built Hermes desktop app")
     })?;
@@ -380,7 +383,7 @@ pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io
         // Windows doesn't reintroduce the relaunch race.
         cmd.creation_flags(0x0000_0008);
     }
-    cmd.spawn().map(|_child| ())
+    cmd.spawn()
 }
 
 #[cfg(target_os = "macos")]

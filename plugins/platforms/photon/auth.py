@@ -464,6 +464,24 @@ def poll_for_token(
     interval: Optional[int] = None,
     on_pending: Optional[Callable[[], None]] = None,
 ) -> str:
+    """Poll for approval and return the highest-priority token candidate."""
+    return poll_for_token_candidates(
+        code,
+        client_id=client_id,
+        timeout=timeout,
+        interval=interval,
+        on_pending=on_pending,
+    )[0].token
+
+
+def poll_for_token_candidates(
+    code: DeviceCode,
+    *,
+    client_id: str = DEFAULT_CLIENT_ID,
+    timeout: Optional[int] = None,
+    interval: Optional[int] = None,
+    on_pending: Optional[Callable[[], None]] = None,
+) -> list:
     """Poll ``/api/auth/device/token`` until the user approves.
 
     Mirrors the official CLI's polling loop: sleep first, then poll;
@@ -511,7 +529,12 @@ def poll_for_token(
                     "device-token response (expected access_token, "
                     "data.access_token, accessToken, or set-auth-token)."
                 )
-            return candidates[0].token
+            # Every candidate is returned, not just the winner:
+            # _validated_dashboard_token tries them in order against the
+            # dashboard API. Returning one would make its fallback loop dead
+            # code and fail login whenever the top-level access_token
+            # authenticates the session but 404s on the project APIs.
+            return candidates
         if resp.status_code == 429:
             # RFC 8628 §3.5 — treat 429 as slow_down.
             sleep += 10
@@ -708,12 +731,7 @@ def login_device_flow(
             webbrowser.open(target, new=2)
         except Exception:
             pass
-    # Poll once for the approved token, then collect every candidate shape so
-    # we can validate against the dashboard API before persisting (avoids
-    # saving a token that authenticates the session lookup but 404s on the
-    # project APIs).
-    first_token = poll_for_token(code, client_id=client_id)
-    candidates = [_DeviceTokenCandidate(source="poll", token=first_token)]
+    candidates = poll_for_token_candidates(code, client_id=client_id)
     token = _validated_dashboard_token(candidates)
     store_photon_token(token)
     return token

@@ -3727,6 +3727,29 @@ def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
     return True
 
 
+def _write_service_definition(path: "Path", definition: str) -> None:
+    """Write a systemd unit / launchd plist without a truncation window.
+
+    A bare ``write_text`` empties the file before the new definition lands,
+    and every caller hands the result straight to the service manager
+    (``systemctl daemon-reload``, ``launchctl bootstrap``), so a half-written
+    file is parsed immediately. The refresh paths make that concrete: they
+    rewrite a definition that is already installed and running, and the
+    launchd refresh can be executing inside the gateway's own process tree —
+    the bootout below it tears that tree down, this CLI included.
+
+    A unit the manager cannot parse means the gateway simply stops coming
+    back at login, with nothing to point at.
+
+    ``preserve_mode`` keeps an already-installed definition's bits;
+    ``create_mode`` lands a new one at 0644, which is what the umask gave
+    before and what systemd and launchd expect to be able to read.
+    """
+    from utils import atomic_write_text
+
+    atomic_write_text(path, definition, preserve_mode=True, create_mode=0o644)
+
+
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     """Rewrite the installed systemd unit when the generated definition has changed."""
     unit_path = get_systemd_unit_path(system=system)
@@ -3770,7 +3793,7 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     if _refuse_temp_home_service_write(new_unit, "systemd unit"):
         return False
 
-    unit_path.write_text(new_unit, encoding="utf-8")
+    _write_service_definition(unit_path, new_unit)
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     print(
         f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install"
@@ -3972,7 +3995,7 @@ def systemd_install(
     if _refuse_temp_home_service_write(new_unit, "systemd unit"):
         return
     print(f"Installing {_service_scope_label(system)} systemd service to: {unit_path}")
-    unit_path.write_text(new_unit, encoding="utf-8")
+    _write_service_definition(unit_path, new_unit)
 
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     if enable_on_startup:
@@ -4872,7 +4895,7 @@ def refresh_launchd_plist_if_needed() -> bool:
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return False
 
-    plist_path.write_text(new_plist, encoding="utf-8")
+    _write_service_definition(plist_path, new_plist)
     label = get_launchd_label()
     domain = _launchd_domain()
     target = f"{domain}/{label}"
@@ -5086,7 +5109,7 @@ def launchd_install(force: bool = False):
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")
-    plist_path.write_text(new_plist, encoding="utf-8")
+    _write_service_definition(plist_path, new_plist)
 
     try:
         _launchctl_bootstrap(
@@ -5136,7 +5159,7 @@ def launchd_start():
             sys.exit(1)
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
-        plist_path.write_text(new_plist, encoding="utf-8")
+        _write_service_definition(plist_path, new_plist)
         try:
             _launchctl_bootstrap(_launchd_domain(), plist_path, label, timeout=30)
             subprocess.run(

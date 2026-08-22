@@ -128,6 +128,12 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
     parsed = json.loads(out)
     assert parsed["status"] == "dispatched", parsed
     assert parsed["mode"] == "background"
+    assert "If no independent work remains" in parsed["note"]
+    assert "Do not repeatedly check task status" in parsed["note"]
+    assert "live_transcripts" in parsed
+    assert "explicit user-requested live monitoring or diagnostics" in parsed["live_transcripts_hint"]
+    assert "not a completion signal" in parsed["live_transcripts_hint"]
+    assert "Read or `tail -f`" not in parsed["live_transcripts_hint"]
 
     evt = _drain_one()
     assert evt is not None

@@ -247,7 +247,12 @@ import {
   type RegistrySessionSource,
   spliceRegistrySessionRows
 } from './profile-session-routing'
-import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
+import {
+  createQuickEntryShortcut,
+  createQuickEntrySubmitRelay,
+  quickEntryWindowBounds,
+  sanitizeQuickEntrySettings
+} from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
@@ -14340,27 +14345,52 @@ ipcMain.handle('hermes:quick-entry:settings:set', async (_event, patch) => {
 // owns the one prompt-submit path, and forwarding keeps it that way. The
 // payload is `{ target, text }` — target routing (current chat / a picked
 // session / new) is the renderer's job too.
-ipcMain.on('hermes:quick-entry:submit', (_event, payload) => {
-  hideQuickEntryWindow()
+const quickEntrySubmitRelay = createQuickEntrySubmitRelay({
+  onSuccess: () => {
+    hideQuickEntryWindow()
+    if (process.platform === 'darwin') {
+      app.dock?.show()
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  }
+})
 
-  const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
+// Main owns the request lifecycle so the capture window can keep text until
+// the primary renderer confirms delivery (#85590).
+ipcMain.handle('hermes:quick-entry:submit', (event, payload) => {
+  if (!quickEntryWindow || event.sender !== quickEntryWindow.webContents) {
+    return { code: 'forbidden', message: 'Quick Entry sender is not authorized.', ok: false, retryable: false }
+  }
+
+  const text =
+    typeof payload === 'string' ? payload.trim() : typeof payload?.text === 'string' ? payload.text.trim() : ''
 
   if (!text) {
-    return
+    return { code: 'empty', message: 'Enter a prompt before submitting.', ok: false, retryable: false }
   }
 
   if (!mainWindow || mainWindow.isDestroyed()) {
-    rememberLog('[quick-entry] dropped a submit: no primary window to route it to')
-
-    return
+    return { code: 'no-primary', message: 'The primary Hermes window is unavailable.', ok: false, retryable: true }
   }
 
-  // Deliberately does NOT raise/focus the main window — the user asked to fire
-  // a prompt from wherever they were, not to be yanked into the app.
-  mainWindow.webContents.send('hermes:quick-entry:submit', {
-    target: typeof payload?.target === 'string' && payload.target ? payload.target : 'current',
-    text
+  const target =
+    typeof payload === 'object' && typeof payload?.target === 'string' && payload.target ? payload.target : 'current'
+
+  return quickEntrySubmitRelay.begin(correlationId => {
+    mainWindow.webContents.send('hermes:quick-entry:submit', { correlationId, target, text })
   })
+})
+
+// Main cannot invoke the primary renderer, so the primary returns by id. Stale
+// or duplicate acknowledgements are intentionally ignored (#85590).
+ipcMain.on('hermes:quick-entry:ack', (event, payload) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    return
+  }
+  quickEntrySubmitRelay.acknowledge(payload?.correlationId, payload?.result)
 })
 
 // Primary renderer → main → quick window: gateway connection state + the

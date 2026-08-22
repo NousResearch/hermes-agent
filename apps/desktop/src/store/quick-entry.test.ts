@@ -43,6 +43,8 @@ describe('quickComposerReducer', () => {
     expect(initialQuickComposerState).toEqual({
       connected: false,
       draft: '',
+      error: null,
+      pendingSubmitId: null,
       sessions: [],
       submitting: false,
       target: QUICK_TARGET_CURRENT,
@@ -50,13 +52,60 @@ describe('quickComposerReducer', () => {
     })
   })
 
-  it('submit sends the trimmed draft with the target, clears it, and hides', () => {
-    const { sent, state } = run([connect, { draft: '  ship it  ', type: 'edit' }, { type: 'submit' }])
+  it('submit sends the trimmed draft but waits for acknowledgement to clear and hide', () => {
+    const { sent, state } = run([
+      connect,
+      { draft: '  ship it  ', type: 'edit' },
+      { submitId: 1, type: 'submit' }
+    ])
 
     expect(sent).toEqual([{ target: QUICK_TARGET_CURRENT, text: 'ship it' }])
-    expect(state.draft).toBe('')
+    expect(state.draft).toBe('  ship it  ')
     expect(state.submitting).toBe(true)
-    expect(state.visible).toBe(false)
+    expect(state.visible).toBe(true)
+
+    const acknowledged = quickComposerReducer(state, { submitId: 1, type: 'submit-ok' }).state
+    expect(acknowledged.draft).toBe('')
+    expect(acknowledged.visible).toBe(false)
+  })
+
+  it('submit-error keeps the draft visible, records the error, and refocuses on retry', () => {
+    const { state } = run([connect, { draft: '  keep me  ', type: 'edit' }, { submitId: 7, type: 'submit' }])
+    const failed = quickComposerReducer(state, {
+      message: 'Delivery failed',
+      submitId: 7,
+      type: 'submit-error'
+    }).state
+
+    expect(failed).toMatchObject({
+      draft: '  keep me  ',
+      error: 'Delivery failed',
+      pendingSubmitId: null,
+      submitting: false,
+      visible: true
+    })
+  })
+
+  it('ignores submit acknowledgements with stale ids', () => {
+    const { state } = run([connect, { draft: 'keep', type: 'edit' }, { submitId: 7, type: 'submit' }])
+
+    expect(quickComposerReducer(state, { submitId: 8, type: 'submit-ok' }).state).toEqual(state)
+    expect(
+      quickComposerReducer(state, { message: 'stale', submitId: 8, type: 'submit-error' }).state
+    ).toEqual(state)
+  })
+
+  it('keeps resume and current-target submits on their existing routes', () => {
+    const resumed = run([
+      connect,
+      { target: 's2', type: 'target' },
+      { draft: 'resume here', type: 'edit' },
+      { submitId: 1, type: 'submit' }
+    ])
+    const current = run([connect, { draft: 'current here', type: 'edit' }, { submitId: 2, type: 'submit' }])
+
+    expect(resumed.sent).toEqual([{ target: 's2', text: 'resume here' }])
+    expect(current.sent).toEqual([{ target: QUICK_TARGET_CURRENT, text: 'current here' }])
   })
 
   it('an empty or whitespace-only submit sends nothing and stays open', () => {

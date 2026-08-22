@@ -53,6 +53,7 @@ import { deferred } from '../../../test/deferred'
 import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
+import { activePinnedStoredSessionIds } from './session-context-drift'
 import { useSessionActions } from './use-session-actions'
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -83,7 +84,7 @@ const RUNTIME_SESSION_ID = 'rt-new-001'
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
   'createBackendSessionForSend' | 'selectSidebarItem' | 'startFreshSessionDraft'
->
+> & Pick<ReturnType<typeof useSessionActions>, 'submitTextToNewSession'>
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -105,10 +106,12 @@ function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 function Harness({
+  getRoutedStoredSessionId = () => null,
   navigate = vi.fn(),
   onReady,
   requestGateway
 }: {
+  getRoutedStoredSessionId?: () => null | string
   navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -122,7 +125,7 @@ function Harness({
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
-    getRoutedStoredSessionId: () => null,
+    getRoutedStoredSessionId,
     navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
@@ -461,6 +464,54 @@ describe('startFreshSessionDraft', () => {
 
     expect(revealTreePane).toHaveBeenCalledWith('workspace')
     expect($terminalTakeover.get()).toBe(true)
+  })
+})
+
+describe('submitTextToNewSession pin release', () => {
+  afterEach(() => {
+    activePinnedStoredSessionIds.clear()
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('force-releases the pin when competing navigation prevents route settlement', async () => {
+    const stored = 'stored-quick-entry'
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return { session_id: RUNTIME_SESSION_ID, stored_session_id: stored } as never
+      }
+
+      return {} as never
+    })
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness
+        getRoutedStoredSessionId={() => 'stored-other'}
+        onReady={value => (handle = value)}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.submitTextToNewSession('quick entry')
+    })
+
+    await new Promise<void>(resolve => {
+      let ticks = 30
+      const tick = () => {
+        ticks -= 1
+        if (ticks === 0) {
+          resolve()
+        } else {
+          window.setTimeout(tick, 0)
+        }
+      }
+      window.setTimeout(tick, 0)
+    })
+    expect(activePinnedStoredSessionIds.has(stored)).toBe(true)
+    await waitFor(() => expect(activePinnedStoredSessionIds.has(stored)).toBe(false), { timeout: 3000 })
   })
 })
 

@@ -128,6 +128,15 @@ export interface QuickEntrySubmitPayload {
   text: string
 }
 
+export interface QuickEntrySubmitResult {
+  ok: boolean
+  code?: string
+  message?: string
+  retryable?: boolean
+  sessionId?: string | null
+  runtimeSessionId?: string | null
+}
+
 /**
  * The quick window's own composer state. Deliberately a tiny pure reducer: the
  * behavior that would actually break a user — an empty submit must not send but
@@ -142,8 +151,12 @@ export interface QuickComposerState {
   draft: string
   /** Recent sessions the picker offers, pushed by the primary renderer. */
   sessions: QuickEntrySessionOption[]
-  /** True between a send and the window actually hiding. Blocks a double-send. */
+  /** True between a send and its acknowledgement. Blocks a double-send. */
   submitting: boolean
+  /** Inline delivery failure retained with the draft until retry. */
+  error: null | string
+  /** Local correlation for ignoring an acknowledgement from an older submit. */
+  pendingSubmitId: number | null
   /** Where a submit lands: current / new / a stored session id. */
   target: string
   /** Whether the window should be visible. False asks the shell to hide. */
@@ -156,7 +169,9 @@ export type QuickComposerEvent =
   | { type: 'edit'; draft: string }
   | { type: 'shown' }
   | { type: 'state'; connected: boolean; sessions: QuickEntrySessionOption[] }
-  | { type: 'submit' }
+  | { type: 'submit'; submitId?: number }
+  | { type: 'submit-error'; message: string; submitId: number }
+  | { type: 'submit-ok'; submitId: number }
   | { type: 'target'; target: string }
 
 export interface QuickComposerTransition {
@@ -170,6 +185,8 @@ export const initialQuickComposerState: QuickComposerState = {
   // capture window that accepts text it can never deliver is a lie.
   connected: false,
   draft: '',
+  error: null,
+  pendingSubmitId: null,
   sessions: [],
   submitting: false,
   target: QUICK_TARGET_CURRENT,
@@ -184,7 +201,15 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
       // hides — the send already left for the main process.
       return {
         send: null,
-        state: { ...state, draft: '', submitting: false, target: QUICK_TARGET_CURRENT, visible: false }
+        state: {
+          ...state,
+          draft: '',
+          error: null,
+          pendingSubmitId: null,
+          submitting: false,
+          target: QUICK_TARGET_CURRENT,
+          visible: false
+        }
       }
     }
 
@@ -197,7 +222,15 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
       // a leftover target — but the pushed gateway truth carries over.
       return {
         send: null,
-        state: { ...state, draft: '', submitting: false, target: QUICK_TARGET_CURRENT, visible: true }
+        state: {
+          ...state,
+          draft: '',
+          error: null,
+          pendingSubmitId: null,
+          submitting: false,
+          target: QUICK_TARGET_CURRENT,
+          visible: true
+        }
       }
     }
 
@@ -232,8 +265,21 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
 
       return {
         send: { target: state.target, text },
-        state: { ...state, draft: '', submitting: true, visible: false }
+        // Wait for main's result before clearing or hiding the capture window (#85590).
+        state: { ...state, error: null, pendingSubmitId: event.submitId ?? null, submitting: true }
       }
+    }
+
+    case 'submit-ok': {
+      return event.submitId > 0 && state.pendingSubmitId === event.submitId
+        ? { send: null, state: { ...state, draft: '', error: null, pendingSubmitId: null, submitting: false, visible: false } }
+        : { send: null, state }
+    }
+
+    case 'submit-error': {
+      return event.submitId > 0 && state.pendingSubmitId === event.submitId
+        ? { send: null, state: { ...state, error: event.message, pendingSubmitId: null, submitting: false, visible: true } }
+        : { send: null, state }
     }
 
     case 'target': {
@@ -248,7 +294,7 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
 
 // ── Primary-renderer bridge ────────────────────────────────────────────────
 
-let submitHandler: ((payload: QuickEntrySubmitPayload) => void) | null = null
+let submitHandler: ((payload: QuickEntrySubmitPayload & { correlationId: string }) => void) | null = null
 let unsubscribeSubmit: (() => void) | null = null
 
 /**
@@ -256,7 +302,9 @@ let unsubscribeSubmit: (() => void) | null = null
  * primary window routes it by target: current chat → `submitText`, a stored
  * session id → resume + submit, new → fresh draft + submit.
  */
-export function setQuickEntrySubmitHandler(fn: ((payload: QuickEntrySubmitPayload) => void) | null): void {
+export function setQuickEntrySubmitHandler(
+  fn: ((payload: QuickEntrySubmitPayload & { correlationId: string }) => void) | null
+): void {
   submitHandler = fn
 }
 
@@ -298,8 +346,11 @@ export function initQuickEntryBridge(): () => void {
   unsubscribeSubmit = api.onSubmit(raw => {
     const payload = normalizeSubmitPayload(raw)
 
-    if (payload) {
-      submitHandler?.(payload)
+    if (payload && typeof raw === 'object' && raw !== null) {
+      const correlationId = (raw as unknown as Record<string, unknown>).correlationId
+      if (typeof correlationId === 'string') {
+        submitHandler?.({ ...payload, correlationId })
+      }
     }
   })
 

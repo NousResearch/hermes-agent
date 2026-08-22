@@ -2,12 +2,73 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   createQuickEntryShortcut,
+  createQuickEntrySubmitRelay,
   DEFAULT_QUICK_ENTRY_SHORTCUT,
   type GlobalShortcutLike,
   parseQuickEntryShortcut,
   quickEntryWindowBounds,
   sanitizeQuickEntrySettings
 } from './quick-entry'
+
+describe('quick-entry submit ack relay', () => {
+  it('ignores an ack for a stale correlation id', async () => {
+    const relay = createQuickEntrySubmitRelay({ onSuccess: vi.fn(), timeoutMs: 1000 })
+    let correlationId = ''
+    let settled = false
+    const pending = relay.begin(id => {
+      correlationId = id
+    }).then(() => {
+      settled = true
+    })
+
+    relay.acknowledge('qe-stale', { ok: true })
+    await Promise.resolve()
+
+    expect(settled).toBe(false)
+    expect(relay.pendingCount()).toBe(1)
+    relay.acknowledge(correlationId, { ok: false })
+    await pending
+    expect(relay.pendingCount()).toBe(0)
+  })
+
+  it('resolves an unacknowledged submit as a timeout and cleans it up', async () => {
+    vi.useFakeTimers()
+    const relay = createQuickEntrySubmitRelay({ onSuccess: vi.fn(), timeoutMs: 15000 })
+    const pending = relay.begin(vi.fn())
+
+    await vi.advanceTimersByTimeAsync(15000)
+
+    await expect(pending).resolves.toMatchObject({ code: 'timeout', ok: false })
+    expect(relay.pendingCount()).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it('runs hide and primary focus only after an ok acknowledgement', async () => {
+    const events: string[] = []
+    const relay = createQuickEntrySubmitRelay({
+      onSuccess: () => events.push('hide-primary-show-focus'),
+      timeoutMs: 1000
+    })
+    let correlationId = ''
+    const pending = relay.begin(id => {
+      correlationId = id
+      events.push('forward')
+    })
+
+    relay.acknowledge(correlationId, { ok: false })
+    await expect(pending).resolves.toMatchObject({ ok: false })
+    expect(events).toEqual(['forward'])
+
+    let okCorrelationId = ''
+    const okPending = relay.begin(id => {
+      okCorrelationId = id
+      events.push('forward-ok')
+    })
+    relay.acknowledge(okCorrelationId, { ok: true })
+    await expect(okPending).resolves.toMatchObject({ ok: true })
+    expect(events).toEqual(['forward', 'forward-ok', 'hide-primary-show-focus'])
+  })
+})
 
 function fakeGlobalShortcut(options: { register?: boolean; taken?: string[] } = {}) {
   const held = new Set(options.taken ?? [])

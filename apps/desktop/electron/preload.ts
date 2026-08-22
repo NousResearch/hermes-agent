@@ -112,7 +112,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   quickEntry: {
     getSettings: () => ipcRenderer.invoke('hermes:quick-entry:settings:get'),
     setSettings: patch => ipcRenderer.invoke('hermes:quick-entry:settings:set', patch),
-    submit: payload => ipcRenderer.send('hermes:quick-entry:submit', payload),
+    // Invoke returns the delivery result so the draft is not lost (#85590).
+    submit: payload => ipcRenderer.invoke('hermes:quick-entry:submit', payload),
+    // Main cannot invoke the primary renderer, so it receives this ack (#85590).
+    ackSubmit: (correlationId, result) =>
+      ipcRenderer.send('hermes:quick-entry:ack', { correlationId, result }),
     dismiss: () => ipcRenderer.send('hermes:quick-entry:dismiss'),
     // Primary renderer → main → quick window: gateway connection state + the
     // recent-session options the target picker offers. Main caches the latest

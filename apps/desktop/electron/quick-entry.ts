@@ -28,6 +28,64 @@ const QUICK_ENTRY_WINDOW_HEIGHT = 168
 // comfortable fraction down from the top rather than dead center.
 const QUICK_ENTRY_TOP_FRACTION = 0.22
 
+export interface QuickEntrySubmitRelayResult {
+  ok: boolean
+  [key: string]: unknown
+}
+
+export interface QuickEntrySubmitRelay {
+  begin: (forward: (correlationId: string) => void) => Promise<QuickEntrySubmitRelayResult>
+  acknowledge: (correlationId: string, result: QuickEntrySubmitRelayResult) => void
+  pendingCount: () => number
+}
+
+export function createQuickEntrySubmitRelay(options: {
+  onSuccess: () => void
+  timeoutMs?: number
+}): QuickEntrySubmitRelay {
+  const pending = new Map<
+    string,
+    { resolve: (result: QuickEntrySubmitRelayResult) => void; timer: NodeJS.Timeout }
+  >()
+  let sequence = 0
+
+  return {
+    acknowledge(correlationId, result) {
+      const request = pending.get(correlationId)
+      if (!request) {
+        return
+      }
+
+      clearTimeout(request.timer)
+      pending.delete(correlationId)
+      request.resolve(result)
+      if (result.ok === true) {
+        options.onSuccess()
+      }
+    },
+    begin(forward) {
+      const correlationId = ['qe', Date.now(), ++sequence].join('-')
+
+      return new Promise(resolve => {
+        const timer = setTimeout(() => {
+          pending.delete(correlationId)
+          resolve({
+            code: 'timeout',
+            message: 'Hermes did not confirm the prompt in time.',
+            ok: false,
+            retryable: true
+          })
+        }, options.timeoutMs ?? 15_000)
+        pending.set(correlationId, { resolve, timer })
+        forward(correlationId)
+      })
+    },
+    pendingCount() {
+      return pending.size
+    }
+  }
+}
+
 // Electron accelerator vocabulary (electronjs.org/docs/latest/api/accelerator).
 // Kept as data so validation and the settings UI agree on one list.
 const ACCELERATOR_MODIFIERS = new Set([

@@ -8,7 +8,12 @@ import type {
   PetOverlayOpenRequest,
   PetOverlayStatePayload
 } from './store/pet-overlay'
-import type { QuickEntryStatePush, QuickEntryStatus, QuickEntrySubmitPayload } from './store/quick-entry'
+import type {
+  QuickEntryStatePush,
+  QuickEntryStatus,
+  QuickEntrySubmitPayload,
+  QuickEntrySubmitResult
+} from './store/quick-entry'
 
 export {}
 
@@ -115,7 +120,8 @@ declare global {
         // Quick window → main: send this payload (main forwards it to the
         // primary renderer, which routes it to the target session and submits
         // through the normal prompt path) and hide.
-        submit: (payload: QuickEntrySubmitPayload) => void
+        submit: (payload: QuickEntrySubmitPayload) => Promise<QuickEntrySubmitResult>
+        ackSubmit: (correlationId: string, result: QuickEntrySubmitResult) => void
         // Quick window → main: hide without sending (Escape / blur).
         dismiss: () => void
         // Primary renderer → main → quick window: gateway connection state +
@@ -125,7 +131,9 @@ declare global {
         // Quick window subscribes to those pushes.
         onState: (callback: (payload: QuickEntryStatePush) => void) => () => void
         // Primary renderer subscribes to submits captured by the quick window.
-        onSubmit: (callback: (payload: QuickEntrySubmitPayload | string) => void) => () => void
+        onSubmit: (
+          callback: (payload: (QuickEntrySubmitPayload & { correlationId: string }) | string) => void
+        ) => () => void
         // Quick window subscribes to "you were just summoned" so it can reset
         // its draft and re-focus the input on every open.
         onShown: (callback: () => void) => () => void

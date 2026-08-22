@@ -107,7 +107,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
-        assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
+        assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.kimi.com/coding"
         assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
@@ -672,39 +672,48 @@ MOONSHOT_DEFAULT_URL = "https://api.moonshot.ai/v1"
 
 
 class TestResolveKimiBaseUrl:
-    """Test _resolve_kimi_base_url() helper for key-prefix auto-detection."""
+    """Test _resolve_kimi_base_url() returns the registry default.
 
-    def test_sk_kimi_prefix_routes_to_kimi_code(self):
-        url = _resolve_kimi_base_url("sk-kimi-abc123", MOONSHOT_DEFAULT_URL, "")
+    The global kimi-coding provider now defaults to the Kimi Coding Plan
+    endpoint (api.kimi.com/coding); key-prefix sniffing is gone. The helper
+    only honours an explicit env override; otherwise it returns the
+    registry default unchanged.
+    """
+
+    def test_default_returned_for_coding_key(self):
+        # The global provider's default is now the coding URL itself.
+        url = _resolve_kimi_base_url("sk-kimi-anything", KIMI_CODE_BASE_URL, "")
         assert url == KIMI_CODE_BASE_URL
 
+    def test_default_returned_for_non_coding_key(self):
+        # A non-sk-kimi key also gets the default (no bifurcation).
+        url = _resolve_kimi_base_url("sk-abc123", KIMI_CODE_BASE_URL, "")
+        assert url == KIMI_CODE_BASE_URL
 
-    def test_env_override_wins_over_legacy(self):
+    def test_env_override_wins(self):
         custom = "https://custom.example.com/v1"
-        url = _resolve_kimi_base_url("sk-abc123", MOONSHOT_DEFAULT_URL, custom)
+        url = _resolve_kimi_base_url("sk-abc123", KIMI_CODE_BASE_URL, custom)
         assert url == custom
 
 
 class TestKimiCodeStatusAutoDetect:
-    """Test that get_api_key_provider_status auto-detects sk-kimi- keys."""
-
+    """Test that get_api_key_provider_status honours env override."""
 
     def test_env_override_wins(self, monkeypatch):
-        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test-key")
+        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test")
         monkeypatch.setenv("KIMI_BASE_URL", "https://override.example/v1")
         status = get_api_key_provider_status("kimi-coding")
         assert status["base_url"] == "https://override.example/v1"
 
 
 class TestKimiCodeCredentialAutoDetect:
-    """Test that resolve_api_key_provider_credentials auto-detects sk-kimi- keys."""
+    """Test that resolve_api_key_provider_credentials returns the coding URL."""
 
-
-    def test_legacy_key_gets_moonshot_url(self, monkeypatch):
-        monkeypatch.setenv("KIMI_API_KEY", "sk-legacy-secret-key")
+    def test_key_gets_coding_url(self, monkeypatch):
+        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test")
         creds = resolve_api_key_provider_credentials("kimi-coding")
-        assert creds["api_key"] == "sk-legacy-secret-key"
-        assert creds["base_url"] == MOONSHOT_DEFAULT_URL
+        assert creds["api_key"] == "sk-kimi-test"
+        assert creds["base_url"] == KIMI_CODE_BASE_URL
 
 
     def test_non_kimi_providers_unaffected(self, monkeypatch):

@@ -2114,12 +2114,12 @@ def _model_flow_copilot_acp(config, current_model=""):
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
 def _model_flow_kimi(config, current_model=""):
-    """Kimi / Moonshot model selection with automatic endpoint routing.
+    """Kimi / Moonshot (global) model selection.
 
-    - sk-kimi-* keys   → api.kimi.com/coding/v1  (Kimi Coding Plan)
-    - Other keys        → api.moonshot.ai/v1      (legacy Moonshot)
-
-    No manual base URL prompt — endpoint is determined by key prefix.
+    The global ``kimi-coding`` provider now always routes to the Kimi
+    Coding Plan endpoint (``api.kimi.com/coding``) — there is no separate
+    legacy Moonshot billing path anymore, so the key prefix is no longer
+    inspected.  ``KIMI_BASE_URL`` still overrides the endpoint if set.
     """
     from hermes_cli.main import _prompt_api_key
     from hermes_cli.auth import (
@@ -2153,21 +2153,19 @@ def _model_flow_kimi(config, current_model=""):
     if abort:
         return
 
-    # Step 2: Auto-detect endpoint from key prefix
-    is_coding_plan = existing_key.startswith("sk-kimi-")
-    if is_coding_plan:
-        effective_base = KIMI_CODE_BASE_URL
-        print(f"  Detected Kimi Coding Plan key → {effective_base}")
-    else:
-        effective_base = pconfig.inference_base_url
-        print(f"  Using Moonshot endpoint → {effective_base}")
-    # Clear any manual base URL override so auto-detection works at runtime
-    if base_url_env and get_env_value(base_url_env):
+    # Step 2: Endpoint — always the Kimi Coding Plan URL for the global
+    # provider. KIMI_BASE_URL (if set) wins; otherwise use the coding
+    # endpoint directly. No key-prefix bifurcation.
+    effective_base = (get_env_value(base_url_env) or "").strip() or KIMI_CODE_BASE_URL
+    print(f"  Using Kimi Coding Plan endpoint → {effective_base}")
+    # Clear any manual base URL override that points elsewhere so the
+    # runtime auto-detection picks the coding endpoint.
+    if base_url_env and get_env_value(base_url_env) and get_env_value(base_url_env) != effective_base:
         save_env_value(base_url_env, "")
     print()
 
-    # Step 3: Model selection — show appropriate models for the endpoint
-    model_list = _PROVIDER_MODELS.get("kimi-coding" if is_coding_plan else "moonshot", [])
+    # Step 3: Model selection — the coding-plan catalog.
+    model_list = _PROVIDER_MODELS.get("kimi-coding", [])
 
     if model_list:
         selected = _prompt_model_selection(
@@ -2199,7 +2197,7 @@ def _model_flow_kimi(config, current_model=""):
         save_config(cfg)
         deactivate_provider()
 
-        endpoint_label = "Kimi Coding" if is_coding_plan else "Moonshot"
+        endpoint_label = "Kimi Coding"
         print(f"Default model set to: {selected} (via {endpoint_label})")
     else:
         print("No change.")

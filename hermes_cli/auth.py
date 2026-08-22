@@ -325,10 +325,11 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="kimi-coding",
         name="Kimi / Moonshot",
         auth_type="api_key",
-        # Legacy platform.moonshot.ai keys use this endpoint (OpenAI-compat).
-        # sk-kimi- (Kimi Code) keys are auto-redirected to api.kimi.com/coding
-        # by _resolve_kimi_base_url() below.
-        inference_base_url="https://api.moonshot.ai/v1",
+        # The Kimi Coding Plan (api.kimi.com/coding) is now the canonical
+        # global endpoint — there is no separate legacy Moonshot billing
+        # path anymore, so the global provider defaults to the coding URL
+        # regardless of key prefix. KIMI_BASE_URL still overrides.
+        inference_base_url="https://api.kimi.com/coding",
         api_key_env_vars=("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
         base_url_env_var="KIMI_BASE_URL",
     ),
@@ -626,10 +627,10 @@ def get_anthropic_key() -> str:
 # Kimi Code Endpoint Detection
 # =============================================================================
 
-# Kimi Code (kimi.com/code) issues keys prefixed "sk-kimi-" that only work
-# on api.kimi.com/coding.  Legacy keys from platform.moonshot.ai work on
-# api.moonshot.ai/v1 (the old default).  Auto-detect when user hasn't set
-# KIMI_BASE_URL explicitly.
+# Kimi Code (kimi.com/code) is now the sole global Kimi endpoint; there is
+# no separate legacy Moonshot billing path for the global (non-CN) provider.
+# The global ``kimi-coding`` ProviderConfig and the KimiProfile plugin both
+# default to ``api.kimi.com/coding`` regardless of key prefix.
 #
 # Note: the base URL intentionally has NO /v1 suffix.  The /coding endpoint
 # speaks the Anthropic Messages protocol, and the anthropic SDK appends
@@ -640,18 +641,21 @@ KIMI_CODE_BASE_URL = "https://api.kimi.com/coding"
 
 
 def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
-    """Return the correct Kimi base URL based on the API key prefix.
+    """Return the Kimi base URL for the given provider config.
 
-    If the user has explicitly set KIMI_BASE_URL, that always wins.
-    Otherwise, sk-kimi- prefixed keys route to api.kimi.com/coding/v1.
+    A user-set ``KIMI_BASE_URL`` always wins.  Otherwise the registry
+    default (``default_url``) is returned unchanged — for the global
+    ``kimi-coding`` provider that default is now ``api.kimi.com/coding``;
+    for ``kimi-coding-cn`` it is the China Moonshot endpoint.
+
+    Key-prefix sniffing (``sk-kimi-``) is no longer needed: there is no
+    separate legacy Moonshot global endpoint to fall back to.  The function
+    keeps its signature so callers (status, credential resolution, the
+    model-flow wizard, and run_agent's env-refresh path) don't have to
+    branch on provider id themselves.
     """
     if env_override:
         return env_override
-    # No key → nothing to infer from.  Return default without inspecting.
-    if not api_key:
-        return default_url
-    if api_key.startswith("sk-kimi-"):
-        return KIMI_CODE_BASE_URL
     return default_url
 
 

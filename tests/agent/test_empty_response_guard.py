@@ -158,6 +158,54 @@ class TestDeterministicEmpty:
         assert guard.deterministic_empty(agent) is False
 
 
+class TestDeterministicEmptyRequiresKnownCost:
+    """#89213 — the skip exists to avoid repeat charges, so a streak with no
+    known cost must keep its full retry budget. On a local/self-hosted endpoint
+    the empties are transient: the same request succeeds on the next attempt.
+    """
+
+    def test_unknown_cost_streak_is_not_deterministic(self, monkeypatch):
+        monkeypatch.setattr(guard, "_estimate_attempt_cost", lambda a, r: None)
+        agent = _agent(
+            model="RavenX-CyberAgent-Qwen3.6-35B-A3B-mlx",
+            provider="custom",
+            base_url="http://localhost:8000/v1",
+        )
+        _record_streak(agent, [_response(), _response()])
+        # Signature/zero-output evidence is identical to the paid-route case…
+        assert guard.streak_cost_usd(agent) is None
+        # …but with nothing to save, the remaining retries must survive.
+        assert guard.deterministic_empty(agent) is False
+
+    def test_zero_cost_streak_is_not_deterministic(self, monkeypatch):
+        """A priced-at-zero route is as free as an unpriced one."""
+        monkeypatch.setattr(
+            guard, "_estimate_attempt_cost", lambda a, r: Decimal("0")
+        )
+        agent = _agent()
+        _record_streak(agent, [_response(), _response()])
+        assert guard.deterministic_empty(agent) is False
+
+    def test_known_cost_streak_still_deterministic(self, monkeypatch):
+        """The motivating incident (paid route, repeat billing) is unchanged."""
+        monkeypatch.setattr(
+            guard, "_estimate_attempt_cost", lambda a, r: Decimal("1.10")
+        )
+        agent = _agent()
+        _record_streak(agent, [_response(), _response()])
+        assert guard.streak_cost_usd(agent) == Decimal("2.20")
+        assert guard.deterministic_empty(agent) is True
+
+    def test_unknown_cost_does_not_widen_the_budget(self, monkeypatch):
+        """Failing open on cost must not also inflate the retry budget."""
+        monkeypatch.setattr(guard, "_estimate_attempt_cost", lambda a, r: None)
+        agent = _agent(provider="custom")
+        _record_streak(agent, [_response(), _response()])
+        assert guard.empty_retry_budget(agent, _response()) == (
+            guard.DEFAULT_EMPTY_RETRY_BUDGET
+        )
+
+
 class TestEmptyRetryBudget:
     def test_default_budget_when_cost_unknown(self, monkeypatch):
         monkeypatch.setattr(guard, "_estimate_attempt_cost", lambda a, r: None)

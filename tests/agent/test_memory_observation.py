@@ -1,0 +1,297 @@
+"""Contract tests for structured, operation-bound memory observations."""
+
+from __future__ import annotations
+
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
+from agent.memory_manager import MemoryManager, build_memory_context_block
+from agent.memory_provider import (
+    MAX_MEMORY_OBSERVATION_BYTES,
+    MAX_MEMORY_OBSERVATIONS,
+    MemoryObservation,
+    MemoryPrefetchResult,
+)
+from tests.agent.test_memory_provider import FakeMemoryProvider
+
+
+class StructuredMemoryProvider(FakeMemoryProvider):
+    """Concrete fixture provider consuming the structured prefetch contract."""
+
+    def __init__(self, name="structured", result=None):
+        super().__init__(name=name)
+        self.result = result or MemoryPrefetchResult()
+
+    def prefetch(self, query, *, session_id=""):
+        self.prefetch_queries.append((query, session_id))
+        return self.result
+
+
+class SessionStructuredProvider(FakeMemoryProvider):
+    """Built-in-shaped provider used to exercise concurrent manager calls."""
+
+    def __init__(self, barrier):
+        super().__init__(name="builtin")
+        self.barrier = barrier
+
+    def prefetch(self, query, *, session_id=""):
+        self.barrier.wait(timeout=5)
+        return MemoryPrefetchResult(
+            context=f"context:{session_id}",
+            observations=(
+                MemoryObservation(
+                    source_kind="session_context",
+                    schema="fixture.session_context",
+                    version=1,
+                    payload={"session_id": session_id},
+                ),
+            ),
+        )
+
+
+def _observation(payload=None, *, provider=""):
+    return MemoryObservation(
+        source_kind="fixture_context",
+        schema="fixture.context",
+        version=1,
+        provider=provider,
+        payload={"available": True} if payload is None else payload,
+    )
+
+
+def _capture_hook(monkeypatch, events):
+    """Install a deterministic in-process memory observer for manager tests."""
+    import hermes_cli.lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: name == "memory_prefetch")
+
+    def invoke_hook(name, **kwargs):
+        assert name == "memory_prefetch"
+        events.append(kwargs)
+        return ["ignored transform"]
+
+    monkeypatch.setattr(lifecycle, "invoke_hook", invoke_hook)
+
+
+def _disable_hook(monkeypatch):
+    import hermes_cli.lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: False)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda *args, **kwargs: pytest.fail("observer must not fire"),
+    )
+
+
+def test_memory_prefetch_is_registered_as_an_observer_hook():
+    from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
+
+    assert "memory_prefetch" in VALID_HOOKS
+    assert "memory_prefetch" in SHELL_UNSUPPORTED_HOOKS
+
+
+def test_legacy_string_context_and_injected_bytes_are_unchanged(monkeypatch):
+    """The compatibility path preserves the exact formatted context bytes."""
+    _disable_hook(monkeypatch)
+    context = "Résumé from memory\n- keep spacing and punctuation"
+
+    legacy = FakeMemoryProvider(name="builtin")
+    legacy._prefetch_result = context
+    structured = StructuredMemoryProvider(
+        name="builtin",
+        result=MemoryPrefetchResult(context=context),
+    )
+
+    legacy_manager = MemoryManager()
+    legacy_manager.add_provider(legacy)
+    legacy_text = build_memory_context_block(legacy_manager.prefetch_all("query"))
+    structured_manager = MemoryManager()
+    structured_manager.add_provider(structured)
+    structured_text = build_memory_context_block(
+        structured_manager.prefetch_all("query")
+    )
+
+    assert structured_manager.prefetch_all("query").encode("utf-8") == context.encode(
+        "utf-8"
+    )
+    assert structured_text.encode("utf-8") == legacy_text.encode("utf-8")
+
+
+def test_structured_context_merge_and_exact_operation_event(monkeypatch):
+    events = []
+    _capture_hook(monkeypatch, events)
+    manager = MemoryManager()
+    first = StructuredMemoryProvider(
+        name="builtin",
+        result=MemoryPrefetchResult(
+            context="first",
+            observations=(_observation(),),
+        ),
+    )
+    second = StructuredMemoryProvider(
+        name="external",
+        result=MemoryPrefetchResult(
+            context="second",
+            observations=(_observation({"component": "second"}),),
+        ),
+    )
+    manager.add_provider(first)
+    manager.add_provider(second)
+
+    result = manager.prefetch_all_result("question", session_id="session-a")
+
+    assert result.context == "first\n\nsecond"
+    assert result.observations
+    assert [item.provider for item in result.observations] == ["builtin", "external"]
+    assert events and events[0]["result"] is result
+    assert events[0]["query"] == "question"
+    assert events[0]["session_id"] == "session-a"
+    assert events[0]["result"].context == result.context
+
+
+def test_malformed_observations_are_dropped_but_context_survives(monkeypatch):
+    events = []
+    _capture_hook(monkeypatch, events)
+    malformed = StructuredMemoryProvider(
+        name="builtin",
+        result=MemoryPrefetchResult(
+            context="usable context",
+            observations=(
+                _observation(object()),
+                _observation("x" * (MAX_MEMORY_OBSERVATION_BYTES + 1)),
+            ),
+        ),
+    )
+    manager = MemoryManager()
+    manager.add_provider(malformed)
+
+    result = manager.prefetch_all_result("question")
+
+    assert result.context == "usable context"
+    assert result.observations == ()
+    assert events == []
+
+
+def test_observations_are_bounded_and_recursively_immutable(monkeypatch):
+    _disable_hook(monkeypatch)
+    observations = tuple(
+        _observation({"nested": [{"value": index}]})
+        for index in range(MAX_MEMORY_OBSERVATIONS + 3)
+    )
+    manager = MemoryManager()
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="builtin",
+            result=MemoryPrefetchResult(context="context", observations=observations),
+        )
+    )
+
+    result = manager.prefetch_all_result("question")
+
+    assert len(result.observations) <= MAX_MEMORY_OBSERVATIONS
+    assert isinstance(result.observations, tuple)
+    payload = result.observations[0].payload
+    assert json.loads(json.dumps(payload))["nested"][0]["value"] == 0
+    assert isinstance(payload["nested"], tuple)
+    with pytest.raises(TypeError):
+        payload["new"] = "nope"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        payload["nested"][0]["value"] = "nope"  # type: ignore[index]
+
+
+def test_no_event_for_string_only_prefetch(monkeypatch):
+    events = []
+    _capture_hook(monkeypatch, events)
+    provider = FakeMemoryProvider(name="builtin")
+    provider._prefetch_result = "plain context"
+    manager = MemoryManager()
+    manager.add_provider(provider)
+
+    assert manager.prefetch_all("question") == "plain context"
+    assert events == []
+
+
+def test_hook_callback_errors_are_isolated(monkeypatch):
+    """The real plugin registry continues after one observer raises."""
+    from hermes_cli import plugins
+
+    plugin_manager = plugins.PluginManager()
+    plugin_manager._discovered = True
+    seen = []
+
+    def broken(**kwargs):
+        raise RuntimeError("observer failure")
+
+    def healthy(result, **kwargs):
+        seen.append(result)
+
+    ctx = plugins.PluginContext(plugins.PluginManifest(name="fixture"), plugin_manager)
+    ctx.register_hook("memory_prefetch", broken)
+    ctx.register_hook("memory_prefetch", healthy)
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: plugin_manager)
+
+    manager = MemoryManager()
+    expected = MemoryPrefetchResult(
+        context="context",
+        observations=(_observation(),),
+    )
+    manager.add_provider(StructuredMemoryProvider(name="builtin", result=expected))
+
+    result = manager.prefetch_all_result("question", session_id="session")
+
+    assert result.context == "context"
+    assert seen == [result]
+
+
+def test_concurrent_operations_keep_session_observations_bound(monkeypatch):
+    events = []
+    event_lock = threading.Lock()
+    import hermes_cli.lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: name == "memory_prefetch")
+
+    def capture_thread_safe(name, **kwargs):
+        with event_lock:
+            events.append(kwargs)
+        return []
+
+    # The deterministic test observer serializes capture so assertions do not
+    # depend on callback timing.
+    monkeypatch.setattr(lifecycle, "invoke_hook", capture_thread_safe)
+    manager = MemoryManager()
+    manager.add_provider(SessionStructuredProvider(threading.Barrier(2)))
+
+    def run(session_id):
+        return session_id, manager.prefetch_all_result("question", session_id=session_id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        returned = dict(pool.map(run, ("session-a", "session-b")))
+
+    assert {item["session_id"] for item in events} == {"session-a", "session-b"}
+    for session_id, result in returned.items():
+        assert result.context == f"context:{session_id}"
+        assert result.observations[0].payload["session_id"] == session_id
+        matching = [event for event in events if event["session_id"] == session_id]
+        assert len(matching) == 1
+        assert matching[0]["result"] is result
+        assert matching[0]["result"].observations[0].payload["session_id"] == session_id
+
+
+def test_invalid_provider_return_keeps_existing_provider_isolation(monkeypatch):
+    _disable_hook(monkeypatch)
+
+    class InvalidProvider(FakeMemoryProvider):
+        def prefetch(self, query, *, session_id=""):  # type: ignore[override]
+            return object()
+
+    manager = MemoryManager()
+    manager.add_provider(InvalidProvider(name="builtin"))
+
+    # A fixture that returns a non-string/non-result is treated like the old
+    # provider exception: this provider contributes no context, but the manager
+    # remains usable for later providers.
+    assert manager.prefetch_all("question") == ""

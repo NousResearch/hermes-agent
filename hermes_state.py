@@ -11168,6 +11168,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
+            # Live replay hands these dictionaries to the agent's next turn.
+            # Mark rows restored from SQLite as already durable so a later
+            # flush does not append the entire resumed transcript again when
+            # the live history has been reconstructed into fresh dicts.
+            # Display and inspection projections intentionally omit this
+            # internal marker.
+            if repair_alternation:
+                msg["_db_persisted"] = True
             # Durable per-message identity for surfaces that need to address a
             # specific row later (desktop reactions). OPT-IN: only the gateway
             # asks for it — every other consumer (ACP restore, export,

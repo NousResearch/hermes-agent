@@ -89,6 +89,47 @@ class TestIdentityFlush:
             finally:
                 db.close()
 
+    def test_resumed_history_is_not_rewritten_after_reconstruction(self):
+        """A live resume marks durable rows before the next flush.
+
+        Gateway/session restore can reconstruct the history dictionaries before
+        the next turn.  Object identity is then no longer enough to distinguish
+        old rows from the new user/assistant pair, so the restored rows must
+        carry the intrinsic persistence marker.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "t.db")
+            try:
+                agent = _make_agent(db)
+                for role, content in (("user", "old question"), ("assistant", "old answer")):
+                    db.append_message(
+                        session_id=SESSION_ID,
+                        role=role,
+                        content=content,
+                    )
+
+                restored = db.get_messages_as_conversation(
+                    SESSION_ID, repair_alternation=True
+                )
+                assert all(message.get("_db_persisted") is True for message in restored)
+
+                # Reconstruct the live list to model a resume path that loses
+                # object identity while preserving the durable marker.
+                messages = [dict(message) for message in restored]
+                messages.extend([
+                    {"role": "user", "content": "new question"},
+                    {"role": "assistant", "content": "new answer"},
+                ])
+                agent._flush_messages_to_session_db(messages, restored)
+
+                assert _contents(db) == [
+                    "old question", "old answer", "new question", "new answer"
+                ]
+            finally:
+                db.close()
+
     def test_cursor_reset_starts_new_turn_identity_window(self):
         """Gateway resets _last_flushed_db_idx=0 before a cached-agent turn."""
         from hermes_state import SessionDB

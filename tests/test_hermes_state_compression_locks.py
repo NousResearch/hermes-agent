@@ -48,6 +48,29 @@ def test_acquire_blocks_second_holder(db: SessionDB) -> None:
 
 
 
+def test_completed_rotation_allows_stale_reacquire_for_recovery(
+    db: SessionDB,
+) -> None:
+    """The lock does not gate post-rotation recovery (#64373).
+
+    try_acquire_compression_lock succeeds even for a completed parent,
+    because already-rotated detection lives in the caller's recovery path.
+    """
+    db.create_session("sess1", source="discord")
+    assert db.try_acquire_compression_lock("sess1", "winner") is True
+    db.end_session("sess1", "compression")
+    db.release_compression_lock("sess1", "winner")
+
+    # Already-rotated parent can still acquire — recovery decides what to do.
+    assert db.try_acquire_compression_lock("sess1", "stale-agent") is True
+    assert db.get_compression_lock_holder("sess1") == "stale-agent"
+
+
+def test_release_with_wrong_holder_is_noop(db: SessionDB) -> None:
+    db.try_acquire_compression_lock("sess1", "holder1")
+    # Late-returning compressor must not release a lock it doesn't own
+    db.release_compression_lock("sess1", "holder_other")
+    assert db.get_compression_lock_holder("sess1") == "holder1"
 
 
 

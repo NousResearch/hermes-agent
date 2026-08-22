@@ -575,6 +575,35 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     )
 
 
+def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
+    """The loser of the lock race must return its input messages verbatim.
+
+    Callers (preflight compression in ``conversation_loop.py``) detect the
+    no-op via ``len(returned) == len(input)`` and stop the auto-compress
+    retry loop.  If the skipped path returned the compressed view, that
+    detection would break and the caller would mutate the conversation
+    without going through state.db rotation.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "LOSER_TEST"
+    db.create_session(parent_sid, source="discord")
+
+    # Pre-acquire the lock so the agent's compress_context sees it held.
+    held = db.try_acquire_compression_lock(parent_sid, "external_holder")
+    assert held is True
+
+    agent = _build_agent_with_db(db, parent_sid)
+    messages = [{"role": "user", "content": "m1"}, {"role": "user", "content": "m2"}]
+
+    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    # Skipped: messages returned verbatim, no rotation
+    assert compressed is messages or compressed == messages
+    assert agent.session_id == parent_sid
+    # Compressor was never called (the skip happens before .compress())
+    agent.context_compressor.compress.assert_not_called()
+
+
 def test_durable_message_committed_before_lease_is_adopted(
     tmp_path: Path,
 ) -> None:

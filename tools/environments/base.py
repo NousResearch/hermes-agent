@@ -294,6 +294,21 @@ def get_sandbox_dir() -> Path:
     return p
 
 
+def sanitize_task_id_for_path(task_id: str) -> str:
+    """Return *task_id* reduced to a safe single filesystem path component.
+
+    Session-scoped container ids carry a scheme prefix with a colon (e.g.
+    ``session:<key>`` from terminal_tool._resolve_container_task_id). Windows
+    forbids ``:`` (plus ``< > " / \\ | ? *`` and control characters) inside
+    path segments, so using the raw id as a directory name makes every
+    ``os.makedirs()`` on the sandbox dir fail with WinError 267. Characters
+    are replaced unconditionally — not just on win32 — so the same task id
+    resolves to the same directory on every host.
+    """
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", task_id.strip())
+    return cleaned or "default"
+
+
 # ---------------------------------------------------------------------------
 # Shared constants and utilities
 # ---------------------------------------------------------------------------

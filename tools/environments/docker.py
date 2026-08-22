@@ -947,7 +947,10 @@ class DockerEnvironment(BaseEnvironment):
         # Persistent workspace via bind mounts from a configurable host directory
         # (TERMINAL_SANDBOX_DIR, default ~/.hermes/sandboxes/). Non-persistent
         # mode uses tmpfs (ephemeral, fast, gone on cleanup).
-        from tools.environments.base import get_sandbox_dir
+        from tools.environments.base import (
+            get_sandbox_dir,
+            sanitize_task_id_for_path,
+        )
 
         # User-configured volume mounts (from config.yaml docker_volumes)
         volume_args = []
@@ -980,7 +983,7 @@ class DockerEnvironment(BaseEnvironment):
         self._home_dir: Optional[str] = None
         writable_args = []
         if self._persistent:
-            sandbox = get_sandbox_dir() / "docker" / task_id
+            sandbox = get_sandbox_dir() / "docker" / sanitize_task_id_for_path(task_id)
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([

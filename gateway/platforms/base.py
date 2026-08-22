@@ -190,6 +190,39 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
     return True
 
 
+def _auto_tts_base_dir() -> str:
+    """Directory for gateway auto-TTS files that passes the write-safety guard.
+
+    Official Docker images set ``HERMES_HOME=/opt/data`` and
+    ``HERMES_WRITE_SAFE_ROOT=/opt/data``. Placing auto-TTS under the system
+    temp dir (typically ``/tmp``) is rejected by ``is_write_denied`` before
+    synthesis runs (#80386). Prefer ``$HERMES_HOME/tmp/hermes_voice``; if that
+    is also outside the safe root (unusual multi-root layouts), try the first
+    write-safe root; only then fall back to the system temp dir.
+    """
+    from pathlib import Path
+
+    from agent.file_safety import get_safe_write_roots, is_write_denied
+    from hermes_constants import get_hermes_home
+
+    candidates: list[Path] = [get_hermes_home() / "tmp" / "hermes_voice"]
+    for root in sorted(get_safe_write_roots()):
+        candidates.append(Path(root) / "tmp" / "hermes_voice")
+    candidates.append(Path(tempfile.gettempdir()) / "hermes_voice")
+
+    seen: set[str] = set()
+    for base in candidates:
+        key = str(base)
+        if key in seen:
+            continue
+        seen.add(key)
+        # Probe a child path so the safe-root prefix check matches the file
+        # the TTS tool will actually open.
+        if not is_write_denied(str(base / "tts_probe")):
+            return str(base)
+    return str(Path(tempfile.gettempdir()) / "hermes_voice")
+
+
 def build_auto_tts_output_path(platform) -> str:
     """Return a unique temp output path for gateway auto-TTS synthesis.
 
@@ -203,13 +236,15 @@ def build_auto_tts_output_path(platform) -> str:
     (``_repair_ogg_container``) then guarantees real Ogg/Opus bytes for every
     provider, including MP3-only backends like Edge TTS. Everything else
     keeps the MP3 default.
+
+    The base directory is chosen so the path is allowed by
+    ``HERMES_WRITE_SAFE_ROOT`` when that sandbox is enabled (Docker default).
     """
     from tools.tts_tool import OPUS_VOICE_PLATFORMS
 
     ext = "ogg" if _platform_name(platform) in OPUS_VOICE_PLATFORMS else "mp3"
     audio_path = os.path.join(
-        tempfile.gettempdir(),
-        "hermes_voice",
+        _auto_tts_base_dir(),
         f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}",
     )
     os.makedirs(os.path.dirname(audio_path), exist_ok=True)

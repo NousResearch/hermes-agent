@@ -14724,9 +14724,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             # Use MP3 output for CLI playback (afplay doesn't handle OGG well).
             # The TTS tool may auto-convert MP3->OGG, but the original MP3 remains.
-            os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
+            # Base dir must pass HERMES_WRITE_SAFE_ROOT (same as gateway auto-TTS).
+            from gateway.platforms.base import _auto_tts_base_dir
+
+            voice_dir = _auto_tts_base_dir()
+            os.makedirs(voice_dir, exist_ok=True)
             mp3_path = os.path.join(
-                tempfile.gettempdir(), "hermes_voice",
+                voice_dir,
                 f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3",
             )
 

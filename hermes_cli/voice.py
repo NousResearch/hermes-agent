@@ -943,7 +943,6 @@ def speak_text(text: str, stop_event: Optional[threading.Event] = None) -> None:
         return
 
     import re
-    import tempfile
     import time
 
     # Cancel any live capture before we open the speakers — otherwise the
@@ -1010,10 +1009,14 @@ def speak_text(text: str, stop_event: Optional[threading.Event] = None) -> None:
         # MP3 output path, pre-chosen so we can play the MP3 directly even
         # when text_to_speech_tool auto-converts to OGG for messaging
         # platforms.  afplay's OGG support is flaky, MP3 always works.
-        os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
+        # Use the write-safe hermes_voice base (not bare /tmp) under Docker
+        # HERMES_WRITE_SAFE_ROOT — same helper as gateway auto-TTS (#80386).
+        from gateway.platforms.base import _auto_tts_base_dir
+
+        voice_dir = _auto_tts_base_dir()
+        os.makedirs(voice_dir, exist_ok=True)
         mp3_path = os.path.join(
-            tempfile.gettempdir(),
-            "hermes_voice",
+            voice_dir,
             f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3",
         )
 

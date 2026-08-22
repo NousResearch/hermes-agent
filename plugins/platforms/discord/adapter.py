@@ -154,6 +154,7 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    _auto_tts_base_dir,
     cache_image_from_url,
     cache_image_from_bytes,
     cache_audio_from_url,
@@ -4500,9 +4501,10 @@ class DiscordAdapter(BasePlatformAdapter):
             phrase = random.choice(phrases)
 
         # Synthesise the ack via the configured TTS provider, then layer it.
+        # Use the same write-safe base as gateway auto-TTS (#80386 / #80398).
         import uuid as _uuid
         audio_path = os.path.join(
-            tempfile.gettempdir(), "hermes_voice",
+            _auto_tts_base_dir(),
             f"ack_{_uuid.uuid4().hex[:12]}.mp3",
         )
         os.makedirs(os.path.dirname(audio_path), exist_ok=True)

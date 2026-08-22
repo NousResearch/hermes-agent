@@ -67,6 +67,12 @@ class TestResolutionOrder:
                     
                     assert result == Path("/hermes/profiles/from-source")
                     mock_get_dir.assert_called_once_with("from-source")
+
+    def test_archived_explicit_profile_is_rejected(self, mock_runner, discord_source):
+        discord_source.profile = "retired"
+        with patch("hermes_cli.profiles.profile_is_archived", return_value=True), \
+             pytest.raises(ProfileRouteRejected):
+            mock_runner._resolve_profile_home_for_source(discord_source)
     
     
     

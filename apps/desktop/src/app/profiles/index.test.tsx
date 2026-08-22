@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type * as Nanostores from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { deleteProfile } from '@/hermes'
+import { archiveProfile } from '@/hermes'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { refreshProfiles, selectProfile, setActiveProfile } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
@@ -28,8 +28,16 @@ vi.mock('@/components/chat/code-editor', () => ({
 }))
 
 vi.mock('@/hermes', () => ({
+  archiveProfile: vi.fn(async () => ({ ok: true, path: '/x' })),
   createProfile: vi.fn(async () => ({ name: 'x', ok: true, path: '/x' })),
-  deleteProfile: vi.fn(async () => ({ ok: true, path: '/x' })),
+  getArchivedProfiles: vi.fn(async () => ({ profiles: [] })),
+  getProfileArchiveManifest: vi.fn(async () => ({
+    archive: '/archive/work',
+    excluded: ['global profile routing rules'],
+    name: 'work',
+    preserved: ['config.yaml', 'sessions'],
+    source: '/profiles/work'
+  })),
   getProfileSoul: vi.fn(async () => ({ content: '', exists: true })),
   renameProfile: vi.fn(async () => ({ name: 'x', ok: true, path: '/x' })),
   updateProfileSoul: vi.fn(async () => ({ ok: true }))
@@ -105,14 +113,14 @@ function findRowMenu(profileName: string) {
   return screen.findByRole('button', { expanded: false, name: profileName })
 }
 
-// Open the (only non-default) row's actions menu → Delete → confirm. The
-// confirm click kicks off an async chain (deleteProfile → onDeleted refresh →
+// Open the (only non-default) row's actions menu → Archive → confirm. The
+// confirm click kicks off an async chain (archiveProfile → onArchived refresh →
 // setProfiles, plus the re-home writes), so settle it inside act() to flush
 // those updates deterministically instead of leaking them past the assertions.
-async function deleteTheNamedProfile() {
+async function archiveTheNamedProfile() {
   realClick(await findRowMenu(NAMED_PROFILE))
-  fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }))
-  const confirm = await screen.findByRole('button', { name: 'Delete' })
+  fireEvent.click(await screen.findByRole('menuitem', { name: /archive profile/i }))
+  const confirm = await screen.findByRole('button', { name: 'Archive profile' })
   await act(async () => {
     fireEvent.click(confirm)
   })
@@ -132,39 +140,39 @@ describe('ProfilesView', () => {
     expect(soul.getAttribute('id')).toBe('new-profile-soul')
   })
 
-  it('re-homes to default when the active profile is deleted', async () => {
-    const deleteProfileMock = vi.mocked(deleteProfile)
+  it('re-homes to default when the active profile is archived', async () => {
+    const archiveProfileMock = vi.mocked(archiveProfile)
     const retireLocalProfileGatewaysMock = vi.mocked(retireLocalProfileGateways)
 
-    deleteProfileMock.mockClear()
+    archiveProfileMock.mockClear()
     retireLocalProfileGatewaysMock.mockClear()
     vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true), makeProfile(NAMED_PROFILE)])
     activeGateway.set(NAMED_PROFILE)
 
     await renderProfilesView()
-    await deleteTheNamedProfile()
+    await archiveTheNamedProfile()
 
-    await waitFor(() => expect(deleteProfile).toHaveBeenCalledWith(NAMED_PROFILE))
+    await waitFor(() => expect(archiveProfile).toHaveBeenCalledWith(NAMED_PROFILE))
     expect(retireLocalProfileGateways).toHaveBeenCalledWith(NAMED_PROFILE)
     expect(retireLocalProfileGatewaysMock.mock.invocationCallOrder[0]).toBeLessThan(
-      deleteProfileMock.mock.invocationCallOrder[0]
+      archiveProfileMock.mock.invocationCallOrder[0]
     )
     await waitFor(() => expect(selectProfile).toHaveBeenCalledWith('default'))
     expect(setActiveProfile).toHaveBeenCalledWith('default')
   })
 
-  it('leaves the active profile alone when a different profile is deleted', async () => {
+  it('leaves the active profile alone when a different profile is archived', async () => {
     vi.mocked(selectProfile).mockClear()
     vi.mocked(setActiveProfile).mockClear()
     vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true), makeProfile(NAMED_PROFILE)])
     activeGateway.set('default')
 
     await renderProfilesView()
-    await deleteTheNamedProfile()
+    await archiveTheNamedProfile()
 
-    await waitFor(() => expect(deleteProfile).toHaveBeenCalledWith(NAMED_PROFILE))
-    // The dialog closes once the delete settles; a non-active delete must not re-home.
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull())
+    await waitFor(() => expect(archiveProfile).toHaveBeenCalledWith(NAMED_PROFILE))
+    // The dialog closes once the archive settles; a non-active archive must not re-home.
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Archive profile' })).toBeNull())
     expect(selectProfile).not.toHaveBeenCalled()
     expect(setActiveProfile).not.toHaveBeenCalled()
   })

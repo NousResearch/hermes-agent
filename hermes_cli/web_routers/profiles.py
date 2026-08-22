@@ -35,6 +35,7 @@ from hermes_cli.web_models import (
     ProfileActiveUpdate,
     ProfileExport,
     ProfileImport,
+    ProfilePurge,
     ProfileRename,
     ProfileSoulUpdate,
     ProfileDescriptionUpdate,
@@ -785,6 +786,18 @@ async def list_profiles_endpoint():
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
 
 
+@router.get("/api/profiles/archived")
+async def list_archived_profiles_endpoint():
+    from hermes_cli import profiles as profiles_mod
+    try:
+        loop = asyncio.get_running_loop()
+        profiles = await loop.run_in_executor(None, profiles_mod.list_archived_profiles)
+        return {"profiles": [_profile_to_dict(p) for p in profiles]}
+    except Exception as e:
+        _log.exception("GET /api/profiles/archived failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod
@@ -1029,6 +1042,62 @@ async def rename_profile_endpoint(name: str, body: ProfileRename):
         "name": profiles_mod.normalize_profile_name(body.new_name),
         "path": str(path),
     }
+
+
+@router.get("/api/profiles/{name}/archive")
+async def profile_archive_manifest_endpoint(name: str):
+    from hermes_cli import profiles as profiles_mod
+    try:
+        return profiles_mod.profile_archive_manifest(name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/api/profiles/{name}/archive")
+async def archive_profile_endpoint(name: str):
+    from hermes_cli import profiles as profiles_mod
+    try:
+        path = profiles_mod.archive_profile(name, yes=True)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (ValueError, FileExistsError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("POST /api/profiles/%s/archive failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "path": str(path)}
+
+
+@router.post("/api/profiles/{name}/restore")
+async def restore_profile_endpoint(name: str):
+    from hermes_cli import profiles as profiles_mod
+    try:
+        path = profiles_mod.restore_profile(name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (ValueError, FileExistsError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("POST /api/profiles/%s/restore failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "path": str(path)}
+
+
+@router.post("/api/profiles/{name}/purge")
+async def purge_profile_endpoint(name: str, body: ProfilePurge):
+    from hermes_cli import profiles as profiles_mod
+    try:
+        path = profiles_mod.purge_profile(name, confirm=body.confirm)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("POST /api/profiles/%s/purge failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "path": str(path)}
 
 
 @router.delete("/api/profiles/{name}")

@@ -594,6 +594,10 @@ class ProfileRename(BaseModel):
     new_name: str
 
 
+class ProfilePurge(BaseModel):
+    confirm: str
+
+
 class ProfileExport(BaseModel):
     # Optional extra root-level files to stage into the archive, filename →
     # text content (e.g. desktop.json — the desktop appearance overlay).

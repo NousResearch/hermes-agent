@@ -692,3 +692,34 @@ class TestProfileScopedAudio:
         assert resp.status_code == 404
         resp = client.post("/api/audio/speak?profile=ghost", json={"text": "x"})
         assert resp.status_code == 404
+
+
+class TestProfileArchiveApi:
+    def test_archive_restore_and_confirmed_purge(self, client, isolated_profiles, monkeypatch):
+        from hermes_cli import profiles
+
+        monkeypatch.setattr(profiles, "_deactivate_profile_runtime", lambda *_: None)
+        worker = isolated_profiles["worker_beta"]
+        (worker / "sessions").mkdir()
+        (worker / "sessions" / "identity").write_text("preserve-me", encoding="utf-8")
+
+        manifest = client.get("/api/profiles/worker_beta/archive")
+        assert manifest.status_code == 200
+        assert "sessions" in manifest.json()["preserved"]
+
+        response = client.post("/api/profiles/worker_beta/archive")
+        assert response.status_code == 200
+        assert not worker.exists()
+        archived = client.get("/api/profiles/archived").json()["profiles"]
+        assert [(item["name"], item["archived"]) for item in archived] == [("worker_beta", True)]
+
+        response = client.post("/api/profiles/worker_beta/restore")
+        assert response.status_code == 200
+        assert (worker / "sessions" / "identity").read_text(encoding="utf-8") == "preserve-me"
+
+        client.post("/api/profiles/worker_beta/archive")
+        denied = client.post("/api/profiles/worker_beta/purge", json={"confirm": "wrong"})
+        assert denied.status_code == 400
+        purged = client.post("/api/profiles/worker_beta/purge", json={"confirm": "worker_beta"})
+        assert purged.status_code == 200
+        assert not profiles.get_archived_profile_dir("worker_beta").exists()

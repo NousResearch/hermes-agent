@@ -2032,6 +2032,22 @@ export const zh: Translations = {
     emptySoul: '空的 SOUL.md —— 开始撰写人格设定…',
     saving: '保存中…',
     saveSoul: '保存 SOUL.md',
+    archiveMenu: '归档配置档案',
+    archivedBadge: '已归档',
+    archiveTitle: '归档配置档案？',
+    archiveDesc: name => `停止向 ${name} 路由，同时保留全部配置档案本地数据。`,
+    archivePreserved: '归档中保留',
+    archiveExcluded: '不包含的安装级数据',
+    archiveManifestLoading: '请等待归档清单加载完成。',
+    archiving: '正在归档…',
+    archived: '配置档案已归档',
+    restoreMenu: '恢复配置档案',
+    restored: '配置档案已恢复',
+    purgeMenu: '永久删除',
+    purgeTitle: '永久删除已归档配置档案？',
+    purgeDesc: name => `这会永久删除 ${name} 的归档数据，且无法撤销。`,
+    purging: '正在永久删除…',
+    purged: '已归档配置档案已删除',
     deleteTitle: '删除配置档案？',
     deleteDescPrefix: '这将删除 ',
     deleteDescMid: ' 并移除其 ',
@@ -2067,7 +2083,8 @@ export const zh: Translations = {
     failedLoadSoul: '加载 SOUL.md 失败',
     failedSaveSoul: '保存 SOUL.md 失败',
     failedCreate: '创建配置档案失败',
-    failedRename: '重命名配置档案失败'
+    failedRename: '重命名配置档案失败',
+    failedRestore: '恢复配置档案失败'
   },
 
   cron: {

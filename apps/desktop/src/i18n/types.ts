@@ -1566,6 +1566,22 @@ export interface Translations {
     emptySoul: string
     saving: string
     saveSoul: string
+    archiveMenu: string
+    archivedBadge: string
+    archiveTitle: string
+    archiveDesc: (name: string) => string
+    archivePreserved: string
+    archiveExcluded: string
+    archiveManifestLoading: string
+    archiving: string
+    archived: string
+    restoreMenu: string
+    restored: string
+    purgeMenu: string
+    purgeTitle: string
+    purgeDesc: (name: string) => string
+    purging: string
+    purged: string
     deleteTitle: string
     deleteDescPrefix: string
     deleteDescMid: string
@@ -1602,6 +1618,7 @@ export interface Translations {
     failedSaveSoul: string
     failedCreate: string
     failedRename: string
+    failedRestore: string
   }
 
   cron: {

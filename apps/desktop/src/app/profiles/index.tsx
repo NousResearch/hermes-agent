@@ -6,7 +6,7 @@ import { CodeEditor } from '@/components/chat/code-editor'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
-import { getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
+import { getArchivedProfiles, getProfileSoul, type ProfileInfo, restoreProfile, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { AlertTriangle, Save } from '@/lib/icons'
@@ -31,8 +31,9 @@ import {
   PanelSectionLabel
 } from '../overlays/panel'
 
+import { ArchiveProfileDialog } from './archive-profile-dialog'
 import { CreateProfileDialog } from './create-profile-dialog'
-import { DeleteProfileDialog } from './delete-profile-dialog'
+import { PurgeProfileDialog } from './purge-profile-dialog'
 import { RenameProfileDialog } from './rename-profile-dialog'
 
 interface ProfilesViewProps {
@@ -47,11 +48,13 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   const [query, setQuery] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
-  const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
+  const [pendingArchive, setPendingArchive] = useState<null | ProfileInfo>(null)
+  const [pendingPurge, setPendingPurge] = useState<null | ProfileInfo>(null)
 
   const refresh = useCallback(async () => {
     try {
-      const list = await refreshProfiles()
+      const [active, archivedResponse] = await Promise.all([refreshProfiles(), getArchivedProfiles()])
+      const list = [...active, ...archivedResponse.profiles]
       setProfiles(list)
       setSelectedName(current => {
         if (current && list.some(p => p.name === current)) {
@@ -132,17 +135,40 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
                   active={selected?.name === profile.name}
                   key={profile.name}
                   menuItems={
-                    profile.is_default
+                    profile.archived
+                      ? [
+                          {
+                            icon: 'refresh',
+                            label: p.restoreMenu,
+                            onSelect: () => {
+                              void (async () => {
+                                try {
+                                  await restoreProfile(profile.name)
+                                  notify({ kind: 'success', title: p.restored, message: profile.name })
+                                  await refresh()
+                                } catch (err) {
+                                  notifyError(err, p.failedRestore)
+                                }
+                              })()
+                            }
+                          },
+                          {
+                            icon: 'trash',
+                            label: p.purgeMenu,
+                            onSelect: () => setPendingPurge(profile),
+                            tone: 'danger'
+                          }
+                        ]
+                      : profile.is_default
                       ? // Renaming the default profile sets a presentation-only
                         // display name (the canonical id stays "default").
                         [{ icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) }]
                       : [
                           { icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) },
                           {
-                            icon: 'trash',
-                            label: t.common.delete,
-                            onSelect: () => setPendingDelete(profile),
-                            tone: 'danger'
+                            icon: 'archive',
+                            label: p.archiveMenu,
+                            onSelect: () => setPendingArchive(profile)
                           }
                         ]
                   }
@@ -174,17 +200,27 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
         onClose={() => setCreateOpen(false)}
         onCreated={selectAndRefresh}
         open={createOpen}
-        profiles={profiles ?? []}
+        profiles={(profiles ?? []).filter(profile => !profile.archived)}
       />
 
-      <DeleteProfileDialog
-        onClose={() => setPendingDelete(null)}
-        onDeleted={async () => {
+      <ArchiveProfileDialog
+        onArchived={async () => {
           setSelectedName(null)
           await refresh()
         }}
-        open={pendingDelete !== null}
-        profile={pendingDelete}
+        onClose={() => setPendingArchive(null)}
+        open={pendingArchive !== null}
+        profile={pendingArchive}
+      />
+
+      <PurgeProfileDialog
+        onClose={() => setPendingPurge(null)}
+        onPurged={async () => {
+          setSelectedName(null)
+          await refresh()
+        }}
+        open={pendingPurge !== null}
+        profile={pendingPurge}
       />
     </Panel>
   )
@@ -234,6 +270,7 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{profileLabel(profile)}</h3>
             {profile.is_default && <PanelPill tone="good">{p.defaultBadge}</PanelPill>}
+            {profile.archived && <PanelPill tone="muted">{p.archivedBadge}</PanelPill>}
             {profile.has_env && <PanelPill tone="muted">.env</PanelPill>}
           </div>
           <p
@@ -262,7 +299,7 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
         />
       </header>
 
-      <SoulEditor profileName={profile.name} />
+      {!profile.archived && <SoulEditor profileName={profile.name} />}
     </PanelDetail>
   )
 }

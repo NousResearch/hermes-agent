@@ -69,6 +69,30 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         "-y", "--yes", action="store_true", help="Skip confirmation prompt"
     )
 
+    profile_archive = profile_subparsers.add_parser(
+        "archive", help="Retire a profile while preserving all profile-local data"
+    )
+    profile_archive.add_argument("profile_name", help="Profile to archive")
+    profile_archive.add_argument(
+        "-y", "--yes", action="store_true", help="Skip confirmation prompt"
+    )
+
+    profile_restore = profile_subparsers.add_parser(
+        "restore", help="Restore an archived profile"
+    )
+    profile_restore.add_argument("profile_name", help="Archived profile to restore")
+    profile_restore.add_argument(
+        "--no-alias", action="store_true", help="Do not recreate a wrapper command"
+    )
+
+    profile_purge = profile_subparsers.add_parser(
+        "purge", help="Permanently delete an archived profile"
+    )
+    profile_purge.add_argument("profile_name", help="Archived profile to permanently delete")
+    profile_purge.add_argument(
+        "--confirm", required=True, help="Repeat the exact profile name to confirm permanent deletion"
+    )
+
     profile_describe = profile_subparsers.add_parser(
         "describe",
         help="Read or set a profile's description (used by the kanban orchestrator)",

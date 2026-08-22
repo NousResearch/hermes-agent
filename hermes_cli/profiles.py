@@ -16,7 +16,9 @@ Usage::
     coder chat                           # use via wrapper alias
     hermes -p coder chat                 # or via flag
     hermes profile use coder             # set as sticky default
-    hermes profile delete coder          # remove profile + alias + service
+    hermes profile archive coder         # retire without deleting local data
+    hermes profile restore coder          # make an archived profile active again
+    hermes profile purge coder --confirm coder  # permanently delete an archive
 """
 
 import json
@@ -38,6 +40,7 @@ from agent.skill_utils import is_excluded_skill_path
 logger = logging.getLogger(__name__)
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_PROFILE_ARCHIVE_DIR = ".archive"
 _WARNED_MISSING_ALLOWLIST_ENTRIES: set[tuple[str, ...]] = set()
 
 # Directories bootstrapped inside every new profile
@@ -379,6 +382,23 @@ def get_profile_dir(name: str) -> Path:
     return _get_profiles_root() / canon
 
 
+def get_archived_profile_dir(name: str) -> Path:
+    """Resolve a named profile to its inactive archive directory."""
+    canon = normalize_profile_name(name)
+    validate_profile_name(canon)
+    if canon == "default":
+        raise ValueError("The default profile cannot be archived.")
+    return _get_profiles_root() / _PROFILE_ARCHIVE_DIR / canon
+
+
+def profile_is_archived(name: str) -> bool:
+    """Return whether *name* has a restorable local archive."""
+    try:
+        return get_archived_profile_dir(name).is_dir()
+    except ValueError:
+        return False
+
+
 def profile_exists(name: str) -> bool:
     """Check whether a profile directory exists."""
     canon = normalize_profile_name(name)
@@ -400,6 +420,20 @@ def list_profile_names() -> List[str]:
         if profiles_root.is_dir():
             for entry in sorted(profiles_root.iterdir()):
                 if entry.is_dir() and entry.name != "default" and _PROFILE_ID_RE.match(entry.name):
+                    names.append(entry.name)
+    except OSError:
+        pass
+    return names
+
+
+def list_archived_profile_names() -> List[str]:
+    """Return archived profile ids without reading profile-local metadata."""
+    names: List[str] = []
+    archive_root = _get_profiles_root() / _PROFILE_ARCHIVE_DIR
+    try:
+        if archive_root.is_dir():
+            for entry in sorted(archive_root.iterdir()):
+                if entry.is_dir() and _PROFILE_ID_RE.match(entry.name):
                     names.append(entry.name)
     except OSError:
         pass
@@ -679,6 +713,9 @@ class ProfileInfo:
     # Optional user-facing display name from profile.yaml. Presentation
     # only — resolution/comparison/spawn paths always use ``name``.
     display_name: str = ""
+    # Archived profiles are retained on disk but excluded from every active
+    # discovery and routing surface.
+    archived: bool = False
 
 
 def _read_distribution_meta(profile_dir: Path) -> tuple:
@@ -1018,6 +1055,34 @@ def list_profiles() -> List[ProfileInfo]:
                 display_name=meta.get("display_name", ""),
             ))
 
+    return profiles
+
+
+def list_archived_profiles() -> List[ProfileInfo]:
+    """Return metadata for inactive, restorable profile archives."""
+    profiles: List[ProfileInfo] = []
+    for name in list_archived_profile_names():
+        entry = get_archived_profile_dir(name)
+        model, provider = _read_config_model(entry)
+        dist_name, dist_version, dist_source = _read_distribution_meta(entry)
+        meta = read_profile_meta(entry)
+        profiles.append(ProfileInfo(
+            name=name,
+            path=entry,
+            is_default=False,
+            gateway_running=False,
+            model=model,
+            provider=provider,
+            has_env=(entry / ".env").exists(),
+            skill_count=_count_skills(entry),
+            distribution_name=dist_name,
+            distribution_version=dist_version,
+            distribution_source=dist_source,
+            description=meta.get("description", ""),
+            description_auto=meta.get("description_auto", False),
+            display_name=meta.get("display_name", ""),
+            archived=True,
+        ))
     return profiles
 
 
@@ -1591,6 +1656,144 @@ def _rmtree_with_retry(profile_dir: Path, onexc_handler) -> None:
                 time.sleep(0.3 * (attempt + 1))
     if last_exc is not None:
         raise last_exc
+
+
+def profile_archive_manifest(name: str) -> Dict[str, object]:
+    """Describe the local data preserved by archiving *name*.
+
+    The manifest deliberately distinguishes the profile directory (moved as a
+    unit) from install-scoped routing and wrapper state, which are disabled but
+    are not copied into the archive.
+    """
+    canon = normalize_profile_name(name)
+    validate_profile_name(canon)
+    if canon == "default":
+        raise ValueError("The default profile cannot be archived.")
+    profile_dir = get_profile_dir(canon)
+    if not profile_dir.is_dir():
+        raise FileNotFoundError(f"Profile '{canon}' does not exist.")
+    try:
+        entries = sorted(entry.name for entry in profile_dir.iterdir())
+    except OSError as exc:
+        raise RuntimeError(f"Could not inspect profile '{canon}': {exc}") from exc
+    return {
+        "name": canon,
+        "source": str(profile_dir),
+        "archive": str(get_archived_profile_dir(canon)),
+        "preserved": entries,
+        "excluded": [
+            "global profile routing rules",
+            "install-wide active-profile selection",
+            "command wrapper alias",
+        ],
+    }
+
+
+def _deactivate_profile_runtime(canon: str, profile_dir: Path) -> None:
+    """Stop routing/runtime surfaces before moving or deleting a profile."""
+    gw_running = _check_gateway_running(profile_dir)
+    _cleanup_gateway_service(canon, profile_dir)
+    _maybe_unregister_gateway_service(canon)
+    if gw_running:
+        _stop_gateway_process(profile_dir)
+    _stop_profile_backends(canon, profile_dir)
+    try:
+        from plugins.memory.holographic.store import MemoryStore as _MemoryStore
+
+        _MemoryStore.release_all_under(profile_dir)
+    except Exception:
+        pass
+
+    alias_name = build_alias_map().get(canon)
+    if alias_name:
+        remove_wrapper_script(alias_name)
+
+    try:
+        if get_active_profile() == canon:
+            set_active_profile("default")
+    except Exception:
+        pass
+
+
+def archive_profile(name: str, yes: bool = False) -> Path:
+    """Retire a named profile while preserving its complete local directory."""
+    manifest = profile_archive_manifest(name)
+    canon = str(manifest["name"])
+    profile_dir = Path(str(manifest["source"]))
+    archive_dir = Path(str(manifest["archive"]))
+    if archive_dir.exists():
+        raise FileExistsError(f"Archived profile '{canon}' already exists.")
+
+    print(f"\nProfile: {canon}")
+    print(f"Path:    {profile_dir}")
+    print("\nThe complete profile directory will be preserved, including:")
+    for entry in manifest["preserved"]:
+        print(f"  • {entry}")
+    print("\nThese install-scoped items are not part of the archive:")
+    for entry in manifest["excluded"]:
+        print(f"  • {entry}")
+
+    if not yes:
+        try:
+            confirm = input(f"Type '{canon}' to archive: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return profile_dir
+        if confirm != canon:
+            print("Cancelled.")
+            return profile_dir
+
+    _deactivate_profile_runtime(canon, profile_dir)
+    archive_dir.parent.mkdir(parents=True, exist_ok=True)
+    profile_dir.replace(archive_dir)
+    print(f"\nProfile '{canon}' archived at {archive_dir}.")
+    return archive_dir
+
+
+def restore_profile(name: str, no_alias: bool = False) -> Path:
+    """Restore an archived profile without starting its gateway automatically."""
+    canon = normalize_profile_name(name)
+    validate_profile_name(canon)
+    archive_dir = get_archived_profile_dir(canon)
+    profile_dir = get_profile_dir(canon)
+    if not archive_dir.is_dir():
+        raise FileNotFoundError(f"Archived profile '{canon}' does not exist.")
+    if profile_dir.exists():
+        raise FileExistsError(f"Profile '{canon}' already exists.")
+
+    archive_dir.replace(profile_dir)
+    if not no_alias and not check_alias_collision(canon):
+        create_wrapper_script(canon)
+    print(f"Profile '{canon}' restored at {profile_dir}.")
+    return profile_dir
+
+
+def purge_profile(name: str, confirm: str) -> Path:
+    """Permanently remove an archived profile after exact-name confirmation."""
+    canon = normalize_profile_name(name)
+    validate_profile_name(canon)
+    if confirm != canon:
+        raise ValueError(f"Permanent purge requires --confirm {canon}")
+    archive_dir = get_archived_profile_dir(canon)
+    if not archive_dir.is_dir():
+        if profile_exists(canon):
+            raise ValueError(f"Profile '{canon}' is active; archive it before purging.")
+        raise FileNotFoundError(f"Archived profile '{canon}' does not exist.")
+
+    def _make_writable(func, path, exc):
+        if isinstance(exc, tuple):
+            exc = exc[1]
+        if not isinstance(exc, PermissionError):
+            raise exc
+        os.chmod(path, os.stat(path).st_mode | stat.S_IWUSR)
+        parent = os.path.dirname(path)
+        if parent:
+            os.chmod(parent, os.stat(parent).st_mode | stat.S_IWUSR)
+        func(path)
+
+    _rmtree_with_retry(archive_dir, _make_writable)
+    print(f"Archived profile '{canon}' permanently deleted.")
+    return archive_dir
 
 
 def delete_profile(name: str, yes: bool = False) -> Path:

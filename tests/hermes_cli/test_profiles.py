@@ -24,8 +24,15 @@ from hermes_cli.profiles import (
     validate_profile_name,
     get_profile_dir,
     create_profile,
+    archive_profile,
     delete_profile,
+    get_archived_profile_dir,
+    list_archived_profiles,
     list_profiles,
+    profile_archive_manifest,
+    profile_is_archived,
+    purge_profile,
+    restore_profile,
     set_active_profile,
     get_active_profile,
     get_active_profile_name,
@@ -272,6 +279,60 @@ class TestDeleteProfile:
 
         assert profile_dir.is_dir()
         assert get_active_profile() == "default"
+
+
+class TestProfileArchiveLifecycle:
+    def test_archive_and_restore_preserve_profile_data_and_routing_state(self, profile_env):
+        profile_dir = create_profile("coder", no_alias=True)
+        payload = b"durable-agent-state\x00\xff"
+        (profile_dir / "sessions" / "identity.bin").write_bytes(payload)
+        set_active_profile("coder")
+
+        manifest = profile_archive_manifest("coder")
+        assert "sessions" in manifest["preserved"]
+        assert "global profile routing rules" in manifest["excluded"]
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._maybe_unregister_gateway_service"), \
+             patch("hermes_cli.profiles._check_gateway_running", return_value=False), \
+             patch("hermes_cli.profiles._stop_profile_backends"), \
+             patch("hermes_cli.profiles.build_alias_map", return_value={}):
+            archived_dir = archive_profile("coder", yes=True)
+
+        assert archived_dir == get_archived_profile_dir("coder")
+        assert profile_is_archived("coder") is True
+        assert not profile_dir.exists()
+        assert (archived_dir / "sessions" / "identity.bin").read_bytes() == payload
+        assert "coder" not in [profile.name for profile in list_profiles()]
+        assert [profile.name for profile in list_archived_profiles()] == ["coder"]
+        assert "coder" not in [name for name, _ in profiles_to_serve(True)]
+        assert get_active_profile() == "default"
+
+        restored_dir = restore_profile("coder", no_alias=True)
+        assert restored_dir == profile_dir
+        assert profile_is_archived("coder") is False
+        assert (restored_dir / "sessions" / "identity.bin").read_bytes() == payload
+        assert "coder" in [name for name, _ in profiles_to_serve(True)]
+
+    def test_purge_requires_archive_and_exact_confirmation(self, profile_env):
+        create_profile("coder", no_alias=True)
+        with pytest.raises(ValueError, match="archive it before purging"):
+            purge_profile("coder", confirm="coder")
+
+        with patch("hermes_cli.profiles._deactivate_profile_runtime"):
+            archived_dir = archive_profile("coder", yes=True)
+
+        with pytest.raises(ValueError, match="requires --confirm coder"):
+            purge_profile("coder", confirm="wrong")
+        assert archived_dir.is_dir()
+
+        removed = purge_profile("coder", confirm="coder")
+        assert removed == archived_dir
+        assert not archived_dir.exists()
+
+
+class TestDeleteProfileRuntime:
+    """Tests for process teardown and deletion helpers."""
 
 
 

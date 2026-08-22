@@ -63,7 +63,7 @@ def generate_bash(parser: argparse.ArgumentParser) -> str:
             # Profile subcommand: complete actions, then profile names for
             # actions that accept a profile argument.
             subcmds = " ".join(sorted(info["subcommands"]))
-            profile_actions = "use delete show alias rename export"
+            profile_actions = "use delete archive restore purge show alias rename export"
             cases.append(
                 f"        profile)\n"
                 f"            case \"$prev\" in\n"

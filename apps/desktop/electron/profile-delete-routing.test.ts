@@ -7,6 +7,7 @@ import {
   decideProfileDeleteAction,
   localProfilePoolKeys,
   ProfileDeletionGate,
+  profileNameFromDeactivateRequest,
   profileNameFromDeleteRequest,
   resolveRouteProfile
 } from './profile-delete-routing'
@@ -37,6 +38,14 @@ test('profileNameFromDeleteRequest returns null for an empty/whitespace name', (
 
 test('profileNameFromDeleteRequest returns null for an undecodable path segment', () => {
   assert.equal(profileNameFromDeleteRequest({ method: 'DELETE', path: '/api/profiles/%E0%A4%A' }), null)
+})
+
+test('profileNameFromDeactivateRequest parses profile archive mutations', () => {
+  assert.equal(
+    profileNameFromDeactivateRequest({ method: 'POST', path: '/api/profiles/Worker/archive' }),
+    'worker'
+  )
+  assert.equal(profileNameFromDeactivateRequest({ method: 'POST', path: '/api/profiles/worker/restore' }), null)
 })
 
 // ---------------------------------------------------------------------------

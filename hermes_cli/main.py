@@ -10268,7 +10268,10 @@ def cmd_profile(args):
     from hermes_cli.profiles import (
         list_profiles,
         create_profile,
+        archive_profile,
         delete_profile,
+        purge_profile,
+        restore_profile,
         seed_profile_skills,
         set_active_profile,
         get_active_profile_name,
@@ -10491,6 +10494,27 @@ def cmd_profile(args):
         yes = getattr(args, "yes", False)
         try:
             delete_profile(name, yes=yes)
+        except (ValueError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "archive":
+        try:
+            archive_profile(args.profile_name, yes=getattr(args, "yes", False))
+        except (ValueError, FileExistsError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "restore":
+        try:
+            restore_profile(args.profile_name, no_alias=getattr(args, "no_alias", False))
+        except (ValueError, FileExistsError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "purge":
+        try:
+            purge_profile(args.profile_name, confirm=args.confirm)
         except (ValueError, FileNotFoundError) as e:
             print(f"Error: {e}")
             sys.exit(1)

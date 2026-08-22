@@ -73,8 +73,8 @@ import {
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import type { ProfileInfo } from '@/types/hermes'
 
+import { ArchiveProfileDialog } from '../../profiles/archive-profile-dialog'
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
-import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
 
@@ -129,7 +129,7 @@ export function ProfileRail() {
 
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
-  const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
+  const [pendingArchive, setPendingArchive] = useState<null | ProfileInfo>(null)
   const [pendingSoul, setPendingSoul] = useState<null | string>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -305,7 +305,7 @@ export function ProfileRail() {
                       color={resolveProfileColor(profile.name, colors)}
                       key={profile.name}
                       label={profileLabel(profile)}
-                      onDelete={() => setPendingDelete(profile)}
+                      onArchive={() => setPendingArchive(profile)}
                       onEditSoul={() => setPendingSoul(profile.name)}
                       onRecolor={color => setProfileColor(profile.name, color)}
                       onRename={() => setPendingRename(profile)}
@@ -360,11 +360,11 @@ export function ProfileRail() {
         open={pendingRename !== null}
       />
 
-      <DeleteProfileDialog
-        onClose={() => setPendingDelete(null)}
-        onDeleted={refreshActiveProfile}
-        open={pendingDelete !== null}
-        profile={pendingDelete}
+      <ArchiveProfileDialog
+        onArchived={refreshActiveProfile}
+        onClose={() => setPendingArchive(null)}
+        open={pendingArchive !== null}
+        profile={pendingArchive}
       />
 
       <EditSoulDialog onClose={() => setPendingSoul(null)} profileName={pendingSoul} />
@@ -618,7 +618,7 @@ interface ProfileSquareProps {
   onRecolor: (color: null | string) => void
   onRename: () => void
   onEditSoul: () => void
-  onDelete: () => void
+  onArchive: () => void
 }
 
 // Hold this long without moving (a drag would have started first) to open the
@@ -629,14 +629,14 @@ const LONG_PRESS_MS = 450
 // fill + the initial in the full color; the active one pops to full opacity with
 // a color ring. These pack tightly so the rail reads as a strip of profiles,
 // drag-sort to reorder (a tap below the drag threshold still selects), and
-// right-click to rename/delete. The button carries both the tooltip and
+// right-click to rename/archive. The button carries both the tooltip and
 // context-menu triggers via nested asChild Slots, so a single element keeps the
 // dnd listeners, hover tip, and right-click menu.
 function ProfileSquare({
   active,
   color,
   label,
-  onDelete,
+  onArchive,
   onEditSoul,
   onRecolor,
   onRename,
@@ -784,12 +784,10 @@ function ProfileSquare({
             <span>{p.exportProfile}</span>
           </ContextMenuItem>
           <ContextMenuItem
-            className="text-destructive focus:text-destructive"
-            onSelect={onDelete}
-            variant="destructive"
+            onSelect={onArchive}
           >
-            <Codicon name="trash" size="0.875rem" />
-            <span>{t.common.delete}</span>
+            <Codicon name="archive" size="0.875rem" />
+            <span>{p.archiveMenu}</span>
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>

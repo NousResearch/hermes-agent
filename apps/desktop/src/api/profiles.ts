@@ -15,6 +15,13 @@ export function getProfiles(): Promise<ProfilesResponse> {
   })
 }
 
+export function getArchivedProfiles(): Promise<ProfilesResponse> {
+  return hermesApi<ProfilesResponse>({
+    path: '/api/profiles/archived',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+  })
+}
+
 export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string }> {
   return hermesApi<{ name: string; ok: boolean; path: string }>({
     path: '/api/profiles',
@@ -35,6 +42,42 @@ export function deleteProfile(name: string): Promise<{ ok: boolean; path: string
   return hermesApi<{ ok: boolean; path: string }>({
     path: `/api/profiles/${encodeURIComponent(name)}`,
     method: 'DELETE'
+  })
+}
+
+export interface ProfileArchiveManifest {
+  archive: string
+  excluded: string[]
+  name: string
+  preserved: string[]
+  source: string
+}
+
+export function getProfileArchiveManifest(name: string): Promise<ProfileArchiveManifest> {
+  return hermesApi<ProfileArchiveManifest>({
+    path: `/api/profiles/${encodeURIComponent(name)}/archive`
+  })
+}
+
+export function archiveProfile(name: string): Promise<{ ok: boolean; path: string }> {
+  return hermesApi<{ ok: boolean; path: string }>({
+    path: `/api/profiles/${encodeURIComponent(name)}/archive`,
+    method: 'POST'
+  })
+}
+
+export function restoreProfile(name: string): Promise<{ ok: boolean; path: string }> {
+  return hermesApi<{ ok: boolean; path: string }>({
+    path: `/api/profiles/${encodeURIComponent(name)}/restore`,
+    method: 'POST'
+  })
+}
+
+export function purgeProfile(name: string): Promise<{ ok: boolean; path: string }> {
+  return hermesApi<{ ok: boolean; path: string }>({
+    path: `/api/profiles/${encodeURIComponent(name)}/purge`,
+    method: 'POST',
+    body: { confirm: name }
   })
 }
 

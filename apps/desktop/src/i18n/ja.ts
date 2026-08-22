@@ -1560,6 +1560,22 @@ export const ja = defineLocale({
     emptySoul: '空の SOUL.md — ペルソナの記述を始めてください...',
     saving: '保存中...',
     saveSoul: 'SOUL を保存',
+    archiveMenu: 'プロファイルをアーカイブ',
+    archivedBadge: 'アーカイブ済み',
+    archiveTitle: 'プロファイルをアーカイブしますか？',
+    archiveDesc: name => `${name} へのルーティングを停止し、プロファイル内の全データを保持します。`,
+    archivePreserved: 'アーカイブに保持されるデータ',
+    archiveExcluded: '含まれないインストール共通データ',
+    archiveManifestLoading: 'アーカイブ一覧の読み込みが完了するまでお待ちください。',
+    archiving: 'アーカイブ中...',
+    archived: 'プロファイルをアーカイブしました',
+    restoreMenu: 'プロファイルを復元',
+    restored: 'プロファイルを復元しました',
+    purgeMenu: '完全に削除',
+    purgeTitle: 'アーカイブ済みプロファイルを完全に削除しますか？',
+    purgeDesc: name => `${name} のアーカイブデータを完全に削除します。この操作は元に戻せません。`,
+    purging: '完全に削除中...',
+    purged: 'アーカイブ済みプロファイルを削除しました',
     deleteTitle: 'プロファイルを削除しますか？',
     deleteDescPrefix: 'これにより ',
     deleteDescMid: ' が削除され、その ',
@@ -1592,7 +1608,8 @@ export const ja = defineLocale({
     failedLoadSoul: 'SOUL.md の読み込みに失敗しました',
     failedSaveSoul: 'SOUL.md の保存に失敗しました',
     failedCreate: 'プロファイルの作成に失敗しました',
-    failedRename: 'プロファイルの名前変更に失敗しました'
+    failedRename: 'プロファイルの名前変更に失敗しました',
+    failedRestore: 'プロファイルの復元に失敗しました'
   },
 
   cron: {

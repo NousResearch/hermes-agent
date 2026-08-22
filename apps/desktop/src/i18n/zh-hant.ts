@@ -1502,6 +1502,22 @@ export const zhHant = defineLocale({
     emptySoul: '空的 SOUL.md — 開始撰寫角色設定…',
     saving: '儲存中…',
     saveSoul: '儲存 SOUL.md',
+    archiveMenu: '封存設定檔',
+    archivedBadge: '已封存',
+    archiveTitle: '封存設定檔？',
+    archiveDesc: name => `停止向 ${name} 路由，同時保留全部設定檔本機資料。`,
+    archivePreserved: '封存中保留',
+    archiveExcluded: '不包含的安裝層級資料',
+    archiveManifestLoading: '請等待封存清單載入完成。',
+    archiving: '正在封存…',
+    archived: '設定檔已封存',
+    restoreMenu: '還原設定檔',
+    restored: '設定檔已還原',
+    purgeMenu: '永久刪除',
+    purgeTitle: '永久刪除已封存設定檔？',
+    purgeDesc: name => `這會永久刪除 ${name} 的封存資料，且無法復原。`,
+    purging: '正在永久刪除…',
+    purged: '已封存設定檔已刪除',
     deleteTitle: '刪除設定檔？',
     deleteDescPrefix: '這將刪除 ',
     deleteDescMid: ' 並移除其 ',
@@ -1534,7 +1550,8 @@ export const zhHant = defineLocale({
     failedLoadSoul: '載入 SOUL.md 失敗',
     failedSaveSoul: '儲存 SOUL.md 失敗',
     failedCreate: '建立設定檔失敗',
-    failedRename: '重新命名設定檔失敗'
+    failedRename: '重新命名設定檔失敗',
+    failedRestore: '還原設定檔失敗'
   },
 
   cron: {

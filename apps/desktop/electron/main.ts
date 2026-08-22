@@ -234,7 +234,7 @@ import {
   decideProfileDeleteAction,
   localProfilePoolKeys,
   ProfileDeletionGate,
-  profileNameFromDeleteRequest,
+  profileNameFromDeactivateRequest,
   resolveRouteProfile
 } from './profile-delete-routing'
 import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profile-rename-routing'
@@ -10508,7 +10508,7 @@ async function exitAfterBackendShutdown(code) {
 // profile-delete-routing.ts; this function only performs the side effects
 // that decision calls for.
 async function prepareProfileDeleteRequest(request) {
-  const profile = profileNameFromDeleteRequest(request)
+  const profile = profileNameFromDeactivateRequest(request)
 
   const decision = decideProfileDeleteAction(profile, {
     isDefaultProfile: p => p === 'default',
@@ -13782,8 +13782,8 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   // Hold the deletion gate for BOTH profile deletes and renames: a concurrent
   // renderer reconnect entering ensureBackend() mid-mutation would otherwise
   // respawn the old-name backend and recreate its HERMES_HOME (#45474).
-  const deletingProfile = profileNameFromDeleteRequest(request)
-  const mutatingProfile = deletingProfile || profileRenameFromRequest(request)?.oldName || null
+  const deactivatingProfile = profileNameFromDeactivateRequest(request)
+  const mutatingProfile = deactivatingProfile || profileRenameFromRequest(request)?.oldName || null
 
   if (!mutatingProfile) {
     return handleHermesApiRequest(request)

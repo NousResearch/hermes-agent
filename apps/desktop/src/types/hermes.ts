@@ -932,6 +932,7 @@ export interface ProfileCreatePayload {
 }
 
 export interface ProfileInfo {
+  archived?: boolean
   /** Presentation-only label override (profile.yaml display_name). */
   display_name?: string
   has_env: boolean

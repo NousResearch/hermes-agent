@@ -74,8 +74,8 @@ vi.mock('@/hermes', () => ({
 }))
 
 vi.mock('@/components/chat/code-editor', () => ({ CodeEditor: () => null }))
+vi.mock('../../profiles/archive-profile-dialog', () => ({ ArchiveProfileDialog: () => null }))
 vi.mock('../../profiles/create-profile-dialog', () => ({ CreateProfileDialog: () => null }))
-vi.mock('../../profiles/delete-profile-dialog', () => ({ DeleteProfileDialog: () => null }))
 vi.mock('../../profiles/rename-profile-dialog', () => ({ RenameProfileDialog: () => null }))
 
 const { $hasMultipleConnections } = await import('@/store/connections')

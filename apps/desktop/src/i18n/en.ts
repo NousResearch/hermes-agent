@@ -1846,6 +1846,22 @@ export const en: Translations = {
     emptySoul: 'Empty SOUL.md — start writing the persona...',
     saving: 'Saving...',
     saveSoul: 'Save SOUL.md',
+    archiveMenu: 'Archive profile',
+    archivedBadge: 'Archived',
+    archiveTitle: 'Archive profile?',
+    archiveDesc: name => `Retire ${name} from routing while preserving all profile-local data.`,
+    archivePreserved: 'Preserved in the archive',
+    archiveExcluded: 'Install-scoped data not included',
+    archiveManifestLoading: 'Wait for the archive manifest to finish loading.',
+    archiving: 'Archiving...',
+    archived: 'Profile archived',
+    restoreMenu: 'Restore profile',
+    restored: 'Profile restored',
+    purgeMenu: 'Delete permanently',
+    purgeTitle: 'Permanently delete archived profile?',
+    purgeDesc: name => `This permanently deletes the archived data for ${name}. This cannot be undone.`,
+    purging: 'Deleting permanently...',
+    purged: 'Archived profile deleted',
     deleteTitle: 'Delete profile?',
     deleteDescPrefix: 'This will delete ',
     deleteDescMid: ' and remove its ',
@@ -1881,7 +1897,8 @@ export const en: Translations = {
     failedLoadSoul: 'Failed to load SOUL.md',
     failedSaveSoul: 'Failed to save SOUL.md',
     failedCreate: 'Failed to create profile',
-    failedRename: 'Failed to rename profile'
+    failedRename: 'Failed to rename profile',
+    failedRestore: 'Failed to restore profile'
   },
 
   cron: {

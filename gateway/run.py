@@ -28182,6 +28182,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from hermes_cli.profiles import (
             get_active_profile_name,
             get_profile_dir,
+            profile_is_archived,
             profile_exists,
         )
         from hermes_constants import get_hermes_home
@@ -28199,6 +28200,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not name:
                 name = get_active_profile_name() or "default"
             
+            if explicit_profile and profile_is_archived(name):
+                logger.warning(
+                    "Profile %r is archived and unavailable for source %s/%s",
+                    explicit_profile,
+                    source.platform.value,
+                    source.chat_id,
+                )
+                raise ProfileRouteRejected(explicit_profile)
             profile_dir = get_profile_dir(name)
             # Warn if an explicit profile doesn't exist on disk
             if explicit_profile and not profile_exists(name):

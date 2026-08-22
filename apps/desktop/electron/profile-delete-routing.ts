@@ -47,6 +47,29 @@ export function profileNameFromDeleteRequest(request) {
   return profileNameFromPath(request.path)
 }
 
+/** Parse requests that must retire a live profile backend before mutation. */
+export function profileNameFromDeactivateRequest(request) {
+  if (!request) {
+    return null
+  }
+
+  const method = String(request.method || 'GET').toUpperCase()
+
+  const path = String(request.path || '')
+
+  if (method === 'DELETE') {
+    return profileNameFromPath(path)
+  }
+
+  if (method !== 'POST') {
+    return null
+  }
+
+  const match = path.match(/^\/api\/profiles\/([^/?#]+)\/archive(?:[?#].*)?$/)
+
+  return match ? profileNameFromPath(`/api/profiles/${match[1]}`) : null
+}
+
 export type ProfileDeleteAction = 'noop' | 'teardown-primary' | 'teardown-pool'
 
 export interface ProfileDeleteDecision {

@@ -73,6 +73,11 @@ MARKER_NAME = ".hermes-update-in-progress"
 # in apps/bootstrap-installer/src-tauri/src/update.rs — keep the name in sync.
 HANDOFF_PID_ENV = "HERMES_UPDATE_HANDOFF_PID"
 
+# Bound on the parent chain walked by _is_ancestor_pid. Real ancestries are a
+# handful of links (init -> desktop -> staged updater -> shim -> us); the cap
+# only exists so an unexpected chain can never spin the walk.
+_MAX_ANCESTRY_DEPTH = 128
+
 # Exit code meaning "another updater/instance owns this install right now".
 # Already the de-facto contract: the Windows shim + venv-holder guards in
 # _cmd_update_impl exit 2, and the Tauri updater matches on it
@@ -146,15 +151,46 @@ def _is_ancestor_pid(pid: int) -> bool:
     parent chain. This heals the fleet of staged ``hermes-setup`` binaries
     that predate the HANDOFF_PID_ENV export and can never send it.
 
-    Never includes our own pid, and any failure counts as "not an ancestor":
-    an unprovable ancestry must fall back to the normal refusal.
+    The chain is walked one link at a time and each ancestor is tested as it is
+    discovered. ``psutil.Process.parents()`` cannot be used here: it builds the
+    whole chain up to the lowest pid *before* returning, and its per-link
+    ``parent()`` tolerates only ``NoSuchProcess``. So any process we may not
+    inspect anywhere above us raises ``AccessDenied`` and discards the
+    ancestors already collected — including the orchestrator one link down.
+    That is not exotic: under firejail with ``ptrace_scope=1``, and in hardened
+    containers, ``/proc/1`` is unreadable, so the GUI update deadlocked against
+    its own parent on every attempt. Walking incrementally means a failure
+    *above* the match can no longer hide it.
+
+    Never includes our own pid, and any failure encountered before a match
+    counts as "not an ancestor": an unprovable ancestry must fall back to the
+    normal refusal.
     """
     if pid <= 0:
         return False
     try:
         import psutil
 
-        return any(parent.pid == pid for parent in psutil.Process().parents())
+        proc = psutil.Process()
+        seen = {proc.pid}
+        for _ in range(_MAX_ANCESTRY_DEPTH):
+            parent = proc.parent()
+            if parent is None:
+                return False
+            if parent.pid == pid:
+                return True
+            if parent.pid in seen:
+                # Defensive only: psutil's create_time check already rejects a
+                # reused ppid, so a true cycle should be unreachable.
+                return False
+            seen.add(parent.pid)
+            proc = parent
+        logger.debug(
+            "Gave up walking process ancestry for pid %s after %s links",
+            pid,
+            _MAX_ANCESTRY_DEPTH,
+        )
+        return False
     except Exception as exc:
         logger.debug("Could not walk process ancestry for pid %s: %s", pid, exc)
         return False

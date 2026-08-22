@@ -896,7 +896,15 @@ class GatewaySlashCommandsMixin:
             # Full view — compression / throughput need the live agent.
             if ctx is not None:
                 threshold = getattr(ctx, "threshold_tokens", 0) or 0
-                threshold_pct = (getattr(ctx, "threshold_percent", 0) or 0) * 100
+                # Show the ACTUAL trigger point as a % of the full context
+                # window, not the configured threshold_percent. threshold_tokens
+                # is computed against the effective input budget (context minus
+                # the max_tokens output reservation, #43547), so the configured
+                # percent (e.g. 85%) would misrepresent the real trigger (e.g.
+                # 63% of the window) and look like a bug.
+                threshold_pct = (
+                    (threshold / context_length * 100) if context_length > 0 else 0
+                )
                 lines.append("")
                 if threshold > 0:
                     if used >= threshold:

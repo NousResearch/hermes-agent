@@ -2938,7 +2938,7 @@ class ContextCompressor(ContextEngine):
     ) -> int:
         """Compute the compaction trigger threshold in tokens.
 
-        The base value is ``effective_input_budget * threshold_percent``, floored
+        The base value is ``context_length * threshold_percent``, floored
         at ``MINIMUM_CONTEXT_LENGTH`` so large-context models don't compress
         prematurely at 50%. BUT that floor degenerates at small windows: for a
         model whose ``context_length`` is at/below the minimum (e.g. a 64K
@@ -2951,18 +2951,11 @@ class ContextCompressor(ContextEngine):
         small model uses most of its context before compacting, but below
         100% so compaction fires before the provider rejects the request.
 
-        The provider reserves ``max_tokens`` of output space out of the same
-        window, so the usable INPUT budget is ``context_length - max_tokens``.
-        With a large ``max_tokens`` (e.g. 65536 on a custom provider) the input
-        budget is materially smaller than the raw window, and a threshold based
-        on the full window lets the session hit a provider 400 before compaction
-        fires (#43547). The percentage and the degenerate-window check below both
-        operate on the effective input budget. ``max_tokens=None`` (provider
-        default) conservatively assumes no reservation (full window).
+        The threshold is a percentage of the full context window (not reduced
+        by the ``max_tokens`` output reservation) so a user-configured
+        threshold_percent matches the percentage shown in /context.
         """
-        effective_window = context_length - (max_tokens or 0)
-        if effective_window <= 0:
-            effective_window = context_length
+        effective_window = context_length
         pct_value = int(effective_window * threshold_percent)
         floored = max(pct_value, MINIMUM_CONTEXT_LENGTH)
         # If flooring pushed the threshold to/over the effective window it can

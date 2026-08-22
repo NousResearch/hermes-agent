@@ -1677,3 +1677,39 @@ def test_resolve_runtime_provider_opencode_free_missing_env_still_resolves(monke
     assert resolved["provider"] == "opencode-free"
     assert resolved["api_key"] == "opencode-zen-free-keyless"
     assert resolved["base_url"] == "https://opencode.ai/zen/v1"
+
+
+def test_custom_provider_resolves_max_output_tokens(monkeypatch):
+    """Custom provider entry with max_output_tokens propagates to resolved runtime dict (#88997)."""
+    custom_entry = {
+        "name": "ollama-local",
+        "base_url": "http://localhost:11434/v1",
+        "api_key": "ollama",
+        "model": "gpt-oss:20b",
+        "max_output_tokens": 8192,
+    }
+    monkeypatch.setattr(rp, "get_compatible_custom_providers", lambda *a, **k: [custom_entry])
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+
+    resolved = rp.resolve_runtime_provider(requested="ollama-local")
+    assert resolved is not None
+    assert resolved.get("max_output_tokens") == 8192
+
+
+def test_custom_provider_resolves_max_tokens_alias(monkeypatch):
+    """Custom provider entry with max_tokens alias propagates to max_output_tokens (#88997)."""
+    custom_entry = {
+        "name": "vllm-local",
+        "base_url": "http://localhost:8000/v1",
+        "api_key": "vllm",
+        "model": "qwen",
+        "max_tokens": 4096,
+    }
+    from hermes_cli.config import _normalize_custom_provider_entry
+    normalized = _normalize_custom_provider_entry(custom_entry)
+    monkeypatch.setattr(rp, "get_compatible_custom_providers", lambda *a, **k: [normalized])
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+
+    resolved = rp.resolve_runtime_provider(requested="vllm-local")
+    assert resolved is not None
+    assert resolved.get("max_output_tokens") == 4096

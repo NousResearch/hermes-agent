@@ -1257,6 +1257,122 @@ def _canonicalize_tool_call_arguments(arg_str: str) -> str:
     return canonical
 
 
+def _tool_parameters_schema(agent, tool_name: str) -> Optional[dict]:
+    """Return the model-facing parameter schema for ``tool_name``.
+
+    Hermes exposes OpenAI-style function definitions in ``agent.tools``. A
+    few dynamically supplied tools use the bare function shape, so accept
+    both forms here. This lookup deliberately does not consult the global
+    registry: the active agent's tool list is the schema the provider saw for
+    this turn, and MCP/deferred tools may not be present in the registry.
+    """
+    for raw_tool in getattr(agent, "tools", None) or []:
+        if not isinstance(raw_tool, dict):
+            continue
+        function = raw_tool.get("function")
+        if not isinstance(function, dict):
+            function = raw_tool
+        if function.get("name") != tool_name:
+            continue
+        parameters = function.get("parameters")
+        return parameters if isinstance(parameters, dict) else None
+    return None
+
+
+def _missing_top_level_required_arguments(
+    agent,
+    tool_name: str,
+    arguments: dict,
+) -> list[str]:
+    """Return missing top-level ``required`` keys from a tool schema.
+
+    This is intentionally the narrow validation available at this boundary:
+    it checks only the parameter object's top-level ``required`` list. A
+    nested property's own ``required`` list is not interpreted as a
+    top-level requirement, so the check cannot reject a valid parent object
+    merely because the same word appears deeper in a JSON Schema.
+    """
+    parameters = _tool_parameters_schema(agent, tool_name)
+    required = parameters.get("required") if parameters else None
+    if not isinstance(required, list):
+        return []
+    return [name for name in required if isinstance(name, str) and name not in arguments]
+
+
+def _validate_tool_call_arguments(
+    agent,
+    tool_calls,
+    mixed_invalid_batch: bool = False,
+) -> list[tuple[str, str]]:
+    """Normalize empty optional calls and reject missing required fields.
+
+    Empty arguments are a compatibility case only for tools whose active
+    schema has no top-level required fields. For required tools, both an
+    empty wire string and a parsed ``{}`` remain invalid and are returned to
+    the caller for the existing bounded recovery path. Non-empty malformed
+    JSON is left untouched so its existing repair/retry behavior remains the
+    authority for that failure class.
+    """
+    invalid: list[tuple[str, str]] = []
+    valid_tool_names = getattr(agent, "valid_tool_names", set()) or set()
+
+    for tool_call in tool_calls:
+        function = getattr(tool_call, "function", None)
+        if function is None:
+            continue
+        name = getattr(function, "name", "") or ""
+
+        # Keep the existing SDK compatibility normalization for structured
+        # arguments. The schema check below then sees the same object that
+        # the executor will parse from the resulting JSON string.
+        arguments = getattr(function, "arguments", None)
+        if isinstance(arguments, (dict, list)):
+            function.arguments = json.dumps(arguments)
+            arguments = function.arguments
+        elif arguments is not None and not isinstance(arguments, str):
+            function.arguments = str(arguments)
+            arguments = function.arguments
+
+        if not arguments or not arguments.strip():
+            missing = _missing_top_level_required_arguments(agent, name, {})
+            if missing:
+                invalid.append((
+                    name,
+                    "Tool call arguments missing required fields for "
+                    f"'{name}': {', '.join(missing)}. The tool was not "
+                    "executed; retry with arguments matching the schema.",
+                ))
+            else:
+                function.arguments = "{}"
+            continue
+
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            # The existing malformed/truncated JSON recovery below owns this
+            # class. Do not replace the raw string here.
+            continue
+
+        if not isinstance(parsed, dict):
+            # The executor's existing JSON-object guard handles scalar/list
+            # payloads. This patch is only the required-key boundary.
+            continue
+
+        if mixed_invalid_batch and name not in valid_tool_names:
+            continue
+
+        missing = _missing_top_level_required_arguments(agent, name, parsed)
+        if missing:
+            invalid.append((
+                name,
+                "Tool call arguments missing required fields for "
+                f"'{name}': {', '.join(missing)}. The tool was not "
+                "executed; retry with arguments matching the schema.",
+            ))
+
+    return invalid
+
+
 def _clone_message_for_send(msg):
     """Structural clone of a history message for the per-call API copy.
 
@@ -7021,20 +7137,22 @@ def run_conversation(
                 # Reset retry counter on successful tool call validation
                 agent._invalid_tool_retries = 0
                 
-                # Validate tool call arguments are valid JSON
-                # Handle empty strings as empty objects (common model quirk)
+                # Validate tool call arguments are valid JSON and satisfy the
+                # active tool's top-level required fields. Empty strings are
+                # normalized only for tools with no required parameters.
+                invalid_required_args = _validate_tool_call_arguments(
+                    agent,
+                    assistant_message.tool_calls,
+                    mixed_invalid_batch=_mixed_invalid_batch,
+                )
                 invalid_json_args = []
                 for tc in assistant_message.tool_calls:
                     args = tc.function.arguments
-                    if isinstance(args, (dict, list)):
-                        tc.function.arguments = json.dumps(args)
-                        continue
-                    if args is not None and not isinstance(args, str):
-                        tc.function.arguments = str(args)
-                        args = tc.function.arguments
-                    # Treat empty/whitespace strings as empty object
+                    # Required-empty calls are recorded above and remain raw
+                    # so the recovery result does not turn them into a
+                    # successful-looking ``{}`` transcript entry. Optional
+                    # empty calls were normalized by the helper.
                     if not args or not args.strip():
-                        tc.function.arguments = "{}"
                         continue
                     try:
                         json.loads(args)
@@ -7049,7 +7167,8 @@ def run_conversation(
                             continue
                         invalid_json_args.append((tc.function.name, str(e)))
                 
-                if invalid_json_args:
+                invalid_argument_errors = invalid_json_args + invalid_required_args
+                if invalid_argument_errors:
                     # Check if the invalid JSON is due to truncation rather
                     # than a model formatting mistake.  Routers sometimes
                     # rewrite finish_reason from "length" to "tool_calls",
@@ -7086,7 +7205,7 @@ def run_conversation(
                     # Track retries for invalid JSON arguments
                     agent._invalid_json_retries += 1
 
-                    tool_name, error_msg = invalid_json_args[0]
+                    tool_name, error_msg = invalid_argument_errors[0]
                     agent._buffer_vprint(f"⚠️  Invalid JSON in tool call arguments for '{tool_name}': {error_msg}")
 
                     if agent._invalid_json_retries < 3:
@@ -7104,15 +7223,27 @@ def run_conversation(
                         append_message(messages, recovery_assistant)
                         
                         # Respond with tool error results for each tool call
-                        invalid_names = {name for name, _ in invalid_json_args}
+                        invalid_names = {name for name, _ in invalid_argument_errors}
+                        required_errors = {
+                            name: error for name, error in invalid_required_args
+                        }
+                        json_errors = {
+                            name: error for name, error in invalid_json_args
+                        }
                         for tc in assistant_message.tool_calls:
                             if tc.function.name in invalid_names:
-                                err = next(e for n, e in invalid_json_args if n == tc.function.name)
-                                tool_result = (
-                                    f"Error: Invalid JSON arguments. {err}. "
-                                    f"For tools with no required parameters, use an empty object: {{}}. "
-                                    f"Please retry with valid JSON."
-                                )
+                                if tc.function.name in required_errors:
+                                    tool_result = (
+                                        f"Error: {required_errors[tc.function.name]} "
+                                        "Please retry with complete arguments."
+                                    )
+                                else:
+                                    err = json_errors[tc.function.name]
+                                    tool_result = (
+                                        f"Error: Invalid JSON arguments. {err}. "
+                                        f"For tools with no required parameters, use an empty object: {{}}. "
+                                        f"Please retry with valid JSON."
+                                    )
                             else:
                                 tool_result = "Skipped: other tool call in this response had invalid JSON."
                             append_message(messages, {

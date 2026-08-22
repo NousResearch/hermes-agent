@@ -140,6 +140,23 @@ def _build_browser_env() -> dict:
     for _key in _BROWSER_PASSTHROUGH_KEYS:
         if _key in os.environ:
             env[_key] = os.environ[_key]
+
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime_dir or runtime_dir == "/tmp":
+        runtime_dir = "/tmp/runtime-root"
+    try:
+        os.makedirs(runtime_dir, mode=0o700, exist_ok=True)
+        os.chmod(runtime_dir, 0o700)
+    except Exception:
+        pass
+    env["XDG_RUNTIME_DIR"] = runtime_dir
+
+    if "AGENT_BROWSER_EXECUTABLE_PATH" not in env:
+        cft_path = os.path.expanduser("~/.hermes/chromium/chrome-linux64/chrome")
+        if os.path.isfile(cft_path) and os.access(cft_path, os.X_OK):
+            env["AGENT_BROWSER_EXECUTABLE_PATH"] = cft_path
+        elif os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH"):
+            env["AGENT_BROWSER_EXECUTABLE_PATH"] = os.environ["AGENT_BROWSER_EXECUTABLE_PATH"]
     return env
 
 try:

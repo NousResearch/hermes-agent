@@ -804,8 +804,9 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                                       f"pip not available and ensurepip failed: {e}")
 
         try:
+            extra_flags = ["--break-system-packages"] if sys.prefix == sys.base_prefix else []
             r = subprocess.run(
-                pip_cmd + ["install", *target_args, *constraint_args, *specs],
+                pip_cmd + ["install", *extra_flags, *target_args, *constraint_args, *specs],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
                 stdin=subprocess.DEVNULL,
                 creationflags=windows_hide_flags(),

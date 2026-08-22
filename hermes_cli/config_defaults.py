@@ -9,6 +9,12 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    "codex_usage": {
+        "cache_ttl": 180.0,
+        "fetch_timeout": 5.0,
+        "fetch_budget": 2,
+        "exhausted_pct": 98.0,
+    },
     "toolsets": ["hermes-cli"],
     # SQLite journal mode used by every Hermes database opener. WAL is the
     # normal default; set DELETE for weak-fsync/shared filesystems where WAL is

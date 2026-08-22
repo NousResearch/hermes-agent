@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from hermes_cli.auth import AuthError
 from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
@@ -12,6 +13,7 @@ class _Response:
     def __init__(self, payload, status_code=200):
         self._payload = payload
         self.status_code = status_code
+        self.text = payload if isinstance(payload, str) else str(payload)
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -22,8 +24,9 @@ class _Response:
 
 
 class _Client:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self._status_code = status_code
 
     def __enter__(self):
         return self
@@ -32,7 +35,7 @@ class _Client:
         return False
 
     def get(self, url, headers=None):
-        return _Response(self._payload)
+        return _Response(self._payload, status_code=self._status_code)
 
 
 class _RoutingClient:
@@ -93,6 +96,70 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_codex_falls_back_when_singleton_missing_access_token(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "pool-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: (_ for _ in ()).throw(AuthError("missing access token", provider="openai-codex", code="codex_auth_missing_access_token")),
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "plan_type": "team",
+                "rate_limit": {
+                    "primary_window": {"used_percent": 100, "reset_at": 1_900_000_000},
+                    "secondary_window": {"used_percent": 72, "reset_at": 1_900_500_000},
+                },
+                "credits": {"has_credits": False, "unlimited": False, "balance": None},
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert snapshot.provider == "openai-codex"
+    assert snapshot.plan == "Team"
+    assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]
+
+
+def test_fetch_account_usage_codex_reports_invalidated_token(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "invalid-token",
+            "source": "hermes-auth-store",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: {"tokens": {"access_token": "invalid-token", "refresh_token": "refresh"}},
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            '{"error":{"code":"token_invalidated"}}',
+            status_code=401,
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert snapshot.available is False
+    assert snapshot.unavailable_reason and snapshot.unavailable_reason.startswith("Token expired or invalid")
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

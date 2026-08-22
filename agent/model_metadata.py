@@ -443,7 +443,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     # provider-aware branches (_resolve_codex_oauth_context_length + models.dev).
     # This hardcoded value is only reached when every probe misses.
     # GPT-5.6 series (Sol/Terra/Luna, GA 2026-07-09) — 1.05M on the direct
-    # OpenAI API (same as gpt-5.5). Codex OAuth caps these at 272K.
+    # OpenAI API (same as gpt-5.5). Codex OAuth exposes a 372K total window
+    # with a 353.4K effective budget after its 5% safety margin.
     # (Lookups length-sort keys at match time, so dict order is cosmetic.)
     "gpt-5.6-luna": 1050000,
     "gpt-5.6-terra": 1050000,

@@ -2735,7 +2735,13 @@ def _send_media_via_adapter(
             ext = Path(media_path).suffix.lower()
             route_platform = platform if platform is not None else getattr(adapter, "platform", None)
             if should_send_media_as_audio(route_platform, ext, is_voice=_is_voice):
-                coro = adapter.send_voice(chat_id=chat_id, audio_path=media_path, metadata=metadata)
+                # Prefer play_tts: it plays into a live voice channel when the bot
+                # is connected to one mapped to this chat, and falls back to
+                # send_voice otherwise. Calling send_voice directly skipped that
+                # router, so a scheduled reminder always arrived as a file
+                # attachment even while the user was sitting in the channel.
+                _audio_send = getattr(adapter, "play_tts", None) or adapter.send_voice
+                coro = _audio_send(chat_id=chat_id, audio_path=media_path, metadata=metadata)
             elif ext in _VIDEO_EXTS:
                 coro = adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=metadata)
             elif ext in _IMAGE_EXTS:

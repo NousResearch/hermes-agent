@@ -1,78 +1,81 @@
 {
-  "generatedBy": "repo-native Playwright + system Chromium",
-  "privacySafeFixture": true,
   "captures": [
     {
-      "surface": "webui",
-      "width": 320,
-      "height": 620,
-      "filename": "webui-320.png",
-      "bytes": 24090,
-      "sha256": "109f2941128b7d63a8c1d5e5314df5346176135c373c0a880efad8edbbd86070",
-      "horizontalOverflow": false
+      "bytes": 25157,
+      "filename": "dashboard-320.png",
+      "horizontalOverflow": false,
+      "sha256": "862494942749287902ae971eed080315853618450b71c37fb5abb6039d845f05",
+      "surface": "dashboard",
+      "width": 320
     },
     {
-      "surface": "webui",
-      "width": 360,
-      "height": 620,
-      "filename": "webui-360.png",
-      "bytes": 24511,
-      "sha256": "275e4d6006cc0e804d42038da42c1f39dac9732aad4ab49d1cceb45851ebc878",
-      "horizontalOverflow": false
+      "bytes": 26148,
+      "filename": "dashboard-360.png",
+      "horizontalOverflow": false,
+      "sha256": "2469f1b3da6c811ed950891ef9f09ea29215417c41cd9b3b8e82fbeffc377dcb",
+      "surface": "dashboard",
+      "width": 360
     },
     {
-      "surface": "webui",
-      "width": 390,
-      "height": 620,
-      "filename": "webui-390.png",
-      "bytes": 24808,
-      "sha256": "37fc0a5e8c1c8a68e84c92b81c4caf95a15fe3b7d4ddf9cd03ca3e6245ee6dbf",
-      "horizontalOverflow": false
+      "bytes": 27105,
+      "filename": "dashboard-390.png",
+      "horizontalOverflow": false,
+      "sha256": "056313aadb66ed4e6d49e07581a2d39136679bd79e70ad542d25caa16ca515e9",
+      "surface": "dashboard",
+      "width": 390
     },
     {
-      "surface": "webui",
-      "width": 430,
-      "height": 620,
-      "filename": "webui-430.png",
-      "bytes": 24397,
-      "sha256": "86094e57eb9cefec6b1a89af3bf71ac84c4899efdd45a0520f018d949fb71f52",
-      "horizontalOverflow": false
+      "bytes": 28325,
+      "filename": "dashboard-430.png",
+      "horizontalOverflow": false,
+      "sha256": "12a4d224accc3bfbabda90d1130d86c131f0e0f2256ae6e8854921179f3b0f41",
+      "surface": "dashboard",
+      "width": 430
     },
     {
-      "surface": "desktop",
-      "width": 320,
-      "height": 620,
+      "bytes": 25286,
       "filename": "desktop-320.png",
-      "bytes": 27443,
-      "sha256": "2ef1364ad08b202391f0dc867c38e48593c1541efbd4cdd1bf2876cff6262e06",
-      "horizontalOverflow": false
+      "horizontalOverflow": false,
+      "sha256": "a34ee200a02fc69160d7b1153ab59832d0b9ba9a48ffdfe69d93777fba071c03",
+      "surface": "desktop",
+      "width": 320
     },
     {
-      "surface": "desktop",
-      "width": 360,
-      "height": 620,
+      "bytes": 25650,
       "filename": "desktop-360.png",
-      "bytes": 27674,
-      "sha256": "d451256e1188e1bd73c644d78fa1db628755c373a668345edd5c7b3666ce160e",
-      "horizontalOverflow": false
+      "horizontalOverflow": false,
+      "sha256": "53b03be0f14c3f59f94641475f33efd11598591ad78f6ec29fcd6db8376f6245",
+      "surface": "desktop",
+      "width": 360
     },
     {
-      "surface": "desktop",
-      "width": 390,
-      "height": 620,
+      "bytes": 25855,
       "filename": "desktop-390.png",
-      "bytes": 28029,
-      "sha256": "d335850c22ef8d5e211bc6ec33218f361f0b2324d58b966465e572a8644d4409",
-      "horizontalOverflow": false
+      "horizontalOverflow": false,
+      "sha256": "1395ab0690d2ef8bddfa3fc050f1e6b5b1261bbf1d351230adadf70b961d3b9b",
+      "surface": "desktop",
+      "width": 390
     },
     {
-      "surface": "desktop",
-      "width": 430,
-      "height": 620,
+      "bytes": 25691,
       "filename": "desktop-430.png",
-      "bytes": 27642,
-      "sha256": "616a9408dbaf4d912b323e097833fe1f5e983ec5907f824d8efe1cb2eb0122fe",
-      "horizontalOverflow": false
+      "horizontalOverflow": false,
+      "sha256": "ed488e365ae9810d36bd430f5a71699381137f3bdbb61f99bf25f1e2364955e6",
+      "surface": "desktop",
+      "width": 430
     }
+  ],
+  "generatedBy": "Playwright mounting production Desktop source and dashboard/dist",
+  "mutation": null,
+  "privacySafeFixture": true,
+  "productionEntries": {
+    "dashboard": "plugins/kanban/dashboard/dist/index.js",
+    "desktop": "apps/desktop/src/plugins/kanban/board.tsx"
+  },
+  "widths": [
+    320,
+    360,
+    390,
+    430
   ]
 }

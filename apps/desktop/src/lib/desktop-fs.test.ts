@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection } from '@/hermes'
 import { $connection } from '@/store/session'
 
 import {
@@ -12,7 +13,8 @@ import {
   readDesktopFileDataUrlLocalFirst,
   readDesktopFileText,
   selectDesktopPaths,
-  setDesktopFsRemotePicker
+  setDesktopFsRemotePicker,
+  writeDesktopFileText
 } from './desktop-fs'
 
 const readDir = vi.fn(async () => ({ entries: [{ name: 'local', path: '/local', isDirectory: true }] }))
@@ -42,6 +44,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
     return { cwd: '/backend/project', branch: 'main' }
   }
 
+  if (path === '/api/fs/write-text') {
+    return { ok: true, path: '/remote/file.txt' }
+  }
+
   if (path.startsWith('/api/git/file-diff?')) {
     return { diff: 'remote diff' }
   }
@@ -69,6 +75,7 @@ describe('desktop filesystem facade', () => {
   })
 
   afterEach(() => {
+    setApiRequestConnection(null)
     vi.unstubAllGlobals()
     vi.clearAllMocks()
     $connection.set(null)
@@ -142,6 +149,27 @@ describe('desktop filesystem facade', () => {
 
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fsrv%2Fproject', profile: 'remote-docker' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'remote-docker' })
+  })
+
+  it('routes remote filesystem reads and writes through the active registered gateway', async () => {
+    setApiRequestConnection('remote-user')
+    $connection.set({ mode: 'remote', profile: 'default' } as never)
+
+    await readDesktopFileText('/remote/file.txt')
+    await writeDesktopFileText('/remote/file.txt', 'updated')
+
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'remote-user',
+      path: '/api/fs/read-text?path=%2Fremote%2Ffile.txt',
+      profile: 'default'
+    })
+    expect(api).toHaveBeenCalledWith({
+      body: { content: 'updated', path: '/remote/file.txt' },
+      connectionId: 'remote-user',
+      method: 'POST',
+      path: '/api/fs/write-text',
+      profile: 'default'
+    })
   })
 
   it('keys SSH filesystem caches by stable host identity instead of the forwarded port', () => {

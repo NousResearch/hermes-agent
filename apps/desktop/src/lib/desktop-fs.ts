@@ -4,6 +4,7 @@ import type {
   HermesReadFileTextResult,
   HermesSelectPathsOptions
 } from '@/global'
+import { hermesApi } from '@/hermes'
 import { $connection } from '@/store/session'
 
 export interface DesktopFsRemotePicker {
@@ -58,7 +59,9 @@ function bridge() {
 }
 
 function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
-  return bridge().api<T>(
+  bridge()
+
+  return hermesApi<T>(
     body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
   )
 }

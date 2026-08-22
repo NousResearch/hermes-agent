@@ -131,6 +131,16 @@ DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 _RATE_WINDOW_SECONDS = 60.0
+# Raw-body HMAC-SHA256 signature headers that share the same
+# ``sha256=<hex>`` format.  The order is the validation precedence: the first
+# header present wins and validation fails closed if it is invalid, so a
+# captured/invalid higher-priority signature can never fall through to a
+# second header and silently change the selected protocol.  Keep this list
+# sorted by priority and extend it when another HMAC-format sender is added.
+_RAW_HMAC_SIGNATURE_HEADERS = (
+    "X-Hub-Signature-256",  # GitHub
+    "X-Redmine-Signature-256",  # Redmine 7
+)
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
 _LOOPBACK_HOSTS = frozenset({
@@ -1066,7 +1076,7 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, Linear, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, Redmine, GitLab, Svix, Linear, generic HMAC-SHA256)."""
         def _header(name: str) -> str:
             return (
                 request.headers.get(name, "")
@@ -1104,13 +1114,18 @@ class WebhookAdapter(BasePlatformAdapter):
             ).hexdigest()
             return _hmac_str_equal(linear_sig, expected_linear)
 
-        # GitHub: X-Hub-Signature-256 = sha256=<hex>
-        gh_sig = request.headers.get("X-Hub-Signature-256", "")
-        if gh_sig:
+        # All headers in _RAW_HMAC_SIGNATURE_HEADERS use the same raw-body
+        # HMAC-SHA256 format (``sha256=<hex>``); see the constant for the
+        # documented precedence and fail-closed contract.
+        for header in _RAW_HMAC_SIGNATURE_HEADERS:
+            signature = request.headers.get(header, "")
+            if not signature:
+                continue
+
             expected = "sha256=" + hmac.new(
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
-            return _hmac_str_equal(gh_sig, expected)
+            return _hmac_str_equal(signature, expected)
 
         # GitLab: X-Gitlab-Token = <plain secret>
         gl_token = request.headers.get("X-Gitlab-Token", "")

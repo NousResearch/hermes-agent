@@ -86,6 +86,30 @@ _LOG_FORMAT = "%(asctime)s %(levelname)s%(session_tag)s %(name)s: %(message)s"
 _LOG_FORMAT_VERBOSE = "%(asctime)s - %(name)s - %(levelname)s%(session_tag)s - %(message)s"
 
 
+def _line_buffer_piped_stdout() -> None:
+    """Best-effort line buffering for a piped stdout (#92281).
+
+    Python block-buffers stdout when it isn't a TTY, so an agent loop
+    driving ``print()`` into a supervisor's pipe delivers its output in
+    large delayed bursts — a headless run looks stalled for minutes while
+    the work is actually progressing (only stderr, which we already give
+    ``line_buffering=True`` in ``_safe_stderr()``, shows up on time).
+    Reconfigure the interpreter's own stdout for line buffering when it is
+    piped; interactive TTY stdout is already line-buffered, and the ACP
+    entry point keeps stdout as a protocol channel it manages itself and
+    never calls ``setup_logging``.
+    """
+    try:
+        stream = sys.stdout
+        if stream is None or stream.isatty():
+            return
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(line_buffering=True)
+    except Exception:
+        pass  # buffering is observability, not correctness — never crash
+
+
 def _safe_stderr():  # type: ignore[return]
     """Return a stderr stream that tolerates Unicode on all platforms.
 
@@ -303,6 +327,12 @@ def setup_logging(
     home = hermes_home or get_hermes_home()
     log_dir = home / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Stdout is block-buffered when piped (no TTY); line-buffer it so a
+    # headless supervisor's log stream tracks the agent loop incrementally
+    # (#92281). Runs before the initialized check so every entry mode that
+    # reaches this function gets it, idempotent by construction.
+    _line_buffer_piped_stdout()
 
     # Read config defaults (best-effort — config may not be loaded yet).
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()

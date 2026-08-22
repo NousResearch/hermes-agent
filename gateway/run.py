@@ -12473,12 +12473,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _faulthandler_path = os.path.join(_log_dir, "gateway_faulthandler.log")
                 os.makedirs(_log_dir, exist_ok=True)
                 _fh = open(_faulthandler_path, "a", encoding="utf-8")
-                faulthandler.register(
-                    _sigusr2,
-                    file=_fh,
-                    all_threads=True,
-                    chain=True,
-                )
+                from gateway.faulthandler_setup import register_traceback_signal
+
+                register_traceback_signal(_sigusr2, file=_fh)
             except Exception:
                 logger.debug("Could not set up faulthandler file logging", exc_info=True)
 

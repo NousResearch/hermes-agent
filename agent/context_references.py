@@ -248,11 +248,42 @@ async def preprocess_context_references_async(
     if not refs:
         return ContextReferenceResult(message=message, original_message=message)
 
-    cwd_path = Path(cwd).expanduser().resolve()
+    lexical_cwd = Path(cwd).expanduser()
+    if not lexical_cwd.is_absolute():
+        lexical_cwd = Path.cwd() / lexical_cwd
+    lexical_cwd = lexical_cwd.absolute()
+    lexical_allowed_root = (
+        Path(allowed_root).expanduser() if allowed_root is not None else lexical_cwd
+    )
+    if not lexical_allowed_root.is_absolute():
+        lexical_allowed_root = Path.cwd() / lexical_allowed_root
+    lexical_allowed_root = lexical_allowed_root.absolute()
+
+    if _has_denied_lexical_reference_ancestor(
+        lexical_cwd,
+        base_path=lexical_cwd,
+    ) or _has_denied_lexical_reference_ancestor(
+        lexical_allowed_root,
+        base_path=lexical_cwd,
+    ):
+        warning = (
+            "@ context injection refused: working directory or allowed root is "
+            "blocked by permissions.deny.paths"
+        )
+        return ContextReferenceResult(
+            message=f"{message}\n\n--- Context Warnings ---\n- {warning}",
+            original_message=message,
+            references=refs,
+            warnings=[warning],
+            expanded=True,
+            blocked=True,
+        )
+
+    cwd_path = lexical_cwd.resolve()
     # Default to the current working directory so @ references cannot escape
     # the active workspace unless a caller explicitly widens the root.
     allowed_root_path = (
-        Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
+        lexical_allowed_root.resolve() if allowed_root is not None else cwd_path
     )
     warnings: list[str] = []
     blocks: list[str] = []
@@ -365,14 +396,48 @@ async def _expand_reference(
     return f"{ref.raw}: unsupported reference type", None
 
 
+def _lexical_reference_path(cwd: Path, target: str) -> Path:
+    """Anchor a reference spelling without dereferencing filesystem aliases."""
+    path = Path(os.path.expanduser(target))
+    return path if path.is_absolute() else cwd / path
+
+
+def _has_denied_lexical_reference_ancestor(path: Path, *, base_path: Path) -> bool:
+    """Check a path chain against permissions.deny.paths without dereferencing."""
+    try:
+        from agent.deny_policy import match_permissions_deny_path, permissions_deny_paths
+
+        patterns = permissions_deny_paths()
+        current = path.absolute()
+        return any(
+            match_permissions_deny_path(
+                str(ancestor),
+                patterns=patterns,
+                base_path=base_path,
+                canonicalize=False,
+            )
+            is not None
+            for ancestor in [current, *current.parents]
+        )
+    except Exception:
+        logger.warning(
+            "permissions.deny.paths lexical context-reference check failed closed for %s",
+            path,
+            exc_info=True,
+        )
+        return True
+
+
 def _expand_file_reference(
     ref: ContextReference,
     cwd: Path,
     *,
     allowed_root: Path | None = None,
 ) -> tuple[str | None, str | None]:
+    lexical_path = _lexical_reference_path(cwd, ref.target)
+    _ensure_reference_path_allowed(lexical_path, base_path=cwd)
     path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
-    _ensure_reference_path_allowed(path)
+    _ensure_reference_path_allowed(path, base_path=cwd)
     if not path.exists():
         return f"{ref.raw}: file not found", None
     if not path.is_file():
@@ -405,8 +470,10 @@ def _expand_folder_reference(
     *,
     allowed_root: Path | None = None,
 ) -> tuple[str | None, str | None]:
+    lexical_path = _lexical_reference_path(cwd, ref.target)
+    _ensure_reference_path_allowed(lexical_path, base_path=cwd, search_root=True)
     path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
-    _ensure_reference_path_allowed(path)
+    _ensure_reference_path_allowed(path, base_path=cwd, search_root=True)
     if not path.exists():
         return f"{ref.raw}: folder not found", None
     if not path.is_dir():
@@ -416,12 +483,29 @@ def _expand_folder_reference(
     return None, f"📁 {ref.raw} ({estimate_tokens_rough(listing)} tokens)\n{listing}"
 
 
+def _ensure_git_reference_allowed(cwd: Path) -> None:
+    """Reject Git context expansion before Git can read a denied worktree."""
+    _ensure_reference_path_allowed(cwd, base_path=cwd, search_root=True)
+    current = cwd.absolute()
+    for parent in [current, *current.parents]:
+        _ensure_reference_path_allowed(parent, base_path=cwd, search_root=True)
+        git_marker = parent / ".git"
+        _ensure_reference_path_allowed(git_marker, base_path=cwd)
+        if git_marker.exists():
+            return
+
+
 def _expand_git_reference(
     ref: ContextReference,
     cwd: Path,
     args: list[str],
     label: str,
 ) -> tuple[str | None, str | None]:
+    try:
+        _ensure_git_reference_allowed(cwd)
+    except ValueError as exc:
+        return f"{ref.raw}: {exc}", None
+
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         result = subprocess.run(
@@ -481,7 +565,47 @@ def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -
     return resolved
 
 
-def _ensure_reference_path_allowed(path: Path) -> None:
+def _ensure_reference_path_allowed(
+    path: Path,
+    *,
+    base_path: Path,
+    search_root: bool = False,
+) -> None:
+    try:
+        from agent.deny_policy import (
+            match_permissions_deny_path,
+            match_permissions_deny_search_root,
+            permissions_deny_paths,
+        )
+
+        patterns = permissions_deny_paths()
+        if search_root:
+            match = match_permissions_deny_search_root(
+                str(path),
+                patterns=patterns,
+                base_path=base_path,
+                root_is_file=False,
+                canonicalize=True,
+            )
+        else:
+            match = match_permissions_deny_path(
+                str(path),
+                patterns=patterns,
+                base_path=base_path,
+                canonicalize=True,
+            )
+        if match is not None:
+            raise ValueError(
+                "path is blocked by permissions.deny.paths and cannot be attached"
+            )
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(
+            "path could not be verified against permissions.deny.paths and "
+            "cannot be attached"
+        ) from exc
+
     from hermes_constants import get_hermes_home
     home = Path(os.path.expanduser("~")).resolve()
     hermes_home = get_hermes_home().resolve()

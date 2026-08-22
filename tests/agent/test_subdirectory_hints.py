@@ -81,6 +81,258 @@ class TestSubdirectoryHintTracker:
 
 
 
+    def test_denied_subtree_does_not_load_context(self, project):
+        """permissions.deny.paths blocks progressive context discovery."""
+        private = project / "private"
+        private.mkdir()
+        (private / "AGENTS.md").write_text("PRIVATE CONTEXT MUST NOT LEAK")
+        (private / "data.txt").write_text("private data")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        with patch(
+            "agent.deny_policy.permissions_deny_paths",
+            return_value=[str(private / "**")],
+        ):
+            result = tracker.check_tool_call(
+                "read_file", {"path": str(private / "data.txt")}
+            )
+
+        assert result is None
+
+    def test_denied_hint_file_is_skipped(self, project):
+        """A file-specific deny applies before context hint content is read."""
+        mixed = project / "mixed"
+        mixed.mkdir()
+        agents = mixed / "AGENTS.md"
+        agents.write_text("DENIED AGENTS CONTEXT")
+        (mixed / "CLAUDE.md").write_text("Allowed sibling context")
+        (mixed / "data.txt").write_text("ordinary data")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        with patch(
+            "agent.deny_policy.permissions_deny_paths",
+            return_value=[str(agents)],
+        ):
+            result = tracker.check_tool_call(
+                "read_file", {"path": str(mixed / "data.txt")}
+            )
+
+        assert result is not None
+        assert "Allowed sibling context" in result
+        assert "DENIED AGENTS CONTEXT" not in result
+
+    def test_relative_deny_rule_skips_hint_file(self, project):
+        """Relative hint-file rules are anchored to the tracker working dir."""
+        mixed = project / "mixed-relative"
+        mixed.mkdir()
+        (mixed / "AGENTS.md").write_text("RELATIVE DENIED HINT")
+        (mixed / "CLAUDE.md").write_text("Allowed relative hint sibling")
+        (mixed / "data.txt").write_text("ordinary data")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        with patch(
+            "agent.deny_policy.permissions_deny_paths",
+            return_value=["mixed-relative/AGENTS.md"],
+        ):
+            result = tracker.check_tool_call(
+                "read_file", {"path": str(mixed / "data.txt")}
+            )
+
+        assert result is not None
+        assert "Allowed relative hint sibling" in result
+        assert "RELATIVE DENIED HINT" not in result
+
+    def test_progressive_context_rejects_symlink_to_sensitive_file(self, tmp_path):
+        secret = tmp_path / "secrets" / ".env"
+        secret.parent.mkdir()
+        secret.write_text("PROGRESSIVE_CONTEXT_SECRET=must-not-load", encoding="utf-8")
+        subdir = tmp_path / "pkg"
+        subdir.mkdir()
+        try:
+            (subdir / "AGENTS.md").symlink_to(secret)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call(
+            "read_file",
+            {"path": str(subdir / "module.py")},
+        )
+
+        assert result is None
+
+    def test_denied_working_dir_context_is_not_read_during_digest_seed(self, project):
+        """Tracker initialization must not read a denied startup context file."""
+        agents = project / "AGENTS.md"
+        original_read_text = Path.read_text
+
+        def guarded_read_text(path_obj, *args, **kwargs):
+            if path_obj == agents:
+                raise AssertionError("denied context was read during digest seeding")
+            return original_read_text(path_obj, *args, **kwargs)
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(agents)],
+            ),
+            patch.object(Path, "read_text", guarded_read_text),
+        ):
+            SubdirectoryHintTracker(working_dir=str(project))
+
+    def test_digest_seed_checks_lexical_working_dir_before_resolve(self, tmp_path):
+        lexical_workdir = tmp_path / "alias-workspace"
+        lexical_workdir.mkdir()
+        (lexical_workdir / "AGENTS.md").write_text("DENIED LEXICAL HINT")
+        original_resolve = Path.resolve
+
+        def guarded_resolve(path_obj, *args, **kwargs):
+            if path_obj == lexical_workdir:
+                raise AssertionError("working dir resolved before lexical deny")
+            return original_resolve(path_obj, *args, **kwargs)
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(tmp_path / "alias-*" / "AGENTS.md")],
+            ),
+            patch.object(Path, "resolve", autospec=True, side_effect=guarded_resolve),
+        ):
+            SubdirectoryHintTracker(working_dir=str(lexical_workdir))
+
+    def test_digest_seed_preflights_fixed_width_denied_ancestor(self, tmp_path):
+        denied_ancestor = tmp_path / "private1"
+        working_dir = denied_ancestor / "src"
+        working_dir.mkdir(parents=True)
+        (working_dir / "AGENTS.md").write_text("DENIED DIGEST ANCESTOR")
+        original_is_file = Path.is_file
+        from agent import deny_policy
+
+        def in_denied_subtree(path_obj):
+            return path_obj == denied_ancestor or denied_ancestor in path_obj.parents
+
+        def guarded_is_file(path_obj):
+            if in_denied_subtree(path_obj):
+                raise AssertionError("digest seed probed inside denied ancestor")
+            return original_is_file(path_obj)
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(tmp_path / "private?")],
+            ),
+            patch(
+                "agent.deny_policy.os.path.realpath",
+                wraps=deny_policy.os.path.realpath,
+            ) as mock_realpath,
+            patch.object(Path, "is_file", guarded_is_file),
+        ):
+            SubdirectoryHintTracker(working_dir=str(working_dir))
+
+        assert not any(
+            in_denied_subtree(Path(call.args[0]))
+            for call in mock_realpath.call_args_list
+        )
+
+    def test_progressive_discovery_rechecks_ancestor_above_working_dir(
+        self, tmp_path
+    ):
+        """A denied parent of working_dir blocks every later hint discovery."""
+        denied_ancestor = tmp_path / "private1"
+        working_dir = denied_ancestor / "src"
+        subdir = working_dir / "pkg"
+        subdir.mkdir(parents=True)
+        hint = subdir / "AGENTS.md"
+        hint.write_text("SHOULD_NOT_LOAD")
+        target = subdir / "module.py"
+        target.write_text("data")
+        original_resolve = Path.resolve
+        original_read_text = Path.read_text
+        from agent import deny_policy
+
+        def in_denied_subtree(path_obj):
+            return path_obj == denied_ancestor or denied_ancestor in path_obj.parents
+
+        def guarded_resolve(path_obj, *args, **kwargs):
+            if in_denied_subtree(path_obj):
+                raise AssertionError("progressive discovery resolved inside denied ancestor")
+            return original_resolve(path_obj, *args, **kwargs)
+
+        def guarded_read_text(path_obj, *args, **kwargs):
+            if in_denied_subtree(path_obj):
+                raise AssertionError("progressive discovery read inside denied ancestor")
+            return original_read_text(path_obj, *args, **kwargs)
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(tmp_path / "private?")],
+            ),
+            patch(
+                "agent.deny_policy.os.path.realpath",
+                wraps=deny_policy.os.path.realpath,
+            ) as mock_realpath,
+            patch.object(Path, "resolve", autospec=True, side_effect=guarded_resolve),
+            patch.object(Path, "read_text", autospec=True, side_effect=guarded_read_text),
+        ):
+            tracker = SubdirectoryHintTracker(working_dir=str(working_dir))
+            result = tracker.check_tool_call(
+                "read_file",
+                {"path": str(target)},
+            )
+
+        assert result is None
+        assert not any(
+            in_denied_subtree(Path(call.args[0]))
+            for call in mock_realpath.call_args_list
+        )
+
+    def test_progressive_discovery_preflights_denied_ancestor_before_metadata(
+        self,
+        tmp_path,
+    ):
+        denied_ancestor = tmp_path / "private1"
+        nested = denied_ancestor / "src"
+        nested.mkdir(parents=True)
+        hint = nested / "AGENTS.md"
+        hint.write_text("DENIED ANCESTOR CONTEXT")
+        target = nested / "file.py"
+        target.write_text("data")
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        original_is_dir = Path.is_dir
+        original_read_text = Path.read_text
+
+        def guarded_is_dir(path_obj):
+            if denied_ancestor == path_obj or denied_ancestor in path_obj.parents:
+                raise AssertionError("denied ancestor subtree was probed")
+            return original_is_dir(path_obj)
+
+        def guarded_read_text(path_obj, *args, **kwargs):
+            if denied_ancestor == path_obj or denied_ancestor in path_obj.parents:
+                raise AssertionError("denied ancestor context was read")
+            return original_read_text(path_obj, *args, **kwargs)
+
+        from agent import deny_policy
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(tmp_path / "private?")],
+            ),
+            patch(
+                "agent.deny_policy.os.path.realpath",
+                wraps=deny_policy.os.path.realpath,
+            ) as mock_realpath,
+            patch.object(Path, "is_dir", guarded_is_dir),
+            patch.object(Path, "read_text", guarded_read_text),
+        ):
+            result = tracker.check_tool_call(
+                "read_file",
+                {"path": str(target)},
+            )
+
+        assert result is None
+        mock_realpath.assert_not_called()
 
     def test_workdir_arg(self, project):
         """The workdir argument from terminal tool is checked."""

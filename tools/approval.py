@@ -621,48 +621,56 @@ def detect_hardline_command(command: str) -> tuple:
 
 
 def _match_user_deny_rule(command: str) -> str | None:
-    """Return the matching ``approvals.deny`` glob, or None.
+    """Return the matching user-defined command deny glob, or None.
 
-    ``approvals.deny`` in config.yaml is a user-defined list of fnmatch
-    globs that block a command unconditionally — like the hardline floor,
-    a deny match fires BEFORE the yolo / mode=off bypass. It is the
-    user-editable counterpart to the code-shipped hardline blocklist:
-    "never let the agent run this, even under yolo".
+    ``approvals.deny`` is the historical terminal-command deny list.
+    ``permissions.deny.commands`` is a forward-compatible alias in the broader
+    deny-policy namespace. Both block unconditionally — like the hardline floor,
+    a deny match fires BEFORE the yolo / mode=off bypass.
 
     Matching is case-insensitive and runs over the same normalized /
     deobfuscated command variants the dangerous-pattern detector uses, so
     quoting tricks (``r\\m``, ``git st""atus``) can't sidestep a rule any
-    more easily than they sidestep detection. Empty/absent list = no-op.
+    more easily than they sidestep detection. Empty/absent lists = no-op.
     """
-    try:
-        deny_patterns = _get_approval_config().get("deny") or []
-    except Exception:
-        return None
+    from agent.deny_policy import command_deny_patterns
+
+    deny_patterns = command_deny_patterns()
     if not deny_patterns:
-        return None
-    globs = [p.strip() for p in deny_patterns
-             if isinstance(p, str) and p.strip()]
-    if not globs:
         return None
     for command_variant in _command_detection_variants(command):
         candidate = command_variant.lower().strip()
-        for pattern in globs:
+        for pattern in deny_patterns:
             if fnmatch.fnmatchcase(candidate, pattern.lower()):
                 return pattern
     return None
 
 
 def _user_deny_block_result(pattern: str) -> dict:
-    """Build the standard block result for an ``approvals.deny`` match."""
+    """Build the standard block result for a user-defined command deny match."""
     return {
         "approved": False,
         "user_deny": True,
         "message": (
             f"BLOCKED: this command matches the user-defined deny rule "
-            f"'{pattern}' (approvals.deny in config.yaml). It cannot be "
-            "executed via the agent — not even with --yolo, /yolo, or "
-            "approvals.mode=off. Do NOT retry or rephrase this command; "
-            "the user has explicitly forbidden it."
+            f"'{pattern}' (approvals.deny / permissions.deny.commands in "
+            "config.yaml). It cannot be executed via the agent — not even "
+            "with --yolo, /yolo, or approvals.mode=off. Do NOT retry or "
+            "rephrase this command; the user has explicitly forbidden it."
+        ),
+    }
+
+
+def _user_deny_policy_error_result() -> dict:
+    """Fail closed when configured command deny rules cannot be evaluated."""
+    return {
+        "approved": False,
+        "user_deny": True,
+        "message": (
+            "BLOCKED: approvals.deny / permissions.deny.commands could not be "
+            "evaluated. No command was executed because command deny-policy "
+            "configuration and matching errors fail closed. Check config.yaml "
+            "and retry after fixing the policy."
         ),
     }
 
@@ -3732,27 +3740,36 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return {"approved": True, "message": None}
+    skip_container_guards = _should_skip_container_guards(
+        env_type,
+        has_host_access=has_host_access,
+    )
 
-    # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
-    # to raw device, shutdown/reboot, fork bomb, kill -1) are blocked
-    # unconditionally, BEFORE the yolo bypass.  Opting into yolo is
-    # trusting the agent with your files and services, not trusting it
-    # to wipe the disk or power the box off.
-    is_hardline, hardline_desc = detect_hardline_command(command)
-    if is_hardline:
-        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
-        return _hardline_block_result(hardline_desc, command)
+    # Hardline checks remain host-focused for isolated backends, preserving the
+    # existing sandbox behavior. Explicit user deny policy below is global.
+    if not skip_container_guards:
+        is_hardline, hardline_desc = detect_hardline_command(command)
+        if is_hardline:
+            logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+            return _hardline_block_result(hardline_desc, command)
 
     # User-defined deny rules (approvals.deny in config.yaml): like the
     # hardline floor, these fire BEFORE the yolo bypass — a deny rule is the
-    # user saying "never, even under yolo".
-    deny_pattern = _match_user_deny_rule(command)
+    # user saying "never, even under yolo". Policy errors also fail closed.
+    try:
+        deny_pattern = _match_user_deny_rule(command)
+    except Exception:
+        logger.exception("User deny policy evaluation failed closed")
+        return _user_deny_policy_error_result()
     if deny_pattern is not None:
         logger.warning("User deny rule %r blocked command: %s",
                        deny_pattern, command[:200])
         return _user_deny_block_result(deny_pattern)
+
+    # Isolated backends skip host-danger heuristics and approval prompts, but a
+    # user-defined deny is an explicit cross-backend policy floor.
+    if skip_container_guards:
+        return {"approved": True, "message": None}
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
@@ -4353,39 +4370,42 @@ def check_all_command_guards(command: str, env_type: str,
     such a session is no longer isolated, so it goes through the normal flow
     instead of the container fast-path.
     """
-    # Skip isolated container backends for both checks. Docker stops skipping
-    # once host paths are bind-mounted into the sandbox.
-    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return {"approved": True, "message": None}
+    # Isolated backends skip host-danger heuristics and prompts. Explicit user
+    # deny policy is evaluated below before that fast-path returns.
+    skip_container_guards = _should_skip_container_guards(
+        env_type,
+        has_host_access=has_host_access,
+    )
 
-    # Hardline floor: unconditional block for catastrophic commands
-    # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
-    # kill -1). Applies BEFORE yolo / mode=off / cron approve-mode so
-    # no session-level setting can bypass it.
-    is_hardline, hardline_desc = detect_hardline_command(command)
-    if is_hardline:
-        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
-        return _hardline_block_result(hardline_desc, command)
+    # Hardline and sudo-stdin checks remain host-focused for isolated backends.
+    if not skip_container_guards:
+        is_hardline, hardline_desc = detect_hardline_command(command)
+        if is_hardline:
+            logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+            return _hardline_block_result(hardline_desc, command)
 
-    # == Sudo stdin guard ==
-    # Like the hardline floor above, this is unconditional: there is never a
-    # legitimate reason for the agent to pipe passwords to sudo -S when no
-    # SUDO_PASSWORD has been configured.  This must fire BEFORE the yolo
-    # check so even yolo/smart approval/mode=off cannot bypass it.
-    is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
-    if is_sudo_guess:
-        logger.warning("Sudo stdin guard block: %s (command: %s)",
-                       sudo_guess_desc, command[:200])
-        return _sudo_stdin_block_result(sudo_guess_desc)
+        is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
+        if is_sudo_guess:
+            logger.warning("Sudo stdin guard block: %s (command: %s)",
+                           sudo_guess_desc, command[:200])
+            return _sudo_stdin_block_result(sudo_guess_desc)
 
     # User-defined deny rules (approvals.deny in config.yaml): like the
     # hardline floor, these fire BEFORE the yolo / mode=off bypass — a deny
-    # rule is the user saying "never, even under yolo".
-    deny_pattern = _match_user_deny_rule(command)
+    # rule is the user saying "never, even under yolo". Policy errors also
+    # fail closed.
+    try:
+        deny_pattern = _match_user_deny_rule(command)
+    except Exception:
+        logger.exception("User deny policy evaluation failed closed")
+        return _user_deny_policy_error_result()
     if deny_pattern is not None:
         logger.warning("User deny rule %r blocked command: %s",
                        deny_pattern, command[:200])
         return _user_deny_block_result(deny_pattern)
+
+    if skip_container_guards:
+        return {"approved": True, "message": None}
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

@@ -387,10 +387,82 @@ def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
         return Path(os.getcwd())
 
 
-def _git_root(cwd: Path) -> Optional[Path]:
-    current = cwd.resolve()
-    for parent in [current, *current.parents]:
-        if (parent / ".git").exists():
+def _is_denied_workspace_root(
+    path: Path,
+    *,
+    base_path: Path | None = None,
+    canonicalize: bool = True,
+) -> bool:
+    """Fail closed before coding-context discovery can enumerate *path*."""
+    try:
+        from agent.deny_policy import (
+            match_permissions_deny_search_root,
+            permissions_deny_paths,
+        )
+
+        return match_permissions_deny_search_root(
+            str(path),
+            patterns=permissions_deny_paths(),
+            base_path=base_path or path,
+            root_is_file=False,
+            canonicalize=canonicalize,
+        ) is not None
+    except Exception:
+        logger.warning(
+            "permissions.deny.paths coding-context check failed closed for %s",
+            path,
+            exc_info=True,
+        )
+        return True
+
+
+def _has_denied_workspace_ancestor(path: Path, *, base_path: Path) -> bool:
+    """Preflight the full lexical chain before any canonical filesystem probe."""
+    current = path.absolute()
+    return any(
+        _is_denied_workspace_root(
+            ancestor,
+            base_path=base_path,
+            canonicalize=False,
+        )
+        for ancestor in [current, *current.parents]
+    )
+
+
+class _DeniedDiscovery:
+    """Distinct result for policy-blocked discovery (not ordinary no-root)."""
+
+
+_DENIED_DISCOVERY = _DeniedDiscovery()
+
+
+def _git_root(
+    cwd: Path,
+    *,
+    policy_base_path: Path | None = None,
+) -> Optional[Path] | _DeniedDiscovery:
+    current = cwd.absolute() if policy_base_path is not None else cwd.resolve()
+    parents = [current, *current.parents]
+    if policy_base_path is not None and any(
+        _is_denied_workspace_root(
+            parent,
+            base_path=policy_base_path,
+            canonicalize=False,
+        )
+        for parent in parents
+    ):
+        return _DENIED_DISCOVERY
+    for parent in parents:
+        if policy_base_path is not None and _is_denied_workspace_root(
+            parent, base_path=policy_base_path
+        ):
+            return _DENIED_DISCOVERY
+        git_marker = parent / ".git"
+        if policy_base_path is not None and _is_denied_workspace_root(
+            git_marker, base_path=policy_base_path
+        ):
+            return _DENIED_DISCOVERY
+        if git_marker.exists():
             return parent
     return None
 
@@ -402,7 +474,11 @@ def _home() -> Optional[Path]:
         return None
 
 
-def _marker_root(cwd: Path) -> Optional[Path]:
+def _marker_root(
+    cwd: Path,
+    *,
+    policy_base_path: Path | None = None,
+) -> Optional[Path] | _DeniedDiscovery:
     """Nearest ancestor that looks like a project root, or ``None``.
 
     Walks up at most a few levels so a manifest in the workspace root counts
@@ -410,7 +486,18 @@ def _marker_root(cwd: Path) -> Optional[Path]:
     Makefile or AGENTS.md sitting in the home directory is global user config,
     not a project-root signal.
     """
-    current = cwd.resolve()
+    current = cwd.absolute() if policy_base_path is not None else cwd.resolve()
+    all_parents = [current, *current.parents]
+    if policy_base_path is not None and any(
+        _is_denied_workspace_root(
+            parent,
+            base_path=policy_base_path,
+            canonicalize=False,
+        )
+        for parent in all_parents
+    ):
+        return _DENIED_DISCOVERY
+    parents = all_parents[:7]
     home = _home()
     # Shared world-writable temp roots are never project roots: a stray
     # manifest in /tmp (left by any process) must not flip every session
@@ -420,13 +507,20 @@ def _marker_root(cwd: Path) -> Optional[Path]:
         temp_root = Path(tempfile.gettempdir()).resolve()
     except Exception:
         temp_root = None
-    for depth, parent in enumerate([current, *current.parents]):
-        if depth > 6:
-            break
+    for parent in parents:
         if parent == home or (temp_root is not None and parent == temp_root):
             continue
+        if policy_base_path is not None and _is_denied_workspace_root(
+            parent, base_path=policy_base_path
+        ):
+            return _DENIED_DISCOVERY
         for marker in _PROJECT_MARKERS:
-            if (parent / marker).exists():
+            candidate = parent / marker
+            if policy_base_path is not None and _is_denied_workspace_root(
+                candidate, base_path=policy_base_path
+            ):
+                continue
+            if candidate.exists():
                 return parent
     return None
 
@@ -454,13 +548,26 @@ def _detect_profile_name(mode: str, platform: str, cwd_str: str) -> str:
     if platform and platform.strip().lower() not in INTERACTIVE_CODING_PLATFORMS:
         return GENERAL_PROFILE.name
     cwd = Path(cwd_str)
+    if _has_denied_workspace_ancestor(cwd, base_path=cwd):
+        return GENERAL_PROFILE.name
+    if _is_denied_workspace_root(cwd):
+        return GENERAL_PROFILE.name
     # A recognized project root (manifest / AGENTS.md / .cursorrules) is a code
     # workspace on its own — cheap stat checks, no scan.
-    if _marker_root(cwd) is not None:
+    marker_root = _marker_root(cwd, policy_base_path=cwd)
+    if marker_root is _DENIED_DISCOVERY:
+        return GENERAL_PROFILE.name
+    if marker_root is not None:
+        if _is_denied_workspace_root(marker_root, base_path=cwd):
+            return GENERAL_PROFILE.name
         return CODING_PROFILE.name
-    git_root = _git_root(cwd)
+    git_root = _git_root(cwd, policy_base_path=cwd)
+    if git_root is _DENIED_DISCOVERY:
+        return GENERAL_PROFILE.name
     if git_root is not None and git_root == _home():
         git_root = None  # dotfiles repo at $HOME — not a code workspace
+    if git_root is not None and _is_denied_workspace_root(git_root, base_path=cwd):
+        return GENERAL_PROFILE.name
     # A bare git repo only counts when it actually holds code, so `git init` on a
     # notes/writing/research folder stays in the general posture.
     if git_root is not None and _has_code_files(git_root):
@@ -784,6 +891,9 @@ def detect_project_facts(root: Path) -> ProjectFacts:
     of truth for both the prompt snapshot (:func:`_project_facts`) and the
     gateway's ``project.facts`` — so the UI never re-sniffs verify commands.
     """
+    if _is_denied_workspace_root(root):
+        return ProjectFacts([], [], [], [])
+
     manifests = [m for m in _PROJECT_MARKERS if m not in _CONTEXT_FILES and (root / m).is_file()]
     package_managers = list(
         dict.fromkeys(pm for lock, pm in (*_PY_LOCKFILES, *_JS_LOCKFILES) if (root / lock).is_file())
@@ -848,8 +958,20 @@ def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, An
     re-derive "are we coding?" or duplicate the verify-command sniffing.
     """
     resolved = _resolve_cwd(cwd)
-    root = _git_root(resolved) or _marker_root(resolved)
+    if _has_denied_workspace_ancestor(resolved, base_path=resolved):
+        return None
+    if _is_denied_workspace_root(resolved):
+        return None
+    root = _git_root(resolved, policy_base_path=resolved)
+    if root is _DENIED_DISCOVERY:
+        return None
     if root is None:
+        root = _marker_root(resolved, policy_base_path=resolved)
+    if root is _DENIED_DISCOVERY:
+        return None
+    if root is None:
+        return None
+    if _is_denied_workspace_root(root, base_path=resolved):
         return None
 
     f = detect_project_facts(root)
@@ -870,9 +992,21 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     — so marker-only (non-git) projects still get a snapshot.
     """
     resolved = _resolve_cwd(cwd)
-    git_root = _git_root(resolved)
-    root = git_root or _marker_root(resolved)
+    if _has_denied_workspace_ancestor(resolved, base_path=resolved):
+        return ""
+    if _is_denied_workspace_root(resolved):
+        return ""
+    git_root = _git_root(resolved, policy_base_path=resolved)
+    if git_root is _DENIED_DISCOVERY:
+        return ""
+    root = git_root
     if root is None:
+        root = _marker_root(resolved, policy_base_path=resolved)
+    if root is _DENIED_DISCOVERY:
+        return ""
+    if root is None:
+        return ""
+    if _is_denied_workspace_root(root, base_path=resolved):
         return ""
 
     lines = ["Workspace (snapshot at session start — re-check with `git` before acting on it):"]

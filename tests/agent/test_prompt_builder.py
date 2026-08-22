@@ -15,6 +15,7 @@ from agent.prompt_builder import (
     _skill_should_show,
     _find_hermes_md,
     _find_git_root,
+    _DENIED_CONTEXT_DISCOVERY,
     _strip_yaml_frontmatter,
     build_skills_system_prompt,
     build_nous_subscription_prompt,
@@ -444,6 +445,295 @@ class TestBuildContextFilesPrompt:
         assert "Project Context" in result
         assert "Hermes Agent" in result
 
+    def test_permissions_deny_skips_project_context(self, tmp_path):
+        """Startup context discovery inherits permissions.deny.paths."""
+        from unittest.mock import patch
+
+        (tmp_path / "AGENTS.md").write_text("PRIVATE STARTUP CONTEXT")
+
+        with patch(
+            "agent.deny_policy.permissions_deny_paths",
+            return_value=[str(tmp_path / "**")],
+        ):
+            result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert result == ""
+        assert "PRIVATE STARTUP CONTEXT" not in result
+
+    def test_permissions_deny_real_config_skips_project_context(
+        self, tmp_path, monkeypatch
+    ):
+        """Real temp HERMES_HOME config protects startup context discovery."""
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        project = tmp_path / "private-project"
+        project.mkdir()
+        (project / "AGENTS.md").write_text("REAL CONFIG PRIVATE CONTEXT")
+        (hermes_home / "config.yaml").write_text(
+            "permissions:\n"
+            "  deny:\n"
+            "    paths:\n"
+            f"      - '{project.as_posix()}/**'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        result = build_context_files_prompt(cwd=str(project), skip_soul=True)
+
+        assert result == ""
+        assert "REAL CONFIG PRIVATE CONTEXT" not in result
+
+    def test_permissions_deny_skips_exact_context_file(self, tmp_path):
+        """A denied AGENTS.md cannot shadow an allowed lower-priority file."""
+        from unittest.mock import patch
+
+        agents = tmp_path / "AGENTS.md"
+        agents.write_text("DENIED STARTUP CONTEXT")
+        (tmp_path / "CLAUDE.md").write_text("Allowed startup context")
+
+        with patch(
+            "agent.deny_policy.permissions_deny_paths",
+            return_value=[str(agents)],
+        ):
+            result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "Allowed startup context" in result
+        assert "DENIED STARTUP CONTEXT" not in result
+
+    def test_permissions_deny_skips_agents_override_and_loads_agents(self, tmp_path):
+        """A denied high-priority override cannot shadow an allowed AGENTS.md."""
+        from unittest.mock import patch
+
+        override = tmp_path / "AGENTS.override.md"
+        override.write_text("DENIED OVERRIDE CONTEXT")
+        (tmp_path / "AGENTS.md").write_text("Allowed AGENTS context")
+
+        with patch(
+            "agent.deny_policy.permissions_deny_paths",
+            return_value=[str(override)],
+        ):
+            result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "Allowed AGENTS context" in result
+        assert "DENIED OVERRIDE CONTEXT" not in result
+
+    def test_agents_override_symlink_to_sensitive_file_is_blocked(self, tmp_path):
+        """AGENTS.override.md inherits the canonical sensitive-file guard."""
+        secret = tmp_path / "secrets" / ".env"
+        secret.parent.mkdir()
+        secret.write_text("OVERRIDE_CONTEXT_SECRET=must-not-load", encoding="utf-8")
+        try:
+            (tmp_path / "AGENTS.override.md").symlink_to(secret)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+        (tmp_path / "AGENTS.md").write_text("Allowed fallback context")
+
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "Allowed fallback context" in result
+        assert "OVERRIDE_CONTEXT_SECRET" not in result
+
+    def test_permissions_deny_relative_rule_skips_exact_context_file(self, tmp_path):
+        """Relative context-file rules are anchored to the project cwd."""
+        from unittest.mock import patch
+
+        (tmp_path / "AGENTS.md").write_text("RELATIVE DENIED CONTEXT")
+        (tmp_path / "CLAUDE.md").write_text("Allowed relative-rule sibling")
+
+        with patch(
+            "agent.deny_policy.permissions_deny_paths",
+            return_value=["AGENTS.md"],
+        ):
+            result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "Allowed relative-rule sibling" in result
+        assert "RELATIVE DENIED CONTEXT" not in result
+
+    def test_startup_context_rejects_symlink_to_sensitive_file(self, tmp_path):
+        secret = tmp_path / "secrets" / ".env"
+        secret.parent.mkdir()
+        secret.write_text("STARTUP_CONTEXT_SECRET=must-not-load", encoding="utf-8")
+        try:
+            (tmp_path / "AGENTS.md").symlink_to(secret)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "STARTUP_CONTEXT_SECRET" not in result
+        assert result == ""
+
+    def test_denied_cursor_rules_descendant_blocks_directory_enumeration(self, tmp_path):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        rules_dir = tmp_path / ".cursor" / "rules"
+        rules_dir.mkdir(parents=True)
+        denied = rules_dir / "secret.mdc"
+        denied.write_text("DENIED CURSOR RULE")
+        original_glob = Path.glob
+
+        def guarded_glob(path_obj, pattern):
+            if path_obj == rules_dir:
+                raise AssertionError("cursor rules enumerated before deny-root check")
+            return original_glob(path_obj, pattern)
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(denied)],
+            ),
+            patch.object(
+                Path,
+                "glob",
+                autospec=True,
+                side_effect=guarded_glob,
+            ) as mock_glob,
+        ):
+            result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert result == ""
+        mock_glob.assert_not_called()
+
+    def test_startup_context_checks_lexical_cwd_before_resolve(self, tmp_path):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        lexical_cwd = tmp_path / "alias-workspace"
+        lexical_cwd.mkdir()
+        (lexical_cwd / "AGENTS.md").write_text("DENIED LEXICAL STARTUP")
+        original_resolve = Path.resolve
+
+        def guarded_resolve(path_obj, *args, **kwargs):
+            if path_obj == lexical_cwd:
+                raise AssertionError("startup cwd resolved before lexical deny")
+            return original_resolve(path_obj, *args, **kwargs)
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(tmp_path / "alias-*" / "AGENTS.md")],
+            ),
+            patch.object(Path, "resolve", autospec=True, side_effect=guarded_resolve),
+        ):
+            result = build_context_files_prompt(cwd=str(lexical_cwd), skip_soul=True)
+
+        assert result == ""
+        assert "DENIED LEXICAL STARTUP" not in result
+
+    def test_startup_preflights_fixed_width_denied_ancestor_before_metadata(
+        self,
+        tmp_path,
+    ):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        denied_ancestor = tmp_path / "private1"
+        cwd = denied_ancestor / "src"
+        cwd.mkdir(parents=True)
+        (cwd / "AGENTS.md").write_text("DENIED ANCESTOR STARTUP")
+        original_exists = Path.exists
+        original_is_file = Path.is_file
+        from agent import deny_policy
+        from agent.prompt_builder import (
+            _is_denied_project_context_path,
+            _is_denied_project_context_root,
+        )
+
+        def in_denied_subtree(path_obj):
+            return path_obj == denied_ancestor or denied_ancestor in path_obj.parents
+
+        def guarded_exists(path_obj):
+            if in_denied_subtree(path_obj):
+                raise AssertionError("startup probed inside denied ancestor")
+            return original_exists(path_obj)
+
+        def guarded_is_file(path_obj):
+            if in_denied_subtree(path_obj):
+                raise AssertionError("startup inspected file inside denied ancestor")
+            return original_is_file(path_obj)
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(tmp_path / "private?")],
+            ),
+            patch(
+                "agent.deny_policy.os.path.realpath",
+                wraps=deny_policy.os.path.realpath,
+            ) as mock_realpath,
+            patch.object(Path, "exists", guarded_exists),
+            patch.object(Path, "is_file", guarded_is_file),
+        ):
+            lexical_root_denied = lambda path: _is_denied_project_context_root(
+                path,
+                base_path=cwd,
+                canonicalize=False,
+            )
+            assert _find_git_root(
+                cwd,
+                is_lexically_root_denied=lexical_root_denied,
+            ) is _DENIED_CONTEXT_DISCOVERY
+            git_realpath_calls = [
+                str(call.args[0])
+                for call in mock_realpath.call_args_list
+                if in_denied_subtree(Path(call.args[0]))
+            ]
+            assert git_realpath_calls == []
+            mock_realpath.reset_mock()
+            assert _find_hermes_md(
+                cwd,
+                is_lexically_denied=lambda path: _is_denied_project_context_path(
+                    path,
+                    base_path=cwd,
+                    canonicalize=False,
+                ),
+                is_lexically_root_denied=lexical_root_denied,
+            ) is _DENIED_CONTEXT_DISCOVERY
+            hermes_realpath_calls = [
+                str(call.args[0])
+                for call in mock_realpath.call_args_list
+                if in_denied_subtree(Path(call.args[0]))
+            ]
+            assert hermes_realpath_calls == []
+            mock_realpath.reset_mock()
+            result = build_context_files_prompt(cwd=str(cwd), skip_soul=True)
+
+        assert result == ""
+        denied_realpath_calls = [
+            str(call.args[0])
+            for call in mock_realpath.call_args_list
+            if in_denied_subtree(Path(call.args[0]))
+        ]
+        assert denied_realpath_calls == []
+
+    def test_denied_hermes_md_is_not_probed_before_allowed_agents_md(self, tmp_path):
+        """Exact deny checks precede implicit .hermes.md file metadata access."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        hermes_md = tmp_path / ".hermes.md"
+        hermes_md.write_text("DENIED HERMES CONTEXT")
+        (tmp_path / "AGENTS.md").write_text("Allowed agents context")
+        original_is_file = Path.is_file
+
+        def guarded_is_file(path_obj):
+            if path_obj == hermes_md:
+                raise AssertionError("denied .hermes.md was probed")
+            return original_is_file(path_obj)
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(hermes_md)],
+            ),
+            patch.object(Path, "is_file", guarded_is_file),
+        ):
+            result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "Allowed agents context" in result
+        assert "DENIED HERMES CONTEXT" not in result
+
     def test_loads_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
         result = build_context_files_prompt(cwd=str(tmp_path))
@@ -565,8 +855,84 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert result == ""
 
+    def test_permissions_deny_blocks_soul_before_metadata_probe(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        from unittest.mock import patch
 
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        soul = hermes_home / "SOUL.md"
+        original_exists = Path.exists
 
+        def guarded_exists(path_obj):
+            if path_obj == soul:
+                raise AssertionError("denied SOUL.md metadata was probed")
+            return original_exists(path_obj)
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(soul)],
+            ),
+            patch.object(Path, "exists", guarded_exists),
+            patch("hermes_cli.config.ensure_hermes_home") as mock_ensure,
+        ):
+            from agent.prompt_builder import load_soul_md
+
+            assert load_soul_md() is None
+
+        mock_ensure.assert_not_called()
+
+    def test_permissions_deny_blocks_profile_scoped_soul_before_metadata_probe(
+        self, tmp_path
+    ):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        profile_home = tmp_path / "profile-home"
+        profile_home.mkdir()
+        soul = profile_home / "SOUL.md"
+        original_exists = Path.exists
+
+        def guarded_exists(path_obj):
+            if path_obj == soul:
+                raise AssertionError("denied profile SOUL.md metadata was probed")
+            return original_exists(path_obj)
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(soul)],
+            ),
+            patch.object(Path, "exists", guarded_exists),
+            patch("hermes_cli.config.ensure_hermes_home") as mock_ensure,
+        ):
+            from agent.prompt_builder import load_soul_md
+
+            assert load_soul_md(home_override=profile_home) is None
+
+        mock_ensure.assert_not_called()
+
+    def test_permissions_deny_globbed_profile_home_blocks_soul(self, tmp_path):
+        from unittest.mock import patch
+
+        profile_home = tmp_path / "private1"
+        profile_home.mkdir()
+        (profile_home / "SOUL.md").write_text(
+            "GLOBBED PROFILE SOUL SECRET",
+            encoding="utf-8",
+        )
+
+        with patch(
+            "agent.deny_policy.permissions_deny_paths",
+            return_value=[str(tmp_path / "private?")],
+        ):
+            from agent.prompt_builder import load_soul_md
+
+            result = load_soul_md(home_override=profile_home)
+
+        assert result is None
 
     # --- .hermes.md / HERMES.md discovery ---
 
@@ -673,6 +1039,28 @@ class TestFindGitRoot:
         # If result is not None, it must actually contain .git
         if result is not None:
             assert (result / ".git").exists()
+
+    def test_denied_ancestor_root_stops_before_git_metadata_probe(self, tmp_path):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        root = tmp_path / "repo"
+        nested = root / "src"
+        nested.mkdir(parents=True)
+        git_marker = root / ".git"
+        original_exists = Path.exists
+
+        def guarded_exists(path_obj):
+            if path_obj == git_marker:
+                raise AssertionError("denied ancestor .git was probed")
+            return original_exists(path_obj)
+
+        with patch.object(Path, "exists", guarded_exists):
+            assert _find_git_root(
+                nested,
+                is_denied=lambda _path: False,
+                is_root_denied=lambda path: path == root,
+            ) is _DENIED_CONTEXT_DISCOVERY
 
 
 class TestStripYamlFrontmatter:

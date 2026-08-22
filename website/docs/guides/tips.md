@@ -101,7 +101,7 @@ Already have a `.cursorrules` or `.cursor/rules/*.mdc` file? Hermes reads those 
 
 ### Discovery
 
-Hermes loads the top-level `AGENTS.md` from the current working directory at session start. Subdirectory `AGENTS.md` files are discovered lazily during tool calls (via `subdirectory_hints.py`) and injected into tool results — they are not loaded upfront into the system prompt.
+At session start, Hermes discovers the git/project root and merges each `AGENTS.md` on the directory chain from that root through the current working directory. `AGENTS.md` files below the working directory are discovered lazily during tool calls (via `subdirectory_hints.py`) and injected into tool results — they are not loaded upfront into the system prompt.
 
 :::tip
 Keep context files focused and concise. Every character counts against your token budget since they're injected into every single message.
@@ -217,7 +217,7 @@ When the agent triggers a dangerous command approval (`rm -rf`, `DROP TABLE`, et
 Hermes checks every command against a curated list of dangerous patterns before execution. This includes recursive deletes, SQL drops, piping curl to shell, and more. Don't disable this in production — it exists for good reasons.
 
 :::warning
-When running in a container backend (Docker, Singularity, Modal, Daytona), dangerous command checks are **skipped** because the container is the security boundary. Make sure your container images are properly locked down.
+When running in a container backend (Docker, Singularity, Modal, Daytona, or Vercel Sandbox), ordinary dangerous-command heuristics and approval prompts are **skipped** because the container is the security boundary. Explicit user-defined command deny rules still apply. Make sure your container images are properly locked down.
 :::
 
 ### Use Allowlists for Messaging Bots

@@ -3459,6 +3459,46 @@ def load_config_readonly() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=False)
 
 
+def load_security_policy_config_readonly() -> Dict[str, Any]:
+    """Load explicit user + managed security policy without writes or fallback.
+
+    Unlike the general runtime loader, this path never seeds ``HERMES_HOME``,
+    runs migrations, merges defaults, or serves last-known-good/default policy
+    after a parse error. Security guards must fail closed when either policy
+    file is malformed. Managed values retain normal leaf-level precedence and
+    both layers receive standard environment expansion.
+    """
+
+    def _read_mapping(path: Path, label: str) -> Dict[str, Any]:
+        try:
+            with open(path, encoding="utf-8") as config_file:
+                loaded = fast_safe_load(config_file)
+        except FileNotFoundError:
+            return {}
+        if loaded is None:
+            return {}
+        if not isinstance(loaded, dict):
+            raise ValueError(f"{label} config root must be a mapping")
+        return loaded
+
+    with _CONFIG_LOCK:
+        user_config = _read_mapping(get_config_path(), "user")
+        effective = _expand_env_vars(copy.deepcopy(user_config))
+        if not isinstance(effective, dict):
+            raise ValueError("expanded user config root must be a mapping")
+
+        from hermes_cli import managed_scope
+
+        managed_dir = managed_scope.get_managed_dir()
+        if managed_dir is None:
+            return effective
+        managed_config = _read_mapping(managed_dir / "config.yaml", "managed")
+        managed_expanded = _expand_env_vars(copy.deepcopy(managed_config))
+        if not isinstance(managed_expanded, dict):
+            raise ValueError("expanded managed config root must be a mapping")
+        return _deep_merge(effective, managed_expanded)
+
+
 def write_platform_config_field(
     platform_key: str,
     field_key: str,

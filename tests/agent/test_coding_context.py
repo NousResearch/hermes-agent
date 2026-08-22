@@ -5,6 +5,7 @@ import os
 import subprocess
 import shutil
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -38,6 +39,128 @@ def _git_init(path):
 # ── resolver ──────────────────────────────────────────────────────────────
 
 class TestIsCodingContext:
+
+    def test_permissions_deny_skips_workspace_detection_before_scan(self, tmp_path):
+        private = tmp_path / "private" / "secret.py"
+        private.parent.mkdir()
+        private.write_text("SECRET = True\n")
+        (tmp_path / "package.json").write_text("{}")
+        cfg = {"agent": {"coding_context": "auto"}}
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(private)],
+            ),
+            patch(
+                "agent.coding_context._marker_root",
+                side_effect=AssertionError("denied workspace was probed"),
+            ),
+        ):
+            assert cc.is_coding_context(
+                platform="cli",
+                cwd=tmp_path,
+                config=cfg,
+            ) is False
+
+    def test_relative_deny_rule_skips_workspace_detection_before_scan(self, tmp_path):
+        private = tmp_path / "private" / "secret.py"
+        private.parent.mkdir()
+        private.write_text("SECRET = True\n")
+        (tmp_path / "package.json").write_text("{}")
+        cfg = {"agent": {"coding_context": "auto"}}
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=["private/secret.py"],
+            ),
+            patch(
+                "agent.coding_context._marker_root",
+                side_effect=AssertionError("relative-denied workspace was probed"),
+            ),
+        ):
+            assert cc.is_coding_context(
+                platform="cli",
+                cwd=tmp_path,
+                config=cfg,
+            ) is False
+
+    def test_nested_cwd_denied_sibling_blocks_git_root_scan(self, tmp_path):
+        root = tmp_path / "repo"
+        nested = root / "src"
+        denied = root / "private"
+        nested.mkdir(parents=True)
+        denied.mkdir()
+        cfg = {"agent": {"coding_context": "auto"}}
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(denied / "**")],
+            ),
+            patch("agent.coding_context._marker_root", return_value=None),
+            patch("agent.coding_context._git_root", return_value=root),
+            patch(
+                "agent.coding_context._has_code_files",
+                side_effect=AssertionError("denied ancestor root was scanned"),
+            ),
+        ):
+            assert cc.is_coding_context(
+                platform="cli",
+                cwd=nested,
+                config=cfg,
+            ) is False
+
+    def test_public_entry_preflights_denied_cwd_ancestor_before_realpath(self, tmp_path):
+        denied_ancestor = tmp_path / "private1"
+        cwd = denied_ancestor / "src"
+        cwd.mkdir(parents=True)
+        cfg = {"agent": {"coding_context": "auto"}}
+        from agent import deny_policy
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(tmp_path / "private?")],
+            ),
+            patch(
+                "agent.deny_policy.os.path.realpath",
+                wraps=deny_policy.os.path.realpath,
+            ) as mock_realpath,
+        ):
+            assert cc.is_coding_context(
+                platform="cli",
+                cwd=cwd,
+                config=cfg,
+            ) is False
+
+        assert not any(
+            Path(call.args[0]) == denied_ancestor
+            or denied_ancestor in Path(call.args[0]).parents
+            for call in mock_realpath.call_args_list
+        )
+
+    def test_denied_marker_discovery_stops_before_git_fallback(self, tmp_path):
+        denied_ancestor = tmp_path / "private1"
+        cwd = denied_ancestor / "src"
+        cwd.mkdir(parents=True)
+
+        with patch(
+            "agent.deny_policy.permissions_deny_paths",
+            return_value=[str(tmp_path / "private?")],
+        ):
+            result = cc._marker_root(cwd, policy_base_path=cwd)
+
+        assert result is cc._DENIED_DISCOVERY
+        with (
+            patch("agent.coding_context._marker_root", return_value=result),
+            patch(
+                "agent.coding_context._git_root",
+                side_effect=AssertionError("git fallback ran after denied marker discovery"),
+            ),
+        ):
+            assert cc._detect_profile_name("auto", "cli", str(cwd)) == "general"
 
 
 
@@ -95,6 +218,43 @@ class TestCodingSelection:
 class TestWorkspaceBlock:
     def test_empty_outside_repo(self, tmp_path):
         assert cc.build_coding_workspace_block(tmp_path) == ""
+
+    def test_permissions_deny_skips_workspace_snapshot_before_git_probe(self, tmp_path):
+        private = tmp_path / "private" / "secret.py"
+        private.parent.mkdir()
+        private.write_text("SECRET = True\n")
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(private)],
+            ),
+            patch(
+                "agent.coding_context._git_root",
+                side_effect=AssertionError("denied workspace reached git discovery"),
+            ),
+        ):
+            assert cc.build_coding_workspace_block(tmp_path) == ""
+
+    def test_nested_cwd_denied_sibling_blocks_workspace_git_probe(self, tmp_path):
+        root = tmp_path / "repo"
+        nested = root / "src"
+        denied = root / "private"
+        nested.mkdir(parents=True)
+        denied.mkdir()
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(denied / "**")],
+            ),
+            patch("agent.coding_context._git_root", return_value=root),
+            patch(
+                "agent.coding_context._git",
+                side_effect=AssertionError("denied ancestor root reached git probe"),
+            ),
+        ):
+            assert cc.build_coding_workspace_block(nested) == ""
 
     def test_reports_branch_and_clean_status(self, tmp_path):
         _git_init(tmp_path)
@@ -170,6 +330,26 @@ class TestProjectFacts:
         assert facts["verifyCommands"]
         for cmd in facts["verifyCommands"]:
             assert cmd in verify_line
+
+    def test_nested_cwd_denied_sibling_blocks_project_facts(self, tmp_path):
+        root = tmp_path / "repo"
+        nested = root / "src"
+        denied = root / "private"
+        nested.mkdir(parents=True)
+        denied.mkdir()
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(denied / "**")],
+            ),
+            patch("agent.coding_context._git_root", return_value=root),
+            patch(
+                "agent.coding_context.detect_project_facts",
+                side_effect=AssertionError("denied ancestor root facts were read"),
+            ),
+        ):
+            assert cc.project_facts_for(nested) is None
 
 
 
@@ -337,6 +517,61 @@ class TestProfiles:
 # ── detection signals ───────────────────────────────────────────────────────
 
 class TestDetection:
+    def test_denied_marker_is_not_probed(self, tmp_path):
+        root = tmp_path / "repo"
+        nested = root / "src"
+        denied = root / "private"
+        nested.mkdir(parents=True)
+        denied.mkdir()
+        marker = root / "pyproject.toml"
+        original_exists = Path.exists
+
+        def guarded_exists(path_obj):
+            if path_obj == marker:
+                raise AssertionError("marker inside denied-overlap root was probed")
+            return original_exists(path_obj)
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(denied / "**")],
+            ),
+            patch.object(Path, "exists", guarded_exists),
+        ):
+            assert cc._marker_root(nested, policy_base_path=nested) is cc._DENIED_DISCOVERY
+
+    @pytest.mark.parametrize("resolver", [cc._git_root, cc._marker_root])
+    def test_workspace_discovery_preflights_fixed_width_denied_ancestor(
+        self,
+        tmp_path,
+        resolver,
+    ):
+        denied_ancestor = tmp_path / "private1"
+        cwd = denied_ancestor / "src"
+        cwd.mkdir(parents=True)
+        from agent import deny_policy
+
+        def in_denied_subtree(raw_path):
+            path = Path(raw_path)
+            return path == denied_ancestor or denied_ancestor in path.parents
+
+        with (
+            patch(
+                "agent.deny_policy.permissions_deny_paths",
+                return_value=[str(tmp_path / "private?")],
+            ),
+            patch(
+                "agent.deny_policy.os.path.realpath",
+                wraps=deny_policy.os.path.realpath,
+            ) as mock_realpath,
+        ):
+            assert resolver(cwd, policy_base_path=cwd) is cc._DENIED_DISCOVERY
+
+        assert not any(
+            in_denied_subtree(call.args[0])
+            for call in mock_realpath.call_args_list
+        )
+
     @pytest.mark.parametrize("marker", ["pyproject.toml", "package.json", "go.mod", "AGENTS.md"])
     def test_project_manifest_triggers_without_git(self, tmp_path, marker):
         (tmp_path / marker).write_text("x")

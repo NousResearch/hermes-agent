@@ -20,7 +20,7 @@ import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
-from agent.prompt_builder import _scan_context_content
+from agent.prompt_builder import _is_blocked_implicit_context_read, _scan_context_content
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,40 @@ def _is_ancestor_or_same(a: Path, b: Path) -> bool:
         return False
 
 
+def _is_denied_context_path(
+    path: Path,
+    *,
+    base_path: Path,
+    canonicalize: bool = True,
+) -> bool:
+    """Return whether progressive context discovery must not inspect *path*.
+
+    Context hints are an implicit file-read path, so they inherit the same
+    ``permissions.deny.paths`` floor as explicit file tools. Policy evaluation
+    errors fail closed rather than leaking context from an uncertain boundary.
+    """
+    try:
+        from agent.deny_policy import (
+            match_permissions_deny_path,
+            permissions_deny_paths,
+        )
+
+        patterns = permissions_deny_paths()
+        return match_permissions_deny_path(
+            str(path),
+            patterns=patterns,
+            base_path=base_path,
+            canonicalize=canonicalize,
+        ) is not None
+    except Exception:
+        logger.warning(
+            "permissions.deny.paths context check failed closed for %s",
+            path,
+            exc_info=True,
+        )
+        return True
+
+
 class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
 
@@ -83,7 +117,10 @@ class SubdirectoryHintTracker:
     """
 
     def __init__(self, working_dir: Optional[str] = None):
-        self.working_dir = Path(working_dir or os.getcwd()).resolve()
+        lexical_working_dir = Path(working_dir or os.getcwd()).expanduser()
+        if not lexical_working_dir.is_absolute():
+            lexical_working_dir = Path.cwd() / lexical_working_dir
+        self.working_dir = lexical_working_dir.absolute()
         self._loaded_dirs: Set[Path] = set()
         # Content digests already injected — prevents re-sending the same file
         # reachable through symlinks, hardlinks, or duplicated copies.
@@ -100,8 +137,14 @@ class SubdirectoryHintTracker:
         a different path (a symlink farm, a shared workspace) is recognised as a
         duplicate instead of being sent a second time.
         """
+        if self._has_denied_lexical_ancestor(self.working_dir):
+            return
         for filename in _HINT_FILENAMES:
             candidate = self.working_dir / filename
+            if _is_denied_context_path(candidate, base_path=self.working_dir):
+                continue
+            if _is_blocked_implicit_context_read(candidate):
+                continue
             try:
                 if not candidate.is_file():
                     continue
@@ -159,9 +202,9 @@ class SubdirectoryHintTracker:
         return list(candidates)
 
     def _add_path_candidate(self, raw_path: str, candidates: Set[Path]):
-        """Resolve a raw path and add its directory + ancestors to candidates.
+        """Anchor a raw path lexically and add its directory + ancestors.
 
-        Walks up from the resolved directory toward the filesystem root,
+        Walks up from the lexical directory toward the filesystem root,
         stopping at the first directory already in ``_loaded_dirs`` (or after
         ``_MAX_ANCESTOR_WALK`` levels).  This ensures that reading
         ``project/src/main.py`` discovers ``project/AGENTS.md`` even when
@@ -171,22 +214,49 @@ class SubdirectoryHintTracker:
             p = Path(raw_path).expanduser()
             if not p.is_absolute():
                 p = self.working_dir / p
-            p = p.resolve()
+            p = p.absolute()
+
+            # Preflight the complete lexical ancestor chain before realpath,
+            # exists/is_file/is_dir, or hint-file probes. A fixed-width rule can
+            # deny an ancestor without matching a deeper descendant.
+            if self._has_denied_lexical_ancestor(p):
+                return
+            if _is_denied_context_path(p, base_path=self.working_dir):
+                return
             # Use parent if it's a file path (has extension or doesn't exist as dir)
             if p.suffix or (p.exists() and p.is_file()):
                 p = p.parent
             # Walk up ancestors — stop at already-loaded or root
+            pending: Set[Path] = set()
             for _ in range(_MAX_ANCESTOR_WALK):
                 if p in self._loaded_dirs:
                     break
+                if _is_denied_context_path(p, base_path=self.working_dir):
+                    return
                 if self._is_valid_subdir(p):
-                    candidates.add(p)
+                    pending.add(p)
                 parent = p.parent
                 if parent == p:
                     break  # filesystem root
                 p = parent
+            candidates.update(pending)
         except (OSError, ValueError, RuntimeError):
             pass
+
+    def _has_denied_lexical_ancestor(
+        self,
+        path: Path,
+    ) -> bool:
+        """Check the complete lexical chain before filesystem canonicalization."""
+        current = path
+        for current in [current, *current.parents]:
+            if _is_denied_context_path(
+                current,
+                base_path=self.working_dir,
+                canonicalize=False,
+            ):
+                return True
+        return False
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
         """Extract path-like tokens from a shell command string."""
@@ -215,25 +285,27 @@ class SubdirectoryHintTracker:
         (e.g. ~/.codex/AGENTS.md, ~/.claude/CLAUDE.md), which causes
         cross-agent context contamination and instruction mixup.
         """
+        if self._has_denied_lexical_ancestor(path):
+            return False
+        if _is_denied_context_path(path, base_path=self.working_dir):
+            return False
+        if path in self._loaded_dirs:
+            return False
+        # Reject paths whose canonical target escapes the working directory while
+        # retaining the lexical path for deny checks and hint-file provenance.
+        try:
+            canonical_path = path.resolve()
+            canonical_root = self.working_dir.resolve()
+            if not canonical_path.is_relative_to(canonical_root):
+                return False
+        except (OSError, ValueError):
+            if not _is_ancestor_or_same(self.working_dir, path):
+                return False
         try:
             if not path.is_dir():
                 return False
         except OSError:
             return False
-        if path in self._loaded_dirs:
-            return False
-        # Reject paths outside the working directory tree.
-        # path.resolve() may differ from working_dir.resolve() due to symlinks,
-        # but path.is_relative_to(working_dir) handles both absolute and
-        # symlinked paths correctly on Python 3.9+.
-        try:
-            if not path.is_relative_to(self.working_dir):
-                return False
-        except (OSError, ValueError):
-            # Older Python or path resolution error — fall back to parent
-            # check as a best-effort safeguard.
-            if not _is_ancestor_or_same(self.working_dir, path):
-                return False
         if self._is_excluded(path):
             return False
         return True
@@ -279,6 +351,10 @@ class SubdirectoryHintTracker:
         found_hints = []
         for filename in _HINT_FILENAMES:
             hint_path = directory / filename
+            if _is_denied_context_path(hint_path, base_path=self.working_dir):
+                continue
+            if _is_blocked_implicit_context_read(hint_path):
+                continue
             try:
                 if not hint_path.is_file():
                     continue

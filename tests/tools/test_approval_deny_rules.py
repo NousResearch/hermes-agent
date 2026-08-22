@@ -22,6 +22,10 @@ def deny_config(monkeypatch):
         state["config"] = {"mode": "manual", "deny": list(patterns), **extra}
 
     monkeypatch.setattr(mod, "_get_approval_config", lambda: state["config"])
+    monkeypatch.setattr(
+        "agent.deny_policy.load_user_config",
+        lambda: {"approvals": state["config"]},
+    )
     return set_deny
 
 
@@ -41,15 +45,57 @@ class TestMatchUserDenyRule:
         assert mod._match_user_deny_rule("git push --force origin main") is None
 
     def test_missing_key_is_noop(self, monkeypatch):
-        monkeypatch.setattr(mod, "_get_approval_config", lambda: {"mode": "manual"})
+        monkeypatch.setattr(
+            "agent.deny_policy.load_user_config",
+            lambda: {"approvals": {"mode": "manual"}},
+        )
         assert mod._match_user_deny_rule("rm -rf build/") is None
 
-
-    def test_config_load_failure_fails_open(self, monkeypatch):
+    def test_config_load_failure_propagates_to_fail_closed_guard(self, monkeypatch):
         def boom():
             raise RuntimeError("config unavailable")
-        monkeypatch.setattr(mod, "_get_approval_config", boom)
-        assert mod._match_user_deny_rule("git push --force") is None
+
+        monkeypatch.setattr("agent.deny_policy.load_user_config", boom)
+        with pytest.raises(RuntimeError, match="config unavailable"):
+            mod._match_user_deny_rule("git push --force")
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ("legacy operation", "legacy*"),
+            ("alias operation", "alias*"),
+        ],
+    )
+    def test_command_aliases_share_one_strict_policy_snapshot(
+        self,
+        monkeypatch,
+        command,
+        expected,
+    ):
+        calls = 0
+
+        def strict_load():
+            nonlocal calls
+            calls += 1
+            return {
+                "approvals": {"deny": ["legacy*"]},
+                "permissions": {"deny": {"commands": ["alias*"]}},
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_security_policy_config_readonly",
+            strict_load,
+        )
+        monkeypatch.setattr(
+            mod,
+            "_get_approval_config",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("general config loader used for command deny policy")
+            ),
+        )
+
+        assert mod._match_user_deny_rule(command) == expected
+        assert calls == 1
 
     def test_quote_obfuscation_still_matches(self, deny_config):
         """Deobfuscation variants from the detector also feed deny matching."""
@@ -58,6 +104,35 @@ class TestMatchUserDenyRule:
 
 
 class TestDenyBeatsYolo:
+    @pytest.mark.parametrize(
+        "env_type",
+        ["local", "docker", "modal"],
+    )
+    @pytest.mark.parametrize(
+        "deny_value",
+        [
+            "git push --force*",
+            {"git push --force*": True},
+            ["git push --force*", 42],
+        ],
+    )
+    @pytest.mark.parametrize(
+        "guard",
+        [mod.check_dangerous_command, mod.check_all_command_guards],
+    )
+    def test_malformed_legacy_deny_fails_closed_in_all_guards(
+            self, monkeypatch, clean_env, deny_value, guard, env_type):
+        monkeypatch.setattr(
+            "agent.deny_policy.load_user_config",
+            lambda: {"approvals": {"mode": "off", "deny": deny_value}},
+        )
+
+        result = guard("ls -la", env_type)
+
+        assert result["approved"] is False
+        assert result.get("user_deny") is True
+        assert "could not be evaluated" in result["message"]
+
     def test_deny_blocks_under_yolo_env(self, deny_config, clean_env, monkeypatch):
         deny_config(["git push --force*"])
         monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", True)
@@ -113,12 +188,22 @@ class TestDenyOrdering:
         assert result["approved"] is False
         assert result.get("user_deny") is True
 
-    def test_container_backend_skips_deny(self, deny_config, clean_env):
-        """Isolated container backends bypass the whole guard stack (existing
-        contract) — deny rules protect the host, containers can't touch it."""
+    @pytest.mark.parametrize(
+        "guard",
+        [mod.check_dangerous_command, mod.check_all_command_guards],
+    )
+    @pytest.mark.parametrize(
+        "env_type",
+        ["docker", "singularity", "modal", "daytona", "vercel_sandbox"],
+    )
+    def test_isolated_backend_does_not_skip_user_deny(
+            self, deny_config, clean_env, guard, env_type):
         deny_config(["git push --force*"])
-        result = mod.check_dangerous_command("git push --force origin main", "docker")
-        assert result["approved"] is True
+
+        result = guard("git push --force origin main", env_type)
+
+        assert result["approved"] is False
+        assert result.get("user_deny") is True
 
     def test_benign_command_unaffected(self, deny_config, clean_env):
         deny_config(["git push --force*"])

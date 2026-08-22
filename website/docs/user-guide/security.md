@@ -113,9 +113,11 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
 
-### User-Defined Deny Rules (`approvals.deny`)
+### User-Defined Deny Rules (`approvals.deny` / `permissions.deny`)
 
-The hardline blocklist is fixed and code-shipped. `approvals.deny` is its user-editable counterpart: a list of glob patterns that block matching terminal commands unconditionally — **before** `--yolo`, `/yolo`, and `approvals.mode: off` are consulted. Use it to run yolo-with-exceptions: "let the agent do everything, except these specific things, ever."
+The hardline blocklist is fixed and code-shipped. User-defined deny rules are the editable counterpart: patterns that block matching commands or file-tool paths unconditionally — **before** `--yolo`, `/yolo`, and `approvals.mode: off` are consulted. Use them to run yolo-with-exceptions: "let the agent do everything, except these specific things, ever."
+
+`approvals.deny` remains the historical command-deny location:
 
 ```yaml
 approvals:
@@ -125,15 +127,32 @@ approvals:
     - "dd if=* of=/dev/*"
 ```
 
+`permissions.deny` is the broader namespace. `permissions.deny.commands` is an alias for command deny rules, while `permissions.deny.paths` blocks file-tool access to matching paths:
+
+```yaml
+permissions:
+  deny:
+    paths:
+      - "~/.ssh/**"
+      - "~/.aws/**"
+      - "C:/Users/*/obsidian/Private/**"
+    commands:
+      - "git push --force*"
+```
+
 Details:
 
-- Patterns are [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs (`*`, `?`, `[...]`) matched **case-insensitively** against the whole command text. `git push --force*` matches `git push --force origin main` but not `git push origin main`.
-- Matching runs over the same normalized/deobfuscated command variants the dangerous-pattern detector uses, so simple quoting tricks (`git pu""sh --force`) don't slip past a rule.
+- Patterns are [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs (`*`, `?`, `[...]`) matched **case-insensitively**. Command globs match the whole command text. Path globs match normalized, slash-separated paths with `~` expanded.
+- `permissions.deny.paths` applies to file tools (`read_file`, `write_file`, `patch`, and `search_files`) and implicit readers such as `@file`/`@folder` references, startup project context, progressive subdirectory hints, and coding-workspace discovery. Denied paths are blocked before reads/writes. Recursive searches are rejected before backend enumeration when the requested root is denied or may overlap a denied descendant; the policy does not enter a denied subtree and filter it only afterward.
+- Relative path rules are anchored to the active task/project working directory across explicit file tools and implicit context discovery.
+- Local path checks match both the lexical path supplied to the tool and its canonical filesystem identity, covering rules written against aliases as well as aliases that resolve into denied locations. Non-local backends are matched lexically after the existing backend path-resolution step and are never rewritten through host `realpath`.
+- Deny policy loading, validation, and matching errors fail closed. Malformed deny configuration blocks the affected operation until the configuration is fixed.
+- Matching runs over the same normalized/deobfuscated command variants the dangerous-pattern detector uses, so simple quoting tricks (`git pu""sh --force`) don't slip past a command rule.
 - **YAML quoting:** always quote patterns. A bare leading `*` is a YAML alias and fails to parse; `{`, `!`, and `: ` have their own YAML meanings. Single quotes are safest for shell-ish content.
-- Deny rules apply to host-reaching backends (local, SSH, host-mounted Docker). Isolated container backends skip the guard stack entirely, as they always have — nothing they run can touch the host.
-- A denied command returns a BLOCKED error to the agent telling it not to retry or rephrase. Nothing runs.
+- Command deny rules apply to every backend, including isolated Docker, Singularity, Modal, Daytona, and Vercel Sandbox sessions. Isolation still skips the ordinary dangerous-command prompt stack for non-denied commands, but it never overrides an explicit user deny rule.
+- A denied command or path returns a BLOCKED error to the agent telling it not to retry or rephrase. Nothing runs.
 
-Like the rest of the approval config, changes take effect immediately (the config cache is mtime-keyed) — no session restart needed.
+Like the rest of the config, changes take effect immediately (the config cache is mtime-keyed) — no session restart needed.
 
 :::note Threat model
 Deny rules are a guardrail against an honest-but-wrong agent, the same threat model as the dangerous-pattern detector. They are not a sandbox against a deliberately adversarial process — for that, use an isolated backend (Docker, Modal) or an egress-restricted environment.
@@ -190,7 +209,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
 
 :::info
-**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, ordinary dangerous-command heuristics and approval prompts are **skipped** because the container itself is the security boundary. Explicit user-defined command deny rules still run first and block matching commands in every backend.
 :::
 
 ### Approval Flow (CLI)

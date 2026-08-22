@@ -24480,13 +24480,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cause = classify_persistence_error(error)
         hint = format_session_db_unavailable()
         if cause == "corrupt":
+            hermes_home = get_hermes_home()
+            state_db_path = hermes_home / "state.db"
+            backups_path = hermes_home / "backups"
             message = (
                 "⚠️ Session database corruption detected. Messages may not be "
                 "persisted. Recovery options:\n"
                 "1. Run `hermes doctor --fix`\n"
-                "2. Salvage with: sqlite3 ~/.hermes/state.db \".recover\" "
+                f"2. Salvage with: sqlite3 \"{state_db_path}\" \".recover\" "
                 "(then replace state.db)\n"
-                "3. Restore from a backup in ~/.hermes/backups/\n"
+                f"3. Restore from a backup in {backups_path}/\n"
                 f"Error: {error}"
             )
         else:

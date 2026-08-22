@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: loops
+description: Manage email marketing campaigns, transactional emails, contacts, and events with Loops.
+source: https://loops.so/docs/mcp-server
+
+# Loops ships a hosted Streamable HTTP server with OAuth and Client ID
+# Metadata Documents. Hermes handles discovery, browser authorization, token
+# exchange, and refresh; there is nothing to install locally.
+transport:
+  type: http
+  url: https://mcp.loops.so
+
+auth:
+  type: oauth
+
+# Let the install-time checklist start with every discovered tool enabled so
+# users can choose the smallest useful surface for their workspace.
+
+suggest:
+  keywords:
+    - loops
+    - email
+    - email marketing
+    - transactional email
+    - campaigns
+  hosts:
+    - loops.so
+    - mcp.loops.so
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with Loops.
+  After approving access, restart the Hermes session so the Loops tools load.
+
+  You can re-run the tool checklist at any time with:
+    hermes mcp configure loops

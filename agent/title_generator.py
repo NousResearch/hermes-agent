@@ -113,6 +113,22 @@ _TITLE_RESPONSE_FORMAT = {
     },
 }
 
+
+def _title_request_extra_body(
+    response_format_supported: Optional[bool],
+) -> dict[str, Any]:
+    """Return structured-output request fields when the route supports them.
+
+    Unknown capability is intentionally treated like unsupported capability:
+    title parsing already has JSON/prose fallbacks, while an optimistic
+    response_format parameter can make an otherwise valid auxiliary request
+    fail at the provider boundary.
+    """
+    if response_format_supported is True:
+        return {"response_format": _TITLE_RESPONSE_FORMAT}
+    return {}
+
+
 # Control-tag wrappers that surround machine-authored content inside what is
 # nominally a "user" message. Titling from these is what produces a session
 # named after a slash command or an injected reminder rather than the user's
@@ -344,6 +360,7 @@ def generate_title(
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    response_format_supported: Optional[bool] = None,
 ) -> Optional[str]:
     """Generate a session title from the user's opening message.
 
@@ -400,17 +417,20 @@ def generate_title(
     ]
 
     try:
-        response = call_llm(
-            task="title_generation",
-            messages=messages,
+        request_extra_body = _title_request_extra_body(response_format_supported)
+        request_kwargs = {
+            "task": "title_generation",
+            "messages": messages,
             # A title is a handful of tokens. The old 500-token ceiling let a
             # chatty model burn seconds generating prose we then threw away.
-            max_tokens=64,
-            temperature=0.3,
-            timeout=timeout,
-            main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-        )
+            "max_tokens": 64,
+            "temperature": 0.3,
+            "timeout": timeout,
+            "main_runtime": main_runtime,
+        }
+        if request_extra_body:
+            request_kwargs["extra_body"] = request_extra_body
+        response = call_llm(**request_kwargs)
         content = response.choices[0].message.content or ""
         title = _clean_title(_extract_title_text(content))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title

@@ -285,6 +285,11 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - A tool-result ``name`` that differs from the matching assistant
+          tool call. Deferred tools use the outer ``tool_call`` bridge on the
+          wire while Hermes records the resolved inner tool name for display
+          and search. Gemini rejects that mismatch with ``INVALID_ARGUMENT``,
+          so the wire copy must use the name associated with ``tool_call_id``.
         - Hermes-internal scaffolding markers — any top-level message key
           starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
           ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
@@ -299,10 +304,39 @@ class ChatCompletionsTransport(ProviderTransport):
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
         )
+        tool_call_names: dict[str, str] = {}
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            tool_calls = msg.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                call_id = tc.get("id")
+                function = tc.get("function")
+                function_name = (
+                    function.get("name") if isinstance(function, dict) else None
+                )
+                if (
+                    isinstance(call_id, str)
+                    and call_id
+                    and isinstance(function_name, str)
+                    and function_name
+                ):
+                    tool_call_names[call_id] = function_name
+
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
+            tool_call_id = msg.get("tool_call_id")
+            expected_tool_name = (
+                tool_call_names.get(tool_call_id)
+                if isinstance(tool_call_id, str)
+                else None
+            )
             if (
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
@@ -310,6 +344,10 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
                 or "api_content" in msg  # persist-what-you-send sidecar
+                or (
+                    expected_tool_name is not None
+                    and msg.get("name") != expected_tool_name
+                )
             ):
                 needs_sanitize = True
                 break
@@ -373,6 +411,15 @@ class ChatCompletionsTransport(ProviderTransport):
                     copied_msg = dict(msg)
                     sanitized[msg_idx] = copied_msg
                 return copied_msg
+
+            tool_call_id = msg.get("tool_call_id")
+            expected_tool_name = (
+                tool_call_names.get(tool_call_id)
+                if isinstance(tool_call_id, str)
+                else None
+            )
+            if expected_tool_name is not None and msg.get("name") != expected_tool_name:
+                mutable_msg()["name"] = expected_tool_name
 
             if (
                 "codex_reasoning_items" in msg

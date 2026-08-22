@@ -146,6 +146,56 @@ class TestChatCompletionsBasic:
         msgs = [{"role": "user", "content": "hi"}]
         assert transport.convert_messages(msgs) is msgs
 
+    @pytest.mark.parametrize("include_tool_name", [False, True])
+    def test_convert_messages_matches_deferred_tool_result_name(
+        self, transport, include_tool_name
+    ):
+        """Gemini requires a tool result to name the function actually called.
+
+        Hermes keeps the resolved MCP name for its own display/search metadata,
+        but a deferred call is represented to the model by the ``tool_call``
+        bridge. The wire copy must therefore use that outer name without
+        mutating the canonical conversation history.
+        """
+        tool_result = {
+            "role": "tool",
+            "name": "mcp__server__status",
+            "tool_call_id": "call_1",
+            "content": '{"ok":true}',
+        }
+        if include_tool_name:
+            tool_result["tool_name"] = "mcp__server__status"
+
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_call",
+                            "arguments": '{"name":"mcp__server__status"}',
+                        },
+                    }
+                ],
+            },
+            tool_result,
+        ]
+
+        result = transport.convert_messages(msgs, model="google/gemini-3.6-flash")
+
+        assert result[1]["name"] == result[0]["tool_calls"][0]["function"]["name"]
+        assert result[1]["name"] == "tool_call"
+        assert "tool_name" not in result[1]
+        assert result[0] is msgs[0]
+        assert result[1] is not msgs[1]
+        assert msgs[1]["name"] == "mcp__server__status"
+        assert msgs[1].get("tool_name") == (
+            "mcp__server__status" if include_tool_name else None
+        )
+
     def test_convert_messages_strips_internal_scaffolding_markers(self, transport):
         """Hermes-internal ``_``-prefixed markers must never reach the wire.
 

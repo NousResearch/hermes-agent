@@ -7119,6 +7119,28 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
+            # A transcript this short can still be enormous when a handful of
+            # tool results are huge (e.g. a 7-message session sitting 46K+
+            # tokens over threshold). Try the cheap Phase-1 prune — including
+            # its protected-region pressure pass (#61932) — before conceding
+            # the no-op: it needs no LLM call and can shrink the transcript
+            # even when there aren't enough messages for a real compaction.
+            pruned_messages, pruned_count = self._prune_old_tool_results(
+                messages, protect_tail_count=self.protect_last_n,
+                protect_tail_tokens=self.tail_token_budget,
+            )
+            if pruned_messages != messages:
+                self._last_compression_made_progress = True
+                telemetry["failure_class"] = None
+                telemetry["chunk_count"] = 0
+                if not self.quiet_mode:
+                    logger.info(
+                        "Compression (small transcript): pruned %d tool "
+                        "result(s) across %d messages without summarization",
+                        pruned_count, n_messages,
+                    )
+                return pruned_messages
+
             # Record the no-op, exactly as the sibling "no compressable window"
             # branch below does (#40803). Returning without touching the
             # anti-thrashing counter leaves should_compress() saying True on a

@@ -1913,6 +1913,63 @@ class TestTokenBudgetTailProtection:
 
 
 
+class TestInsufficientMessagesStillPrunesToolResults:
+    """Regression: a transcript far over the compaction threshold with only
+    a handful of messages must still get the cheap Phase-1 tool-result prune
+    (including the #61932 protected-region pressure pass) before falling
+    back to a no-op.
+
+    Live trigger: a 7-message session sitting 46K+ tokens over threshold —
+    every compaction returned unchanged as "insufficient_messages" because
+    the early return fired before Phase 1 ever ran, and the transcript rode
+    the context window into model degeneracy.
+    """
+
+    def test_huge_tool_results_pruned_below_message_floor(self, compressor):
+        c = compressor  # protect_first_n=2, protect_last_n=2 -> _min_for_compress=7
+        # Distinct (non-duplicate) content so the dedup pass can't explain
+        # any shrinkage on its own — this is exercising the protected-region
+        # pressure pass (#61932), not byte-identical back-referencing.
+        big_a = "read of file a: " + "a" * 58_000
+        big_b = "read of file b: " + "b" * 58_000
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "do the two big things"},
+            {
+                "role": "assistant",
+                "content": "on it",
+                "tool_calls": [
+                    {"id": "call-1", "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": big_a},
+            {
+                "role": "assistant",
+                "content": "and the second one",
+                "tool_calls": [
+                    {"id": "call-2", "function": {"name": "read_file", "arguments": '{"path":"b.txt"}'}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-2", "content": big_b},
+            {"role": "assistant", "content": "both done"},
+        ]
+        assert len(messages) == 7  # == _min_for_compress: exercises the early-return branch
+
+        before_count = c._ineffective_compression_count
+        total_before = sum(len(str(m.get("content", ""))) for m in messages)
+        result = c.compress(messages, current_tokens=90_000)
+        total_after = sum(len(str(m.get("content", ""))) for m in result)
+
+        assert result != messages
+        # One of the two ~58K-char tool bodies gets demoted to a one-line
+        # summary by the pressure pass; a short recent floor stays verbatim.
+        # Materially smaller (well over half) without requiring the exact
+        # ratio, which is sensitive to the token estimator's internals.
+        assert total_after < total_before * 0.6
+        # The prune-and-return path must not be scored as an ineffective
+        # compaction — it made real progress, unlike the old no-op.
+        assert c._ineffective_compression_count == before_count
+        assert c._last_compression_made_progress is True
 
 
 class TestUpdateModelBudgets:

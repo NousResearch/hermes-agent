@@ -250,6 +250,16 @@ stop_ui() { # error state leaves the window up for the user to read
 GATE="" GATE_MSG=""
 linux_gate() {
   local unpacked="$INSTALL_ROOT/apps/desktop/release/linux-unpacked" sb arg
+  # Canonicalise both sides before the prefix compare. On some distros
+  # (e.g. Fedora/ostree) /home is a symlink to /var/home; the relaunch
+  # target is read from /proc/<pid>/exe, which the kernel canonicalises
+  # through symlinks, while INSTALL_ROOT keeps the original spelling —
+  # the raw prefix match then false-gates as "skew" and tells the user
+  # to reinstall an app that is fine. readlink -m canonicalises existing
+  # leading components without requiring the full path to exist (unlike
+  # -f); a no-op when both sides are already spelled the same.
+  unpacked="$(readlink -m -- "$unpacked")"
+  [ -n "$RELAUNCH_TARGET" ] && RELAUNCH_TARGET="$(readlink -m -- "$RELAUNCH_TARGET")"
   case "$RELAUNCH_TARGET" in
     "$unpacked"/*) ;;
     *) GATE=skew GATE_MSG="Backend updated, but the desktop app package (AppImage/deb/rpm) was not changed. Update or reinstall it to match."; return ;;

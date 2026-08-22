@@ -5,6 +5,11 @@ lands on the **shared open file description** — not just the child's descripto
 The gateway's next ``read()`` returns ``EAGAIN``, which CPython's buffered
 ``TextIOWrapper`` converts to ``b''`` (apparent EOF), killing the gateway.
 
+``SO_RCVTIMEO`` is the second route to the same symptom.  It is a socket option
+rather than a file-status flag, but it lives on the same shared description, and
+when it expires the read returns ``''`` with ``O_NONBLOCK`` **clear** — so the
+flag alone is not enough to tell tampering from a real peer close.
+
 This module provides:
 - :func:`diagnose_stdin_state` — forensic diagnostic (``O_NONBLOCK`` / ``SO_RCVTIMEO``)
 - :func:`handle_spurious_eof` — check whether an empty ``readline()`` is a genuine
@@ -37,6 +42,13 @@ except ImportError:
 import struct
 
 
+# ``struct timeval`` — ``tv_sec``, ``tv_usec`` — the payload of ``SO_RCVTIMEO``
+# on the platforms this POSIX-only module runs on.  Named once so the probe and
+# the recovery below cannot drift apart.
+_TIMEVAL_FORMAT = "ll"
+_TIMEVAL_SIZE = struct.calcsize(_TIMEVAL_FORMAT)
+
+
 # Rate-limit: at most this many spurious-EOF recoveries per 60-second window.
 # A child aggressively flipping ``O_NONBLOCK`` on the shared fd would otherwise
 # create a tight busy-loop burning CPU.  Exceeding the cap exits the process —
@@ -45,12 +57,65 @@ import struct
 MAX_RECOVERIES_PER_MINUTE = 10
 
 
+def _read_stdin_rcvtimeo() -> bytes | None:
+    """Return stdin's raw ``SO_RCVTIMEO`` timeval, or ``None`` if unreadable.
+
+    ``SO_RCVTIMEO`` is a socket option (not a file-status flag), equally shared
+    on the open file description.  A child setting it via ``setsockopt``
+    launders into the same spurious-EOF path as ``O_NONBLOCK`` — but with
+    ``O_NONBLOCK`` clear.
+
+    ``None`` means **"cannot tell"**, not "no timeout": either the ``socket``
+    module is unavailable, or fd 0 is not a socket at all (a tty, or an
+    anonymous pipe), in which case ``fromfd``/``getsockopt`` raises
+    ``ENOTSOCK``.  Callers must treat ``None`` as "nothing detected" so that
+    non-socket stdin keeps its existing behaviour.
+    """
+    if not (_HAS_SOCKET and _socket is not None):
+        return None
+    try:
+        s = _socket.fromfd(0, _socket.AF_UNIX, _socket.SOCK_STREAM)
+    except Exception:
+        # ``ENOTSOCK`` surfaces here on platforms whose socket constructor
+        # validates the descriptor (macOS).
+        return None
+    try:
+        # ``getsockopt`` without an explicit buffer length assumes an *int*
+        # option and reads only ``sizeof(int)`` bytes, truncating
+        # ``struct timeval`` to the low half of ``tv_sec`` — a 500 ms timeout
+        # would then be reported as ``0``.  Read the whole struct.
+        return s.getsockopt(_socket.SOL_SOCKET, _socket.SO_RCVTIMEO, _TIMEVAL_SIZE)
+    except Exception:
+        # ...and here on platforms that defer validation to the option call.
+        return None
+    finally:
+        # ``fromfd`` duped the fd; ``close`` releases the dup without touching
+        # the original fd 0.
+        s.close()
+
+
+def _stdin_rcvtimeo_is_set() -> bool:
+    """Return ``True`` only when stdin carries a **non-zero** receive timeout.
+
+    A zeroed timeval means "block forever", which is the default and is not
+    tampering.  An unreadable probe (``None``) is deliberately reported as
+    ``False``: on a tty or an anonymous pipe there is no timeout to detect, and
+    guessing ``True`` there would make every genuine peer-close look spurious.
+
+    The byte-wise test avoids unpacking, so it holds regardless of the
+    platform's timeval width or endianness.
+    """
+    tv = _read_stdin_rcvtimeo()
+    return tv is not None and any(tv)
+
+
 def diagnose_stdin_state() -> str:
     """Return a diagnostic string about stdin's current state.
 
     Used for crash-log forensics when stdin iteration falls through.
-    Distinguishes genuine peer-close (flag clear) from spurious EOF
-    caused by a child setting ``O_NONBLOCK`` on the shared file description.
+    Distinguishes a genuine peer-close from a spurious EOF caused by a child
+    mutating the shared file description — either ``O_NONBLOCK`` or a non-zero
+    ``SO_RCVTIMEO``.
     """
     parts: list[str] = []
     if _HAS_FCNTL and _fcntl is not None:
@@ -61,22 +126,10 @@ def diagnose_stdin_state() -> str:
             parts.append(f"F_GETFL error: {e}")
     else:
         parts.append("O_NONBLOCK=n/a (no fcntl)")
-    # ``SO_RCVTIMEO`` is a socket option (not a file-status flag), equally
-    # shared on the open file description.  A child setting it via
-    # ``setsockopt`` launders into the same spurious-EOF path with
-    # ``O_NONBLOCK`` clear, so we report it alongside the flag.
-    if _HAS_SOCKET and _socket is not None:
-        try:
-            s = _socket.fromfd(0, _socket.AF_UNIX, _socket.SOCK_STREAM)
-            try:
-                tv = s.getsockopt(_socket.SOL_SOCKET, _socket.SO_RCVTIMEO)
-                parts.append(f"SO_RCVTIMEO={tv!r}")
-            finally:
-                # ``fromfd`` duped the fd; ``close`` releases the dup without
-                # touching the original fd 0.
-                s.close()
-        except Exception:
-            pass
+    # Report the shared-description socket timeout alongside the flag.
+    tv = _read_stdin_rcvtimeo()
+    if tv is not None:
+        parts.append(f"SO_RCVTIMEO={tv!r}")
     return ", ".join(parts) if parts else "unknown"
 
 
@@ -106,7 +159,10 @@ def handle_spurious_eof(
     except Exception:
         is_nonblock = False
 
-    if not is_nonblock:
+    # ``SO_RCVTIMEO`` reaches the same symptom by a different route: the read
+    # expires and returns ``''`` with ``O_NONBLOCK`` **clear**, so the flag
+    # alone cannot distinguish it from a peer close.  Probe it too.
+    if not is_nonblock and not _stdin_rcvtimeo_is_set():
         # Genuine peer-close — no subprocess flag tampering detected.
         log_fn("stdin EOF (peer closed)")  # type: ignore[operator]
         return False
@@ -125,7 +181,7 @@ def handle_spurious_eof(
         return False
 
     diag = diagnose_stdin_state()
-    log_fn(f"stdin spurious EOF (subprocess O_NONBLOCK flip), recovering: {diag}")  # type: ignore[operator]
+    log_fn(f"stdin spurious EOF (subprocess O_NONBLOCK / SO_RCVTIMEO), recovering: {diag}")  # type: ignore[operator]
 
     # Clear ``O_NONBLOCK`` on the shared file description.
     os.set_blocking(0, True)
@@ -139,7 +195,11 @@ def handle_spurious_eof(
             s = _socket.fromfd(0, _socket.AF_UNIX, _socket.SOCK_STREAM)
             try:
                 # Zero timeval: tv_sec=0, tv_usec=0 (struct timeval on most platforms)
-                s.setsockopt(_socket.SOL_SOCKET, _socket.SO_RCVTIMEO, struct.pack("ll", 0, 0))
+                s.setsockopt(
+                    _socket.SOL_SOCKET,
+                    _socket.SO_RCVTIMEO,
+                    struct.pack(_TIMEVAL_FORMAT, 0, 0),
+                )
             finally:
                 s.close()
         except Exception:

@@ -449,6 +449,27 @@ class TestKeylessFailover:
         assert out["success"] is True
         assert out["data"]["served_by"] == "parallel"
 
+    def test_search_fails_over_on_anonymous_provider_forbidden(self, monkeypatch):
+        self._pin(monkeypatch, "firecrawl")
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS,
+            "firecrawl",
+            lambda q, l: {
+                "success": False,
+                "error": "Keyless Firecrawl search failed: Client error '403 Forbidden'",
+            },
+        )
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS,
+            "keenable",
+            lambda q, l: self._ok("keenable"),
+        )
+
+        out = keyless_mcp.search_with_failover("firecrawl", "q")
+
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "keenable"
+
     def test_search_no_failover_on_non_throttle_error(self, monkeypatch):
         self._pin(monkeypatch, "exa")
         monkeypatch.setitem(
@@ -473,7 +494,7 @@ class TestKeylessFailover:
             )
         out = keyless_mcp.search_with_failover("exa", "q")
         assert out["success"] is False
-        assert "all keyless vendors throttled" in out["error"]
+        assert "all keyless vendors unavailable" in out["error"]
 
     def test_search_walks_ring_past_multiple_throttles(self, monkeypatch):
         # exa -> parallel -> tavily all throttled; firecrawl serves.
@@ -526,6 +547,38 @@ class TestKeylessFailover:
         monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "exa", lambda urls: throttled)
         monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "parallel", lambda urls: good)
         out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
+        assert out == good
+
+    def test_extract_fails_over_when_anonymous_provider_rejects_batch(self, monkeypatch):
+        self._pin(monkeypatch, "firecrawl")
+        forbidden = [
+            {
+                "url": url,
+                "title": "",
+                "content": "",
+                "error": "Keyless Firecrawl extract failed: HTTP 403",
+            }
+            for url in ("https://a", "https://b")
+        ]
+        good = [
+            {"url": "https://a", "title": "A", "content": "x"},
+            {"url": "https://b", "title": "B", "content": "y"},
+        ]
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_EXTRACTORS,
+            "firecrawl",
+            lambda urls: forbidden,
+        )
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_EXTRACTORS,
+            "keenable",
+            lambda urls: good,
+        )
+
+        out = keyless_mcp.extract_with_failover(
+            "firecrawl", ["https://a", "https://b"]
+        )
+
         assert out == good
 
     def test_extract_partial_failure_stays_on_primary(self, monkeypatch):

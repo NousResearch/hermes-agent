@@ -1,11 +1,16 @@
 import json
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
-                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None):
+                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None,
+                  observe_unmentioned_group_messages=None, observe_group_allow_from=None,
+                  sender_authorized=True):
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     extra = {}
@@ -23,6 +28,10 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
         extra["group_policy"] = group_policy
     if group_allow_from is not None:
         extra["group_allow_from"] = group_allow_from
+    if observe_unmentioned_group_messages is not None:
+        extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+    if observe_group_allow_from is not None:
+        extra["observe_group_allow_from"] = observe_group_allow_from
 
     adapter = object.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -34,6 +43,10 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
     adapter._group_allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("group_allow_from"))
     adapter._mention_patterns = adapter._compile_mention_patterns()
     adapter._free_response_chats = adapter._whatsapp_free_response_chats()
+    adapter._authorization_check = lambda *_args: sender_authorized
+    adapter._session_store = MagicMock()
+    adapter._enqueue_text_event = MagicMock()
+    adapter._message_handler = AsyncMock()
     return adapter
 
 
@@ -42,6 +55,9 @@ def _group_message(body="hello", **overrides):
         "isGroup": True,
         "body": body,
         "chatId": "120363001234567890@g.us",
+        "senderId": "alice@lid",
+        "senderName": "Alice",
+        "from": "alice@lid",
         "mentionedIds": [],
         "botIds": ["15551230000@s.whatsapp.net", "15551230000@lid"],
         "quotedParticipant": "",
@@ -83,6 +99,153 @@ def test_group_messages_can_require_direct_trigger_via_config():
         )
     ) is True
     assert adapter._should_process_message(_group_message("/status")) is True
+
+
+def test_observe_mode_dispatches_only_trusted_native_mentions():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"^zero\b"],
+        free_response_chats=["120363999999999999@g.us"],
+        group_policy="open",
+        observe_unmentioned_group_messages=True,
+    )
+
+    assert adapter._should_process_message(_group_message("@15551230000 hello")) is False
+    assert adapter._should_process_message(_group_message("/status")) is False
+    assert adapter._should_process_message(_group_message("zero status")) is False
+    assert adapter._should_process_message(
+        _group_message("replying", quotedParticipant="15551230000@lid")
+    ) is False
+    assert adapter._should_process_message(
+        _group_message("hello", mentionedIds=["15551230000@s.whatsapp.net"])
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_observe_mode_free_response_chat_dispatches_without_mention():
+    adapter = _make_adapter(
+        require_mention=True,
+        free_response_chats=["120363001234567890@g.us"],
+        group_policy="open",
+        observe_unmentioned_group_messages=True,
+    )
+
+    # The configured free-response group dispatches every authorized message.
+    free_response = _group_message("no mention here")
+    assert adapter._should_process_message(free_response) is True
+    assert adapter._should_observe_unmentioned_group_message(free_response) is False
+    event = await adapter._build_message_event(free_response)
+    assert event is not None
+    assert "_whatsapp_observed_only" not in event.metadata
+    await adapter._dispatch_or_observe_inbound_event(event)
+    adapter.__dict__["_enqueue_text_event"].assert_called_once_with(event)
+    adapter._session_store.append_to_transcript.assert_not_called()
+
+    # Other groups still require the trusted native mention.
+    other = _group_message("no mention here", chatId="120363888888888888@g.us")
+    assert adapter._should_process_message(other) is False
+    mentioned = _group_message(
+        "hello",
+        chatId="120363888888888888@g.us",
+        mentionedIds=["15551230000@s.whatsapp.net"],
+    )
+    assert adapter._should_process_message(mentioned) is True
+
+
+def test_observe_mode_matches_device_qualified_bot_id():
+    adapter = _make_adapter(
+        group_policy="open",
+        observe_unmentioned_group_messages=True,
+    )
+
+    message = _group_message(
+        "hello",
+        botIds=["15551230000:10@s.whatsapp.net"],
+        mentionedIds=["15551230000@s.whatsapp.net"],
+    )
+
+    assert adapter._message_has_native_bot_mention(message) is True
+    assert adapter._should_process_message(message) is True
+
+
+def test_observe_mode_rejects_unauthorized_senders_before_persistence():
+    adapter = _make_adapter(
+        group_policy="open",
+        observe_unmentioned_group_messages=True,
+        sender_authorized=False,
+    )
+    message = _group_message("background context", senderId="unauthorized@lid")
+
+    assert adapter._should_process_message(message) is False
+    assert adapter._should_observe_unmentioned_group_message(message) is False
+
+
+
+@pytest.mark.asyncio
+async def test_authorized_unmentioned_message_is_observed_without_dispatch():
+    adapter = _make_adapter(
+        group_policy="open",
+        observe_unmentioned_group_messages=True,
+    )
+    adapter._session_store.get_or_create_session.return_value = SimpleNamespace(
+        session_id="session-1"
+    )
+    data = _group_message(
+        "background context",
+        senderId="alice@lid",
+        senderName="Alice",
+        messageId="message-1",
+    )
+
+    event = await adapter._build_message_event(data)
+
+    assert event is not None
+    assert event.metadata["_whatsapp_observed_only"] is True
+    with patch(
+        "plugins.platforms.whatsapp.adapter.asyncio.to_thread",
+        new_callable=AsyncMock,
+        side_effect=lambda func, *args: func(*args),
+    ) as to_thread:
+        await adapter._dispatch_or_observe_inbound_event(event)
+    to_thread.assert_awaited_once_with(adapter._observe_unmentioned_group_event, event)
+    enqueue_mock = adapter.__dict__["_enqueue_text_event"]
+    handler_mock = adapter.__dict__["_message_handler"]
+    enqueue_mock.assert_not_called()
+    handler_mock.assert_not_awaited()
+    entry = adapter._session_store.append_to_transcript.call_args.args[1]
+    assert entry["content"] == "[Alice] background context"
+    assert entry["observed"] is True
+
+
+@pytest.mark.asyncio
+async def test_addressed_turn_keeps_observed_rows_context_only():
+    from gateway.run import _build_gateway_agent_history
+
+    adapter = _make_adapter(
+        group_policy="open",
+        observe_unmentioned_group_messages=True,
+    )
+    event = await adapter._build_message_event(
+        _group_message(
+            "what did Alice say?",
+            mentionedIds=["15551230000@s.whatsapp.net"],
+        )
+    )
+
+    assert event is not None
+    assert "observed WhatsApp group context" in (event.channel_prompt or "")
+    history, observed_context = _build_gateway_agent_history(
+        [
+            {
+                "role": "user",
+                "content": "[Alice] background context",
+                "observed": True,
+            }
+        ],
+        channel_prompt=event.channel_prompt,
+    )
+    assert history == []
+    assert observed_context == "[Alice] background context"
 
 
 def test_regex_mention_patterns_allow_custom_wake_words():

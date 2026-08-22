@@ -20,9 +20,24 @@ import {
   extractBridgeEvent,
   inboundReadReceiptKeys,
   mediaPayloadForFile,
+  normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
+
+// -- WhatsApp ID normalization --------------------------------------------
+{
+  assert.equal(
+    normalizeWhatsAppId('15559998888:10@s.whatsapp.net'),
+    '15559998888@s.whatsapp.net',
+  );
+  assert.equal(
+    normalizeWhatsAppId('15559998888@10@s.whatsapp.net'),
+    '15559998888@s.whatsapp.net',
+  );
+  assert.equal(normalizeWhatsAppId('15559998888@lid'), '15559998888@lid');
+  console.log('  ✓ device-qualified WhatsApp IDs normalize for native mentions');
+}
 
 // -- inbound read receipts ------------------------------------------------
 {

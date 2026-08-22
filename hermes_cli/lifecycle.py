@@ -8,14 +8,19 @@ from typing import Any, List
 logger = logging.getLogger(__name__)
 
 
-def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
-    """Notify first-party observers, then invoke compatibility plugin hooks."""
+def observe_hook(hook_name: str, **kwargs: Any) -> None:
+    """Notify first-party observers without dispatching compatibility plugins."""
     try:
         from hermes_cli.observability import observe_lifecycle
 
         observe_lifecycle(hook_name, **kwargs)
     except Exception:
         logger.warning("Built-in observability hook failed", exc_info=True)
+
+
+def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
+    """Notify first-party observers, then invoke compatibility plugin hooks."""
+    observe_hook(hook_name, **kwargs)
 
     from hermes_cli import plugins
 

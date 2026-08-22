@@ -25,6 +25,13 @@ Plugins may register callbacks for any of the hooks in ``VALID_HOOKS``.
 The agent core calls ``invoke_hook(name, **kwargs)`` at the appropriate
 points.
 
+Operators can make a plugin's ``pre_tool_call`` hook mandatory for selected
+tool-name globs with
+``plugins.entries.<plugin_id>.required_pre_tool_call.tools``. Mandatory hooks
+must return an explicit ``allow``, ``block``, or ``approve`` decision; missing,
+failed, or malformed policy hooks fail closed for matching tools. Ordinary
+observer hooks retain their fail-open behavior.
+
 Tool registration
 -----------------
 ``PluginContext.register_tool()`` delegates to ``tools.registry.register()``
@@ -50,6 +57,7 @@ import types
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import wraps
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Type, Union)
 
@@ -1205,6 +1213,19 @@ class PluginRegistration:
                 self._on_dispose(self)
 
 
+@dataclass(frozen=True)
+class _RegisteredHook:
+    plugin_id: str
+    callback: Callable
+
+
+@dataclass(frozen=True)
+class _HookInvocation:
+    plugin_id: Optional[str]
+    result: Any = None
+    error: Optional[Exception] = None
+
+
 # ---------------------------------------------------------------------------
 # PluginContext  – handed to each plugin's ``register()`` function
 # ---------------------------------------------------------------------------
@@ -2200,6 +2221,33 @@ class PluginContext:
             if agent is not None:
                 kwargs["parent_agent"] = agent
 
+        parent_agent = kwargs.get("parent_agent")
+        middleware_trace = kwargs.get("middleware_trace")
+        try:
+            block_message = resolve_pre_tool_block(
+                tool_name,
+                args,
+                task_id=str(kwargs.get("task_id") or ""),
+                session_id=str(
+                    kwargs.get("session_id")
+                    or getattr(parent_agent, "session_id", "")
+                    or ""
+                ),
+                tool_call_id=str(kwargs.get("tool_call_id") or ""),
+                turn_id=str(kwargs.get("turn_id") or ""),
+                api_request_id=str(kwargs.get("api_request_id") or ""),
+                middleware_trace=(
+                    list(middleware_trace) if isinstance(middleware_trace, list) else None
+                ),
+            )
+        except Exception:
+            # Preserve fail-open behavior for ordinary observer-hook failures.
+            # Required-policy failures are converted to block messages inside
+            # resolve_pre_tool_block().
+            block_message = None
+        if block_message is not None:
+            return json.dumps({"error": block_message}, ensure_ascii=False)
+
         return registry.dispatch(
             tool_name, args, scope=self._manager.scope_key, **kwargs
         )
@@ -3126,11 +3174,15 @@ class PluginContext:
                 ", ".join(sorted(VALID_HOOKS)),
             )
         callbacks = self._manager._hooks.setdefault(hook_name, [])
-        callbacks.append(callback)
+        registered = _RegisteredHook(
+            plugin_id=self.manifest.key or self.manifest.name,
+            callback=callback,
+        )
+        callbacks.append(registered)
         handle = self._track(
             "hook", hook_name,
             lambda: self._manager._remove_callback(
-                self._manager._hooks, hook_name, callback
+                self._manager._hooks, hook_name, registered
             ),
         )
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
@@ -3401,7 +3453,7 @@ class PluginManager:
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._plugins: Dict[str, LoadedPlugin] = {}
-        self._hooks: Dict[str, List[Callable]] = {}
+        self._hooks: Dict[str, List[Union[Callable, _RegisteredHook]]] = {}
         self._middleware: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
@@ -5101,6 +5153,39 @@ class PluginManager:
         }
         return callback(**accepted_payload)
 
+    def invoke_hook_detailed(
+        self, hook_name: str, **kwargs: Any
+    ) -> List[_HookInvocation]:
+        """Call hooks while retaining owner and failure state for policy gates."""
+        if hook_name != "gateway_platform_event":
+            kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        invocations: List[_HookInvocation] = []
+        for registered in self._hooks.get(hook_name, []):
+            if isinstance(registered, _RegisteredHook):
+                plugin_id = registered.plugin_id
+                callback = registered.callback
+            else:
+                plugin_id = None
+                callback = registered
+            try:
+                invocations.append(
+                    _HookInvocation(
+                        plugin_id=plugin_id,
+                        result=self._invoke_hook_callback(callback, kwargs),
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Hook '%s' callback %s raised: %s",
+                    hook_name,
+                    getattr(callback, "__name__", repr(callback)),
+                    exc,
+                )
+                invocations.append(
+                    _HookInvocation(plugin_id=plugin_id, error=exc)
+                )
+        return invocations
+
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all registered callbacks for *hook_name*.
 
@@ -5124,27 +5209,11 @@ class PluginManager:
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
         """
-        # Most legacy observer hooks carry the shared telemetry marker. Gateway
-        # platform events define event-local additive envelopes instead: injecting
-        # a bus-wide version here would turn unrelated adapter payloads into one
-        # monolithic compatibility contract (#64176).
-        if hook_name != "gateway_platform_event":
-            kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
-        callbacks = self._hooks.get(hook_name, [])
-        results: List[Any] = []
-        for cb in callbacks:
-            try:
-                ret = self._invoke_hook_callback(cb, kwargs)
-                if ret is not None:
-                    results.append(ret)
-            except Exception as exc:
-                logger.warning(
-                    "Hook '%s' callback %s raised: %s",
-                    hook_name,
-                    getattr(cb, "__name__", repr(cb)),
-                    exc,
-                )
-        return results
+        return [
+            invocation.result
+            for invocation in self.invoke_hook_detailed(hook_name, **kwargs)
+            if invocation.error is None and invocation.result is not None
+        ]
 
     def _subscribe_event(
         self,
@@ -5349,7 +5418,12 @@ class PluginManager:
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:
         """Return a stable snapshot of callbacks registered for a hook."""
-        return tuple(self._hooks.get(hook_name, ()))
+        return tuple(
+            registered.callback
+            if isinstance(registered, _RegisteredHook)
+            else registered
+            for registered in self._hooks.get(hook_name, ())
+        )
 
     def render_system_prompt_sections(
         self, session_info: Mapping[str, Any]
@@ -5986,6 +6060,129 @@ class _PreToolCallDirective:
     modified_args: Optional[Dict[str, Any]] = None
 
 
+@dataclass(frozen=True)
+class _RequiredPreToolPolicies:
+    plugin_ids: tuple[str, ...] = ()
+    invalid_plugin_ids: tuple[str, ...] = ()
+    configuration_error: bool = False
+
+
+def _required_pre_tool_policies(tool_name: str) -> _RequiredPreToolPolicies:
+    """Return strict policy plugins configured for this runtime tool name.
+
+    Configuration lives under each plugin's existing trust entry::
+
+        plugins:
+          entries:
+            github-policy:
+              required_pre_tool_call:
+                tools: ["github_*", "terminal"]
+
+    ``true`` is shorthand for all tools. Once the opt-in key is present,
+    malformed policy configuration fails closed instead of silently disabling
+    the operator's intended guard.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly_strict
+
+        config = load_config_readonly_strict() or {}
+    except Exception:
+        logger.exception("Required pre_tool_call policy configuration is unreadable")
+        return _RequiredPreToolPolicies(configuration_error=True)
+
+    plugins_config = config.get("plugins", {})
+    if not isinstance(plugins_config, dict):
+        return _RequiredPreToolPolicies(configuration_error=True)
+    if "entries" not in plugins_config:
+        return _RequiredPreToolPolicies()
+    entries = plugins_config.get("entries")
+    if not isinstance(entries, dict):
+        return _RequiredPreToolPolicies(configuration_error=True)
+
+    required: List[str] = []
+    invalid: List[str] = []
+    for raw_plugin_id, entry in entries.items():
+        if not isinstance(raw_plugin_id, str) or not raw_plugin_id.strip():
+            return _RequiredPreToolPolicies(configuration_error=True)
+        plugin_id = raw_plugin_id.strip()
+        if not isinstance(entry, dict):
+            return _RequiredPreToolPolicies(configuration_error=True)
+        if "required_pre_tool_call" not in entry:
+            continue
+        setting = entry.get("required_pre_tool_call")
+        if setting is False or setting is None:
+            continue
+        if setting is True:
+            patterns = ["*"]
+        elif isinstance(setting, dict):
+            patterns = setting.get("tools")
+            if not (
+                isinstance(patterns, list)
+                and patterns
+                and all(isinstance(pattern, str) and pattern.strip() for pattern in patterns)
+            ):
+                invalid.append(plugin_id)
+                continue
+            patterns = [pattern.strip() for pattern in patterns]
+        else:
+            invalid.append(plugin_id)
+            continue
+        if any(fnmatchcase(tool_name, pattern) for pattern in patterns):
+            required.append(plugin_id)
+    return _RequiredPreToolPolicies(tuple(required), tuple(invalid))
+
+
+def required_pre_tool_policy_failure(tool_name: str) -> Optional[str]:
+    """Return a sanitized fail-closed message if *tool_name* is protected."""
+    policies = _required_pre_tool_policies(tool_name)
+    if policies.configuration_error:
+        return "BLOCKED: required pre_tool_call policy configuration is unavailable"
+    if not policies.plugin_ids and not policies.invalid_plugin_ids:
+        return None
+    return f"BLOCKED: required pre_tool_call policy evaluation failed for {tool_name}"
+
+
+def _required_policy_block(plugin_id: str, reason: str) -> _PreToolCallDirective:
+    logger.error("Required pre_tool_call policy %r %s", plugin_id, reason)
+    return _PreToolCallDirective(
+        action="block",
+        message=f"BLOCKED: required pre_tool_call policy '{plugin_id}' {reason}",
+    )
+
+
+def _required_policy_configuration_block() -> _PreToolCallDirective:
+    logger.error("Required pre_tool_call policy configuration is unavailable")
+    return _PreToolCallDirective(
+        action="block",
+        message="BLOCKED: required pre_tool_call policy configuration is unavailable",
+    )
+
+
+def _parse_pre_tool_call_result(
+    result: Any, *, explicit_allow: bool = False
+) -> tuple[bool, _PreToolCallDirective]:
+    if not isinstance(result, dict):
+        return False, _PreToolCallDirective()
+    action = result.get("action")
+    if action == "allow" and explicit_allow:
+        return True, _PreToolCallDirective()
+    if action not in ("block", "approve"):
+        return False, _PreToolCallDirective()
+    message = result.get("message")
+    message = message if isinstance(message, str) and message else None
+    if action == "block" and not message:
+        return False, _PreToolCallDirective()
+    rule_key = result.get("rule_key") if action == "approve" else None
+    rule_key = rule_key.strip() if isinstance(rule_key, str) else None
+    if not rule_key:
+        rule_key = None
+    return True, _PreToolCallDirective(
+        action=action,
+        message=message,
+        rule_key=rule_key,
+    )
+
+
 def set_thread_tool_whitelist(
     allowed: Optional[Set[str]],
     deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this thread's tool whitelist",
@@ -6042,21 +6239,63 @@ def _get_pre_tool_call_directive_details(
             message=fmt.format(tool_name=tool_name),
         )
 
-    from hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
+    hook_kwargs = {
+        "tool_name": tool_name,
+        "args": args if isinstance(args, dict) else {},
+        "task_id": task_id,
+        "session_id": session_id,
+        "tool_call_id": tool_call_id,
+        "turn_id": turn_id,
+        "api_request_id": api_request_id,
+        "middleware_trace": list(middleware_trace or []),
+    }
+    from hermes_cli.lifecycle import observe_hook
 
-    hook_results = invoke_lifecycle_hook(
-        "pre_tool_call",
-        tool_name=tool_name,
-        args=args if isinstance(args, dict) else {},
-        task_id=task_id,
-        session_id=session_id,
-        tool_call_id=tool_call_id,
-        turn_id=turn_id,
-        api_request_id=api_request_id,
-        middleware_trace=list(middleware_trace or []),
-    )
+    observe_hook("pre_tool_call", **hook_kwargs)
+    policies = _required_pre_tool_policies(tool_name)
+    if policies.configuration_error:
+        return _required_policy_configuration_block()
+    if policies.invalid_plugin_ids:
+        return _required_policy_block(
+            policies.invalid_plugin_ids[0], "has invalid configuration"
+        )
 
-    block_msg: Optional[str] = None
+    if policies.plugin_ids:
+        manager = get_plugin_manager()
+        invocations = manager.invoke_hook_detailed("pre_tool_call", **hook_kwargs)
+        for plugin_id in policies.plugin_ids:
+            loaded = manager._plugins.get(plugin_id)
+            if loaded is None or not loaded.enabled or loaded.error:
+                return _required_policy_block(plugin_id, "is unavailable")
+            owned = [
+                invocation
+                for invocation in invocations
+                if invocation.plugin_id == plugin_id
+            ]
+            if not owned:
+                return _required_policy_block(
+                    plugin_id, "did not register a pre_tool_call hook"
+                )
+            for invocation in owned:
+                if invocation.error is not None:
+                    return _required_policy_block(plugin_id, "callback failed")
+                valid, directive = _parse_pre_tool_call_result(
+                    invocation.result, explicit_allow=True
+                )
+                if not valid:
+                    return _required_policy_block(
+                        plugin_id, "returned an invalid decision"
+                    )
+                if directive.action == "block":
+                    return directive
+        hook_results = [
+            invocation.result
+            for invocation in invocations
+            if invocation.error is None and invocation.result is not None
+        ]
+    else:
+        hook_results = invoke_hook("pre_tool_call", **hook_kwargs)
+
     modified_args: Optional[Dict[str, Any]] = None
 
     for result in hook_results:
@@ -6145,7 +6384,7 @@ def get_pre_tool_call_block_message(
     return message if directive == "block" else None
 
 
-def resolve_pre_tool_block(
+def _resolve_pre_tool_block(
     tool_name: str,
     args: Optional[Dict[str, Any]],
     task_id: str = "",
@@ -6240,6 +6479,39 @@ def _resolve_block_from_details(
     return None
 
 
+def resolve_pre_tool_block(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[str]:
+    """Fail closed on resolver errors only for explicitly protected tools."""
+    try:
+        return _resolve_pre_tool_block(
+            tool_name,
+            args,
+            task_id=task_id,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+            middleware_trace=middleware_trace,
+        )
+    except Exception:
+        block_message = required_pre_tool_policy_failure(tool_name)
+        if block_message is not None:
+            logger.exception(
+                "Required pre_tool_call policy resolution crashed for %s",
+                tool_name,
+            )
+            return block_message
+        raise
+
+
 def _dispatch_pre_tool_call_hooks(
     tool_name: str,
     args: Optional[Dict[str, Any]],
@@ -6268,16 +6540,26 @@ def _dispatch_pre_tool_call_hooks(
     Callers that also need input transformation should call this
     function and apply ``modified_args`` if not ``None``.
     """
-    details = _get_pre_tool_call_directive_details(
-        tool_name, args, task_id=task_id, session_id=session_id,
-        tool_call_id=tool_call_id, turn_id=turn_id,
-        api_request_id=api_request_id, middleware_trace=middleware_trace,
-    )
-    block_msg = _resolve_block_from_details(
-        details, tool_name,
-        turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id,
-    )
-    return (block_msg, details.modified_args)
+    try:
+        details = _get_pre_tool_call_directive_details(
+            tool_name, args, task_id=task_id, session_id=session_id,
+            tool_call_id=tool_call_id, turn_id=turn_id,
+            api_request_id=api_request_id, middleware_trace=middleware_trace,
+        )
+        block_msg = _resolve_block_from_details(
+            details, tool_name,
+            turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id,
+        )
+        return (block_msg, details.modified_args)
+    except Exception:
+        block_message = required_pre_tool_policy_failure(tool_name)
+        if block_message is not None:
+            logger.exception(
+                "Required pre_tool_call policy resolution crashed for %s",
+                tool_name,
+            )
+            return (block_message, None)
+        raise
 
 
 def get_pre_verify_continue_message(

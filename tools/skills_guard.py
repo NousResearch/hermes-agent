@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v1"
+SCANNER_VERSION = "skills-guard-v2"
 
 
 
@@ -98,6 +98,47 @@ class ScanResult:
 # Threat patterns — (regex, pattern_id, severity, category, description)
 # ---------------------------------------------------------------------------
 
+# Agent config files: their contents become instructions in a LATER session,
+# so writing to one persists behaviour. Graded by confidence, because merely
+# NAMING one is how ordinary project docs, contributing guides, and
+# repo-authored skills describe their own conventions — treating a mention as
+# critical quarantines every honest skill that documents its own repo.
+_AGENT_CONFIG_FILE = r'(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)'
+_HERMES_CONFIG_FILE = r'(?:\.hermes/config\.yaml|\.hermes/SOUL\.md)'
+
+# Explicit word forms (no \w* wildcards — those match innocent substrings such
+# as "address" for "add").
+_CONFIG_MUTATION_VERB = (
+    r'\b(?:write|writes|writing|wrote|append|appends|appending|'
+    r'insert|inserts|inserting|inject|injects|injecting|'
+    r'modify|modifies|modifying|edit|edits|editing|'
+    r'update|updates|updating|overwrite|overwrites|overwriting|'
+    r'replace|replaces|replacing|rewrite|rewrites|rewriting)\b'
+)
+# Shell redirection or tee INTO the file — a mechanical write, not prose.
+_CONFIG_REDIRECT = r'(?:>>?\s*|\|\s*tee\s+(?:-a\s+)?)'
+
+
+def _config_write_regex(file_alt: str) -> str:
+    """Regex for an unambiguous, mechanical write into *file_alt*."""
+    return rf'{_CONFIG_REDIRECT}[^\n|>]{{0,40}}?{file_alt}'
+
+
+def _config_mutation_regex(file_alt: str) -> str:
+    """Regex for a prose instruction to change *file_alt*, in either order.
+
+    The gap forbids commas: an enumeration ("Write or refactor skills,
+    AGENTS.md, CLAUDE.md") is a doc listing its subject matter, whereas a real
+    instruction names the file as the direct object of the verb ("modify
+    CLAUDE.md", "append ... to AGENTS.md").
+    """
+    return (
+        rf'{_CONFIG_MUTATION_VERB}[^\n,]{{0,60}}?{file_alt}'
+        rf'|{file_alt}[^\n]{{0,40}}?(?:should|must|needs?\s+to)\s+'
+        rf'(?:contain|say|include|have)'
+    )
+
+
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
@@ -148,7 +189,9 @@ THREAT_PATTERNS = [
      "reads known secrets file"),
 
     # ── Exfiltration: programmatic env access ──
-    (r'printenv|env\s*\|',
+    # `env |` needs a word boundary: without it, "test-env |" in a markdown
+    # table (or any word ending in "env") reads as an environment dump.
+    (r'\bprintenv\b|(?<![\w-])env\s*\|',
      "dump_all_env", "high", "exfiltration",
      "dumps all environment variables"),
     # `os.environ` bare access (dict dump / iteration) is suspicious, but the
@@ -376,12 +419,18 @@ THREAT_PATTERNS = [
      "backtick string with command substitution"),
 
     # ── Path traversal ──
-    (r'\.\./\.\./\.\.',
+    # Only flag traversal that ESCAPES into a filesystem operation. A bare
+    # `../../` is how every markdown doc links to a sibling directory, so
+    # matching it alone flags ordinary cross-references. Require either a
+    # shell/# language file operation on the path, or an escape toward a
+    # sensitive root.
+    (r'(?:cat|cp|mv|rm|ln|tar|curl|wget|source|\.|bash|sh|python[23]?|node|open|'
+     r'read_file|write_file|include|require|import)\s+[^\n]{0,40}?\.\./\.\./\.\.',
      "path_traversal_deep", "high", "traversal",
-     "deep relative path traversal (3+ levels up)"),
-    (r'\.\./\.\.',
-     "path_traversal", "medium", "traversal",
-     "relative path traversal (2+ levels up)"),
+     "file operation on a deep relative traversal path (3+ levels up)"),
+    (r'(?:\.\./){2,}(?:etc|root|home|Users|\.ssh|\.aws|\.config|\.hermes)\b',
+     "path_traversal_sensitive", "high", "traversal",
+     "relative traversal toward a sensitive system or credential directory"),
     (r'/etc/passwd|/etc/shadow',
      "system_passwd_access", "critical", "traversal",
      "references system password files"),
@@ -458,14 +507,23 @@ THREAT_PATTERNS = [
      "sets SUID/SGID bit on a file"),
 
     # ── Agent config persistence ──
-    (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
+    # Tiered by confidence. A mechanical write (shell redirection/tee) or an
+    # explicit instruction to modify the file is the real persistence threat;
+    # a bare mention is documentation and must not quarantine a skill.
+    (_config_write_regex(_AGENT_CONFIG_FILE),
+     "agent_config_write", "critical", "persistence",
+     "writes directly into an agent config file (persists instructions across sessions)"),
+    (_config_mutation_regex(_AGENT_CONFIG_FILE),
      "agent_config_mod", "critical", "persistence",
-     "references agent config files (could persist malicious instructions across sessions)"),
-    (r'\.hermes/config\.yaml|\.hermes/SOUL\.md',
+     "instructs modification of agent config files (could persist instructions across sessions)"),
+    (_config_write_regex(_HERMES_CONFIG_FILE),
+     "hermes_config_write", "critical", "persistence",
+     "writes directly into Hermes configuration"),
+    (_config_mutation_regex(_HERMES_CONFIG_FILE),
      "hermes_config_mod", "critical", "persistence",
-     "references Hermes configuration files directly"),
+     "instructs modification of Hermes configuration files"),
     (r'\.claude/settings|\.codex/config',
-     "other_agent_config", "high", "persistence",
+     "other_agent_config", "medium", "persistence",
      "references other agent configuration files"),
 
     # ── Hardcoded secrets (credentials embedded in the skill itself) ──
@@ -515,7 +573,15 @@ THREAT_PATTERNS = [
      "claims new policy/guidelines (may be social engineering)"),
 
     # ── Context window exfiltration ──
-    (r'(include|output|print|send|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|context)',
+    # Require an EXFIL destination or an explicit "entire/full" qualifier.
+    # Bare "output ... context" matches ordinary prose about context
+    # collectors, context budgets, and context files.
+    (r'(?:include|output|print|send|share|dump|upload|post)\s+(?:\w+\s+){0,3}'
+     r'(?:the\s+)?(?:entire|full|complete|whole|all\s+(?:of\s+)?(?:the\s+)?)\s*'
+     r'(?:conversation|chat\s+history|previous\s+messages|context\s+window)'
+     r'|(?:send|post|upload|transmit|exfiltrate)\s+(?:\w+\s+){0,3}'
+     r'(?:conversation|chat\s+history|previous\s+messages|context\s+window)'
+     r'\s+(?:to|at)\s+',
      "context_exfil", "high", "exfiltration",
      "instructs agent to output/share conversation history"),
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',

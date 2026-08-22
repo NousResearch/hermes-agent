@@ -135,13 +135,16 @@ let getWindowsModule: Promise<GetWindowsModule | null> | null = null
  * returns, so it reaches the agent transcript (and `agent.log` on whichever
  * host runs the backend) without needing the desktop's own log.
  *
- * Set once per cause and never cleared: the module import is memoized, so an
- * import-time failure is permanent for the process and must survive to be
- * reported on every later call.
+ * Holds the most recent cause until an enumeration succeeds. Import failures
+ * stay permanent by construction: the module import is memoized, so a failed
+ * load can never be followed by a success, and its reason survives to be
+ * reported on every later call. A transient runtime failure is cleared as soon
+ * as `openWindows()` returns a real list, so a later unexplained null carries
+ * no cause at all and a stale reason can never be attached to it.
  */
 let lastEnumerationFailure: string | null = null
 
-const describe = (error: unknown): string => {
+export const describeThrown = (error: unknown): string => {
   const message = error instanceof Error ? error.message : String(error)
   const code = (error as { code?: string } | null)?.code
 
@@ -185,7 +188,7 @@ const loadGetWindows = (): Promise<GetWindowsModule | null> => {
     try {
       specifier = resolveOutsideAsar(import.meta.resolve('get-windows'))
     } catch (error) {
-      noteEnumerationFailure(`import.meta.resolve('get-windows') threw ${describe(error)}`)
+      noteEnumerationFailure(`import.meta.resolve('get-windows') threw ${describeThrown(error)}`)
 
       return null
     }
@@ -193,7 +196,7 @@ const loadGetWindows = (): Promise<GetWindowsModule | null> => {
     try {
       return await import(specifier)
     } catch (error) {
-      noteEnumerationFailure(`import('${specifier}') threw ${describe(error)}`)
+      noteEnumerationFailure(`import('${specifier}') threw ${describeThrown(error)}`)
 
       return null
     }
@@ -228,7 +231,7 @@ async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<Enumera
         : undefined
     )
   } catch (error) {
-    noteEnumerationFailure(`openWindows() threw ${describe(error)}`)
+    noteEnumerationFailure(`openWindows() threw ${describeThrown(error)}`)
 
     return null
   }
@@ -238,6 +241,12 @@ async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<Enumera
 
     return null
   }
+
+  // A real list proves both the loader and the enumerator work, so any cause
+  // recorded earlier in this process describes a condition that has passed.
+  // Import failures keep their permanence here by construction: a memoized
+  // failed import returns null above and never reaches this line.
+  lastEnumerationFailure = null
 
   // get-windows documents openWindows() as front-to-back, and macOS/Windows
   // honor that (CGWindowList / EnumWindows order). Its lib/linux.js, however,

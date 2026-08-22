@@ -11,6 +11,19 @@ describe('model-status-label', () => {
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
   })
 
+  it('keeps full ids for custom / self-hosted model sources', () => {
+    // Custom HF-org / self-hosted prefixes are part of the model's identity
+    // and stay visible, so `esatapedico/...` vs `ggml-org/...` variants of
+    // the same base model never look identical in pickers or the status bar.
+    expect(displayModelName('esatapedico/Qwen3.8-27B-NVFP4-MTP-GGUF')).toBe(
+      'esatapedico/Qwen3.8-27B-NVFP4-MTP-GGUF'
+    )
+    expect(displayModelName('ggml-org/qwen3.8-27b@q4_k_m')).toBe('ggml-org/qwen3.8-27b@q4_k_m')
+    expect(formatModelStatusLabel('esatapedico/Qwen3.8-27B-NVFP4-MTP-GGUF', { reasoningEffort: 'medium' })).toBe(
+      'esatapedico/Qwen3.8-27B-NVFP4-MTP-GGUF · Med'
+    )
+  })
+
   it('strips trailing date-pin snapshots from the display name', () => {
     expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4 5')
     expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')

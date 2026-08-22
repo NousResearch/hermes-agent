@@ -33,12 +33,35 @@ export function currentPickerSelection(
   }
 }
 
-/** Strip provider prefix and normalize for display. */
+// Well-known provider prefixes that are noise in a display name (the short
+// id after them is unambiguous). Anything else — custom orgs, HF repos,
+// self-hosted variants — keeps its full prefix so distinct model sources
+// (e.g. `esatapedico/Qwen3.8-27B-...` vs `ggml-org/qwen3.8-...`) stay
+// distinguishable in pickers and the status bar.
+const KNOWN_PROVIDER_PREFIXES = new Set([
+  'anthropic', 'openai', 'deepseek', 'google', 'gemini', 'meta', 'mistral',
+  'xai', 'grok', 'amazon', 'cohere', 'nous', 'microsoft', 'azure', 'github',
+  'openrouter', 'together', 'fireworks', 'groq', 'ollama', 'lmstudio',
+])
+
+/** Strip known provider prefix and normalize for display. */
 export function modelBaseId(model: string): string {
   const trimmed = model.trim()
-  const slash = trimmed.lastIndexOf('/')
+  const slash = trimmed.indexOf('/')
 
-  return slash >= 0 ? trimmed.slice(slash + 1) : trimmed
+  if (slash > 0) {
+    const prefix = trimmed.slice(0, slash).toLowerCase()
+
+    // Known aggregator/provider → drop the prefix (it's display noise).
+    if (KNOWN_PROVIDER_PREFIXES.has(prefix)) {
+      return trimmed.slice(slash + 1)
+    }
+
+    // Custom org / HF repo / self-hosted → keep the full id.
+    return trimmed
+  }
+
+  return trimmed
 }
 
 // Trailing model-id variants that should render as a grayed tag beside the
@@ -74,6 +97,13 @@ function prettifyBase(base: string): string {
 export function modelDisplayParts(model: string): { name: string; tag: string } {
   let base = modelBaseId(model)
   let tag = ''
+
+  // Models with an org/provider prefix (e.g. `esatapedico/Qwen3.8-27B-...`)
+  // are shown verbatim — the full id IS the display name, so the user can
+  // tell custom-provider variants apart at a glance.
+  if (base.includes('/')) {
+    return { name: model.trim() || 'No model', tag }
+  }
 
   for (const [pattern, label] of VARIANT_TAGS) {
     if (pattern.test(base)) {

@@ -9690,13 +9690,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     # Sentinel prefix used to distinguish JSON-encoded structured content
     # (multimodal messages: lists of parts like text + image_url) from plain
-    # string content. The NUL byte is not legal in normal text, so this
-    # cannot collide with real user content.
+    # string content. Literal strings carrying this reserved prefix are escaped
+    # by _encode_content so a crafted import cannot trigger decoding on read.
     _CONTENT_JSON_PREFIX = "\x00json:"
 
     @classmethod
     def _encode_content(cls, content: Any) -> Any:
-        """Serialize structured (list/dict) message content for sqlite.
+        """Serialize structured or reserved-prefix message content for sqlite.
 
         sqlite3 can only bind ``str``, ``bytes``, ``int``, ``float``, and ``None``
         to query parameters. Multimodal messages have ``content`` as a list of
@@ -9704,9 +9704,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         raises ``ProgrammingError: Error binding parameter N: type 'list' is
         not supported`` when bound directly.
 
-        Returns the value unchanged when it's already a safe scalar, or a
-        sentinel-prefixed JSON string for lists/dicts. Paired with
-        :meth:`_decode_content` on read.
+        A literal string beginning with the internal sentinel must also be
+        encoded. Otherwise a caller can make a plain string look like stored
+        structured content and trigger an unintended JSON decode on read.
+        Paired with :meth:`_decode_content`.
         """
         if isinstance(content, str):
             # Lone UTF-16 surrogates reach here inside tool results scraped
@@ -9718,13 +9719,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # land. Left raw, sqlite3 raises UnicodeEncodeError, the flush is
             # abandoned, and the session silently stops persisting for the
             # rest of its life. Scrub so persistence never fails.
-            return _sanitize_surrogates(content)
+            content = _sanitize_surrogates(content)
+            if not content.startswith(cls._CONTENT_JSON_PREFIX):
+                return content
         if content is None or isinstance(content, (bytes, int, float)):
             return content
         try:
             # json.dumps defaults to ensure_ascii=True, which escapes any
             # surrogate as \udXXX — already safe to bind.
-            return cls._CONTENT_JSON_PREFIX + json.dumps(content)
+            return cls._CONTENT_JSON_PREFIX + json.dumps(content, allow_nan=False)
         except (TypeError, ValueError):
             # Last-resort fallback: stringify so persistence never fails.
             return _sanitize_surrogates(str(content))
@@ -9734,10 +9737,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Reverse :meth:`_encode_content`; returns scalars unchanged."""
         if isinstance(content, str) and content.startswith(cls._CONTENT_JSON_PREFIX):
             try:
-                return json.loads(content[len(cls._CONTENT_JSON_PREFIX):])
-            except (json.JSONDecodeError, TypeError):
+                decoded = json.loads(content[len(cls._CONTENT_JSON_PREFIX):])
+                json.dumps(decoded, allow_nan=False)
+                return decoded
+            except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
                 logger.warning(
-                    "Failed to decode JSON-encoded message content; "
+                    "Failed to safely decode JSON-encoded message content; "
                     "returning raw string"
                 )
                 return content

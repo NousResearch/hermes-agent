@@ -168,6 +168,35 @@ def test_structured_runtime_options_persist_atomically_and_reset(store_factory, 
     }
 
 
+def test_structured_runtime_options_roll_back_memory_when_save_fails(
+    store_factory, monkeypatch
+):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    assert store.set_runtime_options(
+        session_key,
+        model_override=OVERRIDE,
+        reasoning_override={"enabled": True, "effort": "high"},
+        service_tier_override="priority",
+    )
+    before = store.get_runtime_options(session_key)
+
+    def _fail_save():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "_save", _fail_save)
+    with pytest.raises(OSError, match="disk full"):
+        store.set_runtime_options(
+            session_key,
+            model_override=None,
+            reasoning_override={"enabled": False},
+            service_tier_override="normal",
+        )
+
+    assert store.get_runtime_options(session_key) == before
+
+
 def test_runner_rehydrates_all_structured_runtime_options(store_factory):
     store = store_factory()
     entry = store.get_or_create_session(_make_source())

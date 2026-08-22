@@ -3106,10 +3106,22 @@ class SessionStore:
             )
             if not changed:
                 return True
+            previous_model = entry.model_override
+            previous_reasoning = entry.reasoning_override
+            previous_tier = entry.service_tier_override
             entry.model_override = cleaned_model
             entry.reasoning_override = cleaned_reasoning
             entry.service_tier_override = service_tier_override
-            self._save()
+            try:
+                self._save()
+            except Exception:
+                # Keep the in-memory store transactional with the durable
+                # write. A failed save must not leave this process using a
+                # configuration that a restart would silently discard.
+                entry.model_override = previous_model
+                entry.reasoning_override = previous_reasoning
+                entry.service_tier_override = previous_tier
+                raise
             return True
 
     def get_runtime_options(self, session_key: str) -> Optional[Dict[str, Any]]:

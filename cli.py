@@ -14931,6 +14931,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             pass
         return True
 
+    def _voice_concise_responses_enabled(self) -> bool:
+        try:
+            from hermes_cli.config import load_config_readonly
+            from utils import is_truthy_value
+
+            voice_cfg = load_config_readonly().get("voice", {})
+            return not isinstance(voice_cfg, dict) or is_truthy_value(
+                voice_cfg.get("concise_responses", True), default=True
+            )
+        except Exception:
+            return True
+
     def _enable_voice_mode(self):
         """Enable voice mode after checking requirements."""
         if self._voice_mode:
@@ -16346,7 +16358,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # model responds concisely. The prefix is API-call-local only —
             # run_conversation persists the original clean user message.
             _voice_prefix = ""
-            if voice_input and isinstance(message, str):
+            if (
+                voice_input
+                and isinstance(message, str)
+                and self._voice_concise_responses_enabled()
+            ):
                 _voice_prefix = (
                     "[Voice input — respond concisely and conversationally, "
                     "2-3 sentences max. No code blocks or markdown.] "

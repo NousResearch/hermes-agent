@@ -89,8 +89,10 @@ class _StubAgent:
         self.max_iterations = 90
         self.model = "test/model"
         self.platform = "cli"
+        self.captured = None
 
     def run_conversation(self, **kwargs):
+        self.captured = kwargs
         # Simulate a turn that finishes normally — it never observed the
         # interrupt flag (raced past its last check).
         time.sleep(self.turn_seconds)
@@ -193,6 +195,76 @@ def test_chat_persists_clean_input_when_a_queued_note_changes_api_message():
     assert agent.captured is not None
     assert agent.captured["user_message"] == "[MODEL SWITCH NOTE]\n\nclean prompt"
     assert agent.captured["persist_user_message"] == "clean prompt"
+
+
+def test_voice_chat_persists_clean_input_when_concise_guidance_is_enabled():
+    """Voice guidance is model-facing only; history keeps the transcription."""
+    cli = _make_cli()
+    agent = _StubAgent(cli.session_id, turn_seconds=0)
+    cli.agent = agent
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+
+    with patch("hermes_cli.config.load_config_readonly", return_value={"voice": {}}), \
+         patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        cli.chat("clean transcription", voice_input=True)
+
+    assert agent.captured is not None
+    assert agent.captured["user_message"].startswith("[Voice input —")
+    assert agent.captured["user_message"].endswith("clean transcription")
+    assert agent.captured["persist_user_message"] == "clean transcription"
+
+
+def test_voice_chat_matches_typed_input_when_concise_guidance_is_disabled():
+    """The accessibility toggle removes only the model-facing style prefix."""
+    cli = _make_cli()
+    agent = _StubAgent(cli.session_id, turn_seconds=0)
+    cli.agent = agent
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+
+    with patch(
+        "hermes_cli.config.load_config_readonly",
+        return_value={"voice": {"concise_responses": False}},
+    ), patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        cli.chat("run a multi-step task", voice_input=True)
+
+    assert agent.captured is not None
+    assert agent.captured["user_message"] == "run a multi-step task"
+    assert agent.captured["persist_user_message"] is None
+
+
+def test_typed_chat_never_gets_voice_guidance_when_setting_is_enabled():
+    """The voice setting never changes ordinary typed input."""
+    cli = _make_cli()
+    agent = _StubAgent(cli.session_id, turn_seconds=0)
+    cli.agent = agent
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+
+    with patch(
+        "hermes_cli.config.load_config_readonly",
+        return_value={"voice": {"concise_responses": True}},
+    ), patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        cli.chat("typed request")
+
+    assert agent.captured is not None
+    assert agent.captured["user_message"] == "typed request"
 
 
 def test_chat_preserves_clean_multimodal_input_when_note_changes_api_message():

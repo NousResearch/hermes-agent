@@ -435,7 +435,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   voice: {
     recordKey: 'Voice Shortcut',
     maxRecordingSeconds: 'Max Recording Length',
-    autoTts: 'Read Responses Aloud'
+    autoTts: 'Read Responses Aloud',
+    conciseResponses: 'Concise CLI Voice Responses'
   },
   stt: {
     enabled: 'Speech To Text',
@@ -592,7 +593,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     enabled: 'Summarize older context when conversations get large.'
   },
   voice: {
-    autoTts: 'Automatically speak assistant responses.'
+    autoTts: 'Automatically speak assistant responses.',
+    conciseResponses: 'Apply brief conversational response guidance to CLI microphone requests.'
   },
   tts: {
     xai: {
@@ -699,6 +701,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.echo_transcripts',
       'stt.provider',
       'voice.auto_tts',
+      'voice.concise_responses',
       'tts.edge.voice',
       'tts.openai.model',
       'tts.openai.voice',

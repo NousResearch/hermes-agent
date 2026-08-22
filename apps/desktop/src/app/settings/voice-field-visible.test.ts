@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
+import { SECTIONS } from './constants'
 import { voiceFieldVisible } from './helpers'
 
 const cfg = (over: Record<string, unknown> = {}): HermesConfigRecord =>
@@ -12,10 +13,23 @@ const cfg = (over: Record<string, unknown> = {}): HermesConfigRecord =>
   }) as unknown as HermesConfigRecord
 
 describe('voiceFieldVisible', () => {
+  it('includes concise response guidance in the curated Voice settings', () => {
+    const voice = SECTIONS.find(section => section.id === 'voice')
+
+    expect(voice?.keys).toContain('voice.concise_responses')
+  })
+
   it('always shows top-level + non-provider keys', () => {
     const config = cfg()
 
-    for (const key of ['tts.provider', 'stt.enabled', 'stt.provider', 'voice.auto_tts', 'voice.record_key']) {
+    for (const key of [
+      'tts.provider',
+      'stt.enabled',
+      'stt.provider',
+      'voice.auto_tts',
+      'voice.concise_responses',
+      'voice.record_key'
+    ]) {
       expect(voiceFieldVisible(key, config)).toBe(true)
     }
   })

@@ -698,7 +698,8 @@ export const zh: Translations = {
       voice: {
         recordKey: '语音快捷键',
         maxRecordingSeconds: '最长录音时长',
-        autoTts: '朗读回复'
+        autoTts: '朗读回复',
+        conciseResponses: '简洁的 CLI 语音回复'
       },
       stt: {
         enabled: '语音转文字',
@@ -845,7 +846,8 @@ export const zh: Translations = {
         enabled: '当对话变大时对较早的上下文进行摘要。'
       },
       voice: {
-        autoTts: '自动朗读助手回复。'
+        autoTts: '自动朗读助手回复。',
+        conciseResponses: '为 CLI 麦克风请求应用简短、对话式的回复指引。'
       },
       stt: {
         enabled: '启用本地或提供方支持的语音转写。',

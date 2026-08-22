@@ -54,9 +54,14 @@ describe('desktop i18n runtime translator', () => {
 
   it('keeps translated settings field copy addressable from schema keys', () => {
     const field = ['display', 'show_reasoning'].join('.')
+    const voiceField = ['voice', 'concise_responses'].join('.')
 
     expect(fieldCopyForSchemaKey(zh.settings.fieldLabels, field)).toBe('推理过程块')
     expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBe('当后端提供推理内容时予以显示。')
+    expect(fieldCopyForSchemaKey(zh.settings.fieldLabels, voiceField)).toBe('简洁的 CLI 语音回复')
+    expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, voiceField)).toBe(
+      '为 CLI 麦克风请求应用简短、对话式的回复指引。'
+    )
   })
 
   it('falls back to English when the active locale cannot resolve a key', () => {

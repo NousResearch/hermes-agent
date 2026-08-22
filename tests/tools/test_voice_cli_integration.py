@@ -184,6 +184,42 @@ class TestVoiceBeepConfigReal:
         mock_beep.assert_not_called()
 
 
+class TestVoiceConciseResponsesConfigReal:
+    """Test the model-facing concise-response guidance toggle from config.yaml."""
+
+    @pytest.mark.parametrize(
+        ("config_text", "expected"),
+        [
+            ("{}\n", True),
+            ("voice:\n  concise_responses: true\n", True),
+            ("voice:\n  concise_responses: false\n", False),
+            ("voice:\n  concise_responses: \"false\"\n", False),
+            # A non-mapping section must preserve the backward-compatible
+            # default rather than fail a turn.
+            ("voice: invalid\n", True),
+            # A YAML parse failure falls back to DEFAULT_CONFIG in load_config().
+            ("voice: [broken\n", True),
+        ],
+    )
+    def test_config_yaml_values(self, config_text, expected):
+        from hermes_cli import config as config_module
+
+        config_path = config_module.get_config_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(config_text, encoding="utf-8")
+        config_module._LOAD_CONFIG_CACHE.clear()
+        config_module._RAW_CONFIG_CACHE.clear()
+
+        assert _make_voice_cli()._voice_concise_responses_enabled() is expected
+
+    def test_config_load_failure_preserves_the_compatible_default(self):
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            side_effect=RuntimeError("unreadable config"),
+        ):
+            assert _make_voice_cli()._voice_concise_responses_enabled() is True
+
+
 class TestMaxRecordingSecondsConfigReal:
     """voice.max_recording_seconds must reach the recorder from config.
 

@@ -169,6 +169,7 @@ voice:
   submit_mode: "direct"  # TUI: direct | draft
   max_recording_seconds: 120
   auto_tts: false
+  concise_responses: true
   beep_enabled: true
   silence_threshold: 200
   silence_duration: 3.0

@@ -1428,6 +1428,11 @@ stt:
 #                      # client: always desktop-streamed PCM (detection stays
 #                      #         on the backend).
 
+# CLI microphone input. Keep concise_responses enabled for short,
+# conversational voice replies; disable it to treat dictation like typed input.
+# voice:
+#   concise_responses: true
+
 # Image generation. Each provider plugin reads its own ``image_gen.<name>``
 # block; deepinfra discovers models live from
 # api.deepinfra.com/v1/openai/models filtered by the ``image-gen`` tag —

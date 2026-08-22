@@ -2366,6 +2366,30 @@ class TestConfigRoundTrip:
         reloaded = self.client.get("/api/config").json()
         assert reloaded["terminal"]["font_family"] == "MesloLGS NF"
 
+    def test_voice_concise_responses_schema_and_round_trip(self):
+        """Dashboard/desktop config API exposes and persists the voice toggle."""
+        from hermes_cli.config import load_config, read_raw_config
+
+        schema = self.client.get("/api/config/schema").json()["fields"]
+        field = schema["voice.concise_responses"]
+        assert field["type"] == "boolean"
+        assert field["category"] == "voice"
+
+        web_config = self.client.get("/api/config").json()
+        assert web_config["voice"]["concise_responses"] is True
+        auto_tts_before = web_config["voice"]["auto_tts"]
+        web_config["voice"]["concise_responses"] = False
+
+        response = self.client.put("/api/config", json={"config": web_config})
+
+        assert response.status_code == 200
+        assert read_raw_config()["voice"]["concise_responses"] is False
+        persisted_voice = load_config()["voice"]
+        assert persisted_voice["concise_responses"] is False
+        assert persisted_voice["auto_tts"] is auto_tts_before
+        reloaded = self.client.get("/api/config").json()
+        assert reloaded["voice"]["concise_responses"] is False
+
 
 # ---------------------------------------------------------------------------
 # New feature endpoint tests

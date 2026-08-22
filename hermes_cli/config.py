@@ -1017,6 +1017,35 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     return missing
 
 
+_CUSTOM_PROVIDER_MODEL_OVERRIDE_FIELDS = frozenset({
+    "context_length",
+    "prompt_caching",
+})
+
+
+def _set_path_parts(dotted_key: str) -> List[str]:
+    """Split a config-set path while preserving schema-defined opaque keys."""
+    parts = dotted_key.split(".")
+    if (
+        len(parts) >= 5
+        and parts[0] == "custom_providers"
+        and parts[1].isdigit()
+        and parts[2] == "models"
+    ):
+        model_path = parts[3:]
+        field = model_path[-1]
+        if field in _CUSTOM_PROVIDER_MODEL_OVERRIDE_FIELDS:
+            model_id = ".".join(model_path[:-1])
+            return parts[:3] + [model_id, field]
+        if len(model_path) > 1:
+            raise ValueError(
+                "ambiguous custom-provider model paths can only address "
+                "supported model override fields: "
+                + ", ".join(sorted(_CUSTOM_PROVIDER_MODEL_OVERRIDE_FIELDS))
+            )
+    return parts
+
+
 def _set_nested(config, dotted_key: str, value):
     """Set a value at an arbitrarily nested dotted key path.
 
@@ -1039,7 +1068,7 @@ def _set_nested(config, dotted_key: str, value):
     destroying list-typed config like ``custom_providers`` whenever a
     caller used an indexed path.
     """
-    parts = dotted_key.split(".")
+    parts = _set_path_parts(dotted_key)
     current = config
     for part in parts[:-1]:
         if isinstance(current, list):
@@ -5597,7 +5626,11 @@ def set_config_value(key: str, value: str, force: bool = False):
                     file=sys.stderr,
                 )
                 sys.exit(1)
-    _set_nested(user_config, key, value)
+    try:
+        _set_nested(user_config, key, value)
+    except (IndexError, TypeError, ValueError) as exc:
+        print(f"✗ Cannot set {key!r}: {exc}", file=sys.stderr)
+        sys.exit(1)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical
     # key the runtime resolver actually reads, instead of being silently

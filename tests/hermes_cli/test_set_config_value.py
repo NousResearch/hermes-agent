@@ -294,6 +294,89 @@ class TestListNavigation:
 
 
 # ---------------------------------------------------------------------------
+# Dotted custom-provider model IDs — regression tests for #91095
+# ---------------------------------------------------------------------------
+
+class TestDottedCustomProviderModelIds:
+    def _write_config(self, home, models):
+        import yaml
+
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({
+                "custom_providers": [{
+                    "name": "Local Ollama",
+                    "base_url": "http://localhost:11434/v1",
+                    "models": models,
+                }]
+            })
+        )
+
+    def _read_models(self, home):
+        import yaml
+
+        saved = yaml.safe_load(_read_config(home))
+        return saved["custom_providers"][0]["models"]
+
+    def test_updates_existing_dotted_model_id(self, _isolated_hermes_home):
+        self._write_config(
+            _isolated_hermes_home,
+            {"qwen3.5:4b": {"context_length": 16_384}},
+        )
+
+        set_config_value(
+            "custom_providers.0.models.qwen3.5:4b.context_length",
+            "65536",
+        )
+
+        assert self._read_models(_isolated_hermes_home) == {
+            "qwen3.5:4b": {"context_length": 65_536}
+        }
+
+    def test_creates_first_override_for_dotted_model_id(
+        self,
+        _isolated_hermes_home,
+    ):
+        self._write_config(_isolated_hermes_home, {})
+
+        set_config_value(
+            "custom_providers.0.models.qwen3.5:4b.context_length",
+            "65536",
+        )
+
+        assert self._read_models(_isolated_hermes_home) == {
+            "qwen3.5:4b": {"context_length": 65_536}
+        }
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            (
+                "custom_providers.0.models.vendor.model.unsupported_flag",
+                "true",
+            ),
+            (
+                "custom_providers.0.models.qwen3.5:4b",
+                "{context_length: 65536}",
+            ),
+        ],
+    )
+    def test_rejects_ambiguous_dotted_model_path(
+        self,
+        _isolated_hermes_home,
+        key,
+        value,
+    ):
+        self._write_config(_isolated_hermes_home, {})
+        before = _read_config(_isolated_hermes_home)
+
+        with pytest.raises(SystemExit) as exc:
+            set_config_value(key, value)
+
+        assert exc.value.code == 1
+        assert _read_config(_isolated_hermes_home) == before
+
+
+# ---------------------------------------------------------------------------
 # Cron drift guard warning — regression tests for #59031
 # ---------------------------------------------------------------------------
 

@@ -84,6 +84,206 @@ class TestSmartApproval:
 
 
 class TestDetectDangerousRm:
+    def test_rm_rf_detected(self):
+        is_dangerous, key, desc = detect_dangerous_command("rm -rf /home/user")
+        assert is_dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    @pytest.mark.parametrize("recursive_option", ("--r", "--recurs", "--recursive"))
+    def test_rm_recursive_long_flag_abbreviations(self, recursive_option):
+        is_dangerous, key, desc = detect_dangerous_command(
+            f'rm "build dir" {recursive_option}'
+        )
+        assert is_dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    @pytest.mark.parametrize(
+        "wrapper",
+        (
+            "/usr/bin/env",
+            r"C:\Windows\env.exe",
+        ),
+    )
+    def test_absolute_wrapper_paths_preserve_rm_detection(self, wrapper):
+        is_dangerous, _, desc = detect_dangerous_command(
+            f'{wrapper} rm "build dir" -rf'
+        )
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
+    @pytest.mark.parametrize(
+        "wrapper",
+        (
+            "/usr/bin/env",
+            r"C:\Windows\env.com",
+        ),
+    )
+    @pytest.mark.parametrize(
+        ("option", "argument"),
+        (
+            ("--unset", "FOO"),
+            ("-C", "/tmp"),
+        ),
+    )
+    def test_env_option_arguments_do_not_hide_rm_detection(
+        self, wrapper, option, argument
+    ):
+        is_dangerous, _, desc = detect_dangerous_command(
+            f'{wrapper} {option} {argument} rm "build dir" -rf'
+        )
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
+    def test_mixed_quote_heredoc_delimiter_preserves_following_command(self):
+        command = 'cat <<E"OF"\nbody\nEOF\nrm "build dir" -rf'
+
+        is_dangerous, _, desc = detect_dangerous_command(command)
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
+    def test_rm_like_data_in_mixed_quote_heredoc_is_not_detected(self):
+        command = 'cat <<E"OF"\nrm "d" -rf\nEOF'
+
+        assert detect_dangerous_command(command) == (False, None, None)
+
+    @pytest.mark.parametrize(
+        "command",
+        (
+            'echo $((1 << 2))\nrm "build dir" -rf',
+            'value=$(cat <<EOF\nbody\nEOF)\nrm "build dir" -rf',
+        ),
+    )
+    def test_nested_heredoc_tokens_do_not_hide_later_rm(self, command):
+        is_dangerous, _, desc = detect_dangerous_command(command)
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
+    def test_arithmetic_shift_without_rm_is_not_detected(self):
+        command = "echo $((1 << 2))"
+
+        assert detect_dangerous_command(command) == (False, None, None)
+
+    def test_rm_like_data_in_quoted_heredoc_is_not_detected(self):
+        command = 'cat <<"EOF"\nrm "quoted dir" -rf\nEOF'
+
+        assert detect_dangerous_command(command) == (False, None, None)
+
+    def test_multiple_and_tab_stripped_heredocs_are_data(self):
+        commands = (
+            'cat <<FIRST <<"SECOND"\nrm "a" -rf\nFIRST\nrm "b" -rf\nSECOND',
+            'cat <<-EOF\n\trm "quoted dir" -rf\n\tEOF',
+        )
+
+        for command in commands:
+            assert detect_dangerous_command(command) == (False, None, None)
+
+    def test_herestring_does_not_suppress_the_next_command(self):
+        command = 'cat <<<EOF\nrm "quoted dir" -rf'
+
+        is_dangerous, _, desc = detect_dangerous_command(command)
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
+    def test_heredoc_marker_in_comment_does_not_suppress_the_next_command(self):
+        command = 'echo ok # <<EOF\nrm "quoted dir" -rf'
+
+        is_dangerous, _, desc = detect_dangerous_command(command)
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
+    def test_rm_after_heredoc_terminator_is_detected(self):
+        command = 'cat <<EOF\nrm "d" -rf\nEOF\nrm "e" -rf'
+
+        is_dangerous, _, desc = detect_dangerous_command(command)
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
+    def test_heredoc_body_inside_command_substitution_stays_executable(self):
+        command = 'value=$(cat <<EOF\nrm "d" -rf\nEOF)\nls'
+
+        is_dangerous, _, desc = detect_dangerous_command(command)
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
+    def test_heredoc_inside_bare_subshell_keeps_newline_starts(self):
+        command = '(cat <<EOF\nrm "d" -rf\nEOF)'
+
+        is_dangerous, _, desc = detect_dangerous_command(command)
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
+    def test_heredoc_inside_brace_group_is_data(self):
+        command = '{ cat <<EOF\nrm "d" -rf\nEOF\n}'
+
+        assert detect_dangerous_command(command) == (False, None, None)
+
+    def test_heredoc_token_inside_backtick_substitution_keeps_later_rm(self):
+        command = '`cat <<EOF`\nrm "d" -rf'
+
+        is_dangerous, _, desc = detect_dangerous_command(command)
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
+    def test_unterminated_heredoc_body_is_data_to_end_of_input(self):
+        command = 'cat <<EOF\nrm "d" -rf'
+
+        assert detect_dangerous_command(command) == (False, None, None)
+
+    def test_crlf_heredoc_terminator_and_following_rm(self):
+        command = 'cat <<EOF\r\nrm "d" -rf\r\nEOF\r\nrm "e" -rf'
+
+        is_dangerous, _, desc = detect_dangerous_command(command)
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
+
+    def test_command_substitution_in_unquoted_heredoc_body_is_detected(self):
+        command = 'cat <<EOF\n$(rm "d" -rf)\nEOF'
+
+        is_dangerous, _, desc = detect_dangerous_command(command)
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
+    def test_backtick_substitution_in_unquoted_heredoc_body_is_detected(self):
+        command = 'cat <<EOF\n`rm "d" -rf`\nEOF'
+
+        is_dangerous, _, desc = detect_dangerous_command(command)
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
+    def test_command_substitution_in_quoted_heredoc_body_stays_data(self):
+        command = 'cat <<"EOF"\n$(rm "d" -rf)\nEOF'
+
+        assert detect_dangerous_command(command) == (False, None, None)
+
+    def test_backslash_escaped_heredoc_delimiter_over_detects_substitution(self):
+        # bash would NOT expand this body (`<<\EOF` quotes the delimiter), and
+        # the walker honors that on the raw command. Detection still fires
+        # because _normalize_command_for_detection strips the backslash before
+        # the detection variants run, turning the delimiter into the expanding
+        # form. That errs toward prompting, so pin the safe-side behavior.
+        command = 'cat <<\\EOF\n$(rm "d" -rf)\nEOF'
+
+        is_dangerous, _, desc = detect_dangerous_command(command)
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+
     def test_rm_flags_after_operands_detected(self):
         # GNU rm permutes options: `rm build/ -rf` == `rm -rf build/`.
         # Port of openai/codex#33464.
@@ -93,11 +293,53 @@ class TestDetectDangerousRm:
             "rm ~/projects -rf",
             "sudo rm build/ -rf",
             "rm one two three -rf",
+            'rm "/srv/data" -rf',
+            "rm 'build' -rf",
+            'rm "foo"/bar -rf',
+            r'rm "foo\"bar" -rf',
+            r'rm foo\"bar -rf',
+            'MODE=test /bin/rm "my build" -rf',
+            'rm.exe "my build" -fR',
+            "$(rm build/ -rf)",
+            "(rm build/ -rf)",
         ):
             is_dangerous, key, desc = detect_dangerous_command(cmd)
             assert is_dangerous is True, f"{cmd!r} should require approval"
-            assert "delete" in desc.lower()
+            assert desc == "recursive delete (flags after operands)"
 
+    def test_rm_operand_walk_character_budget_fails_closed_quickly(self):
+        cmd = 'rm "a"'
+        for _ in range(400):
+            cmd = 'rm "a" $(' + cmd + ')'
+        cmd += ";"
+
+        started = time.perf_counter()
+        is_dangerous, _, desc = detect_dangerous_command(cmd)
+        elapsed = time.perf_counter() - started
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+        assert elapsed < 2.0
+
+    def test_rm_flags_after_operands_no_false_positives(self):
+        for cmd in (
+            # after a bare `--`, -rf-looking tokens are literal filenames
+            "rm -- -weird-r-file",
+            "rm -f -- -r-file",
+            # a later pipeline/command segment's flags don't belong to rm
+            "rm foo | grep -r bar",
+            "rm foo; ls -lart",
+            # long options whose `r` is not whitespace-anchored
+            "npm rm somepkg --registry=https://registry.npmjs.org",
+            "rm old.log --verbose",
+            # plain multi-operand deletes and data contexts stay safe
+            "rm build/file.txt other.txt",
+            'rm "operand -rf" other.txt',
+            'echo rm "x y" -r',
+            'git commit -m "rm x" --amend',
+        ):
+            is_dangerous, key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is False, f"{cmd!r} should be safe, got: {desc}"
 
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):

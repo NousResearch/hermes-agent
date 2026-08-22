@@ -726,6 +726,60 @@ def test_session_resume_rejects_runaway_transcript_before_history_load(
     assert "safe resume limit is 20000" in response["error"]["message"]
 
 
+def test_session_resume_sealed_compression_boundary_never_loads_history(
+    server, monkeypatch
+):
+    from hermes_cli.compression_boundary import (
+        build_compression_checkpoint,
+        checkpoint_meta_key,
+    )
+
+    sealed = build_compression_checkpoint(
+        "sealed-session",
+        prompt="continue from the last verified step",
+    )
+    reopened = []
+
+    class _DB:
+        def get_session(self, sid):
+            return {"id": sid, "message_count": 50_000}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, sid):
+            return sid
+
+        def get_meta(self, key):
+            return (
+                json.dumps(sealed)
+                if key == checkpoint_meta_key("sealed-session")
+                else None
+            )
+
+        def reopen_session(self, sid):
+            reopened.append(sid)
+            raise AssertionError("sealed compression session must not reopen")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    response = server.handle_request(
+        {
+            "id": "sealed-resume",
+            "method": "session.resume",
+            "params": {"session_id": "sealed-session", "omit_messages": True},
+        }
+    )
+
+    result = response["result"]
+    assert result["compression_boundary"]["reason"] == "compression_exhausted"
+    assert result["messages"] == []
+    assert result["compression_boundary"]["resume_prompt"].startswith(
+        "Continue the interrupted task"
+    )
+    assert reopened == []
+
+
 def test_session_resume_guard_failure_fails_open(server, monkeypatch):
     """A transient guard error must not block resume (fail open, log only)."""
     reopened = []

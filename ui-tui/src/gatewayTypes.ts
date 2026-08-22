@@ -182,6 +182,11 @@ export interface SessionCreateResponse {
 }
 
 export interface SessionResumeResponse {
+  compression_boundary?: {
+    old_session_id?: string
+    reason?: string
+    resume_prompt?: string
+  }
   inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
@@ -647,7 +652,17 @@ export type GatewayEvent =
       session_id?: string
       type: 'wake.detected'
     }
-  | { payload?: { reason?: string }; session_id?: string; type: 'dashboard.new_session_requested' }
+  | {
+      payload?: {
+        checkpoint_persisted?: boolean
+        old_session_id?: string
+        reason?: string
+        replay_prompt?: boolean
+        resume_prompt?: string
+      }
+      session_id?: string
+      type: 'dashboard.new_session_requested'
+    }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
   | {
       payload?: { level?: 'info' | 'warn' | 'error'; message?: string }

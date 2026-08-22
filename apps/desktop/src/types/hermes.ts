@@ -616,6 +616,11 @@ export interface SessionMessagesResponse {
 }
 
 export interface SessionResumeResponse {
+  compression_boundary?: {
+    old_session_id?: string
+    reason?: string
+    resume_prompt?: string
+  }
   /** Present when the backend found a fresh crash-interrupted turn and
    *  scheduled its automatic continuation; the turn arrives as a normal
    *  message.start stream right after this resume. */

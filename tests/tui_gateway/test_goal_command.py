@@ -256,7 +256,7 @@ def test_pending_input_commands_includes_goal(server):
 # ── active-goal recovery after compression exhaustion ───────────────
 
 
-def test_active_goal_retries_once_without_judging_failed_turn(
+def test_active_goal_pauses_and_seals_session_without_retrying_failed_turn(
     server, turn_env, monkeypatch
 ):
     from hermes_cli.goals import GoalManager
@@ -264,13 +264,11 @@ def test_active_goal_retries_once_without_judging_failed_turn(
     session_key = "goal-compression-retry"
     mgr = GoalManager(session_key)
     mgr.set("finish the current task")
-    continuation = mgr.next_continuation_prompt()
     seen_prompts = []
-    results = iter([_compression_failure(), {"final_response": "recovered work"}])
 
     def run_conversation(message, **_kwargs):
         seen_prompts.append(message)
-        return next(results)
+        return _compression_failure()
 
     judged = []
 
@@ -288,15 +286,20 @@ def test_active_goal_retries_once_without_judging_failed_turn(
 
     server._run_prompt_submit("rid", "sid", session, "initial work")
 
-    assert seen_prompts == ["initial work", continuation]
-    assert judged == ["recovered work"]
+    assert seen_prompts == ["initial work"]
+    assert judged == []
     assert GoalManager(session_key).state.turns_used == 0
+    assert GoalManager(session_key).state.status == "paused"
+    assert "fresh session required" in (GoalManager(session_key).state.paused_reason or "")
     assert server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS not in session
     completes = [p for event, _sid, p in turn_env if event == "message.complete"]
-    assert [p["status"] for p in completes] == ["error", "complete"]
+    assert [p["status"] for p in completes] == ["error"]
+    assert len(
+        [p for event, _sid, p in turn_env if event == "dashboard.new_session_requested"]
+    ) == 1
 
 
-def test_second_consecutive_exhaustion_pauses_goal_instead_of_looping(
+def test_compression_exhaustion_pauses_goal_without_a_same_session_loop(
     server, turn_env, monkeypatch
 ):
     from hermes_cli.goals import GoalManager
@@ -324,23 +327,22 @@ def test_second_consecutive_exhaustion_pauses_goal_instead_of_looping(
 
     server._run_prompt_submit("rid", "sid", session, "initial work")
 
-    assert len(seen_prompts) == 2
+    assert len(seen_prompts) == 1
     assert judged == []
     state = GoalManager(session_key).state
     assert state.status == "paused"
     assert state.turns_used == 0
-    assert "compression exhausted twice" in state.paused_reason
+    assert "fresh session required" in state.paused_reason
     assert server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS not in session
     notices = [
         p["text"]
         for event, _sid, p in turn_env
         if event == "status.update" and p.get("kind") == "goal"
     ]
-    assert any("Retrying the active goal once" in text for text in notices)
     assert any("Goal paused" in text for text in notices)
 
 
-def test_real_queued_prompt_preempts_goal_compression_retry(
+def test_queued_user_prompt_moves_into_compression_boundary_checkpoint(
     server, turn_env, monkeypatch
 ):
     from hermes_cli.goals import GoalManager
@@ -348,7 +350,6 @@ def test_real_queued_prompt_preempts_goal_compression_retry(
     session_key = "goal-compression-user-preempts"
     mgr = GoalManager(session_key)
     mgr.set("finish the current task")
-    continuation = mgr.next_continuation_prompt()
     seen_prompts = []
     session_holder = {}
 
@@ -357,7 +358,7 @@ def test_real_queued_prompt_preempts_goal_compression_retry(
         if len(seen_prompts) == 1:
             server._enqueue_prompt(session_holder["session"], "real user input", None)
             return _compression_failure()
-        return {"final_response": "handled the user's update"}
+        return _compression_failure()
 
     monkeypatch.setattr(
         GoalManager,
@@ -374,9 +375,15 @@ def test_real_queued_prompt_preempts_goal_compression_retry(
 
     server._run_prompt_submit("rid", "sid", session, "initial work")
 
-    assert seen_prompts == ["initial work", "real user input"]
-    assert continuation not in seen_prompts
+    assert seen_prompts == ["initial work"]
+    assert session.get("queued_prompt") is None
     assert server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS not in session
+    boundary = next(
+        payload
+        for event, _sid, payload in turn_env
+        if event == "dashboard.new_session_requested"
+    )
+    assert "real user input" in boundary["resume_prompt"]
 
 
 def test_compression_deferred_is_not_treated_as_exhaustion(server):
@@ -413,6 +420,46 @@ def test_exhaustion_without_active_goal_keeps_error_only_behavior(server):
     assert server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS not in session
 
 
+def test_terminal_compression_exhaustion_requests_fresh_session_without_replay(
+    server, turn_env
+):
+    session_key = "compression-session"
+    agent = types.SimpleNamespace(
+        session_id=session_key,
+        run_conversation=lambda *args, **kwargs: _compression_failure(),
+        clear_interrupt=lambda: None,
+    )
+    session = _turn_session(agent, session_key)
+
+    server._run_prompt_submit("rid", "sid", session, "do not replay me")
+
+    boundary_events = [
+        payload
+        for event, sid, payload in turn_env
+        if event == "dashboard.new_session_requested"
+    ]
+    assert len(boundary_events) == 1
+    assert boundary_events[0]["old_session_id"] == session_key
+    assert boundary_events[0]["reason"] == "compression_exhausted"
+    assert boundary_events[0]["replay_prompt"] is False
+    assert boundary_events[0]["checkpoint_persisted"] is True
+    assert "do not replay me" in boundary_events[0]["resume_prompt"]
+
+
+def test_compression_deferred_does_not_request_fresh_session(server, turn_env):
+    session_key = "compression-deferred-session"
+    agent = types.SimpleNamespace(
+        session_id=session_key,
+        run_conversation=lambda *args, **kwargs: {"compression_deferred": True, "failed": True},
+        clear_interrupt=lambda: None,
+    )
+    session = _turn_session(agent, session_key)
+
+    server._run_prompt_submit("rid", "sid", session, "retry later")
+
+    assert not any(event == "dashboard.new_session_requested" for event, _, _ in turn_env)
+
+
 def test_new_goal_does_not_inherit_previous_goal_recovery_attempt(server):
     from hermes_cli.goals import GoalManager
 
@@ -435,11 +482,10 @@ def test_new_goal_does_not_inherit_previous_goal_recovery_attempt(server):
         raw="Context length exceeded.",
     )
 
-    assert first_prompt is not None
-    assert replacement_prompt is not None
-    assert "replacement goal" in replacement_prompt
-    assert "Retrying the active goal once" in replacement_notice
-    assert GoalManager(session_key).state.status == "active"
+    assert first_prompt is None
+    assert replacement_prompt is None
+    assert replacement_notice is not None
+    assert GoalManager(session_key).state.status == "paused"
 
 
 # ── command.dispatch /moa ────────────────────────────────────────────

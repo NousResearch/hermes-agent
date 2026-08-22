@@ -429,6 +429,22 @@ def _(rid, params: dict) -> dict:
                 target = tip
                 found = db.get_session(target) or found
 
+        # A terminal compression boundary is never eligible for transcript or
+        # agent reconstruction. This check must precede the live-session fast
+        # path and every history read: otherwise a restart (or a second window)
+        # can re-open the poisoned transcript that the boundary event sealed.
+        # The checkpoint is namespaced by the resolved tip, so a pre-boundary
+        # parent still resumes normally when it has a healthy continuation tip.
+        try:
+            from hermes_cli.compression_boundary import compression_boundary_resume_payload
+
+            boundary_payload = compression_boundary_resume_payload(db, target)
+        except Exception:
+            logger.debug("compression boundary resume guard failed", exc_info=True)
+            boundary_payload = None
+        if boundary_payload is not None:
+            return _ok(rid, boundary_payload)
+
         # Every interactive resume path materializes the model history, even when
         # omit_messages suppresses the response copy. Count the complete lineage
         # before any reopen/history read so a runaway transcript cannot exhaust

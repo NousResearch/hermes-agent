@@ -10563,7 +10563,6 @@ def _prepend_note(run_message: Any, note: str) -> Any:
 
 
 _GOAL_COMPRESSION_RECOVERY_ATTEMPTS = "_goal_compression_recovery_attempts"
-_GOAL_COMPRESSION_RECOVERY_LIMIT = 1
 
 
 def _is_successful_goal_turn(result: Any, status: str, raw: Any) -> bool:
@@ -10584,15 +10583,15 @@ def _plan_goal_compression_recovery(
     status: str,
     raw: Any,
 ) -> tuple[str | None, str | None]:
-    """Plan a bounded active-goal retry after compression exhaustion.
+    """Close an active goal when compression exhaustion seals its session.
 
     Compression exhaustion is a failed turn, so it must not be sent to the
-    goal judge or consume the goal's turn budget.  One fresh continuation turn
-    is allowed.  If that turn also exhausts compression, pause the goal rather
-    than spinning until an arbitrary user message happens to wake it up.
+    goal judge or consume the goal's turn budget.  Retrying inside the same
+    session would reuse the poisoned transcript, so the goal is paused and the
+    caller creates a fresh session with a bounded checkpoint.
 
-    Returns ``(continuation_prompt, status_notice)``.  Sessions without an
-    active goal retain the existing error-only behavior.
+    Returns ``(None, status_notice)`` for compression exhaustion. Sessions
+    without an active goal retain the existing error-only behavior.
     """
     compression_exhausted = bool(
         isinstance(result, dict) and result.get("compression_exhausted")
@@ -10622,39 +10621,87 @@ def _plan_goal_compression_recovery(
         session.pop(_GOAL_COMPRESSION_RECOVERY_ATTEMPTS, None)
         return None, None
 
-    goal_created_at = float(getattr(goal_mgr.state, "created_at", 0.0) or 0.0)
-    recovery_state = session.get(_GOAL_COMPRESSION_RECOVERY_ATTEMPTS)
-    attempts = 0
-    if (
-        isinstance(recovery_state, dict)
-        and recovery_state.get("goal_created_at") == goal_created_at
-        and recovery_state.get("goal") == getattr(goal_mgr.state, "goal", "")
-    ):
-        try:
-            attempts = int(recovery_state.get("attempts", 0) or 0)
-        except (TypeError, ValueError):
-            attempts = 0
-
-    continuation_prompt = goal_mgr.next_continuation_prompt()
-    if attempts < _GOAL_COMPRESSION_RECOVERY_LIMIT and continuation_prompt:
-        session[_GOAL_COMPRESSION_RECOVERY_ATTEMPTS] = {
-            "goal_created_at": goal_created_at,
-            "goal": getattr(goal_mgr.state, "goal", ""),
-            "attempts": attempts + 1,
-        }
-        return (
-            continuation_prompt,
-            "Context compression was exhausted. Retrying the active goal once.",
-        )
-
-    goal_mgr.pause(reason="context compression exhausted twice consecutively")
-    # A later explicit /goal resume gets a fresh bounded recovery cycle.
+    goal_mgr.pause(reason="context compression exhausted; fresh session required")
     session.pop(_GOAL_COMPRESSION_RECOVERY_ATTEMPTS, None)
     return (
         None,
-        "Goal paused after context compression was exhausted twice. "
-        "Run /compress, then /goal resume to continue.",
+        "Goal paused after context compression was exhausted. A fresh session is being prepared; continue from the checkpoint instead of replaying this transcript.",
     )
+
+
+def _record_compression_boundary(
+    session: dict,
+    agent: Any,
+    prompt: Any,
+    result: Any,
+) -> dict[str, Any]:
+    """Persist and describe the one-way boundary after compression exhaustion."""
+    from hermes_cli.compression_boundary import (
+        build_compression_checkpoint,
+        persist_compression_checkpoint,
+    )
+
+    old_session_id = str(
+        session.get("session_key") or getattr(agent, "session_id", "") or ""
+    ).strip()
+    goal_text = ""
+    if old_session_id:
+        try:
+            from hermes_cli.goals import GoalManager
+
+            goal_state = GoalManager(old_session_id).state
+            goal_text = str(getattr(goal_state, "goal", "") or "")
+        except Exception:
+            logger.debug("failed to read goal for compression checkpoint", exc_info=True)
+
+    error_text = result.get("error") if isinstance(result, dict) else result
+    queued_parts: list[str] = []
+    with session.get("history_lock", contextlib.nullcontext()):
+        queued_head = session.get("queued_prompt")
+        queued_tail = session.get("queued_prompts") or []
+        for queued in ([queued_head] if queued_head else []) + list(queued_tail):
+            if isinstance(queued, dict):
+                queued_text = queued.get("text")
+            else:
+                queued_text = queued
+            if isinstance(queued_text, str) and queued_text.strip():
+                queued_parts.append(queued_text.strip())
+        # A fresh session owns the handoff. Leaving these envelopes on the
+        # sealed session would either strand the user's follow-up or let a
+        # late drain dispatch it against the poisoned transcript.
+        session["queued_prompt"] = None
+        session.pop("queued_prompts", None)
+        session["_queued_prompt_generation"] = int(
+            session.get("_queued_prompt_generation", 0)
+        ) + 1
+    queued_prompt = "\n\n".join(queued_parts)
+    checkpoint = build_compression_checkpoint(
+        old_session_id,
+        prompt=prompt,
+        queued_prompt=queued_prompt,
+        goal=goal_text,
+        cwd=session.get("cwd"),
+        model=getattr(agent, "model", None),
+        error=error_text,
+    )
+    persisted = False
+    try:
+        with _session_db(session) as db:
+            persisted = persist_compression_checkpoint(db, checkpoint)
+    except Exception:
+        logger.warning(
+            "failed to persist compression boundary checkpoint for %s",
+            old_session_id or "unknown-session",
+            exc_info=True,
+        )
+
+    return {
+        "old_session_id": old_session_id,
+        "reason": "compression_exhausted",
+        "replay_prompt": False,
+        "resume_prompt": checkpoint["resume_prompt"],
+        "checkpoint_persisted": persisted,
+    }
 
 
 # Captured at import time. Several _run_prompt_submit tests monkeypatch
@@ -11601,6 +11648,26 @@ def _run_prompt_submit(
             _retire_turn_marker(session, marker_key)
             session.pop("_auto_continue_scheduled", None)
             _emit_settled_session_info(sid, session, agent)
+
+        # A terminal compression failure must move interactive surfaces onto a
+        # fresh session. Emit this only after the turn has settled so the
+        # client can close the old session without racing its finally block.
+        # Compression exhaustion is a hard boundary for every session,
+        # including sessions with active goals. The checkpoint is persisted
+        # before the event so a client never receives a continuation prompt
+        # that exists only in memory.
+        if (
+            isinstance(result, dict)
+            and result.get("compression_exhausted")
+            and not result.get("compression_deferred")
+        ):
+            boundary = _record_compression_boundary(session, agent, prompt, result)
+            _emit(
+                "dashboard.new_session_requested",
+                sid,
+                boundary,
+            )
+            return
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
         # every auto follow-up below — drain it first and skip them this cycle;

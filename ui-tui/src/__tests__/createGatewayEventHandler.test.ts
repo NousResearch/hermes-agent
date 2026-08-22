@@ -927,6 +927,31 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.composer.setInput).toHaveBeenCalledWith('')
   })
 
+  it('starts a fresh session for a current compression boundary only', () => {
+    const ctx = buildCtx([])
+    patchUiState({ sid: 'active-session' })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { reason: 'compression_exhausted', replay_prompt: false },
+      session_id: 'old-session',
+      type: 'dashboard.new_session_requested'
+    } as any)
+    expect(ctx.session.newSession).not.toHaveBeenCalled()
+
+    onEvent({
+      payload: {
+        reason: 'compression_exhausted',
+        replay_prompt: false,
+        resume_prompt: 'continue from checkpoint'
+      },
+      session_id: 'active-session',
+      type: 'dashboard.new_session_requested'
+    } as any)
+    expect(ctx.session.newSession).toHaveBeenCalledWith('session auto-reset after compression exhaustion')
+    expect(ctx.composer.setInput).toHaveBeenCalledWith('continue from checkpoint')
+  })
+
   it('opens a fresh session before starting voice after wake detection', async () => {
     const ctx = buildCtx([])
     ctx.session.newSession = vi.fn(async () => patchUiState({ sid: 'wake-session' }))

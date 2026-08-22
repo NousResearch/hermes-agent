@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { approvalReplaySessionId, gatewayEventRequiresSessionId, resolveGatewayEventSessionId } from './gateway-events'
+import {
+  approvalReplaySessionId,
+  compressionBoundaryResumePrompt,
+  gatewayEventRequiresSessionId,
+  resolveGatewayEventSessionId,
+  shouldRequestFreshSessionAfterCompression
+} from './gateway-events'
 
 describe('gateway event routing', () => {
   it('rehydrates pending approvals on reconnect ready and resumed session info', () => {
@@ -126,5 +132,61 @@ describe('gateway event routing', () => {
       pinned: true,
       sessionId: 'session-a'
     })
+  })
+
+  it('accepts only a current-session compression boundary request', () => {
+    expect(
+      shouldRequestFreshSessionAfterCompression(
+        {
+          payload: { reason: 'compression_exhausted' },
+          session_id: 'session-a',
+          type: 'dashboard.new_session_requested'
+        },
+        'session-a'
+      )
+    ).toBe(true)
+
+    expect(
+      shouldRequestFreshSessionAfterCompression(
+        {
+          payload: { reason: 'compression_exhausted' },
+          session_id: 'session-old',
+          type: 'dashboard.new_session_requested'
+        },
+        'session-a'
+      )
+    ).toBe(false)
+
+    expect(
+      shouldRequestFreshSessionAfterCompression(
+        {
+          payload: { reason: 'compression_exhausted' },
+          session_id: 'session-a',
+          type: 'dashboard.new_session_requested'
+        },
+        null
+      )
+    ).toBe(false)
+
+    expect(
+      shouldRequestFreshSessionAfterCompression(
+        {
+          payload: { reason: 'compression_exhausted' },
+          type: 'dashboard.new_session_requested'
+        },
+        null
+      )
+    ).toBe(false)
+  })
+
+  it('returns only the current boundary handoff prompt', () => {
+    const event = {
+      payload: { reason: 'compression_exhausted', resume_prompt: '  continue from checkpoint  ' },
+      session_id: 'session-a',
+      type: 'dashboard.new_session_requested'
+    }
+
+    expect(compressionBoundaryResumePrompt(event, 'session-a')).toBe('continue from checkpoint')
+    expect(compressionBoundaryResumePrompt(event, 'session-old')).toBeNull()
   })
 })

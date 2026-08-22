@@ -4,11 +4,52 @@ const LOG_TAIL = 5
 
 interface RpcEventLike {
   payload?: unknown
+  session_id?: string
   type?: string
 }
 
 function asRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+}
+
+/**
+ * Return true only for a current-session compression boundary request.
+ *
+ * The gateway can finish a turn after the desktop has already moved to a
+ * different chat. A late boundary must not create a fresh draft in whichever
+ * session happens to be focused when it arrives.
+ */
+export function shouldRequestFreshSessionAfterCompression(
+  event: RpcEventLike,
+  activeSessionId: null | string
+): boolean {
+  if (event.type !== 'dashboard.new_session_requested') {
+    return false
+  }
+
+  if (asRecord(event.payload).reason !== 'compression_exhausted') {
+    return false
+  }
+
+  if (!activeSessionId) {
+    return false
+  }
+
+  return !event.session_id ? true : event.session_id === activeSessionId
+}
+
+/** Return the bounded, redacted handoff prompt carried by a current boundary. */
+export function compressionBoundaryResumePrompt(
+  event: RpcEventLike,
+  activeSessionId: null | string
+): string | null {
+  if (!shouldRequestFreshSessionAfterCompression(event, activeSessionId)) {
+    return null
+  }
+
+  const prompt = asRecord(event.payload).resume_prompt
+
+  return typeof prompt === 'string' && prompt.trim() ? prompt.trim() : null
 }
 
 /**

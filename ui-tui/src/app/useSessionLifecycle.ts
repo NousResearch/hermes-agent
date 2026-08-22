@@ -342,13 +342,25 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         const previousSid = getUiState().sid
 
         gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
-          .then(raw => {
+          .then(async raw => {
             const r = asRpcResult<SessionResumeResponse>(raw)
 
             if (!r) {
               sys('error: invalid response: session.resume')
 
               return patchUiState({ status: 'ready' })
+            }
+
+            if (r.compression_boundary) {
+              const resumePrompt = r.compression_boundary.resume_prompt?.trim()
+              const freshSessionId = await startNewSession(
+                'session auto-reset after compression exhaustion'
+              )
+              if (freshSessionId && resumePrompt) {
+                composerActions.setInput(resumePrompt)
+              }
+
+              return
             }
 
             const info = r.info ?? null
@@ -382,7 +394,20 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           })
       })
     },
-    [closeSession, colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
+    [
+      closeSession,
+      colsRef,
+      composerActions,
+      gw,
+      panel,
+      resetSession,
+      rpc,
+      scrollRef,
+      setHistoryItems,
+      setSessionStartedAt,
+      startNewSession,
+      sys
+    ]
   )
 
   const guardBusySessionSwitch = useCallback(

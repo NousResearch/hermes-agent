@@ -784,6 +784,32 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'dashboard.new_session_requested': {
+        // Compression exhaustion is a terminal conversation boundary. Start a
+        // new session without replaying the failed prompt; the old session
+        // remains available in history for inspection.
+
+        const activeSessionId = getUiState().sid
+
+        if (
+          ev.payload?.reason === 'compression_exhausted' &&
+          Boolean(activeSessionId) &&
+          (!ev.session_id || ev.session_id === activeSessionId)
+        ) {
+          newSession('session auto-reset after compression exhaustion')
+
+          const resumePrompt = ev.payload?.resume_prompt?.trim()
+
+          if (resumePrompt) {
+            // Keep the handoff as an editable draft. The prompt is bounded and
+            // redacted by the gateway; submitting it remains a user action.
+            setInput(resumePrompt)
+          }
+        }
+
+        return
+      }
+
       case 'session.usage': {
         // Live usage tick while a turn runs (see tui_gateway
         // _start_usage_ticker) — keeps the status-bar context window current

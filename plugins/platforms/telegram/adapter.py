@@ -10915,6 +10915,21 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
+    # Propagate rich_messages and rich_drafts, checking both the top-level
+    # telegram config AND the extra sub-dict.  These are typically written
+    # under extra: (``platforms.telegram.extra.rich_messages: true``), but
+    # also accepting a top-level shorthand helps users who write them
+    # alongside e.g. ``telegram.disable_link_previews``.  Without this
+    # explicit forward, rich_messages/rich_drafts only reach the adapter
+    # through the generic extra-keys loop below — which depends on
+    # ``_telegram_extra`` being non-empty and may miss the value when the
+    # config is loaded from a nested path where ``telegram_cfg["extra"]``
+    # is absent or malformed (issue #72908).
+    for _rich_key in ("rich_messages", "rich_drafts"):
+        if _rich_key in telegram_cfg:
+            extras.setdefault(_rich_key, telegram_cfg[_rich_key])
+        elif _rich_key in _telegram_extra:
+            extras.setdefault(_rich_key, _telegram_extra[_rich_key])
     # Pass through telegram-specific extra keys (e.g. base_url proxy override),
     # but EXCLUDE the generic shared-config keys that _merge_platform_map in
     # gateway/config.py already merges with correct top-level-over-nested

@@ -149,3 +149,46 @@ class TestDoctorCommandInstallation:
         assert "Command Installation" in out
         assert "$PREFIX/bin" in out
 
+    @pytest.mark.windows_only
+    def test_windows_command_install_fix_and_verify(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        venv_scripts = project / "venv" / "Scripts"
+        venv_scripts.mkdir(parents=True, exist_ok=True)
+        hermes_exe = venv_scripts / "hermes.exe"
+        hermes_exe.write_text("MZ_DUMMY_EXE", encoding="utf-8")
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        # First run: bin/hermes.exe missing -> check_warn
+        out = _run_doctor(fix=False)
+        assert "Command Installation" in out
+        assert "Launcher binary not found" in out
+
+        # Second run: with fix=True -> creates launcher copy
+        out_fix = _run_doctor(fix=True)
+        assert "Created launcher copy" in out_fix
+        bin_exe = project / "bin" / "hermes.exe"
+        assert bin_exe.exists()
+        assert bin_exe.read_text(encoding="utf-8") == "MZ_DUMMY_EXE"
+
+

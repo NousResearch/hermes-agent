@@ -2056,6 +2056,61 @@ def run_doctor(args):
                         manual_issues.append(f"Add {_cmd_link_display} to your PATH")
                 else:
                     issues.append(f"Missing {_cmd_link_display}/hermes symlink — run 'hermes doctor --fix'")
+    else:
+        _section("Command Installation")
+        # On Windows native, verify venv Scripts entry points and bin\\ launcher copy
+        _venv_exe = None
+        for _venv_name in ("venv", ".venv"):
+            _candidate = PROJECT_ROOT / _venv_name / "Scripts" / "hermes.exe"
+            if _candidate.exists():
+                _venv_exe = _candidate
+                break
+
+        _bin_dir = PROJECT_ROOT / "bin"
+        _bin_exe = _bin_dir / "hermes.exe"
+
+        if _venv_exe is None:
+            check_warn(
+                "Venv entry point not found",
+                "(hermes.exe not in venv\\Scripts\\ or .venv\\Scripts\\ — reinstall with pip install -e '.[all]')"
+            )
+            manual_issues.append(
+                f"Reinstall entry point: cd {PROJECT_ROOT}; .\\venv\\Scripts\\Activate.ps1; pip install -e '.[all]'"
+            )
+        else:
+            check_ok(f"Venv entry point exists ({_venv_exe.relative_to(PROJECT_ROOT)})")
+
+            if _bin_exe.exists():
+                check_ok(f"Launcher binary exists ({_bin_exe.relative_to(PROJECT_ROOT)})")
+            else:
+                check_warn(
+                    f"Launcher binary not found ({_bin_exe.relative_to(PROJECT_ROOT)})",
+                    "(hermes command may not be available on global PATH)"
+                )
+                if should_fix:
+                    try:
+                        import shutil
+                        _bin_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(_venv_exe, _bin_exe)
+                        check_ok(f"Created launcher copy: {_bin_exe.relative_to(PROJECT_ROOT)}")
+                        fixed_count += 1
+                    except Exception as e:
+                        check_warn(f"Failed to copy launcher binary: {e}")
+                else:
+                    issues.append(f"Missing {_bin_exe.relative_to(PROJECT_ROOT)} — run 'hermes doctor --fix'")
+
+            # Check if bin dir is on PATH
+            _path_dirs = [os.path.normcase(os.path.normpath(p)) for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+            _norm_bin = os.path.normcase(os.path.normpath(str(_bin_dir)))
+            if _norm_bin in _path_dirs:
+                check_ok("Launcher directory is on PATH")
+            else:
+                _ps_hint = f"[Environment]::SetEnvironmentVariable('Path', $env:Path + ';{_bin_dir}', 'User')"
+                check_warn(
+                    f"Launcher directory not on PATH: {_bin_dir}",
+                    f"(run in PowerShell: {_ps_hint})"
+                )
+                manual_issues.append(f"Add {_bin_dir} to your User PATH")
 
     _section("External Tools")
     # Git

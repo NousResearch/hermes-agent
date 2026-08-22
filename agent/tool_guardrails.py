@@ -38,6 +38,41 @@ IDEMPOTENT_TOOL_NAMES = frozenset(
     }
 )
 
+# Read-shaped calls of mutating tools (#92475). A mutating tool is classified
+# by its worst-case call, but some also expose a pure-read call shape that
+# has no side effect, cannot fail, and returns identical bytes when nothing
+# changed — exactly the profile ``idempotent_no_progress`` exists to catch.
+# Without this table such reads inherit the MUTATING exclusion and get
+# neither the failure detectors (nothing fails) nor the no-progress detector
+# (excluded by classification), so an agent can repeat them indefinitely
+# while producing no signal.
+#
+# Each entry maps a tool name to the argument whose absence or explicit
+# null marks the read path. The value must mirror the tool's OWN branch:
+# e.g. todo_tool runs ``store.write(...)`` whenever ``todos is not None``
+# (an EMPTY list is a write that clears the list), so only absent/null
+# payloads qualify as reads. Deliberately NOT listed here: ``process`` — its
+# repetition is legitimate polling, already exempted via
+# STALL_GUARD_REPEATABLE_TOOLS; putting it in no-progress tracking would
+# fight the intended pattern.
+MUTATING_TOOL_READ_SHAPED_CALLS: dict[str, str] = {
+    "todo": "todos",
+}
+
+
+def is_read_shaped_call(tool_name: str, args: Mapping[str, Any] | None) -> bool:
+    """Whether this specific call of a mutating tool is a pure read.
+
+    True only for tools listed in ``MUTATING_TOOL_READ_SHAPED_CALLS`` whose
+    payload argument is either absent or explicitly None — mirroring each
+    tool's own read/write branch. Any present (even empty) payload counts as
+    the mutating shape and stays outside no-progress tracking.
+    """
+    if not isinstance(args, Mapping):
+        args = {}
+    payload_arg = MUTATING_TOOL_READ_SHAPED_CALLS.get(tool_name)
+    return payload_arg is not None and args.get(payload_arg) is None
+
 MUTATING_TOOL_NAMES = frozenset(
     {
         "terminal",
@@ -406,7 +441,7 @@ class ToolCallGuardrailController:
             self._halt_decision = decision
             return decision
 
-        if self._is_idempotent(tool_name):
+        if self._is_idempotent(tool_name, args):
             record = self._no_progress.get(signature)
             if record is not None:
                 _result_hash, repeat_count = record
@@ -493,7 +528,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
-        if not self._is_idempotent(tool_name):
+        if not self._is_idempotent(tool_name, args):
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -520,9 +555,16 @@ class ToolCallGuardrailController:
 
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
-    def _is_idempotent(self, tool_name: str) -> bool:
+    def _is_idempotent(self, tool_name: str, args: Mapping[str, Any] | None = None) -> bool:
+        """Whether this call should get no-progress loop detection.
+
+        Name-set behaviour for every listed tool; additionally, a mutating
+        tool whose SPECIFIC call is a pure read (#92475) counts as idempotent
+        here so the read shape is tracked like any other read-only call.
+        The ``args`` default keeps the historical single-argument call valid.
+        """
         if tool_name in self.config.mutating_tools:
-            return False
+            return is_read_shaped_call(tool_name, args)
         return tool_name in self.config.idempotent_tools
 
     def observe_identical_call(

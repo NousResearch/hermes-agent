@@ -169,6 +169,94 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.should_halt is True
 
 
+# ── Read-shaped calls of mutating tools (#92475) ─────────────────────────────
+
+from agent.tool_guardrails import is_read_shaped_call  # noqa: E402
+
+
+def test_todo_no_arg_read_gets_no_progress_warn_and_block():
+    # `todo` is classified MUTATING (worst-case call), but the no-todos call
+    # is a pure read (tools/todo_tool.py: `store.read()` whenever todos is
+    # None). It cannot fail and returns identical bytes, so neither the
+    # failure counters nor — before the fix — the no-progress detector ever
+    # saw it. With hard_stop_enabled=True the read must warn at 2 identical
+    # results and block the NEXT execution at 5, like any idempotent read.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True)
+    )
+    args = {"merge": False}
+
+    actions = []
+    for _ in range(5):
+        assert controller.before_call("todo", args).action == "allow"
+        actions.append(controller.after_call("todo", args, '{"todos":[]}').action)
+
+    assert actions == ["allow", "warn", "warn", "warn", "warn"]
+
+    blocked = controller.before_call("todo", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+
+def test_todo_explicit_null_todos_follows_the_tools_real_read_branch():
+    # todo_tool branches on `todos is not None`, so an EXPLICIT null is also
+    # a pure read and must be detected identically to the absent-argument form.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True)
+    )
+
+    for i in range(2):
+        assert controller.before_call("todo", {"todos": None}).action == "allow"
+        controller.after_call("todo", {"todos": None}, '{"todos":[]}')
+
+    assert controller.before_call("todo", {"todos": None}).action == "allow"
+    third = controller.after_call("todo", {"todos": None}, '{"todos":[]}')
+    assert third.action == "warn"
+    assert third.code == "idempotent_no_progress_warning"
+
+
+def test_todo_write_shaped_calls_keep_today_behaviour_exactly():
+    # Any call that carries a todos payload goes through store.write() —
+    # including an EMPTY list, which clears the list. Those calls must remain
+    # outside no-progress tracking (and must reset any read streak recorded
+    # under their own signature, which they always did by classification).
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True)
+    )
+    args = {"todos": [], "merge": False}
+
+    for _ in range(7):
+        assert controller.before_call("todo", args).action == "allow"
+        assert controller.after_call("todo", args, '{"ok":true}').action == "allow"
+
+
+def test_process_polling_stays_exempt_from_no_progress_detection():
+    # Guard rail against over-generalizing: `process` repeats deliberately
+    # (polling) and is already notice-exempt via STALL_GUARD_REPEATABLE_TOOLS.
+    # It must never enter the no-progress tracker.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True)
+    )
+    args = {"action": "poll", "session_id": "s1"}
+
+    for _ in range(7):
+        assert controller.before_call("process", args).action == "allow"
+        assert controller.after_call("process", args, '{"status":"running"}').action == "allow"
+
+
+def test_read_shaped_call_table_matches_todo_branch_semantics():
+    # The helper mirrors todo_tool's own branch (`todos is not None` means
+    # write): only absent or explicitly-null payloads count as reads.
+    assert is_read_shaped_call("todo", {}) is True
+    assert is_read_shaped_call("todo", {"merge": False}) is True
+    assert is_read_shaped_call("todo", {"todos": None}) is True
+    assert is_read_shaped_call("todo", {"todos": []}) is False
+    assert is_read_shaped_call("todo", {"todos": [{"id": "x"}]}) is False
+    # Unlisted tools have no read shape — name-set behaviour is untouched.
+    assert is_read_shaped_call("write_file", {}) is False
+    assert is_read_shaped_call("web_search", {}) is False
+
+
 
 
 

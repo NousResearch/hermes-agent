@@ -46,7 +46,10 @@ from hermes_cli.dashboard_auth.cookies import (
     set_pkce_cookie,
     set_session_cookies,
 )
-from hermes_cli.dashboard_auth.login_page import render_login_html
+from hermes_cli.dashboard_auth.login_page import (
+    render_login_html,
+    render_native_provider_choice_html,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -335,20 +338,31 @@ async def auth_native_authorize(
     # auto-select, and fail desktop login with a misleading "Unknown provider".
     p = get_provider(provider) if provider else None
     if p is None and not provider:
+        sess_providers = list_session_providers()
         native_eligible = [
             pp
-            for pp in list_session_providers()
+            for pp in sess_providers
             if not getattr(pp, "supports_password", False)
         ]
         if len(native_eligible) == 1:
             p = native_eligible[0]
-        elif not native_eligible:
+        elif len(native_eligible) > 1:
+            return HTMLResponse(
+                render_native_provider_choice_html(
+                    providers=native_eligible,
+                    authorize_path=f"{_prefix(request)}/auth/native/authorize",
+                    code_challenge=code_challenge,
+                    code_challenge_method=code_challenge_method,
+                    redirect_uri=redirect_uri,
+                    state=state,
+                ),
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+            )
+        elif len(sess_providers) == 1:
             # No brokerable provider at all. Preserve the old behaviour of
             # selecting a lone password provider so the explicit 400 below
             # (rather than a 404) explains why native OAuth is unavailable.
-            sess_providers = list_session_providers()
-            if len(sess_providers) == 1:
-                p = sess_providers[0]
+            p = sess_providers[0]
     if p is None:
         raise HTTPException(
             status_code=404, detail=f"Unknown provider: {provider!r}"

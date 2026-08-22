@@ -66,6 +66,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async,
     cache_document_from_bytes_async,
     cache_image_from_bytes_async,
+    looks_like_slash_command,
 )
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -1025,7 +1026,10 @@ def _message_type_from_media(media_types: List[str], text: str) -> MessageType:
         return MessageType.VOICE
     if media_types:
         return MessageType.DOCUMENT
-    if text.startswith("/"):
+    # Invisible-padded commands must classify as COMMAND too, or they fall
+    # into _enqueue_text_event and the debounce window merges them with the
+    # user's next message.
+    if looks_like_slash_command(text):
         return MessageType.COMMAND
     return MessageType.TEXT
 

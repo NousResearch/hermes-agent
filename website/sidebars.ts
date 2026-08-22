@@ -298,6 +298,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'security',
+                  key: 'skills-bundled-security',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/security/security-secrets-protocol',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'smart-home',
                   key: 'skills-bundled-smart-home',
                   collapsed: true,

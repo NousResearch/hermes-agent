@@ -129,6 +129,12 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`llm-wiki`](/docs/user-guide/skills/bundled/research/research-llm-wiki) | Karpathy's LLM Wiki: build/query interlinked markdown KB. | `research/llm-wiki` |
 | [`research-paper-writing`](/docs/user-guide/skills/bundled/research/research-research-paper-writing) | Write ML papers for NeurIPS/ICML/ICLR: design→submit. | `research/research-paper-writing` |
 
+## security
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`secrets-protocol`](/docs/user-guide/skills/bundled/security/security-secrets-protocol) | Authoritative secrets-handling protocol for every Hermes secret source (Bitwarden, 1Password, command helper) — encrypted-only cache, no plaintext at rest, masked output, child-process env hygiene. | `security/secrets-protocol` |
+
 ## smart-home
 
 | Skill | Description | Path |

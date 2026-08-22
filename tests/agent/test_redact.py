@@ -677,6 +677,25 @@ class TestConfigKeyRedosResistance:
         assert "Sup3rS3cret!" not in result
         assert ".password=" in result
 
+    def test_secret_keyword_with_large_opaque_payload_completes_fast(self):
+        """A keyword elsewhere must not make config scanning quadratic.
+
+        Tool output can contain a credential assignment followed by a large
+        base64 attachment. The keyword activates assignment scanning, while
+        the unbroken payload made both lowercase-env and dotted-key patterns
+        retry from every character despite not being a config assignment.
+        """
+        import time
+
+        text = "credential=x\n" + "A" * 100_000 + "="
+        t0 = time.perf_counter()
+        result = redact_sensitive_text(text)
+        elapsed = time.perf_counter() - t0
+
+        assert "credential=x" not in result
+        assert result.endswith("A" * 100_000 + "=")
+        assert elapsed < 3.0
+
     def test_yaml_assign_redos_resistance(self):
         """_YAML_ASSIGN_RE must not backtrack excessively on long inputs."""
         import time

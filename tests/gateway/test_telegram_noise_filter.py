@@ -177,6 +177,98 @@ def test_manual_compress_feedback_and_failure_notices_stay_visible(platform, mes
     assert _prepare_gateway_status_message(platform, "warn", message) == message
 
 
+# The retry/fallback trace. These reach chat ONLY through
+# _flush_status_buffer, which runs when every retry and fallback is exhausted
+# ("Surfaces the full retry/fallback trace so the user can see what was tried
+# before the turn gave up"); on success they are dropped unseen. So they are
+# the failure trace, not chatter — suppressing them would blind the user at
+# exactly the moment the turn gave up, and on LINE they cost nothing then
+# because no answer is competing for the reply token.
+TERMINAL_FAILURE_TRACE_MESSAGES = [
+    "🔄 Primary model failed — switching to fallback: gemini-3.6-flash via gemini",
+    "⚠️ Provider safety filter blocked this request — trying fallback...",
+    "⚠️ TLS certificate verification failed — trying fallback...",
+    "⚠️ Empty/malformed response — switching to fallback...",
+    "❌ Provider safety filter blocked this request: HTTP 400 content policy.",
+    "❌ TLS certificate verification failed: self-signed certificate in chain.",
+]
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+@pytest.mark.parametrize(
+    "message", TERMINAL_FAILURE_TRACE_MESSAGES, ids=lambda m: m[:34]
+)
+def test_terminal_failure_trace_stays_visible(platform, message):
+    """Suppressing the success notice must not eat the failure trace.
+
+    The success notice and these lines all say "fallback", so a regex widened
+    by one careless word swallows the trace too — and the user is left with a
+    bare error, or silence, at the one moment the detail matters.
+    """
+    assert _prepare_gateway_status_message(platform, "warn", message) == message
+
+
+FALLBACK_SUCCESS_NOTICE = (
+    "🔄 Switched to fallback model: gpt-5.4-mini via openai-codex → glm-5.3 via zai"
+)
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_fallback_notice_stays_visible_where_status_is_free(platform):
+    """The success notice is suppressed ONLY where a bubble costs money.
+
+    Upstream emits it so an operator sees a durable provider change even when
+    the fallback succeeded. On Telegram/Slack/Feishu that bubble is free, so
+    the notice must survive — this is a cost rule, not a global mute.
+    """
+    assert (
+        _prepare_gateway_status_message(platform, "lifecycle", FALLBACK_SUCCESS_NOTICE)
+        == FALLBACK_SUCCESS_NOTICE
+    )
+
+
+def test_fallback_notice_suppressed_on_line_where_it_costs_the_reply_token():
+    """On LINE the same bubble spends the turn's only free delivery.
+
+    A LINE bot replies for free only with the single-use replyToken from the
+    inbound event; spending it on a status message forces the real answer onto
+    the metered Push API, billed per recipient.
+    """
+    assert (
+        _prepare_gateway_status_message("line", "lifecycle", FALLBACK_SUCCESS_NOTICE)
+        is None
+    )
+
+
+@pytest.mark.parametrize("message", TERMINAL_FAILURE_TRACE_MESSAGES, ids=lambda m: m[:34])
+def test_line_keeps_the_failure_trace(message):
+    """Suppressing the success notice on LINE must not eat the failure trace.
+
+    Those lines only reach chat once every retry and fallback is exhausted, so
+    they are the one explanation the user gets — and they are free to deliver
+    then, because no answer is competing for the token.
+    """
+    assert _prepare_gateway_status_message("line", "warn", message) == message
+
+
+# Trace lines the pre-existing provider-error sanitizer REWRITES rather than
+# passing through (raw provider text must never reach chat users). Asserted
+# separately because byte-equality does not hold — the property under test is
+# that the noise filter did not swallow them on the way.
+SANITIZED_TRACE_MESSAGES = [
+    "❌ Non-retryable error (HTTP 401): Your authentication token has been invalidated.",
+    "⚠️ Non-retryable error (HTTP 400) — trying fallback...",
+]
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+@pytest.mark.parametrize("message", SANITIZED_TRACE_MESSAGES, ids=lambda m: m[:34])
+def test_sanitized_failures_still_reach_the_user(platform, message):
+    assert _prepare_gateway_status_message(platform, "warn", message) is not None, (
+        "a terminal failure was swallowed as noise"
+    )
+
+
 @pytest.mark.parametrize("platform", ["slack", "matrix"])
 def test_chat_gateways_redact_secret_in_provider_error(platform):
     """Provider-error bodies carrying secrets must never reach chat users.

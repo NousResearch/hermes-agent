@@ -518,6 +518,40 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+# Platforms where a status bubble is METERED, not merely noisy.
+#
+# LINE is currently the only one. A LINE bot may send either a Reply — free,
+# but it needs the single-use replyToken that arrives with the inbound webhook
+# event and expires in about a minute — or a Push, which is billed PER
+# RECIPIENT against a monthly allowance (200/month on the free plan, so one
+# answer in a 13-member group costs 13). A status bubble sent while the turn
+# is still running consumes that one replyToken, and the real answer then has
+# no free path left.
+#
+# Everywhere else the same bubble is free, so it stays visible: this is a cost
+# rule, not a taste rule, and it must not quietly become a global mute.
+_METERED_STATUS_PLATFORMS = frozenset({"line"})
+
+# The one-shot SUCCESS-path fallback notice (_emit_pending_fallback_notice),
+# which fires only when a fallback RECOVERED the turn — so a real answer is
+# still coming and still needs the token.
+#
+# Deliberately NOT matched: the retry/fallback lines that reach chat through
+# _flush_status_buffer. Those are buffered and DROPPED on success, surfacing
+# only once every retry and fallback is exhausted — they are the failure
+# trace, and by then no answer is competing for the token anyway.
+_METERED_FALLBACK_NOTICE_RE = re.compile(
+    r"switched\s+to\s+fallback\s+model", re.IGNORECASE
+)
+
+
+def _status_message_is_metered_noise(platform: Any, text: str) -> bool:
+    """True when this status would cost the user money on this platform."""
+    if _gateway_platform_value(platform) not in _METERED_STATUS_PLATFORMS:
+        return False
+    return bool(_METERED_FALLBACK_NOTICE_RE.search(text))
+
+
 def _non_conversational_metadata(
     metadata: Optional[Dict[str, Any]] = None,
     *,
@@ -863,6 +897,11 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
             and _COMPRESSION_PROGRESS_STATUS_RE.search(text)
         ):
             return None
+    if _status_message_is_metered_noise(platform, text):
+        # The switch stays visible where it is free: in the logs via
+        # logger.info("Fallback activated: ...") at the emit site, and on the
+        # terminal path via the flushed retry/fallback trace.
+        return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text

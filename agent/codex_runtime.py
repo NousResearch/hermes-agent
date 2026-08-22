@@ -20,7 +20,7 @@ import json
 import logging
 import time
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 
@@ -674,6 +674,27 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     return on_event
 
 
+def _final_text_was_streamed(agent, final_text: Optional[str]) -> bool:
+    """Whether *final_text* already reached the user as streamed interim text.
+
+    Delegates to ``AIAgent._interim_content_was_streamed``, which prefix-matches
+    against what was actually streamed. That direction matters here: a mismatch
+    yields a benign duplicate, never a suppressed answer, so this can never lose
+    a reply. Returns ``False`` when the agent predates the helper or the text is
+    empty.
+    """
+    if not final_text:
+        return False
+    probe = getattr(agent, "_interim_content_was_streamed", None)
+    if not callable(probe):
+        return False
+    try:
+        return bool(probe(final_text))
+    except Exception:  # noqa: BLE001 — never fail a turn over dedup bookkeeping
+        logger.debug("interim-streamed probe raised", exc_info=True)
+        return False
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -921,11 +942,27 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    _turn_completed = not turn.interrupted and turn.error is None
     return {
         "final_response": turn.final_text,
+        # The live app-server event bridge routes every completed agentMessage
+        # through _emit_interim_assistant_message, and that item can BE the
+        # turn's final answer. conversation_loop reports that via
+        # response_previewed, but this early-return path never set the key, so
+        # the gateway defaulted it to False and delivered the same text twice —
+        # one unreferenced copy from the bridge, one reply-referenced copy from
+        # the normal final path (#74248).
+        #
+        # Successful turns only: an interrupted/errored turn substitutes
+        # sentinel text like <turn_aborted> for final_text, and marking that
+        # partial result previewed would let the gateway suppress its delivery
+        # entirely — the failure mode this key must never cause.
+        "response_previewed": (
+            _turn_completed and _final_text_was_streamed(agent, turn.final_text)
+        ),
         "messages": messages,
         "api_calls": api_calls,
-        "completed": not turn.interrupted and turn.error is None,
+        "completed": _turn_completed,
         "partial": turn.interrupted or turn.error is not None,
         "interrupted": _user_interrupted,
         **(

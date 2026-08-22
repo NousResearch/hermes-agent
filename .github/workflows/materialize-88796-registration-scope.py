@@ -7,7 +7,7 @@ import subprocess
 
 
 manager_path = Path("agent/memory_manager.py")
-text = manager_path.read_text()
+text = manager_path.read_text(encoding="utf-8")
 
 signature_anchor = (
     "    def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:\n"
@@ -101,10 +101,10 @@ registration_replacement = '''        self._providers.append(provider)
 if text.count(registration_anchor) != 1:
     raise SystemExit(f"registration fence anchor drifted: {text.count(registration_anchor)}")
 text = text.replace(registration_anchor, registration_replacement, 1)
-manager_path.write_text(text)
+manager_path.write_text(text, encoding="utf-8")
 
 agent_path = Path("agent/agent_init.py")
-agent = agent_path.read_text()
+agent = agent_path.read_text(encoding="utf-8")
 construction_anchor = '''                agent._memory_manager = _MemoryManager()
                 _mp = _load_mem(_mem_provider_name)
 '''
@@ -119,10 +119,13 @@ construction_replacement = '''                # Establish process/profile quaran
 '''
 if agent.count(construction_anchor) != 1:
     raise SystemExit(f"agent memory-manager construction drifted: {agent.count(construction_anchor)}")
-agent_path.write_text(agent.replace(construction_anchor, construction_replacement, 1))
+agent_path.write_text(
+    agent.replace(construction_anchor, construction_replacement, 1),
+    encoding="utf-8",
+)
 
 tests_path = Path("tests/agent/test_memory_async_sync.py")
-tests = tests_path.read_text()
+tests = tests_path.read_text(encoding="utf-8")
 
 replacements = {
     '''    first = MemoryManager(external_prefetch_timeout=0.03)
@@ -180,7 +183,10 @@ assertion_replacement = '''    assert second_provider.calls["tool_schema"] == 0
 '''
 if tests.count(assertion_anchor) != 1:
     raise SystemExit(f"registration assertion anchor drifted: {tests.count(assertion_anchor)}")
-tests_path.write_text(tests.replace(assertion_anchor, assertion_replacement, 1))
+tests_path.write_text(
+    tests.replace(assertion_anchor, assertion_replacement, 1),
+    encoding="utf-8",
+)
 
 subprocess.run(
     [

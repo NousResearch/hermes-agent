@@ -19,8 +19,10 @@ test('source contract: create-group modal has search, checkboxes, name, create',
   assert.match(pluginSource, /function CreateGroupChatDialog\(/)
   // Reuses the roster search filter so name/@handle/title all match.
   assert.match(pluginSource, /const visible = filterBots\(roster, allMeta, query\)/)
-  // Selection is checkbox-driven and capped at the room member limit.
-  assert.match(pluginSource, /const atCap = selected\.length >= GROUP_CHAT_MAX_MEMBERS/)
+  // Selection is checkbox-driven and capped at the room member limit, which
+  // the budget controls can raise or switch off before the room exists.
+  assert.match(pluginSource, /const memberCap = resolveGroupChatLimits\(\{ limits \}\)\.members/)
+  assert.match(pluginSource, /const atCap = memberCap !== null && selected\.length >= memberCap/)
   // Create requires 2+ members. Membership mutation is covered by the
   // behavioral groupMembershipPatch tests rather than another source regex.
   assert.match(pluginSource, /selected\.length >= 2/)

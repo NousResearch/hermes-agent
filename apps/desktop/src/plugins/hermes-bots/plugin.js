@@ -240,7 +240,9 @@ function recordGroupActivity(group, event) {
   }
 
   const current = $groupActivity.get()[group] || { events: [] }
-  const entry = { at: Date.now(), epoch: room.epoch || 0, ...event }
+  // Spread first: `at` and `epoch` belong to the record, not to the caller. A
+  // caller that shipped its own `at` once rendered an event as decades old.
+  const entry = { ...event, at: Date.now(), epoch: room.epoch || 0 }
   const events = [...current.events, entry].slice(-GROUP_ACTIVITY_LIMIT)
   $groupActivity.set({ ...$groupActivity.get(), [group]: { ...current, events } })
 
@@ -264,6 +266,16 @@ function groupActivityLabel(event) {
     return base
   }
 
+  // The safety stop is about the room, not about a member, so it reads as a
+  // statement rather than "<bot> hit the safety stop".
+  if (kind === 'safety' || kind === 'capped') {
+    const what = event?.detail === 'messages' ? 'messages' : 'rounds'
+    const count = event?.count ?? '?'
+    return kind === 'safety'
+      ? `safety stop: ${count} ${what} reached`
+      : `stopped at the ${what} limit (${count}), raise it in the room budget`
+  }
+
   const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot')
 
   return `${who} ${base}`
@@ -278,7 +290,9 @@ const GROUP_ACTIVITY_LABELS = {
   failed: 'hit an error',
   cancelled: 'turn interrupted by a newer message',
   settled: 'turn settled',
-  delivered: 'delivered a late reply'
+  delivered: 'delivered a late reply',
+  safety: 'safety stop',
+  capped: 'stopped at the limit'
 }
 
 const GROUP_ACTIVITY_GLYPHS = {
@@ -290,7 +304,9 @@ const GROUP_ACTIVITY_GLYPHS = {
   failed: 'error',
   cancelled: 'close',
   settled: 'check-all',
-  delivered: 'mail-read'
+  delivered: 'mail-read',
+  safety: 'debug-pause',
+  capped: 'debug-pause'
 }
 
 /** Text tone for an activity row: quiet for pass/cancel/settle, accent for
@@ -298,6 +314,12 @@ const GROUP_ACTIVITY_GLYPHS = {
 function groupActivityTone(kind) {
   if (kind === 'failed' || kind === 'timed-out') {
     return 'text-destructive'
+  }
+
+  // A safety stop is not a failure, but it must not read as routine either:
+  // the room stopped short of what the user asked for.
+  if (kind === 'safety' || kind === 'capped') {
+    return 'text-(--ui-warning,#d68b00)'
   }
 
   if (kind === 'working' || kind === 'replied' || kind === 'delivered') {
@@ -429,12 +451,18 @@ function groupChatSyncSnapshot(all = $groupChats.get(), deleted = {}) {
       at: Number(entry?.at || 0),
       ...(entry?.thread ? { thread: String(entry.thread).slice(0, 128) } : {})
     }))
+    // A room that raised its member cap syncs the members it actually has; the
+    // ceiling still bounds the payload so one room cannot blow the envelope.
+    const syncMembers = (Array.isArray(room?.members) ? room.members : []).slice(
+      0,
+      resolveGroupChatLimits(room).members ?? GROUP_CHAT_LIMIT_CEILINGS.members
+    )
     const compact = {
       name: String(name).slice(0, 64),
       ...(typeof room?.roomId === 'string' && room.roomId ? { roomId: String(room.roomId).slice(0, 128) } : {}),
       log,
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
-      members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
+      members: syncMembers.map(member => ({
         name: String(member?.name || '').slice(0, 128),
         ...(member?.handle ? { handle: String(member.handle).slice(0, 128) } : {}),
         ...(member?.connectionId ? { connectionId: String(member.connectionId).slice(0, 128) } : {}),
@@ -444,7 +472,10 @@ function groupChatSyncSnapshot(all = $groupChats.get(), deleted = {}) {
       })),
       ...(typeof room?.image === 'string' && room.image.length <= GROUP_CHAT_SYNC_IMAGE_CHARS
         ? { image: room.image }
-        : {})
+        : {}),
+      // Carried across gateways so a room keeps its rules on every machine
+      // that mirrors it; omitted entirely when the room is on the defaults.
+      ...(durableGroupChatLimits(room?.limits) ? { limits: durableGroupChatLimits(room.limits) } : {})
     }
 
     const key = groupChatRoomKey(name, room)
@@ -761,6 +792,13 @@ function mergeRemoteGroupChatSnapshotIntoRooms(
         : remoteRevision >= localRevision && Object.prototype.hasOwnProperty.call(projected, 'image')
           ? projected.image || null
           : existing.image || null,
+      // Same rule as image: the newer revision decides. A room whose rules
+      // were changed on another machine arrives with them attached.
+      limits: isPreserved
+        ? existing.limits || null
+        : remoteRevision >= localRevision && Object.prototype.hasOwnProperty.call(projected, 'limits')
+          ? durableGroupChatLimits(projected.limits)
+          : existing.limits || null,
       syncRevision: isPreserved ? localRevision : Math.max(remoteRevision, localRevision),
       epoch: Number(existing.epoch || 0),
       running: Boolean(existing.running)
@@ -793,6 +831,36 @@ function mergeRemoteGroupChatSnapshotIntoRooms(
   return rooms
 }
 
+/** The stored form of a room's limit overrides: only the axes the room
+ *  actually set, each a positive integer or null. Absent means "inherit", so
+ *  writing nothing is how a room stays on the defaults. */
+function durableGroupChatLimits(limits) {
+  if (!limits || typeof limits !== 'object') {
+    return null
+  }
+
+  const out = {}
+
+  for (const key of ['rounds', 'messages', 'members', 'history', 'safetyRounds', 'safetyMessages']) {
+    if (!Object.prototype.hasOwnProperty.call(limits, key)) {
+      continue
+    }
+    if (limits[key] === null) {
+      out[key] = null
+      continue
+    }
+    if (typeof limits[key] !== 'number' && typeof limits[key] !== 'string') {
+      continue
+    }
+    const n = Math.floor(Number(limits[key]))
+    if (Number.isFinite(n) && n > 0) {
+      out[key] = n
+    }
+  }
+
+  return Object.keys(out).length ? out : null
+}
+
 function durableGroupChatRooms(all = $groupChats.get()) {
   const durable = {}
 
@@ -820,6 +888,7 @@ function durableGroupChatRooms(all = $groupChats.get()) {
       // already carries.
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
       image: room.image || null,
+      limits: durableGroupChatLimits(room.limits),
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
     }
   }
@@ -4478,10 +4547,98 @@ function knownGroups(metaByName) {
 // turn in its OWN persistent per-group Hermes session and is fed only the
 // room messages that are NEW since it last saw the room.
 
+// Defaults. A room may override any of these; see resolveGroupChatLimits.
 const GROUP_CHAT_MAX_ROUNDS = 3
 const GROUP_CHAT_MAX_MESSAGES = 10
 const GROUP_CHAT_HISTORY_LIMIT = 24
 const GROUP_CHAT_MAX_MEMBERS = 6
+
+// Ceilings for the room-level overrides. Not a policy on how long a
+// conversation may run — purely the range the UI offers, so a typo in a
+// number field cannot ask for a million rounds.
+const GROUP_CHAT_LIMIT_CEILINGS = { rounds: 100, messages: 500, members: 24, history: 200 }
+
+// Where the safety brake starts when a room turns a limit off. The user can
+// move it, or switch it off entirely for a genuinely unbounded room.
+const GROUP_CHAT_SAFETY_DEFAULTS = { rounds: 50, messages: 200 }
+
+/** Per-room limit overrides. Each axis is one of three states:
+ *
+ *    number  the limit, enforced as before
+ *    null    off — the axis no longer stops the loop
+ *    absent  inherit the default above
+ *
+ *  With `rounds`/`messages` off, `safetyRounds`/`safetyMessages` take over as
+ *  a brake; those are themselves nullable, and null there means a room that
+ *  runs until every member passes or the user sends again. Both of those
+ *  still hold: `spokeThisRound === 0` ends the drive, and a new user message
+ *  bumps the epoch, which the loop honors at the next member boundary. So an
+ *  unlimited room is never a room you cannot get out of.
+ */
+function resolveGroupChatLimits(room) {
+  const raw = room && typeof room.limits === 'object' && room.limits ? room.limits : {}
+
+  const axis = (key, fallback, ceiling) => {
+    if (!Object.prototype.hasOwnProperty.call(raw, key)) {
+      return fallback
+    }
+    if (raw[key] === null) {
+      return null
+    }
+    // Guard the coercion: Number(true) is 1 and Number([]) is 0, so a stray
+    // boolean or array would otherwise read as a real limit.
+    if (typeof raw[key] !== 'number' && typeof raw[key] !== 'string') {
+      return fallback
+    }
+    const n = Math.floor(Number(raw[key]))
+    return Number.isFinite(n) && n > 0 ? Math.min(n, ceiling) : fallback
+  }
+
+  const rounds = axis('rounds', GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_LIMIT_CEILINGS.rounds)
+  const messages = axis('messages', GROUP_CHAT_MAX_MESSAGES, GROUP_CHAT_LIMIT_CEILINGS.messages)
+
+  return {
+    rounds,
+    messages,
+    members: axis('members', GROUP_CHAT_MAX_MEMBERS, GROUP_CHAT_LIMIT_CEILINGS.members),
+    history: axis('history', GROUP_CHAT_HISTORY_LIMIT, GROUP_CHAT_LIMIT_CEILINGS.history),
+    // Only meaningful while the matching axis is off.
+    safetyRounds: rounds === null ? axis('safetyRounds', GROUP_CHAT_SAFETY_DEFAULTS.rounds, GROUP_CHAT_LIMIT_CEILINGS.rounds) : null,
+    safetyMessages:
+      messages === null ? axis('safetyMessages', GROUP_CHAT_SAFETY_DEFAULTS.messages, GROUP_CHAT_LIMIT_CEILINGS.messages) : null
+  }
+}
+
+/** Short room-budget summary for the room header: "3 rounds · 10 msgs", or
+ *  what the room actually does when an axis is off. */
+function groupChatBudgetLabel(room) {
+  const limits = resolveGroupChatLimits(room)
+
+  const axis = (value, brake, one, many) => {
+    if (value !== null) {
+      return `${value} ${value === 1 ? one : many}`
+    }
+    return brake === null ? `\u221e ${many}` : `\u2264${brake} ${many}`
+  }
+
+  return `${axis(limits.rounds, limits.safetyRounds, 'round', 'rounds')} \u00b7 ${axis(
+    limits.messages,
+    limits.safetyMessages,
+    'msg',
+    'msgs'
+  )}`
+}
+
+/** The round/message ceiling actually applied to a drive: the limit, else the
+ *  safety brake, else nothing. `null` means the loop is not bounded by count. */
+function groupChatDriveCaps(limits) {
+  return {
+    rounds: limits.rounds ?? limits.safetyRounds,
+    messages: limits.messages ?? limits.safetyMessages,
+    roundsUnbounded: limits.rounds === null && limits.safetyRounds === null,
+    messagesUnbounded: limits.messages === null && limits.safetyMessages === null
+  }
+}
 
 /** "(pass)" (loosely: pass / (pass) / pass.) or empty = the member stayed silent. */
 function isGroupPassText(text) {
@@ -4821,6 +4978,16 @@ async function disbandGroupChat(group, members) {
 function setGroupChatImage(group, image) {
   updateGroupChat(group, room => {
     room.image = image || null
+    return room
+  })
+}
+
+/** Write a room's budget overrides. Storing nothing (every axis on its
+ *  default) clears the field, so a room that was reset looks exactly like a
+ *  room that never changed anything. */
+function setGroupChatLimits(group, limits) {
+  updateGroupChat(group, room => {
+    room.limits = durableGroupChatLimits(limits)
     return room
   })
 }
@@ -5433,10 +5600,19 @@ async function harvestStrandedGroupReply(group, member) {
 async function runGroupChatRounds(group, members, thread) {
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
+  // Read once per drive: a mid-drive settings change applies to the NEXT send,
+  // so a running conversation keeps the rules it started under.
+  const limits = resolveGroupChatLimits($groupChats.get()[group])
+  const caps = groupChatDriveCaps(limits)
+  // Why the drive ended, decided where it actually ends and reported once in
+  // `finally`. Before this, every ending reported as `settled`, so a room cut
+  // off by its budget looked exactly like a room that had finished talking
+  // (#92213, reported by AllanGamal against a two-bot room on the 3-round cap).
+  let stoppedBy = null
   let posted = 0
 
   try {
-    for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
+    for (let round = 0; caps.rounds === null || round < caps.rounds; round++) {
       // Deliver any replies that finished after their turn timed out —
       // every member, not just this round's responders, so long work is
       // late, never lost.
@@ -5468,9 +5644,11 @@ async function runGroupChatRounds(group, members, thread) {
       let spokeThisRound = 0
 
       for (const member of responders) {
-        if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES) {
+        if (!isCurrent() || (caps.messages !== null && posted >= caps.messages)) {
           if (!isCurrent()) {
             recordGroupActivity(group, { kind: 'cancelled', member: null, thread })
+          } else {
+            stoppedBy = 'messages'
           }
           return
         }
@@ -5491,7 +5669,9 @@ async function runGroupChatRounds(group, members, thread) {
           groupName: group,
           members,
           viewer: member,
-          deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(e => formatGroupChatLine(e, member.name))
+          deltaLines: (limits.history === null ? delta : delta.slice(-limits.history)).map(e =>
+            formatGroupChatLine(e, member.name)
+          )
         })
 
         // Images riding this delta (user attachments — member entries don't
@@ -5541,12 +5721,32 @@ async function runGroupChatRounds(group, members, thread) {
       }
 
       if (spokeThisRound === 0) {
+        stoppedBy = 'settled'
         return // everyone passed — the conversation settled
       }
     }
+
+    // Falling out of the loop means the round budget ran out; every other exit
+    // returns above.
+    stoppedBy = stoppedBy ?? (caps.rounds === null ? 'settled' : 'rounds')
   } finally {
     if (isCurrent()) {
-      recordGroupActivity(group, { kind: 'settled', member: null, thread })
+      recordGroupActivity(
+        group,
+        stoppedBy === 'rounds' || stoppedBy === 'messages'
+          ? {
+              kind: (stoppedBy === 'rounds' ? limits.rounds : limits.messages) === null ? 'safety' : 'capped',
+              member: null,
+              thread,
+              detail: stoppedBy,
+              // NOT `at`: recordGroupActivity stamps that with Date.now(), and
+              // spreading the event over it turned "1 round" into a timestamp
+              // of 1ms past the epoch, which the room rendered as "20688 days
+              // ago".
+              count: stoppedBy === 'rounds' ? caps.rounds : caps.messages
+            }
+          : { kind: 'settled', member: null, thread }
+      )
       updateGroupChat(group, r => {
         r.running = false
         r.turn = null
@@ -9095,6 +9295,229 @@ function GroupDialog({ bot, onClose }) {
  *  a live preview (image, else the organization glyph), Upload / Generate /
  *  Remove. Reuses the bot-avatar pipeline (device picker, 256px normalize,
  *  image.generate probe) so room pictures cost the same as bot avatars. */
+/** One row of the room budget, built on the same shape the app's own settings
+ *  rows use (src/app/settings/primitives.tsx: ListRow / ToggleRow): a
+ *  container-queried grid, label and description on the left, the control
+ *  right-aligned. Plugins cannot import those primitives, so the structure is
+ *  mirrored here rather than invented.
+ *
+ *  Rounds and messages get a second row when they are off, holding the safety
+ *  brake, which is itself switchable: a room the user deliberately unbounds
+ *  should actually be unbounded. */
+function GroupLimitRow({ label, hint, value, fallback, ceiling, onChange, brake }) {
+  const off = value === null
+  const shown = off ? '' : String(value ?? fallback)
+
+  const numberField = (props) =>
+    jsx(Input, {
+      // text-xs mirrors CONTROL_TEXT in src/app/settings/constants.ts; the
+      // field fills its column there rather than carrying a fixed width,
+      // which is what makes its border read at this size.
+      className: 'min-w-0 flex-1 text-xs',
+      inputMode: 'numeric',
+      max: ceiling,
+      min: 1,
+      type: 'number',
+      ...props
+    })
+
+  const control = (children) => jsx('div', { className: 'flex min-w-0 items-center gap-2', children })
+
+  return jsxs('div', {
+    className: '@container',
+    children: [
+      jsxs('div', {
+        className: 'grid gap-2 py-2.5 @xs:grid-cols-[minmax(0,1fr)_11rem] @xs:items-center @xs:gap-3',
+        children: [
+          jsxs('div', {
+            className: 'min-w-0',
+            children: [
+              jsx('div', {
+                className: 'text-[length:var(--conversation-text-font-size)] font-medium text-foreground',
+                children: label
+              }),
+              hint
+                ? jsx('div', {
+                    className:
+                      'mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)',
+                    children: hint
+                  })
+                : null
+            ]
+          }),
+          jsx('div', {
+            className: 'min-w-0 @xs:justify-self-end',
+            children: control([
+              numberField({
+                'aria-label': label,
+                disabled: off,
+                placeholder: off ? '\u221e' : String(fallback),
+                value: shown,
+                onChange: event => {
+                  const raw = event.target.value.trim()
+                  if (!raw) {
+                    onChange(undefined)
+                    return
+                  }
+                  const n = Math.floor(Number(raw))
+                  onChange(Number.isFinite(n) && n > 0 ? Math.min(n, ceiling) : undefined)
+                }
+              }),
+              jsx(Switch, {
+                'aria-label': `Limit ${label.toLowerCase()}`,
+                checked: !off,
+                onCheckedChange: on => {
+                  haptic('tap')
+                  onChange(on ? fallback : null)
+                }
+              })
+            ])
+          })
+        ]
+      }),
+      off && brake
+        ? jsxs('div', {
+            className:
+              'grid gap-2 border-l border-(--ui-border) pb-2.5 pl-3 @xs:grid-cols-[minmax(0,1fr)_11rem] @xs:items-center @xs:gap-3',
+            children: [
+              jsx('div', {
+                className:
+                  'min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)',
+                children: brake.value === null ? `No safety stop on ${label.toLowerCase()}` : 'Safety stop after'
+              }),
+              jsx('div', {
+                className: 'min-w-0 @xs:justify-self-end',
+                children: control([
+                  numberField({
+                    'aria-label': `Safety stop for ${label.toLowerCase()}`,
+                    disabled: brake.value === null,
+                    placeholder: brake.value === null ? '\u221e' : String(brake.fallback),
+                    value: brake.value === null ? '' : String(brake.value ?? brake.fallback),
+                    onChange: event => {
+                      const raw = event.target.value.trim()
+                      if (!raw) {
+                        brake.onChange(undefined)
+                        return
+                      }
+                      const n = Math.floor(Number(raw))
+                      brake.onChange(Number.isFinite(n) && n > 0 ? Math.min(n, ceiling) : undefined)
+                    }
+                  }),
+                  jsx(Switch, {
+                    'aria-label': `Safety stop for ${label.toLowerCase()}`,
+                    checked: brake.value !== null,
+                    onCheckedChange: on => {
+                      haptic('tap')
+                      brake.onChange(on ? brake.fallback : null)
+                    }
+                  })
+                ])
+              })
+            ]
+          })
+        : null
+    ]
+  })
+}
+
+/** The room budget editor. Shared by the create dialog, group settings, and
+ *  the room's own budget popover, so all three write the same shape. */
+function GroupLimitsControls({ limits, onChange, memberCount = 0 }) {
+  const set = (key, next) => {
+    const draft = { ...(limits || {}) }
+    if (next === undefined) {
+      delete draft[key]
+    } else {
+      draft[key] = next
+    }
+    onChange(draft)
+  }
+
+  const read = key => (Object.prototype.hasOwnProperty.call(limits || {}, key) ? limits[key] : undefined)
+  const resolved = resolveGroupChatLimits({ limits })
+  const unbounded =
+    (resolved.rounds === null && resolved.safetyRounds === null) ||
+    (resolved.messages === null && resolved.safetyMessages === null)
+
+  // The two axes multiply: with N members, one round is N messages, so the
+  // message budget usually runs out first. Raising rounds alone then changes
+  // nothing visible, which reads as the setting being broken. Say which one
+  // actually ends the conversation.
+  const effectiveRounds = resolved.rounds ?? resolved.safetyRounds
+  const effectiveMessages = resolved.messages ?? resolved.safetyMessages
+  const binding =
+    effectiveMessages !== null && effectiveRounds !== null && memberCount > 0
+      ? Math.ceil(effectiveMessages / memberCount) < effectiveRounds
+        ? 'messages'
+        : null
+      : null
+
+  return jsxs('div', {
+    className: 'flex flex-col divide-y divide-(--ui-border)',
+    children: [
+      jsx(GroupLimitRow, {
+        label: 'Rounds',
+        hint: 'Round-robin passes over the members per message you send',
+        value: read('rounds'),
+        fallback: GROUP_CHAT_MAX_ROUNDS,
+        ceiling: GROUP_CHAT_LIMIT_CEILINGS.rounds,
+        onChange: next => set('rounds', next),
+        brake: {
+          value: read('safetyRounds'),
+          fallback: GROUP_CHAT_SAFETY_DEFAULTS.rounds,
+          onChange: next => set('safetyRounds', next)
+        }
+      }),
+      jsx(GroupLimitRow, {
+        label: 'Messages',
+        hint: 'Total bot messages per message you send',
+        value: read('messages'),
+        fallback: GROUP_CHAT_MAX_MESSAGES,
+        ceiling: GROUP_CHAT_LIMIT_CEILINGS.messages,
+        onChange: next => set('messages', next),
+        brake: {
+          value: read('safetyMessages'),
+          fallback: GROUP_CHAT_SAFETY_DEFAULTS.messages,
+          onChange: next => set('safetyMessages', next)
+        }
+      }),
+      jsx(GroupLimitRow, {
+        label: 'Members',
+        hint: 'How many bots this room may hold',
+        value: read('members'),
+        fallback: GROUP_CHAT_MAX_MEMBERS,
+        ceiling: GROUP_CHAT_LIMIT_CEILINGS.members,
+        onChange: next => set('members', next)
+      }),
+      jsx(GroupLimitRow, {
+        label: 'History',
+        hint: 'Room lines each bot sees per turn — drives token cost',
+        value: read('history'),
+        fallback: GROUP_CHAT_HISTORY_LIMIT,
+        ceiling: GROUP_CHAT_LIMIT_CEILINGS.history,
+        onChange: next => set('history', next)
+      }),
+      binding === 'messages'
+        ? jsx('div', {
+            className: 'pt-2 text-[0.65rem] text-(--ui-text-tertiary)',
+            children: `With ${memberCount} bots, the message budget runs out after about ${Math.max(
+              1,
+              Math.ceil(effectiveMessages / memberCount)
+            )} round${Math.ceil(effectiveMessages / memberCount) === 1 ? '' : 's'} — raise it too, or the round setting will not change anything.`
+          })
+        : null,
+      unbounded
+        ? jsx('div', {
+            className: 'pt-2 text-[0.65rem] text-(--ui-warning,#d68b00)',
+            children:
+              'Unlimited means unlimited: this room keeps going until every bot passes, or until you send again. ' +
+              'Nothing else will stop it, and every turn costs tokens. Your call.'
+          })
+        : null
+    ]
+  })
+}
+
 function GroupImageControls({ image, onImage, seedName, seedMembers }) {
   const imagen = useValue($imagenAvailable)
   const [busy, setBusy] = useState(false)
@@ -9179,13 +9602,16 @@ function GroupImageControls({ image, onImage, seedName, seedMembers }) {
 function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }) {
   const rooms = useValue($groupChats)
   const current = (rooms[group] || {}).image || null
+  const currentLimits = (rooms[group] || {}).limits || null
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
+  const [limits, setLimits] = useState(currentLimits)
 
   useEffect(() => {
     if (open) {
       setName(group)
       setImage(current)
+      setLimits(currentLimits)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
@@ -9200,6 +9626,8 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }) {
     if (image !== current) {
       setGroupChatImage(finalName, image)
     }
+
+    setGroupChatLimits(finalName, limits)
 
     onClose()
 
@@ -9216,7 +9644,7 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }) {
       }
     },
     children: jsxs(DialogContent, {
-      className: 'max-w-sm',
+      className: 'max-w-md',
       children: [
         jsxs(DialogHeader, {
           children: [
@@ -9245,6 +9673,16 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }) {
             onChange: event => setName(event.target.value)
           })
         }),
+        jsxs('div', {
+          className: 'mt-1',
+          children: [
+            jsx('div', {
+              className: 'text-[0.65rem] uppercase tracking-wider text-(--ui-text-quaternary) mb-1',
+              children: 'Room budget'
+            }),
+            jsx(GroupLimitsControls, { limits, memberCount: (members || []).length, onChange: setLimits })
+          ]
+        }),
         jsxs(DialogFooter, {
           children: [
             jsx(Button, { variant: 'secondary', onClick: onClose, children: 'Cancel' }),
@@ -9266,6 +9704,8 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
   const [checked, setChecked] = useState({})
   const [name, setName] = useState('')
   const [image, setImage] = useState(null)
+  const [limits, setLimits] = useState(null)
+  const [showBudget, setShowBudget] = useState(false)
 
   // Reset per open so a cancelled draft doesn't leak into the next one.
   useEffect(() => {
@@ -9274,12 +9714,17 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
       setChecked({})
       setName('')
       setImage(null)
+      setLimits(null)
+      setShowBudget(false)
     }
   }, [open])
 
   const selected = roster.filter(bot => checked[botRosterKey(bot)])
   const visible = filterBots(roster, allMeta, query)
-  const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
+  // The member cap is part of the budget, so raising it here immediately
+  // widens the picker instead of forcing a create-then-edit round trip.
+  const memberCap = resolveGroupChatLimits({ limits }).members
+  const atCap = memberCap !== null && selected.length >= memberCap
   const placeholder = selected.length
     ? selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta))).join(', ')
     : 'Group name'
@@ -9322,12 +9767,18 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
     // gateway's name-keyed bot metadata to remain seated in this room.
     const roomMembers = durableGroupChatMembers(selected)
 
+    const roomLimits = durableGroupChatLimits(limits)
+
     updateGroupChat(groupName, room => {
       room.members = roomMembers
       room.roomId = roomId
 
       if (image) {
         room.image = image
+      }
+
+      if (roomLimits) {
+        room.limits = roomLimits
       }
 
       return room
@@ -9352,7 +9803,7 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
           children: [
             jsx(DialogTitle, { children: 'New Group Chat' }),
             jsx(DialogDescription, {
-              children: `Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`
+              children: `Pick ${memberCap === null ? '2 or more' : `2–${memberCap}`} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`
             })
           ]
         }),
@@ -9456,6 +9907,19 @@ function CreateGroupChatDialog({ open, roster, onClose, onCreated }) {
                 onChange: event => setName(event.target.value)
               })
             })
+          ]
+        }),
+        jsxs('div', {
+          className: 'flex flex-col',
+          children: [
+            jsx('button', {
+              className:
+                'w-fit text-[0.65rem] text-(--ui-text-tertiary) hover:text-(--ui-text-secondary) transition-colors',
+              type: 'button',
+              onClick: () => setShowBudget(value => !value),
+              children: showBudget ? 'Hide room budget' : 'Room budget \u2026'
+            }),
+            showBudget ? jsx(GroupLimitsControls, { limits, memberCount: selected.length, onChange: setLimits }) : null
           ]
         }),
         jsxs(DialogFooter, {
@@ -10044,6 +10508,16 @@ function GroupChatWorkspace({ group, members, onBack, visible = true }) {
       jsx('span', {
         className: 'shrink-0 text-[0.65rem] text-(--ui-text-quaternary)',
         children: `${members.length} bots`
+      }),
+      jsx(Tip, {
+        label: 'Room budget — click to change',
+        children: jsx('button', {
+          className:
+            'shrink-0 text-[0.65rem] text-(--ui-text-quaternary) hover:text-(--ui-text-secondary) transition-colors',
+          type: 'button',
+          onClick: () => setSettingsOpen(true),
+          children: groupChatBudgetLabel(room)
+        })
       }),
       jsx(Button, {
         variant: 'ghost',
@@ -11444,6 +11918,7 @@ export default {
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
+                  limits: durableGroupChatLimits(room.limits),
                   syncRevision: Math.max(0, Number(room.syncRevision || 0)),
                   epoch: 0,
                   running: false

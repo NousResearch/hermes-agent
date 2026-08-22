@@ -2243,7 +2243,9 @@ def _dump_subagent_timeout_diagnostic(
         return None
 
 
-def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
+def _spill_summary_to_file(
+    task_index: int, summary: str, task_id: Optional[str] = None
+) -> Optional[str]:
     """Write a subagent's full summary to the delegation cache and return path.
 
     Mirrors web_extract's ``_store_full_text``: the file lands in
@@ -2267,14 +2269,17 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
         # cache/delegation is bind-mounted read-only into remote backends
         # whose container UID must be able to read it.
         write_text_exclusive(path, summary, private=False)
-        return str(path)
+
+        from tools.credential_files import to_agent_visible_cache_path
+
+        return to_agent_visible_cache_path(str(path), task_id=task_id)
     except Exception as exc:
         logger.debug("Failed to spill subagent summary to file: %s", exc)
         return None
 
 
 def _trim_summary_with_footer(
-    summary: str, cap: int, task_index: int
+    summary: str, cap: int, task_index: int, task_id: Optional[str] = None
 ) -> tuple[str, Optional[str]]:
     """Return (model_text, spill_path) for one over-budget summary.
 
@@ -2300,7 +2305,7 @@ def _trim_summary_with_footer(
     if 0 <= nl < tail_budget * 0.5:
         tail = tail[nl + 1:]
 
-    spill_path = _spill_summary_to_file(task_index, summary)
+    spill_path = _spill_summary_to_file(task_index, summary, task_id=task_id)
 
     footer_lines = [
         "",
@@ -2401,6 +2406,7 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
     if not candidates:
         return  # both disabled / unknown → leave summaries untouched
     cap = min(candidates)
+    task_id = getattr(parent_agent, "_current_task_id", None)
 
     for entry in summaries:
         summary = entry["summary"]
@@ -2408,7 +2414,7 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
             continue
         original_len = len(summary)
         model_text, spill_path = _trim_summary_with_footer(
-            summary, cap, entry.get("task_index", -1)
+            summary, cap, entry.get("task_index", -1), task_id=task_id
         )
         entry["summary"] = model_text
         entry["summary_truncated"] = True
@@ -3797,6 +3803,15 @@ def delegate_task(
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
         task_list, context, model=creds.get("model"), provider=creds.get("provider")
     )
+    from tools.credential_files import to_agent_visible_cache_path
+
+    parent_task_id = getattr(parent_agent, "_current_task_id", None)
+
+    def _agent_visible_live_paths() -> List[str]:
+        return [
+            to_agent_visible_cache_path(path, task_id=parent_task_id)
+            for path in live_paths
+        ]
 
     # Capture the ORIGINATING session's wake target BEFORE any child agent is
     # constructed: _build_child_agent() -> AIAgent() -> agent_init calls
@@ -4065,16 +4080,19 @@ def delegate_task(
                     _w.finalize(entry)
                 except Exception:
                     logger.debug("Live transcript finalize failed", exc_info=True)
-                if _idx < len(live_paths):
-                    entry["live_transcript"] = live_paths[_idx]
         update_manifest_statuses(live_deleg_id, results)
+        agent_live_paths = _agent_visible_live_paths()
+        for entry in results:
+            _idx = entry.get("task_index", -1)
+            if isinstance(_idx, int) and 0 <= _idx < len(agent_live_paths):
+                entry["live_transcript"] = agent_live_paths[_idx]
 
         combined: Dict[str, Any] = {
             "results": results,
             "total_duration_seconds": total_duration,
         }
-        if live_paths:
-            combined["live_transcripts"] = list(live_paths)
+        if agent_live_paths:
+            combined["live_transcripts"] = list(agent_live_paths)
         return combined
 
     # ----- Background dispatch: run the WHOLE batch as one async unit -----
@@ -4296,8 +4314,9 @@ def delegate_task(
                     "redirect one, action='stop' with subagent_id to end one "
                     "early."
                 )
-            if live_paths:
-                payload["live_transcripts"] = list(live_paths)
+            agent_live_paths = _agent_visible_live_paths()
+            if agent_live_paths:
+                payload["live_transcripts"] = list(agent_live_paths)
                 payload["live_transcripts_hint"] = (
                     "Each subagent streams a human-readable transcript of its "
                     "operations to the file listed above (append-only, one per "

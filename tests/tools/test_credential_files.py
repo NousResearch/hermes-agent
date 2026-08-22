@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +17,7 @@ from tools.credential_files import (
     map_cache_path_to_container,
     register_credential_file,
     register_credential_files,
+    to_agent_visible_cache_path,
 )
 
 
@@ -369,6 +371,7 @@ class TestCacheDirectoryMounts:
         assert "/root/.hermes/attachments" in container_paths
         assert "/root/.hermes/images" in container_paths
         assert "/root/.hermes/cache/images" in container_paths
+        assert "/root/.hermes/cache/delegation" in container_paths
         for mount in mounts:
             assert Path(mount["host_path"]).is_dir()
 
@@ -471,6 +474,72 @@ class TestToAgentVisiblePathPerBackend:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         from tools.credential_files import to_agent_visible_cache_path
         assert to_agent_visible_cache_path("/etc/hosts") == "/etc/hosts"
+
+
+@pytest.mark.parametrize("backend", ["ssh", "daytona", "vercel_sandbox"])
+def test_remote_cache_path_uses_tilde_before_environment_exists(
+    tmp_path, monkeypatch, backend
+):
+    hermes_home = tmp_path / ".hermes"
+    delegation_dir = hermes_home / "cache" / "delegation"
+    delegation_dir.mkdir(parents=True)
+    host_path = str(delegation_dir / "summary.txt")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr("tools.terminal_tool.get_active_env", lambda task_id: None)
+    monkeypatch.setattr(
+        "tools.terminal_tool.resolve_task_overrides",
+        lambda task_id: {"env_type": backend},
+    )
+
+    assert (
+        to_agent_visible_cache_path(host_path, task_id="cold-remote")
+        == "~/.hermes/cache/delegation/summary.txt"
+    )
+
+
+def test_modal_cache_path_uses_root_hermes_before_environment_exists(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / ".hermes"
+    delegation_dir = hermes_home / "cache" / "delegation"
+    delegation_dir.mkdir(parents=True)
+    host_path = str(delegation_dir / "summary.txt")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr("tools.terminal_tool.get_active_env", lambda task_id: None)
+    monkeypatch.setattr(
+        "tools.terminal_tool.resolve_task_overrides",
+        lambda task_id: {"env_type": "modal"},
+    )
+
+    assert (
+        to_agent_visible_cache_path(host_path, task_id="cold-modal")
+        == "/root/.hermes/cache/delegation/summary.txt"
+    )
+
+
+def test_active_remote_environment_overrides_global_local_backend(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    delegation_dir = hermes_home / "cache" / "delegation"
+    delegation_dir.mkdir(parents=True)
+    host_path = str(delegation_dir / "summary.txt")
+    sync_calls = []
+    env = SimpleNamespace(
+        _remote_home="/srv/agent",
+        _sync_manager=SimpleNamespace(
+            sync=lambda *, force=False: sync_calls.append(force)
+        ),
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr("tools.terminal_tool.get_active_env", lambda task_id: env)
+
+    assert (
+        to_agent_visible_cache_path(host_path, task_id="active-remote")
+        == "/srv/agent/.hermes/cache/delegation/summary.txt"
+    )
+    assert sync_calls == [True]
 
 
 class TestIterCacheFiles:

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
-import { markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
+import { isLiveTailReplyId, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
@@ -73,13 +73,21 @@ export function useComposerVoice({
     onTranscribeAudio
   })
 
-  /** Auto-speak selector: the latest unspoken reply only — a backlog collapses to the newest. */
+  /** Auto-speak selector: the latest unspoken reply only - a backlog collapses to the newest. */
   const pendingResponse = () => {
     const messages = $messages.get()
-    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden && !m.interim)
+
+    // Skip live-tail ids (assistant-stream-*, inflight-assistant-*) and interim
+    // bubbles - they are not stable. The hydrate rewrites them under a durable
+    // id, and auto-speak would re-read the same turn at the playback-idle edge.
+    if (!last || isLiveTailReplyId(last.id) || last.interim) {
+      return null
+    }
+
     const spoken = resolveSpokenReply(sessionId, messages)
 
-    if (!last || last.id === spoken?.id) {
+    if (last.id === spoken?.id) {
       return null
     }
 
@@ -91,7 +99,7 @@ export function useComposerVoice({
 
     return {
       id: last.id,
-      pending: Boolean(last.pending),
+      pending: false,
       text
     }
   }
@@ -109,9 +117,9 @@ export function useComposerVoice({
 
   const consumePendingResponse = () => {
     const messages = $messages.get()
-    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden && !m.interim)
 
-    if (last) {
+    if (last && !isLiveTailReplyId(last.id)) {
       markAssistantIdSpoken(sessionId, messages, last.id)
     }
   }

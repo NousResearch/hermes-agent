@@ -405,3 +405,19 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestSnapshotExcludeDelegatedAndCronSession:
+    """Regression for #90782: terminal snapshot must exclude per-session lifecycle markers."""
+
+    def test_export_dump_unsets_delegated_and_cron_session_markers(self):
+        from tools.environments.base import (
+            _export_dump_excluding_session_vars,
+            _SNAPSHOT_EXCLUDED_ENV_REGEX,
+        )
+
+        dump = _export_dump_excluding_session_vars("/tmp/snap.tmp")
+        assert "HERMES_DELEGATED_CHILD_CONTEXT" in dump
+        assert "HERMES_CRON_SESSION" in dump
+        assert "HERMES_DELEGATED_CHILD_CONTEXT" in _SNAPSHOT_EXCLUDED_ENV_REGEX
+        assert "HERMES_CRON_SESSION" in _SNAPSHOT_EXCLUDED_ENV_REGEX

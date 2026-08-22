@@ -27,11 +27,22 @@ except ImportError:
     # Python 3.8 fallback (shouldn't be needed — Hermes requires 3.9+)
     from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
 
-# Cached state — resolved once, reused on every call.
+# Cached state, keyed to the active timezone source. This process can multiplex
+# profiles by switching HERMES_HOME, so a single unkeyed value would leak the
+# first profile's timezone into later profile-scoped work.
 # Call reset_cache() to force re-resolution (e.g. after config changes).
 _cached_tz: Optional[ZoneInfo] = None
 _cached_tz_name: Optional[str] = None
 _cache_resolved: bool = False
+_cache_identity: Optional[tuple[str, str]] = None
+
+
+def _timezone_cache_identity() -> tuple[str, str]:
+    """Return the active source identity for the timezone cache."""
+    tz_env = os.getenv("HERMES_TIMEZONE", "").strip()
+    if tz_env:
+        return ("environment", tz_env)
+    return ("config", str(get_config_path()))
 
 
 def _resolve_timezone_name() -> str:
@@ -94,14 +105,17 @@ def _get_zoneinfo(name: str) -> Optional[ZoneInfo]:
 
 
 def get_timezone() -> Optional[ZoneInfo]:
-    """Return the user's configured ZoneInfo, or None (meaning server-local).
+    """Return the active profile's configured ZoneInfo, or None (server-local).
 
-    Resolved once and cached. Call ``reset_cache()`` after config changes.
+    The cache is isolated by the active environment override or profile config
+    path. Call ``reset_cache()`` after editing the active config in place.
     """
-    global _cached_tz, _cached_tz_name, _cache_resolved
-    if not _cache_resolved:
+    global _cached_tz, _cached_tz_name, _cache_resolved, _cache_identity
+    cache_identity = _timezone_cache_identity()
+    if not _cache_resolved or _cache_identity != cache_identity:
         _cached_tz_name = _resolve_timezone_name()
         _cached_tz = _get_zoneinfo(_cached_tz_name)
+        _cache_identity = cache_identity
         _cache_resolved = True
     return _cached_tz
 
@@ -113,10 +127,11 @@ def reset_cache() -> None:
     config edit or ``HERMES_TIMEZONE`` update) to force ``get_timezone()`` /
     ``now()`` to read the new value instead of the value cached at first use.
     """
-    global _cached_tz, _cached_tz_name, _cache_resolved
+    global _cached_tz, _cached_tz_name, _cache_resolved, _cache_identity
     _cached_tz = None
     _cached_tz_name = None
     _cache_resolved = False
+    _cache_identity = None
 
 
 def now() -> datetime:

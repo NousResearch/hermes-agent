@@ -16990,6 +16990,39 @@ async def console_ws(ws: WebSocket) -> None:
                 pass
 
 
+def _chat_unavailable_message(exc: BaseException) -> str:
+    """Human-readable detail for the dashboard's red 'Chat unavailable' banner.
+
+    The embedded ``/chat`` terminal is a Node-based TUI spawned by the
+    dashboard. Several startup failures reach these handlers as opaque values
+    -- most notably ``SystemExit(1)``, raised by ``_make_tui_argv`` when
+    ``node``/``npm`` are missing, whose only signal is the bare exit code.
+    Surfacing that code verbatim (``Chat unavailable: 1``) tells the user
+    nothing; translate the known cases into actionable text and fall back to
+    the exception's own message for the rest.
+    """
+    if isinstance(exc, SystemExit):
+        # _make_tui_argv prints a readable "node not found" line then
+        # sys.exit(1); that stdout never reaches this handler, so reconstruct
+        # the guidance here. Code 1 is the documented missing-Node case; any
+        # other non-zero exit gets a generic but still readable note.
+        code = getattr(exc, "code", None)
+        if code in (None, 0, 1):
+            return (
+                "the embedded chat terminal could not start because Node.js "
+                "was not found. The dashboard spawns a Node-based TUI, so "
+                "install Node.js 18+ and ensure `node` is on the dashboard "
+                "process's PATH (or point HERMES_NODE at the binary), then "
+                "reload the page."
+            )
+        return f"the chat terminal exited during startup (exit code {code})."
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        return str(detail) if detail is not None else "unknown profile or request error."
+    text = str(exc).strip()
+    return text or f"{exc.__class__.__name__} during chat startup."
+
+
 @app.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     peer = ws.client.host if ws.client else "?"
@@ -17076,12 +17109,13 @@ async def pty_ws(ws: WebSocket) -> None:
         argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
     except HTTPException as exc:
         # Unknown/invalid profile from _resolve_profile_dir.
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
+        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {_chat_unavailable_message(exc)}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
     except SystemExit as exc:
-        # _make_tui_argv calls sys.exit(1) when node/npm is missing.
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+        # _make_tui_argv calls sys.exit(1) when node/npm is missing; the
+        # readable reason it prints never reaches here, so render guidance.
+        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {_chat_unavailable_message(exc)}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
 
@@ -17102,11 +17136,11 @@ async def pty_ws(ws: WebSocket) -> None:
         try:
             bridge = _spawn()
         except PtyUnavailableError as exc:
-            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {_chat_unavailable_message(exc)}\x1b[0m\r\n")
             await ws.close(code=1011)
             return
         except (FileNotFoundError, OSError) as exc:
-            await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
+            await ws.send_text(f"\r\n\x1b[31mChat failed to start: {_chat_unavailable_message(exc)}\x1b[0m\r\n")
             await ws.close(code=1011)
             return
         await _legacy_pump(ws, bridge)
@@ -17118,11 +17152,11 @@ async def pty_ws(ws: WebSocket) -> None:
             attach_token, spawn=_spawn
         )
     except PtyUnavailableError as exc:
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {_chat_unavailable_message(exc)}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
     except (FileNotFoundError, OSError, RegistryFull) as exc:
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {_chat_unavailable_message(exc)}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
 

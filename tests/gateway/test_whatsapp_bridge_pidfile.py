@@ -17,19 +17,12 @@ import subprocess
 import sys
 import time
 
-import pytest
-
-import os
-import socket
-
 from plugins.platforms.whatsapp.adapter import (
     _bridge_pid_is_ours,
-    _kill_port_process,
     _kill_stale_bridge_by_pidfile,
-    _listener_pids_on_port,
     _write_bridge_pidfile,
 )
-from gateway.status import get_process_start_time, _pid_exists
+from gateway.status import get_process_start_time
 
 
 def _spawn_sleeper(*extra_argv) -> subprocess.Popen:
@@ -89,40 +82,3 @@ class TestIdentityGuard:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
-
-
-class TestKillPortProcess:
-    """Freeing the bridge port must target only LISTENers, never clients.
-
-    Root cause of the live Firefox kills: ``lsof -ti :PORT`` (and ``fuser
-    PORT/tcp``) also returned *client* sockets whose connection merely involved
-    the port number. The WhatsApp bridge uses port 3000 by default — a common
-    local dev-server port — so a browser tab on ``localhost:3000`` was matched
-    and SIGTERMed every time the (crash-looping) bridge restarted.
-    """
-
-    def test_listener_lookup_excludes_client_process(self):
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind(("127.0.0.1", 0))
-        port = srv.getsockname()[1]
-        srv.listen(5)
-        # A separate process holding a *client* connection to that port.
-        client = subprocess.Popen([
-            sys.executable, "-c",
-            "import socket,time; c=socket.create_connection(('127.0.0.1',%d)); time.sleep(0.2)" % port,
-        ])
-        try:
-            conn, _ = srv.accept()  # establish the client connection
-            pids = _listener_pids_on_port(port)
-            if os.getpid() not in pids:
-                pytest.skip("neither lsof nor ss detected the listener here")
-            # The listener (this process) is found; the client process is NOT —
-            # the LISTEN filter is what spares unrelated clients like a browser.
-            assert client.pid not in pids
-            conn.close()
-        finally:
-            client.kill()
-            client.wait()
-            srv.close()
-

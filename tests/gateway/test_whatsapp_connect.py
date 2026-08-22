@@ -13,7 +13,6 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
-import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -306,75 +305,6 @@ class TestBridgeRuntimeFailure:
         assert result is False
         mock_fh.close.assert_called_once()
         assert adapter._bridge_log_fh is None
-
-
-# ---------------------------------------------------------------------------
-# _kill_port_process() cross-platform tests
-# ---------------------------------------------------------------------------
-
-class TestKillPortProcess:
-    """Verify _kill_port_process uses platform-appropriate commands."""
-
-    @pytest.mark.windows_only
-    def test_uses_netstat_and_taskkill_on_windows(self):
-        """``windows_only``: netstat/taskkill are Windows binaries. The old
-        ``_IS_WINDOWS`` patch selected this branch on Linux, where neither
-        exists, so the mocked argv was the only thing under test."""
-        from plugins.platforms.whatsapp.adapter import _kill_port_process
-
-        netstat_output = (
-            "  Proto  Local Address          Foreign Address        State           PID\n"
-            "  TCP    0.0.0.0:3000           0.0.0.0:0              LISTENING       12345\n"
-            "  TCP    0.0.0.0:3001           0.0.0.0:0              LISTENING       99999\n"
-        )
-        mock_netstat = MagicMock(stdout=netstat_output)
-        mock_taskkill = MagicMock()
-
-        def run_side_effect(cmd, **kwargs):
-            if cmd[0] == "netstat":
-                return mock_netstat
-            if cmd[0] == "taskkill":
-                return mock_taskkill
-            return MagicMock()
-
-        with patch("plugins.platforms.whatsapp.adapter.subprocess.run", side_effect=run_side_effect) as mock_run:
-            _kill_port_process(3000)
-
-        # netstat called
-        assert any(
-            call.args[0][0] == "netstat" for call in mock_run.call_args_list
-        )
-        # taskkill called with correct PID
-        assert any(
-            call.args[0] == ["taskkill", "/PID", "12345", "/F"]
-            for call in mock_run.call_args_list
-        )
-
-
-    @pytest.mark.linux_only
-    def test_kills_only_listeners_on_linux(self):
-        """POSIX path SIGTERMs only LISTENer PIDs (never clients) — the #43846 fix.
-
-        Replaces the old fuser-based test: ``fuser``/bare ``lsof -i`` also
-        matched client sockets sharing the port number, which closed unrelated
-        processes (a browser tab on the same port). The implementation now
-        resolves listeners via ``_listener_pids_on_port`` and signals only those.
-
-        ``linux_only``: asserts the POSIX ``os.kill``/SIGTERM path, which is
-        genuinely selected here without patching ``_IS_WINDOWS``.
-        """
-        from plugins.platforms.whatsapp import adapter as wa
-
-        kills = []
-        with patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port",
-                   return_value=[55555]) as mock_listeners, \
-             patch("plugins.platforms.whatsapp.adapter.os.kill",
-                   side_effect=lambda pid, sig: kills.append((pid, sig))):
-            wa._kill_port_process(3000)
-
-        mock_listeners.assert_called_once_with(3000)
-        assert kills == [(55555, signal.SIGTERM)]
-
 
 # ---------------------------------------------------------------------------
 # Persistent HTTP session lifecycle

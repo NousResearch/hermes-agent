@@ -4143,6 +4143,33 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _fire_first_delta()
                 agent._fire_reasoning_delta(reasoning_text)
 
+            # Vertex/Gemini OpenAI-compat streams thought summaries as plain
+            # content deltas flagged ``extra_content.google.thought: true``
+            # (no <think> tags on the streaming wire), so the think scrubber
+            # never sees them. Route flagged deltas into the reasoning stream
+            # instead of visible content.
+            _delta_extra = getattr(delta, "extra_content", None)
+            if _delta_extra is None and hasattr(delta, "model_extra"):
+                _me = getattr(delta, "model_extra", None)
+                if isinstance(_me, dict):
+                    _delta_extra = _me.get("extra_content")
+            if (
+                isinstance(_delta_extra, dict)
+                and isinstance(_delta_extra.get("google"), dict)
+                and _delta_extra["google"].get("thought")
+                and not getattr(delta, "tool_calls", None)
+            ):
+                _thought_text = getattr(delta, "content", None)
+                if _thought_text:
+                    _thought_text = separate_glued_reasoning_blocks(
+                        reasoning_parts[-1] if reasoning_parts else "",
+                        _thought_text,
+                    )
+                    reasoning_parts.append(_thought_text)
+                    _fire_first_delta()
+                    agent._fire_reasoning_delta(_thought_text)
+                continue
+
             # Accumulate text content — fire callback only when no tool calls
             delta_content = getattr(delta, "content", None)
             if delta_content:

@@ -605,6 +605,96 @@ class TestReasoningStreaming:
         assert response.choices[0].message.content == "The answer is 42"
 
 
+class TestGeminiThoughtDeltaRouting:
+    """Vertex/Gemini OpenAI-compat thought deltas stay out of visible content.
+
+    The Vertex OpenAI-compat surface streams Gemini thought summaries as
+    ordinary ``delta.content`` chunks flagged only by
+    ``delta.extra_content = {"google": {"thought": True}}`` — no <think>
+    tags on the streaming wire — so tag-based scrubbing never fires and the
+    summaries leaked into the visible reply. Flagged deltas must be routed
+    to the reasoning stream instead.
+    """
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_thought_deltas_route_to_reasoning(self, mock_close, mock_create):
+        from run_agent import AIAgent
+
+        def _thought_chunk(text):
+            chunk = _make_stream_chunk(content=text)
+            chunk.choices[0].delta.extra_content = {"google": {"thought": True}}
+            return chunk
+
+        chunks = [
+            _thought_chunk("**Analyzing The Question**\n\nWorking it through.\n\n"),
+            _thought_chunk("**Refining The Answer**\n\nDouble-checking.\n\n"),
+            _make_stream_chunk(content="The answer is 42"),
+            _make_stream_chunk(finish_reason="stop"),
+        ]
+
+        reasoning_deltas = []
+        text_deltas = []
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="google/gemini-3-flash-preview",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda t: text_deltas.append(t),
+            reasoning_callback=lambda t: reasoning_deltas.append(t),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        # Thought text never reaches visible content or text deltas.
+        assert text_deltas == ["The answer is 42"]
+        assert response.choices[0].message.content == "The answer is 42"
+        # It lands in the reasoning stream instead.
+        assert "Analyzing The Question" in "".join(reasoning_deltas)
+        reasoning_content = response.choices[0].message.reasoning_content or ""
+        assert "Analyzing The Question" in reasoning_content
+        assert "Refining The Answer" in reasoning_content
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_unflagged_extra_content_stays_visible(self, mock_close, mock_create):
+        """A non-thought extra_content payload doesn't hijack normal content."""
+        from run_agent import AIAgent
+
+        chunk = _make_stream_chunk(content="Visible text")
+        chunk.choices[0].delta.extra_content = {"google": {"thought_signature": "abc"}}
+        chunks = [chunk, _make_stream_chunk(finish_reason="stop")]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="google/gemini-3-flash-preview",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "Visible text"
+        assert response.choices[0].message.reasoning_content is None
+
+
 # ── Test: _has_stream_consumers ──────────────────────────────────────────
 
 

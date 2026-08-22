@@ -42,6 +42,11 @@ from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
+# Single source of truth for the doctor all-clear wording so the message
+# shown by ``hermes doctor`` and the one returned by ``render_doctor_section``
+# can't drift apart.
+ALL_CLEAR_MESSAGE = "No known-compromised packages detected"
+
 
 # =============================================================================
 # Advisory catalog
@@ -411,7 +416,7 @@ def render_doctor_section(hits: list[AdvisoryHit]) -> tuple[bool, list[str]]:
     """
     fresh = filter_unacked(hits)
     if not fresh:
-        return False, ["No active security advisories.  ✓"]
+        return False, [f"{ALL_CLEAR_MESSAGE}.  ✓"]
 
     lines: list[str] = []
     for i, hit in enumerate(fresh):

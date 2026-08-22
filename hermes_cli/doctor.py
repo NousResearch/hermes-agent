@@ -1080,9 +1080,15 @@ def run_doctor(args):
     print(color("│                 🩺 Hermes Doctor                        │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
 
-    _section("Security Advisories")
+    _section("Supply-Chain Advisories")
+    check_info(
+        "Checks for known-compromised package versions (e.g. supply-chain "
+        "worms). Run `hermes security audit` for a broader CVE scan of "
+        "installed dependencies."
+    )
     try:
         from hermes_cli.security_advisories import (
+            ALL_CLEAR_MESSAGE,
             detect_compromised,
             filter_unacked,
             full_remediation_text,
@@ -1121,7 +1127,7 @@ def run_doctor(args):
                         f"(advisory {h.advisory.id} acknowledged)",
                     )
         else:
-            check_ok("No active security advisories")
+            check_ok(ALL_CLEAR_MESSAGE)
     except Exception as e:
         # Never let a bug in the advisory check block the rest of doctor.
         check_warn(f"Security advisory check failed: {e}")

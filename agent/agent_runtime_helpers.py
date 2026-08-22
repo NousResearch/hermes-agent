@@ -2519,6 +2519,55 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 agent._client_log_context(),
             )
             return client
+    if agent.provider == "custom" or str(agent.provider).startswith("custom:"):
+        # Local Ollama is configured as provider "custom" — either bare ("custom")
+        # or as a named instance ("custom:<name>") when several custom providers are
+        # set up (providers.py forms these as "custom:" + normalized-name; the
+        # "ollama"/"vllm"/"llamacpp" aliases all normalize to "custom"). Match the
+        # provider *type* (before the colon) so a second Ollama instance such as
+        # "custom:ollama-2" still gets the native path instead of silently falling
+        # back to /v1. Route it through Ollama's NATIVE /api/chat — which honors
+        # per-request num_ctx and returns correct streaming tool_calls, unlike the
+        # OpenAI-compat /v1 path — but ONLY when the endpoint is positively
+        # identified as Ollama via an /api/version probe (same detection-based,
+        # always-on selection the Gemini branch above uses), so a non-Ollama
+        # "custom" server (vLLM / llama.cpp / LM Studio) — which has no /api/version
+        # — fails the probe and stays byte-identical to the existing /v1 path.
+        from agent.ollama_native_adapter import OllamaNativeClient, is_native_ollama_base_url
+
+        base_url = str(client_kwargs.get("base_url", "") or "")
+        # Give the probe the same auth material and TLS trust the real client will
+        # use — an unauthenticated / default-trust probe would 401 or SSLError
+        # behind an authenticated proxy or a private CA and native routing would
+        # silently never engage for exactly those deployments.
+        if is_native_ollama_base_url(
+            base_url,
+            api_key=client_kwargs.get("api_key"),
+            default_headers=client_kwargs.get("default_headers"),
+            default_query=client_kwargs.get("default_query"),
+            verify=httpx_verify,
+        ):
+            safe_kwargs = {
+                k: v for k, v in client_kwargs.items()
+                if k in {
+                    "api_key", "base_url", "default_headers", "default_query",
+                    "timeout", "http_client",
+                }
+            }
+            if "http_client" not in safe_kwargs:
+                keepalive_http = agent._build_keepalive_http_client(
+                    base_url, verify=httpx_verify,
+                )
+                if keepalive_http is not None:
+                    safe_kwargs["http_client"] = keepalive_http
+            client = OllamaNativeClient(**safe_kwargs)
+            _ra().logger.info(
+                "Ollama native client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                agent._client_log_context(),
+            )
+            return client
     # Inject TCP keepalives so the kernel detects dead provider connections
     # instead of letting them sit silently in CLOSE-WAIT (#10324).  Without
     # this, a peer that drops mid-stream leaves the socket in a state where

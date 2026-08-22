@@ -2026,6 +2026,43 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     try:
         from providers import get_provider_profile
         _profile = get_provider_profile(agent.provider)
+        if _profile is None and str(agent.provider).startswith("custom:"):
+            # Named custom instances ("custom:<name>") aren't in the registry, but
+            # a named OLLAMA instance needs the "custom" profile so the profile path
+            # runs build_api_kwargs_extras() and injects ollama_num_ctx — without it,
+            # create_openai_client routes the endpoint to the native client but
+            # num_ctx never reaches extra_body and the model loads at Ollama's 4096
+            # default. Gate the fallback on the same /api/version identification the
+            # client selection uses (cache-warm here: the client build just probed
+            # this base_url): a NON-Ollama named instance (vLLM / a corp gateway)
+            # must keep its pre-existing no-profile request shape — the profile
+            # would inject max_tokens=65536 and reasoning_effort/think fields that
+            # such endpoints reject.
+            from agent.ollama_native_adapter import is_native_ollama_base_url
+
+            # Probe the SAME base_url the client was built from (_client_kwargs) —
+            # agent.base_url can be empty (router-resolved providers) or still
+            # carry a query string agent_init stripped into default_query — and
+            # with the SAME TLS verify, so this per-turn caller can't poison the
+            # shared probe cache that client selection reads.
+            _ck = getattr(agent, "_client_kwargs", None) or {}
+            _verify = None
+            try:
+                from agent.ssl_verify import resolve_httpx_verify
+
+                _verify = resolve_httpx_verify(
+                    ca_bundle=_ck.get("ssl_ca_cert"), ssl_verify=_ck.get("ssl_verify")
+                )
+            except Exception:
+                _verify = None
+            if is_native_ollama_base_url(
+                str(_ck.get("base_url") or getattr(agent, "base_url", "") or ""),
+                api_key=_ck.get("api_key"),
+                default_headers=_ck.get("default_headers"),
+                default_query=_ck.get("default_query"),
+                verify=_verify,
+            ):
+                _profile = get_provider_profile("custom")
     except Exception:
         _profile = None
 

@@ -990,3 +990,1066 @@ def test_pool_sync_back_preserves_active_provider(tmp_path, monkeypatch):
     state = raw_after["providers"]["xai-oauth"]["tokens"]
     assert state["access_token"] == new_access
     assert state["refresh_token"] == "rt-rotated"
+
+
+# ---------------------------------------------------------------------------
+# External OAuth refresh ownership (xAI-only)
+# Fleet is the sole rotating refresh-token writer when oauth.refresh_owner=external.
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_owns_oauth_refresh_ownership_matrix(tmp_path, monkeypatch):
+    """Absent config preserves runtime ownership; external/malformed fail closed."""
+    from hermes_cli.auth import runtime_owns_oauth_refresh
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # No config.yaml → standalone runtime-owned behavior.
+    assert runtime_owns_oauth_refresh("xai-oauth") is True
+    # Non-xAI providers are unaffected by this contract.
+    assert runtime_owns_oauth_refresh("openai-codex") is True
+    assert runtime_owns_oauth_refresh("nous") is True
+
+    (hermes_home / "config.yaml").write_text("model: grok-3\n")
+    assert runtime_owns_oauth_refresh("xai-oauth") is True
+
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: runtime\n")
+    assert runtime_owns_oauth_refresh("xai-oauth") is True
+
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    assert runtime_owns_oauth_refresh("xai-oauth") is False
+
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: fleet\n")
+    assert runtime_owns_oauth_refresh("xai-oauth") is False
+
+    (hermes_home / "config.yaml").write_text("oauth: []\n")
+    assert runtime_owns_oauth_refresh("xai-oauth") is False
+
+    (hermes_home / "config.yaml").write_text("{]\n")
+    assert runtime_owns_oauth_refresh("xai-oauth") is False
+
+
+def test_resolve_xai_runtime_credentials_refuses_external_owner_refresh(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    fresh = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
+    _setup_hermes_auth(
+        hermes_home,
+        access_token=fresh,
+        discovery={"token_endpoint": "https://auth.x.ai/oauth2/token"},
+    )
+    (hermes_home / "config.yaml").write_text(
+        "oauth:\n  refresh_owner: external\n"
+    )
+    auth_payload = json.loads((hermes_home / "auth.json").read_text())
+    scheduler_access = _jwt_with_exp(int(time.time()) + 3 * 60 * 60)
+    auth_payload["credential_pool"] = {
+        "xai-oauth": [{
+            "id": "scheduler-selected",
+            "priority": 0,
+            "auth_type": "oauth",
+            "access_token": scheduler_access,
+            "refresh_token": "scheduler-rotated-refresh",
+        }]
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_payload))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _refresh_must_not_run(*_args, **_kwargs):
+        raise AssertionError("runtime must not rotate externally managed OAuth")
+
+    monkeypatch.setattr(
+        "hermes_cli.auth._refresh_xai_oauth_tokens", _refresh_must_not_run
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.refresh_xai_oauth_pure", _refresh_must_not_run
+    )
+
+    creds = resolve_xai_oauth_runtime_credentials(
+        force_refresh=True, refresh_if_expiring=False
+    )
+    assert creds["api_key"] == scheduler_access
+
+
+def test_external_refresh_owner_blocks_proactive_and_reactive_xai_rotation(
+    tmp_path, monkeypatch
+):
+    """External owner: select may use access token; refresh POST is forbidden."""
+    from agent.credential_pool import AUTH_TYPE_OAUTH, CredentialPool, PooledCredential
+    import uuid
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"version": 1, "providers": {}})
+    )
+    (hermes_home / "config.yaml").write_text(
+        "oauth:\n  refresh_owner: external\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    refresh_calls = {"count": 0}
+
+    def _refresh_must_not_run(*_args, **_kwargs):
+        refresh_calls["count"] += 1
+        raise AssertionError("runtime must not rotate externally managed OAuth")
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.refresh_xai_oauth_pure", _refresh_must_not_run
+    )
+
+    near_expiry = _jwt_with_exp(int(time.time()) + 30)
+    entry = PooledCredential(
+        provider="xai-oauth",
+        id=uuid.uuid4().hex[:6],
+        label="test",
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source="manual:xai_pkce",
+        access_token=near_expiry,
+        refresh_token="rt-owned-by-scheduler",
+        base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    pool = CredentialPool("xai-oauth", [entry])
+    pool._persist(oauth_token_write_authority="external-scheduler")
+
+    assert pool._entry_needs_refresh(entry) is False
+    assert pool.select() is not None
+
+    auth_payload = json.loads((hermes_home / "auth.json").read_text())
+    scheduler_access = _jwt_with_exp(int(time.time()) + 3 * 60 * 60)
+    scheduler_entry = auth_payload["credential_pool"]["xai-oauth"][0]
+    scheduler_entry["access_token"] = scheduler_access
+    scheduler_entry["refresh_token"] = "rt-rotated-by-scheduler"
+    (hermes_home / "auth.json").write_text(json.dumps(auth_payload))
+
+    adopted = pool.try_refresh_current()
+    assert adopted is not None
+    assert adopted.access_token == scheduler_access
+    assert adopted.refresh_token == "rt-rotated-by-scheduler"
+    assert refresh_calls["count"] == 0
+    persisted = json.loads((hermes_home / "auth.json").read_text())
+    persisted_entry = persisted["credential_pool"]["xai-oauth"][0]
+    assert persisted_entry["access_token"] == scheduler_access
+    assert persisted_entry["refresh_token"] == "rt-rotated-by-scheduler"
+
+
+def test_external_refresh_owner_preserves_scheduler_tokens_during_round_robin_write(
+    tmp_path, monkeypatch
+):
+    from agent.credential_pool import (
+        AUTH_TYPE_OAUTH,
+        CredentialPool,
+        PooledCredential,
+    )
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"version": 1, "providers": {}})
+    )
+    (hermes_home / "config.yaml").write_text(
+        "oauth:\n"
+        "  refresh_owner: external\n"
+        "credential_pool_strategies:\n"
+        "  xai-oauth: round_robin\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    entries = [
+        PooledCredential(
+            provider="xai-oauth",
+            id=f"entry-{index}",
+            label=f"entry {index}",
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=index,
+            source=f"manual:{index}",
+            access_token=f"access-old-{index}",
+            refresh_token=f"refresh-old-{index}",
+            base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+        )
+        for index in range(2)
+    ]
+    pool = CredentialPool("xai-oauth", entries)
+    pool._persist(oauth_token_write_authority="external-scheduler")
+
+    auth_payload = json.loads((hermes_home / "auth.json").read_text())
+    scheduler_entry = auth_payload["credential_pool"]["xai-oauth"][0]
+    scheduler_entry["id"] = "scheduler-entry"
+    scheduler_entry["access_token"] = "access-from-scheduler"
+    scheduler_entry["refresh_token"] = "refresh-from-scheduler"
+    (hermes_home / "auth.json").write_text(json.dumps(auth_payload))
+
+    assert pool.select() is not None
+
+    persisted = json.loads((hermes_home / "auth.json").read_text())
+    selected_disk_entry = next(
+        entry
+        for entry in persisted["credential_pool"]["xai-oauth"]
+        if entry["id"] == "scheduler-entry"
+    )
+    assert selected_disk_entry["access_token"] == "access-from-scheduler"
+    assert selected_disk_entry["refresh_token"] == "refresh-from-scheduler"
+    assert not any(
+        entry["id"] == "entry-0"
+        for entry in persisted["credential_pool"]["xai-oauth"]
+    )
+
+
+def test_external_refresh_owner_adopts_scheduler_replacement_entry(
+    tmp_path, monkeypatch
+):
+    from agent.credential_pool import (
+        AUTH_TYPE_OAUTH,
+        CredentialPool,
+        PooledCredential,
+    )
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"version": 1, "providers": {}})
+    )
+    (hermes_home / "config.yaml").write_text(
+        "oauth:\n  refresh_owner: external\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    original_entry = PooledCredential(
+        provider="xai-oauth",
+        id="old-entry",
+        label="old",
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source="manual:old",
+        access_token="access-old",
+        refresh_token="refresh-old",
+        base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    pool = CredentialPool("xai-oauth", [original_entry])
+    pool._persist(oauth_token_write_authority="external-scheduler")
+    assert pool.select() is not None
+
+    auth_payload = json.loads((hermes_home / "auth.json").read_text())
+    auth_payload["credential_pool"]["xai-oauth"] = [{
+        "id": "scheduler-entry",
+        "label": "scheduler",
+        "auth_type": "oauth",
+        "priority": 0,
+        "source": "manual:scheduler",
+        "access_token": "access-from-scheduler",
+        "refresh_token": "refresh-from-scheduler",
+        "base_url": DEFAULT_XAI_OAUTH_BASE_URL,
+    }]
+    (hermes_home / "auth.json").write_text(json.dumps(auth_payload))
+
+    adopted = pool.try_refresh_current()
+
+    assert adopted is not None
+    assert adopted.id == "scheduler-entry"
+    assert adopted.access_token == "access-from-scheduler"
+    assert pool.current() == adopted
+
+
+def test_external_refresh_owner_does_not_report_unchanged_token_as_refreshed(
+    tmp_path, monkeypatch
+):
+    from agent.credential_pool import (
+        AUTH_TYPE_OAUTH,
+        CredentialPool,
+        PooledCredential,
+    )
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "auth.json").write_text(
+        json.dumps({"version": 1, "providers": {}})
+    )
+    (hermes_home / "config.yaml").write_text(
+        "oauth:\n  refresh_owner: external\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    unchanged_entry = PooledCredential(
+        provider="xai-oauth",
+        id="unchanged-entry",
+        label="unchanged",
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source="manual:unchanged",
+        access_token="access-unchanged",
+        refresh_token="refresh-unchanged",
+        base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    pool = CredentialPool("xai-oauth", [unchanged_entry])
+    pool._persist(oauth_token_write_authority="external-scheduler")
+    assert pool.select() is not None
+
+    assert pool.try_refresh_current() is None
+
+
+def test_external_refresh_owner_allows_interactive_reauth_singleton_sync(
+    tmp_path, monkeypatch
+):
+    from agent.credential_pool import load_pool
+
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(
+        hermes_home,
+        access_token="access-old-dead",
+        refresh_token="refresh-old-dead",
+    )
+    auth_payload = json.loads((hermes_home / "auth.json").read_text())
+    auth_payload["credential_pool"] = {
+        "xai-oauth": [{
+            "id": "device-entry",
+            "label": "device",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "device_code",
+            "access_token": "access-old-dead",
+            "refresh_token": "refresh-old-dead",
+            "base_url": DEFAULT_XAI_OAUTH_BASE_URL,
+        }]
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_payload))
+    (hermes_home / "config.yaml").write_text(
+        "oauth:\n  refresh_owner: external\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _save_xai_oauth_tokens({
+        "access_token": "access-from-reauth",
+        "refresh_token": "refresh-from-reauth",
+    })
+
+    pool = load_pool("xai-oauth")
+
+    selected = pool.select()
+    assert selected is not None
+    assert selected.access_token == "access-from-reauth"
+    persisted = json.loads((hermes_home / "auth.json").read_text())
+    persisted_entry = persisted["credential_pool"]["xai-oauth"][0]
+    assert persisted_entry["access_token"] == "access-from-reauth"
+    assert persisted_entry["refresh_token"] == "refresh-from-reauth"
+    resolved = resolve_xai_oauth_runtime_credentials()
+    assert resolved["api_key"] == "access-from-reauth"
+
+
+def test_external_refresh_owner_keeps_scheduler_pool_over_stale_singleton(
+    tmp_path, monkeypatch
+):
+    from agent.credential_pool import load_pool
+
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(
+        hermes_home,
+        access_token="access-stale-singleton",
+        refresh_token="refresh-stale-singleton",
+    )
+    auth_payload = json.loads((hermes_home / "auth.json").read_text())
+    auth_payload["credential_pool"] = {
+        "xai-oauth": [{
+            "id": "scheduler-entry",
+            "label": "scheduler",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "device_code",
+            "access_token": "access-scheduler-fresh",
+            "refresh_token": "refresh-scheduler-fresh",
+            "base_url": DEFAULT_XAI_OAUTH_BASE_URL,
+        }]
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_payload))
+    (hermes_home / "config.yaml").write_text(
+        "oauth:\n  refresh_owner: external\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    pool = load_pool("xai-oauth")
+
+    selected = pool.select()
+    assert selected is not None
+    assert selected.access_token == "access-scheduler-fresh"
+    persisted = json.loads((hermes_home / "auth.json").read_text())
+    persisted_entry = persisted["credential_pool"]["xai-oauth"][0]
+    assert persisted_entry["access_token"] == "access-scheduler-fresh"
+    assert persisted_entry["refresh_token"] == "refresh-scheduler-fresh"
+    resolved = resolve_xai_oauth_runtime_credentials()
+    assert resolved["api_key"] == "access-scheduler-fresh"
+
+
+def test_external_refresh_owner_resolves_pool_without_singleton(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "xai-oauth": [{
+                "id": "pool-only",
+                "priority": 0,
+                "auth_type": "oauth",
+                "access_token": "access-pool-only",
+                "refresh_token": "refresh-pool-only",
+            }]
+        },
+    }))
+    (hermes_home / "config.yaml").write_text(
+        "oauth:\n  refresh_owner: external\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    resolved = resolve_xai_oauth_runtime_credentials()
+
+    assert resolved["api_key"] == "access-pool-only"
+
+
+def test_external_refresh_owner_reuses_expired_exhaustion_entry(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(
+        hermes_home,
+        access_token="access-stale-singleton",
+        refresh_token="refresh-stale-singleton",
+    )
+    auth_payload = json.loads((hermes_home / "auth.json").read_text())
+    auth_payload["credential_pool"] = {
+        "xai-oauth": [
+            {
+                "id": "cooldown-expired",
+                "priority": 0,
+                "auth_type": "oauth",
+                "last_status": "exhausted",
+                "last_error_reset_at": time.time() - 1,
+                "access_token": "access-after-cooldown",
+                "refresh_token": "refresh-after-cooldown",
+            },
+            {
+                "id": "fallback",
+                "priority": 1,
+                "auth_type": "oauth",
+                "access_token": "access-fallback",
+                "refresh_token": "refresh-fallback",
+            },
+        ]
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_payload))
+    (hermes_home / "config.yaml").write_text(
+        "oauth:\n  refresh_owner: external\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    resolved = resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False)
+
+    assert resolved["api_key"] == "access-after-cooldown"
+
+
+def test_external_owner_persist_drops_stale_id_and_preserves_scheduler_replacement(
+    tmp_path, monkeypatch
+):
+    from agent.credential_pool import AUTH_TYPE_OAUTH, CredentialPool, PooledCredential
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    stale = PooledCredential(
+        provider="xai-oauth", id="old-id", label="old", auth_type=AUTH_TYPE_OAUTH,
+        priority=0, source="manual:old", access_token="old-access",
+        refresh_token="old-refresh", base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    pool = CredentialPool("xai-oauth", [stale])
+    pool._persist(oauth_token_write_authority="external-scheduler")
+    scheduler_entry = {
+        "id": "scheduler-id", "label": "scheduler", "auth_type": "oauth",
+        "priority": 0, "source": "manual:scheduler",
+        "access_token": "scheduler-access", "refresh_token": "scheduler-refresh",
+        "base_url": DEFAULT_XAI_OAUTH_BASE_URL,
+    }
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    payload["credential_pool"]["xai-oauth"] = [scheduler_entry]
+    (hermes_home / "auth.json").write_text(json.dumps(payload))
+
+    pool._persist()
+
+    persisted = json.loads((hermes_home / "auth.json").read_text())
+    assert persisted["credential_pool"]["xai-oauth"] == [scheduler_entry]
+
+
+def test_external_owner_adopts_global_scheduler_replacement_without_local_pool(
+    tmp_path, monkeypatch
+):
+    from agent.credential_pool import AUTH_TYPE_OAUTH, CredentialPool, PooledCredential
+
+    hermes_home = tmp_path / "profile"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    global_store = {"version": 1, "credential_pool": {}}
+    monkeypatch.setattr("hermes_cli.auth._load_global_auth_store", lambda: global_store)
+    stale = PooledCredential(
+        provider="xai-oauth", id="old-id", label="old", auth_type=AUTH_TYPE_OAUTH,
+        priority=0, source="manual:old", access_token="old-access",
+        refresh_token="old-refresh", base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    pool = CredentialPool("xai-oauth", [stale])
+    assert pool.select() == stale
+    global_store["credential_pool"]["xai-oauth"] = [{
+        "id": "global-scheduler-id", "label": "global scheduler",
+        "auth_type": "oauth", "priority": 0, "source": "manual:scheduler",
+        "access_token": "global-access", "refresh_token": "global-refresh",
+        "base_url": DEFAULT_XAI_OAUTH_BASE_URL,
+    }]
+
+    adopted = pool.try_refresh_current()
+
+    assert adopted is not None
+    assert adopted.id == "global-scheduler-id"
+    assert adopted.access_token == "global-access"
+
+
+def test_external_owner_adopts_selected_replacement_when_old_id_is_dead(
+    tmp_path, monkeypatch
+):
+    from agent.credential_pool import AUTH_TYPE_OAUTH, CredentialPool, PooledCredential
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    stale = PooledCredential(
+        provider="xai-oauth", id="old-id", label="old", auth_type=AUTH_TYPE_OAUTH,
+        priority=0, source="manual:old", access_token="old-access",
+        refresh_token="old-refresh", base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    pool = CredentialPool("xai-oauth", [stale])
+    assert pool.select() == stale
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    payload["credential_pool"] = {"xai-oauth": [
+        {**stale.to_dict(), "last_status": "dead"},
+        {
+            "id": "new-id", "label": "new", "auth_type": "oauth", "priority": 1,
+            "source": "manual:scheduler", "access_token": "new-access",
+            "refresh_token": "new-refresh", "base_url": DEFAULT_XAI_OAUTH_BASE_URL,
+        },
+    ]}
+    (hermes_home / "auth.json").write_text(json.dumps(payload))
+
+    adopted = pool.try_refresh_current()
+
+    assert adopted is not None
+    assert adopted.id == "new-id"
+    assert pool.current() == adopted
+
+
+def test_external_owner_replacement_reuses_existing_in_memory_entry_id(
+    tmp_path, monkeypatch
+):
+    from agent.credential_pool import AUTH_TYPE_OAUTH, CredentialPool, PooledCredential
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    old = PooledCredential(
+        provider="xai-oauth", id="old-id", label="old", auth_type=AUTH_TYPE_OAUTH,
+        priority=0, source="manual:old", access_token="old-access",
+        refresh_token="old-refresh", base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    fallback = PooledCredential(
+        provider="xai-oauth", id="fallback-id", label="fallback",
+        auth_type=AUTH_TYPE_OAUTH, priority=1, source="manual:fallback",
+        access_token="fallback-stale-access", refresh_token="fallback-stale-refresh",
+        base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    pool = CredentialPool("xai-oauth", [old, fallback])
+    assert pool.select() == old
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    payload["credential_pool"] = {"xai-oauth": [
+        {**old.to_dict(), "last_status": "dead"},
+        {
+            **fallback.to_dict(),
+            "access_token": "fallback-scheduler-access",
+            "refresh_token": "fallback-scheduler-refresh",
+        },
+    ]}
+    (hermes_home / "auth.json").write_text(json.dumps(payload))
+
+    adopted = pool.try_refresh_current()
+
+    assert adopted is not None
+    assert adopted.id == "fallback-id"
+    assert adopted.access_token == "fallback-scheduler-access"
+    assert [entry.id for entry in pool.entries()] == ["fallback-id"]
+    assert pool.current() == adopted
+
+
+def test_runtime_owned_xai_pool_fallback_skips_dead_first_entry(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {}, "credential_pool": {"xai-oauth": [
+            {
+                "id": "dead", "priority": 0, "auth_type": "oauth",
+                "last_status": "dead", "access_token": "dead-access",
+                "refresh_token": "dead-refresh",
+            },
+            {
+                "id": "live", "priority": 1, "auth_type": "oauth",
+                "access_token": "live-access", "refresh_token": "live-refresh",
+            },
+        ]},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    resolved = resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False)
+
+    assert resolved["api_key"] == "live-access"
+
+
+def test_external_xai_owner_rejects_stale_singleton_when_pool_has_no_usable_entry(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(
+        hermes_home, access_token="stale-singleton", refresh_token="stale-refresh"
+    )
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    payload["credential_pool"] = {"xai-oauth": [{
+        "id": "dead", "priority": 0, "auth_type": "oauth", "last_status": "dead",
+        "access_token": "dead-access", "refresh_token": "dead-refresh",
+    }]}
+    (hermes_home / "auth.json").write_text(json.dumps(payload))
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(AuthError) as exc_info:
+        resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False)
+
+    assert exc_info.value.code == "xai_external_pool_unavailable"
+    assert exc_info.value.relogin_required is False
+
+
+def test_external_scheduler_write_authority_allows_token_mutation(tmp_path, monkeypatch):
+    from hermes_cli.auth import write_credential_pool, read_credential_pool
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "xai-oauth": [{
+                "id": "sched-1",
+                "auth_type": "oauth",
+                "priority": 0,
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+            }]
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    write_credential_pool(
+        "xai-oauth",
+        [{
+            "id": "sched-1",
+            "auth_type": "oauth",
+            "priority": 0,
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+        }],
+        oauth_token_write_authority="external-scheduler",
+    )
+    entries = read_credential_pool("xai-oauth")
+    assert entries[0]["access_token"] == "new-access"
+    assert entries[0]["refresh_token"] == "new-refresh"
+
+
+def test_xai_http_force_refresh_adopts_without_refresh_post(tmp_path, monkeypatch):
+    """Voice/tool helper route: force_refresh must not POST under external owner."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    near = _jwt_with_exp(int(time.time()) + 30)
+    fresh = _jwt_with_exp(int(time.time()) + 3 * 60 * 60)
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "xai-oauth": [{
+                "id": "voice-1",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:scheduler",
+                "access_token": near,
+                "refresh_token": "rt-voice",
+                "base_url": DEFAULT_XAI_OAUTH_BASE_URL,
+            }]
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _refresh_must_not_run(*_args, **_kwargs):
+        raise AssertionError("xai_http force_refresh must not spend refresh token")
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _refresh_must_not_run)
+
+    # Scheduler rotates on disk before the helper retries.
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    payload["credential_pool"]["xai-oauth"][0]["access_token"] = fresh
+    payload["credential_pool"]["xai-oauth"][0]["refresh_token"] = "rt-voice-rotated"
+    (hermes_home / "auth.json").write_text(json.dumps(payload))
+
+    from tools.xai_http import resolve_xai_http_credentials
+
+    creds = resolve_xai_http_credentials(force_refresh=True, api_key_hint=near)
+    assert creds["api_key"] == fresh
+    assert creds["provider"] == "xai-oauth"
+
+
+def test_auth_add_xai_oauth_persists_under_external_owner(tmp_path, monkeypatch):
+    """Production path: hermes auth add xai-oauth must keep the new row on disk.
+
+    Fleet recovery spawns exactly this command under oauth.refresh_owner=external.
+    Without interactive-login write authority, write_credential_pool drops the
+    newly authorized OAuth row/token pair.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    access_token = "xai-interactive-access"
+    refresh_token = "xai-interactive-refresh"
+    monkeypatch.setattr(
+        "hermes_cli.auth._xai_oauth_device_code_login",
+        lambda **_kwargs: {
+            "tokens": {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "id_token": "",
+                "token_type": "Bearer",
+            },
+            "discovery": {"token_endpoint": "https://auth.x.ai/oauth2/token"},
+            "redirect_uri": "",
+            "base_url": DEFAULT_XAI_OAUTH_BASE_URL,
+            "last_refresh": "2026-08-03T12:00:00Z",
+            "source": "oauth-device-code",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "xai-oauth"
+        auth_type = "oauth"
+        api_key = None
+        label = "fleet-recovery"
+        timeout = None
+        no_browser = True
+
+    auth_add_command(_Args())
+
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    entries = payload["credential_pool"]["xai-oauth"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["access_token"] == access_token
+    assert entry["refresh_token"] == refresh_token
+    assert entry["auth_type"] == "oauth"
+    assert entry["source"] == "manual:device_code"
+    assert entry["label"] == "fleet-recovery"
+    assert payload.get("active_provider") == "xai-oauth"
+
+
+def test_external_owner_runtime_mark_exhausted_cannot_poison_scheduler_status(
+    tmp_path, monkeypatch
+):
+    """Unauthorized runtime _persist must not poison scheduler usability fields."""
+    from agent.credential_pool import (
+        AUTH_TYPE_OAUTH,
+        STATUS_EXHAUSTED,
+        CredentialPool,
+        PooledCredential,
+    )
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    entry = PooledCredential(
+        provider="xai-oauth",
+        id="sched-1",
+        label="scheduler",
+        auth_type=AUTH_TYPE_OAUTH,
+        priority=0,
+        source="manual:scheduler",
+        access_token="scheduler-access",
+        refresh_token="scheduler-refresh",
+        base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    pool = CredentialPool("xai-oauth", [entry])
+    pool._persist(oauth_token_write_authority="external-scheduler")
+
+    # Scheduler marks healthy usability metadata on disk.
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    disk_entry = payload["credential_pool"]["xai-oauth"][0]
+    disk_entry["last_status"] = None
+    disk_entry["last_status_at"] = None
+    disk_entry["last_error_code"] = None
+    disk_entry["last_error_reason"] = None
+    disk_entry["last_error_message"] = None
+    disk_entry["last_error_reset_at"] = None
+    (hermes_home / "auth.json").write_text(json.dumps(payload))
+
+    # Runtime believes the credential is exhausted/dead and tries to persist.
+    pool._mark_exhausted(entry, 429, {"reason": "rate_limit", "message": "slow down"})
+
+    persisted = json.loads((hermes_home / "auth.json").read_text())["credential_pool"][
+        "xai-oauth"
+    ][0]
+    assert persisted["access_token"] == "scheduler-access"
+    assert persisted["refresh_token"] == "scheduler-refresh"
+    assert persisted.get("last_status") in (None, "")
+    assert persisted.get("last_status_at") in (None, "")
+    assert persisted.get("last_error_code") in (None, "")
+    assert persisted.get("last_error_reason") in (None, "")
+    assert STATUS_EXHAUSTED != persisted.get("last_status")
+
+
+def test_external_owner_unauthorized_removed_ids_cannot_delete_scheduler_row(
+    tmp_path, monkeypatch
+):
+    from hermes_cli.auth import read_credential_pool, write_credential_pool
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {},
+                "credential_pool": {
+                    "xai-oauth": [
+                        {
+                            "id": "sched-keep",
+                            "auth_type": "oauth",
+                            "priority": 0,
+                            "access_token": "keep-access",
+                            "refresh_token": "keep-refresh",
+                        }
+                    ]
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    write_credential_pool(
+        "xai-oauth",
+        [],
+        removed_ids=["sched-keep"],
+    )
+    entries = read_credential_pool("xai-oauth")
+    assert len(entries) == 1
+    assert entries[0]["id"] == "sched-keep"
+    assert entries[0]["access_token"] == "keep-access"
+
+
+def test_external_owner_scheduler_authority_can_delete_and_update(
+    tmp_path, monkeypatch
+):
+    from hermes_cli.auth import read_credential_pool, write_credential_pool
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {},
+                "credential_pool": {
+                    "xai-oauth": [
+                        {
+                            "id": "old-sched",
+                            "auth_type": "oauth",
+                            "priority": 0,
+                            "access_token": "old-access",
+                            "refresh_token": "old-refresh",
+                            "last_status": "exhausted",
+                            "last_error_code": 429,
+                        }
+                    ]
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    write_credential_pool(
+        "xai-oauth",
+        [
+            {
+                "id": "new-sched",
+                "auth_type": "oauth",
+                "priority": 0,
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+                "last_status": None,
+                "last_error_code": None,
+            }
+        ],
+        removed_ids=["old-sched"],
+        oauth_token_write_authority="external-scheduler",
+    )
+    entries = read_credential_pool("xai-oauth")
+    assert len(entries) == 1
+    assert entries[0]["id"] == "new-sched"
+    assert entries[0]["access_token"] == "new-access"
+    assert entries[0]["refresh_token"] == "new-refresh"
+    assert entries[0].get("last_status") is None
+
+
+def test_external_owner_interactive_login_cannot_overwrite_unrelated_scheduler_row(
+    tmp_path, monkeypatch
+):
+    from hermes_cli.auth import read_credential_pool, write_credential_pool
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {},
+                "credential_pool": {
+                    "xai-oauth": [
+                        {
+                            "id": "sched-unrelated",
+                            "auth_type": "oauth",
+                            "priority": 0,
+                            "label": "scheduler",
+                            "access_token": "scheduler-access",
+                            "refresh_token": "scheduler-refresh",
+                            "last_status": None,
+                            "last_error_code": None,
+                        }
+                    ]
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Snapshot includes a poisoned view of the scheduler row plus a new login.
+    write_credential_pool(
+        "xai-oauth",
+        [
+            {
+                "id": "sched-unrelated",
+                "auth_type": "oauth",
+                "priority": 0,
+                "label": "scheduler",
+                "access_token": "stolen-access",
+                "refresh_token": "stolen-refresh",
+                "last_status": "dead",
+                "last_error_code": 401,
+                "last_error_reason": "poison",
+            },
+            {
+                "id": "interactive-new",
+                "auth_type": "oauth",
+                "priority": 1,
+                "label": "interactive",
+                "access_token": "interactive-access",
+                "refresh_token": "interactive-refresh",
+            },
+        ],
+        removed_ids=["sched-unrelated"],
+        oauth_token_write_authority="interactive-login",
+        authorized_oauth_entry_ids=["interactive-new"],
+    )
+    entries = {entry["id"]: entry for entry in read_credential_pool("xai-oauth")}
+    assert set(entries) == {"sched-unrelated", "interactive-new"}
+    assert entries["sched-unrelated"]["access_token"] == "scheduler-access"
+    assert entries["sched-unrelated"]["refresh_token"] == "scheduler-refresh"
+    assert entries["sched-unrelated"].get("last_status") is None
+    assert entries["sched-unrelated"].get("last_error_code") is None
+    assert entries["interactive-new"]["access_token"] == "interactive-access"
+    assert entries["interactive-new"]["refresh_token"] == "interactive-refresh"
+
+
+def test_external_owner_interactive_login_can_replace_authorized_entry(
+    tmp_path, monkeypatch
+):
+    from hermes_cli.auth import read_credential_pool, write_credential_pool
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("oauth:\n  refresh_owner: external\n")
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {},
+                "credential_pool": {
+                    "xai-oauth": [
+                        {
+                            "id": "reauth-target",
+                            "auth_type": "oauth",
+                            "priority": 0,
+                            "access_token": "old-access",
+                            "refresh_token": "old-refresh",
+                            "last_status": "dead",
+                            "last_error_code": 401,
+                        }
+                    ]
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    write_credential_pool(
+        "xai-oauth",
+        [
+            {
+                "id": "reauth-target",
+                "auth_type": "oauth",
+                "priority": 0,
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+                "last_status": None,
+                "last_error_code": None,
+                "last_error_reason": None,
+                "last_error_message": None,
+                "last_error_reset_at": None,
+            }
+        ],
+        oauth_token_write_authority="interactive-login",
+        authorized_oauth_entry_ids=["reauth-target"],
+    )
+    entries = read_credential_pool("xai-oauth")
+    assert len(entries) == 1
+    assert entries[0]["access_token"] == "new-access"
+    assert entries[0]["refresh_token"] == "new-refresh"
+    assert entries[0].get("last_status") is None
+    assert entries[0].get("last_error_code") is None

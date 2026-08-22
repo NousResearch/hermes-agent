@@ -762,19 +762,34 @@ class CredentialPool:
             return matches[0].id if len(matches) == 1 else None
 
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
-        """Swap an entry in-place by id, preserving sort order.
+        """Swap an entry by id without allowing replacement-ID duplicates.
 
         Self-locking (RLock) so the deferred refresh path — which
         deliberately runs outside the pool lock — cannot tear
         ``self._entries`` against a concurrent select()/rotation.
         """
         with self._lock:
+            if new.id != old.id:
+                self._entries = [
+                    entry
+                    for entry in self._entries
+                    if entry.id not in {old.id, new.id}
+                ]
+                self._entries.append(new)
+                self._entries.sort(key=lambda entry: entry.priority)
+                return
             for idx, entry in enumerate(self._entries):
                 if entry.id == old.id:
                     self._entries[idx] = new
                     return
 
-    def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
+    def _persist(
+        self,
+        *,
+        removed_ids: Optional[List[str]] = None,
+        oauth_token_write_authority: Optional[str] = None,
+        authorized_oauth_entry_ids: Optional[List[str]] = None,
+    ) -> None:
         # Self-locking (RLock): snapshotting self._entries must not race a
         # concurrent rotation when called from the deferred refresh path.
         with self._lock:
@@ -782,6 +797,8 @@ class CredentialPool:
                 self.provider,
                 [entry.to_dict() for entry in self._entries],
                 removed_ids=removed_ids,
+                oauth_token_write_authority=oauth_token_write_authority,
+                authorized_oauth_entry_ids=authorized_oauth_entry_ids,
             )
 
     def _is_terminal_auth_failure(
@@ -1006,7 +1023,11 @@ class CredentialPool:
         manually added entries are independent credentials with their own
         refresh-token lifecycle.
         """
-        if self.provider != "xai-oauth" or entry.source != "device_code":
+        if (
+            self.provider != "xai-oauth"
+            or entry.source != "device_code"
+            or not auth_mod.runtime_owns_oauth_refresh(self.provider)
+        ):
             return entry
         try:
             with _auth_store_lock():
@@ -1304,7 +1325,76 @@ class CredentialPool:
         except Exception as exc:
             logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
 
+    def _sync_external_entry_from_pool(
+        self, entry: PooledCredential
+    ) -> Optional[PooledCredential]:
+        """Adopt the scheduler-selected entry without writing auth.json.
+
+        External refresh ownership makes the on-disk pool authoritative. The
+        read must happen before reactive recovery decides whether to retry, and
+        this method deliberately does not persist its in-memory snapshot back
+        over a token pair the scheduler may just have rotated.
+        """
+        try:
+            disk_entry = auth_mod._selected_usable_oauth_pool_entry(self.provider)
+            if not isinstance(disk_entry, dict):
+                return None
+            disk_access_token = disk_entry.get("access_token")
+            disk_refresh_token = disk_entry.get("refresh_token")
+            if not isinstance(disk_access_token, str) or not disk_access_token:
+                return None
+            disk_entry_id = disk_entry.get("id")
+            if not isinstance(disk_entry_id, str) or not disk_entry_id:
+                return None
+            credentials_changed = (
+                disk_entry_id != entry.id
+                or disk_access_token != entry.access_token
+                or (
+                    isinstance(disk_refresh_token, str)
+                    and disk_refresh_token
+                    and disk_refresh_token != entry.refresh_token
+                )
+            )
+            if not credentials_changed:
+                return None
+            if disk_entry_id != entry.id:
+                updated = PooledCredential.from_dict(self.provider, disk_entry)
+                self._replace_entry(entry, updated)
+                return updated
+            updated = replace(
+                entry,
+                access_token=disk_access_token,
+                refresh_token=(
+                    disk_refresh_token
+                    if isinstance(disk_refresh_token, str) and disk_refresh_token
+                    else entry.refresh_token
+                ),
+                last_refresh=disk_entry.get("last_refresh") or entry.last_refresh,
+                last_status=disk_entry.get("last_status"),
+                last_status_at=disk_entry.get("last_status_at"),
+                last_error_code=disk_entry.get("last_error_code"),
+                last_error_reason=disk_entry.get("last_error_reason"),
+                last_error_message=disk_entry.get("last_error_message"),
+                last_error_reset_at=disk_entry.get("last_error_reset_at"),
+            )
+            self._replace_entry(entry, updated)
+            return updated
+        except Exception as exc:
+            logger.debug(
+                "Failed to adopt externally refreshed %s pool entry: %s",
+                self.provider,
+                exc,
+            )
+            return None
+
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
+        if not auth_mod.runtime_owns_oauth_refresh(self.provider):
+            synced = self._sync_external_entry_from_pool(entry)
+            logger.warning(
+                "credential pool: refusing %s OAuth refresh because config assigns ownership externally",
+                self.provider,
+            )
+            return synced
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
                 self._mark_exhausted(entry, None)
@@ -1761,6 +1851,8 @@ class CredentialPool:
 
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
         if entry.auth_type != AUTH_TYPE_OAUTH:
+            return False
+        if not auth_mod.runtime_owns_oauth_refresh(self.provider):
             return False
         if self.provider == "anthropic":
             if entry.expires_at_ms is None:
@@ -2397,11 +2489,19 @@ class CredentialPool:
                 return None, None, f"No credential #{index}."
             return None, None, f'No credential matching "{raw}".'
 
-    def add_entry(self, entry: PooledCredential) -> PooledCredential:
+    def add_entry(
+        self,
+        entry: PooledCredential,
+        *,
+        oauth_token_write_authority: Optional[str] = None,
+    ) -> PooledCredential:
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
-            self._persist()
+            self._persist(
+                oauth_token_write_authority=oauth_token_write_authority,
+                authorized_oauth_entry_ids=[entry.id],
+            )
             return entry
 
 
@@ -3166,7 +3266,16 @@ def load_pool(provider: str) -> CredentialPool:
         changed = raw_needs_sanitization or raw_needs_auth_normalization or custom_changed
         changed |= _prune_stale_seeded_entries(entries, custom_sources)
     else:
-        singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
+        if (
+            provider == "xai-oauth"
+            and not auth_mod.runtime_owns_oauth_refresh(provider)
+        ):
+            singleton_changed = False
+            singleton_sources = set()
+        else:
+            singleton_changed, singleton_sources = _seed_from_singletons(
+                provider, entries
+            )
         env_changed, env_sources = _seed_from_env(provider, entries)
         changed = (
             raw_needs_sanitization

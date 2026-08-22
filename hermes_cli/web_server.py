@@ -1186,6 +1186,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
 _CATEGORY_MERGE: Dict[str, str] = {
     "privacy": "security",
+    # Refresh ownership controls which process may spend OAuth refresh tokens,
+    # so expose the single oauth setting alongside the existing security
+    # controls rather than creating a one-field dashboard tab.
+    "oauth": "security",
     "context": "agent",
     "skills": "agent",
     "cron": "agent",

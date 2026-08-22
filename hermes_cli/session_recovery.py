@@ -25,6 +25,7 @@ from hermes_state import (
     SCHEMA_VERSION,
     SessionDB,
     _db_opens_cleanly,
+    _reapply_durability_barriers,
 )
 
 
@@ -1439,6 +1440,17 @@ def _recover_via_lost_and_found(
     destination_conn = sqlite3.connect(
         str(output), isolation_level=None, timeout=1.0
     )
+    # This connection is what performs the FTS5 rebuild + row-mapping bulk
+    # write below (the class of operation _connect_repair_durable's own
+    # docstring calls out: "rewrites nearly every page of the file"). This
+    # is a fresh raw sqlite3.connect — whatever journal mode the earlier
+    # SessionDB(db_path=output) init settled on (WAL, or DELETE if this
+    # SQLite build is WAL-reset-vulnerable), a raw connect inherits
+    # sqlite3's synchronous=NORMAL default with no macOS full-fsync
+    # barrier, which cannot guarantee this write survives an interrupted
+    # checkpoint (see hermes_state._connect_repair_durable, the same
+    # documented gap for the in-place repair path). No-op elsewhere.
+    _reapply_durability_barriers(destination_conn)
     try:
         destination_conn.execute("PRAGMA foreign_keys=OFF")
         mapping = map_lost_and_found_rows(lf_conn, destination_conn)
@@ -1609,6 +1621,13 @@ def recover_session_database(
                 isolation_level=None,
                 timeout=1.0,
             )
+            # Same reasoning as the lost_and_found salvage path above: this
+            # connection performs the canonical-table row-by-row copy below,
+            # which rewrites the file page by page, via a fresh raw
+            # sqlite3.connect that inherits synchronous=NORMAL with no
+            # macOS full-fsync barrier regardless of the journal mode the
+            # SessionDB init just above settled on. No-op elsewhere.
+            _reapply_durability_barriers(destination_conn)
             destination_conn.execute("PRAGMA foreign_keys=OFF")
 
             copy_report: dict[str, dict[str, Any]] = {}

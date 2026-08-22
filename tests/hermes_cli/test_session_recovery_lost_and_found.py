@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -300,6 +301,59 @@ def test_lost_and_found_lane_recovers_schema_unreadable_source(
         assert len(sessions) == expected["sessions"]
     finally:
         recovered_db.close()
+
+
+@pytest.mark.skipif(
+    not HAVE_SQLITE3_CLI,
+    reason="sqlite3 CLI not on PATH; .recover is a shell-only feature",
+)
+def test_lost_and_found_lane_applies_macos_durability_barriers(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The lost_and_found lane's destination connection — the one that runs
+    the FTS5 rebuild + row-mapping bulk write in _recover_via_lost_and_found
+    — must go through hermes_state._reapply_durability_barriers, same as the
+    plain row-by-row recovery path (see
+    test_session_recovery.py::test_recovery_applies_macos_durability_barriers_to_destination_connection).
+    This lane rewrites even more of the file than the plain path (FTS5
+    `rebuild` on top of the row mapping), so it is at least as exposed to
+    the documented macOS fsync-ordering gap."""
+    import hermes_state
+
+    source = tmp_path / "schemaless.db"
+    output = tmp_path / "schemaless-recovered.db"
+    _make_schema_unreadable_source(source)
+
+    observed: list[dict[str, int]] = []
+    real_reapply = hermes_state._reapply_durability_barriers
+
+    def spy(conn: sqlite3.Connection) -> bool:
+        result = real_reapply(conn)
+        observed.append({
+            "synchronous": conn.execute("PRAGMA synchronous").fetchone()[0],
+            "checkpoint_fullfsync": conn.execute(
+                "PRAGMA checkpoint_fullfsync"
+            ).fetchone()[0],
+        })
+        return result
+
+    monkeypatch.setattr(session_recovery, "_reapply_durability_barriers", spy)
+
+    report = recover_session_database(
+        source, output, work_dir=tmp_path, allow_partial=True,
+    )
+
+    assert report["mode"] == "lost_and_found_salvage"
+    assert len(observed) == 1, (
+        "expected exactly one destination connection to go through the "
+        "durability-barrier helper for the lost_and_found lane"
+    )
+    pragmas = observed[0]
+    if sys.platform == "darwin":
+        assert pragmas["synchronous"] == 2, f"expected synchronous=FULL (2), got {pragmas}"
+        assert pragmas["checkpoint_fullfsync"] == 1, f"expected checkpoint_fullfsync=1, got {pragmas}"
+    else:
+        assert pragmas["synchronous"] == 1, "sqlite3's own WAL default (NORMAL) unaffected off-Darwin"
 
 
 # ── mapper unit tests (no sqlite3 CLI required) ─────────────────────────────

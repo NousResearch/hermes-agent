@@ -487,6 +487,67 @@ def test_partial_recovery_keeps_messages_when_sessions_are_unsalvageable(
 
 
 
+def test_recovery_applies_macos_durability_barriers_to_destination_connection(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The destination connection that performs the canonical-table bulk
+    copy must go through hermes_state._reapply_durability_barriers.
+
+    The `sqlite3.connect(str(output), ...)` at this call site is a fresh raw
+    connection against a file already left in WAL mode by the preceding
+    `SessionDB(db_path=output)` init a few lines above — a raw connect
+    against an already-WAL file inherits WAL's `synchronous=NORMAL` default
+    with no `checkpoint_fullfsync`, which is exactly the gap
+    `hermes_state._connect_repair_durable`'s docstring documents as unsafe
+    on macOS for connections that go on to rewrite the file page by page
+    (which the row-by-row canonical-table copy below does).
+
+    This spies on the REAL `_reapply_durability_barriers` (not a mock that
+    replaces it) so the test proves two things: the call site is wired, and
+    the pragma is genuinely accepted on the live connection — not silently
+    swallowed by the function's own best-effort exception handling.
+    """
+    source = tmp_path / "sessions-source.db"
+    output = tmp_path / "sessions-recovered.db"
+    _make_source(source)
+
+    # PRAGMA synchronous/checkpoint_fullfsync are per-connection state, not
+    # persisted in the file, so they must be read WHILE the connection is
+    # still open — capture inside the spy itself, not after
+    # recover_session_database() returns and the connection is closed.
+    observed: list[dict[str, int]] = []
+    real_reapply = hermes_state._reapply_durability_barriers
+
+    def spy(conn: sqlite3.Connection) -> bool:
+        result = real_reapply(conn)
+        observed.append({
+            "synchronous": conn.execute("PRAGMA synchronous").fetchone()[0],
+            "checkpoint_fullfsync": conn.execute(
+                "PRAGMA checkpoint_fullfsync"
+            ).fetchone()[0],
+        })
+        return result
+
+    monkeypatch.setattr(session_recovery, "_reapply_durability_barriers", spy)
+
+    recover_session_database(source, output, work_dir=tmp_path, chunk_size=16)
+
+    assert len(observed) == 1, (
+        "expected exactly one destination connection to go through the "
+        "durability-barrier helper for this (non-lost-and-found) recovery path"
+    )
+    pragmas = observed[0]
+    if sys.platform == "darwin":
+        # This dev/CI box is real macOS: assert the pragmas actually took,
+        # not just that the (best-effort, never-raising) helper ran.
+        assert pragmas["synchronous"] == 2, f"expected synchronous=FULL (2), got {pragmas}"
+        assert pragmas["checkpoint_fullfsync"] == 1, f"expected checkpoint_fullfsync=1, got {pragmas}"
+    else:
+        # Elsewhere the pragmas are documented no-ops; the call-site wiring
+        # (proven above) is the whole fix on non-Darwin platforms.
+        assert pragmas["synchronous"] == 1, "sqlite3's own WAL default (NORMAL) unaffected off-Darwin"
+
+
 def test_cli_allow_partial_salvages_rows_across_a_corrupt_leaf(
     tmp_path: Path,
 ) -> None:

@@ -954,6 +954,37 @@ export function reuseBlankDraftTile(storedSessionId: string): boolean {
   return true
 }
 
+/** Drop the STORED tiles of every profile that isn't live right now.
+ *
+ *  Tiles persist per profile, so a layout reset only ever reached the active
+ *  one: the other profiles' tiles stayed on disk and re-adopted at their saved
+ *  edges the moment the gateway swapped (the profile rail, or opening a session
+ *  owned by another profile) — a reset that visibly undid itself one profile
+ *  later. Reset restores the whole window, so the inactive sets are cleared
+ *  here while the active profile's tiles go through the normal reset handler
+ *  (stacked into main as tabs).
+ *
+ *  The live atom is untouched — this only prunes the persisted map. */
+export function clearInactiveProfileTiles() {
+  if (isSecondaryWindow()) {
+    return
+  }
+
+  const active = profileKey()
+  let changed = false
+
+  for (const key of Object.keys(tilesByProfile)) {
+    if (key !== active) {
+      delete tilesByProfile[key]
+      changed = true
+    }
+  }
+
+  if (changed) {
+    persistTiles()
+  }
+}
+
 // Closed-tab stack for ⌘⇧T reopen (in-memory) — keyed PER PROFILE like the
 // tiles themselves, so ⌘⇧T after a profile switch never resurrects the other
 // profile's session. The tile's placement is remembered so it returns in place.

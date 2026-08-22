@@ -49,6 +49,7 @@ import {
 import {
   $sessionStates,
   $sessionTiles,
+  clearInactiveProfileTiles,
   closeSessionTile,
   discardSessionTile,
   patchSessionTile,
@@ -456,6 +457,11 @@ export function SessionTileCloseConfirm() {
  *  workspace group as a tab (append). The main group id is re-read each pass
  *  because appending returns a new tree. */
 export function stackSessionTilesIntoMain(): void {
+  // Reset restores the whole window: the other profiles' persisted tiles would
+  // otherwise re-adopt at their saved edges on the next gateway swap, silently
+  // undoing the reset one profile switch later.
+  clearInactiveProfileTiles()
+
   for (const tile of $sessionTiles.get()) {
     const tree = $layoutTree.get()
     const mainGroup = tree ? findGroupOfPane(tree, 'workspace')?.id : null

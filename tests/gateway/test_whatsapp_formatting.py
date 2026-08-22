@@ -110,6 +110,53 @@ class TestFormatMessage:
         # Already-WhatsApp _italic_ passes through unchanged
         assert adapter.format_message("_italic_") == "_italic_"
 
+    @pytest.mark.parametrize(
+        ("markdown", "wire_text"),
+        [
+            ("***bold italic***", "_*bold italic*_"),
+            (
+                "*Italic containing **bold text** inside it*",
+                "_Italic containing *bold text* inside it_",
+            ),
+            (
+                "***Bold text** inside italic*",
+                "_*Bold text* inside italic_",
+            ),
+            (
+                "*Italic containing **bold text***",
+                "_Italic containing *bold text*_",
+            ),
+            (
+                "**Bold containing *italic text* inside it**",
+                "*Bold containing _italic text_ inside it*",
+            ),
+            (
+                "***Italic text* inside bold**",
+                "*_Italic text_ inside bold*",
+            ),
+            (
+                "**Bold containing *italic text***",
+                "*Bold containing _italic text_*",
+            ),
+        ],
+    )
+    def test_nested_emphasis_has_balanced_whatsapp_delimiters(
+        self, markdown, wire_text
+    ):
+        adapter = _make_adapter()
+        assert adapter.format_message(markdown) == wire_text
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "`***bold italic***`",
+            "```markdown\n***bold italic***\n```",
+        ],
+    )
+    def test_nested_emphasis_inside_code_is_unchanged(self, code):
+        adapter = _make_adapter()
+        assert adapter.format_message(code) == code
+
 
 # ---------------------------------------------------------------------------
 # MAX_MESSAGE_LENGTH tests

@@ -458,15 +458,53 @@ class WhatsAppBehaviorMixin:
         result = re.sub(r"`[^`\n]+`", _save_code, result)
 
         # --- 3. Convert markdown formatting to WhatsApp syntax ---
-        # Italic: standard Markdown *text* → WhatsApp _text_.  Do this before
-        # bold conversion so **bold** does not become italic by accident.  The
-        # lookarounds avoid list bullets and bold delimiters.
+        # Protect combined emphasis before the single-star pass. Otherwise
+        # ``***text***`` loses one delimiter and renders as bold with literal
+        # asterisks instead of balanced bold+italic.
+        _EMPH_PH = "\x00EMPH"
+        combined_emphasis: list[str] = []
+
+        def _save_combined_emphasis(m: re.Match) -> str:
+            combined_emphasis.append(f"_*{m.group(1)}*_")
+            return f"{_EMPH_PH}{len(combined_emphasis) - 1}\x00"
+
         result = re.sub(
-            r"(?<!\*)\*(?!\s|\*)([^*\n]*?\S[^*\n]*?)\*(?!\*)",
-            r"_\1_",
+            r"(?<!\*)\*\*\*(?=\S)([^*\n]+?)(?<=\S)\*\*\*(?!\*)",
+            _save_combined_emphasis,
             result,
         )
-        # Bold: **text** or __text__ → *text*
+
+        # Italic: standard Markdown *text* → WhatsApp _text_. Treat an inner
+        # **bold** span as one atom so the outer italic delimiters cannot consume
+        # one of its stars. Convert that inner span while replacing the outer.
+        def _italic_to_whatsapp(m: re.Match) -> str:
+            inner = re.sub(r"\*\*(.+?)\*\*", r"*\1*", m.group(1))
+            return f"_{inner}_"
+
+        result = re.sub(
+            r"(?<!\*)\*(?!\s)(?=(?:[^*\n]|\*\*[^*\n]))"
+            r"((?:[^*\n]|\*\*[^*\n]+?\*\*)*?)(?<!\s)\*(?!\*)",
+            _italic_to_whatsapp,
+            result,
+        )
+
+        # Bold: **text** → *text*. Treat an inner *italic* span as one atom for
+        # the same reason, including when it touches either outer delimiter.
+        def _bold_to_whatsapp(m: re.Match) -> str:
+            inner = re.sub(
+                r"(?<!\*)\*(?!\s)([^*\n]*?\S[^*\n]*?)\*(?!\*)",
+                r"_\1_",
+                m.group(1),
+            )
+            return f"*{inner}*"
+
+        result = re.sub(
+            r"(?<!\*)\*\*(?!\s)(?=(?:[^*\n]|\*[^*\n]))"
+            r"((?:[^*\n]|\*[^*\n]+?\*)*?)(?<!\s)\*\*(?!\*)",
+            _bold_to_whatsapp,
+            result,
+        )
+        # Preserve the existing conversion for other double-star shapes.
         result = re.sub(r"\*\*(.+?)\*\*", r"*\1*", result)
         result = re.sub(r"__(.+?)__", r"*\1*", result)
         # Strikethrough: ~~text~~ → ~text~
@@ -491,6 +529,8 @@ class WhatsAppBehaviorMixin:
         result = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", result)
 
         # --- 6. Restore protected sections ---
+        for i, emphasis in enumerate(combined_emphasis):
+            result = result.replace(f"{_EMPH_PH}{i}\x00", emphasis)
         for i, fence in enumerate(fences):
             result = result.replace(f"{_FENCE_PH}{i}\x00", fence)
         for i, code in enumerate(codes):

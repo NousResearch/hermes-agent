@@ -511,3 +511,116 @@ def test_installed_https_context_is_preserved(monkeypatch):
     ]
     assert len(https_handlers) == 1
     assert getattr(https_handlers[0], "_context", None) is context
+def test_lmstudio_load_post_drops_bearer_on_redirect(monkeypatch):
+    """A cold LM Studio load must not leak its bearer across an unsafe redirect."""
+    from hermes_cli import models
+
+    sink = _server()
+    source = ThreadingHTTPServer(("127.0.0.1", 0), _LmStudioSourceHandler)
+    Thread(target=source.serve_forever, daemon=True).start()
+    _RecordingHandler.requests = []
+    _LmStudioSourceHandler.redirect_to = f"http://localhost:{sink.server_port}/sink"
+    monkeypatch.setattr(
+        models,
+        "_lmstudio_fetch_raw_models",
+        lambda **_kwargs: [
+            {"id": "model", "max_context_length": 8192, "loaded_instances": []}
+        ],
+    )
+    try:
+        result = models.ensure_lmstudio_model_loaded(
+            "model",
+            f"http://127.0.0.1:{source.server_port}",
+            api_key="lm-secret",
+            target_context_length=4096,
+            timeout=3,
+            return_load_result=True,
+        )
+    finally:
+        source.shutdown()
+        sink.shutdown()
+
+    # The redirected response carries no LM Studio load echo, and the refreshed
+    # catalog still shows nothing loaded, so no context can be verified.
+    assert result.load_attempted is True
+    assert result.context_length is None
+
+    method, headers = _RecordingHandler.requests[-1]
+    assert method == "GET"
+    assert "authorization" not in headers
+    assert "content-type" not in headers
+
+
+class _LmStudioUnloadRedirectHandler(BaseHTTPRequestHandler):
+    redirect_to = ""
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+
+        if self.path == "/api/v1/models/unload":
+            self.send_response(302)
+            self.send_header("Location", type(self).redirect_to)
+            self.end_headers()
+            return
+
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, _format, *_args):
+        pass
+
+
+def test_lmstudio_unload_post_drops_bearer_on_redirect(monkeypatch):
+    """Unloading a dirty instance must not leak its bearer across a redirect."""
+    from hermes_cli import models
+
+    sink = _server()
+    source = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        _LmStudioUnloadRedirectHandler,
+    )
+    Thread(target=source.serve_forever, daemon=True).start()
+
+    _RecordingHandler.requests = []
+    _LmStudioUnloadRedirectHandler.redirect_to = (
+        f"http://localhost:{sink.server_port}/sink"
+    )
+
+    monkeypatch.setattr(
+        models,
+        "_lmstudio_fetch_raw_models",
+        lambda **_kwargs: [
+            {
+                "id": "model",
+                "type": "llm",
+                "max_context_length": 8192,
+                "loaded_instances": [
+                    {
+                        "id": "model-instance",
+                        "config": {"context_length": 1024},
+                    }
+                ],
+            }
+        ],
+    )
+
+    try:
+        result = models.ensure_lmstudio_model_loaded(
+            "model",
+            f"http://127.0.0.1:{source.server_port}",
+            api_key="lm-secret",
+            target_context_length=4096,
+            timeout=3,
+            return_load_result=True,
+        )
+    finally:
+        source.shutdown()
+        sink.shutdown()
+
+    # The insufficient instance is dirty state: it is unloaded, then reloaded.
+    assert result.load_attempted is True
+
+    method, headers = _RecordingHandler.requests[-1]
+    assert method == "GET"
+    assert "authorization" not in headers
+    assert "content-type" not in headers

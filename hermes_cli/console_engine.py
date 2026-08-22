@@ -572,6 +572,7 @@ class HermesConsoleEngine:
         self.register(("logs",), "logs [name] [-n N]", "Show recent Hermes logs.", _logs)
         self.register(("sessions", "list"), "sessions list [--limit N]", "List recent sessions.", _sessions_list)
         self.register(("sessions", "stats"), "sessions stats", "Show session store statistics.", _sessions_stats)
+        self.register(("sessions", "storage-report"), "sessions storage-report [--json]", "Read-only session storage attribution report.", _sessions_storage_report)
         self.register(("config", "show"), "config show", "Show current configuration.", _config_show)
         self.register(("config", "path"), "config path", "Print config.yaml path.", _config_path)
         self.register(
@@ -1373,6 +1374,29 @@ def _sessions_stats(_engine: HermesConsoleEngine, args: list[str]) -> str:
         return "\n".join(lines)
     finally:
         db.close()
+
+
+def _sessions_storage_report(_engine: HermesConsoleEngine, args: list[str]) -> str:
+    import json as _json
+
+    as_json = False
+    for arg in args:
+        if arg == "--json":
+            as_json = True
+        else:
+            raise ConsoleCommandError(
+                "Usage: sessions storage-report [--json]"
+            )
+
+    from hermes_cli.session_storage_report import (
+        build_storage_report,
+        format_storage_report,
+    )
+
+    report = build_storage_report()
+    if as_json:
+        return _json.dumps(report, indent=2)
+    return format_storage_report(report)
 
 
 def _config_show(_engine: HermesConsoleEngine, args: list[str]) -> str:

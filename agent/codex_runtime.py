@@ -306,6 +306,18 @@ def _record_codex_app_server_compaction(
             compressor.last_completion_tokens = 0
             compressor.awaiting_real_usage_after_compression = True
 
+    session_db = getattr(agent, "_session_db", None)
+    recorder = getattr(
+        type(session_db) if session_db is not None else None,
+        "increment_successful_compression_count",
+        None,
+    )
+    if callable(recorder):
+        try:
+            recorder(session_db, getattr(agent, "session_id", None) or "")
+        except Exception:
+            logger.debug("codex compaction count persistence failed", exc_info=True)
+
     agent._last_compaction_in_place = False
     try:
         if getattr(agent, "event_callback", None):

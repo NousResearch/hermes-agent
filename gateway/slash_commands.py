@@ -828,6 +828,7 @@ class GatewaySlashCommandsMixin:
             context_length = getattr(ctx, "context_length", 0) or 0
 
         model_name = _clean_str(getattr(agent, "model", "")) if has_agent else ""
+        durable_totals = None
 
         if not used:
             used = _int_value(getattr(session_entry, "last_prompt_tokens", 0))
@@ -839,6 +840,20 @@ class GatewaySlashCommandsMixin:
                     model_name = _clean_str(row.get("model", ""))
             except Exception:
                 model_name = ""
+
+        if self._session_db:
+            try:
+                await self._session_db.flush_token_counts()
+            except Exception:
+                pass
+            try:
+                totals = await self._session_db.get_compression_lineage_totals(
+                    session_entry.session_id
+                )
+                if isinstance(totals, dict):
+                    durable_totals = totals
+            except Exception:
+                durable_totals = None
 
         if not context_length:
             try:
@@ -893,12 +908,14 @@ class GatewaySlashCommandsMixin:
                 t("gateway.context.headroom", headroom=f"{headroom:,}"),
             ]
 
-            # Full view — compression / throughput need the live agent.
-            if ctx is not None:
+            # Compression/throughput accounting is durable across resident-agent
+            # reconstruction. The live compressor still owns threshold and last-
+            # savings diagnostics, but never the session-wide totals.
+            if durable_totals is not None or ctx is not None:
                 threshold = getattr(ctx, "threshold_tokens", 0) or 0
                 threshold_pct = (getattr(ctx, "threshold_percent", 0) or 0) * 100
                 lines.append("")
-                if threshold > 0:
+                if ctx is not None and threshold > 0:
                     if used >= threshold:
                         lines.append(
                             t(
@@ -916,20 +933,31 @@ class GatewaySlashCommandsMixin:
                                 to_go=f"{threshold - used:,}",
                             )
                         )
-                compressions = getattr(ctx, "compression_count", 0) or 0
+                compressions = (
+                    _int_value(durable_totals.get("successful_compression_count"))
+                    if durable_totals is not None
+                    else _int_value(getattr(ctx, "compression_count", 0))
+                )
                 lines.append(t("gateway.context.compressions", count=compressions))
-                if compressions:
+                if compressions and ctx is not None:
                     savings = getattr(ctx, "_last_compression_savings_pct", None)
                     if savings is not None:
                         lines.append(
                             t("gateway.context.last_savings", savings=f"{savings:.0f}")
                         )
 
-                api_calls = getattr(agent, "session_api_calls", 0) or 0
-                input_tokens = getattr(agent, "session_input_tokens", 0) or 0
-                output_tokens = getattr(agent, "session_output_tokens", 0) or 0
-                reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
-                total_tokens = getattr(agent, "session_total_tokens", 0) or 0
+                if durable_totals is not None:
+                    api_calls = _int_value(durable_totals.get("api_call_count"))
+                    input_tokens = _int_value(durable_totals.get("input_tokens"))
+                    output_tokens = _int_value(durable_totals.get("output_tokens"))
+                    reasoning_tokens = _int_value(durable_totals.get("reasoning_tokens"))
+                    total_tokens = _int_value(durable_totals.get("total_tokens"))
+                else:
+                    api_calls = getattr(agent, "session_api_calls", 0) or 0
+                    input_tokens = getattr(agent, "session_input_tokens", 0) or 0
+                    output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+                    reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
+                    total_tokens = getattr(agent, "session_total_tokens", 0) or 0
                 lines.append("")
                 lines.append(
                     t("gateway.context.totals_header", calls=api_calls)

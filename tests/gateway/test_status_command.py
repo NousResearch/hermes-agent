@@ -516,6 +516,53 @@ async def test_context_command_keeps_configured_window_without_resident_agent():
     assert context_lookup.call_args.kwargs["config_context_length"] == 262_144
 
 
+@pytest.mark.asyncio
+async def test_context_command_reports_durable_totals_without_resident_agent(tmp_path):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-durable",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    session_entry.last_prompt_tokens = 40_000
+    runner = _make_runner(session_entry)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner._session_db = AsyncSessionDB(db)
+    try:
+        db.create_session(
+            "sess-durable",
+            source="telegram",
+            model="openai/gpt-test",
+        )
+        db.update_token_counts(
+            "sess-durable",
+            input_tokens=110_000,
+            output_tokens=9_000,
+            cache_read_tokens=70_000,
+            cache_write_tokens=2_000,
+            reasoning_tokens=6_000,
+            api_call_count=27,
+        )
+        for _ in range(4):
+            db.increment_successful_compression_count("sess-durable")
+
+        with patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=200_000,
+        ):
+            result = await runner._handle_context_command(_make_event("/context"))
+    finally:
+        db.close()
+
+    assert "Compressions this session: 4" in result
+    assert "cumulative across 27 API calls" in result
+    assert "Input 110,000 · Output 9,000 · Reasoning 6,000" in result
+    assert "Total billed: 191,000" in result
+    assert "Full compression and throughput stats available" not in result
+
+
 def _stub_agent(**overrides) -> SimpleNamespace:
     """Build a stub agent with the attributes _handle_context_command reads."""
     props = dict(
@@ -538,6 +585,73 @@ def _stub_agent(**overrides) -> SimpleNamespace:
     )
     props.update(overrides)
     return SimpleNamespace(**props)
+
+
+@pytest.mark.asyncio
+async def test_context_command_prefers_durable_totals_after_agent_reconstruction():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-reconstructed",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner._running_agents[session_entry.session_key] = _stub_agent(
+        session_api_calls=2,
+        session_input_tokens=300,
+        session_output_tokens=40,
+        session_reasoning_tokens=5,
+        session_total_tokens=345,
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=47_231,
+            context_length=200_000,
+            threshold_tokens=100_000,
+            threshold_percent=0.5,
+            compression_count=0,
+            _last_compression_savings_pct=None,
+        ),
+    )
+    runner._session_db._db.get_compression_lineage_totals.return_value = {
+        "successful_compression_count": 6,
+        "api_call_count": 91,
+        "input_tokens": 800_000,
+        "output_tokens": 70_000,
+        "cache_read_tokens": 500_000,
+        "cache_write_tokens": 10_000,
+        "reasoning_tokens": 20_000,
+        "total_tokens": 1_400_000,
+    }
+
+    result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "Compressions this session: 6" in result
+    assert "cumulative across 91 API calls" in result
+    assert "Input 800,000 · Output 70,000 · Reasoning 20,000" in result
+    assert "Total billed: 1,400,000" in result
+    assert "cumulative across 2 API calls" not in result
+
+
+@pytest.mark.asyncio
+async def test_context_command_uses_resident_totals_when_durable_row_is_missing():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-not-persisted",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner._running_agents[session_entry.session_key] = _stub_agent()
+    runner._session_db._db.get_compression_lineage_totals.return_value = None
+
+    result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "Compressions this session: 2" in result
+    assert "cumulative across 47 API calls" in result
+    assert "Total billed: 3,158,641" in result
 
 
 @pytest.mark.asyncio

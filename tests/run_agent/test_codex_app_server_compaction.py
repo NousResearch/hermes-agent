@@ -180,3 +180,26 @@ def test_codex_native_boundary_clears_stale_hermes_fallback_streak():
     assert _record_codex_app_server_compaction(agent, turn) is True
     assert compressor._fallback_compression_streak == 0
     assert compressor._verify_compaction_cleared_threshold is True
+
+
+def test_codex_native_boundary_persists_successful_compression(tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("hermes-session-1", source="cli")
+        agent = DummyAgent(
+            TurnResult(thread_id="thread-1", turn_id="compact-turn-1")
+        )
+        agent._session_db = db
+        turn = TurnResult(
+            thread_id="thread-1",
+            turn_id="compact-turn-1",
+            compacted=True,
+        )
+
+        assert _record_codex_app_server_compaction(agent, turn) is True
+
+        assert db.get_session("hermes-session-1")["successful_compression_count"] == 1
+    finally:
+        db.close()

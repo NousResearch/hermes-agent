@@ -6397,7 +6397,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (total_messages, total_tool_calls, child_session_id),
             )
             updated = conn.execute(
-                "UPDATE sessions SET ended_at = ?, end_reason = 'compression' "
+                "UPDATE sessions SET ended_at = ?, end_reason = 'compression', "
+                "successful_compression_count = "
+                "COALESCE(successful_compression_count, 0) + 1 "
                 "WHERE id = ? AND ended_at IS NULL",
                 (time.time(), parent_session_id),
             )
@@ -6930,6 +6932,26 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
 
         self._execute_write(_do)
+
+    def increment_successful_compression_count(self, session_id: str) -> int:
+        """Record one successful externally-owned compaction boundary."""
+        if not session_id:
+            return 0
+        self._insert_session_row(session_id, "unknown")
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET successful_compression_count = "
+                "COALESCE(successful_compression_count, 0) + 1 WHERE id = ?",
+                (session_id,),
+            )
+            row = conn.execute(
+                "SELECT successful_compression_count FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            return max(0, int(row[0] or 0)) if row is not None else 0
+
+        return int(self._execute_write(_do))
 
     # ──────────────────────────────────────────────────────────────────────
     # Compression locks
@@ -10697,13 +10719,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # the archived rows are still on disk but not part of the live count.
             if model_config_patch is None:
                 conn.execute(
-                    "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                    "UPDATE sessions SET message_count = ?, tool_call_count = ?, "
+                    "successful_compression_count = "
+                    "COALESCE(successful_compression_count, 0) + 1 WHERE id = ?",
                     (inserted, tool_calls_total, session_id),
                 )
             else:
                 conn.execute(
                     "UPDATE sessions SET message_count = ?, tool_call_count = ?, "
-                    "model_config = ? WHERE id = ?",
+                    "model_config = ?, successful_compression_count = "
+                    "COALESCE(successful_compression_count, 0) + 1 WHERE id = ?",
                     (inserted, tool_calls_total, patched_model_config, session_id),
                 )
             return inserted
@@ -11945,6 +11970,52 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # requested session itself was compacted.
                 continue
         return lineage if session_id in lineage else [session_id]
+
+    def get_compression_lineage_totals(
+        self, session_id: str
+    ) -> Optional[Dict[str, int]]:
+        """Return durable usage and compaction totals for one logical session.
+
+        Physical session rows rotate at compression boundaries.  Aggregate the
+        canonical compression lineage only; explicit branches, delegates, and
+        reset-created children must keep independent accounting scopes.
+        """
+        columns = (
+            "successful_compression_count",
+            "api_call_count",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+        )
+        totals = {column: 0 for column in columns}
+        lineage = list(dict.fromkeys(self.get_compression_lineage(session_id)))
+        if not lineage:
+            return None
+
+        placeholders = ",".join("?" for _ in lineage)
+        select = ", ".join(
+            f"COALESCE(SUM(COALESCE({column}, 0)), 0) AS {column}"
+            for column in columns
+        )
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                f"SELECT {select} FROM sessions WHERE id IN ({placeholders})",
+                lineage,
+            ).fetchone()
+        if row is not None:
+            totals.update({column: max(0, int(row[column] or 0)) for column in columns})
+        totals["total_tokens"] = sum(
+            totals[column]
+            for column in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+            )
+        )
+        return totals
 
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""

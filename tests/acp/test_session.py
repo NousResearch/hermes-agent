@@ -81,6 +81,10 @@ class TestCreateSession:
                     "default": "fake-model",
                     "provider": "fake-provider",
                 },
+                "agent": {
+                    "max_turns": 100,
+                    "reasoning_effort": "high",
+                },
                 "mcp_servers": {},
             },
             raising=False,
@@ -91,6 +95,10 @@ class TestCreateSession:
                 "model": {
                     "default": "fake-model",
                     "provider": "fake-provider",
+                },
+                "agent": {
+                    "max_turns": 100,
+                    "reasoning_effort": "high",
                 },
                 "mcp_servers": {},
             },
@@ -109,6 +117,11 @@ class TestCreateSession:
         state = SessionManager(db=None).create_session(cwd="/tmp/project")
 
         assert state.agent.session_cwd == "/tmp/project"
+        assert state.agent.kwargs["max_iterations"] == 100
+        assert state.agent.kwargs["reasoning_config"] == {
+            "enabled": True,
+            "effort": "high",
+        }
 
 
 

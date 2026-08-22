@@ -620,11 +620,29 @@ class SessionManager:
         model_cfg = config.get("model")
         default_model = ""
         config_provider = None
+        agent_cfg = config.get("agent")
+        if not isinstance(agent_cfg, dict):
+            agent_cfg = {}
         if isinstance(model_cfg, dict):
             default_model = str(model_cfg.get("default") or default_model)
             config_provider = model_cfg.get("provider")
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
+
+        try:
+            max_iterations = int(
+                agent_cfg.get("max_turns", config.get("max_turns", 90))
+            )
+            if max_iterations < 1:
+                raise ValueError("max_turns must be positive")
+        except (TypeError, ValueError):
+            max_iterations = 90
+
+        from hermes_constants import parse_reasoning_effort
+
+        reasoning_config = parse_reasoning_effort(
+            agent_cfg.get("reasoning_effort")
+        )
 
         configured_mcp_servers = [
             name
@@ -642,6 +660,8 @@ class SessionManager:
             "session_id": session_id,
             "session_db": self._get_db(),
             "model": model or default_model,
+            "max_iterations": max_iterations,
+            "reasoning_config": reasoning_config,
         }
 
         try:

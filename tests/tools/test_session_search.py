@@ -293,6 +293,68 @@ class TestDiscoveryShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+    def test_compacted_tool_output_requires_tool_role_and_full_detail(self, db):
+        """Recovery discovery must be able to return an archived tool row.
+
+        The normal discovery default intentionally excludes tool output, so a
+        compaction-era recovery pointer must opt into the tool role. The
+        current-session guard still permits the archived row because it has
+        left live context; passing ``session_id`` instead would select READ
+        mode and is not a substitute for discovery.
+        """
+        session_id = "s_compacted_tool"
+        marker = "EXACT_TOOL_RECOVERY_MARKER /tmp/output.txt"
+        db.create_session(session_id, source="cli")
+        db.append_message(session_id, role="user", content="Run the command")
+        db.append_message(
+            session_id,
+            role="tool",
+            content=marker,
+            tool_name="terminal",
+        )
+        db.archive_and_compact(
+            session_id,
+            [
+                {"role": "user", "content": "[CONTEXT COMPACTION] command summary"},
+                {"role": "assistant", "content": "The command was compacted."},
+            ],
+        )
+        archived_tool = next(
+            message
+            for message in db.get_messages(session_id, include_inactive=True)
+            if message["content"] == marker
+        )
+        assert archived_tool["active"] == 0
+        assert archived_tool["compacted"] == 1
+
+        default = json.loads(
+            session_search(
+                query="EXACT_TOOL_RECOVERY_MARKER",
+                db=db,
+                current_session_id=session_id,
+            )
+        )
+        assert default["count"] == 0
+
+        recovered = json.loads(
+            session_search(
+                query="EXACT_TOOL_RECOVERY_MARKER",
+                role_filter="tool",
+                detail="full",
+                db=db,
+                current_session_id=session_id,
+            )
+        )
+        assert recovered["count"] == 1
+        hit = recovered["results"][0]
+        assert hit["session_id"] == session_id
+        assert hit["matched_role"] == "tool"
+        assert hit["detail"] == "full"
+        assert any(
+            message["role"] == "tool" and marker in message["content"]
+            for message in hit["messages"]
+        )
+
 
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):

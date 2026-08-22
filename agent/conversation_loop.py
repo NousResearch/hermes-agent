@@ -39,6 +39,10 @@ from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_metadata import append_message
+from agent.openmaus_screenshot_compat import (
+    is_openmaus_screenshot_compat_enabled,
+    maybe_normalize_openmaus_screenshot_call,
+)
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
     build_turn_context,
@@ -3055,10 +3059,15 @@ def run_conversation(
                         agent.thinking_callback("")
 
                 _use_streaming = True
+                # The opt-in OpenMaus screenshot compatibility parser consumes
+                # only a complete response. Never expose a partial pseudo-call
+                # as streamed assistant text before it has passed that parser.
+                if is_openmaus_screenshot_compat_enabled(agent):
+                    _use_streaming = False
                 # Provider signaled "stream not supported" on a previous
                 # attempt — switch to non-streaming for the rest of this
                 # session instead of re-failing every retry.
-                if getattr(agent, "_disable_streaming", False):
+                elif getattr(agent, "_disable_streaming", False):
                     _use_streaming = False
                 # CopilotACPClient communicates via subprocess stdio and
                 # returns a plain SimpleNamespace — not an iterable
@@ -6665,6 +6674,15 @@ def run_conversation(
                     assistant_message.content = "\n".join(parts)
                 else:
                     assistant_message.content = str(raw)
+
+            # One bound local model emits known screenshot requests as exact
+            # pseudo-call blocks. The opt-in parser converts only those
+            # read-only forms into the ordinary dispatch path; approvals, MCP
+            # execution, history, and ACP events remain unchanged.
+            if maybe_normalize_openmaus_screenshot_call(
+                agent, assistant_message, finish_reason, was_streaming=_use_streaming
+            ):
+                finish_reason = assistant_message.finish_reason
 
             try:
                 from hermes_cli.lifecycle import (

@@ -181,6 +181,10 @@ class SessionState:
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    # MCP servers supplied by this ACP client for this live session. These are
+    # deliberately in-memory only: reconnect/load sends mcpServers again, and
+    # persisting them would turn a client-scoped capability into profile config.
+    session_mcp_server_names: List[str] = field(default_factory=list)
 
 
 class SessionManager:
@@ -608,6 +612,7 @@ class SessionManager:
         requested_provider: str | None = None,
         base_url: str | None = None,
         api_mode: str | None = None,
+        session_mcp_server_names: List[str] | None = None,
     ):
         if self._agent_factory is not None:
             return self._agent_factory()
@@ -636,7 +641,10 @@ class SessionManager:
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
                 ["hermes-acp"],
-                mcp_server_names=configured_mcp_servers,
+                mcp_server_names=[
+                    *configured_mcp_servers,
+                    *(session_mcp_server_names or []),
+                ],
             ),
             "quiet_mode": True,
             "session_id": session_id,

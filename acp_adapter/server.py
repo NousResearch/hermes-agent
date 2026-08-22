@@ -1160,6 +1160,13 @@ class HermesACPAgent(acp.Agent):
             )
             return
 
+        # Retain only the names explicitly supplied for this live ACP session.
+        # Model switching rebuilds AIAgent, so without this session-scoped
+        # record the replacement falls back to config.yaml toolsets and loses
+        # ephemeral clients such as OpenMaus's `computer` MCP. Never persist
+        # these names: the ACP client must provide them again on load/resume.
+        state.session_mcp_server_names = list(dict.fromkeys(config_map))
+
         try:
             from model_tools import get_tool_definitions
             from agent.memory_manager import inject_memory_provider_tools
@@ -2337,6 +2344,7 @@ class HermesACPAgent(acp.Agent):
             cwd=state.cwd,
             model=new_model,
             requested_provider=target_provider,
+            session_mcp_server_names=state.session_mcp_server_names,
         )
         self.session_manager.save_session(state.session_id)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
@@ -2589,6 +2597,7 @@ class HermesACPAgent(acp.Agent):
                 requested_provider=requested_provider,
                 base_url=current_base_url,
                 api_mode=current_api_mode,
+                session_mcp_server_names=state.session_mcp_server_names,
             )
             self.session_manager.save_session(session_id)
             logger.info(

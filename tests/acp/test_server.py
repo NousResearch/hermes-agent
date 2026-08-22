@@ -369,6 +369,36 @@ class TestListAndFork:
 
 class TestSessionConfiguration:
 
+    def test_protocol_model_switch_retains_session_mcp_servers(self, agent, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.session_mcp_server_names = ["computer"]
+        replacement = MagicMock(name="ReplacementAIAgent")
+
+        with patch.object(mock_manager, "_make_agent", return_value=replacement) as make_agent:
+            result = asyncio.run(
+                agent.set_session_model(
+                    "custom:omlx:local-model",
+                    state.session_id,
+                )
+            )
+
+        assert isinstance(result, SetSessionModelResponse)
+        assert state.agent is replacement
+        assert make_agent.call_args.kwargs["session_mcp_server_names"] == ["computer"]
+
+    def test_slash_model_switch_retains_session_mcp_servers(self, agent, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.session_mcp_server_names = ["computer"]
+        state.agent.provider = "openrouter"
+        replacement = MagicMock(name="ReplacementAIAgent")
+
+        with patch.object(mock_manager, "_make_agent", return_value=replacement) as make_agent:
+            result = agent._cmd_model("custom:omlx:local-model", state)
+
+        assert "Model switched" in result
+        assert state.agent is replacement
+        assert make_agent.call_args.kwargs["session_mcp_server_names"] == ["computer"]
+
     @pytest.mark.asyncio
     async def test_router_accepts_stable_session_config_methods(self, agent):
         new_resp = await agent.new_session(cwd="/tmp")
@@ -692,6 +722,7 @@ class TestRegisterSessionMcpServers:
             quiet_mode=True,
         )
         assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
+        assert state.session_mcp_server_names == ["srv"]
         assert state.agent.tools is fake_tools
         assert state.agent.tools[-1] == {
             "type": "function",

@@ -110,6 +110,49 @@ class TestCreateSession:
 
         assert state.agent.session_cwd == "/tmp/project"
 
+    def test_make_agent_combines_configured_and_session_mcp_toolsets(self, monkeypatch):
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {"default": "fake-model", "provider": "fake-provider"},
+                "mcp_servers": {
+                    "profile-server": {},
+                    "disabled-server": {"enabled": False},
+                },
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {
+                "provider": requested,
+                "api_mode": "chat_completions",
+                "base_url": "https://example.invalid",
+                "api_key": "test-key",
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
+
+        runtime_agent = SessionManager(db=MagicMock())._make_agent(
+            session_id="session-1",
+            cwd="/tmp/project",
+            session_mcp_server_names=["computer", "profile-server"],
+        )
+
+        assert runtime_agent.kwargs["enabled_toolsets"] == [
+            "hermes-acp",
+            "mcp-profile-server",
+            "mcp-computer",
+        ]
+
 
 
 

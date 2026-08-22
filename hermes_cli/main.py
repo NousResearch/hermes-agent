@@ -9143,13 +9143,18 @@ def _cleanup_pending_shim_renames(scripts_dir: Path) -> int:
 
 
 def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
-    """Roll back ``_quarantine_running_hermes_exe`` if uv didn't write replacements."""
-    for original, quarantined in moved:
-        try:
-            if not original.exists() and quarantined.exists():
-                quarantined.rename(original)
-        except OSError:
-            pass
+    """Roll back ``_quarantine_running_hermes_exe`` if uv didn't write replacements.
+
+    This is the safety-critical direction. A failed *quarantine* only aborts an
+    update; a failed *restore* leaves the install with no ``hermes`` on PATH,
+    and therefore no way to run the command that would repair it (#75584). The
+    outbound rename already retries a lock, so this one must too rather than
+    swallow the first ``OSError`` in silence.
+
+    Delegates to the stdlib-only helper that the early-recovery copy in
+    ``_install_repair`` also uses, so the two cannot drift apart.
+    """
+    _early_recovery_mod.restore_quarantined_shims(moved)
 
 
 def _run_quarantined_install(
@@ -9191,12 +9196,49 @@ def _run_quarantined_install(
             _restore_quarantined_exes(moved)
 
 
-def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
-    """Sweep ``hermes.exe.old.*`` and stale reboot renames left by prior updates.
+# A quarantine file younger than this may belong to an update running RIGHT
+# NOW in another process, whose restore step still needs it. Deleting one
+# mid-flight destroys the only copy of that shim.
+_QUARANTINE_GRACE_SECONDS = 15 * 60
 
-    Called early on every hermes invocation. The .old files are unlocked once
-    their owning process exited, so deletion succeeds the next run. Silent
-    no-op when nothing's there or on file-locked / permission errors.
+
+def _quarantine_stamp_ms(stale: Path) -> int | None:
+    """The ``.old.<unix-ms>`` stamp in a quarantine filename, or ``None``.
+
+    ``None`` means the name was not produced by
+    :func:`_quarantine_running_hermes_exe`. We neither rescue nor delete those:
+    the sweep should not destroy files whose provenance it cannot establish, and
+    they are not ours to put back.
+
+    Parsed from the NAME rather than ``st_mtime`` because ``rename`` preserves
+    the original shim's mtime, which records when uv wrote the shim — days
+    earlier, in general — not when it was quarantined.
+    """
+    try:
+        return int(stale.name.rsplit(".old.", 1)[1])
+    except (IndexError, ValueError):
+        return None
+
+
+def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
+    """Sweep — and where necessary RESCUE — ``hermes.exe.old.*`` from updates.
+
+    Called early on every hermes invocation. Two cases the old unconditional
+    ``unlink()`` got wrong, both ending with ``hermes`` gone from PATH:
+
+    1. **Orphan rescue.** If ``hermes.exe`` is missing while
+       ``hermes.exe.old.*`` is present, that .old file is the ONLY surviving
+       copy of the shim — an update died, or its restore failed, between
+       the rename and uv writing a replacement (#75584). Deleting it converts a
+       one-rename recovery into a full reinstall. Put it back instead, through
+       the same retry-and-report helper the update-time restore uses.
+    2. **Concurrency.** A fresh quarantine file may belong to an update in
+       flight in another process (the desktop update button racing a shell
+       ``hermes update`` does exactly this). Leave anything inside the grace
+       window alone; a later run sweeps it.
+
+    Silent no-op on non-Windows, when there is nothing to do, or on
+    file-locked / permission errors.
     """
     if not _is_windows():
         return
@@ -9205,14 +9247,42 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
     if scripts_dir is None:
         return
     _cleanup_pending_shim_renames(scripts_dir)
+
+    now = _time.time()
+
     try:
-        for stale in scripts_dir.glob("*.exe.old.*"):
-            try:
-                stale.unlink()
-            except OSError:
-                pass  # still locked or in use — try again next run
+        candidates = [
+            (stamp, stale)
+            for stale, stamp in (
+                (p, _quarantine_stamp_ms(p)) for p in scripts_dir.glob("*.exe.old.*")
+            )
+            if stamp is not None
+        ]
     except OSError:
-        pass
+        return
+
+    # Newest first by PARSED stamp. Sorting the raw filenames lexicographically
+    # only tracks recency while every stamp shares a digit width: a stray
+    # ``.old.999`` sorts above a 13-digit epoch-ms stamp and would be the copy
+    # rescued onto the live shim name.
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+
+    for stamp, stale in candidates:
+        try:
+            original = stale.with_name(stale.name.rsplit(".old.", 1)[0])
+
+            if not original.exists():
+                # Orphan rescue: this is the last copy of the shim, so it gets
+                # the retry ladder and the recovery message, not a bare rename.
+                _early_recovery_mod.restore_quarantined_shims([(original, stale)])
+                continue
+
+            if now - stamp / 1000.0 < _QUARANTINE_GRACE_SECONDS:
+                continue  # may be a live quarantine from a concurrent update
+
+            stale.unlink()
+        except OSError:
+            pass  # still locked or in use — try again next run
 
 
 # Import probes for venv corruption after a failed lazy ``uv pip install``.

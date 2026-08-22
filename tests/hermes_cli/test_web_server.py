@@ -2204,6 +2204,13 @@ class TestWebServerEndpoints:
 class TestBuildSchemaFromConfig:
 
 
+    def test_skin_options_come_from_builtin_registry(self):
+        from hermes_cli.skin_engine import builtin_skin_names
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        assert CONFIG_SCHEMA["display.skin"]["options"] == builtin_skin_names()
+
+
     def test_overrides_applied(self):
         from hermes_cli.web_server import CONFIG_SCHEMA
         # terminal.backend should be a select with options

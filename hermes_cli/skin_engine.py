@@ -448,6 +448,51 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "tool_prefix": "┊",
     },
+    "nous-blue-contrast": {
+        "name": "nous-blue-contrast",
+        "description": "Nous Blue Contrast — vivid blue on a deep navy canvas",
+        "colors": {
+            "background": "#001934",
+            "banner_border": "#4D8DFF",
+            "banner_title": "#78B7FF",
+            "banner_accent": "#4D8DFF",
+            "banner_dim": "#80A8D8",
+            "banner_text": "#F5F8FC",
+            "ui_accent": "#4D8DFF",
+            "ui_label": "#9CCBFF",
+            "ui_ok": "#4CC9A4",
+            "ui_error": "#FF7A90",
+            "ui_warn": "#FFB454",
+            "prompt": "#F5F8FC",
+            "input_rule": "#4D8DFF",
+            "response_border": "#78B7FF",
+            "status_bar_bg": "#06264A",
+            "status_bar_text": "#B2D5FF",
+            "status_bar_strong": "#78B7FF",
+            "status_bar_dim": "#80A8D8",
+            "status_bar_good": "#4CC9A4",
+            "status_bar_warn": "#FFB454",
+            "status_bar_bad": "#FF9A62",
+            "status_bar_critical": "#FF7A90",
+            "session_label": "#9CCBFF",
+            "session_border": "#6F9DD1",
+            "completion_menu_bg": "#06264A",
+            "completion_menu_current_bg": "#0D3F7A",
+            "selection_bg": "#164C88",
+            "shell_dollar": "#78B7FF",
+            "voice_status_bg": "#06264A",
+        },
+        "spinner": {},
+        "branding": {
+            "agent_name": "Hermes Agent",
+            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye! ⚕",
+            "response_label": " ⚕ Hermes ",
+            "prompt_symbol": "❯",
+            "help_header": "(^_^)? Available Commands",
+        },
+        "tool_prefix": "│",
+    },
     "daylight": {
         "name": "daylight",
         "description": "Light theme for bright terminals with dark text and cool blue accents",
@@ -783,6 +828,11 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 
 _active_skin: Optional[SkinConfig] = None
 _active_skin_name: str = "default"
+
+
+def builtin_skin_names() -> List[str]:
+    """Return built-in skin names in display order."""
+    return list(_BUILTIN_SKINS)
 
 
 def _skins_dir() -> Path:

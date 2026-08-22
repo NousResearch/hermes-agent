@@ -1445,10 +1445,53 @@ class MatrixAdapter(BasePlatformAdapter):
                 return str(kval)
         return None
 
-    async def _reverify_keys_after_upload(
-        self, client: Any, local_ed25519: str
+    @staticmethod
+    def _extract_server_curve25519(device_keys_obj: Any) -> Optional[str]:
+        """Extract the curve25519 encryption key from a DeviceKeys object."""
+        for kid, kval in (getattr(device_keys_obj, "keys", {}) or {}).items():
+            if str(kid).startswith("curve25519:"):
+                return str(kval)
+        return None
+
+    @staticmethod
+    def _has_valid_device_self_signature(
+        device_keys_obj: Any,
+        user_id: str,
+        device_id: str,
+        ed25519: str,
     ) -> bool:
-        """Re-query the server after share_keys() and verify our ed25519 key matches."""
+        """Cryptographically verify a server device record's own signature.
+
+        String-matching the advertised ed25519 key is not enough: the record
+        itself must be signed by that key. Fails closed — any error during
+        verification (malformed record, missing signature, bad key material)
+        counts as invalid.
+        """
+        try:
+            from mautrix.crypto.signature import verify_signature_json
+
+            serialized = device_keys_obj.serialize()
+            return bool(
+                verify_signature_json(serialized, user_id, device_id, ed25519)
+            )
+        except Exception as exc:
+            # Fail closed stays deliberate: any error means "not verifiably
+            # valid". Log at debug so a broken install (e.g. ImportError) or
+            # a malformed record is diagnosable instead of indistinguishable
+            # from a genuine signature failure.
+            logger.debug(
+                "Matrix: device self-signature verification raised: %s",
+                exc,
+                exc_info=True,
+            )
+            return False
+
+    async def _reverify_keys_after_upload(
+        self, client: Any, local_ed25519: str, local_curve25519: str
+    ) -> bool:
+        """Re-query the server after share_keys() and verify the full device
+        record: both identity keys must match and the self-signature must be
+        valid."""
         if not client.device_id or self._device_id_unverified:
             logger.warning(
                 "Matrix: skipping post-upload key verification — "
@@ -1460,16 +1503,31 @@ class MatrixAdapter(BasePlatformAdapter):
             dk = getattr(resp, "device_keys", {}) or {}
             ud = dk.get(str(client.mxid)) or {}
             dev = ud.get(str(client.device_id))
-            if dev:
-                server_ed = self._extract_server_ed25519(dev)
-                if server_ed != local_ed25519:
-                    logger.error(
-                        "Matrix: device %s has immutable identity keys that "
-                        "don't match this installation. Generate a new access "
-                        "token with a fresh device.",
-                        client.device_id,
-                    )
-                    return False
+            if not dev:
+                logger.error(
+                    "Matrix: device %s was not present after key upload",
+                    client.device_id,
+                )
+                return False
+            server_ed = self._extract_server_ed25519(dev)
+            server_curve = self._extract_server_curve25519(dev)
+            if server_ed != local_ed25519 or server_curve != local_curve25519:
+                logger.error(
+                    "Matrix: device %s has identity keys that don't match this "
+                    "installation after upload. Generate a new access token "
+                    "with a fresh device.",
+                    client.device_id,
+                )
+                return False
+            if not self._has_valid_device_self_signature(
+                dev, str(client.mxid), str(client.device_id), server_ed
+            ):
+                logger.error(
+                    "Matrix: device %s has an invalid self-signature after "
+                    "key upload",
+                    client.device_id,
+                )
+                return False
         except Exception as exc:
             logger.error("Matrix: post-upload key verification failed: %s", exc, exc_info=True)
             return False
@@ -1653,6 +1711,7 @@ class MatrixAdapter(BasePlatformAdapter):
         our_user_devices = device_keys_map.get(str(client.mxid)) or {}
         our_keys = our_user_devices.get(str(client.device_id))
         local_ed25519 = olm.account.identity_keys.get("ed25519")
+        local_curve25519 = olm.account.identity_keys.get("curve25519")
 
         if not our_keys:
             logger.warning("Matrix: device keys missing from server — re-uploading")
@@ -1662,23 +1721,53 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.error("Matrix: failed to re-upload device keys: %s", exc, exc_info=True)
                 return False
-            return await self._reverify_keys_after_upload(client, local_ed25519)
+            return await self._reverify_keys_after_upload(
+                client, local_ed25519, local_curve25519
+            )
 
         server_ed25519 = self._extract_server_ed25519(our_keys)
+        server_curve25519 = self._extract_server_curve25519(our_keys)
+        signature_valid = bool(server_ed25519) and self._has_valid_device_self_signature(
+            our_keys, str(client.mxid), str(client.device_id), server_ed25519
+        )
 
-        if server_ed25519 != local_ed25519:
+        if (
+            server_ed25519 != local_ed25519
+            or server_curve25519 != local_curve25519
+            or not signature_valid
+        ):
+            invalid_reason = (
+                "identity key missing from server record"
+                if not server_ed25519
+                else (
+                    "identity key mismatch"
+                    if server_ed25519 != local_ed25519
+                    else (
+                        "encryption key missing from server record"
+                        if not server_curve25519
+                        else (
+                            "encryption key mismatch"
+                            if server_curve25519 != local_curve25519
+                            else "invalid device self-signature"
+                        )
+                    )
+                )
+            )
             if olm.account.shared:
                 logger.error(
-                    "Matrix: server has different identity keys for device %s — "
+                    "Matrix: server device record for %s failed verification (%s) — "
                     "local crypto state is stale. Delete %s and restart.",
                     client.device_id,
+                    invalid_reason,
                     _CRYPTO_DB_PATH,
                 )
                 return False
 
             logger.warning(
-                "Matrix: server has stale keys for device %s — attempting re-upload",
+                "Matrix: server device record for %s failed verification (%s) — "
+                "attempting re-upload",
                 client.device_id,
+                invalid_reason,
             )
             try:
                 await client.api.request(
@@ -1703,7 +1792,9 @@ class MatrixAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
                 return False
-            return await self._reverify_keys_after_upload(client, local_ed25519)
+            return await self._reverify_keys_after_upload(
+                client, local_ed25519, local_curve25519
+            )
 
         return True
 

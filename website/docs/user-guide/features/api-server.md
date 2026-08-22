@@ -198,7 +198,10 @@ Delete a stored response.
 
 ### GET /v1/models
 
-Lists the agent as an available model. The advertised model name defaults to the [profile](/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
+Returns an OpenAI-style model list containing the backward-compatible alias
+model (`hermes-agent`, or the active [profile](/user-guide/profiles) name) plus
+any aliases explicitly configured in `gateway.platforms.api_server.model_routes`.
+Most OpenAI-compatible frontends call this endpoint for model discovery.
 
 `/v1/models` is intentionally the cheap OpenAI-compat surface. It does **not**
 enumerate every authenticated provider/model combination Hermes can route to,
@@ -748,9 +751,10 @@ In Open WebUI, add each as a separate connection. The model dropdown shows `alic
 
 - **Response storage** — stored responses (for `previous_response_id`) are persisted in SQLite and survive gateway restarts. Max 100 stored responses (LRU eviction).
 - **No file upload** — inline images are supported on both `/v1/chat/completions` and `/v1/responses`, but uploaded files (`file`, `input_file`, `file_id`) and non-image document inputs are not supported through the API.
-- **Simple OpenAI clients still see an alias** — `/v1/models` advertises the
-  stable Hermes alias (`hermes-agent` or the active profile name). Richer
-  clients can send explicit `provider` / `model_options` overrides on requests.
+- **Simple OpenAI clients see bounded aliases** — `/v1/models` advertises the
+  stable Hermes alias (`hermes-agent` or the active profile name) and any
+  explicitly configured `model_routes` aliases. Richer clients can use
+  `/api/model/options` and send explicit `provider` / `model_options` overrides.
 
 ## Proxy Mode
 

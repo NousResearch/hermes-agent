@@ -4755,11 +4755,12 @@ class FeishuAdapter(BasePlatformAdapter):
                     reply_to=reply_to,
                     metadata=metadata,
                 )
-                # Audio messages may fail with 99992402 when using thread_id routing.
-                # Try replying to the last message in the thread, then fall back to chat_id.
+                # Audio/file messages may fail with 99992402 when using
+                # thread_id routing (Feishu does not support
+                # receive_id_type="thread_id"). Try replying to the last
+                # message in the thread, then fall back to chat_id.
                 if (not self._response_succeeded(message_response)
                         and getattr(message_response, "code", None) == 99992402
-                        and resolved_message_type == "audio"
                         and (metadata or {}).get("thread_id")):
                     # Try reply API with thread_id as reply anchor
                     thread_msg_id = (metadata or {}).get("reply_to_message_id")
@@ -4768,7 +4769,7 @@ class FeishuAdapter(BasePlatformAdapter):
                             (metadata or {}).get("thread_id")
                         )
                     if thread_msg_id:
-                        logger.info("[Feishu] Audio: retrying via reply API in thread")
+                        logger.info("[Feishu] Media: retrying via reply API in thread")
                         message_response = await self._feishu_send_with_retry(
                             chat_id=chat_id,
                             msg_type=resolved_message_type,
@@ -4777,7 +4778,7 @@ class FeishuAdapter(BasePlatformAdapter):
                             metadata=metadata,
                         )
                     if not self._response_succeeded(message_response):
-                        logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
+                        logger.warning("[Feishu] Media send failed in thread, retrying with chat_id")
                         message_response = await self._feishu_send_with_retry(
                             chat_id=chat_id,
                             msg_type=resolved_message_type,
@@ -4837,32 +4838,45 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # For topic/thread messages that fell back from reply→create, use
         # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
+        # the main chat. NOTE: Feishu's message.create does NOT support
+        # receive_id_type="thread_id" (only chat_id/open_id/user_id/email),
+        # so for Feishu we instead reply to the last message in the thread
+        # (reply API keeps the message inside the thread), falling back to a
+        # plain chat_id create when no anchor can be resolved.
         _thread_id = (metadata or {}).get("thread_id")
         if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
+            anchor = await self._fetch_last_message_in_thread(_thread_id)
+            if anchor:
+                body = self._build_reply_message_body(
+                    content=payload,
+                    msg_type=msg_type,
+                    reply_in_thread=True,
+                    uuid_value=str(uuid.uuid4()),
+                )
+                request = self._build_reply_message_request(anchor, body)
+                return await self._run_blocking(self._client.im.v1.message.reply, request)
+            logger.warning(
+                "[Feishu] No anchor found in thread %s; falling back to chat_id create",
+                _thread_id,
             )
-            request = self._build_create_message_request("thread_id", body)
-        else:
-            receive_id = chat_id
-            receive_id_type = "chat_id"
-            if chat_id.startswith("feishu_user_id:"):
-                receive_id = chat_id.split(":", 1)[1]
-                receive_id_type = "user_id"
-            elif chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
 
-            body = self._build_create_message_body(
-                receive_id=receive_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request(receive_id_type, body)
+        # Plain chat_id / user_id / open_id create (also the fallback when a
+        # thread anchor cannot be resolved — Feishu has no thread_id receive).
+        receive_id = chat_id
+        receive_id_type = "chat_id"
+        if chat_id.startswith("feishu_user_id:"):
+            receive_id = chat_id.split(":", 1)[1]
+            receive_id_type = "user_id"
+        elif chat_id.startswith("ou_"):
+            receive_id_type = "open_id"
+
+        body = self._build_create_message_body(
+            receive_id=receive_id,
+            msg_type=msg_type,
+            content=payload,
+            uuid_value=str(uuid.uuid4()),
+        )
+        request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
 
     @staticmethod

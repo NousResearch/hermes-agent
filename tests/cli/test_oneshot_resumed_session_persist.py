@@ -12,7 +12,8 @@ next turn and ends the session with ``cli_close`` on quit).
 The fix routes every one-shot exit (quiet ``-Q -q``, human ``-q``, and the
 kanban SIGTERM path) through ``cli._flush_one_shot_session_store``: a final
 ``_persist_session`` retry (idempotent via the per-message persisted
-markers), a token-count drain, and ``end_session(..., "cli_close")``.
+markers), a token-count drain, and ``end_session(..., "cli_close")`` for
+CLI-owned rows only.
 """
 
 from __future__ import annotations
@@ -54,10 +55,11 @@ def _make_agent(session_db, session_id="oneshot-88583"):
     return agent
 
 
-def _fake_cli(agent):
+def _fake_cli(agent, *, resumed=False):
     return SimpleNamespace(
         agent=agent,
         session_id=agent.session_id,
+        _resumed=resumed,
         conversation_history=[],
         _session_db=agent._session_db,
         _release_active_session=lambda: None,
@@ -119,7 +121,7 @@ class TestOneShotDurableFlush:
                     {"role": "user", "content": "hi"},
                     {"role": "assistant", "content": "hello"},
                 ]
-                fake = _fake_cli(agent)
+                fake = _fake_cli(agent, resumed=True)
                 monkeypatch.setattr(cli_mod, "_run_cleanup", lambda **kw: None)
                 monkeypatch.setattr(
                     cli_mod, "_notify_single_query_session_finalize", lambda _c: None
@@ -130,6 +132,62 @@ class TestOneShotDurableFlush:
                 sess = db.get_session(agent.session_id)
                 assert sess["ended_at"] is not None
                 assert sess["end_reason"] == "cli_close"
+            finally:
+                db.close()
+
+    @pytest.mark.parametrize("source", ["webui", "telegram"])
+    def test_flush_keeps_borrowed_cross_surface_session_open(self, source):
+        """A one-shot CLI borrower persists its turn without ending its owner."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "state.db")
+            try:
+                session_id = f"borrowed-{source}"
+                db.create_session(session_id, source=source)
+                agent = _make_agent(db, session_id=session_id)
+                agent._session_messages = [
+                    {"role": "user", "content": "borrowed one-shot turn"},
+                    {"role": "assistant", "content": "persisted reply"},
+                ]
+
+                with patch.object(db, "flush_token_counts", wraps=db.flush_token_counts) as flush:
+                    cli_mod._flush_one_shot_session_store(
+                        _fake_cli(agent, resumed=True)
+                    )
+
+                assert [m["content"] for m in db.get_messages(session_id)] == [
+                    "borrowed one-shot turn",
+                    "persisted reply",
+                ]
+                assert flush.call_count >= 1
+                session = db.get_session(session_id)
+                assert session is not None
+                assert session["source"] == source
+                assert session["ended_at"] is None
+                assert session["end_reason"] is None
+            finally:
+                db.close()
+
+    @pytest.mark.parametrize("source", ["cron", "kanban"])
+    def test_flush_closes_fresh_cli_owned_source_override(self, source):
+        """A source override does not transfer ownership of a fresh CLI row."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "state.db")
+            try:
+                session_id = f"fresh-{source}"
+                db.create_session(session_id, source=source)
+                agent = _make_agent(db, session_id=session_id)
+
+                cli_mod._flush_one_shot_session_store(
+                    _fake_cli(agent, resumed=False)
+                )
+
+                session = db.get_session(session_id)
+                assert session is not None
+                assert session["end_reason"] == "cli_close"
             finally:
                 db.close()
 

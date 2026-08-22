@@ -1379,7 +1379,7 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
 
 
 def _flush_one_shot_session_store(cli) -> None:
-    """Durably flush + finalize the one-shot session row before process exit.
+    """Durably flush the one-shot session row before process exit.
 
     The quiet/one-shot ``-q`` / ``-Q`` paths (including resume-or-create of a
     titled session via ``-c <name> --create-if-missing``, the Bot Mode
@@ -1392,16 +1392,17 @@ def _flush_one_shot_session_store(cli) -> None:
       write-lock contention (e.g. a busy multiplex gateway sharing state.db)
       was silently lost — the reply reached stdout and agent.log but the
       resumed session's stored history never changed (#88583);
-    - the resumed/created titled session row was left dangling open
-      (``ended_at``/``end_reason`` NULL) on every one-shot exit;
+    - CLI-owned resumed/created rows were left dangling open
+      (``ended_at``/``end_reason`` NULL) on one-shot exit;
     - queued async token-accounting deltas relied on interpreter-exit hooks,
       which the kanban SIGTERM path's ``os._exit(0)`` skips entirely.
 
     Idempotent and best-effort: ``_persist_session`` dedupes via the
     per-message ``_DB_PERSISTED_MARKER`` stamps (already-written turns are
     not re-written) and ``end_session`` no-ops on an already-ended row.
-    Sessions handed off to the gateway are owned by the gateway process and
-    are left strictly alone (#88234).
+    Sessions handed off to the gateway are left strictly alone (#88234).
+    A resumed row created by another surface is still flushed, but remains
+    open for that surface to own and continue.
     """
     agent = getattr(cli, "agent", None)
     if agent is None:
@@ -1430,6 +1431,19 @@ def _flush_one_shot_session_store(cli) -> None:
         db.flush_token_counts()
     except Exception:
         logger.debug("one-shot token-count drain failed", exc_info=True)
+    # A fresh CLI session is ours regardless of its source override (cron and
+    # Kanban launch CLI workers this way). A resumed row is ours only when it
+    # originated in the CLI. WebUI/desktop/messaging rows can remain live on
+    # their owning surface while a one-shot CLI turn borrows them; ending such
+    # a row here strands that owner behind a stale cli_close boundary.
+    if getattr(cli, "_resumed", False):
+        try:
+            row = db.get_session(session_id)
+        except Exception:
+            logger.debug("one-shot session ownership lookup failed", exc_info=True)
+            return
+        if not row or (row.get("source") or "").strip().lower() != "cli":
+            return
     try:
         db.end_session(session_id, "cli_close")
     except Exception:

@@ -483,21 +483,51 @@ function SessionRow({
   const { t } = useI18n();
   const navigate = useNavigate();
 
+  // Initial load + live polling for active sessions
   useEffect(() => {
-    if (!isExpanded || messages !== null) return;
+    if (!isExpanded) return;
+
     let cancelled = false;
-    api
-      .getSessionMessages(session.id)
-      .then((resp) => {
-        if (!cancelled) setMessages(resp.messages);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(String(err));
-      });
+    let lastCount = messages?.length ?? 0;
+
+    // Initial full load
+    if (messages === null) {
+      api
+        .getSessionMessages(session.id)
+        .then((resp) => {
+          if (!cancelled) {
+            setMessages(resp.messages);
+            lastCount = resp.messages.length;
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) setError(String(err));
+        });
+    }
+
+    // Poll for new messages every 3s if session is active (running)
+    if (!session.is_active) return;
+
+    const interval = setInterval(() => {
+      if (cancelled) return;
+      api
+        .getSessionMessages(session.id)
+        .then((resp) => {
+          if (cancelled) return;
+          if (resp.messages.length !== lastCount) {
+            setMessages(resp.messages);
+            lastCount = resp.messages.length;
+          }
+        })
+        .catch(() => {});
+    }, 3000);
+
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
-  }, [isExpanded, session.id, messages]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isExpanded, session.id, session.is_active]);
 
   const sourceKey = session.source?.split(":")[0];
   const sourceInfo = (session.source

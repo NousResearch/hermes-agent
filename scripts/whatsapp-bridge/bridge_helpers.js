@@ -506,6 +506,13 @@ export function inboundReadReceiptKeys({ key, enabled }) {
   return [key];
 }
 
+export function outboundUnreadTarget({ mode, enabled, sentMessage }) {
+  // Only self-chat mode shares a number with the recipient, so only there
+  // does an outgoing send leave WhatsApp's own read state to fix up.
+  if (!enabled || mode !== 'self-chat' || !sentMessage?.key?.id) return null;
+  return sentMessage;
+}
+
 export function mediaPayloadForFile({ buffer, filePath, mediaType, caption, fileName }) {
   const ext = filePath.toLowerCase().split('.').pop();
   const type = mediaType || inferMediaType(ext);

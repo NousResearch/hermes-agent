@@ -181,9 +181,14 @@ whatsapp:
   reply_prefix: ""                          # Empty string disables the header
   # reply_prefix: "🤖 *My Bot*\n──────\n"  # Custom prefix (supports \n for newlines)
   send_read_receipts: false                 # Mark accepted inbound messages as read (blue ticks)
+  mark_sent_unread: false                   # Self-chat mode: mark the chat unread after Hermes replies
 ```
 
 When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound messages as read after DM/group/mention filtering passes. Rejected messages (e.g., from non-allowlisted senders) are not marked read. Disabled by default for privacy. Changing this setting automatically restarts the bridge subprocess on the next connection.
+
+In **self-chat mode**, Hermes' replies and scheduled-job deliveries are sent from your own linked account, so WhatsApp leaves the conversation read — easy to miss an async cron reminder or briefing. Set `mark_sent_unread: true` to have the bridge mark the self-chat unread again immediately after a successful send. This only applies in self-chat mode (bot-mode replies are genuinely incoming on the recipient's phone) and only creates the unread indicator — it does not guarantee a push notification. Disabled by default, preserving current behavior.
+
+`mark_sent_unread` marks the whole conversation unread, which also reverses the effect of `send_read_receipts: true` on the inbound message that triggered the reply — the message you just marked read becomes unread again. If you run both settings together in self-chat mode, expect the chat to end up unread after each reply.
 
 ---
 

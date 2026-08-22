@@ -455,6 +455,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             read_receipts if isinstance(read_receipts, bool)
             else str(read_receipts or "").strip().lower() in {"1", "true", "yes", "on"}
         )
+        mark_sent_unread = config.extra.get("mark_sent_unread", False)
+        self._mark_sent_unread = (
+            mark_sent_unread if isinstance(mark_sent_unread, bool)
+            else str(mark_sent_unread or "").strip().lower() in {"1", "true", "yes", "on"}
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -694,6 +699,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
             bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = (
                 "true" if self._send_read_receipts else "false"
+            )
+            bridge_env["WHATSAPP_MARK_SENT_UNREAD"] = (
+                "true" if self._mark_sent_unread else "false"
             )
             # Under multiplexing, the bridge subprocess runs with a copy of
             # os.environ that does NOT contain the secondary profile's .env

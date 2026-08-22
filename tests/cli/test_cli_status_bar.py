@@ -55,6 +55,83 @@ def _attach_agent(
 
 
 class TestCLIStatusBar:
+    def test_status_bar_alias_respects_active_provider(self):
+        cli_mod._REVERSE_ALIAS_CACHE = None
+        cli_obj = _make_cli(model="gpt-5.6-sol")
+        cli_obj.agent = SimpleNamespace(model="gpt-5.6-sol", provider="openai-codex")
+
+        config = {
+            "model": {
+                "aliases": {
+                    "local-gpt56": "local-sub2api/gpt-5.6-sol",
+                    "codex-gpt56": "openai-codex/gpt-5.6-sol",
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=config):
+            snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["model_short"] == "codex-gpt56"
+
+    def test_status_bar_does_not_use_alias_from_other_provider(self):
+        cli_mod._REVERSE_ALIAS_CACHE = None
+        cli_obj = _make_cli(model="gpt-5.6-sol")
+        cli_obj.agent = SimpleNamespace(model="gpt-5.6-sol", provider="openai-codex")
+
+        config = {
+            "model": {
+                "aliases": {
+                    "local-gpt56": "local-sub2api/gpt-5.6-sol",
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=config):
+            snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["model_short"] == "gpt-5.6-sol"
+
+    def test_status_bar_unmatched_provider_does_not_use_model_only_fallback(self):
+        cli_mod._REVERSE_ALIAS_CACHE = None
+        cli_obj = _make_cli(model="gpt-5.6-sol")
+        cli_obj.agent = SimpleNamespace(model="gpt-5.6-sol", provider="openai-codex-beta")
+
+        config = {
+            "model": {
+                "aliases": {
+                    "local-gpt56": "local-sub2api/gpt-5.6-sol",
+                    "codex-gpt56": "openai-codex/gpt-5.6-sol",
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=config):
+            snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["model_short"] == "gpt-5.6-sol"
+
+    def test_reverse_alias_keeps_model_only_fallback_without_provider(self):
+        cli_mod._REVERSE_ALIAS_CACHE = None
+        config = {
+            "model": {
+                "aliases": {
+                    "local-gpt56": "local-sub2api/gpt-5.6-sol",
+                    "longer-gpt56": "other-provider/gpt-5.6-sol",
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=config):
+            assert cli_mod._reverse_alias_for_display("gpt-5.6-sol") == "local-gpt56"
+
+    def test_reverse_alias_treats_auto_provider_as_unknown(self):
+        cli_mod._REVERSE_ALIAS_CACHE = None
+        config = {
+            "model_aliases": {
+                "local-gpt56": {"model": "local-sub2api/gpt-5.6-sol"},
+                "longer-gpt56": {"provider": "other-provider", "model": "gpt-5.6-sol"},
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=config):
+            assert cli_mod._reverse_alias_for_display("gpt-5.6-sol", "auto") == "local-gpt56"
+
     def test_session_title_is_right_aligned_after_it_is_queued(self):
         cli_obj = _make_cli()
         cli_obj._pending_title = "weekly-digest"
@@ -368,5 +445,3 @@ class TestIdleSinceLastTurn:
         cli_obj._prompt_duration = 5.0
         snapshot = cli_obj._get_status_bar_snapshot()
         assert snapshot["idle_since"].startswith("✓ ")
-
-

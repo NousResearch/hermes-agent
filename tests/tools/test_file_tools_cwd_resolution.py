@@ -111,6 +111,28 @@ def test_container_absolute_input_path_does_not_follow_host_symlink(tmp_path, mo
     assert resolved != (host_project / "oilsands-sim" / "README.md")
 
 
+def test_ssh_absolute_input_path_does_not_follow_host_symlink(tmp_path, monkeypatch):
+    """SSH paths are remote-local and must not be host-dereferenced.
+
+    An SSH backend has its own filesystem namespace. Resolving an absolute
+    path through host-side symlinks (e.g. macOS /home ->
+    /System/Volumes/Data/home) rewrites the path before the remote sees it,
+    so file tools and the remote terminal disagree about where the file lives.
+    """
+    host_project = tmp_path / "host-project"
+    host_project.mkdir()
+    remote_mount = tmp_path / "workspace-projects"
+    remote_mount.symlink_to(host_project, target_is_directory=True)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "ssh"})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+
+    remote_path = remote_mount / "oilsands-sim" / "README.md"
+    resolved = ft._resolve_path_for_task(str(remote_path), task_id="default")
+
+    assert resolved == remote_path
+    assert resolved != (host_project / "oilsands-sim" / "README.md")
+
+
 def test_container_path_normalization_uses_posix_path_syntax():
     resolved = ft._normalize_without_host_deref("/workspace/projects/foo/../bar")
 

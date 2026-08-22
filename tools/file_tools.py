@@ -169,7 +169,7 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPa
 # (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
 # sessions get the same protection. See references/worktree-cwd-discipline.md.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
-_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox", "ssh"})
 
 
 def _terminal_env_type_for_task(task_id: str = "default") -> str:
@@ -209,9 +209,13 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
 
 
 def _uses_container_paths(task_id: str = "default") -> bool:
+    # SSH backends also target a remote filesystem: absolute paths must keep
+    # their lexical form and NOT be resolved through host-side symlinks (e.g.
+    # macOS /home -> /System/Volumes/Data/home). Treat "ssh" as a remote
+    # backend alongside the container backends for path-resolution purposes.
     try:
         from tools.terminal_tool import _CONTAINER_BACKENDS
-        container_backends = _CONTAINER_BACKENDS
+        container_backends = _CONTAINER_BACKENDS | {"ssh"}
     except Exception:
         container_backends = _CONTAINER_PATH_BACKENDS_FALLBACK
     return _terminal_env_type_for_task(task_id) in container_backends

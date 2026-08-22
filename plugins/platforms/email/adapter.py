@@ -18,6 +18,8 @@ Environment variables:
 import asyncio
 import email as email_lib
 import imaplib
+import inspect
+import json
 import logging
 import os
 import re
@@ -47,6 +49,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform, PlatformConfig
+from gateway.session import SessionSource
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -563,6 +566,29 @@ class EmailAdapter(BasePlatformAdapter):
         #     email:
         #       skip_attachments: true
         self._skip_attachments = extra.get("skip_attachments", False)
+        response_delivery = extra.get("response_delivery")
+        if response_delivery is None:
+            response_delivery = _get_esecret("EMAIL_RESPONSE_DELIVERY", "email")
+        self._response_delivery = str(response_delivery or "email").strip().lower()
+
+        approval_discord_channel = extra.get("approval_discord_channel")
+        if approval_discord_channel is None:
+            approval_discord_channel = (
+                _get_esecret("EMAIL_APPROVAL_DISCORD_CHANNEL", "")
+                or _get_esecret("DISCORD_HOME_CHANNEL", "")
+            )
+        self._approval_discord_channel = str(approval_discord_channel or "").strip()
+
+        approval_discord_thread = extra.get(
+            "approval_discord_thread",
+            extra.get("approval_discord_thread_id"),
+        )
+        if approval_discord_thread is None:
+            approval_discord_thread = (
+                _get_esecret("EMAIL_APPROVAL_DISCORD_THREAD_ID", "")
+                or _get_esecret("DISCORD_HOME_CHANNEL_THREAD_ID", "")
+            )
+        self._approval_discord_thread = str(approval_discord_thread or "").strip()
 
         # Require the sender's From: domain to be authenticated (SPF/DKIM/DMARC)
         # before trusting it for authorization. The From: header is
@@ -1144,6 +1170,116 @@ class EmailAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[Email] Send failed to %s: %s", chat_id, e)
             return SendResult(success=False, error=str(e))
+
+    async def _send_final_response_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+        source: Optional[SessionSource] = None,
+    ) -> SendResult:
+        """Deliver the gateway's automatic final response to an inbound email.
+
+        The stock Email adapter replies by email.  For approval-gated email
+        intake, email is an input surface only: the response/approval card must
+        go to the live Discord adapter.  Explicit outbound email remains
+        possible only via an approved send/reply action that calls ``send``
+        directly, and other gateway notices keep the inherited retry path.
+        """
+        if self._response_delivery not in {"discord", "discord_home", "approval_discord"}:
+            return await super()._send_final_response_with_retry(
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=metadata,
+                max_retries=max_retries,
+                base_delay=base_delay,
+                source=source,
+            )
+
+        channel_id = self._approval_discord_thread or self._approval_discord_channel
+        if not channel_id:
+            return SendResult(success=False, error="No Discord approval channel configured")
+
+        profile_name = source.profile if source is not None else None
+        discord_adapter = self._discord_delivery_adapter(profile_name)
+        if discord_adapter is None:
+            return SendResult(success=False, error="Discord adapter is not connected")
+
+        result = await discord_adapter._send_with_retry(
+            chat_id=channel_id,
+            content=content,
+            metadata=None,
+            max_retries=max_retries,
+            base_delay=base_delay,
+        )
+        if result.success:
+            logger.info("[Email] Routed inbound-email response to Discord channel %s", channel_id)
+        else:
+            logger.error(
+                "[Email] Discord approval delivery failed; suppressing email fallback: %s",
+                result.error,
+            )
+        return result
+
+    def _discord_delivery_adapter(
+        self, profile_name: Optional[str] = None
+    ) -> Optional[BasePlatformAdapter]:
+        """Resolve Discord for the inbound event's profile, failing closed."""
+
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None:
+            return None
+
+        adapter = None
+        profile_name = (profile_name or "").strip() or None
+        resolver = getattr(runner, "_authorization_adapter", None)
+        if callable(resolver):
+            supports_profile = True
+            try:
+                sig = inspect.signature(resolver)
+                params = list(sig.parameters.values())
+                positional = {
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                }
+                supports_profile = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params) or sum(
+                    1 for p in params if p.kind in positional and p.default is inspect.Parameter.empty
+                ) >= 2 or any(p.name == "profile" for p in params)
+            except (TypeError, ValueError):
+                supports_profile = True
+
+            if supports_profile:
+                try:
+                    adapter = resolver(Platform.DISCORD, profile_name)
+                except Exception:
+                    logger.debug("[Email] Failed to resolve Discord adapter from gateway runner", exc_info=True)
+            else:
+                if profile_name is not None:
+                    # A legacy resolver cannot honor explicit profile
+                    # provenance. Fail closed instead of falling back to the
+                    # active profile's Discord transport.
+                    return None
+                try:
+                    adapter = resolver(Platform.DISCORD)
+                except Exception:
+                    logger.debug("[Email] Failed to resolve Discord adapter from gateway runner", exc_info=True)
+
+        if adapter is None:
+            if profile_name is not None:
+                # The profile-aware resolver intentionally returns None when
+                # that profile has no connected Discord adapter. Falling back
+                # here would cross profile/credential boundaries.
+                return None
+            adapters = getattr(runner, "adapters", None) or {}
+            adapter = adapters.get(Platform.DISCORD)
+
+        if not isinstance(adapter, BasePlatformAdapter):
+            return None
+        return adapter
 
     def _message_id_domain(self) -> str:
         """Domain part for generated Message-IDs.

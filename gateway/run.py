@@ -2042,6 +2042,49 @@ def _home_thread_env_var(platform_name: str) -> str:
     return f"{_home_target_env_var(platform_name)}_THREAD_ID"
 
 
+_SUPPRESS_HOME_NOTICE_CONFIG_CACHE: dict[str, bool] = {}
+
+
+def _suppress_home_channel_notice_from_config(platform_name: str) -> bool:
+    cached = _SUPPRESS_HOME_NOTICE_CONFIG_CACHE.get(platform_name)
+    if cached is not None:
+        return cached
+    suppressed = False
+    try:
+        cfg = _load_gateway_config()
+        platforms = cfg.get("platforms") or {}
+        platform_cfg = platforms.get(platform_name) or {}
+        if isinstance(platform_cfg, dict):
+            response_delivery = str(platform_cfg.get("response_delivery") or "").strip().lower()
+            suppressed = bool(
+                platform_cfg.get("suppress_home_notice")
+                or platform_cfg.get("suppress_home_channel_notice")
+                or (platform_name == "email" and response_delivery in {"discord", "discord_home", "approval_discord"})
+            )
+    except Exception:
+        suppressed = False
+    _SUPPRESS_HOME_NOTICE_CONFIG_CACHE[platform_name] = suppressed
+    return suppressed
+
+
+def _suppress_home_channel_notice(platform_name: str) -> bool:
+    """Return True when a platform opts out of the first-run /sethome notice.
+
+    Env overrides are intentionally supported for gateway platforms because
+    several adapters, including Email, are primarily configured from `.env`.
+    For email intake routed to Discord, suppress the prompt implicitly: email is
+    the inbound surface, not the home-channel surface.
+    """
+    env_prefix = platform_name.upper().replace("-", "_")
+    if os.getenv(f"{env_prefix}_SUPPRESS_HOME_NOTICE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    if os.getenv(f"{env_prefix}_SUPPRESS_HOME_CHANNEL_NOTICE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    if platform_name == "email" and os.getenv("EMAIL_RESPONSE_DELIVERY", "").strip().lower() in {"discord", "discord_home", "approval_discord"}:
+        return True
+    return _suppress_home_channel_notice_from_config(platform_name)
+
+
 def _restart_notification_pending() -> bool:
     """Return True when a /restart completion marker is waiting to be delivered."""
     return (_hermes_home / ".restart_notify.json").exists()
@@ -20216,7 +20259,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             home_env = "set"
                 except Exception:
                     pass
-            if not home_env:
+            if not home_env and not _suppress_home_channel_notice(platform_name):
                 # Slack dispatches all Hermes commands through a single
                 # parent slash command `/hermes`; bare `/sethome` is not
                 # registered and would fail with "app did not respond".
@@ -28185,7 +28228,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile_exists,
         )
         from hermes_constants import get_hermes_home
-        
+
         # Track whether a profile was explicitly requested (vs. falling back to default)
         explicit_profile = None
         try:
@@ -28198,7 +28241,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     explicit_profile = name  # Routing explicitly set this profile
             if not name:
                 name = get_active_profile_name() or "default"
-            
+
             profile_dir = get_profile_dir(name)
             # Warn if an explicit profile doesn't exist on disk
             if explicit_profile and not profile_exists(name):

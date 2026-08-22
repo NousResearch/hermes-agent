@@ -106,7 +106,7 @@ class GatewayAuthorizationMixin:
         if not platform:
             return None
         profile_name = (profile or "").strip() or None
-        if profile_name and profile_name != "default":
+        if profile_name:
             active_profile = None
             active_profile_fn = getattr(self, "_active_profile_name", None)
             if callable(active_profile_fn):

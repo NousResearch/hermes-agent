@@ -74,6 +74,34 @@ def test_active_profile_stamp_resolves_primary_adapter(monkeypatch):
     assert runner._authorization_adapter(Platform.WECOM, profile="dev") is default_adapter
 
 
+def test_default_profile_resolves_secondary_adapter_when_named_profile_is_active(monkeypatch):
+    """Literal default is secondary when a named profile owns primary adapters."""
+    runner, named_active_adapter, default_secondary_adapter = _make_multiplex_runner(
+        monkeypatch
+    )
+    runner._active_profile_name = lambda: "reviewer"
+    runner._profile_adapters["default"] = runner._profile_adapters.pop("coder")
+
+    assert (
+        runner._authorization_adapter(Platform.WECOM, profile="default")
+        is default_secondary_adapter
+    )
+    assert (
+        runner._authorization_adapter(Platform.WECOM, profile="reviewer")
+        is named_active_adapter
+    )
+
+
+def test_missing_default_secondary_adapter_does_not_fallback_to_named_active(monkeypatch):
+    runner, _named_active_adapter, _secondary_adapter = _make_multiplex_runner(
+        monkeypatch
+    )
+    runner._active_profile_name = lambda: "reviewer"
+    runner._profile_adapters.clear()
+
+    assert runner._authorization_adapter(Platform.WECOM, profile="default") is None
+
+
 def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
     """Unauthorized-DM behavior must read the secondary adapter's dm_policy."""
     runner, _default_adapter, secondary_adapter = _make_multiplex_runner(monkeypatch)

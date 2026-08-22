@@ -44,6 +44,8 @@ import {
   inboundReadReceiptKeys,
   inferMediaType,
   mediaPayloadForFile,
+  normalizeOutboundMode,
+  outboundRequestAllowed,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
@@ -83,6 +85,7 @@ const SEND_READ_RECEIPTS =
   process.env &&
   typeof process.env.WHATSAPP_SEND_READ_RECEIPTS === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_SEND_READ_RECEIPTS.toLowerCase());
+const OUTBOUND_MODE = normalizeOutboundMode(process.env.WHATSAPP_OUTBOUND_MODE);
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
@@ -813,6 +816,17 @@ app.use((req, res, next) => {
   next();
 });
 
+// Structural read-only mode. Keep this above every route so direct bridge
+// clients cannot bypass the Python adapter's policy gate.
+app.use((req, res, next) => {
+  if (!outboundRequestAllowed(OUTBOUND_MODE, req.method)) {
+    return res.status(403).json({
+      error: 'WhatsApp outbound sends are disabled by outbound_mode=never',
+    });
+  }
+  next();
+});
+
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
   const msgs = messageQueue.splice(0, messageQueue.length);
@@ -1111,6 +1125,7 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    outboundMode: OUTBOUND_MODE,
   });
 });
 

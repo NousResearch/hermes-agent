@@ -181,9 +181,12 @@ whatsapp:
   reply_prefix: ""                          # Empty string disables the header
   # reply_prefix: "🤖 *My Bot*\n──────\n"  # Custom prefix (supports \n for newlines)
   send_read_receipts: false                 # Mark accepted inbound messages as read (blue ticks)
+  outbound_mode: normal                     # "normal" or structural read-only "never"
 ```
 
 When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound messages as read after DM/group/mention filtering passes. Rejected messages (e.g., from non-allowlisted senders) are not marked read. Disabled by default for privacy. Changing this setting automatically restarts the bridge subprocess on the next connection.
+
+Set `outbound_mode: never` when WhatsApp should be an observation-only data source. Hermes continues to ingest allowed inbound messages, but rejects text, edits, media, polls, locations, typing indicators, and read receipts at both the Python adapter and the local bridge. The bridge exposes the active value as `outboundMode` from `GET /health`. The default, `normal`, preserves existing delivery behavior. Invalid values fail closed as `never`.
 
 ---
 

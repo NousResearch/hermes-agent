@@ -20,9 +20,22 @@ import {
   extractBridgeEvent,
   inboundReadReceiptKeys,
   mediaPayloadForFile,
+  normalizeOutboundMode,
+  outboundRequestAllowed,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
+
+// -- outbound policy ------------------------------------------------------
+{
+  assert.equal(normalizeOutboundMode(undefined), 'normal');
+  assert.equal(normalizeOutboundMode(' NEVER '), 'never');
+  assert.equal(normalizeOutboundMode('typo'), 'never');
+  assert.equal(outboundRequestAllowed('never', 'POST'), false);
+  assert.equal(outboundRequestAllowed('never', 'GET'), true);
+  assert.equal(outboundRequestAllowed('normal', 'POST'), true);
+  console.log('  ✓ outbound policy blocks writes while preserving inbound reads');
+}
 
 // -- inbound read receipts ------------------------------------------------
 {

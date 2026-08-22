@@ -13,6 +13,16 @@ export const MIME_MAP = {
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 };
 
+export function normalizeOutboundMode(value) {
+  const mode = String(value || 'normal').trim().toLowerCase();
+  return mode === 'normal' || mode === 'never' ? mode : 'never';
+}
+
+export function outboundRequestAllowed(mode, method) {
+  return normalizeOutboundMode(mode) !== 'never'
+    || String(method || '').toUpperCase() !== 'POST';
+}
+
 export function normalizeWhatsAppId(value) {
   if (!value) return '';
   return String(value).replace(':', '@');

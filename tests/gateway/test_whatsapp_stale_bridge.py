@@ -54,6 +54,7 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter._bridge_process = None
     adapter._reply_prefix = None
     adapter._send_read_receipts = False
+    adapter._outbound_mode = "normal"
     adapter._running = False
     adapter._message_handler = None
     adapter._fatal_error_code = None
@@ -134,6 +135,7 @@ class TestStaleBridgeHandshake:
                 "status": "connected",
                 "scriptHash": disk_hash,
                 "sendReadReceipts": False,
+                "outboundMode": "normal",
             }
         )
         mock_proc = MagicMock()
@@ -211,3 +213,4 @@ class TestCacheDirEnvPassthrough:
         assert env["HERMES_AUDIO_CACHE_DIR"] == str(get_audio_cache_dir())
         assert env["HERMES_DOCUMENT_CACHE_DIR"] == str(get_document_cache_dir())
         assert env["WHATSAPP_SEND_READ_RECEIPTS"] == "true"
+        assert env["WHATSAPP_OUTBOUND_MODE"] == "normal"

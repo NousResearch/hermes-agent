@@ -1812,6 +1812,16 @@ class MoAChatCompletions:
                 "MoA aggregator cache plan failed — sending undecorated "
                 "request (cache misses expected): %s", exc,
             )
+        # MoA calls aggregators through the auxiliary client, bypassing the
+        # normal chat-completions transport conversion.
+        if agg_runtime.get("api_mode") == "chat_completions":
+            transport = get_transport("chat_completions")
+            if transport is None:  # pragma: no cover - built-in transport
+                raise RuntimeError("chat_completions transport unavailable")
+            agg_messages = transport.convert_messages(
+                agg_messages,
+                model=agg_runtime.get("model"),
+            )
         # Record the exact aggregator INPUT (incl. the injected reference
         # context) into the pending trace so a trace captures what the
         # aggregator actually saw, not a reconstruction. Traces are a

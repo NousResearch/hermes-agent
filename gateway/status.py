@@ -1009,18 +1009,34 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     if not resolved_lock_path.exists():
         return False
 
+    # Passive liveness probe only: we open the lock solely to test whether some
+    # OTHER process holds the flock, then release immediately. On POSIX the probe
+    # never writes, so open read-only ("r"): opening "a+" (read-write) used to
+    # crash the whole gateway with PermissionError when the lock file was
+    # momentarily owned by a different user (e.g. a stray root-context start left
+    # a root-owned gateway.lock); the liveness check has no need for write access.
+    # On Windows, msvcrt.locking() in _try_acquire_file_lock() must byte-seed an
+    # empty lock (it writes "\n" before LK_NBLCK), so a read-only handle would
+    # raise on the empty-unlocked case and falsely report the lock active; open
+    # read-write there. The real owner still claims the lock read-write in
+    # acquire_gateway_runtime_lock().
+    _probe_mode = "a+" if _IS_WINDOWS else "r"
     try:
-        handle = open(resolved_lock_path, "a+", encoding="utf-8")
+        handle = open(resolved_lock_path, _probe_mode, encoding="utf-8")
     except PermissionError:
-        # Stale root-owned lock file from a previous launchd Background
-        # session that ran as root.  The parent directory owner can unlink
-        # files even when they don't own them, so remove the stale lock
-        # and report inactive — the new process will create a fresh one.
+        # Can't open it in the desired mode (alien-owned). On POSIX, fall back to
+        # a bytewise read-probe via os.open(O_RDONLY); if that also fails we
+        # conservatively report the lock as active (someone owns the file) so we
+        # don't spuriously declare the gateway dead and trigger a replace. On
+        # Windows we can't cheaply distinguish, so also report active.
+        if _IS_WINDOWS:
+            return True
         try:
-            resolved_lock_path.unlink()
+            fd = os.open(resolved_lock_path, os.O_RDONLY)
         except OSError:
-            pass
-        return False
+            return True
+        os.close(fd)
+        return True
     try:
         if _try_acquire_file_lock(handle):
             _release_file_lock(handle)

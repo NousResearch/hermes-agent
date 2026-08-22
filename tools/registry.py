@@ -1194,6 +1194,29 @@ class ToolRegistry:
         entry = self.get_entry(name)
         return entry.schema if entry else None
 
+    def schema_has_required(self, name: str) -> bool:
+        """Return True when the named tool's schema declares required params.
+
+        Unknown tools (no registered schema) return False, matching the
+        fail-open philosophy of ``validate_deferred_call_args``: a missing
+        schema must never block dispatch on a validator edge case.
+        """
+        try:
+            schema = self.get_schema(name)
+            if not isinstance(schema, dict):
+                return False
+            fn = schema.get("function") if schema.get("type") == "function" else schema
+            if not isinstance(fn, dict):
+                return False
+            params = fn.get("parameters")
+            if not isinstance(params, dict):
+                return False
+            required = params.get("required")
+            return isinstance(required, list) and bool(required)
+        except Exception:  # pragma: no cover — never block dispatch on registry bugs
+            return False
+
+
     def get_toolset_for_tool(self, name: str) -> Optional[str]:
         """Return the toolset a tool belongs to, or None."""
         entry = self.get_entry(name)

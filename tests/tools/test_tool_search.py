@@ -677,3 +677,83 @@ class TestDeferredCallSchemaProbe:
         ))
         assert result.get("ok") is True
         assert result.get("doc") == "abc"
+
+
+class TestRegression_EmptyStringArguments83937:
+    """Issue #83937: models behind OpenAI-compatible gateways emit
+    ``arguments: ""`` (empty string) for tools whose parameter schema has
+    no required fields. The execution boundary must treat that as ``{}``
+    instead of rejecting with "tool_call 'arguments' is not valid JSON"
+    — which made the agent retry the same malformed call forever.
+    Tools with required params must keep the strict JSON rejection.
+    """
+
+    @staticmethod
+    def _register(name, toolset, required=()):
+        from tools.registry import registry
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True, "args": args})
+
+        params = {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string", "description": "Doc id"},
+            },
+        }
+        if required:
+            params["required"] = list(required)
+        registry.register(
+            name=name,
+            handler=_handler,
+            schema={"type": "function",
+                    "function": {"name": name, "description": f"desc {name}",
+                                 "parameters": params}},
+            toolset=toolset,
+        )
+
+    def test_empty_arguments_accepted_for_tool_without_required(self):
+        from tools.tool_search import resolve_underlying_call
+
+        self._register("mcp_empty_ok_83937", "mcp-empty-83937")
+        name, args, err = resolve_underlying_call({
+            "name": "mcp_empty_ok_83937",
+            "arguments": "",
+        })
+        assert err is None
+        assert name == "mcp_empty_ok_83937"
+        assert args == {}
+
+    def test_whitespace_arguments_accepted_for_tool_without_required(self):
+        from tools.tool_search import resolve_underlying_call
+
+        self._register("mcp_empty_ws_83937", "mcp-empty-83937")
+        name, args, err = resolve_underlying_call({
+            "name": "mcp_empty_ws_83937",
+            "arguments": "   ",
+        })
+        assert err is None
+        assert args == {}
+
+    def test_empty_arguments_still_rejected_for_tool_with_required(self):
+        from tools.tool_search import resolve_underlying_call
+
+        self._register("mcp_empty_req_83937", "mcp-empty-83937", required=("document_id",))
+        name, args, err = resolve_underlying_call({
+            "name": "mcp_empty_req_83937",
+            "arguments": "",
+        })
+        assert err is not None
+        assert "not valid JSON" in err
+
+    def test_empty_object_arguments_unchanged(self):
+        from tools.tool_search import resolve_underlying_call
+
+        self._register("mcp_empty_obj_83937", "mcp-empty-83937")
+        name, args, err = resolve_underlying_call({
+            "name": "mcp_empty_obj_83937",
+            "arguments": "{}",
+        })
+        assert err is None
+        assert args == {}
+

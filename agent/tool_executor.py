@@ -161,8 +161,26 @@ class _BatchAbandoned(BaseException):
     """
 
 
-def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
+def _parse_tool_arguments(
+    raw_arguments: Any, tool_name: Optional[str] = None
+) -> tuple[dict, Optional[str]]:
     """Parse model-emitted arguments without repairing or coercing them."""
+    # Issue #83937: models behind OpenAI-compatible gateways emit "" instead
+    # of "{}" for tools whose schema has no required params. Normalize
+    # empty/whitespace-only arguments to {} for such tools so the call
+    # executes instead of looping on a JSON parse error; tools with required
+    # params (and tools we cannot identify) keep the strict rejection below.
+    if (
+        isinstance(raw_arguments, str)
+        and not raw_arguments.strip()
+        and tool_name is not None
+    ):
+        try:
+            from tools.registry import registry as _registry
+            if not _registry.schema_has_required(tool_name):
+                return {}, None
+        except Exception:  # pragma: no cover — never block dispatch on registry bugs
+            pass
     try:
         arguments = json.loads(raw_arguments)
     except (json.JSONDecodeError, TypeError):
@@ -1124,7 +1142,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         function_name = tool_call.function.name
 
         function_args, malformed_args_result = _parse_tool_arguments(
-            tool_call.function.arguments
+            tool_call.function.arguments,
+            tool_call.function.name,
         )
 
         if malformed_args_result is not None:
@@ -1973,7 +1992,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         function_name = tool_call.function.name
 
         function_args, malformed_args_result = _parse_tool_arguments(
-            tool_call.function.arguments
+            tool_call.function.arguments,
+            tool_call.function.name,
         )
         if malformed_args_result is not None:
             _emit_terminal_post_tool_call(

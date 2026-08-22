@@ -31,6 +31,12 @@ from tools.mcp_tool import _ENV_VAR_PATTERN, _env_ref_name
 logger = logging.getLogger(__name__)
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CREDENTIAL_ENV_KEY_RE = re.compile(
+    r"(?:^|_)(?:API[_-]?KEY|APIKEY|TOKEN|SECRET|PASSWORD|PASSWD|"
+    r"CREDENTIALS?|AUTH|AUTHORIZATION|PRIVATE[_-]?KEY|ACCESS[_-]?KEY)"
+    r"(?:_|$)",
+    re.IGNORECASE,
+)
 
 
 _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
@@ -769,6 +775,11 @@ def cmd_mcp_test(args):
     # Show auth info (masked)
     auth_type = cfg.get("auth", "")
     headers = cfg.get("headers", {})
+    credential_env_keys = sorted(
+        key
+        for key in (cfg.get("env") or {})
+        if isinstance(key, str) and _CREDENTIAL_ENV_KEY_RE.search(key)
+    )
     if auth_type == "oauth":
         _info("Auth: OAuth 2.1 PKCE")
     elif headers:
@@ -781,6 +792,8 @@ def cmd_mcp_test(args):
                 else:
                     masked = "***"
                 print(f"    {k}: {masked}")
+    elif credential_env_keys:
+        _info(f"Auth: stdio env ({', '.join(credential_env_keys)})")
     else:
         _info("Auth: none")
 

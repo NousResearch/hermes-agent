@@ -500,10 +500,17 @@ def _scan_gateway_pids(
     a live gateway when the PID file is stale/missing, and ``--all`` sweeps can
     discover gateways outside the current profile.
     """
-    # Exclude the entire ancestor chain so the CLI process that invoked this
-    # scan (e.g. ``hermes gateway status``) is never mistaken for a running
-    # gateway.  See #13242.
-    exclude_pids = exclude_pids | _get_ancestor_pids()
+    # Ancestors are suppressed so the CLI process that invoked this scan (e.g.
+    # ``hermes gateway status``) is never mistaken for a running gateway (see
+    # #13242) -- but NOT unconditionally. ``hermes update --gateway`` is
+    # spawned BY the gateway when ``/update`` is issued from a messaging
+    # platform, which puts a real ``gateway run`` in our own ancestor chain.
+    # Excluding it hid the gateway from the update pause machinery, so the
+    # update never paused it and then aborted on the venv-holder guard with
+    # "Other Hermes processes are running from this install's venv" (#87594).
+    # Held separately from ``exclude_pids`` (which the CALLER owns and means
+    # unconditionally) and consulted with the command line in hand below.
+    ancestor_pids = _get_ancestor_pids()
     pids: list[int] = []
     # Strict command-line matcher shared with gateway.status: requires the
     # actual ``gateway run`` subcommand (or the dedicated entrypoints), so this
@@ -551,6 +558,20 @@ def _scan_gateway_pids(
         if looks_like_gateway_command_line(command):
             return True
         return include_restart_managers and looks_like_gateway_runtime_command_line(command)
+
+    def _suppressed_as_ancestor(pid: int, command: str) -> bool:
+        """True when ``pid`` is our own ancestor and is not a gateway runtime.
+
+        The #13242 exclusion exists to keep the invoking CLI (``hermes gateway
+        status``, ``hermes update``) from being counted as a gateway. Those
+        command lines are not gateway runtimes, so gating the exclusion on the
+        matcher preserves that intent exactly while leaving a real ``gateway
+        run`` parent visible -- which is what the update pause path needs when
+        the gateway is the process that spawned it.
+        """
+        if pid not in ancestor_pids:
+            return False
+        return not looks_like_gateway_runtime_command_line(command)
 
     try:
         if is_windows():
@@ -620,9 +641,13 @@ def _scan_gateway_pids(
                         all_profiles or _matches_current_profile(current_cmd)
                     ):
                         try:
-                            _append_unique_pid(pids, int(pid_str), exclude_pids)
+                            scanned_pid = int(pid_str)
                         except ValueError:
-                            pass
+                            scanned_pid = None
+                        if scanned_pid is not None and not _suppressed_as_ancestor(
+                            scanned_pid, current_cmd
+                        ):
+                            _append_unique_pid(pids, scanned_pid, exclude_pids)
                     current_cmd = ""
         else:
             # Try /proc first (works in Docker without procps installed),
@@ -641,8 +666,10 @@ def _scan_gateway_pids(
                             with open(f"/proc/{pid}/cmdline", "rb") as _f:
                                 cmdline = _f.read().decode("utf-8", errors="replace")
                             cmdline = cmdline.replace("\x00", " ")
-                            if _matches_gateway_runtime(cmdline) and (
-                                all_profiles or _matches_current_profile(cmdline)
+                            if (
+                                _matches_gateway_runtime(cmdline)
+                                and (all_profiles or _matches_current_profile(cmdline))
+                                and not _suppressed_as_ancestor(pid, cmdline)
                             ):
                                 _append_unique_pid(pids, pid, exclude_pids)
                         except (OSError, PermissionError):
@@ -690,8 +717,10 @@ def _scan_gateway_pids(
 
                     if pid is None:
                         continue
-                    if _matches_gateway_runtime(command) and (
-                        all_profiles or _matches_current_profile(command)
+                    if (
+                        _matches_gateway_runtime(command)
+                        and (all_profiles or _matches_current_profile(command))
+                        and not _suppressed_as_ancestor(pid, command)
                     ):
                         _append_unique_pid(pids, pid, exclude_pids)
     except (OSError, subprocess.TimeoutExpired):

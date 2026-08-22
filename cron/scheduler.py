@@ -4185,19 +4185,42 @@ def _run_job_script_with_claim_heartbeat(
         heartbeat_thread.join(timeout=1.0)
 
 
-def _parse_wake_gate(script_output: str) -> bool:
-    """Parse the last non-empty stdout line of a cron job's pre-check script
-    as a wake gate.
+def _stdout_signals_no_work(script_output: str) -> bool:
+    """True when stdout begin-line is an OpenClaw-compatible ``NO_WORK`` gate.
 
-    The convention (ported from nanoclaw #1232): if the last stdout line is
-    JSON like ``{"wakeAgent": false}``, the agent is skipped entirely — no
-    LLM run, no delivery. Any other output (non-JSON, missing flag, gate
-    absent, or ``wakeAgent: true``) means wake the agent normally.
+    Shared wake-gate convention with OpenClaw ``job.precheck`` (openclaw#112371
+    / hermes#68809) so the same check script can gate a cron job on either
+    runtime.
+
+    The token boundary is exact: the (leading-whitespace-stripped) begin-line
+    must be exactly ``NO_WORK`` or start ``NO_WORK:`` (an optional
+    ``NO_WORK: reason`` form). Longer identifiers such as ``NO_WORKING`` or
+    ``NO_WORK_TODAY`` are NOT treated as the gate token.
+    """
+    if not script_output:
+        return False
+    begin_line = script_output.lstrip().split("\n", 1)[0].rstrip()
+    return begin_line == "NO_WORK" or begin_line.startswith("NO_WORK:")
+
+
+def _parse_wake_gate(script_output: str) -> bool:
+    """Parse a cron pre-check script's stdout as a wake gate.
+
+    Skip the agent (return False) when either:
+
+    * the stdout begin-line is an OpenClaw-compatible ``NO_WORK`` token
+      (hermes#68809), or
+    * the last non-empty line is JSON ``{"wakeAgent": false}`` (nanoclaw #1232).
+
+    Any other output (non-JSON, missing flag, gate absent, or
+    ``wakeAgent: true``) means wake the agent normally.
 
     Returns True if the agent should wake, False to skip.
     """
     if not script_output:
         return True
+    if _stdout_signals_no_work(script_output):
+        return False
     stripped_lines = [line for line in script_output.splitlines() if line.strip()]
     if not stripped_lines:
         return True
@@ -5081,6 +5104,14 @@ def run_job(
     #   - wakeAgent=false gate    → treated like empty stdout (silent), since
     #                               the whole point of no_agent is that there
     #                               is no agent to wake
+    #   - NO_WORK begin-line gate → same as wakeAgent=false: silent run. A
+    #                               no_agent watchdog with nothing to report
+    #                               emits the shared NO_WORK token
+    #                               (openclaw#112371 / hermes#68809) instead
+    #                               of empty stdout, so it is suppressed here
+    #                               too. This intentionally means a no_agent
+    #                               job whose begin-line is the NO_WORK gate
+    #                               is NOT delivered verbatim.
     if job.get("no_agent"):
         # Load .env before the script runs so auto-delivery can resolve home
         # channels. A standalone cron tick process typically starts WITHOUT
@@ -5147,11 +5178,12 @@ def run_job(
             )
             return False, doc, alert, output
 
-        # Honour the wakeAgent gate as a silent signal — `wakeAgent: false`
-        # means "nothing to report this tick", same as empty stdout.
+        # Honour the wake gate as a silent signal — either `wakeAgent: false`
+        # JSON or a leading `NO_WORK` token means "nothing to report this
+        # tick", same as empty stdout.
         if not _parse_wake_gate(output):
             logger.info(
-                "Job '%s' (no_agent): wakeAgent=false gate — silent run", job_id
+                "Job '%s' (no_agent): wake gate not set — silent run", job_id
             )
             silent_doc = (
                 f"# Cron Job: {job_name}\n\n"

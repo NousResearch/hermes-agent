@@ -66,6 +66,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     escape_like as _escape_like,
     DEFERRED_INDEX_SQL,
     FTS_CJK_STALE_KEY,
+    FTS_INTEGRITY_ENGINE_KEY,
     FTS_SQL,
     FTS_STALE_KEY,
     FTS_STORAGE_VERSION,

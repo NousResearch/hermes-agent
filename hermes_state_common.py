@@ -710,6 +710,16 @@ FTS_CJK_STALE_KEY = "fts_cjk_stale"
 FTS_STALE_KEY = "fts_stale"
 
 
+# state_meta key holding the sqlite3.sqlite_version that last passed the
+# FTS5 'integrity-check' sweep at open. An index written by one SQLite
+# engine can be unreadable by another (the trigram tokenizer's handling of
+# embedded NUL changed across engines, so MATCH and trigger writes succeed
+# while DELETE fails with "malformed inverted index", #86027). The open-time
+# gate therefore re-verifies — and 'rebuild'-repairs — the FTS tables once
+# per ENGINE VERSION instead of on every open.
+FTS_INTEGRITY_ENGINE_KEY = "fts_integrity_engine"
+
+
 # ── Legacy (v22 / inline-content) FTS DDL ──────────────────────────────
 # Used ONLY to keep an existing pre-v23 install's search working and its
 # triggers repairable UNTIL the user opts into `hermes db optimize`. This is

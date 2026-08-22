@@ -35,6 +35,7 @@ class TurnContext:
 
     # --- read-only turn identity / wiring -------------------------------
     source: Any = None
+    routing_identity: Any = None
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]
     _live_status_adapter: Any = None
     _live_status_mode: str = "off"
@@ -143,3 +144,9 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+
+    def __post_init__(self) -> None:
+        if self.routing_identity is None:
+            from gateway.routing_identity import current_routing_identity
+
+            self.routing_identity = current_routing_identity()

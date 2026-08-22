@@ -1,0 +1,93 @@
+name: Complete #89252 claimant-generation proof
+
+on:
+  push:
+    branches:
+      - fix/88715-canonical-multiplex-identity
+
+permissions:
+  contents: write
+
+concurrency:
+  group: complete-89252-claim-proof
+  cancel-in-progress: false
+
+jobs:
+  complete:
+    if: github.repository == 'andrexibiza/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact feature branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: fix/88715-canonical-multiplex-identity
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: '0.9.28'
+
+      - name: Recover the prepared implementation from the exact malformed carrier
+        run: |
+          set -euo pipefail
+          git show caa2b08bcc6e7abe56736fdada36738e01f18557:.github/workflows/complete-89252-claim-proof.yml > /tmp/original-89252-carrier.yml
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lines = Path('/tmp/original-89252-carrier.yml').read_text(encoding='utf-8').splitlines()
+          start = next(index for index, line in enumerate(lines) if line.strip() == "python3 - <<'PY'")
+          end = next(index for index in range(start + 1, len(lines)) if lines[index] == '          PY')
+
+          recovered: list[str] = []
+          active_triple: str | None = None
+          for raw in lines[start + 1:end]:
+              if active_triple is None:
+                  line = raw[10:] if raw.startswith('          ') else raw
+                  recovered.append(line)
+                  openings = [
+                      (line.index(delimiter), delimiter)
+                      for delimiter in ("'''", '\"\"\"')
+                      if line.count(delimiter) % 2
+                  ]
+                  if openings:
+                      active_triple = min(openings)[1]
+                  continue
+
+              if raw.count(active_triple) % 2:
+                  line = raw[10:] if raw.startswith('          ') else raw
+                  recovered.append(line)
+                  active_triple = None
+              else:
+                  recovered.append(raw)
+
+          if active_triple is not None:
+              raise SystemExit(f'unclosed recovered string literal: {active_triple}')
+          script = '\n'.join(recovered) + '\n'
+          compile(script, '<recovered-89252-claim-proof>', 'exec')
+          Path('/tmp/apply-89252-claim-proof.py').write_text(script, encoding='utf-8')
+          PY
+          python3 /tmp/apply-89252-claim-proof.py
+          rm -f .github/workflows/complete-89252-claim-proof.yml
+          git diff --check
+
+      - name: Verify focused production and lifecycle contracts
+        run: |
+          set -euo pipefail
+          uv run --with ruff==0.15.10 ruff check --fix gateway/routing_identity.py tests/gateway/test_routing_identity.py tests/gateway/test_transport_claim_generation.py
+          uv run --with ruff==0.15.10 ruff format gateway/routing_identity.py tests/gateway/test_routing_identity.py tests/gateway/test_transport_claim_generation.py
+          python -m py_compile gateway/routing_identity.py
+          uv run --with pytest==9.1.1 --with pytest-asyncio pytest -q tests/gateway/test_routing_identity.py tests/gateway/test_transport_claim_generation.py tests/ci/test_live_comment.py
+          git diff --check
+
+      - name: Publish the verified architecture completion
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add gateway/routing_identity.py tests/gateway/test_routing_identity.py tests/gateway/test_transport_claim_generation.py .github/workflows/complete-89252-claim-proof.yml
+          git commit -m 'fix(gateway): require current transport claimant proof' \
+            -m 'Persist a non-secret claim digest, retain live adapter object generation as process-local proof, reject stale or duplicate claimants, and allow restart recovery only through one unique current credential owner.' \
+            -m 'Refs #88715' -m 'Refs #88734'
+          git push origin HEAD:fix/88715-canonical-multiplex-identity

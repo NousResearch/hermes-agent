@@ -1,0 +1,279 @@
+name: Build #89252 verified claimant-generation tree
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-89252-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build-verified-tree:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'andrexibiza/hermes-agent' &&
+      github.event.pull_request.head.ref == 'fix/88715-canonical-multiplex-identity'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install locked test environment
+        run: >-
+          uv sync --locked --python 3.11 --extra all --extra dev
+          --extra anthropic --extra mistral --extra fal --extra modal
+          --extra daytona --extra hindsight --extra parallel-web
+
+      - name: Materialize exact claimant and generation contract
+        env:
+          CURRENT_MAIN: b6bcb3e791c673e63974029bbab40cc9326803ff
+          BRANCH: fix/88715-canonical-multiplex-identity
+          CARRIER: .github/workflows/one-shot-fix-89252.yml
+          FORK_REPOSITORY: andrexibiza/hermes-agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$CARRIER"
+          TRIGGER_HEAD=$(git rev-parse HEAD)
+          export CURRENT_MAIN BRANCH TRIGGER_HEAD
+
+          mkdir -p /tmp/hermes-tools
+          REAL_GIT=$(command -v git)
+          cat > /tmp/hermes-tools/git <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          args=("\$@")
+          if [[ \${args[0]:-} == push ]]; then
+            echo '[verified-tree] blocked carrier push' >&2
+            exit 0
+          fi
+          for i in "\${!args[@]}"; do
+            if [[ \${args[\$i]} == origin ]]; then
+              args[\$i]=https://github.com/${FORK_REPOSITORY}.git
+            fi
+          done
+          exec "$REAL_GIT" "\${args[@]}"
+          EOF
+          chmod +x /tmp/hermes-tools/git
+          export PATH="/tmp/hermes-tools:$PATH"
+
+          cp "$CARRIER" /tmp/carrier.yml
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lines = Path('/tmp/carrier.yml').read_text().splitlines()
+          starts = [i for i, line in enumerate(lines) if line.strip() == 'run: |']
+          if not starts:
+              raise SystemExit('carrier has no literal run block')
+          for number, start in enumerate(starts):
+              key_indent = len(lines[start]) - len(lines[start].lstrip())
+              prefix = ' ' * (key_indent + 2)
+              end = len(lines)
+              for index in range(start + 1, len(lines)):
+                  line = lines[index]
+                  stripped = line.lstrip()
+                  indent = len(line) - len(stripped)
+                  if indent == 6 and stripped.startswith('- '):
+                      end = index
+                      break
+              body = [
+                  line[len(prefix):] if line.startswith(prefix) else line
+                  for line in lines[start + 1:end]
+              ]
+              while body and not body[-1].strip():
+                  body.pop()
+              if not body:
+                  raise SystemExit(f'empty carrier run block {number}')
+              Path(f'/tmp/carrier-{number}.sh').write_text('\n'.join(body) + '\n')
+          PY
+
+          for script in /tmp/carrier-*.sh; do
+            bash -n "$script"
+            bash "$script"
+          done
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          base = Path('gateway/platforms/base.py')
+          text = base.read_text(encoding='utf-8')
+          import_line = 'from gateway.routing_identity import routing_identity_adapter_entrypoint\n'
+          if import_line not in text:
+              marker = 'from utils import normalize_proxy_url\n'
+              if marker not in text:
+                  raise SystemExit('base.py import anchor missing')
+              text = text.replace(marker, import_line + marker, 1)
+
+          decorator = '    @routing_identity_adapter_entrypoint\n'
+          if decorator not in text:
+              pattern = re.compile(
+                  r'(?m)^(    async def handle_message\(self, event: MessageEvent\)[^\n]*\n)'
+              )
+              match = pattern.search(text)
+              if match is None:
+                  raise SystemExit('BasePlatformAdapter.handle_message anchor missing')
+              text = text[:match.start()] + decorator + text[match.start():]
+          base.write_text(text, encoding='utf-8')
+
+          claim_tests = Path('tests/gateway/test_transport_claim_generation.py')
+          text = claim_tests.read_text(encoding='utf-8')
+          if 'from gateway.platforms.base import BasePlatformAdapter\n' not in text:
+              text = text.replace(
+                  'import pytest\n\n',
+                  'import pytest\n\nfrom gateway.platforms.base import BasePlatformAdapter\n',
+                  1,
+              )
+          text = text.replace('    routing_identity_adapter_entrypoint,\n', '')
+          start_marker = '@pytest.mark.asyncio\nasync def test_adapter_entrypoint_rejects_duplicate_before_handler_state():'
+          end_marker = '\n\ndef test_current_claim_owner_mismatch_is_conflict():'
+          if start_marker in text:
+              start = text.index(start_marker)
+              end = text.index(end_marker, start)
+              replacement = '''@pytest.mark.asyncio
+async def test_base_adapter_rejects_duplicate_before_stateful_ingress():
+    primary = Adapter("shared-token")
+    secondary = Adapter("shared-token")
+    Runner(primary, secondaries={"reviewer": {"discord": secondary}})
+    source = live_source(primary)
+    event = SimpleNamespace(source=source)
+
+    assert await BasePlatformAdapter.handle_message(primary, event) is None
+    assert source.profile_route_rejected is True
+'''
+              text = text[:start] + replacement.rstrip() + text[end:]
+          elif 'test_base_adapter_rejects_duplicate_before_stateful_ingress' not in text:
+              raise SystemExit('claim-generation test anchor missing')
+          claim_tests.write_text(text, encoding='utf-8')
+
+          integration = Path('tests/gateway/test_multiplex_routing_identity_contract.py')
+          text = integration.read_text(encoding='utf-8')
+          stale = '''    The adapter-local decorator that previously stamped identity inside
+    ``BasePlatformAdapter.handle_message`` is superseded on main (#89860
+    resolves adapter ownership at keying time via set_owner_profile/
+    _session_key_profile).  The routing-identity half that remains scopes
+    the shared gateway ingress instead — exercised here through the real
+    decorated wrapper with the same minimal runner fixture.
+'''
+          current = '''    The adapter-local gate and runner gate are deliberately layered.  The
+    adapter gate proves the live credential claimant/generation before topic
+    recovery or session-key state can be touched; the runner gate then scopes
+    the resolved identity across shared gateway ingress.  #89860 supplies the
+    owner-profile seam but does not by itself prove current credential custody.
+'''
+          if stale in text:
+              text = text.replace(stale, current, 1)
+          elif current not in text:
+              raise SystemExit('integration-contract rationale anchor missing')
+          integration.write_text(text, encoding='utf-8')
+          PY
+
+          uv run --no-sync ruff check --fix \
+            gateway/routing_identity.py \
+            gateway/platforms/base.py \
+            tests/gateway/test_routing_identity.py \
+            tests/gateway/test_transport_claim_generation.py \
+            tests/gateway/test_multiplex_routing_identity_contract.py
+          uv run --no-sync ruff format \
+            gateway/routing_identity.py \
+            gateway/platforms/base.py \
+            tests/gateway/test_routing_identity.py \
+            tests/gateway/test_transport_claim_generation.py \
+            tests/gateway/test_multiplex_routing_identity_contract.py
+          python -m py_compile gateway/routing_identity.py gateway/platforms/base.py
+          uv run --no-sync pytest -q \
+            tests/gateway/test_routing_identity.py \
+            tests/gateway/test_transport_claim_generation.py \
+            tests/gateway/test_multiplex_routing_identity_contract.py
+          git diff --check
+          git add \
+            gateway/routing_identity.py \
+            gateway/platforms/base.py \
+            tests/gateway/test_routing_identity.py \
+            tests/gateway/test_transport_claim_generation.py \
+            tests/gateway/test_multiplex_routing_identity_contract.py
+          git commit --amend --no-edit
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import io
+          import json
+          import subprocess
+          import tarfile
+
+          base = 'b6bcb3e791c673e63974029bbab40cc9326803ff'
+          raw = subprocess.check_output(
+              ['git', 'diff', '--name-status', base, 'HEAD'], text=True
+          )
+          entries = []
+          for line in raw.splitlines():
+              if not line.strip():
+                  continue
+              status, path = line.split('\t', 1)
+              if path.startswith('.github/workflows/'):
+                  continue
+              if path.startswith('contributors/emails/'):
+                  continue
+              if path.startswith('tests/e2e/test__authority_repair_materializer.py'):
+                  continue
+              entries.append((status, path))
+          if not entries:
+              raise SystemExit('materialized product diff is empty')
+
+          manifest = {
+              'base': base,
+              'carrier_source_head': '${{ github.event.pull_request.head.sha }}',
+              'entries': entries,
+              'materialized_head': subprocess.check_output(
+                  ['git', 'rev-parse', 'HEAD'], text=True
+              ).strip(),
+          }
+          output = Path('/tmp/verified-tree.tar.gz')
+          with tarfile.open(output, 'w:gz') as archive:
+              data = json.dumps(manifest, sort_keys=True).encode()
+              info = tarfile.TarInfo('MANIFEST.json')
+              info.size = len(data)
+              info.mode = 0o644
+              archive.addfile(info, io.BytesIO(data))
+              for status, path in entries:
+                  if not status.startswith('D'):
+                      archive.add(path, arcname=path, recursive=False)
+          digest = hashlib.sha256(output.read_bytes()).hexdigest()
+          Path('/tmp/verified-tree.sha256').write_text(
+              f'{digest}  verified-tree.tar.gz\n'
+          )
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          print(f'verified_tree_sha256={digest}')
+          PY
+
+      - name: Upload exact tested tree
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr-89252-verified-tree
+          path: |
+            /tmp/verified-tree.tar.gz
+            /tmp/verified-tree.sha256
+          retention-days: 1
+          if-no-files-found: error

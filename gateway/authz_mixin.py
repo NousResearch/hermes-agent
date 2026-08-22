@@ -107,14 +107,18 @@ class GatewayAuthorizationMixin:
             return None
         profile_name = (profile or "").strip() or None
         if profile_name and profile_name != "default":
-            active_profile = None
-            active_profile_fn = getattr(self, "_active_profile_name", None)
-            if callable(active_profile_fn):
-                try:
-                    active_profile = active_profile_fn()
-                except Exception:
-                    active_profile = None
-            if profile_name == active_profile:
+            # Runtime scopes are task-local; adapter ownership is process-wide.
+            # A secondary turn must not make itself look like the primary
+            # credential owner merely because its profile scope is active.
+            primary_profile = getattr(self, "_primary_profile_name", None)
+            if not primary_profile:
+                active_profile_fn = getattr(self, "_active_profile_name", None)
+                if callable(active_profile_fn):
+                    try:
+                        primary_profile = active_profile_fn()
+                    except Exception:
+                        primary_profile = None
+            if profile_name == primary_profile:
                 adapters = getattr(self, "adapters", None) or {}
                 return adapters.get(platform)
             profile_adapters = getattr(self, "_profile_adapters", None) or {}
@@ -149,9 +153,17 @@ class GatewayAuthorizationMixin:
             return adapters.get(Platform.RELAY)
         # ``getattr`` guards test fixtures that build a bare source via
         # SimpleNamespace and omit ``profile`` (see AGENTS.md pitfall #17).
+        transport_profile = getattr(source, "_transport_profile", None)
+        if not isinstance(transport_profile, str) or not transport_profile.strip():
+            transport_profile = None
+            carried = getattr(source, "routing_identity", None)
+            if isinstance(carried, dict):
+                carried_tp = carried.get("transport_profile")
+                if isinstance(carried_tp, str) and carried_tp.strip():
+                    transport_profile = carried_tp
         return self._authorization_adapter(
             getattr(source, "platform", None),
-            getattr(source, "profile", None),
+            transport_profile or getattr(source, "profile", None),
         )
 
     def _registered_transport_adapter(self, source: SessionSource):
@@ -189,7 +201,15 @@ class GatewayAuthorizationMixin:
             ).items():
                 if adapter is profile_adapters.get(platform):
                     return profile
-        return getattr(source, "profile", None)
+        transport_profile = getattr(source, "_transport_profile", None)
+        if not isinstance(transport_profile, str) or not transport_profile.strip():
+            transport_profile = None
+            carried = getattr(source, "routing_identity", None)
+            if isinstance(carried, dict):
+                carried_tp = carried.get("transport_profile")
+                if isinstance(carried_tp, str) and carried_tp.strip():
+                    transport_profile = carried_tp
+        return transport_profile or getattr(source, "profile", None)
 
     def _adapter_authorization_is_upstream(
         self,

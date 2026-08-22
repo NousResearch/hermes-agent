@@ -94,6 +94,11 @@ from .whatsapp_identity import (
     canonical_whatsapp_identifier,
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
+from .routing_identity import (
+    RoutingIdentity,
+    persistence_payload_for_source,
+    restore_identity_on_source,
+)
 from utils import atomic_replace
 from agent.turn_context import extract_api_content_sidecar
 
@@ -185,6 +190,11 @@ class SessionSource:
     # Transport-local fail-closed signal for an explicit profile route whose
     # target is not served. Excluded from repr/equality and wire serialization.
     profile_route_rejected: bool = field(default=False, repr=False, compare=False)
+    # Trusted local carrier. dataclasses.replace preserves it, but
+    # SessionSource.to_dict deliberately keeps it off the relay wire.
+    routing_identity: Optional[Dict[str, str]] = field(
+        default=None, repr=False, compare=False
+    )
 
     # Discord auto-thread metadata.  Newly auto-created Discord threads start
     # with a fast placeholder title from the raw message, then the gateway can
@@ -787,6 +797,9 @@ class SessionEntry:
     
     # Origin metadata for delivery routing
     origin: Optional[SessionSource] = None
+    # Trusted credential/runtime/persistence ownership. This lives in
+    # the routing index, not SessionSource's wire representation.
+    routing_identity: Optional[Dict[str, str]] = None
     
     # Display metadata
     display_name: Optional[str] = None
@@ -871,6 +884,21 @@ class SessionEntry:
     # (see sanitize_model_override / SessionStore.set_model_override).
     model_override: Optional[Dict[str, str]] = None
 
+    def __post_init__(self) -> None:
+        if self.routing_identity:
+            identity = RoutingIdentity.from_persistence_dict(
+                self.routing_identity
+            )
+            self.routing_identity = identity.to_persistence_dict()
+            if self.origin is not None:
+                restore_identity_on_source(
+                    self.origin, self.routing_identity
+                )
+        elif self.origin is not None:
+            self.routing_identity = persistence_payload_for_source(
+                self.origin
+            )
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -910,6 +938,8 @@ class SessionEntry:
             "reset_had_activity": self.reset_had_activity,
             "prev_session_id": self.prev_session_id,
         }
+        if self.routing_identity:
+            result["routing_identity"] = dict(self.routing_identity)
         if self.model_override:
             # Defence-in-depth: strip credentials even if a caller stored an
             # unsanitized dict directly on the entry.
@@ -1002,6 +1032,7 @@ class SessionEntry:
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
             prev_session_id=data.get("prev_session_id"),
+            routing_identity=data.get("routing_identity"),
             model_override=sanitize_model_override(data.get("model_override")),
         )
 
@@ -1125,7 +1156,13 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
-    ns = _session_key_namespace(profile)
+    # Generic adapter/callback callers historically omitted profile= even
+    # after a route stamped source.profile. Honor that canonical runtime
+    # owner instead of silently collapsing back into agent:main.
+    resolved_profile = profile
+    if resolved_profile is None:
+        resolved_profile = getattr(source, "profile", None)
+    ns = _session_key_namespace(resolved_profile)
     platform = source.platform.value
     slack_scope_id = (
         str(source.scope_id)

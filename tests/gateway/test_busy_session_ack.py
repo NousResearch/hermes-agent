@@ -45,6 +45,12 @@ def _make_event(text="hello", chat_id="123", platform_val="telegram"):
         chat_type="private",
         user_id="user1",
     )
+    # The multiplex runner's fail-closed ingress requires a trusted
+    # transport/persistence binding on a source to treat it as a proven
+    # routed message; stamp the default-profile binding (what the adapter's
+    # build_source would attach in real operation).
+    source._transport_profile = "default"
+    source._persistence_profile = "default"
     evt = MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
@@ -69,6 +75,7 @@ def _make_runner():
     runner.config = MagicMock()
     runner.config.group_sessions_per_user = True
     runner.config.thread_sessions_per_user = False
+    runner.config.multiplex_profiles = False
     runner.session_store = None
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()

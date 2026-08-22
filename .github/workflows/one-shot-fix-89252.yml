@@ -1,0 +1,64 @@
+name: One-shot current transport claimant proof
+
+on:
+  push:
+    branches:
+      - fix/88715-canonical-multiplex-identity
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: fix/88715-canonical-multiplex-identity
+          fetch-depth: 0
+
+      - name: Execute exact claimant carrier with literal heredoc recovery
+        run: |
+          set -euo pipefail
+          previous_carrier_commit=c533a377ab6b541b98e9c2cbd1582de279795300
+          carrier_path=.github/workflows/one-shot-fix-89252.yml
+
+          git fetch --no-tags origin "$previous_carrier_commit"
+          git show "$previous_carrier_commit:$carrier_path" > /tmp/previous-89252-carrier.yml
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('/tmp/previous-89252-carrier.yml').read_text()
+          lines = source.splitlines()
+          starts = [i for i, line in enumerate(lines) if line.strip() == 'run: |']
+          if len(starts) != 1:
+              raise SystemExit(f'expected one outer run block, found {len(starts)}')
+          start = starts[0]
+          key_indent = len(lines[start]) - len(lines[start].lstrip())
+          prefix = ' ' * (key_indent + 2)
+          body = [
+              line[len(prefix):] if line.startswith(prefix) else line
+              for line in lines[start + 1:]
+          ]
+          script = '\n'.join(body) + '\n'
+
+          old = '''for line in lines:
+              if line.startswith('          '):
+                  body.append(line[10:])
+              elif not line:
+                  body.append('')
+              else:
+                  raise SystemExit(f'unexpected carrier indentation: {line!r}')'''
+          new = '''for line in lines:
+              body.append(line[10:] if line.startswith('          ') else line)'''
+          if script.count(old) != 1:
+              raise SystemExit(f'claim extractor anchor drifted: {script.count(old)}')
+          script = script.replace(old, new, 1)
+          Path('/tmp/execute-89252.sh').write_text(script)
+          PY
+
+          bash -n /tmp/execute-89252.sh
+          bash /tmp/execute-89252.sh

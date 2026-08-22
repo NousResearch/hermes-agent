@@ -54,16 +54,26 @@ def _runner(*, default_mode: str = "interrupt") -> GatewayRunner:
 
 
 def _event(*, profile: str | None) -> MessageEvent:
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="chat-1",
+        chat_type="dm",
+        user_id="user-1",
+        profile=profile,
+    )
+    # A multiplex source that is handed to the runner's fail-closed ingress
+    # must carry a trusted transport/persistence binding to be treated as a
+    # proven routed message (what the adapter's build_source stamps in real
+    # operation). Sources with an explicit profile are bound here; a
+    # profile=None source is intentionally left unbound so the adapter can
+    # stamp its own runtime profile.
+    if profile is not None:
+        source._transport_profile = profile
+        source._persistence_profile = profile
     return MessageEvent(
         text="follow up",
         message_type=MessageType.TEXT,
-        source=SessionSource(
-            platform=Platform.TELEGRAM,
-            chat_id="chat-1",
-            chat_type="dm",
-            user_id="user-1",
-            profile=profile,
-        ),
+        source=source,
         message_id="message-1",
     )
 
@@ -91,7 +101,23 @@ async def _load_profile_snapshot(
     profile_home.mkdir()
     (profile_home / "config.yaml").write_text(display, encoding="utf-8")
 
-    assert await runner._start_one_profile_adapters("research", profile_home, {}) == 0
+    # Current main fail-fasts a secondary profile whose gateway config enables
+    # any port-binding platform (gateway/run.py _start_one_profile_adapters)
+    # because the default profile owns the shared HTTP listener.  The fixture
+    # config above only declares busy-mode display settings, so pin the
+    # gateway config to an empty platform set — same seam
+    # test_multiplex_adapter_registry.py patches — and let the real
+    # busy-mode snapshot path (_snapshot_profile_busy_modes) still read the
+    # file above.  Without this the guard raises SecondaryPortBindingConfigError
+    # before the snapshot is ever consulted.
+    with patch(
+        "gateway.config.load_gateway_config",
+        return_value=GatewayConfig(multiplex_profiles=True),
+    ):
+        assert (
+            await runner._start_one_profile_adapters("research", profile_home, {})
+            == 0
+        )
     adapter = _adapter()
     runner._profile_adapters["research"][Platform.TELEGRAM] = adapter
     runner._configure_profile_adapter(adapter, "research", Platform.TELEGRAM)

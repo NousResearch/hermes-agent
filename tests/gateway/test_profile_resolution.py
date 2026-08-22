@@ -305,8 +305,10 @@ class TestAdapterToSessionKeyIntegration:
 
         key = build_session_key(source, profile=source.profile)
         assert key.startswith("agent:coder:"), key
-        # A default-profile key would land in agent:main — must differ.
-        assert key != build_session_key(source, profile=None)
+        # Omitted profile= must not erase the route-stamped runtime owner
+        # (#88715): build_session_key falls back to source.profile, so both
+        # forms scope to agent:coder.
+        assert key == build_session_key(source, profile=None)
 
     @pytest.mark.asyncio
     async def test_adapter_drops_rejected_route_before_dispatch(self, mock_runner):

@@ -217,6 +217,31 @@ class TestEstimateRequestTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
+    def test_glm_5_3_uses_1m_fallback_without_provider_metadata(self):
+        """GLM-5.3 must not fall through to the legacy 202K GLM family."""
+        with patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            for model in ("glm-5.3", "z-ai/glm-5.3"):
+                assert get_model_context_length(model) == 1_048_576
+
+    def test_glm_5_3_discards_legacy_cached_family_fallback(self):
+        """A pre-catalog 202K cache entry must not mask GLM-5.3's 1M window."""
+        with patch(
+            "agent.model_metadata.get_cached_context_length", return_value=202_752
+        ), patch(
+            "agent.model_metadata._invalidate_cached_context_length"
+        ) as invalidate, patch(
+            "agent.model_metadata.fetch_endpoint_model_metadata", return_value={}
+        ), patch(
+            "agent.models_dev.lookup_models_dev_context", return_value=None
+        ):
+            assert get_model_context_length(
+                "glm-5.3",
+                provider="zai",
+                base_url="https://api.z.ai/api/paas/v4",
+            ) == 1_048_576
+
+        invalidate.assert_called_once()
+
     def test_nvidia_deepseek_v4_pro_context_is_endpoint_scoped(self):
         """NVIDIA's 262K NIM window must not lower DeepSeek V4 globally."""
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \

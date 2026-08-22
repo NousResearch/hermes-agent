@@ -2121,6 +2121,7 @@ def _model_name_suggests_minimax_m3(model: str) -> bool:
 # catch-all can never be listed here.
 _PRE_CATALOG_STALE_KEYS = frozenset({
     "minimax-m3",    # 1M; older builds persisted the "minimax" catch-all (204,800)
+    "glm-5.3",       # 1M; pre-catalog builds persisted the "glm" catch-all (202,752)
     "grok-4.3",      # 1M; pre-2026-05-15 builds persisted the "grok-4" catch-all (256,000)
     "grok-4.6",      # 500K; pre-catalog builds persisted the "grok-4" catch-all (256,000)
     "grok-4-fast",   # 2M; pre-2026-04-10 builds fell through to the 256K probe fallback

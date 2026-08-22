@@ -288,9 +288,10 @@ jobs:
           elif [ -n "${{ inputs.version }}" ]; then
             TAG="${{ inputs.version }}"
           else
-            TAG="$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name 2>/dev/null \
-              || gh api repos/${{ github.repository }}/tags --jq '.[0].name' \
-              || echo v0.0.0-ci)"
+            TAG="$(gh api repos/${{ github.repository }}/releases/latest --jq '.tag_name' 2>/dev/null || true)"
+            if [ -z "$TAG" ]; then
+              TAG="$(gh api repos/${{ github.repository }}/tags --jq '.[0].name' || echo v0.0.0-ci)"
+            fi
           fi
           echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
           echo "Uploading artifacts to release $TAG"

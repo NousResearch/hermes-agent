@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url, url_origin
+from tools.http_tools import retryable_get
 from utils import atomic_json_write, base_url_host_matches
 
 logger = logging.getLogger(__name__)
@@ -2041,7 +2042,10 @@ def fetch_openrouter_models(
             _OPENROUTER_CATALOG_URL,
             headers={"Accept": "application/json"},
         )
-        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+        with retryable_get(
+            lambda: _urlopen_model_catalog_request(req, timeout=timeout),
+            logger_extra={"url": req.full_url},
+        ) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
         return list(_openrouter_catalog_cache or fallback)

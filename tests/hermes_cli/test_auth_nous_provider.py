@@ -853,6 +853,65 @@ def test_refresh_token_exchange_sends_refresh_token_header():
     }
 
 
+def test_refresh_token_exchange_does_not_retry_ambiguous_timeout():
+    """A timeout may occur after the portal consumes the single-use token."""
+    from hermes_cli.auth import _refresh_access_token
+
+    class _FakeClient:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, *args, **kwargs):
+            self.calls += 1
+            raise httpx.ReadTimeout("refresh outcome is unknown")
+
+    client = _FakeClient()
+
+    with pytest.raises(httpx.ReadTimeout, match="outcome is unknown"):
+        _refresh_access_token(
+            client=client,
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            refresh_token="refresh-1",
+        )
+
+    assert client.calls == 1
+
+
+def test_refresh_non_reuse_error_keeps_original_description():
+    """Non-reuse invalid_grant errors must keep their original description untouched.
+
+    Only the "reuse detected" signature should trigger the actionable message;
+    generic ``invalid_grant: Refresh session has been revoked`` (the
+    downstream consequence) keeps its original text so we don't overwrite
+    useful server context for unrelated failure modes.
+    """
+    from hermes_cli.auth import _refresh_access_token
+
+    class _FakeResponse:
+        status_code = 400
+
+        def json(self):
+            return {
+                "error": "invalid_grant",
+                "error_description": "Refresh session has been revoked",
+            }
+
+    class _FakeClient:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    with pytest.raises(AuthError) as exc_info:
+        _refresh_access_token(
+            client=_FakeClient(),
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            refresh_token="rt_anything",
+        )
+
+    assert "Refresh session has been revoked" in str(exc_info.value)
+    # Must not have been rewritten with the reuse message.
+    assert "external process" not in str(exc_info.value).lower()
 
 
 # =============================================================================

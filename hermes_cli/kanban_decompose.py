@@ -295,6 +295,9 @@ def decompose_task(
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
+    require_manual_ready_approval = bool(
+        kanban_cfg.get("require_manual_ready_approval", False)
+    )
     roster, valid_names = _build_roster()
 
     try:
@@ -369,6 +372,7 @@ def decompose_task(
                 body=body_val,
                 assignee=assignee_val,
                 author=audit_author,
+                require_manual_ready_approval=require_manual_ready_approval,
             )
         if not ok:
             return DecomposeOutcome(

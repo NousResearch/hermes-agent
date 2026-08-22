@@ -57,6 +57,19 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_kanban_list_json_exposes_manual_ready_gate(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="held", assignee="patch")
+        conn.execute(
+            "UPDATE tasks SET status = 'todo', manual_ready_gate = 1 WHERE id = ?",
+            (task_id,),
+        )
+
+    payload = json.loads(kc.run_slash("list --json"))
+    task = next(row for row in payload if row["id"] == task_id)
+    assert task["manual_ready_gate"] is True
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kb.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")

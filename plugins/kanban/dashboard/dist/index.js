@@ -1992,6 +1992,30 @@
               settings.auto_decompose
                 ? "The dispatcher decomposes new triage tasks automatically."
                 : "Triage tasks stay in triage until you click ⚗ Decompose."),
+            h("label", { className: "flex items-center gap-2 text-xs h-8" },
+              h(Checkbox, {
+                checked: !!settings.auto_promote_children,
+                onCheckedChange: function (checked) {
+                  saveSettings({ auto_promote_children: checked === true });
+                },
+              }),
+              "Auto-promote decomposed children",
+            ),
+            h("div", { className: "text-[10px] text-muted-foreground" },
+              settings.auto_promote_children
+                ? "Children become Ready automatically as dependencies allow."
+                : "Decomposed children stay in Todo until an explicit Promote action."),
+            h("label", { className: "flex items-center gap-2 text-xs h-8" },
+              h(Checkbox, {
+                checked: !!settings.require_manual_ready_approval,
+                onCheckedChange: function (checked) {
+                  saveSettings({ require_manual_ready_approval: checked === true });
+                },
+              }),
+              "Require manual Ready approval",
+            ),
+            h("div", { className: "text-[10px] text-muted-foreground" },
+              "Specified single tasks stay in Todo until an explicit Promote action."),
           ),
         ) : h("div", { className: "text-xs text-muted-foreground" },
           "Loading…"),

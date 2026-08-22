@@ -123,6 +123,34 @@ def test_migration_is_idempotent(tmp_path, monkeypatch):
         assert len(conn.execute("SELECT * FROM task_events").fetchall()) == 2
 
 
+def test_manual_ready_gate_migration_is_idempotent_and_default_safe(tmp_path):
+    db_path = tmp_path / "pre-manual-ready-gate.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.executescript(kb.SCHEMA_SQL)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) "
+        "VALUES ('legacy-task', 'Legacy', 'todo', 1000)"
+    )
+    conn.execute("ALTER TABLE tasks DROP COLUMN manual_ready_gate")
+    conn.commit()
+
+    kb._migrate_add_optional_columns(conn)
+    conn.commit()
+    kb._migrate_add_optional_columns(conn)
+    conn.commit()
+
+    columns = {
+        row["name"]: row for row in conn.execute("PRAGMA table_info(tasks)")
+    }
+    assert columns["manual_ready_gate"]["notnull"] == 1
+    assert columns["manual_ready_gate"]["dflt_value"] == "0"
+    task = kb.get_task(conn, "legacy-task")
+    assert task is not None
+    assert task.manual_ready_gate is False
+    conn.close()
+
+
 def test_unseen_events_for_sub_survives_migrated_db(tmp_path, monkeypatch):
     """The crash that motivated #35096 — ``int(None)`` on a NULL cursor — is
     gone after migration; the notifier query returns an integer cursor."""

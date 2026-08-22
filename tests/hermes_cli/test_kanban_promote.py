@@ -87,6 +87,46 @@ def _promote_ns(task_id, *, ids=None, reason=None, force=False,
     )
 
 
+def test_promote_clears_manual_ready_gate_and_allows_one_claim(conn):
+    child = kb.create_task(conn, title="held child", assignee="patch")
+    conn.execute(
+        "UPDATE tasks SET status = 'todo', manual_ready_gate = 1 WHERE id = ?",
+        (child,),
+    )
+
+    ok, err = kb.promote_task(conn, child, actor="product-owner")
+    assert ok and err is None
+    task = kb.get_task(conn, child)
+    assert task is not None
+    assert task.status == "ready"
+    assert task.manual_ready_gate is False
+
+    claimed = kb.claim_task(conn, child, claimer="test-claim")
+    assert claimed is not None
+    assert kb.claim_task(conn, child, claimer="duplicate-claim") is None
+    ok, err = kb.promote_task(conn, child, actor="product-owner")
+    assert ok is False
+    assert "promote only applies" in (err or "")
+    events = [event.kind for event in kb.list_events(conn, child)]
+    assert events.count("promoted_manual") == 1
+
+
+def test_promote_scheduled_manual_gate_is_supported(conn):
+    child = kb.create_task(conn, title="scheduled hold", assignee="patch")
+    conn.execute(
+        "UPDATE tasks SET status = 'scheduled', manual_ready_gate = 1 WHERE id = ?",
+        (child,),
+    )
+
+    ok, err = kb.promote_task(conn, child, actor="product-owner")
+
+    assert ok is True and err is None
+    task = kb.get_task(conn, child)
+    assert task is not None
+    assert task.status == "ready"
+    assert task.manual_ready_gate is False
+
+
 def test_cli_promote_bulk_ids_promotes_all(kanban_home, capsys):
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent")

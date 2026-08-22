@@ -927,7 +927,15 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 # status set. "Changes requested" (review -> ready) goes through
                 # reopen_review_task via _reopen_if_review.
                 current = kanban_db.get_task(conn, task_id)
-                if current and current.status in ("blocked", "scheduled"):
+                if (
+                    current
+                    and current.manual_ready_gate
+                    and current.status in ("todo", "blocked", "scheduled")
+                ):
+                    ok, _ = kanban_db.promote_task(
+                        conn, task_id, actor="dashboard"
+                    )
+                elif current and current.status in ("blocked", "scheduled"):
                     ok = kanban_db.unblock_task(conn, task_id)
                 else:
                     reopened = _reopen_if_review(conn, task_id, current)
@@ -1176,11 +1184,13 @@ def _set_status_direct(
 
         cur = conn.execute(
             "UPDATE tasks SET status = ?, "
+            "  manual_ready_gate = CASE WHEN ? = 'ready' THEN 0 ELSE manual_ready_gate END, "
             "  claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
             "  claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
             "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
             "WHERE id = ?",
             (
+                effective_status,
                 effective_status,
                 effective_status,
                 effective_status,
@@ -1360,7 +1370,15 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         )
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)
-                        if cur and cur.status in ("blocked", "scheduled"):
+                        if (
+                            cur
+                            and cur.manual_ready_gate
+                            and cur.status in ("todo", "blocked", "scheduled")
+                        ):
+                            ok, _ = kanban_db.promote_task(
+                                conn, tid, actor="dashboard-bulk"
+                            )
+                        elif cur and cur.status in ("blocked", "scheduled"):
                             ok = kanban_db.unblock_task(conn, tid)
                         else:
                             reopened = _reopen_if_review(conn, tid, cur)
@@ -2773,6 +2791,7 @@ class OrchestrationSettingsBody(BaseModel):
     default_assignee: Optional[str] = None
     auto_decompose: Optional[bool] = None
     auto_promote_children: Optional[bool] = None
+    require_manual_ready_approval: Optional[bool] = None
 
 
 @router.get("/orchestration")
@@ -2789,6 +2808,9 @@ def get_orchestration_settings():
     explicit_default = (kanban_cfg.get("default_assignee") or "").strip()
     auto_decompose = bool(kanban_cfg.get("auto_decompose", True))
     auto_promote_children = bool(kanban_cfg.get("auto_promote_children", True))
+    require_manual_ready_approval = bool(
+        kanban_cfg.get("require_manual_ready_approval", False)
+    )
 
     # Resolve fallbacks the same way the decomposer does.
     resolved_orch = explicit_orch
@@ -2812,6 +2834,7 @@ def get_orchestration_settings():
         "default_assignee": explicit_default,
         "auto_decompose": auto_decompose,
         "auto_promote_children": auto_promote_children,
+        "require_manual_ready_approval": require_manual_ready_approval,
         "resolved_orchestrator_profile": resolved_orch,
         "resolved_default_assignee": resolved_default,
         "active_profile": active_default,
@@ -2879,6 +2902,11 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
 
     if payload.auto_promote_children is not None:
         kanban_section["auto_promote_children"] = bool(payload.auto_promote_children)
+
+    if payload.require_manual_ready_approval is not None:
+        kanban_section["require_manual_ready_approval"] = bool(
+            payload.require_manual_ready_approval
+        )
 
     try:
         save_config(cfg)

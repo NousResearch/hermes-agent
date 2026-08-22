@@ -177,6 +177,190 @@ def test_tenant_filter(client):
     assert total == 1
 
 
+def test_orchestration_settings_expose_manual_ready_approval(client):
+    response = client.get("/api/plugins/kanban/orchestration")
+    assert response.status_code == 200
+    assert response.json()["auto_promote_children"] is True
+    assert response.json()["require_manual_ready_approval"] is False
+
+    response = client.put(
+        "/api/plugins/kanban/orchestration",
+        json={
+            "auto_promote_children": False,
+            "require_manual_ready_approval": True,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["auto_promote_children"] is False
+    assert response.json()["require_manual_ready_approval"] is True
+
+
+def test_dashboard_ready_action_clears_manual_gate(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "held for product review", "assignee": "patch"},
+    ).json()["task"]
+    with kb.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'todo', manual_ready_gate = 1 WHERE id = ?",
+            (created["id"],),
+        )
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{created['id']}",
+        json={"status": "ready"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["manual_ready_gate"] is False
+    with kb.connect() as conn:
+        events = [event.kind for event in kb.list_events(conn, created["id"])]
+    assert events.count("promoted_manual") == 1
+
+
+def test_dashboard_ready_action_preserves_legacy_non_gated_transition(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "ordinary todo", "assignee": "patch"},
+    ).json()["task"]
+    with kb.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'todo', manual_ready_gate = 0 WHERE id = ?",
+            (created["id"],),
+        )
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{created['id']}",
+        json={"status": "ready"},
+    )
+
+    assert response.status_code == 200, response.text
+    with kb.connect() as conn:
+        events = [event.kind for event in kb.list_events(conn, created["id"])]
+    assert events.count("promoted_manual") == 0
+    assert events.count("status") == 1
+
+
+def test_dashboard_direct_ready_transition_defensively_clears_stale_gate(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "archived with stale gate", "assignee": "patch"},
+    ).json()["task"]
+    with kb.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'archived', manual_ready_gate = 1 WHERE id = ?",
+            (created["id"],),
+        )
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{created['id']}",
+        json={"status": "ready"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["manual_ready_gate"] is False
+
+
+@pytest.mark.parametrize("parked_status", ["blocked", "scheduled"])
+def test_dashboard_ready_action_clears_gate_from_parked_status(client, parked_status):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "parked manual gate", "assignee": "patch"},
+    ).json()["task"]
+    with kb.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = ?, manual_ready_gate = 1 WHERE id = ?",
+            (parked_status, created["id"]),
+        )
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{created['id']}",
+        json={"status": "ready"},
+    )
+    assert response.status_code == 200, response.text
+    task = response.json()["task"]
+    assert task["status"] == "ready"
+    assert task["manual_ready_gate"] is False
+
+
+def test_dashboard_bulk_ready_clears_gate_from_blocked(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "bulk parked manual gate", "assignee": "patch"},
+    ).json()["task"]
+    with kb.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', manual_ready_gate = 1 WHERE id = ?",
+            (created["id"],),
+        )
+
+    response = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [created["id"]], "status": "ready"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["results"] == [{"id": created["id"], "ok": True}]
+    with kb.connect() as conn:
+        task = kb.get_task(conn, created["id"])
+    assert task is not None
+    assert task.status == "ready"
+    assert task.manual_ready_gate is False
+
+
+def test_dashboard_bulk_ready_preserves_legacy_non_gated_transition(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "ordinary bulk todo", "assignee": "patch"},
+    ).json()["task"]
+    with kb.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'todo', manual_ready_gate = 0 WHERE id = ?",
+            (created["id"],),
+        )
+
+    response = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [created["id"]], "status": "ready"},
+    )
+
+    assert response.status_code == 200, response.text
+    with kb.connect() as conn:
+        events = [event.kind for event in kb.list_events(conn, created["id"])]
+    assert events.count("promoted_manual") == 0
+    assert events.count("status") == 1
+
+
+@pytest.mark.parametrize("parked_status", ["blocked", "scheduled"])
+def test_dashboard_ready_dependency_failure_is_atomic(client, parked_status):
+    parent = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "unfinished parent", "assignee": "planner"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "held child", "assignee": "patch", "parents": [parent["id"]]},
+    ).json()["task"]
+    with kb.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = ?, manual_ready_gate = 1 WHERE id = ?",
+            (parked_status, child["id"]),
+        )
+        before_events = len(kb.list_events(conn, child["id"]))
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}",
+        json={"status": "ready"},
+    )
+
+    assert response.status_code == 409
+    with kb.connect() as conn:
+        task = kb.get_task(conn, child["id"])
+        after_events = len(kb.list_events(conn, child["id"]))
+    assert task is not None
+    assert task.status == parked_status
+    assert task.manual_ready_gate is True
+    assert after_events == before_events
+
+
 def test_dashboard_markdown_html_is_sanitized_before_render():
     """Markdown rendering must sanitize HTML before dangerouslySetInnerHTML."""
 

@@ -601,6 +601,8 @@ The kanban board has two ways to handle a task you drop into the Triage column:
 
 Flip between the two modes from the **Orchestration: Auto/Manual** pill at the top of the kanban page (emerald = Auto, muted gray = Manual), or by editing `config.yaml` directly. Both modes coexist with `hermes kanban specify` — that's still available as a single-task spec rewrite when you don't want fan-out.
 
+Ready approval is a separate control from decomposition. Set `kanban.auto_promote_children: false` to leave every decomposed child in `todo` behind a durable manual gate; dispatcher ticks and completed dependencies do not clear that gate. Set `kanban.require_manual_ready_approval: true` to apply the same gate to a single task produced by **✨ Specify** (including the decomposer's no-fan-out fallback). In either case, explicitly move the card to Ready in the dashboard or run `hermes kanban promote <id>` after review. That native promotion clears the gate and makes the task claimable. Both settings default to automatic behavior for backward compatibility, and existing tasks migrate with no gate.
+
 The decomposer's routing decisions depend on profile descriptions, which is a per-profile labeling primitive you set with `hermes profile create --description "..."`, `hermes profile describe <name> --text "..."`, `hermes profile describe <name> --auto` (LLM-generates from the profile's installed skills + model), or the dashboard's per-profile editor in the expanded **Orchestration settings** panel. Profiles without a description still appear in the roster — they're routable by name, just less precisely. The decomposer NEVER lands a child task with `assignee=None`: when the LLM picks an unknown profile, the child gets routed to `kanban.default_assignee` (or the active default profile if that's unset).
 
 `kanban.orchestrator_profile` does not load that profile's prompt, skills, or custom logic into the decomposition call. It controls who owns the root/orchestration task after fan-out. To change the decomposer's model/provider, configure `auxiliary.kanban_decomposer`. To use a profile's custom task-splitting logic instead of the built-in decomposer, switch to Manual mode and have that profile create or decompose tasks explicitly.
@@ -610,6 +612,8 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | Key | Default | Purpose |
 |---|---|---|
 | `auto_decompose` | `true` | Dispatcher auto-runs the built-in decomposer for Triage tasks every tick. It does not gate profile-driven `kanban_create` calls or creator wake turns. |
+| `auto_promote_children` | `true` | Promote decomposed children as dependencies allow. When `false`, each child stays in `todo` behind a durable gate until an explicit dashboard Ready action or `hermes kanban promote <id>`. |
+| `require_manual_ready_approval` | `false` | Apply the durable manual Ready gate to single-task **Specify** results and no-fan-out decomposition fallbacks. |
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |

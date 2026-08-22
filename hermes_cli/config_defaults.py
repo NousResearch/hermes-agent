@@ -2664,6 +2664,14 @@ DEFAULT_CONFIG = {
         # decomposition is manual via `hermes kanban decompose <id>` or
         # the dashboard's Decompose button.
         "auto_decompose": True,
+        # Promote dependency-free decomposed children immediately. When false,
+        # each child receives a durable task-level hold that only the native
+        # ``kanban promote`` action clears.
+        "auto_promote_children": True,
+        # Apply the same durable manual Ready approval gate to single-task
+        # Triage specification (and decomposer fanout=false fallback). Off by
+        # default so existing automatic workflows retain their behaviour.
+        "require_manual_ready_approval": False,
         # Max triage tasks to decompose per dispatcher tick. Prevents a
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.

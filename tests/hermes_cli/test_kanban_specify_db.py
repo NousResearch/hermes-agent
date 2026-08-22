@@ -52,6 +52,25 @@ def test_specify_promotes_triage_to_todo(kanban_home):
     assert "**Goal**" in (task.body or "")
 
 
+def test_specify_can_require_manual_ready_approval(kanban_home):
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="needs product review")
+        ok = kb.specify_triage_task(
+            conn,
+            tid,
+            title="Specified but held",
+            body="Complete execution contract.",
+            author="product-owner",
+            require_manual_ready_approval=True,
+        )
+        assert ok is True
+        assert kb.recompute_ready(conn) == 0
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "todo"
+        assert task.manual_ready_gate is True
+
+
 def test_specify_rejects_blank_title(kanban_home):
     with kb.connect() as conn:
         tid = _create_triage(conn, title="rough")

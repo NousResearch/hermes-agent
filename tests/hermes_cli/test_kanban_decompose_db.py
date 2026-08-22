@@ -68,6 +68,43 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_manual_decompose_children_stay_todo_across_recompute_passes(kanban_home):
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="review before dispatch")
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "groom first", "assignee": "patch"},
+                {"title": "groom dependent", "assignee": "patch", "parents": [0]},
+            ],
+            author="product-owner",
+            auto_promote=False,
+        )
+        assert child_ids is not None
+        first_id, dependent_id = child_ids
+        first = kb.get_task(conn, first_id)
+        dependent = kb.get_task(conn, dependent_id)
+        assert first is not None and first.status == "todo"
+        assert dependent is not None and dependent.status == "todo"
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.recompute_ready(conn) == 0
+        first = kb.get_task(conn, first_id)
+        assert first is not None and first.status == "todo"
+
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (first_id,))
+        assert kb.recompute_ready(conn) == 0
+        dependent = kb.get_task(conn, dependent_id)
+        assert dependent is not None and dependent.status == "todo"
+
+        conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (dependent_id,))
+        assert kb.recompute_ready(conn) == 0
+        dependent = kb.get_task(conn, dependent_id)
+        assert dependent is not None and dependent.status == "blocked"
+
+
 def test_decompose_records_audit_comment_and_event(kanban_home):
     with kb.connect() as conn:
         tid = _create_triage(conn)

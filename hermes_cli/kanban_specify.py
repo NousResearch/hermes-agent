@@ -50,6 +50,17 @@ HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(
 logger = logging.getLogger(__name__)
 
 
+def _require_manual_ready_approval() -> bool:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+    except Exception:
+        return False
+    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    return bool(kanban_cfg.get("require_manual_ready_approval", False))
+
+
 _SYSTEM_PROMPT = """You are the Kanban triage specifier for the Hermes Agent board.
 A user dropped a rough idea into the Triage column. Your job is to turn it
 into a concrete, actionable task spec that an autonomous worker can pick up
@@ -239,6 +250,7 @@ def specify_task(
             title=new_title,
             body=new_body,
             author=author or _profile_author(),
+            require_manual_ready_approval=_require_manual_ready_approval(),
         )
     if not ok:
         # Race: someone else promoted / archived the task between our

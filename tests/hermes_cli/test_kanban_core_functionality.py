@@ -754,8 +754,7 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
 
 
 def test_legacy_db_without_skills_column_migrates(tmp_path):
-    """_migrate_add_optional_columns is idempotent and adds skills
-    when absent. Run it twice on a pared-down schema to confirm."""
+    """Optional columns migrate idempotently with safe legacy defaults."""
     import sqlite3
     db_path = tmp_path / "legacy.db"
     conn = sqlite3.connect(str(db_path))
@@ -795,6 +794,7 @@ def test_legacy_db_without_skills_column_migrates(tmp_path):
     kb._migrate_add_optional_columns(conn)
     after = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
     assert "skills" in after, f"migration did not add skills column: {after}"
+    assert "manual_ready_gate" in after
 
     # Idempotent: running again must not raise.
     kb._migrate_add_optional_columns(conn)
@@ -806,6 +806,7 @@ def test_legacy_db_without_skills_column_migrates(tmp_path):
     keys = set(row.keys())
     assert "skills" in keys
     assert row["skills"] is None
+    assert row["manual_ready_gate"] == 0
     conn.close()
 
 

@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Any, Optional
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
-from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.auth import (
+    AuthError,
+    _decode_jwt_claims,
+    _read_codex_tokens,
+    resolve_codex_runtime_credentials,
+)
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 if TYPE_CHECKING:
@@ -487,8 +492,15 @@ def _resolve_codex_usage_credentials(
             tokens = token_data.get("tokens") or {}
             account_id = str(tokens.get("account_id", "") or "").strip() or None
         except AuthError:
-            # Pool-only creds carry no singleton account_id; header is optional.
+            # Pool-only credentials do not have the legacy singleton's separate
+            # account_id field. The OAuth access JWT carries the same identifier,
+            # and the ChatGPT usage endpoint requires its header for some account
+            # shapes. Derive only this non-secret identifier; never persist claims.
             logger.debug("codex ▸ /usage account_id read failed (best-effort)", exc_info=True)
+            claims = _decode_jwt_claims(str(creds.get("api_key") or ""))
+            auth_claims = claims.get("https://api.openai.com/auth") or {}
+            if isinstance(auth_claims, dict):
+                account_id = str(auth_claims.get("chatgpt_account_id") or "").strip() or None
         return creds["api_key"], str(creds.get("base_url", "") or "").strip(), account_id
     except AuthError:
         logger.debug("codex ▸ /usage runtime resolver returned no creds; trying pool", exc_info=True)
@@ -504,7 +516,15 @@ def _resolve_codex_usage_credentials(
     entry = pool.select()
     if entry is None:
         raise RuntimeError("No available openai-codex credential in credential pool")
-    return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+    token = entry.runtime_api_key
+    claims = _decode_jwt_claims(str(token or ""))
+    auth_claims = claims.get("https://api.openai.com/auth") or {}
+    account_id = (
+        str(auth_claims.get("chatgpt_account_id") or "").strip() or None
+        if isinstance(auth_claims, dict)
+        else None
+    )
+    return token, str(entry.runtime_base_url or base_url or "").strip(), account_id
 
 
 def _fetch_codex_account_usage(

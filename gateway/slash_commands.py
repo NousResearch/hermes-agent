@@ -5359,19 +5359,15 @@ class GatewaySlashCommandsMixin:
                 account_lines = render_account_usage_lines(account_snapshot, markdown=True)
 
         # ── Nous credits magnitudes + monthly-grant % gauge ─────────────
-        # Shared with the CLI / TUI /usage block via nous_credits_lines(): a single
-        # auth-gate + portal-fetch + render path (which also honors the dev fixture).
-        # Run off the event loop. The helper gates on "a Nous account is logged in"
-        # — NOT the inference provider and NOT nested under `if provider:` — so a
-        # Nous-credentialled user running inference elsewhere (or with none resident)
-        # still sees their balance. NO recovery trigger: messaging binds no notice
-        # consumer, so /usage only displays. Fail-open: never break /usage.
-        try:
-            from agent.account_usage import nous_credits_lines
+        # Nous prices belong only to a Nous inference session. A separate portal
+        # login must not make a Codex subscription request look credit-billed.
+        if str(provider or "").strip().lower() == "nous":
+            try:
+                from agent.account_usage import nous_credits_lines
 
-            credits_lines = await asyncio.to_thread(nous_credits_lines, markdown=True)
-        except Exception:
-            credits_lines = []  # fail-open: never break /usage
+                credits_lines = await asyncio.to_thread(nous_credits_lines, markdown=True)
+            except Exception:
+                credits_lines = []  # fail-open: never break /usage
 
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
             lines = []

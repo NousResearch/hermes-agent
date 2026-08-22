@@ -162,6 +162,31 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
     assert "ChatGPT-Account-Id" not in calls[0]["headers"]
 
 
+def test_codex_usage_derives_account_id_from_pool_oauth_jwt(monkeypatch, codex_usage_payload):
+    calls = []
+    monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: _FakeClient(calls, codex_usage_payload))
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_codex_runtime_credentials",
+        lambda **kwargs: {"api_key": "oauth-jwt", "base_url": "https://chatgpt.com/backend-api/codex"},
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_read_codex_tokens",
+        lambda: (_ for _ in ()).throw(account_usage.AuthError("pool only", provider="openai-codex", code="codex_auth_missing")),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_decode_jwt_claims",
+        lambda token: {"https://api.openai.com/auth": {"chatgpt_account_id": "acct_subscription"}},
+    )
+
+    snapshot = account_usage.fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert calls[0]["headers"]["ChatGPT-Account-Id"] == "acct_subscription"
+
+
 
 
 # ── Banked rate-limit reset credits (`/usage reset`) ─────────────────────────

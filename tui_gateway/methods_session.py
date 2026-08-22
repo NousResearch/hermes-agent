@@ -1548,18 +1548,32 @@ def _(rid, params: dict) -> dict:
     usage: dict = _session_usage_snapshot(session)
     if agent is None and not usage:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
-    # Nous credits block — agent-independent (a portal fetch), so it shows even
-    # with zero API calls or on a resumed session. The TUI /usage panel renders
-    # these lines regardless of `calls`. Fail-open: [] when not logged into Nous
-    # or on any portal hiccup.
+    provider = str(
+        getattr(agent, "provider", "") if agent is not None else _metadata_mirror(session).get("provider", "")
+    ).strip().lower()
+    # Show account limits for the provider that actually owns this session.
+    # Merely being logged into Nous must not place Nous pricing in a Codex view.
     try:
-        from agent.account_usage import nous_credits_lines
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
 
-        credits = nous_credits_lines()
-        if credits:
-            usage["credits_lines"] = credits
+        snapshot = fetch_account_usage(
+            provider,
+            base_url=getattr(agent, "base_url", None) if agent is not None else None,
+            api_key=getattr(agent, "api_key", None) if agent is not None else None,
+        )
+        if snapshot:
+            usage["account_lines"] = render_account_usage_lines(snapshot)
     except Exception:
         pass
+    if provider == "nous":
+        try:
+            from agent.account_usage import nous_credits_lines
+
+            credits = nous_credits_lines()
+            if credits:
+                usage["credits_lines"] = credits
+        except Exception:
+            pass
     return _ok(rid, usage)
 
 

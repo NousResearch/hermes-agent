@@ -375,6 +375,67 @@ class TestVoiceStopAndTranscribeReal:
         mock_transcribe.assert_called_once_with("/tmp/test.wav", model="whisper-1")
 
 
+class TestManualPTTStartRecording:
+    """HermesCLI._manual_ptt_start_recording: the daemon-thread body
+    handle_voice_record's Ctrl+B path dispatches to, with real CLI instance.
+
+    Manual push-to-talk claims the same physical microphone as an active
+    wake-word listener. _on_wake_word already hands the mic off before
+    capturing (it owns the mic when it fires); this covers the manual
+    push-to-talk path, which can otherwise run while the wake detector's
+    own input stream is still open and open a second, independent
+    sd.InputStream on the same device (a PortAudio error on
+    single-owner-capture platforms, e.g. Windows).
+    """
+
+    def test_pauses_wake_word_before_starting_recording(self):
+        cli = _make_voice_cli(_wake_suspended=False)
+        calls: list[str] = []
+
+        def _fake_pause_listening(*, owner):
+            assert owner is cli
+            calls.append("pause_listening")
+            return True
+
+        cli._voice_start_recording = MagicMock(
+            side_effect=lambda: calls.append("voice_start_recording")
+        )
+        with patch("tools.wake_word.pause_listening", side_effect=_fake_pause_listening):
+            cli._manual_ptt_start_recording()
+
+        assert calls == ["pause_listening", "voice_start_recording"], (
+            "pause_listening must run BEFORE _voice_start_recording opens "
+            "the AudioRecorder's own input stream on the same microphone"
+        )
+        assert cli._wake_suspended is True
+
+    def test_skips_wake_suspended_when_pause_declines(self):
+        """pause_listening() returning False means there was nothing to
+        pause (or it declined) — _wake_suspended must stay False, since the
+        watchdog only needs to resume a listener that was actually paused."""
+        cli = _make_voice_cli(_wake_suspended=False)
+        cli._voice_start_recording = MagicMock()
+
+        with patch("tools.wake_word.pause_listening", return_value=False):
+            cli._manual_ptt_start_recording()
+
+        assert cli._wake_suspended is False
+        cli._voice_start_recording.assert_called_once()
+
+    def test_proceeds_when_pause_raises(self):
+        """A pause_listening() failure (e.g. wake_word module unavailable)
+        must not block manual push-to-talk from recording — the mic
+        hand-off is best-effort, not a hard prerequisite."""
+        cli = _make_voice_cli(_wake_suspended=False)
+        cli._voice_start_recording = MagicMock()
+
+        with patch("tools.wake_word.pause_listening", side_effect=RuntimeError("boom")):
+            cli._manual_ptt_start_recording()
+
+        assert cli._wake_suspended is False
+        cli._voice_start_recording.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Barge-in capture — the interruption is transcribed and queued directly
 # ---------------------------------------------------------------------------

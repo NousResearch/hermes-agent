@@ -15215,6 +15215,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(f"{_DIM}Wake capture failed: {e}{_RST}")
             # Leave _wake_suspended set; the watchdog resumes once idle.
 
+    def _manual_ptt_start_recording(self):
+        """Start manual push-to-talk recording (Ctrl+B), on a daemon thread.
+
+        Manual push-to-talk claims the same physical microphone as an active
+        wake-word listener. Unlike ``_on_wake_word`` (which pauses before
+        capturing because the detector already owns the mic when it fires),
+        this path can run while the detector's own stream is still open —
+        hand the mic off first or ``AudioRecorder`` opens a second,
+        independent input stream on the same device (PortAudio init error on
+        single-owner-capture platforms). Setting ``_wake_suspended`` lets the
+        existing wake watchdog (``_start_wake_watchdog``) resume the listener
+        once recording goes idle, exactly as it does for the wake-triggered
+        capture.
+        """
+        try:
+            from tools.wake_word import pause_listening
+            if pause_listening(owner=self):
+                self._wake_suspended = True
+        except Exception as e:
+            logger.debug("wake word pause failed: %s", e)
+        try:
+            self._voice_start_recording()
+            if hasattr(self, '_app') and self._app:
+                self._app.invalidate()
+        except Exception as e:
+            _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
+
     def _start_wake_watchdog(self):
         """Resume the paused detector when the CLI returns to a stable idle."""
         if getattr(self, "_wake_watchdog_started", False):
@@ -18835,15 +18862,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # Dispatch to a daemon thread so play_beep(sd.wait),
                 # AudioRecorder.start(lock acquire), and config I/O
                 # never block the prompt_toolkit event loop.
-                def _start_recording():
-                    try:
-                        cli_ref._voice_start_recording()
-                        if hasattr(cli_ref, '_app') and cli_ref._app:
-                            cli_ref._app.invalidate()
-                    except Exception as e:
-                        _cprint(f"\n{_DIM}Voice recording failed: {e}{_RST}")
-
-                threading.Thread(target=_start_recording, daemon=True).start()
+                threading.Thread(
+                    target=cli_ref._manual_ptt_start_recording, daemon=True
+                ).start()
                 event.app.invalidate()
         from prompt_toolkit.keys import Keys
 

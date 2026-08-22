@@ -39,7 +39,12 @@ jobs:
         run: python3 .github/scripts/restack_dependency_security.py apply
 
       - name: Regenerate current-main npm lock graph
-        run: npm install --package-lock-only --ignore-scripts --include=optional
+        run: |
+          npm install --package-lock-only --ignore-scripts --include=optional
+          # npm 11 preserves the old lock placement when only the override shape
+          # changes. Force the affected package edge through the new nested
+          # PostCSS override without rewriting unrelated dependency families.
+          npm update nanoid --package-lock-only --ignore-scripts --include=optional
 
       - name: Regenerate the exact h2 security lock edge
         run: uv lock --upgrade-package 'h2==4.4.1'

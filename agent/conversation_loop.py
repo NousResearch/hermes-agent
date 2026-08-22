@@ -37,7 +37,11 @@ from agent.conversation_compression import (
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
-from agent.error_classifier import FailoverReason, classify_api_error
+from agent.error_classifier import (
+    FailoverReason,
+    classify_api_error,
+    is_stale_oauth_token_403,
+)
 from agent.message_metadata import append_message
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
@@ -458,6 +462,39 @@ def _is_stale_copilot_credential_error(status_code: Optional[int], error_message
         or "model_not_supported" in lowered
         or "the requested model is not supported" in lowered
     )
+
+
+def _should_refresh_codex_credentials(
+    agent: Any,
+    status_code: Optional[int],
+    error: Exception,
+    retry_state: Any,
+) -> bool:
+    """Should this API error trigger a forced Codex/xAI credential refresh?
+
+    A 401 is the ordinary signal.  xAI also reports an *expired access token*
+    as HTTP 403 with body code ``unauthenticated:bad-credentials`` — before
+    #82052 that 403 fell straight through to the non-retryable abort, so a
+    long-lived worker (tui_gateway slash_worker, gateway session) replayed its
+    stale in-memory token on every turn and never recovered until the process
+    was restarted.  ``_try_refresh_codex_client_credentials`` is the only place
+    that worker's ``api_key`` gets replaced, so the 403 has to reach it.
+
+    xAI's *other* 403 — ``personal-team-blocked:spending-limit`` — is excluded
+    by :func:`is_stale_oauth_token_403`: a billing wall cannot be refreshed
+    away, and retrying it would spin.  The single-shot ``retry_state`` guard
+    bounds this to one extra attempt per turn either way, so a revoked (rather
+    than merely expired) refresh token still aborts as before.
+    """
+    if retry_state.codex_auth_retry_attempted:
+        return False
+    if getattr(agent, "api_mode", None) != "codex_responses":
+        return False
+    if getattr(agent, "provider", None) not in {"openai-codex", "xai-oauth"}:
+        return False
+    if status_code == 401:
+        return True
+    return status_code == 403 and is_stale_oauth_token_403(error)
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
@@ -4799,16 +4836,15 @@ def run_conversation(
                         )
                         continue
 
-                if (
-                    agent.api_mode == "codex_responses"
-                    and agent.provider in {"openai-codex", "xai-oauth"}
-                    and status_code == 401
-                    and not _retry.codex_auth_retry_attempted
+                if _should_refresh_codex_credentials(
+                    agent, status_code, api_error, _retry
                 ):
                     _retry.codex_auth_retry_attempted = True
                     if agent._try_refresh_codex_client_credentials(force=True):
                         _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
-                        agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
+                        agent._buffer_vprint(
+                            f"🔐 {_label} auth refreshed after {status_code}. Retrying request..."
+                        )
                         continue
                 if (
                     agent.api_mode == "chat_completions"

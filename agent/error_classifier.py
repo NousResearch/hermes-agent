@@ -164,6 +164,17 @@ def _billing_ambiguity_context(error_msg: str) -> Dict[str, Any]:
 # auth failures when they arrive as 403.
 _XAI_SPENDING_LIMIT_ERROR_CODE = "personal-team-blocked:spending-limit"
 
+# xAI reports an expired or invalid OAuth2 access token as HTTP 403 with body
+# code ``unauthenticated:bad-credentials`` instead of 401.  Semantically it is
+# a stale-token auth failure that one forced credential refresh recovers, so
+# it must stay distinguishable from _XAI_SPENDING_LIMIT_ERROR_CODE — the other
+# xAI 403, which no amount of refreshing fixes.
+_STALE_OAUTH_TOKEN_ERROR_CODE_PREFIX = "unauthenticated:"
+_STALE_OAUTH_TOKEN_PATTERNS = (
+    "bad-credentials",
+    "access token could not be validated",
+)
+
 # Structured provider codes that mean the account cannot serve paid traffic
 # until credits/subscription capacity is restored. xAI returns its explicit
 # Grok spending-limit signal as HTTP 403 rather than 402.
@@ -758,6 +769,35 @@ _SSL_TRANSIENT_PATTERNS = [
     # Python ssl module prefix, e.g. "[SSL: BAD_RECORD_MAC]"
     "[ssl:",
 ]
+
+
+# ── Provider-shape predicates ───────────────────────────────────────────
+
+def is_stale_oauth_token_403(error: Exception) -> bool:
+    """True when an HTTP 403 is really an expired OAuth access token.
+
+    xAI answers a stale in-memory access token with
+    ``403 {"code": "unauthenticated:bad-credentials", "error": "The OAuth2
+    access token could not be validated."}`` rather than the 401 every other
+    OAuth provider returns.  Callers use this to run the same forced credential
+    refresh they already run for a 401 (issue #82052).
+
+    Deliberately narrow: the account-level xAI 403
+    (``personal-team-blocked:spending-limit``) is a billing wall that refreshing
+    cannot clear, and must not match here.
+    """
+    if _extract_status_code(error) != 403:
+        return False
+    body = _extract_error_body(error)
+    code = (_extract_error_code(body) or "").lower()
+    if code == _XAI_SPENDING_LIMIT_ERROR_CODE:
+        return False
+    if code.startswith(_STALE_OAUTH_TOKEN_ERROR_CODE_PREFIX):
+        return True
+    # Fall back to the message: the SDK's stringified error embeds the raw body
+    # for transports that don't hand us a parseable dict.
+    haystack = f"{error} {body}".lower()
+    return any(pattern in haystack for pattern in _STALE_OAUTH_TOKEN_PATTERNS)
 
 
 # ── Classification pipeline ─────────────────────────────────────────────

@@ -698,3 +698,131 @@ def test_transport_round_trip_drops_foreign_reasoning():
         "Cross-issuer reasoning leaked through build_kwargs — this is the "
         "exact regression that broke session 40de1ae0 on 2026-05-25 01:09."
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix E: an expired xAI access token arrives as 403, not 401 (#82052)
+#
+# xAI answers a stale in-memory OAuth access token with
+# ``403 {"code": "unauthenticated:bad-credentials"}``.  The conversation
+# loop's forced-refresh branch only fired on 401, so the 403 fell through to
+# the non-retryable abort and a long-lived worker (tui_gateway slash_worker)
+# replayed the dead token on every turn until the process was restarted —
+# even though a fresh CLI probe on the same box succeeded, proving the
+# refresh token and credential store were healthy.
+#
+# ``_should_refresh_codex_credentials`` is the gate.  It must open for the
+# stale-token 403 and stay shut for the spending-limit 403, which no amount
+# of refreshing can clear.
+# ---------------------------------------------------------------------------
+
+
+def _retry_state(attempted=False):
+    from agent.turn_retry_state import TurnRetryState
+
+    state = TurnRetryState()
+    state.codex_auth_retry_attempted = attempted
+    return state
+
+
+def _stale_token_403():
+    """The exact error from the issue report."""
+    exc = Exception(
+        'HTTP 403: {"code":"unauthenticated:bad-credentials","error":'
+        '"The OAuth2 access token could not be validated."}'
+    )
+    exc.status_code = 403
+    exc.body = {
+        "code": "unauthenticated:bad-credentials",
+        "error": "The OAuth2 access token could not be validated.",
+    }
+    return exc
+
+
+def _spending_limit_403():
+    exc = Exception("Error code: 403 - spending limit")
+    exc.status_code = 403
+    exc.body = {
+        "code": "personal-team-blocked:spending-limit",
+        "error": "You have run out of credits or need a Grok subscription.",
+    }
+    return exc
+
+
+def test_stale_token_403_opens_the_refresh_gate():
+    """The regression: 403 bad-credentials must reach the credential refresh."""
+    from agent.conversation_loop import _should_refresh_codex_credentials
+
+    agent = _make_codex_agent()
+
+    assert _should_refresh_codex_credentials(
+        agent, 403, _stale_token_403(), _retry_state()
+    ) is True
+
+
+def test_spending_limit_403_keeps_the_refresh_gate_shut():
+    """A billing wall is not a stale token — refreshing it would spin forever."""
+    from agent.conversation_loop import _should_refresh_codex_credentials
+
+    agent = _make_codex_agent()
+
+    assert _should_refresh_codex_credentials(
+        agent, 403, _spending_limit_403(), _retry_state()
+    ) is False
+
+
+def test_plain_401_still_opens_the_refresh_gate():
+    """Pre-existing behaviour is untouched."""
+    from agent.conversation_loop import _should_refresh_codex_credentials
+
+    agent = _make_codex_agent()
+    exc = Exception("Error code: 401 - unauthorized")
+    exc.status_code = 401
+
+    assert _should_refresh_codex_credentials(
+        agent, 401, exc, _retry_state()
+    ) is True
+
+
+def test_stale_token_403_refreshes_at_most_once_per_turn():
+    """The single-shot guard bounds a revoked refresh token to one attempt."""
+    from agent.conversation_loop import _should_refresh_codex_credentials
+
+    agent = _make_codex_agent()
+
+    assert _should_refresh_codex_credentials(
+        agent, 403, _stale_token_403(), _retry_state(attempted=True)
+    ) is False
+
+
+def test_generic_403_does_not_open_the_refresh_gate():
+    """An ordinary permission denial is not a credential problem."""
+    from agent.conversation_loop import _should_refresh_codex_credentials
+
+    agent = _make_codex_agent()
+    exc = Exception("Error code: 403 - forbidden")
+    exc.status_code = 403
+
+    assert _should_refresh_codex_credentials(
+        agent, 403, exc, _retry_state()
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "api_mode,provider",
+    [
+        ("chat_completions", "xai-oauth"),  # wrong transport
+        ("codex_responses", "openrouter"),  # wrong provider
+    ],
+)
+def test_refresh_gate_stays_provider_scoped(api_mode, provider):
+    """Only the Codex/xAI Responses path owns this recovery."""
+    from agent.conversation_loop import _should_refresh_codex_credentials
+
+    agent = _make_codex_agent()
+    agent.api_mode = api_mode
+    agent.provider = provider
+
+    assert _should_refresh_codex_credentials(
+        agent, 403, _stale_token_403(), _retry_state()
+    ) is False

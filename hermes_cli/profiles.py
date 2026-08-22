@@ -31,7 +31,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
@@ -592,19 +592,21 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
 _WRAPPER_READ_LIMIT = 8192
 
 
-def build_alias_map() -> dict[str, str]:
-    """Single-pass reverse map ``{canonical_profile -> alias_name}``.
+def iter_wrapper_aliases() -> Iterator[Tuple[str, str]]:
+    """Yield ``(alias_name, canonical_profile)`` for every wrapper on disk.
 
     Scans the wrapper dir ONCE (vs. :func:`find_alias_for_profile` per profile)
     and reads only a small head slice of each candidate wrapper, skipping
-    binaries. A custom alias (file name != profile) wins over the profile-named
-    wrapper, matching ``find_alias_for_profile``'s preference; deterministic via
-    sorted iteration.
+    binaries, so a wrapper dir that also holds unrelated executables is never
+    read whole. Entries are yielded in sorted order.
+
+    EVERY matching wrapper is yielded, including several pointing at the same
+    profile: a profile can own both its profile-named wrapper and a custom
+    alias. Callers wanting one alias per profile want :func:`build_alias_map`.
     """
     wrapper_dir = _get_wrapper_dir()
-    result: dict[str, str] = {}
     if not wrapper_dir.is_dir():
-        return result
+        return
     is_windows = sys.platform == "win32"
     prefix = "hermes -p "
 
@@ -612,6 +614,8 @@ def build_alias_map() -> dict[str, str]:
         if not entry.is_file():
             continue
         # Only our own wrappers are named with the alias and (on Windows) .bat.
+        # Alias names come from _PROFILE_ID_RE, which forbids ".", so a
+        # suffixed entry on POSIX is never one of ours.
         if is_windows and entry.suffix != ".bat":
             continue
         if not is_windows and entry.suffix:
@@ -620,7 +624,7 @@ def build_alias_map() -> dict[str, str]:
             with open(entry, "r", encoding="utf-8", errors="strict") as f:
                 content = f.read(_WRAPPER_READ_LIMIT)
         except (OSError, UnicodeDecodeError):
-            # UnicodeDecodeError = a binary on PATH (ffmpeg etc.) — not a wrapper.
+            # UnicodeDecodeError = a binary on PATH (ffmpeg etc.), not a wrapper.
             continue
         idx = content.find(prefix)
         if idx == -1:
@@ -630,8 +634,20 @@ def build_alias_map() -> dict[str, str]:
         canon = rest.split(None, 1)[0].strip() if rest.strip() else ""
         if not canon:
             continue
-        canon = normalize_profile_name(canon)
-        alias = entry.stem if is_windows else entry.name
+        yield (entry.stem if is_windows else entry.name), normalize_profile_name(canon)
+
+
+def build_alias_map() -> dict[str, str]:
+    """Single-pass reverse map ``{canonical_profile -> alias_name}``.
+
+    Built on :func:`iter_wrapper_aliases`, so it inherits the bounded read. A
+    custom alias (file name != profile) wins over the profile-named wrapper,
+    matching ``find_alias_for_profile``'s preference; deterministic via sorted
+    iteration. Being keyed by profile, this map holds ONE alias per profile;
+    use :func:`iter_wrapper_aliases` to see every wrapper.
+    """
+    result: dict[str, str] = {}
+    for alias, canon in iter_wrapper_aliases():
         # Custom alias (name != profile) preferred; otherwise keep the
         # profile-named wrapper. Don't overwrite a custom alias already found.
         if alias == canon:

@@ -135,11 +135,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, a Sprite (Fly.io cloud sandbox), or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | sprites | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
   timeout: 180      # Per-command timeout in seconds
@@ -152,7 +152,7 @@ terminal:
 
 `terminal.font_family` controls the embedded terminal in Hermes Desktop. It accepts either one locally installed family name (for example, `MesloLGS NF`) or a CSS font stack. Hermes appends its bundled JetBrains Mono stack as a fallback, and an empty value keeps the default. You can edit the same profile-scoped setting in **Settings → Appearance → Terminal Font**; no Google Fonts download or system-font permission is required.
 
-For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+For cloud sandboxes such as Modal, Daytona, Vercel Sandbox, and Sprites, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 
 ### Backend Overview
 
@@ -164,6 +164,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
+| **sprites** | Sprite (Fly.io cloud sandbox) | Full (hardware-isolated VM) | Stateful sandboxes with checkpoint & restore |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
@@ -446,6 +447,42 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 
 **Disk sizing:** Vercel Sandbox does not currently support Hermes' `container_disk` resource knob. Leave `container_disk` unset or at the shared default `51200`; non-default values fail diagnostics and backend creation instead of being silently ignored.
 
+### Sprites Backend
+
+Runs commands in a [Sprite](https://sprites.dev) — a stateful cloud sandbox on Fly.io, with checkpoint & restore. Sprites persist between sessions by default and are reused by identity: Hermes names them `hermes-{profile}-{task_id}` (just `hermes-{task_id}` on the default profile) and on each session start either resumes the existing Sprite or creates a fresh one. Scoping the name by Hermes profile keeps independent profiles from sharing one live Sprite.
+
+```yaml
+terminal:
+  backend: sprites
+  cwd: /home/sprite                # Sprite default home; "/root" / "~" auto-rewrite
+  container_persistent: true       # Leave the Sprite alive on cleanup (delete if false)
+```
+
+Sprites allocates compute dynamically (up to 8 CPU / 16 GB RAM per Sprite); user-selectable CPU/memory/disk/region knobs aren't exposed yet, so the usual `container_cpu` / `container_memory` / `container_disk` settings are ignored on this backend.
+
+**Required install:** Install the optional SDK extra:
+
+```bash
+pip install 'hermes-agent[sprites]'
+```
+
+**Required authentication:** `SPRITES_TOKEN` environment variable. Get a token with `sprite login` or `sprite auth setup --token …` from the [Sprites CLI](https://sprites.dev).
+
+#### Restricted tokens (recommended for CI / shared envs)
+
+The Sprites dashboard (**Account → Tokens → ⚙ Create Token → Restricted Token Options**) lets you scope a token to:
+
+- **Name Prefix** — the token can only create or operate on sprites whose name starts with `<prefix>-…`. Set this to `hermes` and the token can manage `hermes-default`, `hermes-work-mytask`, and every other `hermes-…` sprite Hermes creates — but nothing else in the account.
+- **Max Sprites Total** — caps how many sprites the token may keep alive at once. Useful for budgeting CI / batch / multi-agent workloads against a known ceiling.
+
+This pairs cleanly with the deterministic `hermes-…` naming scheme: a `hermes`-prefixed restricted token is the right thing to hand to a Hermes runtime (CI, gateway, shared dev box, untrusted automation) when you don't want it touching the rest of your Sprites fleet.
+
+**Persistence:** With `container_persistent: true`, `cleanup()` leaves the Sprite running so the next session can resume against the same filesystem and live VM. With `persistent: false`, the Sprite is deleted on cleanup. Sprites also support server-side checkpoints exposed by the SDK (`sprite.create_checkpoint`, `sprite.restore_checkpoint`), but Hermes does not invoke them automatically — manage checkpoints via the `sprite-env` CLI if needed.
+
+**Credential files:** Hermes pushes `~/.hermes/` credentials/skills/cache into the Sprite at startup via the Sprite filesystem API.
+
+**No sync-back, by design:** Unlike SSH/Modal/Daytona, this backend does **not** copy the agent's files back to the host on cleanup. The Sprite's persistent ext4 filesystem _is_ the authoritative store — anything the agent writes stays inside the Sprite and is visible again the next time Hermes resumes that identity. If you opt out of persistence (`container_persistent: false`), the Sprite is deleted along with its filesystem; treat that mode as intentionally ephemeral.
+
 ### Singularity/Apptainer Backend
 
 Runs commands in a [Singularity/Apptainer](https://apptainer.org) container. Designed for HPC clusters and shared machines where Docker isn't available.
@@ -476,6 +513,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
+- **Sprites** — Needs `SPRITES_TOKEN` plus the optional `sprites-py` SDK (`pip install 'hermes-agent[sprites]'`).
 - **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
@@ -483,6 +521,8 @@ When in doubt, set `terminal.backend` back to `local` and verify that commands r
 ### Remote-to-Host State Sync on Teardown
 
 For the **SSH**, **Modal**, and **Daytona** backends, Hermes pushes your `~/.hermes/` state (credential files, skills, cache) into the remote sandbox during the session, and on teardown **syncs changed state files back** to their original host locations. Files that differ from what was originally pushed (compared by content hash) are applied back in place; new remote files under a synced directory (e.g. a skill the agent created remotely) are mapped back to the corresponding host path. Upload-only credential files are never overwritten on the host.
+
+The **Sprites** backend deliberately opts out of this flow — its persistent ext4 filesystem is the authoritative store, so files survive in the Sprite itself across sessions rather than being copied back to the host. See the [Sprites Backend](#sprites-backend) section for details.
 
 - The sync-back retries up to 3 times with backoff and refuses to extract remote archives larger than 2 GiB.
 - Docker and Singularity use bind mounts (live host filesystem view) and don't need this.

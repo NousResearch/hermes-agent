@@ -189,6 +189,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `VERCEL_PROJECT_ID` | Vercel project ID (required with `VERCEL_TOKEN`) |
 | `VERCEL_TEAM_ID` | Vercel team ID (required with `VERCEL_TOKEN`) |
 | `VERCEL_OIDC_TOKEN` | Vercel short-lived OIDC token (development-only alternative) |
+| `SPRITES_TOKEN` | Sprites: stateful cloud sandboxes on Fly.io ([sprites.dev](https://sprites.dev/)) |
 
 ### Skill API Keys
 

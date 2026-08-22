@@ -127,11 +127,17 @@ def _check_kanban_orchestrator_mode() -> bool:
     lifecycle tools (complete/block/heartbeat), not enumerate or unblock
     board state. Profiles that explicitly opt into the kanban toolset
     and are NOT scoped to a single task are the orchestrator surface.
+
+    The one exception is a dispatched worker run of the configured
+    ``kanban.orchestrator_profile``: that profile IS the board-routing
+    surface, so it keeps ``kanban_list`` / ``kanban_unblock`` even while
+    ``HERMES_KANBAN_TASK`` is set. Any other worker stays scoped to its
+    own card.
     """
     if _is_delegated_child_context():
         return False
     if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
-        return False
+        return _is_orchestrator_worker()
     return _profile_has_kanban_toolset()
 
 
@@ -180,7 +186,112 @@ def _stamp_worker_session_metadata(
     return stamped
 
 
-def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
+def _acting_profile() -> str:
+    """Best-effort name of the profile this process is running as.
+
+    The dispatcher exports ``HERMES_PROFILE`` for every worker it spawns.
+    Interactive/CLI runs may not have it, so fall back to inferring the
+    profile from ``HERMES_HOME``. Preserves the original casing for audit
+    events; matching against ``kanban.orchestrator_profile`` is case-insensitive
+    in :func:`_is_orchestrator_worker`.
+    """
+    env_profile = (os.environ.get("HERMES_PROFILE") or "").strip()
+    if env_profile:
+        return env_profile
+    try:
+        from hermes_cli import profiles as profiles_mod
+
+        return (profiles_mod.get_active_profile_name() or "").strip()
+    except Exception:
+        return ""
+
+
+def _configured_orchestrator_profile() -> str:
+    """``kanban.orchestrator_profile`` as a normalized name, or "".
+
+    Deliberately does NOT apply ``kanban_decompose``'s
+    "fall back to the active default profile" rule: that fallback exists so a
+    root card is never stranded without an owner, and reusing it here would
+    silently hand every ``default`` worker cross-card mutation rights. The
+    board-health exemption is opt-in and only ever applies to an explicitly
+    configured profile name.
+    """
+    try:
+        cfg = load_config()
+        kcfg = cfg.get("kanban") or {}
+        if not isinstance(kcfg, dict):
+            return ""
+        return (kcfg.get("orchestrator_profile") or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _is_orchestrator_worker() -> bool:
+    """True when THIS dispatched worker run is the board's orchestrator.
+
+    The dispatcher exports ``HERMES_PROFILE`` for the assignee it spawns
+    (see kanban_db._worker_env). A worker run of
+    ``kanban.orchestrator_profile`` is the board-health agent: it may
+    enumerate the board and mutate other cards. Any OTHER profile's
+    worker stays scoped to its own card.
+
+    A delegate_task child never qualifies even if it inherits the
+    parent's ``HERMES_PROFILE``: it shares the process, so the name is
+    not proof of dispatcher ownership.
+    """
+    if _is_delegated_child_context():
+        return False
+    orchestrator = _configured_orchestrator_profile()
+    if not orchestrator:
+        return False
+    profile = (os.environ.get("HERMES_PROFILE") or "").strip().lower()
+    if not profile or profile != orchestrator:
+        return False
+    return bool(os.environ.get("HERMES_KANBAN_TASK")) and _is_dispatcher_owned_worker()
+
+
+def _record_cross_card_mutation(
+    tid: str, tool_name: str, *, board: Optional[str] = None
+) -> None:
+    """Audit a board-health mutation the orchestrator made on someone else's card.
+
+    Non-negotiable per the card's D4/D3: the event names the acting profile and
+    the source task id, so the trail never reads as the assigned worker having
+    completed work it did not do. Best-effort — an audit write must never be
+    the reason a legitimate board fix fails.
+    """
+    try:
+        kb, conn = _connect(board=board)
+    except Exception:
+        logger.warning("cross-card audit event skipped: cannot open board", exc_info=True)
+        return
+    try:
+        kb._append_event(
+            conn,
+            tid,
+            "cross_card_mutation",
+            {
+                "actor_profile": _acting_profile(),
+                "source_task_id": os.environ.get("HERMES_KANBAN_TASK"),
+                "tool": tool_name,
+            },
+        )
+        conn.commit()
+    except Exception:
+        logger.warning("cross-card audit event failed for %s", tid, exc_info=True)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _enforce_worker_task_ownership(
+    tid: str,
+    tool_name: str = "this tool",
+    *,
+    board: Optional[str] = None,
+) -> Optional[str]:
     """Reject worker-driven destructive calls on foreign task IDs.
 
     A process spawned by the dispatcher has ``HERMES_KANBAN_TASK`` set
@@ -195,6 +306,12 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     tasks or reopen blocked ones. Workers are narrowly scoped to their
     one task.
 
+    The profile named by ``kanban.orchestrator_profile`` owns board health, so
+    it keeps that cross-card freedom even when the dispatcher spawned it as a
+    worker on its own card (``HERMES_KANBAN_TASK`` set). Callers MUST then
+    invoke :func:`_maybe_record_cross_card_mutation` *after* the mutation
+    actually lands, so a refused complete does not leave a fake audit row.
+
     Returns ``None`` when the call is allowed, or a tool-error string
     when it must be rejected. Callers should ``return`` the error
     verbatim.
@@ -204,12 +321,31 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
         # Orchestrator or CLI context — no task-scope restriction.
         return None
     if tid != env_tid:
+        if _is_orchestrator_worker():
+            return None
         return tool_error(
             f"worker is scoped to task {env_tid}; refusing to mutate "
             f"{tid}. Use kanban_comment to hand off information to other "
             f"tasks, or kanban_create to spawn follow-up work."
         )
     return None
+
+
+def _maybe_record_cross_card_mutation(
+    tid: str, tool_name: str, *, board: Optional[str] = None
+) -> None:
+    """Write the D4 audit event for a successful foreign-card mutation.
+
+    No-op unless this process is a dispatched orchestrator worker acting
+    on a task other than ``HERMES_KANBAN_TASK``. Call after the kernel
+    write succeeded, never before.
+    """
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not env_tid or tid == env_tid:
+        return
+    if not _is_orchestrator_worker():
+        return
+    _record_cross_card_mutation(tid, tool_name, board=board)
 
 
 def _connect(board: Optional[str] = None):
@@ -473,7 +609,7 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     structured tool_error so the model gets a clear refusal instead of
     silently mutating board state from a worker context.
     """
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if os.environ.get("HERMES_KANBAN_TASK") and not _is_orchestrator_worker():
         return tool_error(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
             "must use kanban_complete, kanban_block, kanban_heartbeat, or "
@@ -662,7 +798,9 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
-    ownership_err = _enforce_worker_task_ownership(tid)
+    ownership_err = _enforce_worker_task_ownership(
+        tid, "kanban_complete", board=args.get("board")
+    )
     if ownership_err:
         return ownership_err
     summary = args.get("summary")
@@ -803,6 +941,9 @@ def _handle_complete(args: dict, **kw) -> str:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
+            _maybe_record_cross_card_mutation(
+                tid, "kanban_complete", board=board
+            )
             run = kb.latest_run(conn, tid)
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
@@ -824,7 +965,9 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
-    ownership_err = _enforce_worker_task_ownership(tid)
+    ownership_err = _enforce_worker_task_ownership(
+        tid, "kanban_block", board=args.get("board")
+    )
     if ownership_err:
         return ownership_err
     reason = args.get("reason")
@@ -876,6 +1019,7 @@ def _handle_block(args: dict, **kw) -> str:
                     f"could not block {tid} (unknown id or not in "
                     f"running/ready)"
                 )
+            _maybe_record_cross_card_mutation(tid, "kanban_block", board=board)
             run = kb.latest_run(conn, tid)
             # Tell the worker where the task actually landed so it doesn't
             # assume it's sitting in 'blocked' when routing sent it elsewhere.
@@ -905,7 +1049,9 @@ def _handle_request_review(args: dict, **kw) -> str:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
-    ownership_err = _enforce_worker_task_ownership(tid)
+    ownership_err = _enforce_worker_task_ownership(
+        tid, "kanban_request_review", board=args.get("board")
+    )
     if ownership_err:
         return ownership_err
     summary = args.get("summary")
@@ -957,6 +1103,9 @@ def _handle_request_review(args: dict, **kw) -> str:
                 return tool_error(
                     f"could not request review for {tid}: {detail}"
                 )
+            _maybe_record_cross_card_mutation(
+                tid, "kanban_request_review", board=board
+            )
             run = kb.latest_run(conn, tid)
             landed = kb.get_task(conn, tid)
             return _ok(
@@ -983,7 +1132,9 @@ def _handle_request_changes(args: dict, **kw) -> str:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
-    ownership_err = _enforce_worker_task_ownership(tid)
+    ownership_err = _enforce_worker_task_ownership(
+        tid, "kanban_request_changes", board=args.get("board")
+    )
     if ownership_err:
         return ownership_err
     reason = args.get("reason")
@@ -1004,6 +1155,9 @@ def _handle_request_changes(args: dict, **kw) -> str:
                 return tool_error(
                     f"could not request changes for {tid}: {detail or 'invalid review state'}"
                 )
+            _maybe_record_cross_card_mutation(
+                tid, "kanban_request_changes", board=board
+            )
             landed = kb.get_task(conn, tid)
             run = kb.latest_run(conn, tid)
             return _ok(
@@ -1039,7 +1193,9 @@ def _handle_heartbeat(args: dict, **kw) -> str:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
-    ownership_err = _enforce_worker_task_ownership(tid)
+    ownership_err = _enforce_worker_task_ownership(
+        tid, "kanban_heartbeat", board=args.get("board")
+    )
     if ownership_err:
         return ownership_err
     note = args.get("note")
@@ -1065,6 +1221,9 @@ def _handle_heartbeat(args: dict, **kw) -> str:
                 return tool_error(
                     f"could not heartbeat {tid} (unknown id or not running)"
                 )
+            _maybe_record_cross_card_mutation(
+                tid, "kanban_heartbeat", board=board
+            )
             return _ok(task_id=tid)
         finally:
             conn.close()
@@ -1133,7 +1292,9 @@ def _handle_attach(args: dict, **kw) -> str:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
-    ownership_err = _enforce_worker_task_ownership(tid)
+    ownership_err = _enforce_worker_task_ownership(
+        tid, "kanban_attach", board=args.get("board")
+    )
     if ownership_err:
         return ownership_err
     filename = args.get("filename")
@@ -1161,6 +1322,9 @@ def _handle_attach(args: dict, **kw) -> str:
                 content_type=content_type,
                 uploaded_by="agent",
                 board=board,
+            )
+            _maybe_record_cross_card_mutation(
+                tid, "kanban_attach", board=board
             )
             return _ok(task_id=tid, attachment_id=att_id, size=len(data))
         finally:
@@ -1255,7 +1419,9 @@ def _handle_attach_url(args: dict, **kw) -> str:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
-    ownership_err = _enforce_worker_task_ownership(tid)
+    ownership_err = _enforce_worker_task_ownership(
+        tid, "kanban_attach_url", board=args.get("board")
+    )
     if ownership_err:
         return ownership_err
     url = args.get("url")
@@ -1288,6 +1454,9 @@ def _handle_attach_url(args: dict, **kw) -> str:
                 content_type=content_type or fetched_ct,
                 uploaded_by="agent",
                 board=board,
+            )
+            _maybe_record_cross_card_mutation(
+                tid, "kanban_attach_url", board=board
             )
             return _ok(task_id=tid, attachment_id=att_id, size=len(data))
         finally:
@@ -1620,7 +1789,9 @@ def _handle_unblock(args: dict, **kw) -> str:
     tid = args.get("task_id")
     if not tid:
         return tool_error("task_id is required")
-    ownership_err = _enforce_worker_task_ownership(str(tid))
+    ownership_err = _enforce_worker_task_ownership(
+        str(tid), "kanban_unblock", board=args.get("board")
+    )
     if ownership_err:
         return ownership_err
     board = args.get("board")
@@ -1630,6 +1801,9 @@ def _handle_unblock(args: dict, **kw) -> str:
             ok = kb.unblock_task(conn, str(tid))
             if not ok:
                 return tool_error(f"could not unblock {tid} (not blocked or unknown)")
+            _maybe_record_cross_card_mutation(
+                str(tid), "kanban_unblock", board=board
+            )
             task = kb.get_task(conn, str(tid))
             return _ok(task_id=str(tid), status=task.status if task else None)
         finally:

@@ -716,6 +716,296 @@ def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# kanban.orchestrator_profile board-health exemption (t_d2335f3c)
+# ---------------------------------------------------------------------------
+#
+# The profile named by kanban.orchestrator_profile may mutate ANY task while
+# running as a dispatcher-spawned worker on its own card. Every other profile
+# keeps today's single-task scope. Every cross-card mutation must write a
+# cross_card_mutation task_event naming the acting profile and source task.
+
+
+@pytest.fixture
+def board_health_orchestrator_env(monkeypatch, tmp_path):
+    """A dispatcher-spawned worker whose profile IS the configured
+    kanban.orchestrator_profile, with its own task id in HERMES_KANBAN_TASK."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n  orchestrator_profile: orchestrator\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "orchestrator")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        own = kb.create_task(conn, title="orchestrator's own card", assignee="orchestrator")
+        kb.claim_task(conn, own)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", own)
+    return own
+
+
+def test_ordinary_worker_still_cannot_mutate_other_card(worker_env):
+    """A normal (non-orchestrator) worker profile keeps today's behaviour:
+    it still cannot complete a foreign task."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="sibling", assignee="peer")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (other,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"task_id": other, "summary": "should be refused"})
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    assert "refusing to mutate" in d.get("error", "")
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, other).status == "ready"
+        events = kb.list_events(conn, other)
+        assert not [e for e in events if e.kind == "cross_card_mutation"]
+    finally:
+        conn.close()
+
+
+def test_orchestrator_profile_can_mutate_foreign_card_as_worker(
+    board_health_orchestrator_env,
+):
+    """The configured kanban.orchestrator_profile, even while dispatched as a
+    worker on its own card, may complete a DIFFERENT card (D1/D3)."""
+    own = board_health_orchestrator_env
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="someone else's card", assignee="peer")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (other,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"task_id": other, "summary": "board-health close"})
+    d = json.loads(out)
+    assert d.get("ok") is True, f"orchestrator profile must be allowed: {d}"
+    assert d.get("task_id") == other
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, other).status == "done"
+    finally:
+        conn.close()
+
+    # Own card, meanwhile, is untouched by this call.
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, own).status != "done"
+    finally:
+        conn.close()
+
+
+def test_cross_card_mutation_records_acting_profile_event(
+    board_health_orchestrator_env,
+):
+    """D4: every cross-card mutation writes a task_event naming the acting
+    profile and the source task id, so the audit trail never shows the
+    foreign task's own worker having done the work."""
+    own = board_health_orchestrator_env
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="audited card", assignee="peer")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (other,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"task_id": other, "summary": "board-health close"})
+    d = json.loads(out)
+    assert d.get("ok") is True
+
+    conn = kb.connect()
+    try:
+        events = kb.list_events(conn, other)
+    finally:
+        conn.close()
+    audit = [e for e in events if e.kind == "cross_card_mutation"]
+    assert len(audit) == 1, f"expected exactly one audit event, got {events}"
+    payload = audit[0].payload
+    assert payload["actor_profile"] == "orchestrator"
+    assert payload["source_task_id"] == own
+    assert payload["tool"] == "kanban_complete"
+
+
+def test_exemption_follows_configured_profile_name_not_hardcoded_orchestrator(
+    monkeypatch, tmp_path,
+):
+    """D1: the exemption is the configured kanban.orchestrator_profile value,
+    not the string 'orchestrator'. A worker named techlead with that config
+    may mutate; a worker named orchestrator with a different config must not."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n  orchestrator_profile: techlead\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "techlead")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        own = kb.create_task(conn, title="techlead own", assignee="techlead")
+        kb.claim_task(conn, own)
+        other = kb.create_task(conn, title="foreign", assignee="peer")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (other,))
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", own)
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"task_id": other, "summary": "techlead close"})
+    d = json.loads(out)
+    assert d.get("ok") is True, f"configured profile must be allowed: {d}"
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, other).status == "done"
+        events = kb.list_events(conn, other)
+    finally:
+        conn.close()
+    audit = [e for e in events if e.kind == "cross_card_mutation"]
+    assert len(audit) == 1
+    assert audit[0].payload["actor_profile"] == "techlead"
+    assert audit[0].payload["source_task_id"] == own
+
+
+def test_hardcoded_orchestrator_name_does_not_grant_exemption(
+    monkeypatch, tmp_path,
+):
+    """D1: a worker whose profile happens to be named 'orchestrator' still
+    cannot mutate another card when kanban.orchestrator_profile is unset
+    (or set to someone else)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n  orchestrator_profile: techlead\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "orchestrator")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        own = kb.create_task(conn, title="named-orchestrator own", assignee="orchestrator")
+        kb.claim_task(conn, own)
+        other = kb.create_task(conn, title="foreign", assignee="peer")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (other,))
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", own)
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"task_id": other, "summary": "should be refused"})
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    assert "refusing to mutate" in d.get("error", "")
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, other).status == "ready"
+        events = kb.list_events(conn, other)
+        assert not [e for e in events if e.kind == "cross_card_mutation"]
+    finally:
+        conn.close()
+
+
+def test_failed_cross_card_complete_does_not_write_audit(
+    board_health_orchestrator_env,
+):
+    """D4 audit is post-success: a refused complete must not leave a
+    cross_card_mutation row claiming work that did not happen."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="todo card", assignee="peer")
+        # 'todo' is not a completable status — complete_task returns False.
+        conn.execute("UPDATE tasks SET status='todo' WHERE id=?", (other,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"task_id": other, "summary": "will fail"})
+    d = json.loads(out)
+    assert d.get("ok") is not True
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, other).status == "todo"
+        events = kb.list_events(conn, other)
+        assert not [e for e in events if e.kind == "cross_card_mutation"]
+    finally:
+        conn.close()
+
+
+def test_orchestrator_worker_can_unblock_foreign_card(
+    board_health_orchestrator_env,
+):
+    """D2: status mutations used for board health (unblock) are in the
+    exemption. Sibling PR 92206 unhides the tool; this pins the ownership
+    check plus the D4 audit event."""
+    own = board_health_orchestrator_env
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        other = kb.create_task(conn, title="blocked sibling", assignee="peer")
+        kb.block_task(conn, other, reason="false trip")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock({"task_id": other})
+    d = json.loads(out)
+    assert d.get("ok") is True, f"orchestrator worker must unblock: {d}"
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, other).status in {"ready", "todo"}
+        events = kb.list_events(conn, other)
+    finally:
+        conn.close()
+    audit = [e for e in events if e.kind == "cross_card_mutation"]
+    assert len(audit) == 1
+    assert audit[0].payload["actor_profile"] == "orchestrator"
+    assert audit[0].payload["source_task_id"] == own
+    assert audit[0].payload["tool"] == "kanban_unblock"
+
+
+# ---------------------------------------------------------------------------
 # Optional ``board`` parameter — per-call DB override
 # ---------------------------------------------------------------------------
 #

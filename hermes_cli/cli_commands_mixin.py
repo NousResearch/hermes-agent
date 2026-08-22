@@ -2290,7 +2290,11 @@ class CLICommandsMixin:
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _render_final_assistant_content(response, mode=self.final_response_markdown),
+                        _render_final_assistant_content(
+                            response,
+                            mode=getattr(self, "final_response_markdown", "strip"),
+                            code_theme=getattr(self, "_pygments_theme", "monokai"),
+                        ),
                         title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,

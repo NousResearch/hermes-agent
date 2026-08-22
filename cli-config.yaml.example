@@ -1625,6 +1625,16 @@ display:
   #   false: Wait for the full response before rendering
   streaming: true
 
+  # Assistant Markdown handling in the classic CLI.
+  #   render: Render headings, emphasis, tables, and syntax-highlighted fences
+  #   strip:  Remove Markdown markers and print plain text (default)
+  #   raw:    Preserve Markdown markers without terminal styling
+  # Toggle render/strip at runtime with /markdown (alias /md).
+  final_response_markdown: strip
+
+  # Pygments style for fenced code blocks. Empty selects a skin-aware default.
+  code_theme: ""
+
   # Show [HH:MM] timestamps on user input and assistant response labels.
   # timestamps: false
 

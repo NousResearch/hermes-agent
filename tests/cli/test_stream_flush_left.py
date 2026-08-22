@@ -62,3 +62,45 @@ def test_intentional_markdown_indentation_is_preserved(cli_stub):
     plain = [_strip_ansi(e) for e in emitted]
     assert any(line == "- item" for line in plain)
     assert any(line == "  - nested item" for line in plain)
+
+
+def test_markdown_fence_uses_width_remaining_after_stream_pad(cli_stub, monkeypatch):
+    import cli as climod
+
+    cli, emitted = cli_stub
+    cli.final_response_markdown = "render"
+    cli._pygments_theme = "monokai"
+    monkeypatch.setattr(climod, "_STREAM_PAD", "    ")
+    monkeypatch.setattr(climod, "_terminal_width_for_streaming", lambda: 28)
+
+    cli._stream_delta("```python\nprint('hi')\n```\n")
+    cli._flush_stream()
+
+    fence_lines = [
+        _strip_ansi(line)
+        for line in emitted
+        if "┌" in _strip_ansi(line) or "└" in _strip_ansi(line)
+    ]
+    assert len(fence_lines) == 2
+    assert all(len(line) <= 32 for line in fence_lines)
+
+
+def test_multiline_markdown_table_emits_one_flush_left_row_per_call(cli_stub, monkeypatch):
+    import cli as climod
+
+    cli, emitted = cli_stub
+    cli.final_response_markdown = "render"
+    cli._pygments_theme = "monokai"
+    monkeypatch.setattr(climod, "_terminal_width_for_streaming", lambda: 32)
+
+    cli._stream_delta(
+        "| Name | Description |\n"
+        "| --- | --- |\n"
+        "| Hermes | A deliberately long description that cannot fit |\n"
+        "\n"
+    )
+
+    table_lines = [line for line in emitted if "Name:" in line or "Description:" in line]
+    assert table_lines
+    assert all(not line.startswith(" ") for line in table_lines)
+    assert all("\n" not in line for line in table_lines)

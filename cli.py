@@ -2947,11 +2947,28 @@ def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
         b = int(hex_color[5:7], 16)
         prefix = "1;" if bold else ""
         return f"\033[{prefix}38;2;{r};{g};{b}m"
-    except (ValueError, IndexError):
+    except (ValueError, IndexError, TypeError):
         return _ACCENT_ANSI_DEFAULT if bold else "\033[38;2;184;134;11m"
 
 
-# ────────────────────────────────────────────────────────────────────────
+def _hex_to_truecolor(hex_str: str, layer: str = "fg") -> str:
+    """Convert '#RRGGBB' to '38;2;R;G;B' (fg) or '48;2;R;G;B' (bg).
+
+    Return an empty string for malformed or non-string input so skin YAML
+    mistakes degrade instead of crashing the streaming hot path.
+    """
+    if not isinstance(hex_str, str) or len(hex_str) != 7 or not hex_str.startswith("#"):
+        return ""
+    try:
+        r = int(hex_str[1:3], 16)
+        g = int(hex_str[3:5], 16)
+        b = int(hex_str[5:7], 16)
+    except (ValueError, TypeError):
+        return ""
+    prefix = "38" if layer == "fg" else "48"
+    return f"{prefix};2;{r};{g};{b}"
+
+
 # Light/dark terminal mode detection.
 #
 # Mirrors ui-tui/src/theme.ts detectLightMode().  Used to decide whether
@@ -3461,7 +3478,11 @@ def _terminal_width_for_streaming() -> int:
     return max(20, cols - len(_STREAM_PAD) - 2)
 
 
-def _render_final_assistant_content(text: str, mode: str = "render"):
+def _render_final_assistant_content(
+    text: str,
+    mode: str = "render",
+    code_theme: str = "monokai",
+):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
 
@@ -3496,7 +3517,7 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     plain = _rich_text_from_ansi(text or "").plain
     plain = _preserve_windows_dot_segments_for_markdown(plain)
     plain = realign_markdown_tables(plain, panel_width)
-    return Markdown(plain)
+    return Markdown(plain, code_theme=code_theme)
 
 
 def _post_stream_transform_output(response: str, result: dict | None) -> str:
@@ -5079,6 +5100,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
+
+        # Markdown rendering uses the existing display.final_response_markdown
+        # mode (render | strip | raw); avoid a second conflicting on/off flag.
+        self._pygments_theme = self._resolve_pygments_theme()
+        self._md_stream_processor = None
 
         # Per-turn accounting (display.turn_summary / display.spinner_token_flow).
         # Both are CLI-only, display-only chrome. The collector rides the
@@ -7655,6 +7681,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
 
+    def _resolve_pygments_theme(self) -> str:
+        """Pick a Pygments theme that matches the active skin."""
+        explicit = CLI_CONFIG["display"].get("code_theme", "")
+        if explicit:
+            return str(explicit)
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+
+            skin = get_active_skin()
+            if skin.code_theme:
+                return skin.code_theme
+            skin_theme_map = {
+                "default": "monokai",
+                "ares": "monokai",
+                "mono": "friendly_grayscale",
+                "slate": "nord",
+                "poseidon": "nord",
+                "sisyphus": "friendly_grayscale",
+                "charizard": "monokai",
+            }
+            return skin_theme_map.get(skin.name, "monokai")
+        except Exception:
+            return "monokai"
+
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning/thinking tokens into a dim box above the response.
 
@@ -7882,18 +7932,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _skin = get_active_skin()
                 label = _skin.get_branding("response_label", "⚕ Hermes")
                 _text_hex = _skin.get_color("banner_text", "#FFF8DC")
+                _code_fg_hex = _skin.get_color(
+                    "code_inline_fg",
+                    _skin.get_color("banner_accent", ""),
+                )
+                _code_bg_hex = _skin.get_color("code_inline_bg", "")
             except Exception:
                 label = "⚕ Hermes"
                 _text_hex = "#FFF8DC"
+                _code_fg_hex = ""
+                _code_bg_hex = ""
             # Build a true-color ANSI escape for the response text color
             # so streamed content matches the Rich Panel appearance.
-            try:
-                _r = int(_text_hex[1:3], 16)
-                _g = int(_text_hex[3:5], 16)
-                _b = int(_text_hex[5:7], 16)
-                self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
-            except (ValueError, IndexError):
-                self._stream_text_ansi = ""
+            _body_inner = _hex_to_truecolor(_text_hex, "fg")
+            self._stream_text_ansi = f"\033[{_body_inner}m" if _body_inner else ""
+            _code_fg_part = _hex_to_truecolor(_code_fg_hex, "fg") if _code_fg_hex else ""
+            _code_bg_part = _hex_to_truecolor(_code_bg_hex, "bg") if _code_bg_hex else ""
+            _code_parts = ["1"]
+            if _code_fg_part:
+                _code_parts.append(_code_fg_part)
+            if _code_bg_part:
+                _code_parts.append(_code_bg_part)
+            self._stream_inline_code_ansi = (
+                f"\033[{';'.join(_code_parts)}m" if len(_code_parts) > 1 else ""
+            )
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
             w = self._scrollback_box_width()
@@ -7904,9 +7966,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         # Emit complete lines, keep partial remainder in buffer
         _tc = getattr(self, "_stream_text_ansi", "")
+        _ic = getattr(self, "_stream_inline_code_ansi", "")
+
+        def _markdown_render_enabled() -> bool:
+            return self.final_response_markdown == "render"
 
         def _emit_one(printed_line: str) -> None:
             _cprint(f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
+
+        def _emit_markdown_line(line: str) -> None:
+            if getattr(self, "_md_stream_processor", None) is None:
+                from hermes_cli.markdown_stream import MarkdownStreamProcessor
+
+                self._md_stream_processor = MarkdownStreamProcessor(
+                    base_ansi=_tc,
+                    pygments_theme=self._pygments_theme,
+                    inline_code_ansi=_ic,
+                    max_width=_terminal_width_for_streaming(),
+                )
+            rendered = self._md_stream_processor.feed_line(line)
+            if rendered is not None:
+                for rendered_line in rendered.split("\n"):
+                    _cprint(f"{_STREAM_PAD}{rendered_line}")
 
         def _flush_table_buf() -> None:
             buf = self._stream_table_buf
@@ -7928,6 +8009,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
+
+            if _markdown_render_enabled():
+                _emit_markdown_line(line)
+                continue
 
             # Hold table-shaped lines in a side-buffer so we can re-pad
             # the whole block once it ends.  Streaming line-by-line, we
@@ -7968,6 +8053,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             and not self._in_stream_table
             and not self._stream_buf.lstrip().startswith("|")
             and len(self._stream_buf) >= 80
+            and not _markdown_render_enabled()
         ):
             preview = self._stream_buf[-int(_STREAM_PARTIAL_PREVIEW_LEN):]
             cut = preview.find(" ")
@@ -7993,6 +8079,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._close_reasoning_box()
 
         _tc = getattr(self, "_stream_text_ansi", "")
+        _mode = getattr(self, "final_response_markdown", "strip")
 
         # If the stream buffer has a trailing partial line that looks like
         # a table row, fold it into the table buffer so the whole block
@@ -8013,16 +8100,38 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             joined = "\n".join(self._stream_table_buf)
             self._stream_table_buf = []
             self._in_stream_table = False
-            if self.final_response_markdown == "strip":
+            if _mode == "strip":
                 joined = _strip_markdown_syntax(joined)
             block = realign_markdown_tables(joined, _terminal_width_for_streaming())
             for ln in block.split("\n"):
                 _cprint(f"{_STREAM_PAD}{_tc}{ln}{_RST}" if _tc else f"{_STREAM_PAD}{ln}")
 
         if self._stream_buf:
-            line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
-            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
+            if _mode == "render":
+                if getattr(self, "_md_stream_processor", None) is None:
+                    from hermes_cli.markdown_stream import MarkdownStreamProcessor
+
+                    self._md_stream_processor = MarkdownStreamProcessor(
+                        base_ansi=_tc,
+                        pygments_theme=self._pygments_theme,
+                        inline_code_ansi=getattr(self, "_stream_inline_code_ansi", ""),
+                        max_width=_terminal_width_for_streaming(),
+                    )
+                rendered = self._md_stream_processor.feed_line(self._stream_buf)
+                if rendered is not None:
+                    for rendered_line in rendered.split("\n"):
+                        _cprint(f"{_STREAM_PAD}{rendered_line}")
+            else:
+                line = _strip_markdown_syntax(self._stream_buf) if _mode == "strip" else self._stream_buf
+                _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
             self._stream_buf = ""
+
+        if _mode == "render" and getattr(self, "_md_stream_processor", None) is not None:
+            tail = self._md_stream_processor.flush()
+            if tail:
+                for rendered_line in tail.split("\n"):
+                    _cprint(f"{_STREAM_PAD}{rendered_line}")
+            self._md_stream_processor = None
 
         # Close the response box
         if self._stream_box_opened:
@@ -8035,6 +8144,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._stream_started = False
         self._stream_box_opened = False
         self._stream_text_ansi = ""
+        self._stream_inline_code_ansi = ""
         self._stream_prefilt = ""
         self._in_reasoning_block = False
         self._stream_last_was_newline = True
@@ -8042,6 +8152,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
         self._deferred_content = ""
+        self._md_stream_processor = None
         self._stream_table_buf = []
         self._in_stream_table = False
 
@@ -12107,6 +12218,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_approvals_command(cmd_original)
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
+        elif canonical == "markdown":
+            enabled = self.final_response_markdown != "render"
+            self.final_response_markdown = "render" if enabled else "strip"
+            state = "ON" if enabled else "OFF"
+            save_config_value("display.final_response_markdown", self.final_response_markdown)
+            _cprint(f"  Markdown rendering: {state}")
         elif canonical == "fast":
             self._handle_fast_command(cmd_original)
         elif canonical == "compress":
@@ -16769,8 +16886,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _cprint(_post_stream_text)
                 else:
                     _chat_console = ChatConsole()
+                    content = _render_final_assistant_content(
+                        response,
+                        mode=self.final_response_markdown,
+                        code_theme=self._pygments_theme,
+                    )
                     _chat_console.print(Panel(
-                        _render_final_assistant_content(response, mode=self.final_response_markdown),
+                        content,
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,

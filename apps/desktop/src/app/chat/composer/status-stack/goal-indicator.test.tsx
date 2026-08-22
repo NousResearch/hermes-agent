@@ -69,6 +69,19 @@ describe('ComposerStatusStack goal indicator', () => {
     expect(screen.getByText('ship the feature')).toBeTruthy()
   })
 
+  it.each([
+    ['blocked', 'Goal blocked'],
+    ['stopped', 'Goal stopped'],
+    ['unachievable', 'Goal unachievable']
+  ] as const)('labels a %s goal truthfully', (status, label) => {
+    $goalsBySession.set({ [SID]: goal(status) })
+
+    renderStack()
+
+    expect(screen.getByText(label)).toBeTruthy()
+    expect(screen.getByText('ship the feature')).toBeTruthy()
+  })
+
   it('shows the continuation detail line for an active goal', () => {
     $goalsBySession.set({ [SID]: goal('active', 'ship it', 'Continuing toward goal (3/20)') })
 

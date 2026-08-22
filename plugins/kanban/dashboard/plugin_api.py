@@ -224,7 +224,11 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
         "claim_expires": r.claim_expires,
         "worker_pid": r.worker_pid,
         "max_runtime_seconds": r.max_runtime_seconds,
+        # Two independent leases: liveness ("the worker is responsive") and
+        # progress ("something observable happened"). Surfacing both is what
+        # lets the drawer show a worker that is busy but going nowhere.
         "last_heartbeat_at": r.last_heartbeat_at,
+        "last_progress_at": r.last_progress_at,
         "started_at": r.started_at,
         "ended_at": r.ended_at,
         "outcome": r.outcome,
@@ -1098,7 +1102,7 @@ def _parents_blocking_ready(
 def _invalidate_descendants_for_parent_reopen(
     conn: sqlite3.Connection,
     parent_id: str,
-    terminations: list[tuple[Optional[int], Optional[str]]],
+    terminations: list[tuple[Optional[int], Optional[str], Optional[str]]],
 ) -> None:
     """Delegate to the domain-layer implementation in :mod:`kanban_db`.
 
@@ -1130,7 +1134,7 @@ def _set_status_direct(
     orphaned. ``running -> ready`` via drag-drop is the common case
     (user yanking a stuck worker back to the queue).
     """
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    terminations: list[tuple[Optional[int], Optional[str], Optional[str]]] = []
     effective_status = new_status
     with kanban_db.write_txn(conn):
         # Snapshot current state so we know whether to close a run.
@@ -1169,6 +1173,10 @@ def _set_status_direct(
                 return False
 
         was_running = prev["status"] == "running"
+        prev_identity = (
+            kanban_db._stored_worker_identity(conn, task_id)
+            if was_running else None
+        )
         reopening_satisfied_parent = (
             prev["status"] in {"done", "archived"}
             and effective_status not in {"done", "archived"}
@@ -1178,9 +1186,12 @@ def _set_status_direct(
             "UPDATE tasks SET status = ?, "
             "  claim_lock = CASE WHEN ? = 'running' THEN claim_lock ELSE NULL END, "
             "  claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
-            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
+            "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END, "
+            "  worker_identity = CASE WHEN ? = 'running' "
+            "                        THEN worker_identity ELSE NULL END "
             "WHERE id = ?",
             (
+                effective_status,
                 effective_status,
                 effective_status,
                 effective_status,
@@ -1197,7 +1208,13 @@ def _set_status_direct(
                 outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {effective_status} (dashboard/direct)",
             )
-            terminations.append((prev["worker_pid"], prev["claim_lock"]))
+            # Read the birth identity BEFORE the UPDATE above clears it, and
+            # carry it to the post-commit kill: dragging a card off `running`
+            # signals a worker, so it needs the same ownership proof as every
+            # dispatcher reclaim path (kanban_db.verify_worker_ownership).
+            terminations.append((
+                prev["worker_pid"], prev["claim_lock"], prev_identity,
+            ))
         conn.execute(
             "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
             "VALUES (?, ?, 'status', ?, ?)",
@@ -1219,8 +1236,10 @@ def _set_status_direct(
                 task_id,
                 terminations,
             )
-    for pid, claim_lock in terminations:
-        kanban_db._terminate_reclaimed_worker(pid, claim_lock)
+    for pid, claim_lock, stored_identity in terminations:
+        kanban_db._terminate_reclaimed_worker(
+            pid, claim_lock, stored_identity=stored_identity,
+        )
     # If we re-opened something, children may have gone stale.
     if effective_status in {"done", "ready", "review"}:
         kanban_db.recompute_ready(conn)
@@ -1563,6 +1582,7 @@ def list_active_workers(
     """
     board = _resolve_board(board)
     conn = _conn(board=board)
+    now = int(time.time())
     try:
         rows = conn.execute(
             """
@@ -1578,6 +1598,7 @@ def list_active_workers(
                 r.claim_lock,
                 r.claim_expires,
                 r.last_heartbeat_at,
+                r.last_progress_at,
                 r.max_runtime_seconds
             FROM task_runs r
             JOIN tasks t ON t.id = r.task_id
@@ -1600,11 +1621,16 @@ def list_active_workers(
                 "claim_lock": row["claim_lock"],
                 "claim_expires": row["claim_expires"],
                 "last_heartbeat_at": row["last_heartbeat_at"],
+                "last_progress_at": row["last_progress_at"],
+                "progress_age_seconds": (
+                    now - int(row["last_progress_at"])
+                    if row["last_progress_at"] is not None else None
+                ),
                 "max_runtime_seconds": row["max_runtime_seconds"],
             }
             for row in rows
         ]
-        return {"workers": workers, "count": len(workers), "checked_at": int(time.time())}
+        return {"workers": workers, "count": len(workers), "checked_at": now}
     finally:
         conn.close()
 
@@ -2289,6 +2315,15 @@ def dispatch(
     try:
         result = kanban_db.dispatch_once(
             conn, dry_run=dry_run, max_spawn=max_n, board=board,
+            # Same progress bound the gateway/CLI/daemon ticks use, so a
+            # dashboard nudge cannot behave differently from a scheduled tick.
+            no_progress_timeout_seconds=(
+                kanban_db.resolve_no_progress_timeout_seconds(
+                    kanban_db.configured_kanban_setting(
+                        "no_progress_timeout_seconds"
+                    )
+                )
+            ),
         )
         # DispatchResult is a dataclass.
         try:

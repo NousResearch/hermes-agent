@@ -314,6 +314,14 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Progress lease: terminate + re-queue a running task whose worker is alive
+  # but has shown no observable progress for this long. "Progress" means a
+  # tool call or a board state transition — things the worker does, not things
+  # it says. Raw stream tokens and kanban_heartbeat renew liveness only
+  # (whatever the heartbeat's note says), so a slow single model call is
+  # unaffected while a reasoning-only loop is bounded. 0 disables the check;
+  # values under 60 are refused with a warning and fall back to the default.
+  no_progress_timeout_seconds: 2700
 
 # =============================================================================
 # Terminal Tool Configuration

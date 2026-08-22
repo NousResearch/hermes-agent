@@ -165,6 +165,7 @@ gateway:
       gave_up:             "已放弃（重试次数耗尽）"
       crashed:             "崩溃（worker 异常退出），dispatcher 将重试"
       timed_out:           "超时，dispatcher 将重试"
+      no_progress:         "无可观测进展，worker 已被终止，dispatcher 将重试"
       blocked:             "被阻塞，需要处理"
       status_default:      "状态变化"
       status_joiner:       "，"

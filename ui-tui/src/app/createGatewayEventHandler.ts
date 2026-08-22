@@ -839,7 +839,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
               ? '↻ goal continuing'
               : p.text.startsWith('⏸')
                 ? '⏸ goal paused'
-                : 'ready'
+                : p.text.startsWith('⚠')
+                  ? '⚠ goal blocked'
+                  : p.text.startsWith('■')
+                    ? '■ goal stopped'
+                    : p.text.startsWith('✗')
+                      ? '✗ goal unachievable'
+                      : 'ready'
 
           setStatus(brief)
           restoreStatusAfter(6000)

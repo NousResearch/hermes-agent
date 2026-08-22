@@ -58,6 +58,12 @@ const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
       ? s.goalPaused
       : status === 'waiting'
         ? s.goalWaiting
+        : status === 'blocked'
+          ? s.goalBlocked
+          : status === 'stopped'
+            ? s.goalStopped
+            : status === 'unachievable'
+              ? s.goalUnachievable
         : status === 'done'
           ? s.goalDone
           : s.goalActive

@@ -1261,7 +1261,56 @@ Isolation model:
   isolation.
 - After `kanban.failure_limit` consecutive non-success attempts on the
   same task (default: 2), the dispatcher auto-blocks it to prevent spin
-  loops.
+  loops. Counted outcomes: `spawn_failed`, `timed_out`, `crashed`,
+  `no_progress`. `stale` reclaims are penalty-free.
+
+Two independent leases hold a running claim, and conflating them is a bug
+class we have already shipped once:
+- **Liveness** (`tasks.last_heartbeat_at` + `claim_expires`) — "the process
+  and its provider are responsive." Renewed by *any* agent activity,
+  including raw stream chunks, via the `_touch_activity` bridge. This is what
+  keeps a slow tool-free model call from being reclaimed mid-flight.
+- **Progress** (`tasks.last_progress_at`) — "something observable happened
+  outside the model's token stream." Renewed only by a tool invocation seen
+  by the centralized tool middleware, a board state transition
+  (`kanban_db.PROGRESS_EVENT_KINDS`), or the claim itself, and bounded by
+  `kanban.no_progress_timeout_seconds` (`detect_no_progress_running`).
+
+Reasoning renews liveness, never progress. When adding a new renewal path,
+ask which question it answers: if a worker could emit it while producing
+nothing, it is liveness.
+
+**Model-authored text is never progress.** `kanban_heartbeat(note=...)`
+renews liveness and records the note as commentary; it cannot move the
+progress lease no matter what the note says. An earlier cut of this feature
+renewed progress for a note that was "evidence-bearing and new", which is a
+spelling test rather than a guard — nothing checks the sentence against the
+world, so a worker that never leaves its reasoning loop passes it by varying
+a string, and one that alternates two notes defeats a previous-note dedupe
+outright. `kanban_db.PROGRESS_RENEWAL_SOURCES` is the allowlist and
+`record_progress` enforces it. A future evidence channel needs to be
+deterministic and verified (a hash of a file actually written, an attested
+command exit) before it earns a source constant.
+
+**Never signal a PID you cannot prove you own.** `tasks.worker_pid` is a
+recycled integer, not an identity. The dispatcher records the process's
+immutable birth identity next to it at spawn (`capture_worker_identity` →
+`tasks.worker_identity`: on Linux `/proc/<pid>/stat` `starttime` pinned to the
+kernel `boot_id`, plus sid/pgid; elsewhere `psutil` creation time), and every
+path that signals — TTL reclaim, stale, no-progress, `enforce_max_runtime`,
+the dashboard's drag-off-`running`, ancestor invalidation — must route through
+`_terminate_reclaimed_worker`, which re-verifies it via
+`verify_worker_ownership` first. An absent (legacy row), unreadable,
+mismatched, or non-session-leader identity means **signal nothing** and hold
+the claim (`_reclaim_hold_reason` → `reclaim_deferred` with
+`reason: ownership_unproven`), never release it beside a live process. This is
+not optional caution: reclaim signals a process *group*, so a wrong PID takes
+down a whole wrong tree, not one process. If you add a new termination site,
+it goes through the same helper — do not hand-roll `os.kill`.
+
+Parse `/proc/<pid>/stat` with `_parse_proc_pid_stat`, never
+`line.split()[21]`: `comm` is unescaped and may contain spaces and
+parentheses, so a naive split reads the wrong field for such a process.
 
 Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 

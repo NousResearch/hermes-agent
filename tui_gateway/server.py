@@ -9894,7 +9894,7 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
 # the cursor advances past them and they can't wedge a later completed/blocked
 # event behind an unclaimed row.
 _KANBAN_NOTIFY_KINDS = (
-    "completed", "blocked", "gave_up", "crashed", "timed_out",
+    "completed", "blocked", "gave_up", "crashed", "timed_out", "no_progress",
     "status", "archived", "unblocked",
 )
 _KANBAN_SILENT_KINDS = frozenset({"archived", "unblocked"})
@@ -10037,6 +10037,17 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[
         except (TypeError, ValueError):
             pass
         return f"⏱ {board_tag}{tag}Kanban {task_id} timed out (max_runtime={limit}s); will retry"
+    if kind == "no_progress":
+        age = limit = 0
+        try:
+            age = int(payload.get("progress_age_seconds") or 0)
+            limit = int(payload.get("timeout_seconds") or 0)
+        except (TypeError, ValueError):
+            pass
+        return (
+            f"⏱ {board_tag}{tag}Kanban {task_id} made no observable progress "
+            f"for {age}s (limit {limit}s) — worker terminated; will retry"
+        )
     if kind == "status":
         return f"🔄 {board_tag}{tag}Kanban {task_id} → {payload.get('status') or ''}"
     return None

@@ -34,6 +34,14 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']):
       return <Codicon className="text-emerald-500/80" name="pass-filled" size="0.8rem" />
     }
 
+    if (item.goalStatus === 'blocked' || item.goalStatus === 'unachievable') {
+      return <Codicon className="text-destructive/80" name="error" size="0.8rem" />
+    }
+
+    if (item.goalStatus === 'stopped') {
+      return <Codicon className="text-muted-foreground/60" name="debug-stop" size="0.8rem" />
+    }
+
     return (
       <GlyphSpinner
         ariaLabel={s.running}

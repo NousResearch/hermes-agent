@@ -2619,8 +2619,12 @@ DEFAULT_CONFIG = {
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
         # Auto-block after this many consecutive non-success attempts for the
-        # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
-        # resets the streak for the new profile.
+        # same task/profile (spawn_failed, timed_out, crashed, or
+        # no_progress). Reassignment resets the streak for the new profile.
+        # ``stale`` reclaims are deliberately NOT counted: an absent heartbeat
+        # can mean legitimately quiet long work, whereas a no-progress reclaim
+        # is evidence-based — the worker was demonstrably live and produced
+        # nothing observable, so respawning it unboundedly is a spin loop.
         "failure_limit": 2,
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
@@ -2674,6 +2678,32 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # No-progress detection (progress lease). A running task whose
+        # worker is demonstrably alive — streaming, reasoning, heartbeating —
+        # but has produced NO observable progress for this many seconds is
+        # reclaimed and counted as a failed attempt.
+        #
+        # "Progress" is deterministic, never a guess about what the model is
+        # doing and never something the model can assert about itself: a tool
+        # invocation (attempted, in-flight or completed, seen by the tool
+        # middleware), a board state transition, or the claim itself. Raw
+        # stream tokens, API waits and `kanban_heartbeat` — whatever its note
+        # says — renew LIVENESS (`last_heartbeat_at`) but never progress,
+        # which is why a slow single tool-free model call still survives
+        # untouched while a reasoning-only loop is bounded.
+        #
+        # Default 45 min: wider than any plausible single model call
+        # (including extended thinking and provider backoff), narrow enough
+        # to stop a worker renewing its claim forever without acting. A tool
+        # call that BLOCKS for a long time is unaffected — it keeps renewing
+        # progress for its whole duration; work started in the background
+        # renews from the worker's own polling instead.
+        #
+        # Set 0 to disable. Values in 1..59, booleans and unparseable values
+        # are refused (a WARNING is logged and the default is used): a
+        # sub-minute progress bound would reclaim healthy workers, so it is
+        # a units slip rather than an intent.
+        "no_progress_timeout_seconds": 2700,
         # Orphaned-card reconciliation: each dispatcher tick, requeue
         # 'running' cards whose claim bookkeeping is broken (claim_lock or
         # claim_expires NULL with a dead/gone worker) — zombies invisible

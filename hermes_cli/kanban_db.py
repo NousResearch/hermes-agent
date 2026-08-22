@@ -336,6 +336,10 @@ def _fire_dispatch_tick_hook(
             result.reconciled_orphans,
             result.crashed,
             result.stale,
+            # A tick whose only action was a progress-lease reclaim acted.
+            # Reporting it as ``idle`` would hide the exact incident every
+            # dispatcher-health subscriber is watching for.
+            result.no_progress,
             result.timed_out,
             result.auto_blocked,
             result.rate_limited,
@@ -368,13 +372,175 @@ DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 
 # If a worker's PID is still alive but its ``last_heartbeat_at`` is
 # older than this when ``release_stale_claims`` runs, treat the worker
-# as wedged and reclaim regardless of PID liveness (#29747 gap 3).
-# This catches the logic-loop case where the process is technically
-# running but not making observable progress.  ``_touch_activity``
-# bridges chunk-level liveness into ``last_heartbeat_at`` via #31752,
-# so any genuinely active worker keeps its heartbeat fresh as a side
-# effect of normal API traffic.
+# as WEDGED (the process stopped talking to its provider entirely) and
+# reclaim regardless of PID liveness (#29747 gap 3).  ``_touch_activity``
+# bridges chunk-level liveness into ``last_heartbeat_at`` via #31752, so
+# any genuinely active worker keeps its heartbeat fresh as a side effect
+# of normal API traffic.
+#
+# That bridge is exactly why this threshold cannot detect the *no-progress*
+# case: a worker reasoning in a loop is talking to its provider constantly,
+# so its heartbeat never goes stale.  Liveness and progress are separate
+# leases; see ``DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS`` and
+# :func:`detect_no_progress_running`.
 DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
+
+# --------------------------------------------------------------------------
+# Progress lease
+# --------------------------------------------------------------------------
+# A running claim is renewed by two INDEPENDENT leases:
+#
+#   liveness (last_heartbeat_at + claim_expires)
+#       "the worker process and its provider are responsive."  Renewed by
+#       any agent activity, including raw stream tokens and API waits.  This
+#       is what carries a slow-but-healthy single tool-free model call.
+#
+#   progress (last_progress_at)
+#       "something observable happened OUTSIDE the model's token stream."
+#       Renewed only by deterministic events the model cannot author
+#       directly:
+#         * an attempted / in-flight / completed tool invocation, seen by the
+#           centralized tool-execution middleware
+#           (tools/kanban_tools.note_tool_progress_from_env, driven from
+#           agent/tool_executor.py) — excluding the liveness tool itself,
+#         * a board state transition (``PROGRESS_EVENT_KINDS``),
+#         * the claim that started the run.
+#
+# Text a model writes is NOT one of them.  ``kanban_heartbeat(note=...)``
+# renews liveness and records the note as commentary; it never touches this
+# lease, however specific the note sounds, because nothing checks the note
+# against the world.  See ``PROGRESS_RENEWAL_SOURCES``.
+#
+# Reasoning tokens can renew liveness; they can never renew progress.  A
+# reasoning-only loop is therefore bounded by the no-progress timeout while a
+# genuinely slow API call survives on liveness.
+#
+# Default 45 minutes: comfortably longer than any plausible single tool-free
+# model call (including extended thinking and provider backoff), and short
+# enough to bound the reproduced reasoning-only / recursive-planning loops
+# that previously renewed their claim indefinitely.  Long-running *tools* are
+# unaffected — the in-flight tool ticker renews progress for as long as a
+# tool is genuinely executing.  Set ``kanban.no_progress_timeout_seconds: 0``
+# to disable the guard entirely.
+DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS = 45 * 60
+
+# ``record_progress`` sources. Board transitions and the claim stamp the
+# column inline (they already hold the write txn), so the single callable
+# entry point is the tool middleware.
+PROGRESS_SOURCE_TOOL = "tool_invocation"
+
+# The allowlist IS the class boundary, enforced inside ``record_progress``
+# rather than at its call sites. Progress may be renewed only by signals the
+# model cannot author directly:
+#
+#   * the centralized tool-execution middleware
+#     (``PROGRESS_SOURCE_TOOL``, via tools.kanban_tools.note_tool_progress_from_env)
+#   * a durable board state transition (``PROGRESS_EVENT_KINDS``, stamped
+#     inline by ``_append_event``)
+#
+# There is deliberately NO source for model-authored text. An earlier cut of
+# this feature let ``kanban_heartbeat(note=...)`` renew progress when the note
+# looked like "new evidence"; nothing validates such a note against the world,
+# so it reduces the guard to a spelling test that a worker stuck in a
+# reasoning loop passes by varying a sentence. Should a deterministic,
+# validated evidence mechanism ever exist (a hash of a written file, an
+# attested command exit), it gets its own source constant here — and its own
+# verification — rather than trusting a string.
+PROGRESS_RENEWAL_SOURCES = frozenset({PROGRESS_SOURCE_TOOL})
+
+# Event kinds that constitute a board state transition, i.e. durable evidence
+# that the card actually moved.  Deliberately EXCLUDES lease bookkeeping
+# (``heartbeat``, ``claim_extended``, ``claimed``, ``spawned``) and dispatcher
+# recovery events (``reclaimed``, ``stale``, ``no_progress``, ``timed_out``) —
+# counting those would make the guard renew itself.
+PROGRESS_EVENT_KINDS = frozenset({
+    "completed",
+    "review_requested",
+    "changes_requested",
+    "review_reopened",
+    "blocked",
+    "unblocked",
+    "commented",
+    "attached",
+    "attachment_removed",
+    "linked",
+    "unlinked",
+    "edited",
+    "decomposed",
+    "specified",
+})
+
+
+# Smallest progress window that can mean what it says. A single model call
+# — extended thinking, provider backoff, a long first token — routinely runs
+# past a minute with nothing else happening, so any value in 1..59 would
+# reclaim healthy workers on the very next tick. In practice such a value is
+# a units slip (45 "minutes" written into a seconds field), not an intent, so
+# it is refused rather than obeyed.
+MIN_NO_PROGRESS_TIMEOUT_SECONDS = 60
+
+
+def resolve_no_progress_timeout_seconds(
+    value: Any = None,
+    *,
+    default: int = DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
+) -> int:
+    """Coerce a ``kanban.no_progress_timeout_seconds`` config value.
+
+    ``None`` / missing -> ``default``.  ``0`` is an explicit "disable the
+    guard".  Every other rejected value falls back to ``default`` rather than
+    to 0: a typo in config.yaml must not silently switch the guard off and
+    restore the unbounded-renewal behaviour this exists to prevent (the
+    opposite trade-off from ``dispatch_stale_timeout_seconds``, which is
+    opt-in and defaults to disabled). Each rejection is logged once, at
+    WARNING, so a misconfigured board is visible instead of merely ignored.
+
+    Rejected: booleans (``True`` is an ``int`` in Python, so a YAML
+    ``no_progress_timeout_seconds: true`` would otherwise resolve to a
+    one-second bound), anything unparseable, non-finite floats, negatives,
+    and values in ``1..MIN_NO_PROGRESS_TIMEOUT_SECONDS - 1``.
+
+    ``.inf`` / ``-.inf`` / ``.nan`` are real YAML scalars, so a config can
+    contain them. ``int(float("inf"))`` raises ``OverflowError``, which is not
+    a subclass of ``ValueError`` — left uncaught it would propagate out of a
+    config read and take down the dispatcher tick rather than falling back.
+    """
+    if value is None:
+        return int(default)
+    if isinstance(value, bool):
+        _log.warning(
+            "kanban: no_progress_timeout_seconds=%r is a boolean, not a "
+            "duration; using default %ds", value, default,
+        )
+        return int(default)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is what ``int(float("inf"))`` raises, and it is NOT a
+        # ValueError. ``float("nan")`` raises ValueError. Both are reachable
+        # from a YAML ``.inf`` / ``.nan`` scalar.
+        _log.warning(
+            "kanban: no_progress_timeout_seconds=%r is not a finite integer; "
+            "using default %ds", value, default,
+        )
+        return int(default)
+    if parsed < 0:
+        _log.warning(
+            "kanban: no_progress_timeout_seconds=%d is negative; using "
+            "default %ds", parsed, default,
+        )
+        return int(default)
+    if 0 < parsed < MIN_NO_PROGRESS_TIMEOUT_SECONDS:
+        _log.warning(
+            "kanban: no_progress_timeout_seconds=%ds is below the %ds "
+            "minimum — a single model call routinely takes longer, so this "
+            "would reclaim healthy workers (did you mean minutes?); using "
+            "default %ds",
+            parsed, MIN_NO_PROGRESS_TIMEOUT_SECONDS, default,
+        )
+        return int(default)
+    return parsed
+
 
 # Grace added to a claim when a reclaim is deferred because the previous
 # host-local worker is still alive after a termination attempt. Releasing the
@@ -1085,7 +1251,12 @@ class Task:
     # just spawn). Pre-rename column: ``last_spawn_error``.
     last_failure_error: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
+    # Liveness lease — "process/provider responsive". Bumped by ordinary API
+    # traffic (stream chunks included) via the runtime-activity bridge.
     last_heartbeat_at: Optional[int] = None
+    # Progress lease — "something observable happened outside the token
+    # stream". See ``PROGRESS_EVENT_KINDS`` / :func:`record_progress`.
+    last_progress_at: Optional[int] = None
     current_run_id: Optional[int] = None
     workflow_template_id: Optional[str] = None
     current_step_key: Optional[str] = None
@@ -1194,6 +1365,9 @@ class Task:
             last_heartbeat_at=(
                 row["last_heartbeat_at"] if "last_heartbeat_at" in keys else None
             ),
+            last_progress_at=(
+                row["last_progress_at"] if "last_progress_at" in keys else None
+            ),
             current_run_id=(
                 row["current_run_id"] if "current_run_id" in keys else None
             ),
@@ -1265,6 +1439,11 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    # Per-attempt progress lease; NULL on runs claimed before the column
+    # existed (readers fall back to ``started_at``). Defaulted so the field
+    # can live at the end of the dataclass without reordering the positional
+    # signature callers already rely on.
+    last_progress_at: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
@@ -1283,6 +1462,10 @@ class Run:
             worker_pid=row["worker_pid"],
             max_runtime_seconds=row["max_runtime_seconds"],
             last_heartbeat_at=row["last_heartbeat_at"],
+            last_progress_at=(
+                row["last_progress_at"]
+                if "last_progress_at" in row.keys() else None
+            ),
             started_at=int(row["started_at"]),
             ended_at=(int(row["ended_at"]) if row["ended_at"] is not None else None),
             outcome=row["outcome"],
@@ -1359,10 +1542,32 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- exceeds DEFAULT_FAILURE_LIMIT consecutive non-successes.
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     worker_pid           INTEGER,
+    -- Immutable birth record of the process named by ``worker_pid``, as JSON
+    -- (see capture_worker_identity). A PID is a recycled integer and proves
+    -- nothing on its own; this is what every reclaim path re-verifies before
+    -- it is allowed to signal anything, and especially before it signals the
+    -- worker's process GROUP. NULL on rows claimed before this column existed
+    -- and on platforms that cannot produce one — both read as "ownership
+    -- unproven", which means signal nothing and hold the claim.
+    worker_identity      TEXT,
     -- Short excerpt of the most recent failure's error text.
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
+    -- LIVENESS lease. "The worker process and its provider are responsive."
+    -- Renewed by the explicit kanban_heartbeat tool AND, as a side effect of
+    -- ordinary API traffic, by the runtime-activity bridge (#31752). Stream
+    -- chunks count: that is deliberate, and it is what keeps a slow-but-
+    -- healthy single tool-free model call from being reclaimed mid-flight.
     last_heartbeat_at    INTEGER,
+    -- PROGRESS lease. "Something observable happened OUTSIDE the model's
+    -- token stream." Renewed only by deterministic, semantically meaningful
+    -- events: an attempted/in-flight/completed tool invocation, a board
+    -- state transition (PROGRESS_EVENT_KINDS), or the claim that started the
+    -- run. Never by raw stream tokens, and never by anything a model writes
+    -- (a kanban_heartbeat note is commentary, not evidence). NULL on rows
+    -- claimed before this column existed; readers COALESCE to the active
+    -- run's started_at.
+    last_progress_at     INTEGER,
     -- Pointer into task_runs for the currently-active run (NULL if no
     -- run is in-flight). Denormalised for cheap reads.
     current_run_id       INTEGER,
@@ -1461,17 +1666,23 @@ CREATE TABLE IF NOT EXISTS task_runs (
     profile             TEXT,
     step_key            TEXT,
     status              TEXT NOT NULL,
-    -- status: running | done | blocked | crashed | timed_out | failed | released
+    -- status: running | done | blocked | crashed | timed_out | no_progress |
+    --         failed | released
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
+    -- Per-attempt copy of the worker's birth record; see
+    -- tasks.worker_identity.
+    worker_identity     TEXT,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
+    -- Per-attempt progress lease; see tasks.last_progress_at.
+    last_progress_at    INTEGER,
     started_at          INTEGER NOT NULL,
     ended_at            INTEGER,
     outcome             TEXT,
-    -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
-    --          gave_up | reclaimed | (null while still running)
+    -- outcome: completed | blocked | crashed | timed_out | no_progress |
+    --          spawn_failed | gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
     error               TEXT
@@ -2582,6 +2793,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             )
     if "worker_pid" not in cols:
         _add_column_if_missing(conn, "tasks", "worker_pid", "worker_pid INTEGER")
+    if "worker_identity" not in cols:
+        # Worker birth identity (see SCHEMA_SQL / capture_worker_identity).
+        # Additive and never backfilled: there is no way to reconstruct the
+        # birth record of a process that was already running at upgrade time,
+        # and inventing one would manufacture exactly the false proof this
+        # column exists to prevent. Pre-existing in-flight rows stay NULL and
+        # are therefore never signalled — they are reclaimed only once their
+        # pid is gone.
+        _add_column_if_missing(
+            conn, "tasks", "worker_identity", "worker_identity TEXT"
+        )
     if "last_failure_error" not in cols:
         added = _add_column_if_missing(
             conn, "tasks", "last_failure_error", "last_failure_error TEXT"
@@ -2597,6 +2819,16 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     if "last_heartbeat_at" not in cols:
         _add_column_if_missing(
             conn, "tasks", "last_heartbeat_at", "last_heartbeat_at INTEGER"
+        )
+    if "last_progress_at" not in cols:
+        # Progress lease (see SCHEMA_SQL). Existing rows get NULL rather than
+        # ``now``: backfilling a timestamp would hand every in-flight worker
+        # a lease it never earned, including one already wedged in a
+        # reasoning loop at upgrade time. Readers COALESCE NULL to the active
+        # run's ``started_at``, so a legitimately-running pre-upgrade worker
+        # is measured from when its attempt began.
+        _add_column_if_missing(
+            conn, "tasks", "last_progress_at", "last_progress_at INTEGER"
         )
     if "current_run_id" not in cols:
         _add_column_if_missing(
@@ -2764,6 +2996,21 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 conn, "kanban_notify_subs", "delivery_metadata", "delivery_metadata TEXT"
             )
 
+    # ``task_runs`` gained the progress lease alongside ``tasks``. Boards
+    # created before it need the column added additively; ``_REBUILD_SPECS``
+    # carries it too, so a drifted table rebuilt below keeps the value.
+    runs_cols = {
+        c["name"] for c in conn.execute("PRAGMA table_info(task_runs)")
+    }
+    if runs_cols and "last_progress_at" not in runs_cols:
+        _add_column_if_missing(
+            conn, "task_runs", "last_progress_at", "last_progress_at INTEGER"
+        )
+    if runs_cols and "worker_identity" not in runs_cols:
+        _add_column_if_missing(
+            conn, "task_runs", "worker_identity", "worker_identity TEXT"
+        )
+
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
     # Synthesize a matching task_runs row so subsequent end-run / heartbeat
@@ -2778,6 +3025,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         with write_txn(conn):
             inflight = conn.execute(
                 "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
+                "       worker_identity, "
                 "       max_runtime_seconds, last_heartbeat_at, started_at "
                 "FROM tasks "
                 "WHERE status = 'running' AND current_run_id IS NULL"
@@ -2789,13 +3037,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                     INSERT INTO task_runs (
                         task_id, profile, status,
                         claim_lock, claim_expires, worker_pid,
+                        worker_identity,
                         max_runtime_seconds, last_heartbeat_at,
                         started_at
-                    ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         row["id"], row["assignee"], row["claim_lock"],
                         row["claim_expires"], row["worker_pid"],
+                        row["worker_identity"],
                         row["max_runtime_seconds"], row["last_heartbeat_at"],
                         started,
                     ),
@@ -2848,8 +3098,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 # Each entry pairs the canonical CREATE TABLE with the CREATE INDEX
 # statements that DROP TABLE would otherwise take down with it (including
 # ``idx_events_run``, added by the additive pass above). To guard against
-# this list drifting from SCHEMA_SQL, ``test_rebuilt_schema_matches_fresh``
-# asserts a rebuilt legacy DB is byte-identical to a fresh one.
+# this list drifting from SCHEMA_SQL,
+# ``tests/hermes_cli/test_kanban_progress_lease.py::
+# test_rebuilt_task_runs_matches_the_fresh_schema`` builds ``task_runs``
+# from these specs and compares it column-for-column (name, type, NOT NULL,
+# PK) against the freshly-created table. Only ``task_runs`` is covered; the
+# other entries have no equivalent assertion yet.
 _REBUILD_SPECS = {
     "task_events": (
         "CREATE TABLE task_events ("
@@ -2873,8 +3127,9 @@ _REBUILD_SPECS = {
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
-        " worker_pid INTEGER, max_runtime_seconds INTEGER,"
-        " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
+        " worker_pid INTEGER, worker_identity TEXT, max_runtime_seconds INTEGER,"
+        " last_heartbeat_at INTEGER, last_progress_at INTEGER,"
+        " started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
         " error TEXT)",
         (
@@ -4319,6 +4574,124 @@ def _append_event(
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+    # A durable board transition IS progress evidence, whichever surface
+    # produced it (worker tool, CLI, dashboard). Routing it through the one
+    # funnel every transition already passes keeps the rule in a single
+    # place instead of sprinkled across a dozen mutators. Lease bookkeeping
+    # and dispatcher recovery events are excluded — see PROGRESS_EVENT_KINDS.
+    if kind in PROGRESS_EVENT_KINDS:
+        _stamp_progress_columns(conn, task_id, now, run_id=run_id)
+
+
+def _stamp_progress_columns(
+    conn: sqlite3.Connection,
+    task_id: str,
+    now: int,
+    *,
+    run_id: Optional[int] = None,
+) -> None:
+    """Write ``last_progress_at`` on the task and its active run.
+
+    Caller must already hold a write transaction. Never raises on a missing
+    column: a board mid-migration (opened by an older sibling process that
+    has not run ``_migrate_add_optional_columns`` yet) must not take down a
+    state transition just because its progress lease is not there yet.
+    """
+    try:
+        conn.execute(
+            "UPDATE tasks SET last_progress_at = ? WHERE id = ?",
+            (now, task_id),
+        )
+        rid = run_id if run_id is not None else _current_run_id(conn, task_id)
+        if rid is not None:
+            conn.execute(
+                "UPDATE task_runs SET last_progress_at = ? WHERE id = ?",
+                (now, int(rid)),
+            )
+    except sqlite3.OperationalError as exc:
+        if "no such column" not in str(exc):
+            # A lock/IO error is the caller's transaction to handle — only
+            # the missing-column case is survivable here.
+            raise
+        _log.debug(
+            "kanban: progress lease column missing on this board; skipping "
+            "stamp for %s", task_id,
+        )
+
+
+def record_progress(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source: str,
+    expected_run_id: Optional[int] = None,
+) -> dict[str, Any]:
+    """Renew the PROGRESS lease for ``task_id`` and return a receipt.
+
+    ``source`` must be in :data:`PROGRESS_RENEWAL_SOURCES`; anything else is
+    refused with ``reason="unsupported_source"`` and writes nothing —
+    including values that are not even hashable, which would otherwise make
+    the frozenset membership test raise instead of refuse. That
+    check is the class boundary, and it lives here rather than at the call
+    sites so a future caller cannot re-open a model-authored path by
+    accident. There is no ``note`` parameter: free text a model writes is
+    commentary (``kanban_heartbeat`` still records it as a ``heartbeat``
+    event) and must not be able to move a lease, because nothing validates
+    it against the world.
+
+    Only running tasks can make progress, and only the run that owns the
+    claim: a worker whose run was already reclaimed must not resurrect the
+    lease of the run that replaced it (``expected_run_id``).
+
+    Progress stamps a column and never appends an event — a tool call every
+    few seconds for hours would otherwise bloat ``task_events``. Board
+    transitions are the durable record, and they stamp the column inline from
+    :func:`_append_event`.
+
+    The receipt is the structured diagnostic surfaced to callers and to the
+    dashboard: ``{recorded, reason, source, run_id, last_progress_at}``.
+    Never raises on a normal miss — callers treat it as advisory.
+    """
+    now = int(time.time())
+    receipt: dict[str, Any] = {
+        "recorded": False,
+        "reason": "not_running",
+        "source": source,
+        "run_id": None,
+        "last_progress_at": None,
+    }
+    try:
+        supported = source in PROGRESS_RENEWAL_SOURCES
+    except TypeError:
+        # ``source`` is unhashable (a caller passed a list/dict/set). A
+        # frozenset membership test raises rather than returning False, so
+        # without this the "refuse anything not on the allowlist" boundary
+        # would turn into an exception escaping into the tool middleware.
+        # An unhashable source is by definition not on the allowlist.
+        supported = False
+    if not supported:
+        receipt["reason"] = "unsupported_source"
+        return receipt
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None or row["status"] != "running":
+            return receipt
+        run_id = row["current_run_id"]
+        if expected_run_id is not None and (
+            run_id is None or int(run_id) != int(expected_run_id)
+        ):
+            receipt["reason"] = "superseded"
+            return receipt
+        receipt["run_id"] = int(run_id) if run_id is not None else None
+
+        _stamp_progress_columns(conn, task_id, now, run_id=run_id)
+        receipt["recorded"] = True
+        receipt["reason"] = "recorded"
+        receipt["last_progress_at"] = now
+    return receipt
 
 
 def _end_run(
@@ -4358,7 +4731,8 @@ def _end_run(
                ended_at      = ?,
                claim_lock    = NULL,
                claim_expires = NULL,
-               worker_pid    = NULL
+               worker_pid    = NULL,
+               worker_identity = NULL
          WHERE id = ?
            AND ended_at IS NULL
         """,
@@ -4485,13 +4859,20 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     an explicit unblock that must wait for parents carries ``resume_status``.
     Legacy events omit these fields and therefore retain the historical
     ``ready`` behavior.
+
+    Every dispatcher recovery kind that can interrupt a *review* run has to
+    be listed here, ``no_progress`` included: its payload carries
+    ``retry_status`` from :func:`_retry_status_for_run`, and omitting the kind
+    would silently demote a reclaimed reviewer run into an implementation
+    run on the next promotion.
     """
     row = conn.execute(
         "SELECT payload FROM task_events "
         "WHERE task_id = ? AND kind IN ("
         "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
         "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
-        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
+        "'stale', 'no_progress', 'timed_out', 'crashed', 'spawn_failed', "
+        "'rate_limited'"
         ") ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
@@ -4670,7 +5051,8 @@ def claim_task(
                    SET status = 'reclaimed', outcome = 'reclaimed',
                        summary = COALESCE(summary, 'invariant recovery on re-claim'),
                        ended_at = ?,
-                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+                       claim_lock = NULL, claim_expires = NULL,
+                       worker_pid = NULL, worker_identity = NULL
                  WHERE id = ? AND ended_at IS NULL
                 """,
                 (now, int(stale["current_run_id"])),
@@ -4678,15 +5060,19 @@ def claim_task(
         cur = conn.execute(
             """
             UPDATE tasks
-               SET status        = 'running',
-                   claim_lock    = ?,
-                   claim_expires = ?,
-                   started_at    = COALESCE(started_at, ?)
+               SET status           = 'running',
+                   claim_lock       = ?,
+                   claim_expires    = ?,
+                   started_at       = COALESCE(started_at, ?),
+                   -- The claim itself is a state transition: the attempt
+                   -- starts with a fresh progress lease, so a worker gets
+                   -- the full no-progress window to do something.
+                   last_progress_at = ?
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
             """,
-            (lock, expires, now, task_id),
+            (lock, expires, now, now, task_id),
         )
         if cur.rowcount != 1:
             return None
@@ -4702,8 +5088,8 @@ def claim_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, last_progress_at
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -4712,6 +5098,7 @@ def claim_task(
                 lock,
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
+                now,
                 now,
             ),
         )
@@ -4778,15 +5165,19 @@ def claim_review_task(
         cur = conn.execute(
             """
             UPDATE tasks
-               SET status        = 'running',
-                   claim_lock    = ?,
-                   claim_expires = ?,
-                   started_at    = COALESCE(started_at, ?)
+               SET status           = 'running',
+                   claim_lock       = ?,
+                   claim_expires    = ?,
+                   started_at       = COALESCE(started_at, ?),
+                   -- The claim itself is a state transition: the attempt
+                   -- starts with a fresh progress lease, so a worker gets
+                   -- the full no-progress window to do something.
+                   last_progress_at = ?
              WHERE id = ?
                AND status = 'review'
                AND claim_lock IS NULL
             """,
-            (lock, expires, now, task_id),
+            (lock, expires, now, now, task_id),
         )
         if cur.rowcount != 1:
             return None
@@ -4800,8 +5191,8 @@ def claim_review_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, last_progress_at
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -4810,6 +5201,7 @@ def claim_review_task(
                 lock,
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
+                now,
                 now,
             ),
         )
@@ -5040,11 +5432,16 @@ def release_stale_claims(
             continue
 
         termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            row["worker_pid"], row["claim_lock"],
+            stored_identity=_stored_worker_identity(conn, row["id"]),
+            signal_fn=signal_fn,
         )
-        # Never release a claim while our own worker is still alive: that would
-        # spawn a duplicate beside it. Hold the claim and retry next tick.
-        if _worker_survived_termination(termination):
+        # Never release a claim while our own worker is still alive (a
+        # duplicate would be spawned beside it), and never release one whose
+        # live pid we could not prove we own (we signalled nothing, so the
+        # process is still there). Hold and retry next tick.
+        hold = _reclaim_hold_reason(termination)
+        if hold:
             _defer_reclaim_for_live_worker(
                 conn, row["id"], row["claim_lock"], now, termination,
                 reason="ttl_expired_worker_alive",
@@ -5054,7 +5451,7 @@ def release_stale_claims(
             retry_status = _retry_status_for_run(conn, row["id"])
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, worker_identity = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
                 (retry_status, row["id"], row["claim_lock"], now),
@@ -5139,14 +5536,22 @@ def reclaim_task(
         # Nothing to reclaim — already ready / blocked / done.
         return False
     prev_lock = row["claim_lock"]
+    # Operator-driven, so this path RELEASES even when ownership cannot be
+    # proven — an operator who reaches for reclaim needs the card unstuck, and
+    # refusing would leave them no recovery at all. What the proof still buys
+    # is that we never signal a pid we cannot prove: the receipt records
+    # ``ownership`` / ``ownership_reason`` so a reclaim that could not kill
+    # anything says so instead of implying a dead worker.
     termination = _terminate_reclaimed_worker(
-        row["worker_pid"], prev_lock, signal_fn=signal_fn,
+        row["worker_pid"], prev_lock,
+        stored_identity=_stored_worker_identity(conn, task_id),
+        signal_fn=signal_fn,
     )
     with write_txn(conn):
         retry_status = _retry_status_for_run(conn, task_id)
         cur = conn.execute(
             "UPDATE tasks SET status = ?, claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
+            "claim_expires = NULL, worker_pid = NULL, worker_identity = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
             "AND claim_lock IS ?",
             (retry_status, task_id, prev_lock),
@@ -5449,6 +5854,7 @@ def complete_task(
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL,
+                       worker_identity = NULL,
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
@@ -5466,6 +5872,7 @@ def complete_task(
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL,
+                       worker_identity = NULL,
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
@@ -6315,6 +6722,7 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
+                       worker_identity = NULL,
                        block_kind    = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
@@ -6372,6 +6780,7 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
+                       worker_identity = NULL,
                        block_kind    = ?,
                        block_recurrences = ?
                  WHERE id = ?
@@ -6411,6 +6820,7 @@ def block_task(
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
+                           worker_identity = NULL,
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
@@ -6426,6 +6836,7 @@ def block_task(
                            claim_lock    = NULL,
                            claim_expires = NULL,
                            worker_pid    = NULL,
+                           worker_identity = NULL,
                            block_kind    = ?,
                            block_recurrences = ?
                      WHERE id = ?
@@ -6604,7 +7015,8 @@ def request_review(
                SET status        = 'review',
                    claim_lock    = NULL,
                    claim_expires = NULL,
-                   worker_pid    = NULL
+                   worker_pid    = NULL,
+                   worker_identity = NULL
             """ + assignee_sql + """
              WHERE id = ?
                AND status IN ('running', 'ready')
@@ -6739,7 +7151,8 @@ def request_changes(
                    assignee = COALESCE(?, assignee),
                    claim_lock = NULL,
                    claim_expires = NULL,
-                   worker_pid = NULL
+                   worker_pid = NULL,
+                   worker_identity = NULL
              WHERE id = ? AND status = 'running' AND current_run_id = ?
             """,
             (new_status, implementer, task_id, int(current_run_id)),
@@ -6859,7 +7272,8 @@ def _reclaim_dangling_run(
                SET status = 'reclaimed', outcome = 'reclaimed',
                    summary = COALESCE(summary, ?),
                    ended_at = ?,
-                   claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+                   claim_lock = NULL, claim_expires = NULL,
+                   worker_pid = NULL, worker_identity = NULL
              WHERE id = ? AND ended_at IS NULL
             """,
             (note, now, int(stale["current_run_id"])),
@@ -6994,7 +7408,8 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "claim_lock = NULL, claim_expires = NULL, "
+            "worker_pid = NULL, worker_identity = NULL "
             # consecutive_failures deliberately PRESERVED: review reopen is
             # not a success signal; only complete_task resets the breaker
             # counter (mirrors unblock_task, #35072).
@@ -7075,12 +7490,16 @@ def invalidate_descendants_for_parent_reopen(
 
     Returns ``{"invalidated": [...], "terminations": [...]}`` where each
     invalidated entry is ``{id, prior_status, new_status, resume_status}``
-    and each termination is a ``(worker_pid, claim_lock)`` tuple.
+    and each termination is a ``(worker_pid, claim_lock, worker_identity)``
+    triple. The identity travels with the tuple because it is read inside the
+    transaction alongside the pid it describes: a composing caller drains the
+    list after its own commit, by which time re-reading the row would find the
+    claim already cleared.
     """
     caller_owns_txn = bool(getattr(conn, "in_transaction", False))
     now = int(time.time())
     invalidated: list[dict[str, Any]] = []
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    terminations: list[tuple[Optional[int], Optional[str], Optional[str]]] = []
     with write_txn(conn, allow_nested=True):
         rows = conn.execute(
             """
@@ -7110,7 +7529,11 @@ def invalidate_descendants_for_parent_reopen(
                 resume_status = _retry_status_for_run(
                     conn, row["id"], row["current_run_id"]
                 )
-                terminations.append((row["worker_pid"], row["claim_lock"]))
+                terminations.append((
+                    row["worker_pid"],
+                    row["claim_lock"],
+                    _stored_worker_identity(conn, row["id"]),
+                ))
                 run_id = _end_run(
                     conn,
                     row["id"],
@@ -7122,7 +7545,8 @@ def invalidate_descendants_for_parent_reopen(
             # docstring for why this diverges from reopen_review_task.
             conn.execute(
                 "UPDATE tasks SET status = 'todo', completed_at = NULL, "
-                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                "claim_lock = NULL, claim_expires = NULL, "
+                "worker_pid = NULL, worker_identity = NULL, "
                 "current_run_id = NULL, consecutive_failures = 0 WHERE id = ?",
                 (row["id"],),
             )
@@ -7181,8 +7605,10 @@ def invalidate_descendants_for_parent_reopen(
         # Standalone call: we committed above, so the audit trail is durable
         # — safe to kill workers now. Composed calls leave this to the
         # caller (post-commit), preserving events-before-termination.
-        for pid, claim_lock in terminations:
-            _terminate_reclaimed_worker(pid, claim_lock)
+        for pid, claim_lock, stored_identity in terminations:
+            _terminate_reclaimed_worker(
+                pid, claim_lock, stored_identity=stored_identity,
+            )
     return {"invalidated": invalidated, "terminations": terminations}
 
 
@@ -7514,7 +7940,8 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
-            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "    claim_lock = NULL, claim_expires = NULL, "
+            "    worker_pid = NULL, worker_identity = NULL "
             "WHERE id = ? AND status != 'archived'",
             (task_id,),
         )
@@ -7932,7 +8359,8 @@ def schedule_task(
                SET status       = 'scheduled',
                    claim_lock   = NULL,
                    claim_expires= NULL,
-                   worker_pid   = NULL
+                   worker_pid   = NULL,
+                   worker_identity = NULL
              WHERE id = ?
                AND status IN ('todo', 'ready', 'running', 'blocked')
         """
@@ -8056,8 +8484,15 @@ class DispatchResult:
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
-    """Task ids reclaimed because no progress (heartbeat) was seen
-    within ``dispatch_stale_timeout_seconds``."""
+    """Task ids reclaimed because no liveness heartbeat was seen within
+    ``dispatch_stale_timeout_seconds``. Absence detection — the worker
+    stopped talking entirely. Contrast ``no_progress``."""
+    no_progress: list[str] = field(default_factory=list)
+    """Task ids reclaimed because their PROGRESS lease expired: the worker
+    was demonstrably live (streaming, reasoning, heartbeating) but produced
+    no tool call and no board transition within
+    ``kanban.no_progress_timeout_seconds``. See
+    :func:`detect_no_progress_running`."""
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """Tasks skipped by the respawn guard, as ``(task_id, reason)`` pairs.
 
@@ -8250,13 +8685,454 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+# --------------------------------------------------------------------------
+# Worker process birth identity
+# --------------------------------------------------------------------------
+# ``tasks.worker_pid`` alone is NOT an identity. A PID is a small recycled
+# integer: the worker it named can exit, and the kernel can hand that same
+# number to something entirely unrelated — the operator's editor, a database,
+# another agent's dispatcher — long before a watchdog notices. Every reclaim
+# path in this file used to signal that bare number, and since #31752 the
+# no-progress path signals its whole process GROUP, which turns a one-process
+# misfire into a whole-tree one. That is the hazard this section closes.
+#
+# A process's birth is immutable and cannot be reused:
+#
+#   Linux   field 22 of ``/proc/<pid>/stat`` (``starttime``, clock ticks since
+#           boot) pinned to ``/proc/sys/kernel/random/boot_id`` so the value
+#           cannot alias across a reboot, plus the session and process-group
+#           ids from the same read.
+#   others  ``psutil.Process(pid).create_time()`` — a wall-clock epoch. A
+#           recycled PID is necessarily born LATER than the process it
+#           replaced, so equality here is the same proof.
+#
+# ``sid``/``pgid`` are part of the birth record rather than a separate probe:
+# a session leader can never call ``setsid`` again and a process-group leader
+# can never change its ``pgid``, so for a dispatcher-spawned worker (spawned
+# ``start_new_session=True``) ``sid == pgid == pid`` holds for its whole life.
+# Requiring it at verification time is what proves the group we are about to
+# signal is the one the dispatcher created and not a group we merely resolved
+# to.
+#
+# The proof is REQUIRED, never assumed: an unreadable identity, a legacy row
+# that predates the column, a mismatch, or a worker that is not its own
+# session leader all resolve to "signal nothing". See
+# :func:`verify_worker_ownership`.
+WORKER_IDENTITY_VERSION = 1
+
+# ``/proc/<pid>/stat`` field numbers (1-based, as documented in proc(5)),
+# expressed as offsets into the whitespace-split tail that FOLLOWS the comm
+# field. ``tail[0]`` is field 3 (state), so field N lives at ``tail[N - 3]``.
+_PROC_STAT_PPID = 4 - 3
+_PROC_STAT_PGRP = 5 - 3
+_PROC_STAT_SESSION = 6 - 3
+_PROC_STAT_STARTTIME = 22 - 3
+
+
+def _parse_proc_pid_stat(raw: str) -> Optional[dict[str, int]]:
+    """Parse the fields we need out of one ``/proc/<pid>/stat`` line.
+
+    Field 2 is ``comm``, the executable name in parentheses, and the kernel
+    does NOT escape it: a process named ``my app (beta)`` produces
+    ``123 (my app (beta)) S 1 123 123 ...``. Splitting the whole line on
+    whitespace and indexing field 22 — the obvious implementation, and the one
+    in ``gateway.status._get_process_start_time`` — reads a completely
+    different field for such a process, which here would mean comparing a
+    *wrong* start time and either refusing to reclaim a real worker or, far
+    worse, accepting a recycled PID.
+
+    Anchoring on the LAST ``)`` in the line is exact rather than heuristic:
+    every field after ``comm`` is numeric, so no later field can contain a
+    parenthesis and ``rfind`` cannot overshoot however the process is named.
+
+    Returns None when the line is malformed or truncated.
+    """
+    close = raw.rfind(")")
+    if close == -1:
+        return None
+    tail = raw[close + 1:].split()
+    if len(tail) <= _PROC_STAT_STARTTIME:
+        return None
+    try:
+        return {
+            "ppid": int(tail[_PROC_STAT_PPID]),
+            "pgid": int(tail[_PROC_STAT_PGRP]),
+            "sid": int(tail[_PROC_STAT_SESSION]),
+            "starttime": int(tail[_PROC_STAT_STARTTIME]),
+        }
+    except ValueError:
+        return None
+
+
+def _read_linux_boot_id() -> Optional[str]:
+    """Return this boot's kernel-generated UUID, or None.
+
+    ``starttime`` is measured in clock ticks since boot, so on its own it
+    aliases across reboots: a PID recorded before a reboot can be reborn with
+    the identical value after one. Pinning the identity to ``boot_id`` makes
+    a pre-reboot record un-matchable, which is the correct outcome — the
+    worker it described is definitively gone.
+
+    None means "this boot has no readable id" — unreadable, empty, or not
+    decodable. It is never a value that can compare equal to another None:
+    see :func:`capture_worker_identity`, which refuses to mint a Linux
+    identity without one.
+    """
+    try:
+        with open("/proc/sys/kernel/random/boot_id", "r", encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except (OSError, ValueError):
+        # ValueError covers UnicodeDecodeError from a garbage/binary read.
+        return None
+
+
+def capture_worker_identity(pid: Optional[int]) -> Optional[dict[str, Any]]:
+    """Snapshot the immutable birth identity of ``pid``, or None.
+
+    Called once, at spawn, from :func:`_set_worker_pid`. None means "this
+    platform/process cannot prove an identity" and is stored as NULL: every
+    reclaim path then refuses to signal that PID rather than guessing. That is
+    deliberately the safe direction — a worker we cannot prove we own is a
+    worker we must not kill.
+    """
+    if not pid or int(pid) <= 0:
+        return None
+    pid = int(pid)
+    if sys.platform == "linux":
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                raw = fh.read().decode("utf-8", errors="replace")
+        except (OSError, ValueError):
+            return None
+        parsed = _parse_proc_pid_stat(raw)
+        if parsed is None:
+            return None
+        boot_id = _read_linux_boot_id()
+        boot_id = boot_id.strip() if isinstance(boot_id, str) else None
+        if not boot_id:
+            # No boot id, no Linux identity. ``starttime`` alone is ticks
+            # since boot, so it aliases across a reboot: the same pid reborn
+            # after a restart can carry the identical value and would verify
+            # as "the worker we spawned". Storing an identity without the
+            # boot id would therefore be storing a *weaker* proof than the
+            # column exists to hold, and — because a missing key compares
+            # equal to a missing key — two such records would approve each
+            # other. NULL is the honest answer: unprovable, never signalled.
+            return None
+        return {
+            "v": WORKER_IDENTITY_VERSION,
+            "scheme": "linux_proc",
+            "pid": pid,
+            "starttime": parsed["starttime"],
+            "pgid": parsed["pgid"],
+            "sid": parsed["sid"],
+            "ppid": parsed["ppid"],
+            "boot_id": boot_id,
+        }
+
+    # macOS / BSD / Windows: psutil's creation time is the portable
+    # equivalent. On Windows there are no POSIX sessions, so the identity
+    # carries no sid/pgid and verification authorises a per-PID signal only —
+    # exactly the TerminateProcess behaviour that platform already had, now
+    # gated on a proven creation time instead of a bare PID.
+    try:
+        import psutil  # type: ignore
+
+        create_time = float(psutil.Process(pid).create_time())
+    except Exception:
+        return None
+    ident: dict[str, Any] = {
+        "v": WORKER_IDENTITY_VERSION,
+        "scheme": "create_time",
+        "pid": pid,
+        "create_time": round(create_time, 3),
+    }
+    getpgid = getattr(os, "getpgid", None)
+    getsid = getattr(os, "getsid", None)
+    if getpgid is not None and getsid is not None:
+        try:
+            ident["pgid"] = int(getpgid(pid))
+            ident["sid"] = int(getsid(pid))
+        except (OSError, ValueError):
+            return None
+    return ident
+
+
+# Tolerance when comparing ``create_time`` epochs (seconds). A recycled PID is
+# born strictly after the process it replaced died, and that process was alive
+# for the whole run we are reclaiming, so any real reuse differs by far more
+# than this; the slack only absorbs float/rounding noise between two reads.
+_CREATE_TIME_EPSILON = 1.0
+
+
+def _coerce_worker_identity(stored: Any) -> Optional[dict[str, Any]]:
+    """Normalise a stored identity (JSON text or dict) into a dict, or None."""
+    if stored is None:
+        return None
+    if isinstance(stored, dict):
+        return stored
+    if isinstance(stored, (bytes, bytearray)):
+        try:
+            stored = stored.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if not isinstance(stored, str) or not stored.strip():
+        return None
+    try:
+        parsed = json.loads(stored)
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def verify_worker_ownership(
+    pid: Optional[int],
+    stored_identity: Any,
+    *,
+    probe_fn=None,
+) -> "tuple[str, str]":
+    """Decide what — if anything — we are allowed to signal for ``pid``.
+
+    Returns ``(mode, reason)``:
+
+    * ``("group", "ok")``   — the live process is provably the worker we
+      spawned AND is its own session and process-group leader, so the group
+      is one the dispatcher created. Signalling the group is authorised.
+    * ``("pid", "ok")``     — provably our worker, on a platform with no
+      POSIX sessions (Windows). Per-PID signal only.
+    * ``("none", reason)``  — NOT proven. Signal nothing. ``reason`` is one of
+      ``no_pid``, ``identity_absent`` (legacy row, claimed before the column
+      existed), ``identity_unreadable`` (the live process is gone or its
+      birth record cannot be read), ``identity_scheme_changed``,
+      ``boot_id_absent`` (a Linux record on either side carries no boot id,
+      so its ``starttime`` could alias across a reboot and proves nothing),
+      ``identity_mismatch`` (PID reuse — the number is live but it is not our
+      process), or ``not_dispatcher_session`` (alive and ours by birth stamp
+      but not a session/group leader, so no group here is ours to take).
+
+    There is no "probably" branch. Every failure mode collapses to ``none``.
+
+    ``boot_id_absent`` is deliberately NOT ``identity_mismatch``: a record we
+    cannot evaluate is unknown, not contradicted, so
+    :func:`_identity_contradicts_liveness` must not read it as "the worker is
+    already gone".
+    """
+    if not pid or int(pid) <= 0:
+        return ("none", "no_pid")
+    pid = int(pid)
+    stored = _coerce_worker_identity(stored_identity)
+    if not stored:
+        return ("none", "identity_absent")
+
+    probe = probe_fn if probe_fn is not None else capture_worker_identity
+    try:
+        live = probe(pid)
+    except Exception:  # pragma: no cover - defensive
+        live = None
+    live = _coerce_worker_identity(live)
+    if not live:
+        return ("none", "identity_unreadable")
+
+    if stored.get("scheme") != live.get("scheme"):
+        return ("none", "identity_scheme_changed")
+    try:
+        if int(stored.get("pid", -1)) != pid or int(live.get("pid", -2)) != pid:
+            return ("none", "identity_mismatch")
+    except (TypeError, ValueError):
+        return ("none", "identity_mismatch")
+
+    scheme = live.get("scheme")
+    if scheme == "linux_proc":
+        # The boot id is REQUIRED on both sides, and its absence is checked
+        # before the comparison rather than by it. ``starttime`` is clock
+        # ticks since boot, so without a boot id it aliases across a restart
+        # and a pre-reboot record can match a post-reboot process holding the
+        # same pid. A plain ``stored.get(...) != live.get(...)`` does not
+        # catch that: two records that both lack the key yield ``None ==
+        # None`` and sail through as proof. Missing is not matching.
+        stored_boot = stored.get("boot_id")
+        live_boot = live.get("boot_id")
+        if not isinstance(stored_boot, str) or not stored_boot.strip():
+            return ("none", "boot_id_absent")
+        if not isinstance(live_boot, str) or not live_boot.strip():
+            return ("none", "boot_id_absent")
+        if stored_boot != live_boot:
+            # Different boot: whatever holds this pid now was born after a
+            # restart, so it cannot be the process we recorded.
+            return ("none", "identity_mismatch")
+        try:
+            if int(stored["starttime"]) != int(live["starttime"]):
+                return ("none", "identity_mismatch")
+        except (KeyError, TypeError, ValueError):
+            return ("none", "identity_mismatch")
+    elif scheme == "create_time":
+        try:
+            drift = abs(float(stored["create_time"]) - float(live["create_time"]))
+        except (KeyError, TypeError, ValueError):
+            return ("none", "identity_mismatch")
+        if drift > _CREATE_TIME_EPSILON:
+            return ("none", "identity_mismatch")
+    else:
+        return ("none", "identity_scheme_changed")
+
+    # POSIX session proof. sid/pgid are immutable for a leader, so they are
+    # part of the birth record: they must match what we stored AND still name
+    # this pid, which is what ``start_new_session=True`` guarantees and what
+    # makes the group ours.
+    if "sid" in live or "sid" in stored:
+        try:
+            live_sid = int(live["sid"])
+            live_pgid = int(live["pgid"])
+            if int(stored["sid"]) != live_sid or int(stored["pgid"]) != live_pgid:
+                return ("none", "identity_mismatch")
+        except (KeyError, TypeError, ValueError):
+            return ("none", "identity_mismatch")
+        if live_sid != pid or live_pgid != pid:
+            return ("none", "not_dispatcher_session")
+        return ("group", "ok")
+
+    return ("pid", "ok")
+
+
+def _stored_worker_identity(
+    conn: sqlite3.Connection, task_id: Optional[str],
+) -> Optional[str]:
+    """Read ``tasks.worker_identity`` for ``task_id``, tolerating its absence.
+
+    A board opened by a sibling process that has not run
+    ``_migrate_add_optional_columns`` yet has no such column. Returning None
+    there is the safe answer, not an error: it reads as "ownership unproven",
+    so the reclaim declines to signal instead of crashing the tick.
+    """
+    if not task_id:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT worker_identity FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such column" not in str(exc):
+            raise
+        return None
+    if row is None:
+        return None
+    return row["worker_identity"]
+
+
+def _dispatcher_owned_pgid(pid: int) -> Optional[int]:
+    """Return ``pid`` when it leads a POSIX process group we may signal.
+
+    Dispatcher workers are spawned with ``start_new_session=True``, which
+    calls ``setsid(2)``: the worker becomes both session and process-group
+    leader, so ``getpgid(pid) == pid`` and every process it goes on to spawn
+    inherits that group. That equality is the ownership proof — a worker
+    that inherited the *dispatcher's* group instead has ``getpgid(pid) !=
+    pid``, and signalling that group would take down the dispatcher itself.
+
+    This resolves the group; it does NOT establish ownership. It is only ever
+    called after :func:`verify_worker_ownership` has already proven that the
+    live process is the worker we spawned — on its own, ``getpgid(pid) == pid``
+    says nothing about *which* process holds that pid today, and acting on it
+    alone is what let a recycled PID's whole process tree be signalled.
+
+    Returns None (caller falls back to signalling the single proven pid) when:
+      * this platform has no ``os.getpgid`` — Windows, where the reclaim
+        path keeps its existing per-pid ``TerminateProcess`` behaviour;
+      * the pid is gone or unreadable;
+      * the pid does not lead its own group;
+      * the resolved group is our own, which no reclaim may ever signal.
+    """
+    getpgid = getattr(os, "getpgid", None)
+    if getpgid is None:
+        return None
+    try:
+        pgid = int(getpgid(int(pid)))
+    except (ProcessLookupError, PermissionError, OSError, ValueError):
+        return None
+    if pgid != int(pid):
+        return None
+    try:
+        if pgid == int(getpgid(0)):
+            return None
+    except (OSError, ValueError):
+        return None
+    return pgid
+
+
+def _identity_contradicts_liveness(
+    conn: sqlite3.Connection, task_id: str, pid: Optional[int],
+) -> bool:
+    """True when a stored birth identity PROVES the recorded worker is gone.
+
+    ``_pid_alive(pid)`` answering True is not evidence that *our* worker is
+    alive — the pid may have been recycled. The detectors that skip a task
+    because "the pid is still there" therefore need a second question: does
+    the live process's birth record still match the one we stored? A definite
+    mismatch means the worker we spawned has exited, whatever the number says.
+
+    Deliberately narrow. Only a positive contradiction counts:
+
+    * no stored identity (legacy row) -> False. Absent is *unknown*, not gone;
+      treating it as gone would requeue a card beside a worker that is really
+      still running.
+    * unreadable / not-a-session-leader -> False. Same reasoning.
+    * mismatched birth stamp or changed scheme -> True. This one is proof.
+
+    Answering True only makes a detector treat the run as *crashed* (release
+    the card, count it the way a crash counts). It never authorises a signal —
+    that decision belongs to :func:`verify_worker_ownership` alone.
+    """
+    stored = _stored_worker_identity(conn, task_id)
+    if not stored:
+        return False
+    _mode, reason = verify_worker_ownership(pid, stored)
+    return reason in {"identity_mismatch", "identity_scheme_changed"}
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
     *,
+    stored_identity: Any = None,
     signal_fn=None,
+    killpg_fn=None,
+    probe_fn=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Best-effort host-local worker termination for reclaim paths.
+
+    **Nothing is signalled until ownership is proven.** ``stored_identity`` is
+    the birth record persisted at spawn (see :func:`capture_worker_identity`);
+    it is re-verified against the live process here, and only a
+    ``("group"|"pid", "ok")`` verdict from :func:`verify_worker_ownership`
+    authorises a signal. A legacy row with no identity, an unreadable one, a
+    PID that has been recycled, or a worker that is not its own session leader
+    all resolve to ZERO signals and ``ownership_unproven=True`` in the
+    returned receipt — the caller then holds the claim rather than releasing
+    it (see :func:`_reclaim_hold_reason`).
+
+    The proof is taken TWICE, because it expires. The SIGTERM is authorised
+    by a verdict read moments earlier; the SIGKILL is separated from it by
+    the grace window, during which the most likely cause of "still alive" is
+    that the worker exited and its pid was recycled. Escalation therefore
+    re-runs :func:`verify_worker_ownership` immediately before SIGKILL and
+    re-resolves the mode and process group from that second verdict. If it
+    does not come back proven, no SIGKILL and no ``killpg`` is sent at all
+    and the receipt carries ``escalation_ownership_unproven=True`` plus the
+    specific ``escalation_ownership_reason``.
+
+    When ownership IS proven the whole process GROUP is signalled (see
+    :func:`_dispatcher_owned_pgid`), because killing only the leader left the
+    build, the crawl or the training run it had spawned alive against the same
+    workspace while the board re-queued the card. Group signalling is exactly
+    why the proof is mandatory: signalling a recycled PID kills one wrong
+    process, signalling a recycled PID's *group* kills a whole wrong tree.
+
+    ``signal_fn`` / ``killpg_fn`` / ``probe_fn`` are test hooks. Injecting
+    ``signal_fn`` alone deliberately pins per-pid semantics: a test with a
+    synthetic pid must never reach the real ``os.killpg`` and signal a live
+    group by coincidence. Pass ``killpg_fn`` to observe group signalling, and
+    ``probe_fn`` to supply the live birth record for a synthetic pid.
+    """
     import signal
 
     info: dict[str, Any] = {
@@ -8265,24 +9141,89 @@ def _terminate_reclaimed_worker(
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "process_group": False,
+        "ownership": "not_applicable",
+        "ownership_reason": None,
+        "ownership_unproven": False,
+        "escalation_ownership_unproven": False,
+        "escalation_ownership_reason": None,
+        "signalled": False,
     }
     if not pid or pid <= 0 or not claim_lock:
+        info["ownership_reason"] = "no_pid_or_lock"
         return info
 
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     if not str(claim_lock).startswith(host_prefix):
+        # Remote claim. We could not signal it correctly even if we wanted to
+        # — the PID names a process on another host — so this is not an
+        # ownership failure, and the caller releases as before.
+        info["ownership_reason"] = "remote_claim"
         return info
     info["host_local"] = True
+
+    mode, reason = verify_worker_ownership(
+        int(pid), stored_identity, probe_fn=probe_fn,
+    )
+    info["ownership_reason"] = reason
+    if mode == "none":
+        if not _pid_alive(pid):
+            # Unprovable because there is nothing left to prove: the pid is
+            # gone. No signal is needed and no duplicate can be spawned beside
+            # it, so this is a successful termination, not a refusal.
+            info["ownership_reason"] = "already_dead"
+            info["terminated"] = True
+            return info
+        # Live, host-local, and NOT provably ours. This is the case the whole
+        # section exists for. Signal nothing and say so loudly: the caller
+        # turns this into a `reclaim_deferred` receipt an operator can act on.
+        info["ownership"] = "unproven"
+        info["ownership_unproven"] = True
+        _log.warning(
+            "kanban reclaim: refusing to signal pid %s — ownership unproven "
+            "(%s). The recorded worker may have exited and its pid been "
+            "reused; the claim is held rather than released.",
+            int(pid), reason,
+        )
+        return info
+    info["ownership"] = "proven"
 
     kill = signal_fn if signal_fn is not None else (
         os.kill if hasattr(os, "kill") else None
     )
     if kill is None:
+        info["ownership_reason"] = "no_signal_available"
         return info
 
+    if killpg_fn is not None:
+        killpg = killpg_fn
+    elif signal_fn is None:
+        killpg = getattr(os, "killpg", None)
+    else:
+        killpg = None
+    # ``mode == "pid"`` is Windows, which has no POSIX groups at all.
+    pgid = (
+        _dispatcher_owned_pgid(int(pid))
+        if (killpg is not None and mode == "group") else None
+    )
+    info["process_group"] = pgid is not None
+
+    def _send(sig, target_pgid: Optional[int]) -> None:
+        """Signal the group when we own it, else just the worker.
+
+        ``target_pgid`` is passed rather than closed over because the SIGTERM
+        and the SIGKILL are authorised by two SEPARATE proofs, and the second
+        one may resolve a different group — or none at all.
+        """
+        if target_pgid is not None and killpg is not None:
+            killpg(target_pgid, sig)
+        else:
+            kill(int(pid), sig)
+
     info["termination_attempted"] = True
+    info["signalled"] = True
     try:
-        kill(int(pid), signal.SIGTERM)
+        _send(signal.SIGTERM, pgid)
     except ProcessLookupError:
         # Process is already gone — that's a successful termination, not a
         # survival. Leaving terminated=False here would make the reclaim guard
@@ -8299,11 +9240,62 @@ def _terminate_reclaimed_worker(
         time.sleep(0.5)
 
     if _pid_alive(pid):
+        # ESCALATION RE-PROOF. The verdict above is now up to five seconds
+        # old, and the single most likely explanation for "still alive after
+        # SIGTERM" is not a stubborn worker: it is that the worker DIED
+        # promptly and the kernel handed its number to something else inside
+        # the grace window. A pid that is alive at second five need not be
+        # the pid that was alive at second zero, and SIGKILL is the one
+        # signal the wrong process cannot survive or handle.
+        #
+        # So the proof is redone from scratch — and the signal MODE and
+        # PROCESS GROUP are re-resolved from the fresh verdict rather than
+        # reused. A recycled pid may lead a healthy group of its own; reusing
+        # the group we resolved before the sleep would aim a SIGKILL at every
+        # process in it.
+        mode, reason = verify_worker_ownership(
+            int(pid), stored_identity, probe_fn=probe_fn,
+        )
+        if mode == "none":
+            if not _pid_alive(pid):
+                # It exited between the check and the re-probe. Nothing to
+                # escalate to and nothing left to prove.
+                info["ownership_reason"] = "already_dead"
+                info["terminated"] = True
+                return info
+            # Alive, and no longer provably ours. Send NOTHING. The receipt
+            # says exactly which stage refused so an operator can tell this
+            # apart from a pre-signal refusal: we already delivered a SIGTERM
+            # to what we could prove was our worker, and the thing wearing
+            # that pid now is somebody else's.
+            info["ownership"] = "unproven"
+            info["ownership_unproven"] = True
+            info["ownership_reason"] = "escalation_ownership_unproven"
+            info["escalation_ownership_unproven"] = True
+            info["escalation_ownership_reason"] = reason
+            _log.warning(
+                "kanban reclaim: refusing to SIGKILL pid %s — ownership no "
+                "longer provable at escalation (%s). The worker most likely "
+                "exited during the SIGTERM grace window and its pid was "
+                "reused; no further signal is sent and the claim is held.",
+                int(pid), reason,
+            )
+            return info
+        kill_pgid = (
+            _dispatcher_owned_pgid(int(pid))
+            if (killpg is not None and mode == "group") else None
+        )
+        # Sticky: the flag answers "did any signal go to a group", so a
+        # SIGTERM that reached the group is not un-reported by a SIGKILL that
+        # had to fall back to the bare pid.
+        info["process_group"] = bool(info["process_group"]) or (
+            kill_pgid is not None
+        )
         try:
             # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
             # (which maps to TerminateProcess via the stdlib shim).
             _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            kill(int(pid), _sigkill)
+            _send(_sigkill, kill_pgid)
             info["sigkill"] = True
         except (ProcessLookupError, OSError):
             return info
@@ -8320,12 +9312,56 @@ def _worker_survived_termination(termination: dict) -> bool:
     loop. Only host-local workers we actually signalled count: a non-local
     claim lock or a no-op attempt (no ``os.kill`` available) must fall through
     to the normal release path, since we cannot manage that worker anyway.
+
+    This covers only the *signalled but alive* case. Reclaim call sites use
+    :func:`_reclaim_hold_reason`, which also holds when ownership could not be
+    proven and therefore nothing was signalled at all.
     """
     return bool(
         termination.get("termination_attempted")
         and termination.get("host_local")
         and not termination.get("terminated")
     )
+
+
+def _reclaim_hold_reason(termination: dict) -> Optional[str]:
+    """Why this reclaim must HOLD the claim instead of releasing it, or None.
+
+    Two distinct hazards, one answer — do not release:
+
+    ``"ownership_unproven"``
+        The recorded pid is alive on this host but we could not prove it is
+        the worker we spawned, so we signalled nothing. Releasing here would
+        requeue the card and start a second worker while an unknown process
+        keeps the workspace — and it would also erase the only evidence that
+        the board is in this state. Holding keeps the stale progress lease
+        intact, so the next tick re-detects the same condition and re-emits
+        the receipt until an operator intervenes.
+
+    ``"escalation_ownership_unproven"``
+        We proved ownership, sent the SIGTERM, and by the time the grace
+        window elapsed the pid no longer verified — so the SIGKILL was
+        withheld. Distinct from the above because the state is different: a
+        signal WAS delivered, and what holds the pid now is probably not our
+        worker at all. Kept as its own string so the ``reclaim_deferred``
+        receipt names the stage that refused rather than flattening both
+        refusals into one label.
+
+    ``"worker_alive"``
+        We proved ownership, signalled, and the worker is *still* alive
+        (the cgroup-throttle / uninterruptible-D case). Same rule.
+
+    Remote claims are never held: their worker is not ours to manage.
+    """
+    if not termination.get("host_local"):
+        return None
+    if termination.get("escalation_ownership_unproven"):
+        return "escalation_ownership_unproven"
+    if termination.get("ownership_unproven"):
+        return "ownership_unproven"
+    if _worker_survived_termination(termination):
+        return "worker_alive"
+    return None
 
 
 def _defer_reclaim_for_live_worker(
@@ -8337,13 +9373,26 @@ def _defer_reclaim_for_live_worker(
     *,
     reason: str,
 ) -> None:
-    """Hold a claim whose worker survived termination instead of releasing it.
+    """Hold a claim we must not release instead of requeueing the card.
 
     Extends ``claim_expires`` by ``RECLAIM_DEFER_GRACE_SECONDS`` so the task
     stays ``running`` (no duplicate spawn) and records a ``reclaim_deferred``
     event so the hold is visible in ``hermes kanban tail``. The next dispatch
-    tick retries the kill; this is self-correcting because not spawning a
-    duplicate is what lets the throttled worker finally die.
+    tick retries; for the throttled-worker case this is self-correcting,
+    because not spawning a duplicate is what lets the worker finally die.
+
+    ``reason`` is the *trigger* (which watchdog fired). When ownership could
+    not be proven, the payload's ``reason`` is promoted to
+    ``ownership_unproven`` (or ``escalation_ownership_unproven`` when the
+    refusal happened between the SIGTERM and the SIGKILL) — an operator
+    scanning the feed needs to see which signal was withheld, not merely that
+    a reclaim was postponed — and the trigger is preserved under ``trigger``.
+
+    **The progress lease is deliberately left alone.** Clearing
+    ``last_progress_at`` here would reset the very clock that detected the
+    problem, so the next tick would find a healthy-looking card and the
+    condition would go silent. Leaving it stale means the watchdog re-fires
+    and re-reports every tick until the situation actually resolves.
     """
     grace = now + RECLAIM_DEFER_GRACE_SECONDS
     with write_txn(conn):
@@ -8360,8 +9409,20 @@ def _defer_reclaim_for_live_worker(
                 "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
                 (grace, run_id),
             )
+        # The reclaim-blocking condition, not the watchdog that noticed it,
+        # is what an operator needs to read first. A SIGKILL withheld at
+        # escalation is its own condition: a signal WAS delivered and the pid
+        # then stopped verifying, which is a different thing to investigate
+        # than a reclaim that never signalled at all.
+        if termination.get("escalation_ownership_unproven"):
+            hold_reason = "escalation_ownership_unproven"
+        elif termination.get("ownership_unproven"):
+            hold_reason = "ownership_unproven"
+        else:
+            hold_reason = reason
         payload = {
-            "reason": reason,
+            "reason": hold_reason,
+            "trigger": reason,
             "claim_lock": claim_lock,
             "claim_expires_now": grace,
         }
@@ -8423,6 +9484,7 @@ def heartbeat_worker(
 def enforce_max_runtime(
     conn: sqlite3.Connection,
     *,
+    failure_limit: Optional[int] = None,
     signal_fn=None,
 ) -> list[str]:
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
@@ -8433,11 +9495,28 @@ def enforce_max_runtime(
     breaker has already given up, in which case the task stays blocked
     where ``_record_spawn_failure`` parked it.
 
+    Termination runs through :func:`_terminate_reclaimed_worker`, so a
+    runtime cap is subject to exactly the same ownership proof as every other
+    reclaim: an expired ``max_runtime_seconds`` is not a licence to signal a
+    pid we cannot prove is still our worker. This path used to hold its own
+    inline SIGTERM/SIGKILL loop against the bare pid, which is precisely how a
+    recycled PID gets killed by a watchdog that thinks it is enforcing a
+    timeout. When ownership is unproven (or the worker survives the signal)
+    the claim is HELD via ``reclaim_deferred`` rather than requeued, because
+    requeueing beside a live process is the duplicate-worker bug.
+
+    ``failure_limit`` is the dispatcher's configured ``kanban.failure_limit``
+    and is threaded into :func:`_record_task_failure`. Without it this path
+    recorded its timeouts against ``DEFAULT_FAILURE_LIMIT`` while every other
+    recovery pass in the same tick used the board's setting, so a board that
+    lowered or raised the limit got a different breaker for timeouts than for
+    crashes, stale claims and no-progress reclaims — from the same counter.
+    ``None`` keeps the per-task ``max_retries`` / default resolution.
+
     Runs host-local: only tasks claimed by this host are candidates
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
     test hook; defaults to ``os.kill`` on POSIX.
     """
-    import signal
     timed_out: list[str] = []
     now = int(time.time())
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -8465,37 +9544,30 @@ def enforce_max_runtime(
 
         pid = int(row["worker_pid"])
         tid = row["id"]
-        # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
-        # want a cleaner shutdown can install their own SIGTERM handler
-        # before the grace expires.
-        killed = False
-        kill = signal_fn if signal_fn is not None else (
-            os.kill if hasattr(os, "kill") else None
+        # SIGTERM, a 5 s grace, then SIGKILL — of the whole process group when
+        # (and only when) the birth identity recorded at spawn still matches
+        # the live process. All of that, including the "it refused to die"
+        # bookkeeping, lives in the shared helper.
+        termination = _terminate_reclaimed_worker(
+            pid, row["claim_lock"],
+            stored_identity=_stored_worker_identity(conn, tid),
+            signal_fn=signal_fn,
         )
-        if kill is not None:
-            try:
-                kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
-            # Short polling wait — no time.sleep on the write txn.
-            for _ in range(10):
-                if not _pid_alive(pid):
-                    break
-                time.sleep(0.5)
-            if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
-                    killed = True
-                except (ProcessLookupError, OSError):
-                    pass
+        killed = bool(termination.get("sigkill"))
+
+        hold = _reclaim_hold_reason(termination)
+        if hold:
+            _defer_reclaim_for_live_worker(
+                conn, tid, row["claim_lock"], now, termination,
+                reason="max_runtime_worker_alive",
+            )
+            continue
 
         with write_txn(conn):
             retry_status = _retry_status_for_run(conn, tid)
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_identity = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
@@ -8509,6 +9581,7 @@ def enforce_max_runtime(
                     "sigkill": killed,
                     "retry_status": retry_status,
                 }
+                payload.update(termination)
                 run_id = _end_run(
                     conn, tid,
                     outcome="timed_out", status="timed_out",
@@ -8529,6 +9602,7 @@ def enforce_max_runtime(
                 conn, tid,
                 error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
                 outcome="timed_out",
+                failure_limit=failure_limit,
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={
@@ -8608,14 +9682,18 @@ def detect_stale_running(
         tid = row["id"]
         lock = row["claim_lock"] or ""
 
-        # Terminate the worker if it's still host-local.
+        # Terminate the worker if it's still host-local AND provably ours.
         termination = _terminate_reclaimed_worker(
-            pid, lock, signal_fn=signal_fn,
+            pid, lock,
+            stored_identity=_stored_worker_identity(conn, tid),
+            signal_fn=signal_fn,
         )
 
-        # Never release a claim while our own worker is still alive: that would
-        # spawn a duplicate beside it. Hold the claim and retry next tick.
-        if _worker_survived_termination(termination):
+        # Never release a claim while our own worker is still alive, or while
+        # a live pid's ownership is unproven (nothing was signalled). Either
+        # way a release would spawn a duplicate beside a running process.
+        hold = _reclaim_hold_reason(termination)
+        if hold:
             _defer_reclaim_for_live_worker(
                 conn, tid, lock, now, termination,
                 reason="heartbeat_stale_worker_alive",
@@ -8626,7 +9704,7 @@ def detect_stale_running(
             retry_status = _retry_status_for_run(conn, tid)
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_identity = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ?",
@@ -8677,6 +9755,258 @@ def detect_stale_running(
     return reclaimed
 
 
+# A worker whose liveness heartbeat is older than this at no-progress
+# evaluation time is classified ``stale`` rather than ``fresh`` in the
+# reclaim receipt. Purely diagnostic: it tells an operator whether the
+# worker was chattering with its provider the whole time (a reasoning loop)
+# or had gone quiet as well (wedged). Matches the liveness backstop used by
+# ``release_stale_claims`` so the two reports agree.
+_NO_PROGRESS_LIVENESS_FRESH_SECONDS = DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
+
+
+def detect_no_progress_running(
+    conn: sqlite3.Connection,
+    *,
+    no_progress_timeout_seconds: int = DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
+    failure_limit: Optional[int] = None,
+    auto_blocked_out: Optional[list[str]] = None,
+    signal_fn=None,
+) -> list[str]:
+    """Reclaim ``running`` tasks whose PROGRESS lease expired.
+
+    This is the pass the reproduced incident needed and no existing one
+    could provide. ``release_stale_claims`` and ``detect_stale_running``
+    both key off ``last_heartbeat_at``, which the runtime-activity bridge
+    keeps fresh from raw stream tokens — so a worker that reasoned for
+    thousands of tokens with zero tool calls, zero board transitions and
+    zero artifacts renewed its claim forever.
+
+    A task is a candidate when ``now - COALESCE(tasks.last_progress_at,
+    run.started_at, tasks.started_at)`` exceeds the timeout. The COALESCE
+    is the migration path: a run claimed before the progress lease existed
+    is measured from when its attempt began, never treated as infinitely
+    stale.
+
+    Classification, not overlap. This pass runs after the crash and stale
+    passes in a dispatcher tick and deliberately skips a host-local task
+    whose PID is already gone: that is a *dead* worker and
+    ``detect_crashed_workers`` owns it (it carries exit-code forensics this
+    pass cannot see). What is left is a worker that is alive-or-remote, and
+    the receipt records which — ``worker_state`` (alive/remote/unknown) and
+    ``liveness`` (fresh/stale/never) — so an operator can tell a reasoning
+    loop from a wedged process without reading logs.
+
+    Unlike ``detect_stale_running``, a no-progress reclaim DOES tick the
+    consecutive-failure counter. Stale is dispatcher-side absence detection
+    that can legitimately fire on very long quiet work; no-progress is an
+    evidence-based determination that the worker's model was demonstrably
+    live and produced nothing observable. Respawning that unboundedly is
+    precisely the spin loop the circuit breaker exists to stop, so after
+    ``kanban.failure_limit`` rounds the card is auto-blocked for a human.
+
+    ``failure_limit`` is the dispatcher's ``kanban.failure_limit``; it is
+    threaded into :func:`_record_task_failure` so the breaker trips where the
+    board says it should rather than at ``DEFAULT_FAILURE_LIMIT``. Tasks the
+    breaker trips are appended to the caller-supplied ``auto_blocked_out``
+    list, which is how ``dispatch_once`` gets them onto
+    ``DispatchResult.auto_blocked`` while this function's public return stays
+    a plain ``list[str]`` for direct callers. It is an explicit out-parameter
+    rather than an attribute stashed on the function object: a function
+    attribute is one slot shared by every caller in the process, so two
+    dispatch ticks running concurrently (gateway watcher + a CLI dispatch,
+    or two boards) would overwrite each other's trips and could attribute one
+    board's auto-block to another's result. The list belongs to the caller
+    and never leaves its stack.
+
+    ``no_progress_timeout_seconds <= 0`` disables the pass entirely.
+    ``signal_fn`` is a test hook; defaults to ``os.kill`` on POSIX.
+    Returns the list of reclaimed task ids.
+    """
+    auto_blocked: list[str] = (
+        auto_blocked_out if auto_blocked_out is not None else []
+    )
+    if no_progress_timeout_seconds <= 0:
+        return []
+
+    now = int(time.time())
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    reclaimed: list[str] = []
+
+    try:
+        rows = conn.execute(
+            "SELECT t.id, t.worker_pid, t.claim_lock, t.last_heartbeat_at, "
+            "       t.last_progress_at, t.assignee, "
+            "       COALESCE(t.last_progress_at, r.started_at, t.started_at) "
+            "           AS progress_at "
+            "FROM tasks t "
+            "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.status = 'running'"
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        # ``last_progress_at`` is additive, added by
+        # ``_migrate_add_optional_columns`` at ``init_db``. A board opened by
+        # a sibling process still running an older build has not had that
+        # migration applied, and this pass is one of several in a dispatch
+        # tick: raising here would take the WHOLE tick down — including the
+        # crash, stale and TTL passes that need no new column — and turn a
+        # cosmetic version skew into a dispatcher outage. Degrade to "this
+        # pass has nothing to say" instead. Same narrow test as
+        # ``_stored_worker_identity``: only a missing column is tolerated, so
+        # a locked or corrupt database still surfaces.
+        if "no such column" not in str(exc):
+            raise
+        _log.warning(
+            "kanban: skipping the no-progress pass — this board predates the "
+            "progress lease column (%s). It will run normally once the board "
+            "is opened by a build that migrates it.", exc,
+        )
+        return []
+
+    for row in rows:
+        if row["progress_at"] is None:
+            # No claim bookkeeping at all — reconcile_orphaned_running owns it.
+            continue
+        progress_age = now - int(row["progress_at"])
+        if progress_age <= no_progress_timeout_seconds:
+            continue
+
+        tid = row["id"]
+        lock = row["claim_lock"] or ""
+        pid = row["worker_pid"]
+        host_local = lock.startswith(host_prefix)
+
+        if host_local and pid and not _pid_alive(pid):
+            # Dead, not wedged. Leave the forensics to the crash path.
+            continue
+        worker_state = (
+            "alive" if (host_local and pid) else
+            ("remote" if lock and not host_local else "unknown")
+        )
+
+        last_hb = row["last_heartbeat_at"]
+        hb_age = (now - int(last_hb)) if last_hb is not None else None
+        if hb_age is None:
+            liveness = "never"
+        elif hb_age <= _NO_PROGRESS_LIVENESS_FRESH_SECONDS:
+            liveness = "fresh"
+        else:
+            liveness = "stale"
+
+        termination = _terminate_reclaimed_worker(
+            pid, lock,
+            stored_identity=_stored_worker_identity(conn, tid),
+            signal_fn=signal_fn,
+        )
+        # Never release a claim beside a worker that refused to die, nor beside
+        # a live pid we could not prove we own — both spawn a duplicate. Hold
+        # and retry next tick (same rule as the TTL and stale paths). Holding
+        # also leaves ``last_progress_at`` stale on purpose, so this same
+        # condition is re-detected and re-reported on every following tick
+        # instead of going quiet.
+        hold = _reclaim_hold_reason(termination)
+        if hold:
+            _defer_reclaim_for_live_worker(
+                conn, tid, lock, now, termination,
+                reason="no_progress_worker_alive",
+            )
+            continue
+
+        error = (
+            f"no observable progress for {progress_age}s "
+            f"(limit {no_progress_timeout_seconds}s); "
+            f"worker {worker_state}, liveness {liveness}"
+        )
+        with write_txn(conn):
+            retry_status = _retry_status_for_run(conn, tid)
+            cur = conn.execute(
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_identity = NULL, "
+                "last_heartbeat_at = NULL, last_progress_at = NULL "
+                "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
+                (retry_status, tid, row["claim_lock"]),
+            )
+            if cur.rowcount != 1:
+                continue
+
+            payload = {
+                "classification": "no_progress",
+                "worker_state": worker_state,
+                "liveness": liveness,
+                "last_progress_at": (
+                    int(row["last_progress_at"])
+                    if row["last_progress_at"] is not None else None
+                ),
+                "progress_age_seconds": int(progress_age),
+                "timeout_seconds": int(no_progress_timeout_seconds),
+                "last_heartbeat_at": (
+                    int(last_hb) if last_hb is not None else None
+                ),
+                "heartbeat_age_seconds": (
+                    int(hb_age) if hb_age is not None else None
+                ),
+                "pid": int(pid) if pid else None,
+                "claim_lock": row["claim_lock"],
+                "retry_status": retry_status,
+            }
+            payload.update(termination)
+
+            run_id = _end_run(
+                conn, tid,
+                outcome="no_progress", status="no_progress",
+                error=error,
+                metadata=payload,
+            )
+            _append_event(conn, tid, "no_progress", payload, run_id=run_id)
+            # Inline INSERT — add_comment opens its own write_txn and would
+            # raise on nesting (see write_txn pitfalls). The comment is the
+            # operator receipt AND the respawned worker's brief: it lands in
+            # build_worker_context, so the retry is told, in words, that its
+            # predecessor thought without acting.
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    tid, "dispatcher",
+                    f"reclaimed: no observable progress for {progress_age}s "
+                    f"(limit {no_progress_timeout_seconds}s) while the worker "
+                    f"was {worker_state} and its liveness heartbeat was "
+                    f"{liveness}. No tool call and no board transition "
+                    f"arrived in that window. On the next attempt, act early "
+                    f"and in small steps — run something, write something, "
+                    f"move the card — rather than planning further. "
+                    f"kanban_heartbeat does not count: it renews liveness "
+                    f"only, whatever its note says.",
+                    now,
+                ),
+            )
+            reclaimed.append(tid)
+
+        _log.warning(
+            "kanban: reclaiming task %s — %s", tid, error,
+        )
+        # Outside the txn above: _record_task_failure opens its own. See the
+        # docstring for why no-progress counts a failure and stale does not.
+        tripped = _record_task_failure(
+            conn, tid,
+            error=error,
+            outcome="no_progress",
+            failure_limit=failure_limit,
+            release_claim=False,
+            end_run=False,
+            event_payload_extra={
+                "classification": "no_progress",
+                "worker_state": worker_state,
+                "liveness": liveness,
+                "progress_age_seconds": int(progress_age),
+                "retry_status": retry_status,
+            },
+        )
+        if tripped:
+            auto_blocked.append(tid)
+
+    return reclaimed
+
+
 def reconcile_orphaned_running(
     conn: sqlite3.Connection,
 ) -> list[str]:
@@ -8711,9 +10041,14 @@ def reconcile_orphaned_running(
     for row in rows:
         tid = row["id"]
         pid = row["worker_pid"]
-        if pid and _pid_alive(pid):
+        if (
+            pid and _pid_alive(pid)
+            and not _identity_contradicts_liveness(conn, tid, pid)
+        ):
             # The recorded worker may still be doing real work — never
-            # requeue beside a live process. Retry next tick.
+            # requeue beside a live process. Retry next tick. A pid whose
+            # birth identity is contradicted is NOT that worker, so it does
+            # not hold the card hostage.
             _log.debug(
                 "kanban reconcile: task %s has broken claim bookkeeping but "
                 "pid %s is alive on this host — deferring", tid, pid,
@@ -8722,7 +10057,7 @@ def reconcile_orphaned_running(
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_identity = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ? AND claim_expires IS ?",
@@ -8910,8 +10245,17 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 grace = _resolve_crash_grace_seconds()
                 if time.time() - started_at < grace:
                     continue
+            # "The pid is alive" is not "our worker is alive": a recycled pid
+            # would otherwise keep this card ``running`` forever, with the
+            # reclaim paths correctly refusing to signal it every tick. A
+            # contradicted birth identity settles it — our worker is gone.
+            pid_recycled = False
             if _pid_alive(row["worker_pid"]):
-                continue
+                if not _identity_contradicts_liveness(
+                    conn, row["id"], row["worker_pid"],
+                ):
+                    continue
+                pid_recycled = True
 
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
@@ -8969,6 +10313,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     error_text = f"pid {pid} exited with code {code}"
                 elif kind == "signaled":
                     error_text = f"pid {pid} killed by signal {code}"
+                elif pid_recycled:
+                    error_text = (
+                        f"pid {pid} is live but is no longer the worker we "
+                        f"spawned (birth identity mismatch — pid reused); "
+                        f"treating the run as crashed and never signalling it"
+                    )
                 else:
                     error_text = f"pid {pid} not alive"
                 event_kind = "crashed"
@@ -8976,12 +10326,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
+                if pid_recycled:
+                    event_payload["pid_recycled"] = True
 
             retry_status = _retry_status_for_run(conn, row["id"])
             event_payload["retry_status"] = retry_status
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, worker_identity = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
                 (retry_status, row["id"], pid, row["claim_lock"]),
@@ -9155,7 +10507,7 @@ def _record_task_failure(
     error: str,
     *,
     outcome: str,
-    failure_limit: int = None,
+    failure_limit: Optional[int] = None,
     force_trip: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
@@ -9239,7 +10591,7 @@ def _record_task_failure(
                 # Spawn path: still running, also clear claim state.
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, worker_identity = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('running', 'ready', 'review')",
                     (failures, error[:500], task_id),
@@ -9289,7 +10641,7 @@ def _record_task_failure(
                 # Spawn path: restore the claimed source phase + clear claim.
                 conn.execute(
                     "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, worker_identity = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
                     (retry_status, failures, error[:500], task_id),
@@ -9344,24 +10696,66 @@ def _record_spawn_failure(
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + emit a ``spawned`` event.
+    """Record the spawned child's pid + birth identity, emit ``spawned``.
+
+    This is the single choke point where the dispatcher learns a worker's PID,
+    so it is also where the PID stops being a bare integer: the process's
+    immutable birth record (:func:`capture_worker_identity`) is snapshotted
+    here, microseconds after the spawn, and every later reclaim re-verifies
+    against it before it is allowed to signal anything. Capturing anywhere
+    later would widen the window in which the recorded process could already
+    have exited and had its pid handed to something else.
+
+    A capture that returns None (unsupported platform, or the child exited
+    before we could read it) stores NULL, which reads downstream as "ownership
+    unproven" — the safe direction.
 
     The event's payload carries the pid so a human reading ``hermes kanban
     tail`` can correlate log lines with OS-level traces without opening
-    the drawer.
+    the drawer, plus whether an identity was proven at spawn (an operator
+    seeing ``identity: false`` knows in advance that this worker can never be
+    force-reclaimed).
     """
+    identity = capture_worker_identity(int(pid))
+    identity_json = json.dumps(identity, sort_keys=True) if identity else None
     with write_txn(conn):
-        conn.execute(
-            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
-            (int(pid), task_id),
-        )
+        try:
+            conn.execute(
+                "UPDATE tasks SET worker_pid = ?, worker_identity = ? "
+                "WHERE id = ?",
+                (int(pid), identity_json, task_id),
+            )
+            identity_column = True
+        except sqlite3.OperationalError as exc:
+            # Board opened by a sibling process that has not run the additive
+            # migration yet. Recording the pid still matters (crash detection,
+            # operator forensics); the missing identity simply means no
+            # reclaim will signal this worker.
+            if "no such column" not in str(exc):
+                raise
+            identity_column = False
+            conn.execute(
+                "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+                (int(pid), task_id),
+            )
         run_id = _current_run_id(conn, task_id)
         if run_id is not None:
-            conn.execute(
-                "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
-                (int(pid), run_id),
-            )
-        _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+            if identity_column:
+                conn.execute(
+                    "UPDATE task_runs SET worker_pid = ?, worker_identity = ? "
+                    "WHERE id = ?",
+                    (int(pid), identity_json, run_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
+                    (int(pid), run_id),
+                )
+        _append_event(
+            conn, task_id, "spawned",
+            {"pid": int(pid), "identity": bool(identity_json)},
+            run_id=run_id,
+        )
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -9694,6 +11088,21 @@ def resolve_max_in_progress(configured: Optional[int]) -> Optional[int]:
     return derive_default_max_in_progress()
 
 
+def configured_kanban_setting(key: str) -> Any:
+    """Read one ``kanban.<key>`` value from config.yaml, or None.
+
+    Shared by the dispatch entry points that do not already hold a loaded
+    config (the standalone daemon). Fails open: an unreadable config must
+    not take down a dispatcher tick, it just falls back to the caller's
+    default.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        return (load_config_readonly() or {}).get("kanban", {}).get(key)
+    except Exception:
+        return None
+
+
 def configured_max_in_progress() -> Optional[int]:
     """Read ``kanban.max_in_progress`` from config, or None when unset/invalid.
 
@@ -9815,6 +11224,7 @@ def dispatch_once(
     max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
+    no_progress_timeout_seconds: int = DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
@@ -9850,6 +11260,7 @@ def dispatch_once(
             max_in_progress=max_in_progress,
             failure_limit=failure_limit,
             stale_timeout_seconds=stale_timeout_seconds,
+            no_progress_timeout_seconds=no_progress_timeout_seconds,
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
@@ -9870,6 +11281,7 @@ def dispatch_once(
                 max_in_progress=max_in_progress,
                 failure_limit=failure_limit,
                 stale_timeout_seconds=stale_timeout_seconds,
+                no_progress_timeout_seconds=no_progress_timeout_seconds,
                 board=board,
                 default_assignee=default_assignee,
                 max_in_progress_per_profile=max_in_progress_per_profile,
@@ -9897,6 +11309,7 @@ def _dispatch_once_locked(
     max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
+    no_progress_timeout_seconds: int = DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
@@ -9908,6 +11321,9 @@ def _dispatch_once_locked(
       1. Reclaim stale running tasks (TTL expired).
       2. Reclaim stale running tasks (no recent heartbeat).
       3. Reclaim crashed running tasks (host-local PID no longer alive).
+      3b. Reclaim running tasks whose PROGRESS lease expired — alive and
+          streaming, but no tool call and no board transition within
+          ``no_progress_timeout_seconds``.
       3. Promote todo -> ready where all parents are done.
       4. For each ready task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
@@ -9968,7 +11384,25 @@ def _dispatch_once_locked(
     )
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
-    result.timed_out = enforce_max_runtime(conn)
+    result.timed_out = enforce_max_runtime(conn, failure_limit=failure_limit)
+    # Progress-lease pass runs LAST of the recovery passes: crashed (dead
+    # PID) and stale (no liveness at all) are cheaper, more specific
+    # classifications and own their cases. What reaches here is a worker
+    # that is alive and talking but has produced nothing observable.
+    # A breaker trip here has to reach telemetry and the tick hook, not just
+    # the DB. It is collected through an explicit out-parameter owned by this
+    # call rather than a module-level side channel, so two ticks running at
+    # once (gateway watcher + CLI dispatch, or two boards) cannot read each
+    # other's trips.
+    _no_progress_auto_blocked: list[str] = []
+    result.no_progress = detect_no_progress_running(
+        conn,
+        no_progress_timeout_seconds=no_progress_timeout_seconds,
+        failure_limit=failure_limit,
+        auto_blocked_out=_no_progress_auto_blocked,
+    )
+    if _no_progress_auto_blocked:
+        result.auto_blocked.extend(_no_progress_auto_blocked)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather
@@ -10978,12 +12412,20 @@ def run_daemon(
             max_in_progress = resolve_max_in_progress(
                 configured_max_in_progress()
             )
+            # Same for the progress-lease bound: the standalone daemon must
+            # honour kanban.no_progress_timeout_seconds exactly like the
+            # gateway and the CLI, or the systemd deployment would be the
+            # one surface where a reasoning loop still renews forever.
+            no_progress_timeout_seconds = resolve_no_progress_timeout_seconds(
+                configured_kanban_setting("no_progress_timeout_seconds")
+            )
             with contextlib.closing(connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
+                    no_progress_timeout_seconds=no_progress_timeout_seconds,
                 )
             if on_tick is not None:
                 try:

@@ -22,7 +22,7 @@ export interface ComposerStatusItem {
   exitCode?: number
   /** subagent: active tool label shown on the right. */
   currentTool?: string
-  /** goal: active | paused | waiting | done. */
+  /** Truthful backend goal lifecycle status. */
   goalStatus?: GoalStatus
   id: string
   /** background process: captured stdout/stderr tail for the inline viewer. */

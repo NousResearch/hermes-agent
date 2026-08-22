@@ -72,6 +72,9 @@ kanban_show()
 #  write migrations, run its own checks, commit — the real work happens here)
 
 kanban_heartbeat(note="schema drafted, writing migrations now")
+# ^ liveness + a note for humans. It does NOT renew the progress lease —
+#   only real tool calls and board transitions do. See "Liveness vs.
+#   progress" in the Kanban docs.
 
 kanban_complete(
     summary="users(id, email, pw_hash), sessions(id, user_id, jti, expires_at); "

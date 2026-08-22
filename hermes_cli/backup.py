@@ -385,18 +385,30 @@ def _safe_copy_db(
         # connection's default timeout before each callback.
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=0.0)
         backup_conn = sqlite3.connect(str(dst))
-        busy_deadline = time.monotonic() + max(0.0, timeout_seconds)
+        stall_timeout = max(0.0, timeout_seconds)
+        last_progress_at = time.monotonic()
+        lowest_remaining: int | None = None
 
-        def _check_backup_progress(status: int, _remaining: int, _total: int) -> None:
-            nonlocal busy_deadline
+        def _check_backup_progress(status: int, remaining: int, total: int) -> None:
+            nonlocal last_progress_at, lowest_remaining
             now = time.monotonic()
-            if status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
-                if now >= busy_deadline:
-                    raise _SQLiteBackupTimeout(
-                        f"database remained locked for {timeout_seconds:g} seconds"
-                    )
-            else:
-                busy_deadline = now + max(0.0, timeout_seconds)
+
+            if status == sqlite3.SQLITE_DONE:
+                return
+
+            if status == sqlite3.SQLITE_OK and (
+                lowest_remaining is None or remaining < lowest_remaining
+            ):
+                lowest_remaining = remaining
+                last_progress_at = now
+                return
+
+            if now - last_progress_at >= stall_timeout:
+                raise _SQLiteBackupTimeout(
+                    "database backup made no forward progress for "
+                    f"{timeout_seconds:g} seconds "
+                    f"(status={status}, remaining={remaining}, total={total})"
+                )
 
         conn.backup(
             backup_conn,

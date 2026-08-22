@@ -2605,6 +2605,15 @@ DEFAULT_CONFIG = {
         # behaviour — e.g. for a profile that prefers explicit
         # ``kanban_notify-subscribe`` calls per task.
         "auto_subscribe_on_create": True,
+        # Profile-local worker prompt customization. Each named profile reads
+        # this from its own config.yaml under its HERMES_HOME; it is not a
+        # root-level map of profile names. Empty text preserves the built-in
+        # lifecycle guidance. "append" is the safe default; advanced users
+        # may choose "replace" to substitute the complete guidance block.
+        "guidance_override": {
+            "mode": "append",
+            "text": "",
+        },
         # Run the dispatcher inside the gateway process. On by default —
         # the cost is ~300µs every `dispatch_interval_seconds` when idle,
         # and gateway is the supervisor users already have. Set to false

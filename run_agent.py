@@ -2687,35 +2687,42 @@ class AIAgent:
         """Extract a human-readable one-liner from an API error.
 
         Handles Cloudflare HTML error pages (502, 503, etc.) by pulling the
-        <title> tag instead of dumping raw HTML. Network/DNS failures are
-        translated into an offline hint, including when an SDK wraps the
-        original OS error. Falls back to a truncated str(error) otherwise.
+        <title> tag instead of dumping raw HTML. DNS and routing failures are
+        identified separately, including when an SDK wraps the original OS
+        error. Falls back to a truncated str(error) otherwise.
         """
         raw = str(error)
 
-        # Linux, macOS, and Windows use different low-level messages when DNS
-        # cannot resolve the provider while the device is offline. SDKs often
-        # wrap that OSError in a generic "Connection error", so inspect the
-        # exception chain before showing the top-level message to the user.
-        network_resolution_markers = (
+        # Linux, macOS, and Windows use different low-level messages for DNS
+        # resolution failures. SDKs often wrap that OSError in a generic
+        # "Connection error", so inspect the exception chain. A DNS failure
+        # does not prove that the device's wider internet connection is down.
+        dns_resolution_markers = (
             "temporary failure in name resolution",
             "name or service not known",
             "nodename nor servname provided, or not known",
             "getaddrinfo failed",
             "no address associated with hostname",
+        )
+        routing_failure_markers = (
             "network is unreachable",
         )
         current: Optional[BaseException] = error
         seen: set[int] = set()
         while current is not None and id(current) not in seen:
             seen.add(id(current))
-            if any(
-                marker in str(current).lower()
-                for marker in network_resolution_markers
-            ):
+            current_message = str(current).lower()
+            if any(marker in current_message for marker in dns_resolution_markers):
                 return (
-                    "Hermes can't reach the model provider. You may be offline. "
-                    "Check your internet connection and try again."
+                    "Hermes couldn't resolve the model provider hostname (DNS failure). "
+                    "This does not mean the device is offline; VPN, DNS, or provider "
+                    "routing may be temporarily unavailable."
+                )
+            if any(marker in current_message for marker in routing_failure_markers):
+                return (
+                    "Hermes couldn't route this request to the model provider. "
+                    "This does not establish that the entire internet connection is "
+                    "offline."
                 )
             current = current.__cause__ or current.__context__
 

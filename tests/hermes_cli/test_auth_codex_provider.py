@@ -488,6 +488,27 @@ class _StubHTTPResponse:
             raise self._payload
         return self._payload
 
+    def iter_bytes(self):
+        if self.headers.get("content-encoding"):
+            raise AssertionError("encoded bodies must not be decoded")
+        if isinstance(self._payload, bytes):
+            yield self._payload
+        elif isinstance(self._payload, Exception):
+            yield b"not-json"
+        else:
+            yield json.dumps(self._payload).encode()
+
+
+class _FakeStream:
+    def __init__(self, response):
+        self.response = response
+
+    def __enter__(self):
+        return self.response
+
+    def __exit__(self, *args):
+        return False
+
 
 class _StubHTTPClient:
     def __init__(self, response):
@@ -501,6 +522,10 @@ class _StubHTTPClient:
 
     def post(self, *args, **kwargs):
         return self._response
+
+    def stream(self, *args, **kwargs):
+        assert kwargs["headers"]["accept-encoding"] == "identity"
+        return _FakeStream(self._response)
 
 
 def _patch_httpx(monkeypatch, response):
@@ -562,6 +587,68 @@ def test_refresh_429_without_retry_after_header(monkeypatch):
     assert "quota exhausted" in str(err).lower()
 
 
+def test_refresh_rejects_oversized_streamed_json(monkeypatch):
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr(auth_mod, "CODEX_AUTH_JSON_BODY_MAX_BYTES", 8, raising=False)
+    _patch_httpx(monkeypatch, _StubHTTPResponse(200, b"x" * 9))
+
+    with pytest.raises(AuthError, match="token refresh response exceeded 8 bytes") as exc_info:
+        refresh_codex_oauth_pure("a-tok", "r-tok")
+
+    assert exc_info.value.code == "codex_refresh_invalid_json"
+    assert exc_info.value.relogin_required is False
+
+
+def test_refresh_preserves_structured_error_from_bounded_body(monkeypatch):
+    _patch_httpx(
+        monkeypatch,
+        _StubHTTPResponse(
+            400,
+            {"error": {"code": "invalid_grant", "message": "refresh token expired"}},
+        ),
+    )
+
+    with pytest.raises(AuthError) as exc_info:
+        refresh_codex_oauth_pure("a-tok", "r-tok")
+
+    assert exc_info.value.code == "invalid_grant"
+    assert exc_info.value.relogin_required is True
+    assert "refresh token expired" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _StubHTTPResponse(401, b"x" * 9),
+        _StubHTTPResponse(401, {}, headers={"content-encoding": "gzip"}),
+    ],
+)
+def test_refresh_preserves_401_relogin_when_error_body_is_unreadable(monkeypatch, response):
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr(auth_mod, "CODEX_AUTH_JSON_BODY_MAX_BYTES", 8, raising=False)
+    _patch_httpx(monkeypatch, response)
+
+    with pytest.raises(AuthError) as exc_info:
+        refresh_codex_oauth_pure("a-tok", "r-tok")
+
+    assert exc_info.value.code == "codex_refresh_failed"
+    assert exc_info.value.relogin_required is True
+
+
+def test_refresh_rejects_encoded_success_before_decoding(monkeypatch):
+    response = _StubHTTPResponse(
+        200,
+        {"access_token": "at", "refresh_token": "rt"},
+        headers={"content-encoding": "gzip"},
+    )
+    _patch_httpx(monkeypatch, response)
+
+    with pytest.raises(AuthError, match="unsupported Content-Encoding gzip"):
+        refresh_codex_oauth_pure("a-tok", "r-tok")
+
+
 def test_is_rate_limited_auth_error_distinguishes_credential_errors():
     """Missing/expired credentials must NOT be treated as rate-limit errors."""
     from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, is_rate_limited_auth_error
@@ -591,6 +678,12 @@ class _FakeResp:
     def json(self):
         return self._json
 
+    def iter_bytes(self):
+        if isinstance(self._json, bytes):
+            yield self._json
+        else:
+            yield json.dumps(self._json).encode()
+
 
 def _patch_httpx_post(monkeypatch, responses):
     """Patch hermes_cli.auth.httpx.Client so .post() returns queued responses."""
@@ -606,7 +699,46 @@ def _patch_httpx_post(monkeypatch, responses):
         def post(self, *args, **kwargs):
             return next(seq)
 
+        def stream(self, *args, **kwargs):
+            return _FakeStream(next(seq))
+
     monkeypatch.setattr("hermes_cli.auth.httpx.Client", lambda *a, **k: _FakeClient())
+
+
+@pytest.mark.parametrize(
+    ("responses", "label", "code"),
+    [
+        ([_FakeResp(200, b"x" * 257)], "device code", "device_code_response_invalid"),
+        (
+            [
+                _FakeResp(200, {"user_code": "ABCD", "device_auth_id": "dev", "interval": 3}),
+                _FakeResp(200, b"x" * 257),
+            ],
+            "device auth poll",
+            "device_code_poll_invalid",
+        ),
+        (
+            [
+                _FakeResp(200, {"user_code": "ABCD", "device_auth_id": "dev", "interval": 3}),
+                _FakeResp(200, {"authorization_code": "code", "code_verifier": "verifier"}),
+                _FakeResp(200, b"x" * 257),
+            ],
+            "token exchange",
+            "token_exchange_invalid",
+        ),
+    ],
+)
+def test_device_code_login_bounds_each_json_response(monkeypatch, responses, label, code):
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(auth_mod, "CODEX_AUTH_JSON_BODY_MAX_BYTES", 256, raising=False)
+    _patch_httpx_post(monkeypatch, responses)
+
+    with pytest.raises(AuthError, match=rf"{label} response exceeded 256 bytes") as exc_info:
+        auth_mod._codex_device_code_login()
+
+    assert exc_info.value.code == code
 
 
 

@@ -147,6 +147,7 @@ except Exception:  # pragma: no cover - version import should always succeed
     _HERMES_CLI_VERSION = "unknown"
 CODEX_OAUTH_USER_AGENT = f"hermes-cli/{_HERMES_CLI_VERSION}"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+CODEX_AUTH_JSON_BODY_MAX_BYTES = 1024 * 1024
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
 XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
@@ -244,6 +245,19 @@ class ProviderConfig:
     api_key_env_vars: tuple = ()
     # Optional env var for base URL override
     base_url_env_var: str = ""
+
+
+@dataclass
+class _CodexAuthJsonResponse:
+    status_code: int
+    headers: Dict[str, str]
+    payload: Optional[Dict[str, Any]] = None
+    text: str = ""
+
+    def json(self) -> Dict[str, Any]:
+        if self.payload is None:
+            raise ValueError("Codex auth response body is not a JSON object")
+        return self.payload
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -971,6 +985,107 @@ def _parse_retry_after_seconds(headers: Any) -> Optional[int]:
 
     seconds = parse_retry_after_seconds(headers)
     return None if seconds is None else int(seconds)
+
+
+def _read_codex_auth_json_response(
+    response: httpx.Response,
+    *,
+    label: str,
+    code: str,
+    required: bool,
+    invalid_relogin_required: bool = False,
+) -> tuple[Optional[Dict[str, Any]], str]:
+    content_encoding = str(response.headers.get("content-encoding", "") or "").strip().lower()
+    if content_encoding and content_encoding != "identity":
+        if not required:
+            return None, ""
+        raise AuthError(
+            f"Codex {label} response used unsupported Content-Encoding {content_encoding}.",
+            provider="openai-codex",
+            code=code,
+        )
+
+    chunks: List[bytes] = []
+    total = 0
+    for chunk in response.iter_bytes():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > CODEX_AUTH_JSON_BODY_MAX_BYTES:
+            if not required:
+                return None, ""
+            raise AuthError(
+                f"Codex {label} response exceeded {CODEX_AUTH_JSON_BODY_MAX_BYTES} bytes.",
+                provider="openai-codex",
+                code=code,
+            )
+        chunks.append(chunk)
+
+    text = b"".join(chunks).decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(text)
+    except Exception as exc:
+        if not required:
+            return None, text
+        raise AuthError(
+            f"Codex {label} response returned invalid JSON: {exc}",
+            provider="openai-codex",
+            code=code,
+            relogin_required=invalid_relogin_required,
+        ) from exc
+
+    if not isinstance(payload, dict):
+        if not required:
+            return None, text
+        raise AuthError(
+            f"Codex {label} response must be a JSON object.",
+            provider="openai-codex",
+            code=code,
+            relogin_required=invalid_relogin_required,
+        )
+    return payload, text
+
+
+def _post_codex_auth_json(
+    client: httpx.Client,
+    url: str,
+    *,
+    label: str,
+    code: str,
+    read_error_body: bool = False,
+    read_rate_limit_body: bool = False,
+    invalid_relogin_required: bool = False,
+    **kwargs: Any,
+) -> _CodexAuthJsonResponse:
+    headers = httpx.Headers(kwargs.pop("headers", None))
+    headers["Accept-Encoding"] = "identity"
+    kwargs["headers"] = headers
+    with client.stream("POST", url, **kwargs) as response:
+        payload = None
+        text = ""
+        if response.status_code == 200:
+            payload, text = _read_codex_auth_json_response(
+                response,
+                label=label,
+                code=code,
+                required=True,
+                invalid_relogin_required=invalid_relogin_required,
+            )
+        elif read_error_body and (
+            response.status_code != 429 or read_rate_limit_body
+        ):
+            payload, text = _read_codex_auth_json_response(
+                response,
+                label=label,
+                code=code,
+                required=False,
+            )
+        return _CodexAuthJsonResponse(
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            payload=payload,
+            text=text,
+        )
 
 
 def format_auth_error(error: Exception) -> str:
@@ -3908,8 +4023,13 @@ def refresh_codex_oauth_pure(
             "User-Agent": CODEX_OAUTH_USER_AGENT,
         },
     ) as client:
-        response = client.post(
+        response = _post_codex_auth_json(
+            client,
             CODEX_OAUTH_TOKEN_URL,
+            label="token refresh",
+            code="codex_refresh_invalid_json",
+            read_error_body=True,
+            invalid_relogin_required=True,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             data={
                 "grant_type": "refresh_token",
@@ -3946,26 +4066,23 @@ def refresh_codex_oauth_pure(
         code = "codex_refresh_failed"
         message = f"Codex token refresh failed with status {response.status_code}."
         relogin_required = False
-        try:
-            err = response.json()
-            if isinstance(err, dict):
-                err_obj = err.get("error")
-                # OpenAI shape: {"error": {"code": "...", "message": "...", "type": "..."}}
-                if isinstance(err_obj, dict):
-                    nested_code = err_obj.get("code") or err_obj.get("type")
-                    if isinstance(nested_code, str) and nested_code.strip():
-                        code = nested_code.strip()
-                    nested_msg = err_obj.get("message")
-                    if isinstance(nested_msg, str) and nested_msg.strip():
-                        message = f"Codex token refresh failed: {nested_msg.strip()}"
-                # OAuth spec shape: {"error": "code_str", "error_description": "..."}
-                elif isinstance(err_obj, str) and err_obj.strip():
-                    code = err_obj.strip()
-                    err_desc = err.get("error_description") or err.get("message")
-                    if isinstance(err_desc, str) and err_desc.strip():
-                        message = f"Codex token refresh failed: {err_desc.strip()}"
-        except Exception:
-            pass
+        err = response.payload
+        if isinstance(err, dict):
+            err_obj = err.get("error")
+            # OpenAI shape: {"error": {"code": "...", "message": "...", "type": "..."}}
+            if isinstance(err_obj, dict):
+                nested_code = err_obj.get("code") or err_obj.get("type")
+                if isinstance(nested_code, str) and nested_code.strip():
+                    code = nested_code.strip()
+                nested_msg = err_obj.get("message")
+                if isinstance(nested_msg, str) and nested_msg.strip():
+                    message = f"Codex token refresh failed: {nested_msg.strip()}"
+            # OAuth spec shape: {"error": "code_str", "error_description": "..."}
+            elif isinstance(err_obj, str) and err_obj.strip():
+                code = err_obj.strip()
+                err_desc = err.get("error_description") or err.get("message")
+                if isinstance(err_desc, str) and err_desc.strip():
+                    message = f"Codex token refresh failed: {err_desc.strip()}"
         if code in {"invalid_grant", "invalid_token", "invalid_request"}:
             relogin_required = True
         if code == "refresh_token_reused":
@@ -3988,15 +4105,7 @@ def refresh_codex_oauth_pure(
             relogin_required=relogin_required,
         )
 
-    try:
-        refresh_payload = response.json()
-    except Exception as exc:
-        raise AuthError(
-            "Codex token refresh returned invalid JSON.",
-            provider="openai-codex",
-            code="codex_refresh_invalid_json",
-            relogin_required=True,
-        ) from exc
+    refresh_payload = response.payload or {}
 
     refreshed_access = refresh_payload.get("access_token")
     if not isinstance(refreshed_access, str) or not refreshed_access.strip():
@@ -8257,12 +8366,17 @@ def _codex_device_code_login() -> Dict[str, Any]:
     for attempt in range(1, max_attempts + 1):
         try:
             with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-                resp = client.post(
+                resp = _post_codex_auth_json(
+                    client,
                     f"{issuer}/api/accounts/deviceauth/usercode",
+                    label="device code",
+                    code="device_code_response_invalid",
                     json={"client_id": client_id},
                     headers={"Content-Type": "application/json"},
                 )
         except Exception as exc:
+            if isinstance(exc, AuthError):
+                raise
             raise AuthError(
                 f"Failed to request device code: {exc}",
                 provider="openai-codex", code="device_code_request_failed",
@@ -8306,7 +8420,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
             provider="openai-codex", code="device_code_request_error",
         )
 
-    device_data = resp.json()
+    device_data = resp.payload or {}
     user_code = device_data.get("user_code", "")
     device_auth_id = device_data.get("device_auth_id", "")
     poll_interval = max(3, int(device_data.get("interval", "5")))
@@ -8334,14 +8448,17 @@ def _codex_device_code_login() -> Dict[str, Any]:
         with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
             while _time.monotonic() - start < max_wait:
                 _time.sleep(poll_interval)
-                poll_resp = client.post(
+                poll_resp = _post_codex_auth_json(
+                    client,
                     f"{issuer}/api/accounts/deviceauth/token",
+                    label="device auth poll",
+                    code="device_code_poll_invalid",
                     json={"device_auth_id": device_auth_id, "user_code": user_code},
                     headers={"Content-Type": "application/json"},
                 )
 
                 if poll_resp.status_code == 200:
-                    code_resp = poll_resp.json()
+                    code_resp = poll_resp.payload or {}
                     break
                 elif poll_resp.status_code in {403, 404}:
                     continue  # User hasn't completed login yet
@@ -8373,8 +8490,11 @@ def _codex_device_code_login() -> Dict[str, Any]:
 
     try:
         with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-            token_resp = client.post(
+            token_resp = _post_codex_auth_json(
+                client,
                 CODEX_OAUTH_TOKEN_URL,
+                label="token exchange",
+                code="token_exchange_invalid",
                 data={
                     "grant_type": "authorization_code",
                     "code": authorization_code,
@@ -8385,6 +8505,8 @@ def _codex_device_code_login() -> Dict[str, Any]:
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
     except Exception as exc:
+        if isinstance(exc, AuthError):
+            raise
         raise AuthError(
             f"Token exchange failed: {exc}",
             provider="openai-codex", code="token_exchange_failed",
@@ -8412,7 +8534,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
             provider="openai-codex", code="token_exchange_error",
         )
 
-    tokens = token_resp.json()
+    tokens = token_resp.payload or {}
     access_token = tokens.get("access_token", "")
     refresh_token = tokens.get("refresh_token", "")
 

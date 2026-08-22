@@ -948,6 +948,34 @@ def test_terminal_task_cwd_ssh_sentinel_cwd_uses_remote_home(monkeypatch):
     assert server._terminal_task_cwd({"cwd": "/host/session/dir"}) == "~"
 
 
+def test_session_create_ssh_preserves_remote_project_cwd(monkeypatch):
+    """#83515: a Desktop Project whose primary path only exists on the SSH
+    target must stay the session's cwd through session.create — not get
+    silently discarded by a local os.path.isdir() check and replaced with
+    the global terminal.cwd or the gateway's own launch dir."""
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **kw: None)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_CWD", "/workspace")
+    remote_project = "/workspace/research"
+    assert not os.path.isdir(remote_project)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {"cols": 80, "cwd": remote_project},
+        }
+    )
+    sid = resp["result"]["session_id"]
+    session = server._sessions[sid]
+
+    assert session["explicit_cwd"] is True
+    assert session["cwd"] == remote_project
+    assert server._terminal_task_cwd(session) == remote_project
+
+    server._sessions.pop(sid, None)
+
+
 class _ChunkyStdout:
     def __init__(self):
         self.parts: list[str] = []

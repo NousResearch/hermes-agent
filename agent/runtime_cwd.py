@@ -18,6 +18,15 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Non-local backends whose cwd lives on a different filesystem than this
+# process — keep in sync with agent/prompt_builder.py:_REMOTE_TERMINAL_BACKENDS.
+# Duplicated rather than imported to avoid a circular import (prompt_builder
+# imports resolve_agent_cwd from this module).
+_REMOTE_TERMINAL_BACKENDS = frozenset({
+    "docker", "singularity", "modal", "daytona", "ssh",
+    "vercel_sandbox", "managed_modal",
+})
+
 _UNSET: Any = object()
 
 _SESSION_CWD: ContextVar = ContextVar("HERMES_SESSION_CWD", default=_UNSET)
@@ -58,14 +67,28 @@ def _session_cwd_override() -> str:
 
 
 def resolve_agent_cwd() -> Path:
+    # A non-local backend's configured cwd lives on the backend's filesystem,
+    # not this host's — Path.is_dir() would always be False there and discard
+    # a valid remote path in favor of the host's launch dir (#83515). Nor can
+    # `~` be expanded here: expanduser() would resolve it against this host's
+    # HOME, not the remote's, silently pointing the agent at the wrong path.
+    # Kept verbatim instead, matching tui_gateway/methods_session.py's
+    # session.create handling of a remote raw_cwd.
+    remote = (os.environ.get("TERMINAL_ENV") or "").strip().lower() in _REMOTE_TERMINAL_BACKENDS
     override = _session_cwd_override()
     if override:
+        if remote:
+            logger.debug("cwd validation skipped for remote backend: %s", override)
+            return Path(override)
         p = Path(override).expanduser()
         if p.is_dir():
             return p
         logger.warning("configured working directory does not exist: %s", override)
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
+        if remote:
+            logger.debug("cwd validation skipped for remote backend: %s", raw)
+            return Path(raw)
         p = Path(raw).expanduser()
         if p.is_dir():
             return p

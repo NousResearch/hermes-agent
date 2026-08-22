@@ -2668,6 +2668,21 @@ DEFAULT_CONFIG = {
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.
         "auto_decompose_per_tick": 3,
+        # Profiles excluded from GENERIC auto-decomposition (#83046).
+        # Excluded names are removed from both the decomposer's prompt
+        # roster and its valid-assignee set, so free-form decomposition
+        # children can never be routed to them — use this for
+        # contract-bound profiles whose cards must arrive through an
+        # explicit dispatcher hand-off instead. Entries are matched
+        # case-insensitively against profile ids. The scope is
+        # deliberately narrow: directly created / explicitly assigned
+        # cards dispatch unchanged and never consult this list.
+        # Fail-closed: if exclusion empties the roster or excludes the
+        # resolved ``default_assignee``, decomposition is skipped — the
+        # root card stays in Triage with one board notice explaining why
+        # — rather than creating children that would land somewhere
+        # forbidden.
+        "auto_decompose_excluded_profiles": [],
         # Stale detection: running tasks that have exceeded this many
         # seconds without a heartbeat (since ``last_heartbeat_at``) are
         # auto-reclaimed to ``ready`` on the next dispatcher tick. The

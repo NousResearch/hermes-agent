@@ -1488,6 +1488,38 @@ def test_default_config_kanban_block_not_dropped_by_duplicate_key():
     assert "auto_decompose" in kanban
 
 
+def test_auto_decompose_excluded_profiles_defaults_to_empty_list():
+    """#83046: the exclusion list must default to empty — current behavior
+    (every installed profile is generically routable) is the contract."""
+    excluded = DEFAULT_CONFIG["kanban"].get("auto_decompose_excluded_profiles")
+    assert isinstance(excluded, list)
+    assert excluded == []
+
+
+def test_auto_decompose_excluded_profiles_deep_merges_from_user_yaml(
+    tmp_path, monkeypatch
+):
+    """A user-supplied exclusion list merges over the additive default via
+    the deep-merge path — no _config_version bump or migration required."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "kanban": {"auto_decompose_excluded_profiles": ["reviewer"]},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_cli import config as cfg_mod
+    cfg_mod._cached_config = None  # type: ignore[attr-defined]
+
+    try:
+        loaded = load_config()
+    finally:
+        cfg_mod._cached_config = None  # type: ignore[attr-defined]
+
+    assert loaded["kanban"]["auto_decompose_excluded_profiles"] == ["reviewer"]
+    # Invariant: loading leaves the user on the current latest version —
+    # an additive key never forces a migration.
+    assert loaded["_config_version"] == DEFAULT_CONFIG["_config_version"]
+
+
 def test_default_config_has_no_duplicate_top_level_keys():
     """Guard against any duplicate key silently shadowing a default."""
     import ast

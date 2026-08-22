@@ -611,6 +611,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 |---|---|---|
 | `auto_decompose` | `true` | Dispatcher auto-runs the built-in decomposer for Triage tasks every tick. It does not gate profile-driven `kanban_create` calls or creator wake turns. |
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
+| `auto_decompose_excluded_profiles` | `[]` | Profiles removed from generic decomposition: excluded names never appear in the decomposer's roster prompt or valid-assignee set, so free-form children can't be routed at them. Use it for contract-bound profiles whose cards must arrive through an explicit dispatcher hand-off. Directly created / explicitly assigned cards are unaffected. Fail-closed: if exclusion empties the roster or excludes the resolved default assignee, decomposition is skipped and the root card stays in Triage with one board notice. |
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |

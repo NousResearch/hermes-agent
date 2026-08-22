@@ -32,6 +32,16 @@ Design notes
 * If the LLM picks an assignee that doesn't exist as a profile, we
   rewrite it to the configured ``default_assignee`` (or the default
   profile if unset). A child task NEVER ends up with ``assignee=None``.
+
+* Exclusions: ``kanban.auto_decompose_excluded_profiles`` (#83046)
+  removes profiles from BOTH the prompt roster and the valid-assignee
+  set so contract-bound profiles are never routed free-form children.
+  Fail-closed semantics: if the exclusion empties the roster or
+  excludes the resolved ``default_assignee``, decomposition is skipped —
+  the root stays in Triage with exactly one board notice (a comment,
+  which carries its own board event) explaining why — instead of
+  creating children that would land somewhere forbidden. Directly
+  created / explicitly assigned cards never consult this list.
 """
 
 from __future__ import annotations
@@ -214,12 +224,51 @@ def _resolve_default_assignee(cfg: dict) -> str:
         return "default"
 
 
-def _build_roster() -> tuple[list[dict], set[str]]:
+def _resolve_excluded_profiles(kanban_cfg: dict) -> frozenset[str]:
+    """Normalize ``kanban.auto_decompose_excluded_profiles`` to a name set.
+
+    Entries are canonicalized with ``profiles.normalize_profile_name``
+    so padded or mixed-case config values (``" Reviewer "``, ``"REVIEWER"``)
+    match how profile ids are stored on disk (#18498 convention).
+    Unparseable entries are ignored leniently — this module never raises
+    on expected failure modes — while genuinely dangerous configurations
+    (excluded default assignee, fully emptied roster) are handled
+    fail-closed by :func:`decompose_task`.
+    """
+    raw = (
+        kanban_cfg.get("auto_decompose_excluded_profiles")
+        if isinstance(kanban_cfg, dict)
+        else None
+    )
+    if not raw:
+        return frozenset()
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple, set)):
+        return frozenset()
+    excluded: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        try:
+            excluded.add(profiles_mod.normalize_profile_name(entry))
+        except ValueError:
+            continue
+    return frozenset(excluded)
+
+
+def _build_roster(
+    excluded: frozenset[str] = frozenset(),
+) -> tuple[list[dict], set[str]]:
     """Return (roster_for_prompt, valid_assignee_names).
 
     Each roster entry is ``{name, description, has_description}``. The
     valid-set is used after the LLM responds to rewrite invalid
     assignees to the default fallback.
+
+    ``excluded`` carries normalized profile names (see
+    ``_resolve_excluded_profiles``) that are dropped from BOTH surfaces,
+    so an excluded profile is neither prompted nor routable (#83046).
     """
     roster: list[dict] = []
     valid: set[str] = set()
@@ -229,6 +278,8 @@ def _build_roster() -> tuple[list[dict], set[str]]:
         logger.warning("decompose: failed to list profiles: %s", exc)
         return roster, valid
     for p in all_profiles:
+        if excluded and profiles_mod.normalize_profile_name(p.name) in excluded:
+            continue
         desc = (p.description or "").strip()
         roster.append({
             "name": p.name,
@@ -268,6 +319,26 @@ def _normalize_assignee_choice(
     return chosen
 
 
+def _record_skip_notice(task_id: str, reason: str, author: str) -> None:
+    """Leave exactly one durable notice that decomposition was skipped.
+
+    Reuses the existing comment surface — which appends its own board
+    event row — matching the ``BLOCKED:``/``SCHEDULED:`` CLI notice
+    convention; no new event kind or surface (#83046). A warning is also
+    logged so headless dispatcher ticks are visible in gateway.log.
+    """
+    logger.warning("decompose: %s", reason)
+    try:
+        with kb.connect_closing() as conn:
+            kb.add_comment(conn, task_id, author, f"DECOMPOSE SKIPPED: {reason}")
+    except Exception as exc:
+        # The skip decision itself must never crash the caller (the
+        # auto-decompose tick) — the root card simply stays in Triage.
+        logger.warning(
+            "decompose: could not record skip notice on %s: %s", task_id, exc,
+        )
+
+
 def decompose_task(
     task_id: str,
     *,
@@ -295,7 +366,35 @@ def decompose_task(
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
-    roster, valid_names = _build_roster()
+    audit_author = author or _profile_author()
+    excluded = _resolve_excluded_profiles(kanban_cfg)
+    roster, valid_names = _build_roster(excluded=excluded)
+
+    # Fail-closed guards for GENERIC decomposition (#83046). The
+    # exclusion list is an invariant, not prompt advice: rather than
+    # risk free-form children reaching a contract-bound profile through
+    # the default fallback, skip the decomposition entirely, leave the
+    # root in Triage, and record one board notice explaining why. These
+    # checks live only on this path — directly created / explicitly
+    # assigned cards are untouched (the dispatcher never consults the
+    # exclusion list, and an already-assigned triage card keeps its
+    # assignee below).
+    if excluded:
+        if profiles_mod.normalize_profile_name(default_assignee) in excluded:
+            reason = (
+                "auto-decompose skipped: default_assignee "
+                f"{default_assignee!r} is listed in "
+                "kanban.auto_decompose_excluded_profiles"
+            )
+            _record_skip_notice(task_id, reason, audit_author)
+            return DecomposeOutcome(task_id, False, reason)
+        if not roster:
+            reason = (
+                "auto-decompose skipped: no routable profiles remain "
+                "after kanban.auto_decompose_excluded_profiles"
+            )
+            _record_skip_notice(task_id, reason, audit_author)
+            return DecomposeOutcome(task_id, False, reason)
 
     try:
         from agent.auxiliary_client import call_llm  # type: ignore
@@ -342,7 +441,6 @@ def decompose_task(
         return DecomposeOutcome(task_id, False, "LLM returned malformed JSON")
 
     fanout = bool(parsed.get("fanout"))
-    audit_author = author or _profile_author()
 
     if not fanout:
         # Fall back to single-task spec promotion (same effect as specify).

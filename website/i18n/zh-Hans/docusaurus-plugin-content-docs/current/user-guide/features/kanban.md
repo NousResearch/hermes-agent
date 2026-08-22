@@ -433,6 +433,7 @@ hermes dashboard        # 导航栏中出现 "Kanban" 标签页，位于 "Skills
 |---|---|---|
 | `auto_decompose` | `true` | 调度器每 tick 为 Triage 任务运行内置分解器；它不会限制配置文件驱动的 `kanban_create` 或创建者唤醒回合。 |
 | `auto_decompose_per_tick` | `3` | 每个调度器 tick 的分解上限。超出部分推迟到下一个 tick。 |
+| `auto_decompose_excluded_profiles` | `[]` | 从通用分解中排除的配置文件：被排除的名称既不会出现在分解器的名册提示中，也不会出现在有效受让人集合中，因此自由格式的子任务无法路由到它们。适用于必须通过显式调度交接才能接收卡片的契约绑定配置文件。直接创建/显式指派的卡片不受影响。失败关闭：若排除后名册为空，或排除了已解析的默认受让人，则跳过分解，根卡片保留在 Triage 并附带一条看板通知。 |
 | `orchestrator_profile` | `""` | 拥有分解权的配置文件。空 = 回退到活动默认配置文件。 |
 | `default_assignee` | `""` | LLM 选择未知配置文件时子任务的落地位置。空 = 回退到活动默认配置文件。 |
 | `auto_subscribe_on_create` | `true` | 当 `kanban_create` 在持久 gateway/TUI 会话中运行时，终止事件会通过合成状态回合恢复原始 agent。设为 `false` 可让完成保持被动，或要求显式调用 `kanban_notify-subscribe`。此设置独立于 `auto_decompose`。 |

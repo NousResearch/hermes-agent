@@ -129,6 +129,69 @@ class TestGenerateTitle:
 
 
 
+    def test_retries_with_json_object_on_http_400_status_code(self):
+        """A provider that 400s on strict json_schema (status_code attr set,
+        as the openai SDK does) gets one retry with the looser json_object
+        mode instead of losing the title outright."""
+        calls = []
+
+        def mock_call_llm(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                exc = RuntimeError("bad request")
+                exc.status_code = 400
+                raise exc
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Fix login button"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("fix the login button") == "Fix login button"
+
+        assert len(calls) == 2
+        assert calls[0]["extra_body"]["response_format"]["type"] == "json_schema"
+        assert calls[1]["extra_body"] == {"response_format": {"type": "json_object"}}
+
+    def test_retries_on_vllm_guided_grammar_rejection(self):
+        """vLLM backends that translate json_schema into an uncompilable
+        guided_grammar reject with a plain HTTP 400 whose message never
+        mentions "response_format" — only the status must gate the retry."""
+        calls = []
+
+        def mock_call_llm(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise RuntimeError(
+                    "Error code: 400 - {'error': {'message': \"guided_grammar "
+                    "has compile_grammar_error: No module named 'xgrammar'\", "
+                    "'type': 'invalid_request_error', 'code': '400'}}"
+                )
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Debug xgrammar error"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("why does xgrammar fail") == "Debug xgrammar error"
+
+        assert len(calls) == 2
+
+    def test_does_not_retry_on_unrelated_error(self):
+        """A non-400 failure (e.g. payment/rate-limit) must not retry — it
+        would just burn a second call for a request shape that was never
+        the problem."""
+        calls = []
+
+        def mock_call_llm(**kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("openrouter 402: credits exhausted")
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("question") is None
+
+        assert len(calls) == 1
+
     def test_invokes_failure_callback_on_exception(self):
         """failure_callback must fire so the user sees a warning (issue #15775)."""
         captured = []

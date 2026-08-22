@@ -323,6 +323,24 @@ def _extract_title_text(content: str) -> str:
     return raw.strip("\"'").strip()
 
 
+def _response_format_rejected(exc: Exception) -> bool:
+    """Return whether *exc* is an HTTP 400 rejecting the request shape.
+
+    Some OpenAI-compatible backends (vLLM translating ``json_schema`` into a
+    ``guided_grammar`` it can't compile, DeepSeek/Kimi rejecting the type
+    outright) 400 on strict structured output but accept the looser
+    ``json_object`` mode. A 400 for an unrelated reason (bad auth, invalid
+    model) will just 400 again on retry and fall through to the outer
+    handler, so this check only needs to be cheap, not exhaustive.
+    """
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    if status == 400:
+        return True
+    return "error code: 400" in str(exc).lower()
+
+
 def _clean_title(text: str) -> Optional[str]:
     """Normalize a model-produced title, or None when nothing usable remains."""
     title = " ".join((text or "").split())
@@ -399,18 +417,33 @@ def generate_title(
         {"role": "user", "content": user_snippet},
     ]
 
+    call_kwargs = dict(
+        task="title_generation",
+        messages=messages,
+        # A title is a handful of tokens. The old 500-token ceiling let a
+        # chatty model burn seconds generating prose we then threw away.
+        max_tokens=64,
+        temperature=0.3,
+        timeout=timeout,
+        main_runtime=main_runtime,
+    )
     try:
-        response = call_llm(
-            task="title_generation",
-            messages=messages,
-            # A title is a handful of tokens. The old 500-token ceiling let a
-            # chatty model burn seconds generating prose we then threw away.
-            max_tokens=64,
-            temperature=0.3,
-            timeout=timeout,
-            main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-        )
+        try:
+            response = call_llm(
+                **call_kwargs,
+                extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            )
+        except Exception as schema_exc:
+            if not _response_format_rejected(schema_exc):
+                raise
+            logger.info(
+                "Title provider rejected json_schema response_format (HTTP "
+                "400); retrying with json_object"
+            )
+            response = call_llm(
+                **call_kwargs,
+                extra_body={"response_format": {"type": "json_object"}},
+            )
         content = response.choices[0].message.content or ""
         title = _clean_title(_extract_title_text(content))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title

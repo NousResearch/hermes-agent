@@ -45,6 +45,7 @@ _ENV_VARS = (
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
+    "BUZZ_REPLY_IN_THREAD",
 )
 
 
@@ -420,6 +421,44 @@ class TestBuzzAdapterSend:
         assert result.success is True
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
+
+    @pytest.mark.asyncio
+    async def test_send_includes_reply_to_by_default(self):
+        """Default behaviour: reply chains into the triggering message."""
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt200", "message": ""})
+        adapter._run_cli = cli
+        await adapter.send(CHANNEL, "reply", reply_to="trigger-evt")
+        args, _ = cli.calls[0]
+        assert "--reply-to" in args
+        assert args[args.index("--reply-to") + 1] == "trigger-evt"
+
+    @pytest.mark.asyncio
+    async def test_send_flat_when_reply_in_thread_false(self):
+        """reply_in_thread=False suppresses --reply-to entirely."""
+        adapter = _make_adapter(extra={"reply_in_thread": False})
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt201", "message": ""})
+        adapter._run_cli = cli
+        await adapter.send(CHANNEL, "flat reply", reply_to="trigger-evt")
+        args, _ = cli.calls[0]
+        assert "--reply-to" not in args
+
+    @pytest.mark.asyncio
+    async def test_send_flat_when_reply_in_thread_false_env_override(self):
+        """BUZZ_REPLY_IN_THREAD=false env var also suppresses --reply-to."""
+        adapter = _make_adapter()
+        adapter.reply_in_thread = False  # simulate env override
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt202", "message": ""})
+        adapter._run_cli = cli
+        await adapter.send(CHANNEL, "flat", reply_to="trigger-evt", metadata={"thread_id": "t1"})
+        args, _ = cli.calls[0]
+        assert "--reply-to" not in args
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────

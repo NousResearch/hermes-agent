@@ -35,6 +35,10 @@ const isBarrierMessage = (msg: Msg | undefined) => {
     return true
   }
 
+  if (msg.kind === 'trail' && msg.thinking?.trim() && !msg.tools?.length) {
+    return true
+  }
+
   return false
 }
 

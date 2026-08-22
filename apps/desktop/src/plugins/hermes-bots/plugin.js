@@ -4499,15 +4499,20 @@ async function openRosterBot(bot) {
     return false
   }
 
-  $openBotChat.set({ key, openedRegistryId: '' })
-  closeBotsHomeWorkspace()
-
-  if (typeof host.newChat === 'function') {
-    host.newChat(bot.name)
-  } else {
-    host.navigate('/')
+  // An older Desktop without the profile-scoped draft API has no safe fallback:
+  // do not navigate the current workspace or create a draft on the wrong owner.
+  if (typeof host.newChat !== 'function') {
+    $openBotChat.set(null)
+    if (previousGroup && !$groupChatWorkspace.get()) {
+      $groupChatWorkspace.set(previousGroup)
+    }
+    syncBotsHomeWorkspace()
+    return false
   }
 
+  $openBotChat.set({ key, openedRegistryId: '' })
+  closeBotsHomeWorkspace()
+  host.newChat(bot.name)
   return true
 }
 

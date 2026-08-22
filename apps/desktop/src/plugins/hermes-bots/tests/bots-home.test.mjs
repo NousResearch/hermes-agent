@@ -482,6 +482,23 @@ test('a failed local open leaves no phantom owner in the center', async () => {
   assertNothingRouted(t, 'a refused local open')
 })
 
+test('a missing profile-scoped draft API returns to the home without navigating', async () => {
+  const t = load()
+  t.setPluginCtx({ storage: { set: () => undefined } })
+  t.$botsPaneVisible.set(true)
+  t.host.request = async method => {
+    if (method === 'session.list') return { sessions: [] }
+    if (method === 'session.create') return {}
+    return {}
+  }
+
+  const result = await t.openRosterBot({ connectionId: 'local', name: 'writer' })
+
+  assert.equal(result, false)
+  assert.equal(t.$openBotChat.get(), null, 'no draft was opened without the owner-scoped API')
+  assert.ok(t.botsHomeVisible(), 'the owner home remains the visible recovery surface')
+})
+
 test('a bot chat opens from its canonical name-registry row without closing the prior group tab', async () => {
   const t = load()
   t.setPluginCtx({ storage: { set: () => undefined } })

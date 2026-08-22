@@ -12004,6 +12004,69 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
 
+    async def _await_startup_boot_sends(
+        self,
+        *,
+        planned_restart_notification_pending: bool,
+    ) -> None:
+        """Run boot-path sends without letting them pin the inbound restore gate.
+
+        ``_send_restart_notification`` and ``_redeliver_pending_obligations``
+        used to be awaited inline *before* ``_finish_startup_restore``
+        released the gate. A single Telegram flood-control sleep on either
+        send froze inbound on every platform for the full ``retry_after``
+        (#91969).
+
+        This uses the same bounded ``asyncio.wait`` the resume gate already
+        uses: on timeout we return and let the sends finish in the
+        background. Tasks are not cancelled.
+        """
+        async def _boot_sends() -> None:
+            await self._send_restart_notification()
+            if planned_restart_notification_pending:
+                try:
+                    await self._send_home_channel_startup_notifications(
+                        skip_targets=None,
+                    )
+                finally:
+                    _clear_planned_restart_notification()
+            await self._redeliver_pending_obligations()
+
+        boot_task = asyncio.create_task(_boot_sends())
+        timeout = _startup_restore_drain_timeout_secs()
+        if timeout > 0:
+            _done, pending = await asyncio.wait({boot_task}, timeout=timeout)
+            if pending:
+                logger.warning(
+                    "Boot-path sends still running after %.0fs; releasing "
+                    "inbound gate so other platforms are not frozen. "
+                    "Restart notification / obligation redelivery continue "
+                    "in the background.",
+                    timeout,
+                )
+                boot_task.add_done_callback(self._log_background_boot_send_result)
+                tasks = getattr(self, "_background_tasks", None)
+                if tasks is None:
+                    self._background_tasks = set()
+                    tasks = self._background_tasks
+                tasks.add(boot_task)
+                boot_task.add_done_callback(tasks.discard)
+        else:
+            await boot_task
+
+    @staticmethod
+    def _log_background_boot_send_result(task: "asyncio.Task") -> None:
+        """Done-callback for boot-path sends that outlived the restore gate."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(
+                "background boot-path send failed after gate release: %s",
+                exc,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
     async def _redeliver_pending_obligations(self) -> int:
         """Redeliver final responses recorded in the delivery ledger by a
         previous (now dead) gateway process.
@@ -12067,6 +12130,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             metadata = (
                 {"thread_id": row["thread_id"]} if row.get("thread_id") else None
             )
+
+            # Clear resume_pending BEFORE the send. The answer is already in
+            # the ledger — a hung/flood-limited send must not also replay the
+            # turn when the inbound gate times out and schedules resume
+            # (#91969). Failed sends already skipped resume; this just does
+            # that bookkeeping first.
+            session_key = row.get("session_key") or ""
+            if session_key:
+                try:
+                    await self.async_session_store.clear_resume_pending(session_key)
+                except Exception:
+                    logger.debug(
+                        "clear_resume_pending failed for %s", session_key,
+                        exc_info=True,
+                    )
+
             try:
                 result = await adapter.send(
                     chat_id=row["chat_id"],
@@ -12097,18 +12176,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
             except Exception:
                 logger.debug("delivery ledger update failed", exc_info=True)
-
-            # The answer reached (or was owed to) this session — don't ALSO
-            # re-run the turn via the resume path.
-            session_key = row.get("session_key") or ""
-            if session_key:
-                try:
-                    await self.async_session_store.clear_resume_pending(session_key)
-                except Exception:
-                    logger.debug(
-                        "clear_resume_pending failed for %s", session_key,
-                        exc_info=True,
-                    )
         return redelivered
 
     def _schedule_resume_pending_sessions(self, platform=None) -> int:
@@ -13206,32 +13273,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # of a restart cycle (see _is_stale_restart_redelivery).
         if chat_restart_notification_pending:
             self._booted_from_restart = True
-        await self._send_restart_notification()
-
-        # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
-            try:
-                await self._send_home_channel_startup_notifications(
-                    skip_targets=None,
-                )
-            finally:
-                _clear_planned_restart_notification()
+        # Restart notification, home-channel startup notice, and obligation
+        # redelivery all call adapter.send(). Those sends must not pin the
+        # inbound restore gate — a Telegram flood-control sleep on this path
+        # froze every platform for the full penalty (#91969). Bound them the
+        # same way _finish_startup_restore bounds resume turns.
+        await self._await_startup_boot_sends(
+            planned_restart_notification_pending=planned_restart_notification_pending,
+        )
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
         # by the normal successful-turn path, so a failed auto-resume remains
         # visible for manual recovery on the next user message.
         #
-        # Delivery-obligation redelivery runs FIRST: a session whose final
-        # response was generated but never confirmed-delivered has its answer
-        # in the ledger — redelivering it (and clearing resume_pending for
-        # that session) is strictly cheaper and more correct than re-running
-        # the whole turn.
-        await self._redeliver_pending_obligations()
+        # Delivery-obligation redelivery already ran inside
+        # _await_startup_boot_sends (and clears resume_pending before send):
+        # a session whose final response was generated but never
+        # confirmed-delivered has its answer in the ledger — redelivering it
+        # is strictly cheaper and more correct than re-running the whole turn.
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
 

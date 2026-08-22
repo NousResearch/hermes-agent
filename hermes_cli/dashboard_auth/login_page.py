@@ -391,10 +391,13 @@ _EMPTY_HTML = """\
 <main>
 <h1>Sign-in unavailable</h1>
 <p>This dashboard is bound to a non-loopback host but no authentication
-providers are installed.</p>
-<p>Install <code>plugins/dashboard-auth-nous</code> (default) or another
-auth provider, or restart with <code>--insecure</code> to bypass the
-auth gate (not recommended on untrusted networks).</p>
+providers are available for interactive sign-in.</p>
+<p>Configure an auth provider before exposing this server: run
+<code>hermes dashboard register</code> for Nous Portal OAuth, configure
+<code>dashboard.basic_auth</code>, or install another
+<code>DashboardAuthProvider</code> plugin.</p>
+<p>There is no unauthenticated public-bind option. To keep it local, bind to
+<code>127.0.0.1</code> and connect over an SSH or Tailscale tunnel.</p>
 </main>
 </body>
 </html>

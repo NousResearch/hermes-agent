@@ -14,7 +14,7 @@ import argparse
 from typing import Callable
 
 
-def _add_server_runtime_args(parser) -> None:
+def _add_server_runtime_args(parser, *, headless: bool) -> None:
     """Attach the runtime flags shared by ``dashboard`` and ``serve``.
 
     Both subcommands boot the *same* ``web_server.start_server`` (the
@@ -36,17 +36,26 @@ def _add_server_runtime_args(parser) -> None:
             "DEPRECATED / NO-OP. Formerly bypassed auth on a non-loopback "
             "bind. As of the June 2026 hardening it no longer disables "
             "authentication — a public bind always requires an auth provider "
-            "(password or OAuth). Bind 127.0.0.1 + tunnel to keep it local."
+            "(password or OAuth). This server exposes agent and command "
+            "execution with the Hermes process's OS privileges. Bind "
+            "127.0.0.1 + tunnel to keep it local."
         ),
     )
-    parser.add_argument(
-        "--skip-build",
-        action="store_true",
-        help=(
+    if headless:
+        skip_build_help = (
+            "Accepted no-op for backward compatibility. hermes serve is "
+            "always headless and never builds or serves the web UI."
+        )
+    else:
+        skip_build_help = (
             "Skip the web UI build step and serve the existing dist directly. "
             "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
             "where npm may not be available. Pre-build with: cd web && npm run build"
-        ),
+        )
+    parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help=skip_build_help,
     )
     parser.add_argument(
         "--isolated",
@@ -103,7 +112,7 @@ def build_dashboard_parser(
         help="Start the web UI dashboard",
         description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
     )
-    _add_server_runtime_args(dashboard_parser)
+    _add_server_runtime_args(dashboard_parser, headless=False)
     dashboard_parser.add_argument(
         "--no-open", action="store_true", help="Don't open browser automatically"
     )
@@ -142,7 +151,7 @@ def build_dashboard_parser(
             "a browser UI."
         ),
     )
-    _add_server_runtime_args(serve_parser)
+    _add_server_runtime_args(serve_parser, headless=True)
     # Accepted but redundant: `serve` is always headless (see set_defaults
     # below). Kept so callers that pass the legacy `--no-open` flag (e.g. the
     # desktop backend spawn) don't trip "unrecognized arguments".

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
 
 
@@ -48,3 +50,30 @@ def test_serve_is_a_headless_backend_but_dashboard_is_not():
     # build; only `serve` carries it.
     assert getattr(_parser().parse_args(["serve"]), "headless_backend", False) is True
     assert getattr(_parser().parse_args(["dashboard"]), "headless_backend", False) is False
+
+
+def _option_help(command: str, option: str) -> str:
+    parser = _parser()
+    command_parser = parser._subparsers._group_actions[0].choices[command]
+    return next(
+        action.help
+        for action in command_parser._actions
+        if option in action.option_strings
+    )
+
+
+@pytest.mark.parametrize("command", ["dashboard", "serve"])
+def test_insecure_help_names_the_command_execution_privilege_boundary(command):
+    insecure_help = _option_help(command, "--insecure")
+
+    assert "agent and command execution" in insecure_help
+    assert "Hermes process's OS privileges" in insecure_help
+
+
+def test_skip_build_help_distinguishes_dashboard_from_headless_serve():
+    dashboard_help = _option_help("dashboard", "--skip-build")
+    serve_help = _option_help("serve", "--skip-build")
+
+    assert "serve the existing dist directly" in dashboard_help
+    assert "Accepted no-op for backward compatibility" in serve_help
+    assert "serve is always headless" in serve_help

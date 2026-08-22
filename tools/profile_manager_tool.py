@@ -345,6 +345,14 @@ PROFILE_MANAGE_SCHEMA = {
             "sentences on what it is good at) so task routers can dispatch to it "
             "by role, and a 'soul' capturing the persona and standing "
             "instructions agreed in the conversation.\n\n"
+            "A new profile is scaffolding, not a running Bot: it starts with "
+            "no API credentials, no provider/model config of its own, and no "
+            "running gateway, so its first chat cannot reach a provider until "
+            "a human adds credentials via `hermes -p <name> auth add` or the "
+            "desktop Bots pane. Say so when reporting a profile you created, "
+            "rather than implying it is ready to talk. The exception is "
+            "'clone_from', which copies the source profile's config.yaml and "
+            ".env -- a clone inherits that Bot's provider settings and keys.\n\n"
             "Profiles cannot be deleted through this tool. Chat with a created "
             "profile via `hermes -p <name> chat`, or open it in the desktop "
             "Bots pane."
@@ -392,7 +400,9 @@ PROFILE_MANAGE_SCHEMA = {
                     "type": "string",
                     "description": (
                         "Existing profile to copy config, skills, and SOUL.md "
-                        "from. Omit for a fresh profile with bundled skills."
+                        "from. Also copies the source's .env, so the clone "
+                        "inherits its credentials. Omit for a fresh profile "
+                        "with bundled skills and no credentials."
                     ),
                 },
                 "no_skills": {

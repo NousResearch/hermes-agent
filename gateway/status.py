@@ -462,6 +462,12 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         if token == "gateway/run.py" or token.endswith("/gateway/run.py"):
             return "run"
         basename = token.rsplit("/", 1)[-1]
+        # Atomic Hermes' bundled desktop runner shares HERMES_HOME with the
+        # CLI; without this, `gateway run --replace` does not recognise it,
+        # skips the replace/lock-handoff path, and collides with its
+        # still-held scoped locks (e.g. Discord bot token). See #22418.
+        if basename == "desktop-gateway.py":
+            return "run"
         if basename in ("hermes-gateway", "hermes-gateway.exe"):
             return "run"
 

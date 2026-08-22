@@ -5,9 +5,9 @@
   "source_identity": {
     "root": "/home/sikmindz/Coding/Ares",
     "branch": "sync-updated-live-skills-20260820",
-    "head": "40143fe2e6f30b11085e7c94b647f5e234c25544",
-    "porcelain_entry_count": 20,
-    "scope_note": "Dirty checkout preserved; no runtime activation, gateway restart, credentials, or unrelated path reset."
+    "head": "0317e65ec8723ddc3b558b6769b93f8efc893a9d",
+    "porcelain_entry_count": 0,
+    "scope_note": "Source checkout is clean at the merged published HEAD; no runtime activation, gateway restart, credentials, or unrelated path reset occurred during source publication."
   },
   "verified": [
     {"command": "python3 -m pytest -q tests/ares_runtime/test_local_runtime.py tests/agent/test_ares_managed_identity.py tests/hermes_cli/test_config.py tests/hermes_cli/test_profiles.py", "status": "PASS", "passed": 157, "skipped": 2},

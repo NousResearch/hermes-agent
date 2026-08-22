@@ -106,6 +106,9 @@ def _run(
     final_response=None,
     api_call_count=3,
     turn_exit_reason="unknown",
+    current_user_text=None,
+    reply_to_text=None,
+    internal_context=None,
 ):
     messages = [
         {"role": "user", "content": "do a thing"},
@@ -130,6 +133,9 @@ def _run(
         turn_id="turn-1",
         user_message="do a thing",
         original_user_message="do a thing",
+        current_user_text=current_user_text,
+        reply_to_text=reply_to_text,
+        internal_context=internal_context,
         _should_review_memory=False,
         _turn_exit_reason=turn_exit_reason,
     )
@@ -162,5 +168,30 @@ def test_clean_turn_has_no_cleanup_errors_key():
     assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
     assert result["completed"] is False
     assert "cleanup_errors" not in result
+
+
+def test_post_llm_hook_receives_structured_turn_texts(monkeypatch):
+    captured = {}
+
+    def invoke_hook(name, **kwargs):
+        if name == "post_llm_call":
+            captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", invoke_hook)
+    agent = _StubAgent(raise_in=())
+    _run(
+        agent,
+        final_response="Done.",
+        api_call_count=1,
+        turn_exit_reason="text_response(stop)",
+        current_user_text="Ok, je valide pour Amandine",
+        reply_to_text="recommandation/client",
+        internal_context={"auto_skill": ["support-skill"]},
+    )
+
+    assert captured["current_user_text"] == "Ok, je valide pour Amandine"
+    assert captured["reply_to_text"] == "recommandation/client"
+    assert captured["internal_context"] == {"auto_skill": ["support-skill"]}
 
 

@@ -1775,6 +1775,10 @@ def run_conversation(
     persist_user_display_kind: Optional[str] = None,
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    *,
+    current_user_text: Optional[str] = None,
+    reply_to_text: Optional[str] = None,
+    internal_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -1849,6 +1853,9 @@ def run_conversation(
         stream_callback,
         persist_user_message,
         persist_user_timestamp,
+        current_user_text=current_user_text,
+        reply_to_text=reply_to_text,
+        internal_context=internal_context,
         persist_user_display_kind=persist_user_display_kind,
         persist_user_display_metadata=persist_user_display_metadata,
         restore_or_build_system_prompt=_restore_or_build_system_prompt,
@@ -8407,6 +8414,9 @@ def run_conversation(
         turn_id=turn_id,
         user_message=user_message,
         original_user_message=original_user_message,
+        current_user_text=current_user_text,
+        reply_to_text=reply_to_text,
+        internal_context=internal_context,
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,

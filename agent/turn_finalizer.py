@@ -132,6 +132,9 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    current_user_text=None,
+    reply_to_text=None,
+    internal_context=None,
     _pending_verification_response=None,
     _pending_verification_response_previewed=False,
 ):
@@ -625,6 +628,13 @@ def finalize_turn(
                 task_id=effective_task_id,
                 turn_id=turn_id,
                 user_message=original_user_message,
+                current_user_text=(
+                    original_user_message
+                    if current_user_text is None
+                    else current_user_text
+                ),
+                reply_to_text=reply_to_text or "",
+                internal_context=dict(internal_context or {}),
                 assistant_response=final_response,
                 conversation_history=list(messages),
                 model=agent.model,

@@ -3513,6 +3513,19 @@ class GatewaySlashCommandsMixin:
         source = event.source
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
 
+        parent_entry = self.session_store.get_or_create_session(source)
+        parent_session_id = str(getattr(parent_entry, "session_id", "") or "")
+        parent_session_key = self._session_key_for_source(source)
+        reply_to_text = str(getattr(event, "reply_to_text", "") or "")
+        origin = source.to_dict()
+        origin.update(
+            {
+                "execution_kind": "user_explicit_background",
+                "user_initiated": True,
+                "command": "/background",
+            }
+        )
+
         event_message_id = self._reply_anchor_for_event(event)
 
         # Forward image/audio attachments so the background agent can see them.
@@ -3528,6 +3541,21 @@ class GatewaySlashCommandsMixin:
                 event_message_id=event_message_id,
                 media_urls=media_urls,
                 media_types=media_types,
+                message_type=event.message_type,
+                parent_session_id=parent_session_id,
+                parent_session_key=parent_session_key,
+                reply_to_text=reply_to_text,
+                reply_to_is_own_message=bool(
+                    getattr(event, "reply_to_is_own_message", False)
+                ),
+                auto_skill=getattr(event, "auto_skill", None),
+                channel_prompt=getattr(event, "channel_prompt", None),
+                internal_context=(
+                    {"channel_context": event.channel_context}
+                    if getattr(event, "channel_context", None)
+                    else {}
+                ),
+                origin=origin,
             )
         )
         self._background_tasks.add(_task)

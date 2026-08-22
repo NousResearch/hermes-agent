@@ -1487,6 +1487,69 @@ def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool
     return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
 
 
+def _build_auto_skill_context(
+    auto_skill: Optional[Union[str, List[str]]],
+    *,
+    task_id: str,
+) -> Tuple[str, List[str]]:
+    """Render topic/channel auto-skills for every gateway execution path."""
+    if not auto_skill:
+        return "", []
+    from agent.skill_commands import _build_skill_message, _load_skill_payload
+
+    skill_names = [auto_skill] if isinstance(auto_skill, str) else list(auto_skill)
+    parts: List[str] = []
+    loaded_names: List[str] = []
+    for skill_name in skill_names:
+        loaded = _load_skill_payload(skill_name, task_id=task_id)
+        if not loaded:
+            logger.warning("[Gateway] Auto-skill '%s' not found", skill_name)
+            continue
+        loaded_skill, skill_dir, display_name = loaded
+        note = (
+            f'[IMPORTANT: The "{display_name}" skill is auto-loaded. '
+            "Follow its instructions for this session.]"
+        )
+        part = _build_skill_message(loaded_skill, skill_dir, note)
+        if part:
+            parts.append(part)
+            loaded_names.append(skill_name)
+    return "\n\n".join(parts), loaded_names
+
+
+def _compose_gateway_ephemeral_prompt(
+    runner,
+    *,
+    source: "SessionSource",
+    context_prompt: Optional[str] = None,
+    channel_prompt: Optional[str] = None,
+) -> str:
+    """Compose per-turn gateway context identically for every execution path."""
+    resolved_channel_prompt = str(channel_prompt or "").strip()
+    if not resolved_channel_prompt:
+        platform_config = getattr(
+            getattr(runner, "config", None), "platforms", {}
+        ).get(source.platform)
+        config_extra = getattr(platform_config, "extra", {}) or {}
+        chat_id = str(source.chat_id or "")
+        thread_id = str(getattr(source, "thread_id", None) or "")
+        parent_id = str(getattr(source, "parent_chat_id", None) or "")
+        scoped_id = f"{chat_id}:{thread_id}" if chat_id and thread_id else chat_id
+        resolved_channel_prompt = resolve_channel_prompt(
+            config_extra, scoped_id, thread_id or parent_id
+        ) or resolve_channel_prompt(config_extra, chat_id, parent_id) or ""
+
+    parts = [str(context_prompt or "").strip(), resolved_channel_prompt]
+    configured = runner._get_system_prompt_for_channel(
+        source.platform,
+        source.chat_id or "",
+        thread_id=getattr(source, "thread_id", None),
+        parent_id=getattr(source, "parent_chat_id", None),
+    )
+    parts.append(str(configured or "").strip())
+    return "\n\n".join(part for part in parts if part)
+
+
 def _csv_or_list_to_set(raw: Any) -> set[str]:
     """Normalize a config list or comma-separated scalar into a string set."""
     if raw is None:
@@ -2685,6 +2748,7 @@ from gateway.platforms.base import (
     _reply_anchor_for_event,
     build_auto_tts_output_path,
     merge_pending_message_event,
+    resolve_channel_prompt,
     utf16_len,
 )
 from gateway.shutdown_watchdog import (
@@ -5381,18 +5445,12 @@ class TurnRunner:
         # Combine platform context, YAML channel_prompts hint for this chat,
         # channel_overrides system_prompt (or global ephemeral), and gateway
         # ephemeral prompt from _get_system_prompt_for_channel.
-        combined_ephemeral = ctx.context_prompt or ""
-        event_channel_prompt = (ctx.channel_prompt or "").strip()
-        if event_channel_prompt:
-            combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
-        cfg_channel_prompt = self._runner._get_system_prompt_for_channel(
-            ctx.source.platform,
-            ctx.source.chat_id or "",
-            thread_id=getattr(ctx.source, "thread_id", None),
-            parent_id=getattr(ctx.source, "parent_chat_id", None),
+        combined_ephemeral = _compose_gateway_ephemeral_prompt(
+            self._runner,
+            source=ctx.source,
+            context_prompt=ctx.context_prompt,
+            channel_prompt=ctx.channel_prompt,
         )
-        if cfg_channel_prompt:
-            combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
 
         max_iterations = _current_max_iterations()
 
@@ -6400,6 +6458,9 @@ class TurnRunner:
             _conversation_kwargs = {
                 "conversation_history": agent_history,
                 "task_id": ctx.session_id,
+                "current_user_text": ctx.current_user_text,
+                "reply_to_text": ctx.reply_to_text,
+                "internal_context": ctx.internal_context,
             }
             if _persist_user_message_override is not None:
                 _conversation_kwargs["persist_user_message"] = _persist_user_message_override
@@ -6709,6 +6770,11 @@ class TurnRunner:
             "session_id": effective_session_id,
             "response_previewed": result.get("response_previewed", False),
             "response_transformed": result.get("response_transformed", False),
+            "turn_exit_reason": result.get("turn_exit_reason"),
+            "delivery_already_sent": result.get(
+                "delivery_already_sent", False
+            ),
+            "external_deliveries": result.get("external_deliveries", []),
             # Pass through the agent_persisted flag so the persistence block
             # above can correctly determine whether the codex app-server path
             # self-persisted (it didn't — see codex_runtime.py).  Default
@@ -18313,6 +18379,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         history = history or []
         _pending_stt_prepared = hasattr(event, "_gateway_pending_stt_text")
+        _normalized_current_user_text = str(event.text or "")
+        if _pending_stt_prepared:
+            _cached_spoken = getattr(event, "_gateway_pending_stt_transcripts", []) or []
+            if _cached_spoken:
+                _normalized_current_user_text = "\n\n".join(
+                    str(item).strip() for item in _cached_spoken if str(item).strip()
+                )
         message_text = (
             getattr(event, "_gateway_pending_stt_text", None)
             if _pending_stt_prepared
@@ -18443,6 +18516,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_text,
                     audio_paths,
                 )
+                if _successful_transcripts:
+                    _normalized_current_user_text = "\n\n".join(
+                        str(item).strip()
+                        for item in _successful_transcripts
+                        if str(item).strip()
+                    )
                 # Echo each successful transcript back to the user immediately
                 # when configured. Lets users verify STT quality in real-time,
                 # while allowing quiet STT for users who only want the agent to
@@ -18583,7 +18662,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            reply_snippet = event.reply_to_text
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'
@@ -18696,6 +18775,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("@ context reference expansion failed: %s", exc)
                 logger.debug("@ context reference expansion failure detail", exc_info=True)
 
+        event._gateway_current_user_text = _normalized_current_user_text
         return message_text
 
     async def _prepare_profile_scoped_inbound_message_text(
@@ -19309,6 +19389,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (single source of truth); only the reset reason needs clearing here.
             session_entry.auto_reset_reason = None
 
+        # Preserve the current instruction before any skill/context enrichment.
+        # Hooks receive this separately from the complete model-visible message.
+        _current_user_text = str(event.text or "")
+        _turn_internal_context = {
+            key: value
+            for key, value in {
+                "auto_skill": getattr(event, "auto_skill", None),
+                "channel_context": getattr(event, "channel_context", None),
+                "channel_prompt": getattr(event, "channel_prompt", None),
+            }.items()
+            if value
+        }
+
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.
         # Only inject on NEW sessions — ongoing conversations already have the
@@ -19317,27 +19410,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _is_new_session and _auto:
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
-                from agent.skill_commands import _load_skill_payload, _build_skill_message
-                _combined_parts: list[str] = []
-                _loaded_names: list[str] = []
-                for _sname in _skill_names:
-                    _loaded = _load_skill_payload(_sname, task_id=_quick_key)
-                    if _loaded:
-                        _loaded_skill, _skill_dir, _display_name = _loaded
-                        _note = (
-                            f'[IMPORTANT: The "{_display_name}" skill is auto-loaded. '
-                            f"Follow its instructions for this session.]"
-                        )
-                        _part = _build_skill_message(_loaded_skill, _skill_dir, _note)
-                        if _part:
-                            _combined_parts.append(_part)
-                            _loaded_names.append(_sname)
-                    else:
-                        logger.warning("[Gateway] Auto-skill '%s' not found", _sname)
-                if _combined_parts:
-                    # Append the user's original text after all skill payloads
-                    _combined_parts.append(event.text)
-                    event.text = "\n\n".join(_combined_parts)
+                _auto_context, _loaded_names = _build_auto_skill_context(
+                    _skill_names,
+                    task_id=_quick_key,
+                )
+                if _auto_context:
+                    event.text = f"{_auto_context}\n\n{event.text}"
                     logger.info(
                         "[Gateway] Auto-loaded skill(s) %s for session %s",
                         _loaded_names, session_key,
@@ -20294,6 +20372,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         if message_text is None:
             return
+        _current_user_text = str(
+            getattr(event, "_gateway_current_user_text", _current_user_text) or ""
+        )
 
         # Capture the platform event time as message metadata and keep the
         # persisted transcript clean (strip any leading timestamp prefix).
@@ -20368,6 +20449,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _turn_started_monotonic = time.monotonic()
             agent_result = await self._run_agent(
                 message=message_text,
+                current_user_text=_current_user_text,
+                reply_to_text=str(getattr(event, "reply_to_text", "") or ""),
+                internal_context=_turn_internal_context,
                 context_prompt=context_prompt,
                 history=history,
                 source=source,
@@ -22584,6 +22668,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event_message_id: Optional[str] = None,
         media_urls: Optional[List[str]] = None,
         media_types: Optional[List[str]] = None,
+        message_type: Optional[MessageType] = None,
+        parent_session_id: Optional[str] = None,
+        parent_session_key: Optional[str] = None,
+        reply_to_text: Optional[str] = None,
+        reply_to_is_own_message: bool = False,
+        auto_skill: Optional[Union[str, List[str]]] = None,
+        channel_prompt: Optional[str] = None,
+        internal_context: Optional[Dict[str, Any]] = None,
+        origin: Optional[dict] = None,
     ) -> None:
         """Profile-scoping wrapper around the background agent task.
 
@@ -22594,13 +22687,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return await self._run_background_task_inner(
-                prompt, source, task_id, event_message_id, media_urls, media_types,
+                prompt,
+                source,
+                task_id,
+                event_message_id=event_message_id,
+                media_urls=media_urls,
+                media_types=media_types,
+                message_type=message_type,
+                parent_session_id=parent_session_id,
+                parent_session_key=parent_session_key,
+                reply_to_text=reply_to_text,
+                reply_to_is_own_message=reply_to_is_own_message,
+                auto_skill=auto_skill,
+                channel_prompt=channel_prompt,
+                internal_context=internal_context,
+                origin=origin,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
         with _profile_runtime_scope(profile_home):
             return await self._run_background_task_inner(
-                prompt, source, task_id, event_message_id, media_urls, media_types,
+                prompt,
+                source,
+                task_id,
+                event_message_id=event_message_id,
+                media_urls=media_urls,
+                media_types=media_types,
+                message_type=message_type,
+                parent_session_id=parent_session_id,
+                parent_session_key=parent_session_key,
+                reply_to_text=reply_to_text,
+                reply_to_is_own_message=reply_to_is_own_message,
+                auto_skill=auto_skill,
+                channel_prompt=channel_prompt,
+                internal_context=internal_context,
+                origin=origin,
             )
 
     def _resolve_enabled_toolsets_for_source(
@@ -22646,6 +22767,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event_message_id: Optional[str] = None,
         media_urls: Optional[List[str]] = None,
         media_types: Optional[List[str]] = None,
+        message_type: Optional[MessageType] = None,
+        parent_session_id: Optional[str] = None,
+        parent_session_key: Optional[str] = None,
+        reply_to_text: Optional[str] = None,
+        reply_to_is_own_message: bool = False,
+        auto_skill: Optional[Union[str, List[str]]] = None,
+        channel_prompt: Optional[str] = None,
+        internal_context: Optional[Dict[str, Any]] = None,
+        origin: Optional[dict] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
@@ -22693,24 +22823,103 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._service_tier = self._resolve_session_service_tier(source=source)
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
-            # Enrich the prompt with image descriptions so the background
-            # agent can see user-attached images (same as the main flow).
+            # Reuse the normal inbound attachment preprocessor for every
+            # non-image media type. Images retain their existing background
+            # vision path because detached agents do not consume the foreground
+            # runner's native-image buffer.
             enriched_prompt = prompt
+            normalized_current_user_text = prompt
+            non_image_urls = []
+            non_image_types = []
+            media_event = MessageEvent(
+                text=prompt,
+                message_type=message_type or MessageType.DOCUMENT,
+                source=source,
+                media_urls=media_urls,
+                media_types=media_types,
+            )
+            for i, path in enumerate(media_urls):
+                mtype = media_types[i] if i < len(media_types) else ""
+                if not _event_media_is_image(media_event, i):
+                    non_image_urls.append(path)
+                    non_image_types.append(mtype)
+            if non_image_urls:
+                attachment_event = MessageEvent(
+                    text=prompt,
+                    message_type=message_type or MessageType.DOCUMENT,
+                    source=source,
+                    media_urls=non_image_urls,
+                    media_types=non_image_types,
+                )
+                prepared = await self._prepare_profile_scoped_inbound_message_text(
+                    event=attachment_event,
+                    source=source,
+                    history=[],
+                    session_key=task_id,
+                )
+                if prepared is not None:
+                    enriched_prompt = prepared
+                normalized_current_user_text = str(
+                    getattr(attachment_event, "_gateway_current_user_text", prompt) or ""
+                )
+
+            # Enrich with the same topic/channel auto-skill loader as the normal
+            # gateway path, then with attached image descriptions.
+            auto_skill_context, loaded_auto_skills = _build_auto_skill_context(
+                auto_skill,
+                task_id=task_id,
+            )
+            if auto_skill_context:
+                enriched_prompt = f"{auto_skill_context}\n\n{enriched_prompt}"
             if media_urls:
                 image_paths = []
                 for i, path in enumerate(media_urls):
-                    mtype = media_types[i] if i < len(media_types) else ""
-                    if mtype.startswith("image/"):
+                    if _event_media_is_image(media_event, i):
                         image_paths.append(path)
                 if image_paths:
                     try:
                         enriched_prompt = await self._enrich_message_with_vision(
-                            prompt, image_paths,
+                            enriched_prompt, image_paths,
                         )
                     except Exception as e:
                         logger.warning("Background task vision enrichment failed: %s", e)
 
+            structured_internal_context = dict(internal_context or {})
+            if loaded_auto_skills:
+                structured_internal_context["auto_skill"] = loaded_auto_skills
+            channel_context = str(
+                structured_internal_context.get("channel_context") or ""
+            )
+            if channel_context:
+                enriched_prompt = (
+                    f"{channel_context}\n\n[New message]\n{enriched_prompt}"
+                )
+
+            reply_context = str(reply_to_text or "")
+            if reply_context:
+                reply_label = (
+                    "Replying to your previous message"
+                    if reply_to_is_own_message
+                    else "Replying to"
+                )
+                enriched_prompt = (
+                    f'[{reply_label}: "{reply_context}"]\n\n{enriched_prompt}'
+                )
+
+            context = build_session_context(source, getattr(self, "config", None))
+            redact_pii = bool((user_config.get("privacy") or {}).get("redact_pii", False))
+            context_prompt = _compose_gateway_ephemeral_prompt(
+                self,
+                source=source,
+                context_prompt=build_session_context_prompt(context, redact_pii=redact_pii),
+                channel_prompt=channel_prompt,
+            )
+
             def run_sync():
+                if bool(parent_session_id) != bool(parent_session_key):
+                    raise RuntimeError(
+                        "Background parent session metadata is incomplete"
+                    )
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -22738,14 +22947,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_name=source.chat_name,
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
+                    parent_session_id=parent_session_id,
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
                 try:
+                    if parent_session_id and parent_session_key:
+                        agent.record_gateway_session_peer(
+                            origin=origin,
+                            routable=False,
+                        )
                     return agent.run_conversation(
                         user_message=enriched_prompt,
+                        system_message=context_prompt,
                         task_id=task_id,
+                        current_user_text=normalized_current_user_text,
+                        reply_to_text=reply_context,
+                        internal_context=structured_internal_context,
                     )
                 finally:
                     self._cleanup_agent_resources(agent)
@@ -28094,6 +28313,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        current_user_text: Optional[str] = None,
+        reply_to_text: Optional[str] = None,
+        internal_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -28107,6 +28329,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
+                current_user_text=current_user_text,
+                reply_to_text=reply_to_text,
+                internal_context=internal_context,
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 channel_prompt=channel_prompt, moa_config=moa_config,
@@ -28120,6 +28345,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         with _profile_runtime_scope(profile_home):
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
+                current_user_text=current_user_text,
+                reply_to_text=reply_to_text,
+                internal_context=internal_context,
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 channel_prompt=channel_prompt, moa_config=moa_config,
@@ -28270,6 +28498,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        current_user_text: Optional[str] = None,
+        reply_to_text: Optional[str] = None,
+        internal_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -28555,6 +28786,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _cleanup_progress=_cleanup_progress,
             _cleanup_msg_ids=_cleanup_msg_ids,
             message=message,
+            current_user_text=current_user_text,
+            reply_to_text=reply_to_text,
+            internal_context=dict(internal_context or {}),
             AIAgent=AIAgent,
             resolve_display_setting=resolve_display_setting,
             user_config=user_config,
@@ -29719,6 +29953,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_message_id = None
                 next_channel_prompt = None
                 next_session_key = session_key
+                next_current_user_text = str(pending or "")
+                next_reply_to_text = ""
+                next_internal_context: Dict[str, Any] = {}
                 # #60671 — carry the pending event's message_type into the
                 # recursive call so queued voice turns can stream TTS and
                 # re-mark the generation for the final delivered turn.
@@ -29752,6 +29989,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     if next_message is None:
                         return result
+                    next_current_user_text = str(
+                        getattr(
+                            pending_event,
+                            "_gateway_current_user_text",
+                            getattr(pending_event, "text", ""),
+                        )
+                        or ""
+                    )
+                    next_reply_to_text = str(
+                        getattr(pending_event, "reply_to_text", "") or ""
+                    )
+                    next_internal_context = {
+                        key: value
+                        for key, value in {
+                            "auto_skill": getattr(pending_event, "auto_skill", None),
+                            "channel_context": getattr(pending_event, "channel_context", None),
+                            "channel_prompt": getattr(pending_event, "channel_prompt", None),
+                        }.items()
+                        if value
+                    }
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
                     next_message_type = getattr(pending_event, "message_type", None)
@@ -29800,6 +30057,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 followup_result = await self._run_agent(
                     message=next_message,
+                    current_user_text=next_current_user_text,
+                    reply_to_text=next_reply_to_text,
+                    internal_context=next_internal_context,
                     context_prompt=context_prompt,
                     history=updated_history,
                     source=next_source,

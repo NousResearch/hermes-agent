@@ -66,6 +66,7 @@ class _PendingVoiceAdapter(BasePlatformAdapter):
 
 class _PendingVoiceAgent:
     messages = []
+    conversation_kwargs = []
 
     def __init__(self, **kwargs):
         self.tools = []
@@ -86,6 +87,7 @@ class _PendingVoiceAgent:
 
     def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         type(self).messages.append(message)
+        type(self).conversation_kwargs.append(kwargs)
         if len(type(self).messages) == 1:
             assert self._interrupted.wait(timeout=3), "pending voice interrupt was not delivered"
             return {
@@ -191,11 +193,15 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
         source=source,
         media_urls=["/tmp/telegram-pending-voice.ogg"],
         media_types=["audio/ogg"],
+        reply_to_message_id="42",
+        reply_to_text="REPLY_NONCE",
     )
+    event.channel_context = "INTERNAL_NONCE"
     adapter._pending_messages[session_key] = event
     adapter._active_sessions[session_key] = asyncio.Event()
     adapter._active_sessions[session_key].set()
     _PendingVoiceAgent.messages = []
+    _PendingVoiceAgent.conversation_kwargs = []
 
     with (
         patch("gateway.run._hermes_home", tmp_path),
@@ -215,7 +221,16 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
         )
 
     assert result["final_response"] == "follow-up complete"
-    assert _PendingVoiceAgent.messages == ["initial turn", '"hello once"']
+    assert _PendingVoiceAgent.messages[0] == "initial turn"
+    assert _PendingVoiceAgent.messages[1].endswith('"hello once"')
+    assert "REPLY_NONCE" in _PendingVoiceAgent.messages[1]
+    assert "INTERNAL_NONCE" in _PendingVoiceAgent.messages[1]
+    second_kwargs = _PendingVoiceAgent.conversation_kwargs[1]
+    assert second_kwargs["current_user_text"] == "hello once"
+    assert second_kwargs["reply_to_text"] == "REPLY_NONCE"
+    assert second_kwargs["internal_context"]["channel_context"] == "INTERNAL_NONCE"
+    assert "REPLY_NONCE" not in second_kwargs["current_user_text"]
+    assert "INTERNAL_NONCE" not in second_kwargs["current_user_text"]
     mock_transcribe.assert_called_once_with("/tmp/telegram-pending-voice.ogg", None, "gateway")
     assert adapter.sent == [("12345", '🎙️ "hello once"', None)]
 

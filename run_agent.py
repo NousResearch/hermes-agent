@@ -680,6 +680,39 @@ class AIAgent:
                 "Session DB creation failed (will retry next turn): %s", e
             )
 
+    def record_gateway_session_peer(
+        self,
+        *,
+        origin: Optional[dict] = None,
+        routable: bool = True,
+    ) -> None:
+        """Persist this agent's gateway routing identity.
+
+        Gateway callers use this public contract instead of reaching into the
+        agent's private session-database lifecycle. Ordinary gateway sessions
+        require a routing key. Explicit detached children can set
+        ``routable=False``: their chat/topic identity remains queryable, but
+        restart recovery cannot select them as the live conversation.
+        """
+        self._ensure_db_session()
+        if self._session_db is None:
+            raise RuntimeError("Session DB unavailable for gateway peer recording")
+        if routable and not self._gateway_session_key:
+            raise RuntimeError("Gateway session key missing for peer recording")
+
+        self._session_db.record_gateway_session_peer(
+            self.session_id,
+            source=_session_source_for_agent(self.platform),
+            user_id=self._user_id,
+            session_key=self._gateway_session_key if routable else None,
+            chat_id=self._chat_id,
+            chat_type=self._chat_type,
+            thread_id=self._thread_id,
+            display_name=self._chat_name,
+            origin_json=json.dumps(origin) if origin is not None else None,
+            routable=routable,
+        )
+
     def _transition_context_engine_session(
         self,
         *,
@@ -8492,6 +8525,10 @@ class AIAgent:
         persist_user_display_kind: Optional[str] = None,
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        *,
+        current_user_text: Optional[str] = None,
+        reply_to_text: Optional[str] = None,
+        internal_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review deliberately shares this agent's session_id for prompt-cache
@@ -8866,6 +8903,9 @@ class AIAgent:
                         persist_user_display_kind=persist_user_display_kind,
                         persist_user_display_metadata=persist_user_display_metadata,
                         moa_config=moa_config,
+                        current_user_text=current_user_text,
+                        reply_to_text=reply_to_text,
+                        internal_context=internal_context,
                     )
                 finally:
                     # The lease remains held through relay/task finalization, but

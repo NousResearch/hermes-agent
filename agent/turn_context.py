@@ -438,6 +438,9 @@ def build_turn_context(
     persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
     *,
+    current_user_text: Optional[str] = None,
+    reply_to_text: Optional[str] = None,
+    internal_context: Optional[Dict[str, Any]] = None,
     persist_user_display_kind: Optional[str] = None,
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     restore_or_build_system_prompt,
@@ -1251,6 +1254,13 @@ def build_turn_context(
             task_id=effective_task_id,
             turn_id=turn_id,
             user_message=original_user_message,
+            current_user_text=(
+                original_user_message
+                if current_user_text is None
+                else current_user_text
+            ),
+            reply_to_text=reply_to_text or "",
+            internal_context=dict(internal_context or {}),
             conversation_history=list(messages),
             is_first_turn=(not bool(conversation_history)),
             model=agent.model,

@@ -27,7 +27,11 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+from hermes_cli._subprocess_compat import (
+    windows_detach_popen_kwargs,
+    windows_detach_flags_without_breakaway,
+    windows_hide_flags,
+)
 from hermes_constants import (
     find_node_executable,
     get_hermes_dir,
@@ -346,6 +350,10 @@ def _file_content_hash(path: Path) -> str:
     source hash in ``/health`` (``scriptHash``), and the adapter compares
     it against the hash of bridge.js currently on disk.  A mismatch means
     a long-lived bridge process is serving code from before an update.
+    The adapter also compares the history feature flags reported by
+    ``/health`` (``syncFullHistory``/``historyApi``) against config.yaml,
+    so a settings change restarts the bridge instead of reusing one
+    running the old behavior.
     Returns ``""`` when the file can't be read.
     """
     import hashlib
@@ -649,11 +657,25 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 disk_hash = _file_content_hash(bridge_path)
                                 running_read_receipts = bool(data.get("sendReadReceipts", False))
                                 config_matches = running_read_receipts == self._send_read_receipts
+                                # Feature-flag fingerprint: a bridge started
+                                # with different history settings must be
+                                # restarted, otherwise a config.yaml change
+                                # would silently reuse a bridge running the
+                                # old behavior.  Bridges predating the
+                                # history flags report them as absent, which
+                                # only matches when the flags are disabled.
+                                extra = self.config.extra if isinstance(self.config.extra, dict) else {}
+                                want_sync = bool(extra.get("sync_full_history", False))
+                                want_api = bool(extra.get("enable_history_api", False))
+                                run_sync = bool(data.get("syncFullHistory", False))
+                                run_api = bool(data.get("historyApi", False))
+                                flags_match = (want_sync == run_sync) and (want_api == run_api)
                                 if (
                                     running_hash
                                     and disk_hash
                                     and running_hash == disk_hash
                                     and config_matches
+                                    and flags_match
                                 ):
                                     print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                                     self._mark_connected()
@@ -661,11 +683,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                     self._http_session = aiohttp.ClientSession()
                                     self._poll_task = asyncio.create_task(self._poll_messages())
                                     return True
-                                stale_reason = (
-                                    f"running={running_hash or 'unversioned'}, disk={disk_hash}"
-                                    if running_hash != disk_hash
-                                    else "send_read_receipts config changed"
-                                )
+                                if running_hash != disk_hash:
+                                    stale_reason = (
+                                        f"running={running_hash or 'unversioned'}, disk={disk_hash}"
+                                    )
+                                elif not config_matches:
+                                    stale_reason = "send_read_receipts config changed"
+                                else:
+                                    stale_reason = (
+                                        f"history flags changed (running {run_sync}/{run_api}, "
+                                        f"wanted {want_sync}/{want_api})"
+                                    )
                                 print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
@@ -732,19 +760,70 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
             bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
 
-            self._bridge_process = subprocess.Popen(
-                [
-                    find_node_executable("node") or "node",
-                    str(bridge_path),
-                    "--port", str(self._bridge_port),
-                    "--session", str(self._session_path),
-                    "--mode", whatsapp_mode,
-                ],
-                stdout=bridge_log_fh,
-                stderr=bridge_log_fh,
-                env=bridge_env,
-                **windows_detach_popen_kwargs(),
-            )
+            # Pass WhatsApp history API flags from config.yaml (opt-in, default off).
+            # These are feature flags, not secrets — config.yaml is the right
+            # place per AGENTS.md contribution rubric.
+            if self.config.extra.get("sync_full_history", False):
+                bridge_env["WHATSAPP_SYNC_FULL_HISTORY"] = "true"
+            if self.config.extra.get("enable_history_api", False):
+                bridge_env["WHATSAPP_ENABLE_HISTORY_API"] = "true"
+
+            # Windows: the gateway process (pythonw.exe under Electron/Tauri)
+            # may run inside a job object that disallows breakaway, causing
+            # ``windows_detach_popen_kwargs()`` (which includes
+            # CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS) to raise
+            # PermissionError: [WinError 5] Access is denied.  Fall back to
+            # ``CREATE_NO_WINDOW`` alone — no detach, no breakaway — which
+            # hides the console window without demanding job-object
+            # privileges.
+            node_cmd = [
+                find_node_executable("node") or "node",
+                str(bridge_path),
+                "--port", str(self._bridge_port),
+                "--session", str(self._session_path),
+                "--mode", whatsapp_mode,
+            ]
+            base_kwargs = {
+                "stdout": bridge_log_fh,
+                "stderr": bridge_log_fh,
+                "env": bridge_env,
+            }
+            try:
+                self._bridge_process = subprocess.Popen(
+                    node_cmd,
+                    **base_kwargs,
+                    **windows_detach_popen_kwargs(),
+                )
+            except PermissionError as exc:
+                # Restrict the fallback to the exact case it exists for: the
+                # gateway running inside a Windows job object that disallows
+                # breakaway, which surfaces as PermissionError [WinError 5]
+                # (Access is denied). Any other spawn failure (missing
+                # executable, unrelated error) must propagate rather than be
+                # silently retried with altered process-group semantics.
+                if not (_IS_WINDOWS and getattr(exc, "winerror", None) == 5):
+                    raise
+                logger.info(
+                    "[%s] windows_detach_popen_kwargs failed (WinError 5), "
+                    "falling back to CREATE_NO_WINDOW (no breakaway)",
+                    self.name,
+                )
+                extra_kwargs = (
+                    # Reuse the repo's canonical daemon fallback: drop only the
+                    # CREATE_BREAKAWAY_FROM_JOB bit while preserving the child's
+                    # own process group (CREATE_NEW_PROCESS_GROUP), so the
+                    # long-lived bridge survives the parent and ignores parent
+                    # Ctrl+C. windows_hide_flags() would drop the process group
+                    # too — wrong semantic for a daemon (see
+                    # gateway_windows.py::_spawn_detached).
+                    {"creationflags": windows_detach_flags_without_breakaway()}
+                    if _IS_WINDOWS else {}
+                )
+                self._bridge_process = subprocess.Popen(
+                    node_cmd,
+                    **base_kwargs,
+                    **extra_kwargs,
+                )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             
             # Wait for the bridge to connect to WhatsApp.

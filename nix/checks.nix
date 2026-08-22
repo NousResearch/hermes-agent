@@ -135,17 +135,20 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           targetSystems = builtins.filter
             (s: inputs.self.packages ? ${s})
             [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
-          tryEvalPkg = sys:
-            let pkg = inputs.self.packages.${sys}.default;
-            in builtins.tryEval (builtins.seq pkg.drvPath true);
-          results = map (sys: { inherit sys; result = tryEvalPkg sys; }) targetSystems;
+          tryEvalSystem = sys:
+            let
+              pkg = inputs.self.packages.${sys}.default;
+              devShell = inputs.self.devShells.${sys}.default;
+            in
+            builtins.tryEval (builtins.deepSeq [ pkg.drvPath devShell.drvPath ] true);
+          results = map (sys: { inherit sys; result = tryEvalSystem sys; }) targetSystems;
           failures = builtins.filter (r: !r.result.success) results;
           failMsg = lib.concatMapStringsSep "\n" (r: "  - ${r.sys}") failures;
         in pkgs.runCommand "hermes-cross-eval" { } (
           if failures != [] then
-            throw "Package fails to evaluate on:\n${failMsg}"
+            throw "Package or devShell fails to evaluate on:\n${failMsg}"
           else ''
-            echo "PASS: package evaluates on all ${toString (builtins.length targetSystems)} platforms"
+            echo "PASS: package and devShell evaluate on all ${toString (builtins.length targetSystems)} platforms"
             mkdir -p $out
             echo "ok" > $out/result
           ''

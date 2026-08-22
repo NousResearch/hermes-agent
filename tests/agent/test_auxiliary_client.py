@@ -3774,6 +3774,80 @@ def test_pool_runtime_base_url_uses_nous_env_override(monkeypatch):
     assert _pool_runtime_base_url(entry) == "https://ai.wildebeest-newton.ts.net/v1"
 
 
+class TestCustomProviderCallableApiKey:
+    """A callable api_key (key_cmd token provider) must survive resolution.
+
+    ``key_cmd`` providers supply ``explicit_api_key`` as a callable that mints a
+    bearer token per request rather than a string, so the custom-provider branch
+    must not assume ``str``. These assert the contract across all three key
+    shapes, not just the crash that motivated it.
+    """
+
+    def test_callable_api_key_is_passed_through_uncalled(self):
+        """A callable key reaches the client unchanged and is not invoked or stringified."""
+        calls = []
+
+        def token_provider():
+            calls.append(1)
+            return "minted-token"
+
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="custom-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, _model = resolve_provider_client(
+                provider="custom",
+                model="some-model",
+                explicit_base_url="https://example.invalid/gateway/openai/v1",
+                explicit_api_key=token_provider,
+            )
+
+        assert client is not None
+        mock_openai.assert_called_once()
+        assert mock_openai.call_args[1]["api_key"] is token_provider, (
+            "callable api_key must be handed to the client unchanged so it can "
+            "mint a fresh token per request"
+        )
+        assert calls == [], (
+            "resolution must not invoke the token provider — minting is deferred "
+            "to request time"
+        )
+
+    def test_string_api_key_is_still_stripped(self):
+        """String keys keep their existing normalization."""
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="custom-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, _model = resolve_provider_client(
+                provider="custom",
+                model="some-model",
+                explicit_base_url="https://example.invalid/gateway/openai/v1",
+                explicit_api_key="  spaced-key  ",
+            )
+
+        assert client is not None
+        assert mock_openai.call_args[1]["api_key"] == "spaced-key"
+
+    def test_blank_string_api_key_still_falls_through(self, monkeypatch):
+        """A whitespace-only key must not short-circuit the env fallback."""
+        monkeypatch.setenv("OPENAI_API_KEY", "env-fallback-key")
+
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="custom-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, _model = resolve_provider_client(
+                provider="custom",
+                model="some-model",
+                explicit_base_url="https://example.invalid/gateway/openai/v1",
+                explicit_api_key="   ",
+            )
+
+        assert client is not None
+        assert mock_openai.call_args[1]["api_key"] == "env-fallback-key"
+
+
 class TestAnthropicExplicitApiKey:
     """Test that explicit_api_key is correctly propagated to _try_anthropic().
 

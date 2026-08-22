@@ -6536,7 +6536,15 @@ def resolve_provider_client(
             if api_mode == "anthropic_messages":
                 wrap_base = (explicit_base_url or "").strip().rstrip("/")
             custom_key = (
-                (explicit_api_key or "").strip()
+                # ``explicit_api_key`` may be a callable token provider (a
+                # ``key_cmd``-backed source that mints a bearer token per
+                # request), so only string keys are normalized here; a callable
+                # is a valid credential and passes through untouched.
+                (
+                    explicit_api_key
+                    if callable(explicit_api_key)
+                    else (explicit_api_key or "").strip()
+                )
                 or _scoped_key_env("OPENAI_API_KEY")
                 or _read_main_api_key_if_same_host(custom_base)
                 or "no-key-required"  # local servers don't need auth

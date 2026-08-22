@@ -515,9 +515,9 @@ def load_cli_config() -> Dict[str, Any]:
 
             "skin": "default",
         },
-        "clarify": {
-            "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
-        },
+        # Do not materialize the legacy ``clarify.timeout`` here. Its presence
+        # is the explicit-override signal used by resolve_clarify_timeout(); a
+        # default value would mask the canonical agent.clarify_timeout setting.
         "code_execution": {
             "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
             "max_tool_calls": 50,  # Max RPC tool calls per execution

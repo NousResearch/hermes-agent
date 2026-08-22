@@ -1522,6 +1522,22 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
                 src = os.path.join(extracted, item)
                 dst = os.path.join(str(_m().PROJECT_ROOT), item)
                 staged.append((_stage_replacement(src, dst), dst))
+                # #70337/#87331: the GitHub source ZIP contains only source —
+                # apps/desktop/release/ (the BUILT desktop app, win-unpacked/
+                # Hermes.exe) exists only in the LIVE tree. Swapping `apps`
+                # without it deletes the desktop build and breaks the
+                # shortcut. Graft the live release dir into the staged copy
+                # BEFORE the swap so the commit preserves it atomically.
+                if item == "apps":
+                    live_release = os.path.join(dst, "desktop", "release")
+                    staged_release = os.path.join(
+                        staged[-1][0], "desktop", "release"
+                    )
+                    if os.path.isdir(live_release) and not os.path.exists(
+                        staged_release
+                    ):
+                        os.makedirs(os.path.dirname(staged_release), exist_ok=True)
+                        shutil.copytree(live_release, staged_release)
         except Exception:
             # Nothing is live yet; drop the partial staging copies so a retry
             # starts from the same free space this attempt did.

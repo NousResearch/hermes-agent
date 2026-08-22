@@ -154,6 +154,33 @@ def _extract_message_body(msg: dict) -> str:
     return body
 
 
+def _extract_message_attachments(msg: dict) -> list[dict]:
+    """Return nested MIME attachment metadata without downloading bodies."""
+    attachments = []
+
+    def visit(part: dict) -> None:
+        filename = str(part.get("filename") or "").strip()
+        part_body = part.get("body", {}) or {}
+        attachment_id = str(part_body.get("attachmentId") or "").strip()
+        if filename or attachment_id:
+            attachments.append(
+                {
+                    "filename": filename,
+                    "mimeType": str(part.get("mimeType") or ""),
+                    "attachmentId": attachment_id,
+                    "size": int(part_body.get("size") or 0),
+                }
+            )
+        for child in part.get("parts", []) or []:
+            if isinstance(child, dict):
+                visit(child)
+
+    payload = msg.get("payload", {}) or {}
+    if isinstance(payload, dict):
+        visit(payload)
+    return attachments
+
+
 def _extract_doc_text(doc: dict) -> str:
     text_parts = []
     for element in doc.get("body", {}).get("content", []):
@@ -238,6 +265,7 @@ def gmail_search(args):
                     "to": headers.get("to", ""),
                     "subject": headers.get("subject", ""),
                     "date": headers.get("date", ""),
+                    "internalDate": str(msg.get("internalDate", "")),
                     "snippet": msg.get("snippet", ""),
                     "labels": msg.get("labelIds", []),
                 }
@@ -268,6 +296,7 @@ def gmail_search(args):
             "to": headers.get("to", ""),
             "subject": headers.get("subject", ""),
             "date": headers.get("date", ""),
+            "internalDate": str(msg.get("internalDate", "")),
             "snippet": msg.get("snippet", ""),
             "labels": msg.get("labelIds", []),
         })
@@ -287,10 +316,13 @@ def gmail_get(args):
             "threadId": msg["threadId"],
             "from": headers.get("from", ""),
             "to": headers.get("to", ""),
+            "cc": headers.get("cc", ""),
             "subject": headers.get("subject", ""),
             "date": headers.get("date", ""),
+            "internalDate": str(msg.get("internalDate", "")),
             "labels": msg.get("labelIds", []),
             "body": _extract_message_body(msg),
+            "attachments": _extract_message_attachments(msg),
         }
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return
@@ -306,10 +338,13 @@ def gmail_get(args):
         "threadId": msg["threadId"],
         "from": headers.get("from", ""),
         "to": headers.get("to", ""),
+        "cc": headers.get("cc", ""),
         "subject": headers.get("subject", ""),
         "date": headers.get("date", ""),
+        "internalDate": str(msg.get("internalDate", "")),
         "labels": msg.get("labelIds", []),
         "body": _extract_message_body(msg),
+        "attachments": _extract_message_attachments(msg),
     }
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

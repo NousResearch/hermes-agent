@@ -5,10 +5,10 @@ running it, prompting anyone, or persisting anything. It composes the REAL
 runtime evaluators from ``tools.approval`` in the same order the runtime
 guard (``check_all_command_guards``) applies them:
 
-    1. container-skip gate (isolated backends bypass all guards),
-    2. hardline blocklist (never bypassable, fires before yolo/off),
-    3. sudo-stdin guard (unconditional),
-    4. user ``approvals.deny`` rules (fire before yolo/off),
+    1. hardline blocklist for host-reaching backends,
+    2. sudo-stdin guard for host-reaching backends,
+    3. user ``approvals.deny`` rules (never bypassed by containers or yolo/off),
+    4. container-skip gate for ordinary command guards,
     5. yolo / ``approvals.mode: off`` bypass,
     6. permanent ``command_allowlist``,
     7. dangerous-pattern detection → would ask for approval.
@@ -77,13 +77,22 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
             "normalized_variants": variants,
         }
 
-    # 1. Isolated container backends skip every guard (runtime parity:
-    #    this fires BEFORE the hardline floor in check_all_command_guards).
+    # Isolated container backends skip host-oriented guards, but the runtime
+    # evaluates the operator's explicit deny policy before that fast path.
     if approval._should_skip_container_guards(env_type):
+        deny_pattern = approval._match_user_deny_rule(command)
+        if deny_pattern is not None:
+            return result(
+                "user-deny", rule=deny_pattern,
+                detail="matches a user-defined approvals.deny rule in "
+                       "config.yaml (blocked even in an isolated container, "
+                       "under --yolo, or with mode=off)",
+            )
         return result(
             "allow",
             detail=(f"env_type '{env_type}' is an isolated container backend; "
-                    "the runtime skips all command guards for it"),
+                    "the runtime skips ordinary command guards after "
+                    "approvals.deny evaluation"),
         )
 
     # 2. Hardline blocklist — never bypassable, even under yolo.

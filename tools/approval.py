@@ -3733,6 +3733,11 @@ def check_dangerous_command(command: str, env_type: str,
         {"approved": True/False, "message": str or None, ...}
     """
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
+        deny_pattern = _match_user_deny_rule(command)
+        if deny_pattern is not None:
+            logger.warning("User deny rule %r blocked command: %s",
+                           deny_pattern, command[:200])
+            return _user_deny_block_result(deny_pattern)
         return {"approved": True, "message": None}
 
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
@@ -4353,9 +4358,14 @@ def check_all_command_guards(command: str, env_type: str,
     such a session is no longer isolated, so it goes through the normal flow
     instead of the container fast-path.
     """
-    # Skip isolated container backends for both checks. Docker stops skipping
-    # once host paths are bind-mounted into the sandbox.
+    # Skip ordinary guards for isolated containers, but never an operator's
+    # explicit approvals.deny policy.
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
+        deny_pattern = _match_user_deny_rule(command)
+        if deny_pattern is not None:
+            logger.warning("User deny rule %r blocked command: %s",
+                           deny_pattern, command[:200])
+            return _user_deny_block_result(deny_pattern)
         return {"approved": True, "message": None}
 
     # Hardline floor: unconditional block for catastrophic commands

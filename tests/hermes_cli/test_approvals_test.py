@@ -89,6 +89,27 @@ class TestVerdicts:
         assert "allow" in out
         assert "container" in out or "isolated" in out
 
+    def test_container_env_type_cannot_skip_user_deny(
+            self, isolated_approvals, capsys, monkeypatch):
+        monkeypatch.setattr(
+            A,
+            "_get_approval_config",
+            lambda: {"mode": "off", "deny": ["*chmod*"]},
+        )
+        monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", True)
+
+        rc = at.approvals_test_command(
+            _args(
+                ["chmod", "600", "/tmp/hermes-approval-deny-test"],
+                env_type="docker",
+            )
+        )
+        out = capsys.readouterr().out
+
+        assert rc == 3
+        assert "user-deny" in out
+        assert "*chmod*" in out
+
     def test_mode_off_bypasses_dangerous_but_not_hardline(self, isolated_approvals,
                                                           capsys, monkeypatch):
         monkeypatch.setattr(A, "_get_approval_config", lambda: {"mode": "off"})

@@ -9274,9 +9274,58 @@ def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatc
 @pytest.mark.parametrize(
     "provider_flag", [" --provider custom:new-provider", ""]
 )
-def test_config_set_model_recovers_failed_deferred_resume(monkeypatch, provider_flag):
-    old_ready = threading.Event()
-    old_ready.set()
+def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
+    monkeypatch, tmp_path, provider_flag
+):
+    """Recovery waits for the failed generation and uses the session profile.
+
+    Exercise the real model-switch and deferred-build boundaries: only their
+    provider/network and agent-construction leaves are replaced.
+    """
+    from agent.secret_scope import current_secret_scope
+    from hermes_constants import get_hermes_home
+
+    launch_home = tmp_path / "launch"
+    profile_home = tmp_path / "profiles" / "work"
+    launch_home.mkdir()
+    profile_home.mkdir(parents=True)
+    (launch_home / "config.yaml").write_text(
+        "model:\n  default: launch/model\n  provider: launch-provider\n",
+        encoding="utf-8",
+    )
+    (profile_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: old/model\n"
+        "  provider: custom:new-provider\n"
+        "providers:\n"
+        "  new-provider:\n"
+        "    base_url: https://profile.example/v1\n"
+        "    key_env: PROFILE_API_KEY\n",
+        encoding="utf-8",
+    )
+    (profile_home / ".env").write_text(
+        "PROFILE_API_KEY=profile-secret\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+
+    class ControlledReady:
+        def __init__(self):
+            self._event = threading.Event()
+            self.wait_entered = threading.Event()
+
+        def wait(self, timeout=None):
+            self.wait_entered.set()
+            return self._event.wait(timeout)
+
+        def is_set(self):
+            return self._event.is_set()
+
+        def set(self):
+            self._event.set()
+
+    old_ready = ControlledReady()
     reasoning = {"effort": "high"}
     old_override = {"model": "old/model", "provider": "removed-provider"}
     session = _session(
@@ -9289,62 +9338,137 @@ def test_config_set_model_recovers_failed_deferred_resume(monkeypatch, provider_
             "provider_override": "removed-provider",
             "reasoning_config_override": reasoning,
         },
+        profile_home=str(profile_home),
     )
     session["agent"] = None
     server._sessions["sid"] = session
-    seen = {"build": 0, "persist": 0}
+    switch_called = threading.Event()
+    seen = {"switch": None, "build": None, "persist": 0}
 
-    def fake_apply_model_switch(_sid, current, _value, **_kwargs):
-        current["model_override"] = {
-            "model": "new/model",
-            "provider": "custom:new-provider",
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="new/model",
+        target_provider="custom:new-provider",
+        api_key="profile-secret",
+        base_url="https://profile.example/v1",
+        api_mode="chat_completions",
+        warning_message="",
+        model_info=None,
+        error_message="",
+    )
+
+    def fake_switch_model(**kwargs):
+        seen["switch"] = {
+            "home": get_hermes_home(),
+            "secrets": dict(current_secret_scope() or {}),
+            "providers": kwargs["user_providers"],
+            "current_provider": kwargs["current_provider"],
+            "current_api_key": kwargs["current_api_key"],
         }
-        return {
-            "value": "new/model",
-            "warning": "",
-            "confirm_required": False,
-            "scope": "session",
+        switch_called.set()
+        return result
+
+    class FakeDb:
+        def __init__(self, **_kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_make_agent(_sid, _key, **kwargs):
+        seen["build"] = {
+            "home": get_hermes_home(),
+            "secrets": dict(current_secret_scope() or {}),
+            "overrides": kwargs,
         }
+        return types.SimpleNamespace(
+            model="new/model",
+            provider="custom:new-provider",
+            base_url="https://profile.example/v1",
+            api_mode="chat_completions",
+            _session_db=kwargs.get("session_db"),
+        )
 
-    def fake_start_agent_build(sid, current):
-        seen["build"] += 1
-        assert sid == "sid"
-        assert current["agent_error"] is None
-        assert current["agent_ready"] is not old_ready
-        assert current.get("agent_build_started") is None
-        overrides = current["resume_runtime_overrides"]
-        assert overrides["model_override"] == current["model_override"]
-        assert overrides["provider_override"] == "custom:new-provider"
-        assert overrides["reasoning_config_override"] == reasoning
-        current["agent"] = types.SimpleNamespace(model="new/model")
-        current["agent_ready"].set()
-
-    monkeypatch.setattr(server, "_apply_model_switch", fake_apply_model_switch)
-    monkeypatch.setattr(server, "_start_agent_build", fake_start_agent_build)
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", fake_switch_model)
+    monkeypatch.setattr(
+        "hermes_cli.model_selection_guards.combined_selection_warning",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr("hermes_state.SessionDB", FakeDb)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(
+        "tui_gateway.entry.ensure_mcp_discovery_started", lambda: None
+    )
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+    monkeypatch.setattr(server, "_probe_config_health", lambda *_args: None)
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     monkeypatch.setattr(
         server,
         "_persist_live_session_runtime",
         lambda _session: seen.__setitem__("persist", seen["persist"] + 1),
     )
 
-    try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {
-                    "session_id": "sid",
-                    "key": "model",
-                    "value": f"new/model{provider_flag}",
-                },
-            }
+    response = []
+
+    def run_request():
+        response.append(
+            server.handle_request(
+                {
+                    "id": "1",
+                    "method": "config.set",
+                    "params": {
+                        "session_id": "sid",
+                        "key": "model",
+                        "value": f"new/model{provider_flag}",
+                    },
+                }
+            )
         )
 
-        assert resp["result"]["value"] == "new/model"
-        assert seen == {"build": 1, "persist": 1}
+    request_thread = threading.Thread(target=run_request)
+    try:
+        request_thread.start()
+        assert old_ready.wait_entered.wait(timeout=2), (
+            "model recovery did not wait for the failed build generation"
+        )
+        assert not switch_called.is_set()
+        old_ready.set()
+        request_thread.join(timeout=10)
+
+        assert not request_thread.is_alive()
+        assert response[0]["result"]["value"] == "new/model"
+        assert seen["persist"] == 1
+        assert seen["switch"] == {
+            "home": profile_home,
+            "secrets": {"PROFILE_API_KEY": "profile-secret"},
+            "providers": {
+                "new-provider": {
+                    "base_url": "https://profile.example/v1",
+                    "key_env": "PROFILE_API_KEY",
+                }
+            },
+            "current_provider": (
+                "custom:new-provider" if provider_flag else "custom"
+            ),
+            "current_api_key": "profile-secret" if not provider_flag else "",
+        }
+        assert seen["build"]["home"] == profile_home
+        assert seen["build"]["secrets"] == {
+            "PROFILE_API_KEY": "profile-secret"
+        }
+        overrides = seen["build"]["overrides"]
+        assert overrides["model_override"] == session["model_override"]
+        assert overrides["provider_override"] == "custom:new-provider"
+        assert overrides["reasoning_config_override"] == reasoning
         assert session["agent_error"] is None
         assert session["agent"].model == "new/model"
     finally:
+        old_ready.set()
+        request_thread.join(timeout=10)
         server._sessions.pop("sid", None)
 
 

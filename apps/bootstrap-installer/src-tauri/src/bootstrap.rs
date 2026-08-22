@@ -263,29 +263,24 @@ pub(crate) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
 }
 
 fn resolve_marker_commit(install_root: &Path, pin: &Pin) -> Option<String> {
-    if let Some(commit) = pin
-        .commit
-        .as_ref()
-        .filter(|commit| !commit.trim().is_empty())
-    {
-        return Some(commit.clone());
-    }
-
     let output = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(install_root)
         .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
+        .ok();
+    let installed_commit = output
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            (!commit.is_empty()).then_some(commit)
+        });
 
-    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if commit.is_empty() {
-        None
-    } else {
-        Some(commit)
-    }
+    installed_commit.or_else(|| {
+        pin.commit
+            .as_ref()
+            .filter(|commit| !commit.trim().is_empty())
+            .cloned()
+    })
 }
 
 fn write_bootstrap_complete_marker(install_root: &Path, pin: &Pin) -> Result<serde_json::Value> {
@@ -1081,6 +1076,48 @@ mod tests {
             resolve_hermes_desktop_app(&root).is_none(),
             "no resolved app when nothing has been built"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_complete_marker_records_installed_head_ahead_of_requested_pin() {
+        let root = unique_tmp_dir("marker-installed-head");
+        let run_git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git should run")
+        };
+
+        assert!(run_git(&["init", "-q"]).status.success());
+        let commit = run_git(&[
+            "-c",
+            "user.name=Hermes Test",
+            "-c",
+            "user.email=hermes@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "installed",
+        ]);
+        assert!(
+            commit.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+        let head = run_git(&["rev-parse", "HEAD"]);
+        assert!(head.status.success());
+        let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
+
+        let pin = Pin {
+            commit: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+            branch: Some("main".to_string()),
+        };
+        let marker =
+            write_bootstrap_complete_marker(&root, &pin).expect("marker write should succeed");
+
+        assert_eq!(marker["pinnedCommit"], head);
         let _ = std::fs::remove_dir_all(&root);
     }
 

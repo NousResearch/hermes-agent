@@ -4,13 +4,11 @@
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-stage-protocol.ps1
 #
-# These tests only exercise the metadata surface (-ProtocolVersion, -Manifest,
-# unknown -Stage handling).  They DO NOT actually run any install stages --
-# those have heavy side effects (winget, git clone, pip install, PATH writes)
-# and are out of scope for a unit smoke test.  All three metadata commands
-# below return without invoking Main / Invoke-AllStages.
-#
-# To exercise real install stages, drive the script from a clean VM.
+# These tests exercise the metadata surface (-ProtocolVersion, -Manifest,
+# unknown -Stage handling) plus the bounded bootstrap-marker stage against a
+# temporary Git checkout. Heavy stages with external side effects (winget,
+# clone, pip install, PATH writes) remain out of scope; drive those from a
+# clean VM.
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
@@ -119,6 +117,52 @@ if ($errFrame) {
     Assert-Equal -Expected $false -Actual $errFrame.ok -Label "unknown-stage frame has ok=false"
     Assert-Equal -Expected "does-not-exist" -Actual $errFrame.stage -Label "unknown-stage frame echoes stage name"
     Assert-True ($errFrame.reason -match "unknown stage") -Label "unknown-stage frame explains why"
+}
+
+# -----------------------------------------------------------------------------
+# Test: bootstrap marker records the installed checkout, not a stale request
+# -----------------------------------------------------------------------------
+Write-Host ""
+Write-Host "-- bootstrap marker installed HEAD --"
+$markerTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) `
+    ("hermes-marker-test-" + [Guid]::NewGuid().ToString("N"))
+$markerInstallDir = Join-Path $markerTestRoot "checkout"
+$markerHermesHome = Join-Path $markerTestRoot "home"
+$currentShell = (Get-Process -Id $PID).Path
+
+try {
+    New-Item -ItemType Directory -Path $markerInstallDir, $markerHermesHome -Force | Out-Null
+    & git -C $markerInstallDir init -q
+    Assert-Equal -Expected 0 -Actual $LASTEXITCODE -Label "marker fixture git init succeeds"
+    & git -C $markerInstallDir `
+        -c user.name="Hermes Test" `
+        -c user.email="hermes@example.invalid" `
+        commit --allow-empty -qm installed
+    Assert-Equal -Expected 0 -Actual $LASTEXITCODE -Label "marker fixture git commit succeeds"
+    $installedHead = (& git -C $markerInstallDir rev-parse HEAD).Trim()
+    $requestedCommit = "a" * 40
+
+    $stageOutput = & $currentShell -NoProfile -ExecutionPolicy Bypass -File $installScript `
+        -Stage "bootstrap-marker" `
+        -InstallDir $markerInstallDir `
+        -HermesHome $markerHermesHome `
+        -Commit $requestedCommit `
+        -NonInteractive `
+        -Json
+    Assert-Equal -Expected 0 -Actual $LASTEXITCODE -Label "bootstrap-marker stage exits 0"
+
+    $markerPath = Join-Path $markerInstallDir ".hermes-bootstrap-complete"
+    Assert-True (Test-Path -LiteralPath $markerPath -PathType Leaf) `
+        -Label "bootstrap-marker stage writes the marker"
+    if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+        $marker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
+        Assert-Equal -Expected $installedHead -Actual $marker.pinnedCommit `
+            -Label "marker records installed HEAD instead of stale -Commit"
+    }
+} finally {
+    if (Test-Path -LiteralPath $markerTestRoot) {
+        Remove-Item -LiteralPath $markerTestRoot -Recurse -Force
+    }
 }
 
 # -----------------------------------------------------------------------------

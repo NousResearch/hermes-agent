@@ -19907,3 +19907,12 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+def test_profile_home_rejects_path_traversal_and_invalid_names():
+    """Regression for #90699: _profile_home must validate profile names to prevent traversal."""
+    assert server._profile_home("../../outside") is None
+    assert server._profile_home("/etc") is None
+    assert server._profile_home("..") is None
+    assert server._profile_home("foo/bar") is None
+    assert server._profile_home("invalid*name") is None

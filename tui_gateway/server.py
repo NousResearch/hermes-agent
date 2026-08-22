@@ -1541,7 +1541,9 @@ def _profile_home(profile: str | None) -> Path | None:
     try:
         from hermes_cli import profiles as profiles_mod
 
-        home = Path(profiles_mod.get_profile_dir(name))
+        canon = profiles_mod.normalize_profile_name(name)
+        profiles_mod.validate_profile_name(canon)
+        home = Path(profiles_mod.get_profile_dir(canon))
     except Exception:
         return None
     # Already the launch profile? No override needed.

@@ -175,6 +175,49 @@ def test_set_api_key_stdio_references_env_block(hermes_root):
     assert "LOCALTOOL_TOKEN=tok-xyz" in work_env
 
 
+def test_set_api_key_rejects_portable_only_name(hermes_root, monkeypatch):
+    """A portable Agent Plugin's MCP server is visible via the merged
+    ``_get_mcp_servers()`` (issue #87253) but must not be writable here — it
+    has no native config.yaml entry to update, and unconditionally writing
+    one would create a stale, credential-bearing shadow that permanently
+    shadows the live portable config under native-wins precedence."""
+    import hermes_cli.plugins as plugins_mod
+
+    root = hermes_root
+    portable_name = "agent-plugin-supabase-4d7594e5__supabase"
+    monkeypatch.setattr(plugins_mod, "discover_plugins", lambda force=False: None)
+    monkeypatch.setattr(
+        plugins_mod,
+        "get_plugin_manager",
+        lambda: type(
+            "_Mgr",
+            (),
+            {
+                "get_portable_mcp_servers": lambda self: {
+                    portable_name: {
+                        "url": "https://supabase.example/mcp",
+                        "auth": "oauth",
+                    }
+                }
+            },
+        )(),
+    )
+
+    resp = _call(
+        "mcp.servers.set_api_key",
+        {"profile": "work", "name": portable_name, "value": "sk-leaked-secret"},
+    )
+    assert "error" in resp
+    assert resp["error"]["code"] == 4064
+
+    work_cfg = _read_yaml(root / "profiles" / "work" / "config.yaml")
+    assert portable_name not in work_cfg.get("mcp_servers", {})
+    work_env_path = root / "profiles" / "work" / ".env"
+    assert not work_env_path.exists() or "sk-leaked-secret" not in work_env_path.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_remove_scoped_to_profile(hermes_root):
     root = hermes_root
     _result(

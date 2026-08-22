@@ -76,12 +76,29 @@ def _prompt(question: str, *, password: bool = False, default: str = "") -> str:
 # ─── Config Helpers ───────────────────────────────────────────────────────────
 
 def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
-    """Return the ``mcp_servers`` dict from config, or empty dict."""
+    """Return the ``mcp_servers`` dict from config, merged with portable
+    Agent Plugin MCP servers so ``hermes mcp`` subcommands can see and
+    authenticate them too. Native entries win on name collision, matching
+    the precedence already used by the runtime tool layer.
+    """
     if config is None:
         config = load_config()
     servers = config.get("mcp_servers")
     if not servers or not isinstance(servers, dict):
-        return {}
+        servers = {}
+    else:
+        servers = dict(servers)
+
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+        discover_plugins()
+        for name, portable_cfg in get_plugin_manager().get_portable_mcp_servers().items():
+            if name not in servers:
+                servers[name] = portable_cfg
+    except Exception:
+        logger.debug("Failed to load portable MCP servers", exc_info=True)
+
     return servers
 
 
@@ -658,8 +675,19 @@ def cmd_mcp_remove(args):
         _info("Cancelled.")
         return
 
-    _remove_mcp_server(name)
+    if not _remove_mcp_server(name):
+        _error(
+            f"'{name}' is provided by a portable Agent Plugin, not the native "
+            "config — disable the plugin to remove it."
+        )
+        return
     _success(f"Removed '{name}' from config")
+
+    if name in _get_mcp_servers():
+        _warning(
+            f"A portable Agent Plugin also provides '{name}'; it remains "
+            "active and was not removed."
+        )
 
     # Clean up OAuth tokens if they exist — route through MCPOAuthManager so
     # any provider instance cached in the current process (e.g. from an
@@ -998,6 +1026,13 @@ def cmd_mcp_configure(args):
         available = list(servers.keys())
         if available:
             _info(f"Available: {', '.join(available)}")
+        return
+
+    if name not in load_config().get("mcp_servers", {}):
+        _error(
+            f"'{name}' is provided by a portable Agent Plugin, not the native "
+            "config, so its tool selection can't be edited here."
+        )
         return
 
     cfg = servers[name]

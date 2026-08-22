@@ -168,6 +168,47 @@ class TestMcpRemove:
         cmd_mcp_remove(_make_args(name="oauth-srv"))
         assert not token_file.exists()
 
+    def test_remove_native_warns_when_portable_of_same_name_remains(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Native-wins precedence (#87253) means a name can resolve to both a
+        native and a portable entry. Removing the native one must not claim
+        the name is gone — the portable server is still live and resolvable
+        under that name afterward."""
+        import hermes_cli.plugins as plugins_mod
+
+        _seed_config(tmp_path, {
+            "shared": {"url": "https://native.example/mcp"},
+        })
+        monkeypatch.setattr("builtins.input", lambda _: "y")
+        monkeypatch.setattr(plugins_mod, "discover_plugins", lambda force=False: None)
+        monkeypatch.setattr(
+            plugins_mod,
+            "get_plugin_manager",
+            lambda: type(
+                "_Mgr",
+                (),
+                {
+                    "get_portable_mcp_servers": lambda self: {
+                        "shared": {"url": "https://portable.example/mcp"}
+                    }
+                },
+            )(),
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_remove
+
+        cmd_mcp_remove(_make_args(name="shared"))
+        out = capsys.readouterr().out
+
+        assert "Removed" in out
+        assert "portable Agent Plugin" in out
+
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        assert "shared" not in config.get("mcp_servers", {})
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_add
@@ -654,6 +695,61 @@ class TestConfigHelpers:
         assert "mysvr" in servers
         assert servers["mysvr"]["url"] == "https://example.com/mcp"
 
+
+    def test_portable_plugin_mcp_servers_are_visible(self, monkeypatch):
+        """A portable Agent Plugin MCP server must resolve through
+        ``hermes mcp`` commands (issue #87253), not just the runtime tool
+        layer — otherwise an OAuth one can never be authenticated."""
+        import hermes_cli.plugins as plugins_mod
+        from hermes_cli.mcp_config import _get_mcp_servers
+
+        monkeypatch.setattr(plugins_mod, "discover_plugins", lambda force=False: None)
+        monkeypatch.setattr(
+            plugins_mod,
+            "get_plugin_manager",
+            lambda: type(
+                "_Mgr",
+                (),
+                {
+                    "get_portable_mcp_servers": lambda self: {
+                        "agent-plugin-supabase-4d7594e5__supabase": {
+                            "url": "https://supabase.example/mcp",
+                            "auth": "oauth",
+                        }
+                    }
+                },
+            )(),
+        )
+
+        servers = _get_mcp_servers()
+
+        assert "agent-plugin-supabase-4d7594e5__supabase" in servers
+        assert servers["agent-plugin-supabase-4d7594e5__supabase"]["auth"] == "oauth"
+
+    def test_native_server_wins_name_collision_with_portable(self, monkeypatch):
+        from hermes_cli.mcp_config import _save_mcp_server, _get_mcp_servers
+        import hermes_cli.plugins as plugins_mod
+
+        _save_mcp_server("shared", {"url": "https://native.example/mcp"})
+
+        monkeypatch.setattr(plugins_mod, "discover_plugins", lambda force=False: None)
+        monkeypatch.setattr(
+            plugins_mod,
+            "get_plugin_manager",
+            lambda: type(
+                "_Mgr",
+                (),
+                {
+                    "get_portable_mcp_servers": lambda self: {
+                        "shared": {"url": "https://portable.example/mcp"}
+                    }
+                },
+            )(),
+        )
+
+        servers = _get_mcp_servers()
+
+        assert servers["shared"]["url"] == "https://native.example/mcp"
 
     def test_env_key_for_server(self):
         from hermes_cli.mcp_config import _env_key_for_server

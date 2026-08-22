@@ -2123,9 +2123,17 @@ def _(rid, params: dict) -> dict:
             _strip_bearer_prefix,
         )
 
-        servers = _get_mcp_servers()
+        config = load_config()
+        servers = _get_mcp_servers(config)
         if name not in servers:
             return _err(rid, 4064, f"server '{name}' not found")
+        if name not in (config.get("mcp_servers") or {}):
+            return _err(
+                rid,
+                4064,
+                f"'{name}' is provided by a portable Agent Plugin, not the "
+                "native config, so its API key can't be set here.",
+            )
 
         env_var = str(params.get("env_var") or "").strip() or _env_key_for_server(name)
 

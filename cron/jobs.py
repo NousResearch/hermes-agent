@@ -114,8 +114,16 @@ _fire_fence_locks_guard = threading.Lock()
 # legitimate critical section (field updates only) while keeping the ticker's
 # worst-case stall well under one status-alarm threshold.
 _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
-OUTPUT_DIR = CRON_DIR / "output"
+_OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+OUTPUT_DIR = _OUTPUT_DIR
+# Marker field set by trigger_job() to distinguish manual "Run now" from
+# migration-era stored instants. The migration-repair branch skips recomputation
+# only when this marker is present and still matches (see #78516).
+# Using a marker rather than a time-proximity heuristic avoids the fundamental
+# ambiguity where a ticker's 60s cadence makes a freshly-migrated instant
+# indistinguishable from a manual trigger by age alone.
+_MANUAL_TRIGGER_MARKER = "manual_run_now"
 
 
 @dataclass(frozen=True)
@@ -2307,6 +2315,7 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             "paused_at": None,
             "paused_reason": None,
             "next_run_at": _hermes_now().isoformat(),
+            "_manual_trigger_at": _MANUAL_TRIGGER_MARKER,
         },
     )
 
@@ -3326,9 +3335,15 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # the recompute lands on the same wall-clock time later the same period,
             # and DST-boundary collisions with a still-future stored wall clock are
             # rare relative to the double-fire bug this prevents (#28934).
+            #
+            # Exception: if _manual_trigger_at is set, it is a manual trigger from
+            # trigger_job() rather than a stored migration-era timestamp. In that
+            # case we let the job fire and skip the recomputation, which would
+            # otherwise swallow the manual trigger (see #78516).
             if (
                 kind == "cron"
                 and next_run_dt <= now
+                and raw_jobs[0].get("_manual_trigger_at") != _MANUAL_TRIGGER_MARKER
                 and _timezone_offset_mismatch(raw_next_run_dt, now)
                 and _stored_wall_clock_is_future(raw_next_run_dt, now)
             ):

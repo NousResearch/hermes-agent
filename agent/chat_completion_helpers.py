@@ -2538,32 +2538,30 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
         fb_base_url_hint = (fb.get("base_url") or "").strip() or None
         fb_api_key_hint = resolve_entry_api_key(fb)
-        # Determine api_mode from the ORIGINAL base_url (before URL transformation).
-        # resolve_provider_client() calls _to_openai_base_url() which can rewrite
-        # a dual-surface /anthropic base to /v1, losing the Anthropic wire signal
-        # from the client's post-rewrite base_url. Pre-compute here so detection
-        # sees the URL the user actually configured. (#79787)
-        #
-        # An explicit ``api_mode`` on the fallback entry always wins — including
-        # an explicit "chat_completions" — and suppresses all re-detection below.
-        fb_api_mode_explicit = bool(str(fb.get("api_mode") or "").strip())
-        fb_api_mode = "chat_completions"
-        if fb_api_mode_explicit:
-            fb_api_mode = str(fb.get("api_mode")).strip()
-        elif fb_provider == "anthropic":
-            # Provider-name check must not be gated on fb_base_url_hint:
-            # an entry that names provider: anthropic without an explicit
-            # base_url uses the provider's default endpoint and must still
-            # resolve to anthropic_messages, not chat_completions.
-            fb_api_mode = "anthropic_messages"
-        elif fb_base_url_hint:
-            _orig_url = fb_base_url_hint.rstrip("/").lower()
-            if (
-                _orig_url.endswith("/anthropic")
-                or base_url_hostname(fb_base_url_hint) == "api.anthropic.com"
-            ):
+        from hermes_cli.runtime_provider import _parse_api_mode
+
+        # Parse the documented api_mode/transport aliases before client
+        # construction: the resolver may choose a specialized wrapper from
+        # this declaration, so runtime transport selection must reuse it.
+        fb_declared_api_mode = _parse_api_mode(
+            fb.get("api_mode") or fb.get("transport")
+        )
+        fb_api_mode_explicit = fb_declared_api_mode is not None
+
+        # Determine api_mode from the ORIGINAL base_url (before URL
+        # transformation). resolve_provider_client() can rewrite a dual-surface
+        # /anthropic base to /v1, losing the user's wire-format signal.
+        fb_api_mode = fb_declared_api_mode or "chat_completions"
+        if not fb_api_mode_explicit:
+            if fb_provider == "anthropic":
                 fb_api_mode = "anthropic_messages"
-        
+            elif fb_base_url_hint:
+                _orig_url = fb_base_url_hint.rstrip("/").lower()
+                if (
+                    _orig_url.endswith("/anthropic")
+                    or base_url_hostname(fb_base_url_hint) == "api.anthropic.com"
+                ):
+                    fb_api_mode = "anthropic_messages"
         # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
         # when no explicit key is in the fallback config. Host match
         # (not substring) — see GHSA-76xc-57q6-vm5m.
@@ -2573,8 +2571,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_api_key_hint = get_secret("OLLAMA_API_KEY") or None
         fb_client, _resolved_fb_model = resolve_provider_client(
             fb_provider, model=fb_model, raw_codex=True,
-            explicit_base_url=fb_base_url_hint,
-            explicit_api_key=fb_api_key_hint,
+            explicit_base_url=fb_base_url_hint or "",
+            explicit_api_key=fb_api_key_hint or "",
             api_mode=fb_api_mode)
         if fb_client is None:
             logger.warning(
@@ -2594,7 +2592,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
         # Re-determine api_mode from provider / resolved base URL / model when
         # the pre-computed pass above landed on the default and the user did
-        # not pin api_mode explicitly. An explicit fb.api_mode (even
+        # not pin api_mode explicitly. An explicit api_mode or transport (even
         # "chat_completions") must never be overridden here.
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)

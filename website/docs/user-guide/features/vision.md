@@ -205,6 +205,23 @@ When a user attaches an image — from the CLI clipboard, the gateway (Telegram/
 
 You don't configure this — Hermes looks up your current model's capability in the provider metadata and picks the right path automatically. The practical effect: you can switch between vision and non-vision models mid-session and image handling "just works" without changing your workflow. Text-only models get coherent context about the image rather than a broken multimodal payload they'd have to reject.
 
+Local images routed natively are bounded before base64 encoding so ordinary
+phone photos do not exceed stricter transport limits. Images already within
+the limits pass through byte-for-byte; larger images are EXIF-oriented and
+re-encoded in memory without modifying the cached source. The defaults are a
+900 KB complete data URL and a 2560-pixel longest edge:
+
+```yaml
+agent:
+  native_image_max_payload_bytes: 900000
+  native_image_max_dimension: 2560
+```
+
+Raise these settings for a provider with a larger proven limit. Remote image
+URLs are passed through unchanged. These settings govern images attached to
+the initial native user message; `vision_analyze` is a separate tool path with
+its own payload safeguards.
+
 Which auxiliary model handles the text-description path is configurable under `auxiliary.vision` — see [Auxiliary Models](/user-guide/configuration#auxiliary-models).
 
 ### `vision_analyze` has the same dual behavior

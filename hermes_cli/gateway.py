@@ -1330,7 +1330,7 @@ def _wait_for_systemd_service_restart(
 
 def _systemd_restart_wait_timeout(system: bool = False) -> float:
     """Cover systemd's relaunch delays before applying the runtime wait floor."""
-    from gateway.shutdown_forensics import _parse_systemd_duration_to_us
+    from gateway.shutdown_forensics import parse_systemd_duration_to_us
 
     props = _read_systemd_unit_properties(
         system=system,
@@ -1340,7 +1340,7 @@ def _systemd_restart_wait_timeout(system: bool = False) -> float:
     for name in ("RestartUSec", "TimeoutStartUSec"):
         raw = props.get(name, "")
         duration_us = (
-            int(raw) if raw.isdigit() else _parse_systemd_duration_to_us(raw)
+            int(raw) if raw.isdigit() else parse_systemd_duration_to_us(raw)
         )
         if duration_us is not None:
             supervisor_budget += duration_us / 1_000_000

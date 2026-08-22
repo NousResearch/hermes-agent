@@ -78,6 +78,7 @@ import re
 import random
 import secrets
 import shutil
+import unicodedata
 import sqlite3
 import subprocess
 import sys
@@ -1135,11 +1136,11 @@ class Task:
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
     # Typed block reason (one of VALID_BLOCK_KINDS) or None for legacy/un-typed
-    # blocks. Set by ``block_task``; preserved across unblock so a re-block for
-    # the same kind is recognisable as an unblock↔re-block loop.
+    # blocks. Set by ``block_task``; preserved across unblock and paired with
+    # the reason fingerprint so a same-cause re-block is recognisable.
     block_kind: Optional[str] = None
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
-    # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
+    # ``BLOCK_RECURRENCE_LIMIT``. Reset on completion or material specification.
     block_recurrences: int = 0
 
     @classmethod
@@ -1413,15 +1414,19 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
-    -- to ``blocked`` for a human. Preserved across unblock so a re-block for
-    -- the SAME kind can be recognised as a loop.
+    -- to ``blocked`` for a human. Preserved across unblock and paired with the
+    -- reason fingerprint so a re-block for the SAME cause can be recognised.
     block_kind           TEXT,
+    -- SHA-256 of the normalized human-facing block reason. Preserved across
+    -- unblock with block_kind so recurrence accounting distinguishes causes
+    -- without duplicating potentially sensitive reason text on the task row.
+    block_reason_fingerprint TEXT,
     -- Unblock-loop counter. Incremented each time a task is re-blocked for the
     -- same truly-blocked reason after having been unblocked. When it reaches
     -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
-    -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
-    -- successful completion — NOT on unblock (resetting on unblock is exactly
-    -- the amnesia that let the loop run unbounded).
+    -- ``blocked`` so a cron can't spin it forever. Reset to 0 on successful
+    -- completion or material human specification — NOT on a bare unblock
+    -- (that amnesia let the loop run unbounded).
     block_recurrences    INTEGER NOT NULL DEFAULT 0
 );
 
@@ -2677,6 +2682,16 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "block_reason_fingerprint" not in cols:
+        # Existing recurrence rows are resolved lazily from their latest block
+        # event by block_task(), avoiding raw reason text on the task row.
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "block_reason_fingerprint",
+            "block_reason_fingerprint TEXT",
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -4497,7 +4512,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     ).fetchone()
     try:
         payload = json.loads(row["payload"]) if row and row["payload"] else {}
-    except (json.JSONDecodeError, TypeError):
+    except (TypeError, ValueError, RecursionError):
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
@@ -4855,7 +4870,7 @@ def _retry_status_for_run(
     ).fetchone()
     try:
         payload = json.loads(event["payload"]) if event and event["payload"] else {}
-    except (json.JSONDecodeError, TypeError):
+    except (TypeError, ValueError, RecursionError):
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
@@ -5450,6 +5465,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
+                       block_reason_fingerprint = NULL,
                        block_recurrences = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
@@ -5467,6 +5483,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL,
                        block_kind   = NULL,
+                       block_reason_fingerprint = NULL,
                        block_recurrences = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
@@ -6243,6 +6260,40 @@ def edit_completed_task_result(
     return True
 
 
+def _block_reason_fingerprint(reason: Optional[str]) -> str:
+    """Hash NFKC-, whitespace-, and case-normalized reason text.
+
+    Whitespace and case-only changes share an identity. Distinct ASCII
+    punctuation remains distinct; NFKC-equivalent punctuation does not.
+    """
+    normalized = unicodedata.normalize("NFKC", reason or "")
+    normalized = re.sub(r"\s+", " ", normalized).strip().casefold()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _legacy_block_reason_fingerprint(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Recover cause identity for rows created before the fingerprint column."""
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'block_loop_detected') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row or not row["payload"]:
+        return None
+    try:
+        payload = json.loads(row["payload"])
+    except (TypeError, ValueError, RecursionError):
+        return None
+    if not isinstance(payload, dict) or "reason" not in payload:
+        return None
+    reason = payload["reason"]
+    return _block_reason_fingerprint(reason if isinstance(reason, str) else None)
+
+
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -6265,8 +6316,9 @@ def block_task(
 
     * ``needs_input`` / ``capability`` / ``None`` — "truly blocked" (Dale's
       "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
-      is re-blocked for the SAME kind after having been unblocked, the
-      unblock-loop counter (``block_recurrences``) increments. When it reaches
+      is re-blocked for the same normalized cause after having been unblocked,
+      the unblock-loop counter (``block_recurrences``) increments. When it
+      reaches
       :data:`BLOCK_RECURRENCE_LIMIT`, the task is routed to ``triage`` instead
       of ``blocked`` — breaking the cron-unblock ↔ worker-re-block loop and
       forcing a human-in-the-loop triage decision.
@@ -6285,7 +6337,8 @@ def block_task(
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            "SELECT status, block_kind, block_reason_fingerprint, "
+            "block_recurrences FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if cur_row is None:
@@ -6296,6 +6349,7 @@ def block_task(
             else "ready"
         )
         prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
+        prev_fingerprint = cur_row["block_reason_fingerprint"]
         prev_recurrences = (
             int(cur_row["block_recurrences"])
             if "block_recurrences" in cur_row.keys()
@@ -6357,9 +6411,24 @@ def block_task(
         # re-block for the SAME reason after a prior unblock. block_task only
         # fires from running/ready (i.e. AFTER an unblock returned the task to
         # the work pool), so a stored block_kind that matches the incoming kind
-        # means: blocked → unblocked → about-to-re-block for the same cause.
+        # means: blocked → unblocked → about-to-re-block for the same kind.
+        # The normalized reason fingerprint distinguishes separate causes while
+        # avoiding potentially sensitive reason text on the task row.
         # An un-typed (None) block compares as "same" to a prior un-typed block.
-        same_cause = prev_kind == kind
+        cause_fingerprint = _block_reason_fingerprint(reason)
+        if prev_fingerprint is None and prev_recurrences:
+            prev_fingerprint = _legacy_block_reason_fingerprint(conn, task_id)
+            if prev_fingerprint is None:
+                _log.warning(
+                    "Could not recover legacy block reason fingerprint for task %s; "
+                    "resetting recurrence lineage",
+                    task_id,
+                )
+        same_cause = (
+            prev_kind == kind
+            and prev_fingerprint is not None
+            and prev_fingerprint == cause_fingerprint
+        )
         recurrences = prev_recurrences + 1 if same_cause else 1
 
         if recurrences >= BLOCK_RECURRENCE_LIMIT:
@@ -6373,12 +6442,20 @@ def block_task(
                        claim_expires = NULL,
                        worker_pid    = NULL,
                        block_kind    = ?,
+                       block_reason_fingerprint = ?,
                        block_recurrences = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, recurrences, task_id) if expected_run_id is None
-                else (kind, recurrences, task_id, int(expected_run_id)),
+                (kind, cause_fingerprint, recurrences, task_id)
+                if expected_run_id is None
+                else (
+                    kind,
+                    cause_fingerprint,
+                    recurrences,
+                    task_id,
+                    int(expected_run_id),
+                ),
             )
             if cur.rowcount != 1:
                 return False
@@ -6395,6 +6472,7 @@ def block_task(
                 conn, task_id, "block_loop_detected",
                 {
                     "reason": reason,
+                    "reason_fingerprint": cause_fingerprint,
                     "kind": kind,
                     "recurrences": recurrences,
                     "limit": BLOCK_RECURRENCE_LIMIT,
@@ -6412,11 +6490,12 @@ def block_task(
                            claim_expires = NULL,
                            worker_pid    = NULL,
                            block_kind    = ?,
+                           block_reason_fingerprint = ?,
                            block_recurrences = ?
                      WHERE id = ?
                        AND status IN ('running', 'ready')
                     """,
-                    (kind, recurrences, task_id),
+                    (kind, cause_fingerprint, recurrences, task_id),
                 )
             else:
                 cur = conn.execute(
@@ -6427,12 +6506,19 @@ def block_task(
                            claim_expires = NULL,
                            worker_pid    = NULL,
                            block_kind    = ?,
+                           block_reason_fingerprint = ?,
                            block_recurrences = ?
                      WHERE id = ?
                        AND status IN ('running', 'ready')
                        AND current_run_id = ?
                     """,
-                    (kind, recurrences, task_id, int(expected_run_id)),
+                    (
+                        kind,
+                        cause_fingerprint,
+                        recurrences,
+                        task_id,
+                        int(expected_run_id),
+                    ),
                 )
             if cur.rowcount != 1:
                 return False
@@ -6453,6 +6539,7 @@ def block_task(
                 conn, task_id, "blocked",
                 {
                     "reason": reason,
+                    "reason_fingerprint": cause_fingerprint,
                     "kind": kind,
                     "recurrences": recurrences,
                     "source_status": source_status,
@@ -6569,7 +6656,7 @@ def request_review(
                     if changes_event and changes_event["payload"]
                     else {}
                 )
-            except (json.JSONDecodeError, TypeError):
+            except (TypeError, ValueError, RecursionError):
                 changes_payload = {}
             prior_reviewer = (
                 changes_payload.get("reviewer")
@@ -6693,7 +6780,7 @@ def request_changes(
                 if claimed_event and claimed_event["payload"]
                 else {}
             )
-        except (json.JSONDecodeError, TypeError):
+        except (TypeError, ValueError, RecursionError):
             claimed_payload = {}
         if not isinstance(claimed_payload, dict):
             claimed_payload = {}
@@ -6714,7 +6801,7 @@ def request_changes(
                 if requested_event["payload"]
                 else {}
             )
-        except (json.JSONDecodeError, TypeError):
+        except (TypeError, ValueError, RecursionError):
             requested_payload = {}
         if not isinstance(requested_payload, dict):
             requested_payload = {}
@@ -6919,13 +7006,15 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             if landing_status == "ready" and resume_status == "review"
             else landing_status
         )
-        # NOTE: deliberately does NOT touch ``block_recurrences`` or
-        # ``block_kind``. Resetting the recurrence counter on unblock is exactly
+        # NOTE: deliberately does NOT touch ``block_recurrences``,
+        # ``block_kind``, or ``block_reason_fingerprint``. Resetting recurrence
+        # identity on a bare unblock is exactly
         # the amnesia that let a cron unblock → worker re-block loop run
         # unbounded (Dale's report). The counter survives the unblock so that a
         # subsequent same-cause ``block_task`` can detect the loop and route to
         # triage at ``BLOCK_RECURRENCE_LIMIT``. It is reset to 0 only on a
-        # successful completion (see ``complete_task``). ``consecutive_failures``
+        # successful completion or a material human specification (see
+        # ``complete_task`` and ``specify_triage_task``). ``consecutive_failures``
         # (the *dispatcher* spawn/crash/timeout counter — a different signal) is
         # still reset here, which is correct: a deliberate unblock is a fresh
         # start for the dispatcher's retry budget.
@@ -6958,9 +7047,9 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
     ``review_reopened`` event.
 
     Deliberately does NOT touch ``block_recurrences``/``block_kind``: review is
-    not a block, so there is no loop counter to reset. (A stale counter from a
-    genuine block *before* review is left intact — only :func:`complete_task`
-    clears it.) Returns False when the task is missing or not in ``review``.
+    not a block, so there is no loop counter to reset. A stale counter from a
+    genuine block *before* review is left intact until completion or material
+    specification. Returns False when the task is missing or not in ``review``.
     """
     now = int(time.time())
     with write_txn(conn):
@@ -6981,7 +7070,7 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
                 if review_event and review_event["payload"]
                 else {}
             )
-        except (json.JSONDecodeError, TypeError):
+        except (TypeError, ValueError, RecursionError):
             handoff = {}
         implementer = handoff.get("implementer")
         if not isinstance(implementer, str) or not implementer.strip():
@@ -7236,6 +7325,17 @@ def specify_triage_task(
             sets.append("assignee = ?")
             params.append(assignee)
             changed_fields.append("assignee")
+        if any(field in changed_fields for field in ("title", "body")):
+            # A materially revised specification represents fresh human input,
+            # so an earlier unresolved blocker must not consume the new task's
+            # recurrence budget.
+            sets.extend(
+                [
+                    "block_kind = NULL",
+                    "block_reason_fingerprint = NULL",
+                    "block_recurrences = 0",
+                ]
+            )
         params.append(task_id)
         cur = conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} "

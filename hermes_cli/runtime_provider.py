@@ -1109,6 +1109,29 @@ def _resolve_named_custom_runtime(
     # `provider: ollama` with a LAN/WireGuard `base_url` doesn't silently
     # fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()
+
+    # Managed llama.cpp runtime: a llamacpp-flavored alias with no explicit
+    # base_url resolves to the supervised server (or a detected external
+    # one) before the generic custom fallthrough. Explicit base_url always
+    # wins — a user pointing at a specific server means that server.
+    if requested_norm in ("llamacpp", "llama.cpp", "llama-cpp") and not explicit_base_url:
+        try:
+            from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+
+            endpoint = resolve_llamacpp_endpoint()
+        except Exception:  # noqa: BLE001 — resolution is best-effort
+            endpoint = None
+        if endpoint:
+            return {
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "base_url": endpoint["base_url"],
+                "api_key": (explicit_api_key or "").strip()
+                or endpoint["api_key"] or "no-key-required",
+                "source": "local-runtime",
+                "requested_provider": requested_provider,
+            }
+
     if requested_norm and requested_norm != "custom":
         try:
             from hermes_cli.auth import resolve_provider as _resolve_provider

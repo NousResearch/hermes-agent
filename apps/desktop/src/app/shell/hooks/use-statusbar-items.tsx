@@ -8,6 +8,7 @@ import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
+import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
 import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -268,6 +269,7 @@ export function useStatusbarItems({
   const contextBar = useMemo(() => contextBarLabel(gaugeUsage), [gaugeUsage])
 
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
+  const systemResourcesItem = useSystemResourcesStatusbarItem()
 
   const gatewayMenuContent = useMemo(
     () => (close: () => void) => (
@@ -544,9 +546,12 @@ export function useStatusbarItems({
       },
       {
         detail: contextBar || undefined,
-        hidden: !contextUsage,
+        // Never self-hide: the user opted this item in (it's hidden-by-
+        // default), so an empty label must render as a waiting placeholder,
+        // not a vanished item — an enabled-but-invisible toggle reads as
+        // "another item took its spot".
         id: 'context-usage',
-        label: contextUsage,
+        label: contextUsage || '—',
         menuAlign: 'end',
         menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
         menuContent: (
@@ -563,6 +568,7 @@ export function useStatusbarItems({
         toggleLabel: copy.toggleSessionTimer,
         variant: 'text'
       },
+      systemResourcesItem,
       {
         ...approvalModeItem,
         hidden: gatewayState !== 'open',
@@ -596,6 +602,7 @@ export function useStatusbarItems({
       gaugeUsage,
       sessionStartedAt,
       gatewayState,
+      systemResourcesItem,
       terminalShowing,
       turnStartedAt
     ]

@@ -32,6 +32,7 @@ import { DocsLink, FlowPanel, Status } from './flow'
 import {
   FeaturedProviderRow,
   FireworksProviderRow,
+  LocalModelsProviderRow,
   OpenRouterProviderRow,
   ProviderRow,
   sortProviders
@@ -41,6 +42,7 @@ export {
   FeaturedProviderRow,
   FireworksProviderRow,
   KeyProviderRow,
+  LocalModelsProviderRow,
   OpenRouterProviderRow,
   ProviderRow,
   providerTitle,
@@ -478,10 +480,28 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const collapsible = Boolean(featured)
   const showRest = !collapsible || showAll
 
+  // "Run models locally" leaves the picker for Settings -> Providers ->
+  // Local Models, where install/download live. First-run: persist the skip
+  // (same contract as ChooseLaterLink) so the blocking overlay never
+  // re-nags; manual mode just closes. window.location keeps this picker
+  // router-independent (it renders outside the route tree on first run).
+  const openLocalModels = () => {
+    if (manual) {
+      closeManualOnboarding()
+    } else {
+      dismissFirstRunOnboarding()
+    }
+
+    window.location.hash = '#/settings?tab=providers&pview=local'
+  }
+
   return (
     <div className="grid gap-2">
       <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1">
         {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
+        {/* The no-account path stays always-visible: everything runs on
+            this machine. (Fireworks moved into the expanded list on main.) */}
+        <LocalModelsProviderRow onClick={openLocalModels} />
         {showRest ? (
           <>
             {/* Fireworks leads the expanded list, matching CANONICAL_PROVIDERS

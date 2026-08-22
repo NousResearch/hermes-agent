@@ -30,6 +30,7 @@ import {
 } from '@/store/gateway'
 import { registerGatewayReconnect } from '@/store/gateway-reconnect'
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
+import { checkLocalRuntimeUpdate, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -414,6 +415,12 @@ export function useGatewayBoot({
         ])
         completeDesktopBoot()
         bootCompleted = true
+        // Rediscover local-runtime jobs (model downloads, runtime installs)
+        // that were running before a reload — the backend registry is the
+        // authority; this just resumes following it.
+        watchLocalRuntimeJobs()
+        // One-per-session engine-update pointer (enabled runtimes only).
+        void checkLocalRuntimeUpdate()
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)

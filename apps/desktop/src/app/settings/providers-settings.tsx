@@ -7,6 +7,7 @@ import {
   FEATURED_ID,
   FeaturedProviderRow,
   FireworksProviderRow,
+  LocalModelsProviderRow,
   OpenRouterProviderRow,
   ProviderRow,
   providerTitle,
@@ -29,6 +30,7 @@ import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { CustomEndpointsSettings } from './custom-endpoints-settings'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
+import { LocalModelsSettings } from './local-models-settings'
 import { SettingsContent, SettingsSkeleton } from './primitives'
 
 // The embedded terminal (and thus the "run disconnect command" path) only
@@ -46,7 +48,7 @@ function GroupLabel({ children }: { children: ReactNode }) {
 }
 
 // Sub-views surfaced as a sidebar subnav: account sign-in vs raw API keys.
-export const PROVIDER_VIEWS = ['accounts', 'keys', 'custom-endpoints'] as const
+export const PROVIDER_VIEWS = ['accounts', 'keys', 'custom-endpoints', 'local'] as const
 
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 
@@ -129,12 +131,14 @@ function OAuthPicker({
   onDisconnect,
   onTerminalDisconnect,
   onWantApiKey,
+  onWantLocalModels,
   providers
 }: {
   disconnecting: null | string
   onDisconnect: (provider: OAuthProvider) => void
   onTerminalDisconnect: (provider: OAuthProvider) => void
   onWantApiKey: () => void
+  onWantLocalModels: () => void
   providers: OAuthProvider[]
 }) {
   const { t } = useI18n()
@@ -178,6 +182,8 @@ function OAuthPicker({
       {featured && <FeaturedProviderRow onSelect={select} provider={featured} />}
       {/* Slot #2 — always visible, matching onboarding / CANONICAL_PROVIDERS. */}
       <FireworksProviderRow onClick={onWantApiKey} />
+      {/* Slot #3 — the no-account path, matching onboarding. */}
+      <LocalModelsProviderRow onClick={onWantLocalModels} />
       {connected.length > 0 && (
         <>
           <GroupLabel>{p.connected}</GroupLabel>
@@ -507,6 +513,10 @@ export function ProvidersSettings({
     return <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} />
   }
 
+  if (view === 'local') {
+    return <LocalModelsSettings />
+  }
+
   return (
     <SettingsContent>
       <OAuthPicker
@@ -514,6 +524,7 @@ export function ProvidersSettings({
         onDisconnect={provider => void handleDisconnect(provider)}
         onTerminalDisconnect={provider => void handleTerminalDisconnect(provider)}
         onWantApiKey={() => onViewChange('keys')}
+        onWantLocalModels={() => onViewChange('local')}
         providers={oauthProviders}
       />
     </SettingsContent>

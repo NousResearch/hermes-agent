@@ -1415,6 +1415,35 @@ def fetch_endpoint_model_metadata(
                         model_alias = props.get("model_alias", "")
                         if n_ctx and model_alias and model_alias in cache:
                             cache[model_alias]["context_length"] = n_ctx
+                    else:
+                        # Router mode: bare /props 400s and telemetry is
+                        # per-child (?model=). Enumerate children via the
+                        # native /models (carries status) and read each
+                        # LOADED child's granted window — the value the
+                        # context policy actually granted, which the meter
+                        # and compressor must follow. Unloaded children are
+                        # skipped: probing them could trigger an autoload.
+                        native = requests.get(base + "/models", headers=headers, timeout=5, verify=_verify)
+                        if native.ok:
+                            children = (native.json() or {}).get("data", [])
+                            for child in children[:16]:
+                                if not isinstance(child, dict):
+                                    continue
+                                child_id = child.get("id")
+                                status = (child.get("status") or {}).get("value")
+                                if not child_id or child_id not in cache or status not in ("loaded", "ready"):
+                                    continue
+                                pr = requests.get(
+                                    base + "/v1/props", params={"model": child_id},
+                                    headers=headers, timeout=5, verify=_verify)
+                                if not pr.ok:
+                                    pr = requests.get(
+                                        base + "/props", params={"model": child_id},
+                                        headers=headers, timeout=5, verify=_verify)
+                                if pr.ok:
+                                    child_ctx = (pr.json().get("default_generation_settings") or {}).get("n_ctx")
+                                    if child_ctx:
+                                        cache[child_id]["context_length"] = child_ctx
                 except Exception:
                     pass
 

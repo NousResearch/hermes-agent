@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { currentPickerSelection, displayModelName, formatModelStatusLabel } from './model-status-label'
+import { currentPickerSelection, displayModelName, formatModelStatusLabel, modelDisplayParts } from './model-status-label'
 import { reasoningEffortLabel } from './reasoning-effort'
 
 describe('model-status-label', () => {
@@ -14,6 +14,18 @@ describe('model-status-label', () => {
   it('strips trailing date-pin snapshots from the display name', () => {
     expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4 5')
     expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')
+  })
+
+  it('renders local GGUF ids as a clean name with a quant tag', () => {
+    expect(modelDisplayParts('Qwen3.6-27B-UD-Q4_K_XL')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q4' })
+    expect(modelDisplayParts('Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL')).toEqual({
+      name: 'Nemotron 3 Nano 30B A3B',
+      tag: 'Q4'
+    })
+    expect(modelDisplayParts('Qwen3-4B-Instruct-2507-UD-Q8_K_XL')).toEqual({ name: 'Qwen3 4B', tag: 'Q8' })
+    expect(modelDisplayParts('some-model-Q6_K')).toEqual({ name: 'Some Model', tag: 'Q6' })
+    // Cloud ids keep their existing behavior.
+    expect(modelDisplayParts('anthropic/claude-opus-4.8-fast').tag).toBe('Fast')
   })
 
   it('maps reasoning effort to compact labels', () => {

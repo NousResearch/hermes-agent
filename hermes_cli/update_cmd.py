@@ -3410,7 +3410,12 @@ def _ensure_fhs_path_guard() -> None:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
 def _ensure_acp_launcher() -> None:
-    """Self-heal: install a ``hermes-acp`` launcher next to the ``hermes`` one.
+    """Self-heal the platform launchers exposed on PATH.
+
+    On Windows, restore missing ``hermes.exe`` / ``hermes-acp.exe`` copies in
+    the dedicated ``<install>\\bin`` directory.  Existing files are not
+    overwritten because ``bin\\hermes.exe`` may be the currently running
+    update launcher.
 
     Mirrors the launcher block in ``scripts/install.sh`` so existing installs
     gain the ACP command on ``hermes update`` without a reinstall.  ACP hosts
@@ -3424,14 +3429,21 @@ def _ensure_acp_launcher() -> None:
     (venv wrapper, FHS symlink, pipx/pip console script) without having to
     reconstruct interpreter/entrypoint paths.
 
-    No-op on Windows (install.ps1 copies ``hermes.exe`` + ``hermes-acp.exe``
-    into ``$InstallDir\bin`` and puts THAT on the user PATH — never the whole
-    ``venv\Scripts`` dir, which would shadow the user's ``python`` (#83797) —
-    so ``hermes-acp.exe`` already resolves) and wherever a ``hermes-acp`` is
-    already present next to the ``hermes`` command.  Unwritable directories
+    On POSIX, the ACP shim is skipped wherever a ``hermes-acp`` is already
+    present next to the ``hermes`` command.  Unwritable POSIX directories
     (e.g. ``/usr/local/bin`` as non-root) are skipped silently.  Idempotent.
     """
     if _m().sys.platform == "win32":
+        from hermes_cli._install_repair import _sync_windows_cli_launchers
+
+        try:
+            copied = _sync_windows_cli_launchers(Path(_m().PROJECT_ROOT))
+        except OSError as exc:
+            print(f"  ⚠ Could not restore Windows command launchers: {exc}")
+            return
+        if copied:
+            names = ", ".join(path.name for path in copied)
+            print(f"  ✓ Restored Windows command launcher(s): {names}")
         return
     for bin_dir in (Path.home() / ".local" / "bin", Path("/usr/local/bin")):
         hermes_cmd = bin_dir / "hermes"
@@ -7030,9 +7042,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("FHS PATH guard check failed: %s", e)
 
-        # Self-heal the hermes-acp launcher for installs that predate it, so
-        # ACP hosts (Zed, JetBrains, Buzz) can resolve Hermes on PATH without
-        # a reinstall.  No-op on Windows and when already present.
+        # Self-heal the launchers exposed on PATH: the POSIX hermes-acp shim
+        # and missing copies in Windows' dedicated bin directory.
         try:
             _ensure_acp_launcher()
         except Exception as e:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -1614,3 +1615,359 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Respawn guard: one-shot unblock override (PR #62393)
+# ---------------------------------------------------------------------------
+
+
+def test_unblock_after_active_pr_allows_one_dispatch_attempt_then_reapplies_guard(
+    kanban_home, all_assignees_spawnable
+):
+    """An operator unblock after a PR is a one-shot retry, not a PR loop."""
+    attempts = []
+
+    def failing_spawn(task, workspace):
+        attempts.append(task.id)
+        raise RuntimeError("worker failed before starting")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-fix", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        assert kb.block_task(conn, t, reason="review requested changes")
+        assert kb.unblock_task(conn, t)
+
+        # The explicit unblock is an operator request to address review feedback.
+        assert kb.check_respawn_guard(conn, t) is None
+        first = kb.dispatch_once(conn, spawn_fn=failing_spawn)
+        assert attempts == [t]
+        assert t not in first.respawn_guarded
+
+        # The claim consumed that override. A failed spawn returns to ready, but
+        # the old PR cannot trigger unbounded duplicate retry attempts.
+        assert kb.get_task(conn, t).status == "ready"
+        second = kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+    assert attempts == [t]
+    assert (t, "active_pr") in second.respawn_guarded
+
+
+def test_unblock_with_recent_success_and_active_pr_allows_one_dispatch_attempt(
+    kanban_home, all_assignees_spawnable
+):
+    """One unblock authorizes one claim even when both duplicate guards apply."""
+    attempts = []
+
+    def failing_spawn(task, workspace):
+        attempts.append(task.id)
+        raise RuntimeError("worker failed before starting")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-fix", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        assert kb.block_task(conn, t, reason="review requested changes")
+        assert kb.unblock_task(conn, t)
+
+        assert kb.check_respawn_guard(conn, t) is None
+        kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+        assert attempts == [t]
+        second = kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+    assert attempts == [t]
+    assert (t, "recent_success") in second.respawn_guarded
+
+
+def test_unblock_with_active_pr_and_blocker_error_allows_one_dispatch_attempt(
+    kanban_home, all_assignees_spawnable
+):
+    """Unblock retains its one PR override after it clears a blocker error."""
+    attempts = []
+
+    def failing_spawn(task, workspace):
+        attempts.append(task.id)
+        raise RuntimeError("worker failed before starting")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-fix", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        assert kb.block_task(conn, t, reason="review requested changes")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("authentication failed", t),
+        )
+        assert kb.unblock_task(conn, t)
+
+        assert kb.check_respawn_guard(conn, t) is None
+        kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+        assert attempts == [t]
+        second = kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+    assert attempts == [t]
+    assert (t, "active_pr") in second.respawn_guarded
+
+
+def test_unblock_after_recent_success_allows_one_dispatch_attempt_then_reapplies_guard(
+    kanban_home, all_assignees_spawnable
+):
+    """A recent-success unblock is consumed by the next claim too."""
+    attempts = []
+
+    def failing_spawn(task, workspace):
+        attempts.append(task.id)
+        raise RuntimeError("worker failed before starting")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="retry-completed-work", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        assert kb.block_task(conn, t, reason="review requested changes")
+        assert kb.unblock_task(conn, t)
+
+        assert kb.check_respawn_guard(conn, t) is None
+        kb.dispatch_once(conn, spawn_fn=failing_spawn)
+        assert attempts == [t]
+
+        second = kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+    assert attempts == [t]
+    assert (t, "recent_success") in second.respawn_guarded
+
+
+def test_guarded_only_ready_queue_is_not_health_spawnable(
+    kanban_home, all_assignees_spawnable
+):
+    """Respawn-guarded work is intentionally waiting, not a stuck queue."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="has-pr", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+        assert kb.has_spawnable_ready(conn) is False
+
+
+def test_dependency_repromote_after_active_pr_allows_one_dispatch_attempt(
+    kanban_home, all_assignees_spawnable
+):
+    """A dependency re-promotion is the only re-queue a dependency wait sees,
+    so it carries the same one-shot authority an explicit unblock would.
+
+    Field report: a card with a PR comment hit a dependency block (stale
+    base), landed in ``todo``, and was auto-promoted back to ``ready`` 28s
+    later — where the ``active_pr`` guard then held it for the full 24h
+    window with no operator action available (``unblock_task`` only reaches
+    ``blocked``/``scheduled``). The promotion must mint the override.
+    """
+    attempts = []
+
+    def failing_spawn(task, workspace):
+        attempts.append(task.id)
+        raise RuntimeError("worker failed before starting")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stale-base", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        # Worker hits a stale base and dependency-blocks; the card parks in
+        # ``todo`` (never ``blocked``), so no unblock can ever reach it.
+        assert kb.block_task(
+            conn, t, reason="stale base, needs rebase", kind="dependency",
+        )
+        assert kb.get_task(conn, t).status == "todo"
+
+        # Parent-less dependency wait: recompute_ready promotes it straight
+        # back. The promoted event must carry the one-shot override.
+        assert kb.recompute_ready(conn) == 1
+        assert kb.get_task(conn, t).status == "ready"
+        promoted_event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'promoted' "
+            "ORDER BY id DESC LIMIT 1",
+            (t,),
+        ).fetchone()
+        payload = json.loads(promoted_event["payload"])
+        assert payload["respawn_overrides"] == [{
+            "reason": "active_pr",
+            "evidence": {"kind": "pr_comment", "id": payload["respawn_overrides"][0]["evidence"]["id"]},
+        }]
+
+        # The guard releases for exactly one claim.
+        assert kb.check_respawn_guard(conn, t) is None
+        first = kb.dispatch_once(conn, spawn_fn=failing_spawn)
+        assert attempts == [t]
+        assert t not in first.respawn_guarded
+
+        # The claim consumed the override — the failed spawn returns the task
+        # to ready, but the old PR comment cannot trigger a retry loop.
+        assert kb.get_task(conn, t).status == "ready"
+        second = kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+    assert attempts == [t]
+    assert (t, "active_pr") in second.respawn_guarded
+
+
+def test_dependency_repromote_brake_blocks_second_mint_for_same_evidence(
+    kanban_home, all_assignees_spawnable
+):
+    """The parentless dependency-churn loop (#81305) must not respawn every
+    tick once the guard is relaxed: the automatic promotion path mints at
+    most one override per PR-comment evidence.
+    """
+    attempts = []
+
+    def failing_spawn(task, workspace):
+        attempts.append(task.id)
+        raise RuntimeError("worker failed before starting")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="churn", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+
+        # Cycle 1: dependency block -> auto-promote -> one allowed spawn.
+        assert kb.block_task(conn, t, reason="stale base", kind="dependency")
+        assert kb.recompute_ready(conn) == 1
+        assert kb.check_respawn_guard(conn, t) is None
+        kb.dispatch_once(conn, spawn_fn=failing_spawn)
+        assert attempts == [t]
+
+        # The worker re-blocks the same way; the card churns back to ready.
+        assert kb.block_task(conn, t, reason="still stale", kind="dependency")
+        assert kb.recompute_ready(conn) == 1
+        assert kb.get_task(conn, t).status == "ready"
+
+        # Brake: the evidence's override was already consumed by the cycle-1
+        # claim, so the second promotion mints nothing and the guard holds.
+        promoted_event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'promoted' "
+            "ORDER BY id DESC LIMIT 1",
+            (t,),
+        ).fetchone()
+        assert promoted_event["payload"] is None
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+        second = kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+    assert attempts == [t]
+    assert (t, "active_pr") in second.respawn_guarded
+
+
+def test_dependency_repromote_new_pr_comment_rearms_override(
+    kanban_home, all_assignees_spawnable
+):
+    """Fresh evidence (a newer PR comment) is a new duplicate-PR risk and
+    gets its own one-shot override, even after the brake held the old one."""
+    attempts = []
+
+    def failing_spawn(task, workspace):
+        attempts.append(task.id)
+        raise RuntimeError("worker failed before starting")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="fresh-evidence", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        assert kb.block_task(conn, t, reason="stale base", kind="dependency")
+        assert kb.recompute_ready(conn) == 1
+        kb.dispatch_once(conn, spawn_fn=failing_spawn)
+        assert attempts == [t]
+
+        # A newer PR comment supersedes the consumed evidence.
+        kb.add_comment(
+            conn, t, "worker",
+            "Rebased; now https://github.com/totemx-AI/subsidysmart/pull/100",
+        )
+        assert kb.block_task(conn, t, reason="stale again", kind="dependency")
+        assert kb.recompute_ready(conn) == 1
+
+        assert kb.check_respawn_guard(conn, t) is None
+        kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+    assert attempts == [t, t]
+
+
+def test_explicit_block_unblock_cycle_still_overrides_after_brake(
+    kanban_home, all_assignees_spawnable
+):
+    """The brake only stops the automatic path. An operator block+unblock
+    cycle still authorizes one guarded claim for the same evidence."""
+    attempts = []
+
+    def failing_spawn(task, workspace):
+        attempts.append(task.id)
+        raise RuntimeError("worker failed before starting")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="operator-cycle", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        assert kb.block_task(conn, t, reason="stale base", kind="dependency")
+        assert kb.recompute_ready(conn) == 1
+        kb.dispatch_once(conn, spawn_fn=failing_spawn)
+        assert attempts == [t]
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+        # The only explicit path that reaches a ready task: block, then unblock.
+        assert kb.block_task(conn, t, reason="operator review")
+        assert kb.unblock_task(conn, t)
+
+        assert kb.check_respawn_guard(conn, t) is None
+        kb.dispatch_once(conn, spawn_fn=failing_spawn)
+
+    assert attempts == [t, t]
+
+
+def test_blocked_branch_repromote_after_active_pr_mints_override(
+    kanban_home, all_assignees_spawnable
+):
+    """Non-sticky ``blocked`` tasks (circuit-breaker blocks) recover through
+    the same promotion path and get the same one-shot override."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="breaker-recovery", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        # A circuit-breaker block leaves no ``blocked`` event, so the task is
+        # not sticky and recompute_ready may recover it (same setup as the
+        # failure-limit test above).
+        conn.execute(
+            "UPDATE tasks SET status='blocked' WHERE id=?", (t,),
+        )
+        conn.commit()
+
+        assert kb.recompute_ready(conn) == 1
+        assert kb.get_task(conn, t).status == "ready"
+        assert kb.check_respawn_guard(conn, t) is None
+
+

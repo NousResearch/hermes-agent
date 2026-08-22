@@ -625,6 +625,25 @@ class ChatCompletionsTransport(ProviderTransport):
             if _lm_effort is not None:
                 api_kwargs["reasoning_effort"] = _lm_effort
 
+        # Custom OpenAI-compatible providers: top-level reasoning_effort,
+        # emitted only when the user explicitly set an effort (config.yaml
+        # or a session /reasoning override, both resolved into
+        # reasoning_config before this call). Custom providers do not
+        # advertise supports_reasoning, so the generic extra_body.reasoning
+        # arm below never fires and the effort was silently dropped, letting
+        # the server fall back to its model default (#90031). Identity
+        # pass-through of low|medium|high only: unset, disabled or a level
+        # outside the OpenAI wire set omits the field instead of inventing
+        # a value. Deliberately no supports_reasoning side effect.
+        if params.get("is_custom_provider", False):
+            _custom_effort = None
+            if reasoning_config and isinstance(reasoning_config, dict):
+                _e = str(reasoning_config.get("effort") or "").strip().lower()
+                if _e in {"low", "medium", "high"}:
+                    _custom_effort = _e
+            if _custom_effort is not None:
+                api_kwargs["reasoning_effort"] = _custom_effort
+
         # extra_body assembly
         extra_body: dict[str, Any] = {}
 

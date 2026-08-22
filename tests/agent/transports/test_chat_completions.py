@@ -491,6 +491,100 @@ class TestChatCompletionsLmStudioReasoning:
 
 
 
+class TestChatCompletionsCustomProviderReasoning:
+    """Custom OpenAI-compatible providers (provider == "custom", e.g. local
+    llama.cpp) do not advertise supports_reasoning, so the generic
+    extra_body.reasoning arm never fires and the user's reasoning_effort was
+    silently dropped, letting the server fall back to its model default
+    (#90031). The custom arm emits top-level reasoning_effort only when the
+    user explicitly set an effort (config.yaml or a session /reasoning
+    override, both resolved into reasoning_config before build_kwargs).
+    """
+
+    def test_custom_medium_emits_top_level(self, transport):
+        kw = transport.build_kwargs(
+            model="qwen3-coder", messages=[{"role": "user", "content": "Hi"}],
+            is_custom_provider=True,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kw["reasoning_effort"] == "medium"
+        # No extra_body.reasoning: the generic arm is gated on
+        # supports_reasoning, which custom providers do not advertise.
+        assert "reasoning" not in kw.get("extra_body", {})
+
+    @pytest.mark.parametrize("level", ["low", "high"])
+    def test_custom_identity_pass_through(self, transport, level):
+        # Session /reasoning override and config.yaml both arrive in the
+        # same reasoning_config slot, so this covers "runtime override
+        # beats config" too: the caller-resolved value wins untouched.
+        kw = transport.build_kwargs(
+            model="qwen3-coder", messages=[{"role": "user", "content": "Hi"}],
+            is_custom_provider=True,
+            reasoning_config={"enabled": True, "effort": level},
+        )
+        assert kw["reasoning_effort"] == level
+
+    def test_custom_unset_omits_effort(self, transport):
+        # Untouched installs have no reasoning_effort configured: resolve
+        # returns None and the field must stay absent so the server keeps
+        # its model default (no surprise flip for existing users).
+        kw = transport.build_kwargs(
+            model="qwen3-coder", messages=[{"role": "user", "content": "Hi"}],
+            is_custom_provider=True,
+            reasoning_config=None,
+        )
+        assert "reasoning_effort" not in kw
+        assert "reasoning" not in kw.get("extra_body", {})
+
+    def test_custom_disabled_omits_effort(self, transport):
+        # reasoning_effort: false means thinking disabled; never re-enable.
+        kw = transport.build_kwargs(
+            model="qwen3-coder", messages=[{"role": "user", "content": "Hi"}],
+            is_custom_provider=True,
+            reasoning_config={"enabled": False},
+        )
+        assert "reasoning_effort" not in kw
+
+    def test_custom_unsupported_level_omits_effort(self, transport):
+        # xhigh/ultra/minimal/max are not in the OpenAI low|medium|high
+        # wire set for custom servers; omit rather than invent a value.
+        kw = transport.build_kwargs(
+            model="qwen3-coder", messages=[{"role": "user", "content": "Hi"}],
+            is_custom_provider=True,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+        )
+        assert "reasoning_effort" not in kw
+
+    def test_custom_messages_untouched_by_arm(self, transport):
+        # The arm must not mutate the request; messages are byte-identical
+        # with the branch firing and not firing for the same inputs.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw_on = transport.build_kwargs(
+            model="qwen3-coder", messages=msgs,
+            is_custom_provider=True,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        kw_off = transport.build_kwargs(
+            model="qwen3-coder", messages=msgs,
+            is_custom_provider=False,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kw_on["messages"] == msgs == kw_off["messages"]
+
+    def test_kimi_takes_its_own_arm_no_double_emission(self, transport):
+        # Negative: a Kimi provider has is_custom_provider False (the
+        # flags are mutually exclusive upstream), so exactly one
+        # reasoning_effort is emitted and no extra_body.reasoning.
+        kw = transport.build_kwargs(
+            model="kimi-k3", messages=[{"role": "user", "content": "Hi"}],
+            is_kimi=True,
+            is_custom_provider=False,
+            reasoning_config={"enabled": True, "effort": "low"},
+        )
+        assert kw["reasoning_effort"] == "low"
+        assert "reasoning" not in kw.get("extra_body", {})
+
+
 class TestChatCompletionsValidate:
 
     def test_none(self, transport):

@@ -1752,6 +1752,12 @@ def _compute_provider_model_snapshots(
 
     provider_snapshot: Optional[str] = None
     model_snapshot: Optional[str] = None
+    # Only snapshot an axis when it is explicitly pinned.  Inherit-mode axes
+    # (None) are *expected* to follow the global default, so recording a
+    # snapshot would cause a false drift-guard failure when the global later
+    # changes (#89242).
+    if normalized_provider is None and normalized_model is None:
+        return None, None
     if normalized_provider is None:
         try:
             from hermes_cli.runtime_provider import resolve_runtime_provider

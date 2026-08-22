@@ -191,17 +191,25 @@ class TestCreateJobSnapshot:
         monkeypatch.setattr(jobs, "save_jobs", lambda j: None, raising=True)
         return jobs
 
-    def test_unpinned_job_captures_snapshot(self, monkeypatch):
+    def test_unpinned_job_skips_snapshot(self, monkeypatch):
+        """Inherit-mode jobs (both axes None) skip snapshotting entirely (#89242).
+
+        Recording a snapshot for an inherit-mode job would cause a false
+        drift-guard failure when the global model/provider later changes.
+        """
         jobs = self._isolate_storage(monkeypatch)
 
+        resolver = MagicMock(return_value={"provider": "openrouter"})
         with patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value={"provider": "openrouter"},
+            resolver,
         ):
             job = jobs.create_job(prompt="do a thing", schedule="every 1 hour")
 
         assert job["provider"] is None
-        assert job["provider_snapshot"] == "openrouter"
+        assert job["provider_snapshot"] is None
+        assert job["model_snapshot"] is None
+        resolver.assert_not_called()
 
     def test_pinned_job_skips_snapshot(self, monkeypatch):
         jobs = self._isolate_storage(monkeypatch)

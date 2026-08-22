@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { type HermesOpenTarget, resolveHermesOpenPath } from '@/lib/hermes-open-target'
+import { sendApprovalResponse } from '@/lib/approval-response'
 import { persistString, storedString } from '@/lib/storage'
 
 import { $gateway } from './gateway'
@@ -359,7 +360,7 @@ export async function respondToApprovalAction(sessionId: null | string, actionId
   }
 
   try {
-    await gateway.request('approval.respond', { choice, session_id: sessionId ?? undefined })
+    await sendApprovalResponse(gateway, choice, sessionId)
     clearApprovalRequest(sessionId)
   } catch {
     // Leave the prompt parked so the user can still resolve it in-app.

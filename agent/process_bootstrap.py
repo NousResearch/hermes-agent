@@ -181,6 +181,50 @@ def build_keepalive_http_client(
         )
         # Generous read=None for SSE streaming endpoints.
         timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)
+        def _maybe_fix_json_body(request):
+            # Only apply to JSON requests
+            if request.method != "POST":
+                return None
+            content_type = request.headers.get("Content-Type", "")
+            if not content_type.startswith("application/json"):
+                return None
+            body = request.content
+            if not body:
+                return None
+            try:
+                # Decode body to string (assuming UTF-8)
+                import json
+                body_str = body.decode("utf-8")
+                # Parse JSON
+                data = json.loads(body_str)
+                # Re-serialize with ensure_ascii=False to get raw UTF-8
+                new_body_str = json.dumps(data, ensure_ascii=False)
+                return new_body_str.encode("utf-8")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # If not JSON or not UTF-8, leave as is
+                return None
+
+        def fix_json_encoding(request):
+            new_body = _maybe_fix_json_body(request)
+            if new_body is not None:
+                request.stream = httpx.ByteStream(new_body)
+                request.headers["Content-Length"] = str(len(new_body))
+            return request
+
+        async def fix_json_encoding_async(request):
+            new_body = _maybe_fix_json_body(request)
+            if new_body is not None:
+                class _BodyStream(httpx.AsyncByteStream):
+                    def __init__(self, data: bytes):
+                        self._data = data
+                    async def __aiter__(self):
+                        yield self._data
+                    async def aclose(self) -> None:
+                        pass
+                request.stream = _BodyStream(new_body)
+                request.headers["Content-Length"] = str(len(new_body))
+            return request
+
 
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
@@ -190,12 +234,14 @@ def build_keepalive_http_client(
                 "http://": transport_cls(verify=verify),
                 "https://": transport_cls(verify=verify),
             }
+        request_hook = fix_json_encoding_async if async_mode else fix_json_encoding
         return client_cls(
             limits=limits,
             timeout=timeout,
             proxy=proxy,
             mounts=mounts or None,
             verify=verify,
+            event_hooks={'request': [request_hook]},
         )
     except Exception:
         return None

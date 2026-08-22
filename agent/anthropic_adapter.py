@@ -2904,6 +2904,30 @@ def convert_messages_to_anthropic(
     return system, result
 
 
+# Valid Anthropic thinking.display values (per SDK ThinkingConfig*Param stubs).
+_THINKING_DISPLAY_VALUES = ("summarized", "omitted")
+
+
+def _resolve_thinking_display(reasoning_config: Optional[Dict[str, Any]]) -> str:
+    """Resolve the Anthropic ``thinking.display`` value for a request.
+
+    Reads an optional ``reasoning_config["display"]`` override and validates it
+    against the SDK-supported values (``"summarized"`` | ``"omitted"``).
+
+    Default is ``"summarized"`` so Hermes always receives the reasoning text for
+    its CLI activity feed and the API-server reasoning-exposure paths. A caller
+    that wants to suppress reasoning text on the wire (save returned tokens; the
+    model still thinks, the signature is still returned for continuity) sets
+    ``reasoning_config["display"] = "omitted"``. Any unknown value falls back to
+    ``"summarized"`` so a bad config never produces an invalid request.
+    """
+    if isinstance(reasoning_config, dict):
+        raw = reasoning_config.get("display")
+        if isinstance(raw, str) and raw.strip().lower() in _THINKING_DISPLAY_VALUES:
+            return raw.strip().lower()
+    return "summarized"
+
+
 def build_anthropic_kwargs(
     model: str,
     messages: List[Dict],
@@ -3102,9 +3126,14 @@ def build_anthropic_kwargs(
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):
+                # thinking.display defaults to "summarized" so Hermes always
+                # has reasoning to surface (CLI feed + API-server exposure).
+                # A caller can pass reasoning_config["display"] = "omitted" to
+                # suppress the reasoning text on the wire while the model keeps
+                # thinking and the signature is preserved for continuity.
                 kwargs["thinking"] = {
                     "type": "adaptive",
-                    "display": "summarized",
+                    "display": _resolve_thinking_display(reasoning_config),
                 }
                 adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
                 # Downgrade xhigh→max on models that don't list xhigh as a

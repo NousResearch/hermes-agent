@@ -563,6 +563,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
 }
 
+
+def provider_api_key_env_hint(provider_id: str) -> str:
+    """Return the user-facing API-key environment variable for a provider."""
+    provider_id = provider_id.strip().lower()
+    config = PROVIDER_REGISTRY.get(provider_id)
+    if config and config.api_key_env_vars:
+        return config.api_key_env_vars[0]
+    if provider_id == "minimax-oauth":
+        return PROVIDER_REGISTRY["minimax"].api_key_env_vars[0]
+    return f"{provider_id.upper()}_API_KEY"
+
 # Auto-extend PROVIDER_REGISTRY with any api-key provider registered in
 # providers/ that is not already declared above.  New providers only need a
 # plugins/model-providers/<name>/ plugin — no edits to this file required.

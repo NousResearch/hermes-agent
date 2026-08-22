@@ -9475,9 +9475,11 @@ def _call_llm_impl(
                     resolved_provider = fb_label or resolved_provider
                     effective_provider = resolved_provider
                 else:
+                    from hermes_cli.auth import provider_api_key_env_hint
+
                     raise RuntimeError(
                         f"Provider '{_explicit}' is set in config.yaml but no API key "
-                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                        f"was found. Set the {provider_api_key_env_hint(_explicit)} environment "
                         f"variable, or switch to a different provider with `hermes model`."
                     )
             # For auto/custom with no credentials, try the full auto chain
@@ -10296,9 +10298,11 @@ async def _async_call_llm_impl(
                     resolved_provider = fb_label or resolved_provider
                     effective_provider = resolved_provider
                 else:
+                    from hermes_cli.auth import provider_api_key_env_hint
+
                     raise RuntimeError(
                         f"Provider '{_explicit}' is set in config.yaml but no API key "
-                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                        f"was found. Set the {provider_api_key_env_hint(_explicit)} environment "
                         f"variable, or switch to a different provider with `hermes model`."
                     )
             if client is None and not resolved_base_url:

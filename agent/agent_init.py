@@ -1366,14 +1366,8 @@ def init_agent(
                     # Look up the actual env var name from the provider
                     # config — some providers use non-standard names
                     # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
-                    _env_hint = f"{_explicit.upper()}_API_KEY"
-                    try:
-                        from hermes_cli.auth import PROVIDER_REGISTRY
-                        _pcfg = PROVIDER_REGISTRY.get(_explicit)
-                        if _pcfg and _pcfg.api_key_env_vars:
-                            _env_hint = _pcfg.api_key_env_vars[0]
-                    except Exception:
-                        pass
+                    from hermes_cli.auth import provider_api_key_env_hint
+                    _env_hint = provider_api_key_env_hint(_explicit)
                     # --- Init-time fallback (#17929) ---
                     _fb_entries = []
                     if isinstance(fallback_model, list):

@@ -950,10 +950,14 @@ install_node() {
     fi
 
     log_info "Extracting to ~/.hermes/node/..."
+    # nodejs.org records uid 1001 in the archive, and a root extraction adopts
+    # it, handing the runtime to the next local account created on the host.
+    # -o rather than --no-same-owner: a busybox tar built without long options
+    # accepts only the short spelling.
     if [[ "$tarball_name" == *.tar.xz ]]; then
-        tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+        tar -o -xf "$tmp_dir/$tarball_name" -C "$tmp_dir"
     else
-        tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+        tar -o -xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"
     fi
 
     local extracted_dir

@@ -288,7 +288,7 @@ class TestSkillsGuidanceSafetyRule:
         from agent.prompt_builder import SKILLS_GUIDANCE
 
         assert "## Skill Safety Rule" in SKILLS_GUIDANCE
-        assert "[SKILL_PRUNED]" in SKILLS_GUIDANCE
+        assert _skill_pruned_marker("x") in SKILLS_GUIDANCE
         assert "skill_view(name='...')" in SKILLS_GUIDANCE
         # The rule list must use REAL newlines — the original PR hunk risked
         # literal backslash-n escape text rendering into the system prompt.

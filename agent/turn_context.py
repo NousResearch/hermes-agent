@@ -627,6 +627,11 @@ def build_turn_context(
 
     # Initialize conversation (copy to avoid mutating the caller's list).
     messages = list(conversation_history) if conversation_history else []
+    # Rehydrate the deterministic skill-reload guard on every turn. Historical
+    # markers are cleared by successful later skill_view results during the scan.
+    from agent.tool_executor import refresh_pending_skill_reloads
+
+    refresh_pending_skill_reloads(agent, messages)
 
     # The CLI may already have staged this input outside the history passed to
     # ``run_conversation``. Reuse it only when its clean transcript text matches

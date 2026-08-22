@@ -55,6 +55,256 @@ from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context
 logger = logging.getLogger(__name__)
 
 
+def _pending_skill_reload_lock(agent) -> threading.RLock:
+    """Return the per-agent lock protecting pending skill reload state."""
+    return vars(agent).setdefault("_pending_skill_reload_lock", threading.RLock())
+
+
+@dataclass
+class _PendingSkillReloadScanState:
+    """Append-only transcript watermark plus unresolved reload call ids."""
+
+    message_count: int
+    last_message_id: int | None
+    skill_calls: dict[str, str]
+
+
+def _pending_skill_reload_snapshot(agent) -> tuple[str, ...]:
+    """Fix pending names for one model-emitted tool batch.
+
+    A successful ``skill_view`` clears live state immediately, but sibling calls
+    were chosen before the model saw the reloaded instructions. Keeping the
+    batch-start snapshot blocks those calls until the next model round.
+    """
+    with _pending_skill_reload_lock(agent):
+        return tuple(getattr(agent, "_pending_skill_reloads", []))
+
+
+def _is_pending_main_skill_reload(
+    function_name: str,
+    function_args: dict[str, Any],
+    pending_skill_reloads: tuple[str, ...],
+) -> bool:
+    """Return whether this call must deliver a complete main ``SKILL.md``."""
+    skill_name = function_args.get("name")
+    return (
+        function_name == "skill_view"
+        and isinstance(skill_name, str)
+        and bool(skill_name)
+        and not function_args.get("file_path")
+        and skill_name in pending_skill_reloads
+    )
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(content or "")
+
+
+def _successful_tool_payload(text: str) -> dict[str, Any] | None:
+    """Parse a complete leading success payload while allowing appended notices."""
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(text.lstrip())
+    except (TypeError, ValueError):
+        return None
+    if isinstance(payload, dict) and payload.get("success") is True:
+        return payload
+    return None
+
+
+def refresh_pending_skill_reloads(
+    agent,
+    messages: list[dict[str, Any]],
+    *,
+    force_full: bool = False,
+) -> list[str]:
+    """Refresh pending reloads from only the transcript's appended tail.
+
+    Canonical prune markers add a skill. A later successful ``skill_view``
+    result clears it, so markers retained by a subsequent compaction remain
+    historical rather than re-arming the guard. If that reloaded body is pruned
+    later, its new marker occurs after the successful result and adds it again.
+
+    A message-count + last-message identity watermark makes ordinary turn
+    boundaries O(appended tail). Compression/reset callers invalidate the
+    append-only assumption with ``force_full=True`` (or by clearing the scan
+    state); replaced/truncated transcripts are detected and rescanned in full.
+    """
+    from agent.context_compressor import (
+        _MAX_PRUNED_SKILL_MARKERS,
+        _extract_pruned_skill_names,
+    )
+
+    transcript = messages or []
+    with _pending_skill_reload_lock(agent):
+        state = getattr(agent, "_pending_skill_reload_scan_state", None)
+        can_resume = (
+            not force_full
+            and isinstance(state, _PendingSkillReloadScanState)
+            and state.message_count <= len(transcript)
+            and (
+                state.message_count == 0
+                or id(transcript[state.message_count - 1]) == state.last_message_id
+            )
+        )
+        if can_resume:
+            assert isinstance(state, _PendingSkillReloadScanState)
+            start = state.message_count
+            pending = list(getattr(agent, "_pending_skill_reloads", []))
+            skill_calls = dict(state.skill_calls)
+        else:
+            start = 0
+            pending = []
+            skill_calls = {}
+
+        for message in transcript[start:]:
+            if not isinstance(message, dict):
+                continue
+
+            if message.get("role") == "assistant":
+                for tool_call in message.get("tool_calls") or []:
+                    if isinstance(tool_call, dict):
+                        call_id = str(tool_call.get("id") or "")
+                        function = tool_call.get("function") or {}
+                        function_name = (
+                            function.get("name") if isinstance(function, dict) else None
+                        )
+                        arguments = (
+                            function.get("arguments")
+                            if isinstance(function, dict)
+                            else None
+                        )
+                    else:
+                        call_id = str(getattr(tool_call, "id", "") or "")
+                        function = getattr(tool_call, "function", None)
+                        function_name = getattr(function, "name", None)
+                        arguments = getattr(function, "arguments", None)
+                    if function_name != "skill_view" or not call_id:
+                        continue
+                    try:
+                        parsed = (
+                            json.loads(arguments or "{}")
+                            if isinstance(arguments, str)
+                            else arguments
+                        )
+                    except (TypeError, ValueError):
+                        parsed = None
+                    if (
+                        isinstance(parsed, dict)
+                        and isinstance(parsed.get("name"), str)
+                        and not parsed.get("file_path")
+                    ):
+                        skill_calls[call_id] = parsed["name"]
+
+            text = _message_text(message)
+            for name in _extract_pruned_skill_names(text):
+                if name not in pending and len(pending) < _MAX_PRUNED_SKILL_MARKERS:
+                    pending.append(name)
+
+            if message.get("role") != "tool":
+                continue
+            call_id = str(message.get("tool_call_id") or "")
+            skill_name = skill_calls.pop(call_id, None)
+            if not skill_name or skill_name not in pending:
+                continue
+            payload = _successful_tool_payload(text)
+            if payload is not None and isinstance(payload.get("content"), str):
+                pending.remove(skill_name)
+
+        agent._pending_skill_reloads = pending
+        agent._pending_skill_reload_scan_state = _PendingSkillReloadScanState(
+            message_count=len(transcript),
+            last_message_id=id(transcript[-1]) if transcript else None,
+            skill_calls=skill_calls,
+        )
+        return list(pending)
+
+
+def _pending_skill_reload_block(
+    agent,
+    function_name: str,
+    pending_skill_reloads: tuple[str, ...] | None = None,
+) -> str | None:
+    """Block non-reload tools while canonical prune markers remain pending."""
+    if function_name == "skill_view":
+        return None
+    pending = (
+        _pending_skill_reload_snapshot(agent)
+        if pending_skill_reloads is None
+        else pending_skill_reloads
+    )
+    if not pending:
+        return None
+    calls = "; ".join(f"skill_view(name='{name}')" for name in pending)
+    return (
+        "Skill instructions were pruned during compression. Reload every pending "
+        f"skill before calling {function_name}: {calls}"
+    )
+
+
+def _record_successful_skill_reload(
+    agent, function_name: str, function_args: dict[str, Any], result: Any
+) -> None:
+    """Clear one pending name after its complete main skill reached context."""
+    if function_name != "skill_view" or function_args.get("file_path"):
+        return
+    skill_name = function_args.get("name")
+    if not isinstance(skill_name, str) or not skill_name:
+        return
+    if not isinstance(result, str):
+        return
+    payload = _successful_tool_payload(result)
+    if payload is None or not isinstance(payload.get("content"), str):
+        return
+    with _pending_skill_reload_lock(agent):
+        pending = getattr(agent, "_pending_skill_reloads", [])
+        if skill_name in pending:
+            pending.remove(skill_name)
+
+
+def _finalize_successful_skill_reloads(
+    agent,
+    candidates: list[tuple[str, dict, dict]],
+    effective_task_id: str,
+) -> None:
+    """Clear reloads only after final result-budget processing preserved them."""
+    for function_name, function_args, tool_message in candidates:
+        content = tool_message.get("content", "")
+        _record_successful_skill_reload(
+            agent,
+            function_name,
+            function_args,
+            content,
+        )
+        payload = _successful_tool_payload(content) if isinstance(content, str) else None
+        if payload is not None and payload.get("dedup") is True:
+            # A stale pre-compression repeat-view cache must not strand the
+            # reload boundary. Keep the name pending and make the next model
+            # round's canonical skill_view return the complete SKILL.md.
+            try:
+                from tools.skills_tool import reset_skill_view_dedup
+
+                reset_skill_view_dedup(effective_task_id)
+            except Exception:
+                logger.debug("skill reload dedup reset failed", exc_info=True)
+
+
+def _protected_skill_reload_call_ids(
+    candidates: list[tuple[str, dict, dict]],
+) -> set[str]:
+    """Return call ids whose complete instructional payload must stay inline."""
+    return {
+        str(tool_message.get("tool_call_id") or "")
+        for _, _, tool_message in candidates
+        if tool_message.get("tool_call_id")
+    }
+
+
 def _record_persisted_path_for_stub(agent, tool_call_id: str, function_result) -> None:
     """Tell the stall guards where a persisted result's full content lives.
 
@@ -572,6 +822,7 @@ def _run_agent_tool_execution_middleware(
     middleware_trace: list[dict[str, Any]] | None = None,
     begin_execution=None,
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
+    pending_skill_reloads: tuple[str, ...] | None = None,
 ) -> _ManagedToolResult:
     """Run Relay rewrites before Hermes policy and dispatch exactly once."""
     from agent import relay_tools
@@ -616,8 +867,13 @@ def _run_agent_tool_execution_middleware(
                 return
             begin_execution(callback)
 
-        block_message = scope_block
-        block_error_type = "tool_scope_block"
+        block_message = _pending_skill_reload_block(
+            agent, function_name, pending_skill_reloads
+        )
+        block_error_type = "skill_reload_block"
+        if block_message is None:
+            block_message = scope_block
+            block_error_type = "tool_scope_block"
         if block_message is None:
             block_error_type = "plugin_block"
 
@@ -709,6 +965,16 @@ def _run_agent_tool_execution_middleware(
         )
         _hb_thread.start()
         try:
+            if _is_pending_main_skill_reload(
+                function_name,
+                final_args,
+                pending_skill_reloads
+                if pending_skill_reloads is not None
+                else _pending_skill_reload_snapshot(agent),
+            ):
+                from tools.skills_tool import reset_skill_view_dedup
+
+                reset_skill_view_dedup(effective_task_id)
             return execute(final_args)
         finally:
             _hb_stop.set()
@@ -807,6 +1073,7 @@ def _run_sequential_tool_execution_middleware(
     scope_block: str | None = None,
     display_index: int | None = None,
     middleware_trace: list[dict[str, Any]] | None = None,
+    pending_skill_reloads: tuple[str, ...] | None = None,
 ) -> _ManagedToolResult:
     """Run one sequential call with the concurrent executor's deadline.
 
@@ -825,6 +1092,7 @@ def _run_sequential_tool_execution_middleware(
         "scope_block": scope_block,
         "display_index": display_index,
         "middleware_trace": middleware_trace,
+        "pending_skill_reloads": pending_skill_reloads,
     }
     if function_name in _NEVER_PARALLEL_TOOLS:
         return _run_agent_tool_execution_middleware(agent, **kwargs)
@@ -1067,7 +1335,17 @@ def _begin_tool_execution(
             pass
 
 
-def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
+def execute_tool_calls_concurrent(
+    agent,
+    assistant_message,
+    messages: list,
+    effective_task_id: str,
+    api_call_count: int = 0,
+    *,
+    finalize: bool = True,
+    pending_skill_reloads: tuple[str, ...] | None = None,
+    skill_reload_candidates: list[tuple[str, dict, dict]] | None = None,
+) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
     Results are collected in the original tool-call order and appended to
@@ -1079,6 +1357,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     """
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
+    if pending_skill_reloads is None:
+        pending_skill_reloads = _pending_skill_reload_snapshot(agent)
+    if skill_reload_candidates is None:
+        skill_reload_candidates = []
 
     # Resolve the context-scaled tool-output budget once per turn (cheap, but
     # avoids rebuilding it per result inside the loop below).
@@ -1363,6 +1645,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     middleware_trace=middleware_trace,
                     begin_execution=_advance_start,
                     authorization_gate=authorization_gate,
+                    pending_skill_reloads=pending_skill_reloads,
                 )
                 result = managed.result
                 function_args = managed.args
@@ -1670,6 +1953,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         r = results[i]
         blocked = False
         is_error = True
+        preserve_skill_reload = False
         progress_function_name = name
         # A worker can finish and write results[i] in the window between the
         # deadline snapshot (timed_out_indices, taken from not_done) and this
@@ -1746,6 +2030,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if blocked:
                 effect_disposition = "none"
 
+            preserve_skill_reload = (
+                not blocked
+                and _is_pending_main_skill_reload(
+                    function_name, function_args, pending_skill_reloads
+                )
+            )
+
             if not blocked:
                 function_result = agent._append_guardrail_observation(
                     function_name,
@@ -1753,6 +2044,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     function_result,
                     failed=is_error,
                     tool_call_id=getattr(tc, "id", "") or "",
+                    preserve_full_result=preserve_skill_reload,
                 )
 
             if is_error:
@@ -1786,7 +2078,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_use_id=tc.id,
             env=get_active_env(effective_task_id),
             config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
+        ) if (
+            not _is_multimodal_tool_result(function_result)
+            and not preserve_skill_reload
+        ) else function_result
         _record_persisted_path_for_stub(agent, tc.id, function_result)
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
@@ -1814,6 +2109,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             effect_disposition=effect_disposition,
         )
         messages.append(tool_message)
+        if preserve_skill_reload:
+            skill_reload_candidates.append((name, args, tool_message))
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(
             agent,
@@ -1883,7 +2180,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     num_tools = len(parsed_calls)
     if finalize and num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
-        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
+        enforce_turn_budget(
+            turn_tool_msgs,
+            env=get_active_env(effective_task_id),
+            config=_tool_budget,
+            protected_tool_call_ids=_protected_skill_reload_call_ids(
+                skill_reload_candidates
+            ),
+        )
+        _finalize_successful_skill_reloads(
+            agent, skill_reload_candidates, effective_task_id
+        )
 
     # ── /steer injection ──────────────────────────────────────────────
     # Append any pending user steer text to the last tool result so the
@@ -1914,7 +2221,17 @@ def _append_cancelled_tool_results(messages: list, tool_calls, *, reason: str) -
         ))
 
 
-def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
+def execute_tool_calls_sequential(
+    agent,
+    assistant_message,
+    messages: list,
+    effective_task_id: str,
+    api_call_count: int = 0,
+    *,
+    finalize: bool = True,
+    pending_skill_reloads: tuple[str, ...] | None = None,
+    skill_reload_candidates: list[tuple[str, dict, dict]] | None = None,
+) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools.
 
     ``finalize=False`` skips the end-of-batch aggregate budget enforcement
@@ -1923,10 +2240,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     """
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
+    if pending_skill_reloads is None:
+        pending_skill_reloads = _pending_skill_reload_snapshot(agent)
+    if skill_reload_candidates is None:
+        skill_reload_candidates = []
 
     # Keep every runtime-tool branch on one bounded execution funnel without
     # duplicating timeout policy across the branch-specific callbacks below.
     def _run_agent_tool_execution_middleware(agent, **kwargs):
+        kwargs["pending_skill_reloads"] = pending_skill_reloads
         return _run_sequential_tool_execution_middleware(agent, **kwargs)
 
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
@@ -2663,6 +2985,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 duration_ms=int(tool_duration * 1000),
                 middleware_trace=list(middleware_trace),
             )
+        preserve_skill_reload = (
+            not _execution_blocked
+            and _is_pending_main_skill_reload(
+                function_name, function_args, pending_skill_reloads
+            )
+        )
         if not _execution_blocked:
             function_result = agent._append_guardrail_observation(
                 function_name,
@@ -2670,6 +2998,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result,
                 failed=_is_error_result,
                 tool_call_id=getattr(tool_call, "id", "") or "",
+                preserve_full_result=preserve_skill_reload,
             )
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
@@ -2707,7 +3036,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_use_id=tool_call.id,
             env=get_active_env(effective_task_id),
             config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
+        ) if (
+            not _is_multimodal_tool_result(function_result)
+            and not preserve_skill_reload
+        ) else function_result
         _record_persisted_path_for_stub(agent, tool_call.id, function_result)
 
         # Discover subdirectory context files from tool arguments
@@ -2728,6 +3060,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             effect_disposition="unknown" if _execution_timed_out else None,
         )
         messages.append(tool_message)
+        if preserve_skill_reload:
+            skill_reload_candidates.append(
+                (function_name, function_args, tool_message)
+            )
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(
             agent,
@@ -2814,7 +3150,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # be discarded when aggregate budget enforcement replaces a tool result.
     num_tools_seq = len(assistant_message.tool_calls)
     if finalize and num_tools_seq > 0:
-        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
+        enforce_turn_budget(
+            messages[-num_tools_seq:],
+            env=get_active_env(effective_task_id),
+            config=_tool_budget,
+            protected_tool_call_ids=_protected_skill_reload_call_ids(
+                skill_reload_candidates
+            ),
+        )
+        _finalize_successful_skill_reloads(
+            agent, skill_reload_candidates, effective_task_id
+        )
 
     # ── /steer injection ──────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,
@@ -2825,7 +3171,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
 
 
-def execute_tool_calls_segmented(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, segments=None) -> None:
+def execute_tool_calls_segmented(
+    agent,
+    assistant_message,
+    messages: list,
+    effective_task_id: str,
+    api_call_count: int = 0,
+    segments=None,
+) -> None:
     """Execute a mixed tool-call batch as ordered parallel/sequential segments.
 
     ``segments`` is the ``(kind, calls)`` plan from
@@ -2855,6 +3208,9 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
+    pending_skill_reloads = _pending_skill_reload_snapshot(agent)
+    skill_reload_candidates: list[tuple[str, dict, dict]] = []
+
     for kind, calls in segments:
         if getattr(agent, "_incremental_persistence_failed", False):
             return
@@ -2863,11 +3219,15 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
             execute_tool_calls_concurrent(
                 agent, segment_message, messages, effective_task_id, api_call_count,
                 finalize=False,
+                pending_skill_reloads=pending_skill_reloads,
+                skill_reload_candidates=skill_reload_candidates,
             )
         else:
             execute_tool_calls_sequential(
                 agent, segment_message, messages, effective_task_id, api_call_count,
                 finalize=False,
+                pending_skill_reloads=pending_skill_reloads,
+                skill_reload_candidates=skill_reload_candidates,
             )
 
         if getattr(agent, "_incremental_persistence_failed", False):
@@ -2881,6 +3241,12 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
             messages[-total_tools:],
             env=get_active_env(effective_task_id),
             config=_tool_budget,
+            protected_tool_call_ids=_protected_skill_reload_call_ids(
+                skill_reload_candidates
+            ),
+        )
+        _finalize_successful_skill_reloads(
+            agent, skill_reload_candidates, effective_task_id
         )
         agent._apply_pending_steer_to_tool_results(messages, total_tools)
 

@@ -746,7 +746,7 @@ def _skill_pruned_marker(skill_name: str) -> str:
 # emit helper and this extractor together.
 _SKILL_PRUNED_MARKER_RE = re.compile(
     re.escape(SKILL_PRUNED_MARKER_PREFIX)
-    + r"[^\]]*?reload with skill_view\(name='([^']+)'\)"
+    + r"[^\]]*?reload with skill_view\(name='([^']+)'\)\]"
 )
 
 
@@ -755,7 +755,9 @@ def _extract_pruned_skill_names(text: str) -> list[str]:
     names: list[str] = []
     for match in _SKILL_PRUNED_MARKER_RE.finditer(text or ""):
         name = match.group(1)
-        if name not in names:
+        # Recognition is exact, not merely prefix-shaped: the clear/arm path,
+        # compressor emit sites, and prompt guidance all share this helper.
+        if match.group(0) == _skill_pruned_marker(name) and name not in names:
             names.append(name)
     return names
 

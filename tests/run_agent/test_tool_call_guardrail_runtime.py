@@ -1,10 +1,18 @@
 """Runtime tests for tool-call loop guardrails."""
 
 import json
+import threading
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from agent.context_compressor import (
+    _MAX_PRUNED_SKILL_MARKERS,
+    _skill_pruned_marker,
+    _summarize_tool_result,
+)
+from agent.tool_executor import refresh_pending_skill_reloads
 from run_agent import AIAgent
 
 
@@ -342,6 +350,445 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     mock_hfc.assert_not_called()
     assert "plugin policy" in messages[0]["content"]
     assert agent._tool_guardrails.before_call("web_search", args).action == "allow"
+
+
+def test_pruned_skill_blocks_other_tools_before_dispatch():
+    agent = _make_agent("skill_view", "web_search")
+    refresh_pending_skill_reloads(
+        agent,
+        [
+            {
+                "role": "tool",
+                "content": _summarize_tool_result(
+                    "skill_view", '{"name":"pdf"}', "x" * 6000
+                ),
+            }
+        ],
+    )
+    tc = _mock_tool_call("web_search", json.dumps({"query": "blocked"}), "c-pruned")
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch:
+        agent._execute_tool_calls_sequential(
+            SimpleNamespace(content="", tool_calls=[tc]), messages, "task-1"
+        )
+
+    dispatch.assert_not_called()
+    assert "skill_view(name='pdf')" in messages[0]["content"]
+    assert agent._pending_skill_reloads == ["pdf"]
+
+
+def test_reload_success_does_not_release_later_tool_in_same_sequential_batch():
+    agent = _make_agent("skill_view", "web_search")
+    refresh_pending_skill_reloads(
+        agent, [{"role": "user", "content": _skill_pruned_marker("pdf")}]
+    )
+    calls = [
+        _mock_tool_call("skill_view", json.dumps({"name": "pdf"}), "c-reload"),
+        _mock_tool_call(
+            "web_search", json.dumps({"query": "must wait"}), "c-after-reload"
+        ),
+    ]
+    messages = []
+    executed = []
+
+    def dispatch(name, args, task_id, **kwargs):
+        del task_id, kwargs
+        executed.append((name, args))
+        if name == "skill_view":
+            return json.dumps({"success": True, "name": "pdf", "content": "rules"})
+        return json.dumps({"ok": True})
+
+    with patch("run_agent.handle_function_call", side_effect=dispatch):
+        agent._execute_tool_calls_sequential(
+            SimpleNamespace(content="", tool_calls=calls), messages, "task-1"
+        )
+
+    assert executed == [("skill_view", {"name": "pdf"})]
+    assert agent._pending_skill_reloads == []
+    assert "skill_view(name='pdf')" in messages[1]["content"]
+
+
+def test_reload_success_does_not_race_later_tool_in_same_concurrent_batch():
+    agent = _make_agent("skill_view", "web_search")
+    refresh_pending_skill_reloads(
+        agent, [{"role": "user", "content": _skill_pruned_marker("pdf")}]
+    )
+    calls = [
+        _mock_tool_call("skill_view", json.dumps({"name": "pdf"}), "c-reload"),
+        _mock_tool_call(
+            "web_search", json.dumps({"query": "must wait"}), "c-after-reload"
+        ),
+    ]
+    messages = []
+    executed = []
+    reload_finished = threading.Event()
+
+    def relay_execute(name, args, callback, **kwargs):
+        del kwargs
+        if name == "web_search":
+            assert reload_finished.wait(timeout=5)
+        result = callback(dict(args))
+        if name == "skill_view":
+            reload_finished.set()
+        return result, dict(args)
+
+    def dispatch(name, args, task_id, **kwargs):
+        del task_id, kwargs
+        executed.append((name, args))
+        if name == "skill_view":
+            return json.dumps({"success": True, "name": "pdf", "content": "rules"})
+        return json.dumps({"ok": True})
+
+    with (
+        patch("agent.relay_tools.execute", side_effect=relay_execute),
+        patch("run_agent.handle_function_call", side_effect=dispatch),
+    ):
+        agent._execute_tool_calls_concurrent(
+            SimpleNamespace(content="", tool_calls=calls), messages, "task-1"
+        )
+
+    assert executed == [("skill_view", {"name": "pdf"})]
+    assert agent._pending_skill_reloads == []
+    assert "skill_view(name='pdf')" in messages[1]["content"]
+
+
+def test_reload_boundary_survives_mixed_batch_segmentation():
+    agent = _make_agent("skill_view", "write_file")
+    refresh_pending_skill_reloads(
+        agent, [{"role": "user", "content": _skill_pruned_marker("pdf")}]
+    )
+    calls = [
+        _mock_tool_call("skill_view", json.dumps({"name": "pdf"}), "c-reload"),
+        _mock_tool_call(
+            "write_file",
+            json.dumps({"path": "/tmp/must-wait", "content": "blocked"}),
+            "c-after-reload",
+        ),
+    ]
+    messages = []
+    executed = []
+
+    def dispatch(name, args, task_id, **kwargs):
+        del task_id, kwargs
+        executed.append((name, args))
+        if name == "skill_view":
+            return json.dumps({"success": True, "name": "pdf", "content": "rules"})
+        return json.dumps({"success": True})
+
+    with patch("run_agent.handle_function_call", side_effect=dispatch):
+        agent._execute_tool_calls(
+            SimpleNamespace(content="", tool_calls=calls), messages, "task-1"
+        )
+
+    assert executed == [("skill_view", {"name": "pdf"})]
+    assert agent._pending_skill_reloads == []
+    assert "skill_view(name='pdf')" in messages[1]["content"]
+
+
+def test_successful_skill_view_roundtrip_clears_pending_reload_but_failure_does_not():
+    agent = _make_agent("skill_view", "web_search")
+    markers = [
+        {"role": "user", "content": _skill_pruned_marker(f"skill-{i}")}
+        for i in range(_MAX_PRUNED_SKILL_MARKERS + 3)
+    ]
+    refresh_pending_skill_reloads(agent, markers)
+    assert len(agent._pending_skill_reloads) == _MAX_PRUNED_SKILL_MARKERS
+    assert agent._pending_skill_reloads[0] == "skill-0"
+
+    failed = _mock_tool_call(
+        "skill_view", json.dumps({"name": "skill-0"}), "c-reload-failed"
+    )
+    with patch(
+        "run_agent.handle_function_call",
+        return_value=json.dumps({"success": False, "error": "missing"}),
+    ):
+        agent._execute_tool_calls_sequential(
+            SimpleNamespace(content="", tool_calls=[failed]), [], "task-1"
+        )
+    assert agent._pending_skill_reloads[0] == "skill-0"
+
+    loaded = _mock_tool_call(
+        "skill_view", json.dumps({"name": "skill-0"}), "c-reload-ok"
+    )
+    with patch(
+        "run_agent.handle_function_call",
+        return_value=json.dumps({"success": True, "name": "skill-0", "content": "rules"}),
+    ):
+        agent._execute_tool_calls_sequential(
+            SimpleNamespace(content="", tool_calls=[loaded]), [], "task-1"
+        )
+
+    assert "skill-0" not in agent._pending_skill_reloads
+    assert agent._pending_skill_reloads[0] == "skill-1"
+
+    # Rebuilding state on the next turn treats the retained marker as
+    # historical because the later persisted skill_view result succeeded.
+    history = [
+        {"role": "user", "content": _skill_pruned_marker("skill-0")},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "c-persisted-reload",
+                "type": "function",
+                "function": {
+                    "name": "skill_view",
+                    "arguments": json.dumps({"name": "skill-0"}),
+                },
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "c-persisted-reload",
+            "content": json.dumps(
+                {"success": True, "name": "skill-0", "content": "rules"}
+            ),
+        },
+    ]
+    assert refresh_pending_skill_reloads(agent, history) == []
+
+    # A later compaction marker for the same skill re-arms the guard.
+    history.append({"role": "user", "content": _skill_pruned_marker("skill-0")})
+    assert refresh_pending_skill_reloads(agent, history) == ["skill-0"]
+
+
+def test_pending_reload_refresh_scans_only_appended_tail_and_replaced_history():
+    agent = _make_agent("skill_view")
+    history = [{"role": "user", "content": _skill_pruned_marker("pdf")}]
+
+    with patch("agent.tool_executor._message_text", wraps=lambda msg: msg["content"]) as text:
+        assert refresh_pending_skill_reloads(agent, history) == ["pdf"]
+        assert text.call_count == 1
+
+        text.reset_mock()
+        assert refresh_pending_skill_reloads(agent, history) == ["pdf"]
+        text.assert_not_called()
+
+        history.append({"role": "user", "content": "appended tail"})
+        text.reset_mock()
+        assert refresh_pending_skill_reloads(agent, history) == ["pdf"]
+        assert text.call_count == 1
+
+        replacement = [dict(message) for message in history]
+        replacement[0]["content"] = _skill_pruned_marker("xlsx")
+        text.reset_mock()
+        assert refresh_pending_skill_reloads(agent, replacement) == ["xlsx"]
+        assert text.call_count == len(replacement)
+
+
+def test_pending_reload_refresh_force_full_rescans_after_compression():
+    agent = _make_agent("skill_view")
+    history = [{"role": "user", "content": _skill_pruned_marker("pdf")}]
+    assert refresh_pending_skill_reloads(agent, history) == ["pdf"]
+
+    # Compression may rewrite a retained row in place, preserving both list
+    # length and object identity. Its caller must explicitly invalidate the
+    # append-only watermark so the rewritten marker is observed.
+    history[0]["content"] = _skill_pruned_marker("xlsx")
+    assert refresh_pending_skill_reloads(agent, history) == ["pdf"]
+    assert refresh_pending_skill_reloads(agent, history, force_full=True) == ["xlsx"]
+
+    history[0]["content"] = _skill_pruned_marker("docx")
+    agent.reset_session_state()
+    assert refresh_pending_skill_reloads(agent, history) == ["docx"]
+
+
+def test_pending_reload_tail_scan_matches_skill_call_to_later_result():
+    agent = _make_agent("skill_view")
+    history = [
+        {"role": "user", "content": _skill_pruned_marker("pdf")},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c-tail-reload",
+                    "type": "function",
+                    "function": {
+                        "name": "skill_view",
+                        "arguments": json.dumps({"name": "pdf"}),
+                    },
+                }
+            ],
+        },
+    ]
+    assert refresh_pending_skill_reloads(agent, history) == ["pdf"]
+
+    history.append(
+        {
+            "role": "tool",
+            "tool_call_id": "c-tail-reload",
+            "content": json.dumps(
+                {"success": True, "name": "pdf", "content": "rules"}
+            ),
+        }
+    )
+    assert refresh_pending_skill_reloads(agent, history) == []
+
+
+def test_compression_exception_refreshes_pending_reloads_from_mutated_transcript():
+    agent = _make_agent("skill_view")
+    messages = [{"role": "user", "content": "before compression"}]
+    assert refresh_pending_skill_reloads(agent, messages) == []
+
+    def fail_after_mutating_transcript(*args, **kwargs):
+        del args, kwargs
+        messages[0]["content"] = _skill_pruned_marker("pdf")
+        raise RuntimeError("synthetic compression failure")
+
+    with (
+        patch(
+            "agent.conversation_compression.compress_context",
+            side_effect=fail_after_mutating_transcript,
+        ),
+        patch(
+            "agent.conversation_compression.resolve_context_compression_timeouts",
+            return_value=(0, 0),
+        ),
+    ):
+        try:
+            agent._compress_context(messages, "system prompt", force=True)
+        except RuntimeError as exc:
+            assert str(exc) == "synthetic compression failure"
+        else:
+            raise AssertionError("compression failure was not propagated")
+
+    assert agent._pending_skill_reloads == ["pdf"]
+
+
+def test_malformed_successful_skill_view_body_keeps_reload_guard_armed():
+    agent = _make_agent("skill_view")
+    refresh_pending_skill_reloads(
+        agent, [{"role": "user", "content": _skill_pruned_marker("pdf")}]
+    )
+    loaded = _mock_tool_call(
+        "skill_view", json.dumps({"name": "pdf"}), "c-malformed-reload"
+    )
+    messages = []
+
+    with patch(
+        "run_agent.handle_function_call",
+        return_value=json.dumps(
+            {"success": True, "name": "pdf", "content": ["not", "a", "string"]}
+        ),
+    ):
+        agent._execute_tool_calls_sequential(
+            SimpleNamespace(content="", tool_calls=[loaded]), messages, "task-1"
+        )
+
+    assert agent._pending_skill_reloads == ["pdf"]
+
+
+def test_support_file_view_does_not_clear_live_or_rehydrated_main_reload(
+    tmp_path: Path, monkeypatch
+):
+    skill_name = "reload-support-boundary"
+    hermes_home = tmp_path / "hermes-home"
+    skill_dir = hermes_home / "skills" / skill_name
+    references_dir = skill_dir / "references"
+    references_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "# Main policy\n\nMAIN-POLICY-SENTINEL\n", encoding="utf-8"
+    )
+    (references_dir / "note.md").write_text(
+        "SUPPORT-FILE-SENTINEL\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    agent = _make_agent("skill_view", "web_search")
+    refresh_pending_skill_reloads(
+        agent, [{"role": "user", "content": _skill_pruned_marker(skill_name)}]
+    )
+    support_args = {"name": skill_name, "file_path": "references/note.md"}
+    support_call = _mock_tool_call(
+        "skill_view", json.dumps(support_args), "c-support-only"
+    )
+    messages = []
+
+    agent._execute_tool_calls_sequential(
+        SimpleNamespace(content="", tool_calls=[support_call]),
+        messages,
+        "task-1",
+    )
+
+    assert "SUPPORT-FILE-SENTINEL" in messages[0]["content"]
+    assert "MAIN-POLICY-SENTINEL" not in messages[0]["content"]
+    assert agent._pending_skill_reloads == [skill_name]
+
+    history = [
+        {"role": "user", "content": _skill_pruned_marker(skill_name)},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c-support-only",
+                    "type": "function",
+                    "function": {
+                        "name": "skill_view",
+                        "arguments": json.dumps(support_args),
+                    },
+                }
+            ],
+        },
+        messages[0],
+    ]
+    assert refresh_pending_skill_reloads(agent, history) == [skill_name]
+
+
+def test_pending_main_reload_stays_complete_through_dedup_and_result_budgets(
+    tmp_path: Path, monkeypatch
+):
+    skill_name = "reload-full-delivery"
+    tail_sentinel = "TAIL-POLICY-SENTINEL"
+    hermes_home = tmp_path / "hermes-home"
+    skill_dir = hermes_home / "skills" / skill_name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "# Full policy\n\n" + ("instruction line\n" * 2_500) + tail_sentinel,
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    agent = _make_agent("skill_view", "web_search")
+    call_args = {"name": skill_name}
+
+    # Seed the identical-result tracker with the same successful call. The
+    # recovery call below would otherwise be replaced by a result-reference
+    # stub before the model could receive the restored policy.
+    getattr(agent, "context_compressor").context_length = 200_000
+    first_call = _mock_tool_call(
+        "skill_view", json.dumps(call_args), "c-before-prune"
+    )
+    agent._execute_tool_calls_sequential(
+        SimpleNamespace(content="", tool_calls=[first_call]), [], "task-1"
+    )
+
+    refresh_pending_skill_reloads(
+        agent, [{"role": "user", "content": _skill_pruned_marker(skill_name)}]
+    )
+    # A 16K-token context produces a 9,600-char per-result cap and a
+    # 19,200-char aggregate cap, both below this real skill_view response.
+    getattr(agent, "context_compressor").context_length = 16_000
+    reload_call = _mock_tool_call(
+        "skill_view", json.dumps(call_args), "c-reload-full"
+    )
+    messages = []
+
+    agent._execute_tool_calls_sequential(
+        SimpleNamespace(content="", tool_calls=[reload_call]),
+        messages,
+        "task-1",
+    )
+
+    delivered = messages[0]["content"]
+    payload = json.loads(delivered)
+    assert payload["success"] is True
+    assert tail_sentinel in payload["content"]
+    assert "<persisted-output>" not in delivered
+    assert "result-reference" not in delivered
+    assert agent._pending_skill_reloads == []
 
 
 def test_default_run_conversation_warns_without_guardrail_halt():

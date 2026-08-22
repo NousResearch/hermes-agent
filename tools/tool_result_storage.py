@@ -400,22 +400,29 @@ def enforce_turn_budget(
     tool_messages: list[dict],
     env=None,
     config: BudgetConfig = DEFAULT_BUDGET,
+    protected_tool_call_ids: set[str] | None = None,
 ) -> list[dict]:
     """Layer 3: enforce aggregate budget across all tool results in a turn.
 
     If total chars exceed budget, persist the largest non-persisted results
-    first (via sandbox write) until under budget. Already-persisted results
-    are skipped.
+    first (via sandbox write) until under budget. Already-persisted results and
+    explicitly protected instructional results are skipped. A protected result
+    may intentionally leave the turn above its normal aggregate budget because
+    replacing it would make the recovery protocol impossible to complete.
 
     Mutates the list in-place and returns it.
     """
+    protected_tool_call_ids = protected_tool_call_ids or set()
     candidates = []
     total_size = 0
     for i, msg in enumerate(tool_messages):
         content = msg.get("content", "")
         size = len(content)
         total_size += size
-        if PERSISTED_OUTPUT_TAG not in content:
+        if (
+            PERSISTED_OUTPUT_TAG not in content
+            and str(msg.get("tool_call_id") or "") not in protected_tool_call_ids
+        ):
             candidates.append((i, size))
 
     if total_size <= config.turn_budget:

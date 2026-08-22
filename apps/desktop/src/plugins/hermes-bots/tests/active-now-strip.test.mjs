@@ -84,11 +84,11 @@ test('roster without profiles never throws', () => {
 
 // ── botActivitySession: canonical Bot Chat activity counts (hermes-agent "6d ago" bug) ──
 
-test('botActivitySession picks the fresher preferred_session over a stale last_session', () => {
+test('botActivitySession picks the fresher canonical_session over a stale last_session', () => {
   const botActivitySession = loadBotActivitySession()
   const bot = {
     // Canonical Bot Chat (hidden from session lists): messaged seconds ago.
-    preferred_session: { id: 'bot-chat', last_active: NOW / 1000 - 5, preview: 'fresh DM' },
+    canonical_session: { id: 'bot-chat', last_active: NOW / 1000 - 5, preview: 'fresh DM' },
     // Newest VISIBLE session: 6 days old — what last_session alone reports.
     last_session: { id: 'old-scratch', last_active: NOW / 1000 - 6 * 86400, preview: 'ancient' }
   }
@@ -98,7 +98,7 @@ test('botActivitySession picks the fresher preferred_session over a stale last_s
 test('botActivitySession keeps last_session when it is the fresher one', () => {
   const botActivitySession = loadBotActivitySession()
   const bot = {
-    preferred_session: { id: 'bot-chat', last_active: NOW / 1000 - 3600 },
+    canonical_session: { id: 'bot-chat', last_active: NOW / 1000 - 3600 },
     last_session: { id: 'scratch', last_active: NOW / 1000 - 10 }
   }
   assert.equal(botActivitySession(bot).id, 'scratch')
@@ -107,7 +107,7 @@ test('botActivitySession keeps last_session when it is the fresher one', () => {
 test('botActivitySession degrades to whichever side exists (older gateways / no pin)', () => {
   const botActivitySession = loadBotActivitySession()
   assert.equal(botActivitySession({ last_session: { id: 'only', last_active: 1 } }).id, 'only')
-  assert.equal(botActivitySession({ preferred_session: { id: 'pin', last_active: 1 } }).id, 'pin')
+  assert.equal(botActivitySession({ canonical_session: { id: 'pin', last_active: 1 } }).id, 'pin')
   assert.equal(botActivitySession({}), null)
   assert.equal(botActivitySession(null), null)
 })
@@ -117,7 +117,7 @@ test('activeBots counts Bot Chat activity that last_session cannot see', () => {
   const bots = [
     {
       name: 'default',
-      preferred_session: { last_active: NOW / 1000 - 5 },
+      canonical_session: { last_active: NOW / 1000 - 5 },
       last_session: { last_active: NOW / 1000 - 6 * 86400 }
     }
   ]
@@ -179,7 +179,6 @@ test('ActiveNowStrip renders above the roster, is a live region, and is click-ac
   // a list key; a `key:` prop leaves chips unkeyed (index identity).
   assert.match(source, /\}, botRosterKey\(bot\)\)\s*\}\)\s*\]\s*\}\)\s*\}\s*\/\*\* Assign a bot to a group/s)
   assert.match(source, /jsx\(BotFace,\s*\{[\s\S]*?mood: 'work'/)
-  assert.match(source, /let pinnedChat = botRosterMeta\(bot, allMeta\)\?\.chat/)
-  assert.match(source, /await prepareBotSource\(bot, pinnedChat\)/)
-  assert.match(source, /bot\.preferred_session \|\| bot\.last_session/)
+    assert.match(source, /await prepareBotSource\(bot\)/)
+  assert.match(source, /bot\.canonical_session \|\| last/)
 })

@@ -3460,6 +3460,24 @@ def compress_context(
                             "could not record rejected-compaction strike",
                             exc_info=True,
                         )
+                    # Restore ONLY the prune runway (same rationale as the
+                    # rotation-failure rollback below): compress()'s successful
+                    # tail already zeroed _proactive_prune_rearm_tokens in
+                    # memory, but this refusal keeps the ORIGINAL transcript —
+                    # whose cached prefix is intact. Leaving the runway at 0
+                    # disarms the #79640 throttle, so the very next iteration's
+                    # proactive prune rewrites history and breaks the prompt
+                    # cache without the required regrowth interval (#91830).
+                    # The durable copy was never cleared (that clear only rides
+                    # the archive_and_compact / child-row commit that never
+                    # ran), so restoring the snapshot re-aligns memory with
+                    # disk.
+                    if "_proactive_prune_rearm_tokens" in _compressor_attempt_snapshot:
+                        agent.context_compressor._proactive_prune_rearm_tokens = (
+                            _compressor_attempt_snapshot[
+                                "_proactive_prune_rearm_tokens"
+                            ]
+                        )
                     _release_lock()
                     return messages, _existing_sp
 

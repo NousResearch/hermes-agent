@@ -1245,13 +1245,16 @@ def _wait_for_systemd_service_restart(
     *,
     system: bool = False,
     previous_pid: int | None = None,
-    timeout: float = 60.0,
+    timeout: float | None = None,
+    replacement_observed: list[bool] | None = None,
 ) -> bool:
     """Wait for the gateway service to become active after a restart handoff."""
     import time
 
     svc = get_service_name()
     scope_label = _service_scope_label(system).capitalize()
+    if timeout is None:
+        timeout = _systemd_restart_wait_timeout(system=system)
     deadline = time.monotonic() + timeout
     printed_runtime_wait = False
 
@@ -1269,9 +1272,26 @@ def _wait_for_systemd_service_restart(
         if not new_pid:
             new_pid = _systemd_main_pid_from_props(props)
 
+        runtime_state = _read_gateway_runtime_status()
+        try:
+            runtime_pid = int((runtime_state or {}).get("pid", 0) or 0)
+        except (TypeError, ValueError):
+            runtime_pid = 0
+        if (
+            previous_pid is not None
+            and replacement_observed is not None
+            and not replacement_observed
+            and any(
+                candidate_pid > 0 and candidate_pid != previous_pid
+                for candidate_pid in (new_pid or 0, runtime_pid)
+            )
+        ):
+            replacement_observed.append(True)
+
         if active_state == "active":
             if new_pid and (previous_pid is None or new_pid != previous_pid):
-                runtime_state = _gateway_runtime_status_for_pid(new_pid)
+                if runtime_pid != new_pid:
+                    runtime_state = _gateway_runtime_status_for_pid(new_pid)
                 gateway_state = (runtime_state or {}).get("gateway_state")
                 if gateway_state == "running":
                     print(f"✓ {scope_label} service restarted (PID {new_pid})")
@@ -1306,6 +1326,25 @@ def _wait_for_systemd_service_restart(
         f"  Check logs:   journalctl {'--user ' if not system else ''}-u {svc} -l --since '2 min ago'"
     )
     return False
+
+
+def _systemd_restart_wait_timeout(system: bool = False) -> float:
+    """Cover systemd's relaunch delays before applying the runtime wait floor."""
+    from gateway.shutdown_forensics import parse_systemd_duration_to_us
+
+    props = _read_systemd_unit_properties(
+        system=system,
+        properties=("RestartUSec", "TimeoutStartUSec"),
+    )
+    supervisor_budget = 0.0
+    for name in ("RestartUSec", "TimeoutStartUSec"):
+        raw = props.get(name, "")
+        duration_us = (
+            int(raw) if raw.isdigit() else parse_systemd_duration_to_us(raw)
+        )
+        if duration_us is not None:
+            supervisor_budget += duration_us / 1_000_000
+    return 60.0 + supervisor_budget
 
 
 def _systemd_unit_is_start_limited(props: dict[str, str]) -> bool:
@@ -4120,32 +4159,49 @@ def systemd_restart(system: bool = False):
             f"⏳ {scope_label} service restarting gracefully (PID {pid}) — "
             f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
         )
+        service_action = "restart"
         if _graceful_restart_via_sigusr1(pid, wait_budget):
-            # The gateway exits with code 75 for a planned service restart.
-            # RestartSec can otherwise delay the relaunch even though the
-            # operator asked for an immediate restart, so kick the unit once
-            # the old PID has exited and then wait for the replacement PID.
-            _run_systemctl(
-                ["reset-failed", svc],
+            # Exit 75 transfers restart ownership to systemd.  Observe that
+            # single replacement instead of issuing another restart that can
+            # stop the process systemd has already brought up.
+            replacement_observed: list[bool] = []
+            if _wait_for_systemd_service_restart(
                 system=system,
-                check=False,
-                timeout=30,
-            )
-            _run_systemctl(
-                ["restart", svc],
-                system=system,
-                check=False,
-                timeout=90,
-            )
-            if _wait_for_systemd_service_restart(system=system, previous_pid=pid):
+                previous_pid=pid,
+                replacement_observed=replacement_observed,
+            ):
+                return
+            if replacement_observed:
                 return
             if _systemd_service_is_start_limited(system=system):
                 return
 
-        print(
-            f"⚠ Graceful restart did not complete within {int(wait_budget)}s; "
-            "forcing a service restart..."
-        )
+            # A replacement may have started but not reached gateway runtime
+            # readiness before the wait expired.  Never stop that generation.
+            props = _read_systemd_unit_properties(system=system)
+            if not props:
+                return
+            replacement_pid = _systemd_main_pid_from_props(props)
+            if (
+                props.get("ActiveState") in {"active", "activating", "reloading"}
+                or props.get("SubState") == "auto-restart"
+                or (replacement_pid is not None and replacement_pid != pid)
+            ):
+                return
+
+            print(
+                "⚠ Systemd did not relaunch the gateway after its graceful exit; "
+                "starting the inactive service..."
+            )
+            # ``start`` is intentionally idempotent: if a replacement appears
+            # after the snapshot, this must not stop that new generation.
+            service_action = "start"
+        else:
+            print(
+                f"⚠ Graceful restart did not complete within {int(wait_budget)}s; "
+                "forcing a service restart..."
+            )
+
         _run_systemctl(
             ["reset-failed", svc],
             system=system,
@@ -4153,7 +4209,9 @@ def systemd_restart(system: bool = False):
             timeout=30,
         )
         try:
-            _run_systemctl(["restart", svc], system=system, check=True, timeout=90)
+            _run_systemctl(
+                [service_action, svc], system=system, check=True, timeout=90
+            )
         except subprocess.CalledProcessError as exc:
             if _systemd_error_indicates_start_limit(
                 exc

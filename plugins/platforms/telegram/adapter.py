@@ -311,6 +311,25 @@ from plugins.platforms.telegram.telegram_network import (
 from utils import atomic_replace, env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+# Max seconds a send/edit coroutine may sleep inline on a Telegram
+# flood-control RetryAfter. Longer server penalties fail closed with a
+# ``flood_control:{wait}`` SendResult so the caller's retry machinery
+# (delivery ledger, streaming fallback) owns the wait instead of the
+# coroutine pinning its worker — a 97-minute penalty on the boot path
+# froze inbound on every platform (#91969).
+_FLOOD_INLINE_WAIT_CAP_SECS = 5.0
+
+
+def _flood_cap_result(wait: float) -> "SendResult":
+    """The shared fail-closed SendResult for an over-cap flood wait."""
+    return SendResult(
+        success=False,
+        error=f"flood_control:{wait}",
+        retry_after=float(wait),
+    )
+
+
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -5441,9 +5460,26 @@ class TelegramAdapter(BasePlatformAdapter):
                     except Exception as send_err:
                         retry_after = getattr(send_err, "retry_after", None)
                         if retry_after is not None or "retry after" in str(send_err).lower():
+                            wait = float(retry_after) if retry_after is not None else 1.0
+                            safe_send_error = _redact_telegram_error_text(send_err)
+                            # Mirror the edit path: a RetryAfter past a few
+                            # seconds is not something to hold this coroutine
+                            # open for. Sleeping the server value verbatim
+                            # pinned send() for 97 minutes in production and
+                            # froze inbound on every platform when it ran on
+                            # the gateway boot path (#91969).
+                            if wait > _FLOOD_INLINE_WAIT_CAP_SECS:
+                                logger.warning(
+                                    "[%s] Telegram flood control on send "
+                                    "(retry_after=%.1fs > %.0fs); failing closed "
+                                    "instead of sleeping: %s",
+                                    self.name,
+                                    wait,
+                                    _FLOOD_INLINE_WAIT_CAP_SECS,
+                                    safe_send_error,
+                                )
+                                return _flood_cap_result(wait)
                             if _send_attempt < 2:
-                                wait = float(retry_after) if retry_after is not None else 1.0
-                                safe_send_error = _redact_telegram_error_text(send_err)
                                 logger.warning(
                                     "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s",
                                     self.name,
@@ -5694,12 +5730,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Telegram flood control, waiting %.1fs",
                     self.name, wait,
                 )
-                if wait > 5.0:
-                    return SendResult(
-                        success=False,
-                        error=f"flood_control:{wait}",
-                        retry_after=float(wait),
-                    )
+                if wait > _FLOOD_INLINE_WAIT_CAP_SECS:
+                    return _flood_cap_result(wait)
                 await asyncio.sleep(wait)
                 try:
                     await self._bot.edit_message_text(

@@ -1471,6 +1471,18 @@ def _transfer_db_to_agent(agent, db) -> bool:
     try:
         if getattr(agent, "_session_db", None) is not db:
             return False
+        # Defense in depth (#91610): the shared launch handle must never
+        # transfer. Identity alone passes for it — a launch-profile agent IS
+        # holding that handle — and ownership would make session.close() tear
+        # down the process-wide database every other session shares. Refuse it
+        # explicitly even if a caller invokes the transfer incorrectly; the
+        # caller's own `owns_db` gate is the first line of defense.
+        if db is _get_db():
+            logger.warning(
+                "Refused transfer of the shared launch SessionDB to a session "
+                "agent — the caller's owns_db gate should have prevented this."
+            )
+            return False
         agent._owns_session_db = True
         return True
     except Exception:

@@ -1276,57 +1276,22 @@ function fallbackSelectionAfterHide(name) {
 
 /** One-time reconciliation: Bot Mode sessions are always hidden, but rooms
  *  and Bot Chats created before this policy (or while the old pref was off)
- *  left visible rows behind. On every plugin load, sweep every session id we
- *  own — canonical chats from bot meta plus each group room's member
- *  sessions — through the core session.set_hidden RPC, then run the
- *  ownership-based sweep for the rows we DON'T know by id. Idempotent (the DB
- *  setter is a no-op on already-hidden rows) and feature-detected: older
- *  gateways lack session.set_hidden and simply keep the rows visible. */
+ *  left visible rows behind. On every plugin load, sweep the session ids we
+ *  own by id (each group room's member sessions) through the core
+ *  session.set_hidden RPC, then run the TITLE-based ownership sweep for
+ *  everything else — canonical Bot Chats are identified by name (the
+ *  registry row titled "Bot Chat"), so the title sweep is what hides them;
+ *  no stored-id pointer is consulted. Idempotent (the DB setter is a no-op
+ *  on already-hidden rows) and feature-detected: older gateways lack
+ *  session.set_hidden and simply keep the rows visible. */
 function hideOwnedBotSessions() {
-  const canonical = Object.entries($botMeta.get())
-    .map(([name, meta]) => ({ name, id: meta && meta.chat }))
-    .filter(entry => Boolean(entry.id))
   const rooms = Object.values($groupChats.get())
     .flatMap(room => Object.values(room?.sessions || {}))
     .filter(sid => Boolean(sid) && sid !== true)
 
-  // A stale local/server pointer must not be trusted merely because it looks
-  // like a session id. Resolve every canonical pointer through the backend and
-  // require the canonical Bot Chat title before the hide write. This is
-  // deliberately fail-closed: an unavailable/old gateway may leave an old
-  // Bot Chat visible, but it must never hide an unrelated user conversation.
-  const verifiedCanonical = Promise.resolve()
-    .then(() =>
-      host.request('profiles.list', {
-        include_sessions: true,
-        preferred_session_ids: Object.fromEntries(canonical.map(entry => [entry.name, entry.id]))
-      })
-    )
-    .then(res => {
-      const profiles = Array.isArray(res?.profiles) ? res.profiles : []
-      const valid = []
-
-      for (const entry of canonical) {
-        const profile = profiles.find(item => item?.name === entry.name)
-        const preferred = profile?.preferred_session
-        const ids = [preferred?.id, preferred?.resolved_id, preferred?.session_id, preferred?.session_key]
-          .filter(Boolean)
-          .map(String)
-
-        if (String(preferred?.title || '').trim() === 'Bot Chat' && ids.includes(String(entry.id))) {
-          valid.push(entry.id)
-        }
-      }
-
-      return valid
-    })
-    .catch(() => [])
-
-  const known = verifiedCanonical.then(validCanonical =>
-    Promise.all(
-      [...new Set([...validCanonical, ...rooms])].map(sid =>
-        Promise.resolve(host.request('session.set_hidden', { session_id: sid, hidden: true })).catch(() => undefined)
-      )
+  const known = Promise.all(
+    [...new Set(rooms)].map(sid =>
+      Promise.resolve(host.request('session.set_hidden', { session_id: sid, hidden: true })).catch(() => undefined)
     )
   )
 
@@ -1573,15 +1538,10 @@ function mergeServerMeta(roster, fetchedAt = 0) {
         merged.image = mine.image
       }
 
-      // Server metadata is authoritative for the canonical chat pointer.
-      // Without this deletion sync, ctx.storage resurrects stale sessions
-      // after the server pin is cleared and even after a full app restart.
-      if (
-        Object.prototype.hasOwnProperty.call(mine, 'chat') &&
-        !Object.prototype.hasOwnProperty.call(server, 'chat')
-      ) {
-        delete merged.chat
-      }
+      // Legacy canonical-chat pointers (meta.chat) are dead: identity is the
+      // profile's "Bot Chat" registry row, resolved by name. Drop the key on
+      // sight so old ui_meta can never look meaningful again.
+      delete merged.chat
 
       // Canonical multi-group metadata is authoritative for the compatibility
       // scalar too. A server-side `group: null` is represented by omission,
@@ -3592,21 +3552,6 @@ function PetTab({ image, onImage }) {
  *  Gates every SOUL.md protocol append below. */
 let serverInjectsProtocol = false
 
-/** Pins to resolve precisely on the next roster poll: {profile: chatId}.
- *  The backend answers "what about THIS conversation" per entry
- *  (preferred_session), so a row's preview can describe the same session its
- *  click opens (hermes-agent#88200). Unknown params are ignored by older
- *  gateways, which simply omit the field. */
-function preferredSessionIds(allMeta) {
-  const pins = {}
-  for (const [name, meta] of Object.entries(allMeta || {})) {
-    if (meta?.chat) {
-      pins[name] = meta.chat
-    }
-  }
-  return pins
-}
-
 function useRoster() {
   const activeConnectionId = useValue(host.state.connectionId)
 
@@ -3618,13 +3563,11 @@ function useRoster() {
       // a write can only carry pre-write ui_meta. (Issue time is the
       // conservative bound — the server answered no earlier than this.)
       const issuedAt = Date.now()
-      // Rich rows (last_session, ui_meta, has_avatar) come from the ACTIVE
-      // gateway's profiles.list — unchanged single-source behavior.
-      const pins = preferredSessionIds($botMeta.get())
-      const local = await host.request(
-        'profiles.list',
-        Object.keys(pins).length ? { preferred_session_ids: pins } : {}
-      )
+      // Rich rows (last_session, canonical_session, ui_meta, has_avatar)
+      // come from the ACTIVE gateway's profiles.list — the canonical Bot
+      // Chat is resolved server-side by NAME (the "Bot Chat" registry row),
+      // so the roster never sends session pointers.
+      const local = await host.request('profiles.list', {})
       // Newer backends inject the teammate-messaging protocol into every
       // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
       // carry a second copy. Older gateways lack the flag: keep appending.
@@ -4079,18 +4022,14 @@ function showsHandle(name, meta, bot) {
 }
 
 // ── canonical bot chat ───────────────────────────────────────────────────────
-// Each bot has ONE forever chat, pinned by stored-session id in bot meta
-// (meta.chat — synced server-side via ui_meta, so it follows the profile).
-// Opening a bot ALWAYS lands there: never "most recent session", which
-// drifts whenever the profile is used from the CLI, Sessions mode, or a
-// cronjob. The pin only changes through explicit adoption:
-//   - grandfather: first open of a bot that already has history pins its
-//     current latest session, so continuity starts from the chat in use
-//   - fresh bot: opens a draft; when the first message persists a stored
-//     session, we adopt that id (empty sessions are pruned server-side, so
-//     pre-creating one at enable time is not possible)
-//   - recovery: if the pinned id vanishes from the DB (compaction rewrote
-//     the lineage), re-pin the newest session carrying the canonical title.
+// Each bot has ONE forever chat, identified by NAME, never by pointer: the
+// session titled exactly "Bot Chat" on that bot's profile. The core
+// UNIQUE(title) index makes (profile, "Bot Chat") an exact registry, so every
+// open consults that registry directly — there is nothing to verify, re-pin,
+// grandfather, or recover. Stored-id pins (ui_meta['hermes-bots'].chat) were
+// the previous identity and are REMOVED: every lost-chat incident traced to a
+// dangled or stolen pointer that later guards then welded in. Legacy
+// ui_meta.chat keys are simply ignored.
 
 // In-flight creations, keyed by bot name — double-clicking a row must not
 // mint two canonical chats.
@@ -4100,6 +4039,10 @@ const canonicalCreations = new Map()
  *  adoption, stored-session lookups). */
 const PROFILE_SESSION_LIST_LIMIT = 200
 let botOpenGeneration = 0
+
+/** The one canonical title. (profile, CANONICAL_CHAT_TITLE) IS the bot's
+ *  forever-chat identity — see the header above. */
+const CANONICAL_CHAT_TITLE = 'Bot Chat'
 
 async function openStoredBotChat(name, storedId, summary) {
   if (!storedId || typeof host.openSession !== 'function') {
@@ -4137,27 +4080,26 @@ async function openStoredBotChat(name, storedId, summary) {
   return storedId
 }
 
-/** Adopt-before-mint: the profile may already own a canonical Bot Chat that
- *  the pin lost track of (pin cleared during an outage, ui_meta rolled back,
- *  a fork squatting the title). The core UNIQUE title index guarantees at
- *  most ONE session titled "Bot Chat" per profile db — Profile → Named
- *  Session is an exact registry, so consult it exactly: `title` asks the
- *  gateway for an indexed WHERE title = ? lookup (window-free; a busy
- *  profile can push the forever-chat past any recency window, which would
- *  re-open the fork loop with a higher trigger threshold). Minting while a
- *  "Bot Chat" row exists is always wrong twice over: it forks the
- *  forever-chat AND the new row can never take the (already held) canonical
- *  title, so the next identity check misreads it and forks again — the
- *  infinite-fork loop. An older gateway ignores the unknown `title` param
- *  and returns the plain windowed listing instead — the pre-exact-lookup
- *  behavior — so the local scan below stays as the compatibility rung.
- *  include_hidden is required (canonical chats are always hidden); a gateway
- *  without it simply finds nothing and we fall through to mint. */
+/** True when a session summary IS the canonical registry row. root_title is
+ *  the durable lineage-root title reported by exact-lookup gateways; plain
+ *  title covers windowed listings. */
+function isCanonicalBotChatHistory(history) {
+  const rootTitle = String(history?.root_title || '').trim()
+  const title = String(history?.title || '').trim()
+  return rootTitle === CANONICAL_CHAT_TITLE || (!rootTitle && title === CANONICAL_CHAT_TITLE)
+}
+
+/** THE identity lookup: the profile's session titled exactly "Bot Chat".
+ *  The core UNIQUE title index guarantees at most ONE such row per profile
+ *  db — Profile → Named Session is an exact registry, so consult it exactly:
+ *  `title` asks the gateway for an indexed WHERE title = ? lookup
+ *  (window-free; a busy profile can push the forever-chat past any recency
+ *  window). include_hidden is required (canonical chats are always hidden). */
 async function findExistingCanonicalChat(name) {
   try {
     const res = await host.request('session.list', {
       profile: name,
-      title: 'Bot Chat',
+      title: CANONICAL_CHAT_TITLE,
       limit: PROFILE_SESSION_LIST_LIMIT,
       include_hidden: true
     })
@@ -4168,11 +4110,13 @@ async function findExistingCanonicalChat(name) {
   }
 }
 
-/** Create the bot's ONE forever chat: a real session opened with a kickoff
- *  message (the gateway prunes zero-message sessions, so the chat is born
- *  with the bot introducing itself). Pins the stored id in bot meta and
- *  returns it. Adopts an existing "Bot Chat" row instead of creating when
- *  the profile already has one (see findExistingCanonicalChat). */
+/** Create the bot's ONE forever chat: a real session titled "Bot Chat",
+ *  opened with a kickoff message (the gateway prunes zero-message sessions,
+ *  so the chat is born with the bot introducing itself). Adopts the existing
+ *  "Bot Chat" row instead of creating when the profile already has one —
+ *  minting while a "Bot Chat" row exists is always wrong twice over: it
+ *  forks the forever-chat AND the new row can never take the (already held)
+ *  canonical title. */
 function createCanonicalChat(name) {
   const inflight = canonicalCreations.get(name)
 
@@ -4184,12 +4128,9 @@ function createCanonicalChat(name) {
     const existing = await findExistingCanonicalChat(name)
 
     if (existing?.id) {
-      saveBotMeta(name, { chat: existing.id })
-
       if (typeof host.openSession === 'function') {
         // The exact-lookup gateway reports the compression-lineage tip as
-        // resolved_id; the pin stays the durable row id (same split the
-        // preferred_session path uses).
+        // resolved_id; open the tip, the registry row stays the identity.
         await openStoredBotChat(name, existing.resolved_id || existing.id, existing)
       }
 
@@ -4198,7 +4139,7 @@ function createCanonicalChat(name) {
 
     const res = await host.request('session.create', {
       profile: name,
-      title: 'Bot Chat',
+      title: CANONICAL_CHAT_TITLE,
       // Always born hidden from the global sidebar — Bot Mode sessions are
       // plugin-owned. Core applies this via the generic `hidden` flag
       // (deferred as pending_hidden until the row exists); older gateways
@@ -4208,8 +4149,22 @@ function createCanonicalChat(name) {
     const sid = res?.stored_session_id
     const runtime = res?.session_id
 
-    if (sid) {
-      saveBotMeta(name, { chat: sid })
+    // session.create is intentionally lazy: its stored row does not exist until
+    // the first prompt. Mounting `sid` immediately therefore emits a noisy REST
+    // 404 ("Session not found"), and the turn-start auto-titler can win the race
+    // against the deferred `title: 'Bot Chat'` — under name-identity that is an
+    // identity outage: until the row is titled, the registry has no "Bot Chat"
+    // entry, so a second click during the intro turn mints a duplicate.
+    // session.title materializes the row now and records a user-authority title
+    // before either the open or kickoff, closing both the 404 race and the
+    // untitled window. Older gateways may not support the eager write; retain
+    // the kickoff-and-retry fallback below.
+    if (runtime) {
+      try {
+        await host.request('session.title', { session_id: runtime, title: CANONICAL_CHAT_TITLE })
+      } catch {
+        /* compatibility fallback: prompt.submit will persist the lazy row */
+      }
     }
 
     // Mount the session view FIRST, then send the kickoff — submitting into
@@ -4236,8 +4191,8 @@ function createCanonicalChat(name) {
           await host.openSession(sid, { profile: name, intent: 'main', keepAllProfilesScope: false })
         }
       } catch {
-        // The chat already exists. Keep the pin so the next click
-        // opens it instead of making a second Bot Chat.
+        // The chat already exists under the canonical title — the next click
+        // finds it by name instead of making a second Bot Chat.
       }
     }
 
@@ -4249,187 +4204,25 @@ function createCanonicalChat(name) {
   return run
 }
 
-/** Open the bot's ONE forever chat and return the opened id (or the pin).
+/** Open the bot's ONE forever chat and return the opened registry id.
  *
- *  Identity rules (hermes-agent#88200 — the row must open the session its
- *  preview describes):
- *  - grandfather: no pin + an existing Bot Chat adopts the previewed session
- *    (`history`, the roster's last_session for this bot) instead of minting
- *    a new empty chat. Ordinary user conversations are never adopted;
- *    `last_session` is only a recency hint, not an ownership proof;
- *  - a live pin is verified through the backend's precise preferred_session
- *    resolver (hidden rows still resolve; compression lineages resolve to
- *    the live tip) — never inferred from a paginated, hidden-excluding
- *    session.list window, which misjudged real hidden pins as gone;
- *  - transient lookup failures keep the pin: try the stored id as-is, and
- *    only a rejected open enters recovery. */
-function isCanonicalBotChatHistory(history) {
-  const rootTitle = String(history?.root_title || '').trim()
-  const title = String(history?.title || '').trim()
-  return rootTitle === 'Bot Chat' || (!rootTitle && title === 'Bot Chat')
-}
+ *  The whole resolution is one registry consultation: the profile's session
+ *  titled "Bot Chat" exists → open it (lineage tip); it doesn't → create it.
+ *  No id pointer is read or written anywhere in this path. */
+async function openBotCanonicalChat(name) {
+  const existing = await findExistingCanonicalChat(name)
 
-/** The bot's newest VISIBLE conversation when it should win over the pin, else
- *  null.
- *
- *  RETAINED FOR THE DEAD-PIN RECOVERY PATH ONLY. This is deliberately NOT
- *  consulted while the pin is alive: Bot Mode's documented contract is "click
- *  a Bot to land in its chat — every Bot has a canonical, persistent Bot Chat
- *  conversation that is created (and pinned) the moment the Bot is born", and
- *  canonical Bot Chats are ALWAYS hidden from the Sessions sidebar
- *  (session.create passes hidden:true unconditionally — see
- *  hide-bot-chats.test.mjs). The bot row is therefore the ONLY door to the
- *  forever-chat; preferring a newer session here walls the relationship off
- *  behind a door that no longer leads to it.
- *
- *  Guards, all of which matter:
- *   - the canonical Bot Chat itself is never "newer" (it IS the pin), so
- *     plumbing can't shadow itself;
- *   - an empty draft is skipped: clicking a bot right after a stray ⌘N would
- *     otherwise open a blank chat instead of the conversation;
- *   - identical ids mean the pin already points there — nothing to switch to.
- *  Returns the stored id so callers keep using the normal open path. */
-function newerVisibleBotChat(pinned, history) {
-  const id = history?.id
-
-  if (!id || id === pinned || isCanonicalBotChatHistory(history)) {
-    return null
+  if (existing?.id && typeof host.openSession === 'function') {
+    await openStoredBotChat(name, existing.resolved_id || existing.id, existing)
+    return existing.id
   }
 
-  // `message_count` is absent on older gateways — treat unknown as real
-  // history rather than discarding a legitimate conversation.
-  const count = history?.message_count
-
-  if (typeof count === 'number' && count <= 0) {
-    return null
-  }
-
-  return id
-}
-
-async function openBotCanonicalChat(name, pinned, history) {
-  if (!pinned) {
-    // Grandfather only an actual Bot Chat. `last_session` is merely the most
-    // recent row for the profile; adopting it blindly can claim an unrelated
-    // user conversation and the hide sweep would then hide that conversation.
-    const adoptId = isCanonicalBotChatHistory(history) ? history.id : null
-    if (adoptId && typeof host.openSession === 'function') {
-      await openStoredBotChat(name, adoptId, history)
-      saveBotMeta(name, { chat: adoptId })
-      return adoptId
-    }
-    return createCanonicalChat(name)
-  }
-
-  // Precise verification. An older gateway ignores the unknown param and
-  // omits the key — that reads as a lookup failure below, NOT as a missing
-  // session, so legacy backends keep the try-as-is escape hatch.
-  let preferred
-  let lookupFailed = false
-  try {
-    const res = await host.request('profiles.list', {
-      include_sessions: true,
-      preferred_session_ids: { [name]: pinned }
-    })
-    const row = (res?.profiles ?? []).find(p => p.name === name)
-    preferred = row?.preferred_session
-    if (preferred === undefined) {
-      lookupFailed = true
-    }
-  } catch {
-    lookupFailed = true
-  }
-
-  if (lookupFailed) {
-    // Transient gateway state (or an older backend): the pin is innocent
-    // until proven guilty — try it as-is. A rejected open is still ambiguous:
-    // it can be the same reconnect/hydration outage that broke this lookup, so
-    // preserve the forever-chat pin and surface Retry instead of forking it.
-    return openStoredBotChat(name, pinned, history)
-  }
-
-  if (preferred && isCanonicalBotChatHistory(preferred)) {
-    // The pin is alive and healthy — open it. This is the whole contract:
-    // "Click a Bot to land in its chat — every Bot has a canonical,
-    // persistent Bot Chat conversation that is created (and pinned) the
-    // moment the Bot is born."
-    //
-    // A newer-visible-session preference used to sit here, so that a bot row
-    // landed on the user's most recent conversation instead of the pin. It
-    // was reverted (2026-08-22) because it is unsound given how Bot Mode
-    // stores these chats: canonical Bot Chats are ALWAYS hidden from the
-    // Sessions sidebar (session.create passes hidden:true unconditionally,
-    // and hideOwnedBotSessions sweeps any that were born visible). The bot
-    // row is therefore the ONLY door to the forever-chat, so preferring a
-    // newer session did not merely re-order two equal entry points — it made
-    // the pinned relationship unreachable from anywhere in the UI. Reported
-    // symptom: a bot's whole build history became invisible, while the row
-    // previewed one session and opened another.
-    //
-    // The bug that motivated the preference — "I start a new chat with a bot,
-    // click another bot, click back, and my new chat is gone" — has a
-    // non-destructive answer: scratch sessions started via "New chat with
-    // this agent" are NOT plumbing-titled, so the hide sweep leaves them in
-    // the Sessions sidebar. They are reachable there; they simply are not the
-    // bot row's target, which is by design.
-    try {
-      await openStoredBotChat(name, preferred.resolved_id || preferred.id, preferred)
-      return pinned
-    } catch (error) {
-      // The precise lookup JUST confirmed this session exists, so a failed
-      // open is transient (reconnect, backend restart). Clearing the pin or
-      // minting a replacement here would fork the bot's forever-chat on
-      // every hiccup — report and keep everything as it is.
-      throw error
-    }
-  }
-
-  if (preferred) {
-    // The stored pointer resolved to a real session, but not to Bot Mode's
-    // titled plumbing session. Two legitimate ways to get here, and neither
-    // means "mint a new chat":
-    //  - the pin IS the forever-chat but its title drifted (grandfathered
-    //    pre-convention chats; the LLM auto-titler renaming an untitled row
-    //    after a silent unique-title conflict dropped "Bot Chat"). A pinned
-    //    session carrying real history is the user's conversation — forking
-    //    away from it silently loses their thread, the exact bug this whole
-    //    resolver exists to prevent. The pin is the durable intent: keep it
-    //    and open it, even when some other (likely forked) row holds the
-    //    "Bot Chat" title. The hide sweep only matches plumbing titles, so
-    //    an adopted odd-titled chat is never swept out of the user's
-    //    ordinary session list.
-    //  - the pin resolves to an EMPTY non-plumbing session (a stray draft):
-    //    genuinely corrupted metadata. Clear it — createCanonicalChat then
-    //    adopts the profile's existing "Bot Chat" row if one exists before
-    //    ever creating a new one.
-    const messageCount = Number(preferred.message_count) || 0
-
-    if (messageCount > 0) {
-      await openStoredBotChat(name, preferred.resolved_id || preferred.id, preferred)
-      return pinned
-    }
-
-    await saveBotMeta(name, { chat: null })
-    return createCanonicalChat(name)
-  }
-
-  // Definitively gone (db reset, or the lineage was rewritten past
-  // recovery): re-anchor on the previewed session when there is one.
-  // A previewed row is safe to re-anchor only when it is Bot Mode plumbing.
-  // Otherwise a stale pin must not steal the profile's ordinary latest chat.
-  const recoveryId = isCanonicalBotChatHistory(history) ? history.id : null
-  if (recoveryId && typeof host.openSession === 'function') {
-    await openStoredBotChat(name, recoveryId, history)
-    saveBotMeta(name, { chat: recoveryId })
-    return recoveryId
-  }
-  saveBotMeta(name, { chat: null })
   return createCanonicalChat(name)
 }
 
-async function prepareBotSource(bot, pinnedChat) {
+async function prepareBotSource(bot) {
   if (!bot.sourceScoped) {
-    return pinnedChat
+    return
   }
 
   if (typeof host.ensureAgent !== 'function') {
@@ -4439,7 +4232,7 @@ async function prepareBotSource(bot, pinnedChat) {
   await host.ensureAgent(bot.connectionId, bot.name)
 
   if (!bot.remoteSource) {
-    return pinnedChat
+    return
   }
 
   const liveId = String(typeof host.activeConnectionId === 'function' ? host.activeConnectionId() || '' : '').trim()
@@ -4449,18 +4242,8 @@ async function prepareBotSource(bot, pinnedChat) {
     throw new Error(`Still on ${liveId || 'this device'}, not ${bot.connectionLabel || targetId}`)
   }
 
-  // Thin rows deliberately omit metadata from the active source. Once their
-  // owner is active, recover that source's canonical-chat pointer so
-  // same-named agents never reuse or overwrite each other's pin.
-  try {
-    const refreshed = await host.request('profiles.list', {})
-    const owner = refreshed?.profiles?.find(profile => profile.name === bot.name)
-
-    return owner?.ui_meta?.['hermes-bots']?.chat || null
-  } catch {
-    // Metadata refresh is best-effort; canonical creation remains the fallback.
-    return null
-  }
+  // The canonical chat is found by NAME on the now-active owner source —
+  // there is no per-source pointer to recover.
 }
 
 function displayName(bot, meta) {
@@ -6095,18 +5878,18 @@ function generatedSessionTitle(session, preview) {
 const ACTIVE_WINDOW_S = 90
 
 /** The session whose activity best represents this bot — the FRESHER of the
- *  pinned canonical Bot Chat (preferred_session) and the profile's newest
- *  visible conversation (last_session).
+ *  canonical Bot Chat (canonical_session, the profile's "Bot Chat" registry
+ *  row resolved server-side by name) and the profile's newest visible
+ *  conversation (last_session).
  *
  *  Canonical Bot Chats are hidden from the session list by design, so
  *  last_session alone never sees them: a bot you talk to all day through its
  *  Bot Chat reads "6d ago" because its newest VISIBLE session is a week old.
- *  #88690 moved the preview text to preferred_session but left every activity
- *  signal (age label, pulse dot, unread watermark, recency sort) on
- *  last_session. All of them key off this helper now. Older gateways without
- *  the preferred_session resolver degrade to last_session unchanged. */
+ *  Every activity signal (age label, pulse dot, unread watermark, recency
+ *  sort) keys off this helper. Older gateways without the canonical_session
+ *  field degrade to last_session unchanged. */
 function botActivitySession(bot) {
-  const preferred = bot?.preferred_session
+  const preferred = bot?.canonical_session
   const last = bot?.last_session
 
   if (!preferred || !last) {
@@ -6173,7 +5956,7 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
   // (age label, pulse dot) follow the same rule via botActivitySession:
   // the canonical Bot Chat is hidden from last_session, so keying age off
   // last_session alone shows "6d ago" on a bot you just messaged.
-  const previewSession = bot.preferred_session || last
+  const previewSession = bot.canonical_session || last
   const activitySession = botActivitySession(bot)
   // A live kanban/tool worker counts as activity (#90268): pulse + fresh
   // age while it runs, falling back to chat activity when it ends.
@@ -6241,8 +6024,6 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
       return
     }
 
-    let pinnedChat = meta?.chat
-
     if (!bot.remoteSource && $botUnread.get()[bot.name]) {
       const next = { ...$botUnread.get() }
       delete next[bot.name]
@@ -6252,7 +6033,7 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
     // Activate the owner first so every canonical-chat RPC lands on the
     // backend that owns this bot's state database.
     try {
-      pinnedChat = await prepareBotSource(bot, pinnedChat)
+      await prepareBotSource(bot)
     } catch (error) {
       host.notifyError?.(error, `Could not reach ${bot.connectionLabel || 'the remote source'}`)
 
@@ -6264,13 +6045,10 @@ function BotRow({ bot, onDelete, onEdit, onGroup }) {
     }
 
     try {
-      // `previewSession` prefers the PIN, and so does the click — preview
-      // identity and click identity are the same session by construction
-      // (#88200). The roster's freshest visible session is deliberately NOT
-      // passed: the row's job is to land in the bot's forever-chat, which is
-      // the only door to it (canonical Bot Chats are always hidden from the
-      // Sessions sidebar).
-      const id = await openBotCanonicalChat(bot.name, pinnedChat, previewSession)
+      // Identity is the NAMED registry row (profile → session titled
+      // "Bot Chat"), resolved fresh on every click — preview identity and
+      // click identity agree because both describe that same row (#88200).
+      const id = await openBotCanonicalChat(bot.name)
 
       if (generation === botOpenGeneration && id) {
         return
@@ -11315,10 +11093,8 @@ function BotsPane() {
           }
 
           void (async () => {
-            let pinnedChat = botRosterMeta(bot, allMeta)?.chat
-
             try {
-              pinnedChat = await prepareBotSource(bot, pinnedChat)
+              await prepareBotSource(bot)
             } catch (error) {
               host.notifyError?.(error, `Could not reach ${bot.connectionLabel || 'the remote source'}`)
 
@@ -11330,11 +11106,7 @@ function BotsPane() {
             }
 
             try {
-              const id = await openBotCanonicalChat(
-                bot.name,
-                pinnedChat,
-                bot.preferred_session || bot.last_session
-              )
+              const id = await openBotCanonicalChat(bot.name)
 
               if (generation === botOpenGeneration && id) {
                 return
@@ -11854,11 +11626,17 @@ export default {
 
           if (slashNew) {
             const activeBot = $selectedBot.get()
-            const meta = activeBot ? $botMeta.get()[activeBot] : null
-            const pinnedId = meta?.chat || null
+            // Canonical identity is the profile's "Bot Chat" registry row —
+            // read it from the roster cache (canonical_session, resolved
+            // server-side by name), matching either the durable row id or
+            // the compression-lineage tip currently on screen.
+            const roster = $lastRoster.get()
+            const row = Array.isArray(roster) ? roster.find(bot => bot?.name === activeBot) : null
+            const canonical = row?.canonical_session || null
             const currentId = host.activeSessionId?.get?.() ?? null
+            const canonicalIds = [canonical?.id, canonical?.resolved_id].filter(Boolean).map(String)
 
-            if (activeBot && pinnedId && currentId && String(currentId) === String(pinnedId)) {
+            if (activeBot && currentId && canonicalIds.includes(String(currentId))) {
               host.notify({
                 kind: 'info',
                 title: 'This chat never resets',

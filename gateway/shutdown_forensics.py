@@ -382,7 +382,7 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
                 if value.isdigit():
                     timeout_us = int(value)
                 else:
-                    timeout_us = _parse_systemd_duration_to_us(value)
+                    timeout_us = parse_systemd_duration_to_us(value)
                 if timeout_us is not None:
                     break
         if timeout_us is not None:
@@ -406,11 +406,13 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
     }
 
 
-def _parse_systemd_duration_to_us(raw: str) -> Optional[int]:
+def parse_systemd_duration_to_us(raw: str) -> Optional[int]:
     """Parse 'TimeoutStopUSec=1min 30s' / '90s' style values to microseconds.
 
     systemd accepts a wide grammar; we cover the common cases (s, ms, min,
     h) and return None on anything unexpected.  Never raises.
+
+    Public: also consumed by hermes_cli.gateway's restart-wait sizing.
     """
     if not raw:
         return None
@@ -460,3 +462,7 @@ def _parse_systemd_duration_to_us(raw: str) -> Optional[int]:
                 return None
             digits = ""
     return total_us if total_us > 0 else None
+
+
+# Backward-compat private alias (pre-promotion name).
+_parse_systemd_duration_to_us = parse_systemd_duration_to_us

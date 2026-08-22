@@ -63,6 +63,18 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "usage-center",
+      "description": "Hermes Usage Center — local tokens plus official Grok/Codex/Claude quota, with reset-cycle usage beside remaining percent.",
+      "author": "Chen Leshu",
+      "tags": ["usage", "tokens", "quota", "desktop", "observability"],
+      "repo": "chenleshu/hermes-usage-center",
+      "ref": "7f480c3f45760314c2505f14a62bb4ce7e0a6666",
+      "homepage": "https://github.com/chenleshu/hermes-usage-center",
+      "capabilities": ["dashboard"],
+      "api_version": 1,
+      "added_at": "2026-08-22"
     }
   ]
 }

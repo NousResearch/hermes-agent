@@ -794,6 +794,16 @@ def _sanitize_tool_error(error_msg: str) -> str:
 # Tool argument type coercion
 # =========================================================================
 
+def _try_record_repair(pattern: str, tool_name: str) -> None:
+    """Record a repair observability event.  No-op when stats unavailable."""
+    try:
+        from agent.tool_repair_stats import record_repair, RepairPattern
+
+        record_repair(RepairPattern(pattern), tool_name)
+    except Exception:
+        pass
+
+
 def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Coerce tool call arguments to match their JSON Schema types.
 
@@ -869,12 +879,14 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                     "coerce_tool_args: wrapped bare string in list for %s.%s",
                     tool_name, key,
                 )
+                _try_record_repair("bare_string_wrap", tool_name)
                 continue
             args[key] = [value]
             logger.info(
                 "coerce_tool_args: wrapped bare %s in list for %s.%s",
                 type(value).__name__, tool_name, key,
             )
+            _try_record_repair("bare_object_wrap", tool_name)
             continue
 
         if not isinstance(value, str):

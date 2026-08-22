@@ -5349,6 +5349,16 @@ def cmd_auth(args):
     auth_command(args)
 
 
+def cmd_repair_stats(args):
+    """Show tool-call repair observability stats (operator surface)."""
+    try:
+        from agent.tool_repair_stats import get_stats
+
+        print(get_stats().summary())
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"Tool-call repair stats unavailable: {exc}")
+
+
 def cmd_status(args):
     """Show status of all components."""
     from hermes_cli.status import show_status
@@ -13811,6 +13821,12 @@ def main():
     # =========================================================================
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
+
+    repair_stats_parser = subparsers.add_parser(
+        "repair-stats",
+        help="Show tool-call repair observability stats (operator surface)",
+    )
+    repair_stats_parser.set_defaults(func=cmd_repair_stats)
 
     # =========================================================================
     # claw command  (parser built in hermes_cli/subcommands/claw.py)

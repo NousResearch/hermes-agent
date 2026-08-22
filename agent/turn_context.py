@@ -511,6 +511,16 @@ def build_turn_context(
     except Exception:
         pass
 
+    # Tell the repair-stats collector which model is live for this turn so
+    # repair events can be attributed per model (same binding point as
+    # set_runtime_main above; observability stays strictly best-effort).
+    try:
+        from agent.tool_repair_stats import set_current_model as _set_repair_model
+
+        _set_repair_model(getattr(agent, "model", "") or "")
+    except Exception:
+        pass
+
     # Between-turns MCP refresh: an MCP server that finished connecting since
     # the previous turn (slow HTTP/OAuth servers routinely take 2-6s on a cold
     # connect, missing the bounded startup wait) lands in THIS turn's tool

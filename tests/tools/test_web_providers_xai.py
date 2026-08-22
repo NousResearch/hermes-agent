@@ -212,6 +212,81 @@ class TestXAIProviderSearchFallbacks:
         assert result["data"]["web"] == []
 
 
+class TestXAIProviderStripsCitationMarkers:
+    """#88363 — some Grok web-search replies inject internal
+    ``{render_inline_citation ...}`` placeholders despite
+    ``include: ["no_inline_citations"]``. They carry no URL and must never
+    reach the agent's tool results, regardless of extraction path."""
+
+    _GROK_JSON = json.dumps({
+        "results": [
+            {
+                "title": "Birthday dinner spot",
+                "url": "https://example.com/food",
+                "description": 'Nice restaurant {render_inline_citation citation_id="17"}',
+            },
+            {
+                "title": 'Another place{render_inline_citation citation_id="3"}',
+                "url": "https://example.com/2",
+                "description": 'a{render_inline_citation citation_id="1"}{render_inline_citation citation_id="2"}b',
+            },
+        ]
+    })
+
+    def test_markers_stripped_from_json_path_results(self):
+        from plugins.web.xai import provider as xai_provider
+
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value={}), \
+             patch("httpx.post", return_value=_mock_resp(_responses_payload(self._GROK_JSON))):
+            result = xai_provider.XAIWebSearchProvider().search("birthday dinner", limit=5)
+
+        assert result["success"] is True
+        web = result["data"]["web"]
+        assert web[0]["description"] == "Nice restaurant"
+        assert web[1]["title"] == "Another place"
+        # Adjacent markers collapse to a single space, not empty glue.
+        assert web[1]["description"] == "a b"
+
+    def test_markers_stripped_from_annotation_fallback_text(self):
+        """The annotation path derives descriptions from the raw message body,
+        which is exactly where Grok drops these markers."""
+        from plugins.web.xai import provider as xai_provider
+
+        body = 'xAI is an AI company {render_inline_citation citation_id="17"}founded in 2023.'
+        annotations = [
+            {
+                "type": "url_citation",
+                "url": "https://x.ai/about",
+                "title": "1",
+                "start_index": 4,
+                "end_index": 9,
+            },
+        ]
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value={}), \
+             patch("httpx.post", return_value=_mock_resp(_responses_payload(body, annotations=annotations))):
+            result = xai_provider.XAIWebSearchProvider().search("xai", limit=5)
+
+        assert result["success"] is True
+        for row in result["data"]["web"]:
+            for field in ("title", "description"):
+                assert "render_inline_citation" not in (row[field] or "")
+
+    def test_marker_regex_variants(self):
+        from plugins.web.xai.provider import _strip_inline_citation_markers
+
+        assert (
+            _strip_inline_citation_markers('a {render_inline_citation citation_id="12"} b')
+            == "a b"
+        )
+        assert (
+            _strip_inline_citation_markers('tail {render_inline_citation citation_id="26"}')
+            == "tail"
+        )
+        assert _strip_inline_citation_markers("clean text") == "clean text"
+
+
 # ---------------------------------------------------------------------------
 # Request payload shape
 # ---------------------------------------------------------------------------

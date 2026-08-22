@@ -64,6 +64,13 @@ const EMPTY_PARTS: readonly unknown[] = []
 // constant MESSAGE_PARTS_COMPONENTS, so nothing per-message is captured here.
 const MESSAGE_PARTS = <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
 
+export const OWNER_DIRECTED_ASSISTANT_RE =
+  /^(?:【\s*(?:给|給)\s*[^】\n]{1,64}?\s*的\s*(?:独立汇报|獨立匯報|汇报|匯報|报告|報告)\s*】|\[(?:for you|owner report|to owner)\]|(?:for you|to (?:the )?owner)\s*[:：—-])/iu
+
+export function isOwnerDirectedAssistantText(text: string): boolean {
+  return OWNER_DIRECTED_ASSISTANT_RE.test(text.trim())
+}
+
 interface MessageActionProps {
   messageId: string
   /** Lazy accessor — reads the live message text at action time. Passing the
@@ -161,20 +168,30 @@ const InterAgentCollapsedNotice: FC<{ sender: string }> = ({ sender }) => (
  */
 const InterAgentAssistantMessage: FC<AssistantMessageProps & { sender: string }> = ({ sender, ...props }) => {
   const isRunning = useAuiState(s => s.message.status?.type === 'running')
+  const isOwnerDirected = useAuiState(s => isOwnerDirectedAssistantText(messageContentText(s.message.content as never)))
 
   return (
     <AssistantMessageBody
       {...props}
-      collapsedNotice={isRunning ? null : <InterAgentCollapsedNotice sender={sender} />}
+      audienceBadge={isOwnerDirected ? <OwnerDirectedBadge /> : null}
+      collapsedNotice={isRunning || isOwnerDirected ? null : <InterAgentCollapsedNotice sender={sender} />}
     />
   )
 }
 
-const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null | ReactNode }> = ({
-  collapsedNotice = null,
-  onBranchInNewChat,
-  onDismissError
-}) => {
+const OwnerDirectedBadge: FC = () => (
+  <div
+    className="mb-1 inline-flex w-fit items-center gap-1 rounded-full border border-(--ui-stroke-tertiary) bg-(--ui-control-background) px-2 py-0.5 text-[0.6875rem] font-medium leading-4 text-(--ui-text-secondary)"
+    data-slot="aui_owner-directed-badge"
+  >
+    <Codicon aria-hidden name="person" size="0.75rem" />
+    <span>For you</span>
+  </div>
+)
+
+const AssistantMessageBody: FC<
+  AssistantMessageProps & { audienceBadge?: null | ReactNode; collapsedNotice?: null | ReactNode }
+> = ({ audienceBadge = null, collapsedNotice = null, onBranchInNewChat, onDismissError }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRuntime = useMessageRuntime()
   const { t } = useI18n()
@@ -232,6 +249,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
             className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
             data-slot="aui_assistant-message-content"
           >
+            {audienceBadge}
             {/* Todos render in the composer status stack now, not inline. */}
             {MESSAGE_PARTS}
             <AssistantStatusSlot />

@@ -12,6 +12,7 @@ import { $displayTimestamps } from '@/store/display-timestamps'
 
 import { stubThreadEnvironment } from '../test-utils'
 
+import { isOwnerDirectedAssistantText } from './assistant-message'
 import { formatTimelineRange, formatTimelineTimestamp } from './timestamp'
 
 import { Thread } from '.'
@@ -27,11 +28,11 @@ afterEach(() => {
   cleanup()
 })
 
-function userMessage(): ThreadMessage {
+function userMessage(content = 'question one'): ThreadMessage {
   return {
     id: 'user-1',
     role: 'user',
-    content: [{ type: 'text', text: 'question one' }],
+    content: [{ type: 'text', text: content }],
     attachments: [],
     createdAt,
     metadata: { custom: { timelineTimestamp: createdAt.getTime() / 1000 } }
@@ -70,13 +71,15 @@ function assistantMessage(): ThreadMessage {
 
 function Harness({
   assistant = assistantMessage(),
+  user = userMessage(),
   onBranchInNewChat
 }: {
   assistant?: ThreadMessage
+  user?: ThreadMessage
   onBranchInNewChat?: (messageId: string) => void
 }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistant],
+    messages: [user, assistant],
     isRunning: false,
     onNew: async () => {}
   })
@@ -87,6 +90,50 @@ function Harness({
     </AssistantRuntimeProvider>
   )
 }
+
+describe('inter-agent assistant audience handling', () => {
+  it('recognizes owner-directed report markers', () => {
+    expect(isOwnerDirectedAssistantText('【给 Kuro 的独立汇报】\nDone.')).toBe(true)
+    expect(isOwnerDirectedAssistantText('[for you]\nDone.')).toBe(true)
+    expect(isOwnerDirectedAssistantText('For you: Done.')).toBe(true)
+    expect(isOwnerDirectedAssistantText('Ordinary reply to the other bot.')).toBe(false)
+  })
+
+  it('keeps owner-directed reports visible instead of collapsing them under the triggering bot', async () => {
+    render(
+      <Harness
+        assistant={
+          {
+            ...assistantMessage(),
+            content: [{ text: '【给 Kuro 的独立汇报】\nOwner-visible report.', type: 'text' }]
+          } as unknown as ThreadMessage
+        }
+        user={userMessage('Message from 🤖 reviewer (@reviewer): PASS relay')}
+      />
+    )
+
+    expect(await screen.findByText('For you')).toBeTruthy()
+    expect(await screen.findByText(/Owner-visible report/)).toBeTruthy()
+    expect(screen.queryByText('Replied to reviewer')).toBeNull()
+  })
+
+  it('still collapses ordinary inter-agent replies', async () => {
+    render(
+      <Harness
+        assistant={
+          {
+            ...assistantMessage(),
+            content: [{ text: 'ACK, reviewer.', type: 'text' }]
+          } as unknown as ThreadMessage
+        }
+        user={userMessage('Message from 🤖 reviewer (@reviewer): PASS relay')}
+      />
+    )
+
+    expect(await screen.findByText('Replied to reviewer')).toBeTruthy()
+    expect(screen.queryByText('For you')).toBeNull()
+  })
+})
 
 describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
   it('shows the Branch in new chat button when a handler is provided (open chat)', async () => {

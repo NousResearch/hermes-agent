@@ -222,6 +222,52 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openrouter.ai/anthropic/claude-opus-4.8-fast",
         pricing_version="anthropic-pricing-2026-05",
     ),
+    # ── Anthropic Claude Opus 5 / Fable 5 ────────────────────────────────
+    # Added locally 2026-08-10: both models were MISSING from this table, so
+    # every call was booked as $0.00 with cost_status='unknown' (4,231 of
+    # 4,562 calls in one week => ~$770 invisible). Upstream still lacks them.
+    # Opus 5 holds the $5/$25 rate unchanged since Opus 4.5/4.8; fast mode
+    # carries the 2x premium; Fable 5 is the $10/$50 tier.
+    # Verified 2026-08-10 against the OpenRouter models API
+    # (anthropic/claude-opus-5: prompt 0.000005, completion 0.000025,
+    #  input_cache_read 0.0000005, input_cache_write 0.00000625) and
+    # cross-checked against platform.claude.com pricing docs.
+    (
+        "anthropic",
+        "claude-opus-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-08",
+    ),
+    (
+        "anthropic",
+        "claude-opus-5-fast",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        source="official_docs_snapshot",
+        source_url="https://openrouter.ai/anthropic/claude-opus-5-fast",
+        pricing_version="anthropic-pricing-2026-08",
+    ),
+    (
+        "anthropic",
+        "claude-fable-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        source="official_docs_snapshot",
+        source_url="https://openrouter.ai/anthropic/claude-fable-5",
+        pricing_version="anthropic-pricing-2026-08",
+    ),
     # ── Anthropic Claude Sonnet 5 ────────────────────────────────────────
     # Launched 2026-06-30. Introductory pricing ($2/$10 per MTok) runs
     # through 2026-08-31, after which it reverts to $3/$15 (matching

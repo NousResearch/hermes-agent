@@ -29,6 +29,7 @@ import {
   noteActiveTreeGroup,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
+import type { WorkspaceMode } from '@/contrib/types'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
@@ -535,6 +536,15 @@ export interface SessionTile {
   runtimeId?: string
   /** Resume failed terminally (shown in the tile; retryable). */
   error?: string
+  /** Presentation workspace this tab belongs to. Missing legacy values are Sessions. */
+  workspaceMode?: WorkspaceMode
+  /** Exact opaque owner key for Bot Mode tabs. */
+  workspaceOwnerKey?: string
+}
+
+export interface SessionTileWorkspaceScope {
+  workspaceMode: WorkspaceMode
+  workspaceOwnerKey?: string
 }
 
 // Tiles are persisted PER PROFILE: a session belongs to one profile, and the
@@ -550,13 +560,18 @@ const TILE_PANE_PREFIX = 'session-tile:'
 /** Persisted placement — `dir` + strip slot (`before`) + dock `anchor` so a
  *  restart / profile swap re-adopts tiles in the same order, not all stacked
  *  right of workspace. */
-type StoredTile = Pick<SessionTile, 'anchor' | 'before' | 'dir' | 'storedSessionId'>
+type StoredTile = Pick<
+  SessionTile,
+  'anchor' | 'before' | 'dir' | 'storedSessionId' | 'workspaceMode' | 'workspaceOwnerKey'
+>
 
 const toStored = (t: SessionTile): StoredTile => ({
   anchor: t.anchor,
   before: t.before,
   dir: t.dir,
-  storedSessionId: t.storedSessionId
+  storedSessionId: t.storedSessionId,
+  ...(t.workspaceMode ? { workspaceMode: t.workspaceMode } : {}),
+  ...(t.workspaceOwnerKey ? { workspaceOwnerKey: t.workspaceOwnerKey } : {})
 })
 
 function parseTileList(value: unknown): StoredTile[] {
@@ -570,7 +585,12 @@ function parseTileList(value: unknown): StoredTile[] {
             anchor: typeof raw.anchor === 'string' ? raw.anchor : undefined,
             before: typeof raw.before === 'string' || raw.before === null ? raw.before : undefined,
             dir: raw.dir,
-            storedSessionId: raw.storedSessionId
+            storedSessionId: raw.storedSessionId,
+            workspaceMode: raw.workspaceMode === 'bots' ? 'bots' : 'sessions',
+            workspaceOwnerKey:
+              raw.workspaceMode === 'bots' && typeof raw.workspaceOwnerKey === 'string'
+                ? raw.workspaceOwnerKey
+                : undefined
           }
         })
     : []
@@ -651,6 +671,25 @@ if (!isSecondaryWindow()) {
 
 export function patchSessionTile(storedSessionId: string, patch: Partial<SessionTile>) {
   saveTiles($sessionTiles.get().map(t => (t.storedSessionId === storedSessionId ? { ...t, ...patch } : t)))
+}
+
+export function setSessionTileWorkspaceScope(
+  storedSessionId: string,
+  scope: SessionTileWorkspaceScope
+): boolean {
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+  const workspaceOwnerKey = scope.workspaceMode === 'bots' ? scope.workspaceOwnerKey : undefined
+
+  if (
+    !tile ||
+    ((tile.workspaceMode ?? 'sessions') === scope.workspaceMode && tile.workspaceOwnerKey === workspaceOwnerKey)
+  ) {
+    return false
+  }
+
+  patchSessionTile(storedSessionId, { workspaceMode: scope.workspaceMode, workspaceOwnerKey })
+
+  return true
 }
 
 /** Drop live runtime bindings so every tile re-resumes — used on gateway
@@ -795,7 +834,8 @@ export function openSessionTile(
   storedSessionId: string,
   dir: TileDock = 'right',
   anchor?: string,
-  before?: null | string
+  before?: null | string,
+  workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
 ) {
   const tiles = $sessionTiles.get()
 
@@ -813,13 +853,28 @@ export function openSessionTile(
 
   const dock = anchor ?? focusedSessionTabAnchor() ?? undefined
 
+  const workspaceOwnerKey =
+    workspaceScope.workspaceMode === 'bots' ? workspaceScope.workspaceOwnerKey : undefined
+
   if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
-    saveTiles([...tiles, { anchor: dock, before, dir, storedSessionId }])
+    saveTiles([
+      ...tiles,
+      {
+        anchor: dock,
+        before,
+        dir,
+        storedSessionId,
+        workspaceMode: workspaceScope.workspaceMode,
+        workspaceOwnerKey
+      }
+    ])
     // Adoption is async via the registry — order sync runs after the move path
     // below; a brand-new tile's strip slot is already in `before`.
 
     return
   }
+
+  setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
 
   // Already open: relocate the existing pane to the drop target (pane-mirror
   // only docks on first adoption, so a re-drag must move the tree pane itself).
@@ -940,7 +995,10 @@ export function blankDraftTile(
  *  False when there's no such tab, so the caller can fall back. The spent draft
  *  is DISCARDED rather than closed: it never held a conversation, so ⌘⇧T
  *  resurrecting it would just restore an empty tab. */
-export function reuseBlankDraftTile(storedSessionId: string): boolean {
+export function reuseBlankDraftTile(
+  storedSessionId: string,
+  workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
+): boolean {
   const tile = blankDraftTile($sessionTiles.get(), $sessionStates.get())
 
   if (!tile || tile.storedSessionId === storedSessionId) {
@@ -948,7 +1006,7 @@ export function reuseBlankDraftTile(storedSessionId: string): boolean {
   }
 
   discardSessionTile(tile.storedSessionId)
-  openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before)
+  openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before, workspaceScope)
   revealTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`)
 
   return true
@@ -964,7 +1022,7 @@ export function closeSessionTile(storedSessionId: string) {
   const tile = $sessionTiles.get().find(t => t.storedSessionId === storedSessionId)
 
   if (tile) {
-    closedStack().push({ anchor: tile.anchor, before: tile.before, dir: tile.dir, storedSessionId })
+    closedStack().push(toStored(tile))
   }
 
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
@@ -1011,7 +1069,10 @@ export function reopenLastClosedTile(): void {
     }
 
     if (!$sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
-      openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before)
+      openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before, {
+        workspaceMode: tile.workspaceMode ?? 'sessions',
+        workspaceOwnerKey: tile.workspaceOwnerKey
+      })
       focusOpenSession(storedSessionId)
 
       return

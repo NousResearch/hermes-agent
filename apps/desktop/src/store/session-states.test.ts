@@ -12,12 +12,15 @@ import {
   focusedSessionNeedsRoute,
   markSelectionRestore,
   nextSessionTileForWorkspace,
+  openSessionTile,
   orderTilesByTree,
+  patchSessionTile,
   releaseSessionTranscript,
   resetTileRuntimeBindings,
   selectionHomesToWorkspace,
   type SessionTileDelegate,
-  setSessionTileDelegate
+  setSessionTileDelegate,
+  setSessionTileWorkspaceScope
 } from '@/store/session-states'
 
 const tile = (storedSessionId: string): SessionTile => ({ storedSessionId })
@@ -50,6 +53,69 @@ describe('resetTileRuntimeBindings', () => {
 
     expect(() => resetTileRuntimeBindings()).not.toThrow()
     expect($sessionTiles.get()[0]?.runtimeId).toBeUndefined()
+  })
+})
+
+describe('SessionTile workspace scope', () => {
+  afterEach(() => {
+    $layoutTree.set(null)
+    $selectedStoredSessionId.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('stores an exact Bot owner and keeps it through placement patches', () => {
+    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'connection-a::default' }
+
+    openSessionTile('bot-chat', 'right', undefined, undefined, scope)
+    patchSessionTile('bot-chat', { dir: 'left' })
+
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({
+        dir: 'left',
+        storedSessionId: 'bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'connection-a::default'
+      })
+    ])
+  })
+
+  it('re-scopes an existing tile without changing its placement', () => {
+    openSessionTile('chat', 'bottom', 'workspace')
+
+    expect(
+      setSessionTileWorkspaceScope('chat', {
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'connection-b::default'
+      })
+    ).toBe(true)
+    expect($sessionTiles.get()[0]).toMatchObject({
+      anchor: 'workspace',
+      dir: 'bottom',
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'connection-b::default'
+    })
+  })
+
+  it('preserves workspace scope while dropping a stale runtime binding', () => {
+    $sessionTiles.set([
+      {
+        runtimeId: 'runtime-dead',
+        storedSessionId: 'bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'connection-a::default'
+      }
+    ])
+
+    resetTileRuntimeBindings()
+
+    expect($sessionTiles.get()[0]).toEqual({
+      anchor: undefined,
+      before: undefined,
+      dir: undefined,
+      storedSessionId: 'bot-chat',
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'connection-a::default'
+    })
   })
 })
 

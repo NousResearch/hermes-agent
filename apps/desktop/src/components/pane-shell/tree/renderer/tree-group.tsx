@@ -10,7 +10,7 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, Fragment, type ReactNode, type RefObject, useRef, useState } from 'react'
+import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -35,6 +35,14 @@ import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
 import { emptyPaneLifecycleState, reconcilePaneLifecycle } from '../../pane-lifecycle'
 import { hiddenPaneProps, PaneGroupContext, PaneLifecycleContext, PaneVisibleContext } from '../../pane-visibility'
+import {
+  $workspaceMode,
+  $workspaceOwnerKey,
+  contributesToWorkspace,
+  rememberActivePane,
+  resolveRememberedActivePane,
+  workspaceScopeKey
+} from '../../workspace-scope'
 import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
@@ -228,6 +236,8 @@ export function TreeGroup({
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
+  const workspaceMode = useStore($workspaceMode)
+  const workspaceOwnerKey = useStore($workspaceOwnerKey)
   const newSessionTabAction = useStore($newSessionTabAction)
   const panesWithCloser = useStore($panesWithCloser)
   // Multi-tab selection (⌥/Ctrl-click, Shift-click) — null for every zone but
@@ -245,12 +255,26 @@ export function TreeGroup({
   // Edit mode forces toggle-hidden panes visible so they can be rearranged
   // (mirrors tree-split's paneGone) — restores itself on exit.
   const paneShown = (id: string) =>
-    Boolean(paneFor(id)) && (editMode || !hiddenPanes.has(id)) && !(narrow && paneChrome(paneFor(id)).collapsible)
+    Boolean(paneFor(id)) &&
+    contributesToWorkspace(paneFor(id), workspaceMode, workspaceOwnerKey) &&
+    (editMode || !hiddenPanes.has(id)) &&
+    !(narrow && paneChrome(paneFor(id)).collapsible)
 
   const shown = node.panes.filter(paneShown)
-  const activeId = shown.includes(node.active) ? node.active : (shown[0] ?? node.active)
+  const memoryKey = workspaceScopeKey(workspaceMode, workspaceOwnerKey)
+
+  const activeId = shown.includes(node.active)
+    ? node.active
+    : (resolveRememberedActivePane(memoryKey, shown) ?? shown[0] ?? '')
+
   const active = paneFor(activeId)
-  const isEmpty = node.panes.length === 0
+  const isEmpty = shown.length === 0
+
+  useEffect(() => {
+    if (activeId) {
+      rememberActivePane(memoryKey, activeId)
+    }
+  }, [activeId, memoryKey])
 
   // BOUNDED KEEP-ALIVE: the active pane is visible, a small per-zone LRU stays
   // hot-hidden, and older panes park (unmount). This preserves fast tab

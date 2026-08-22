@@ -413,6 +413,26 @@ describe('profile-aware plugin session opens', () => {
     expect(openSessionCore).toHaveBeenCalledWith('remote-chat', expect.any(Function), 'in-place')
   })
 
+  it('threads an exact Bot workspace owner into the core session open', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'default',
+      targetProfile: 'backend-default'
+    }
+
+    await host.openSession('bot-chat', {
+      route,
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'source-a::default'
+    })
+
+    expect(openSessionCore).toHaveBeenCalledWith('bot-chat', expect.any(Function), 'in-place', {
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'source-a::default'
+    })
+  })
+
   it('waits until the target Bot Chat runtime and history are on main before resolving', async () => {
     vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
 

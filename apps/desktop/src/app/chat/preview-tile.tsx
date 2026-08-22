@@ -122,6 +122,7 @@ export function watchPreviewTiles(): void {
 
 const watchPreviewTileMirror = paneMirror<{ id: string }>({
   source: $previewTabs,
+  workspaceMode: 'sessions',
   key: tab => tab.id,
   prefix: PREVIEW_TILE_PREFIX,
   // Identical to route (page) tiles: its own zone docked beside main, sized by

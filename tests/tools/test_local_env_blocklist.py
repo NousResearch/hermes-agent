@@ -301,27 +301,70 @@ class TestActiveVenvMarkerStripping:
         })
         assert "CONDA_PREFIX" not in result_env
 
+    def test_conda_shlvl_marker_stripped_end_to_end(self):
+        """#82255: half-stripped conda (SHLVL without PREFIX) crashes shell init."""
+        result_env = _run_with_env(extra_os_env={
+            "CONDA_PREFIX": "/opt/conda/envs/hermes",
+            "CONDA_SHLVL": "1",
+            "CONDA_PROMPT_MODIFIER": "(hermes) ",
+        })
+        assert "CONDA_PREFIX" not in result_env
+        assert "CONDA_SHLVL" not in result_env
+        assert "CONDA_PROMPT_MODIFIER" not in result_env
+
     def test_make_run_env_strips_markers(self):
         from tools.environments.local import _make_run_env
-        poison = {"VIRTUAL_ENV": "/venv", "CONDA_PREFIX": "/conda", "PATH": "/usr/bin"}
+        poison = {
+            "VIRTUAL_ENV": "/venv",
+            "CONDA_PREFIX": "/conda",
+            "CONDA_SHLVL": "1",
+            "CONDA_PROMPT_MODIFIER": "(base) ",
+            "PATH": "/usr/bin",
+        }
         with patch.dict(os.environ, poison, clear=True):
             result = _make_run_env({})
         assert "VIRTUAL_ENV" not in result
         assert "CONDA_PREFIX" not in result
+        assert "CONDA_SHLVL" not in result
+        assert "CONDA_PROMPT_MODIFIER" not in result
 
     def test_sanitize_subprocess_env_strips_markers(self):
         from tools.environments.local import _sanitize_subprocess_env
-        base = {"VIRTUAL_ENV": "/venv", "CONDA_PREFIX": "/conda", "HOME": "/home/user"}
+        base = {
+            "VIRTUAL_ENV": "/venv",
+            "CONDA_PREFIX": "/conda",
+            "CONDA_SHLVL": "1",
+            "CONDA_PROMPT_MODIFIER": "(base) ",
+            "HOME": "/home/user",
+        }
         # Even an explicitly-passed extra marker is stripped.
         result = _sanitize_subprocess_env(base, {"VIRTUAL_ENV": "/also/venv"})
         assert "VIRTUAL_ENV" not in result
         assert "CONDA_PREFIX" not in result
+        assert "CONDA_SHLVL" not in result
+        assert "CONDA_PROMPT_MODIFIER" not in result
         assert result.get("HOME") == "/home/user"
 
     def test_markers_constant_contents(self):
         from tools.environments.local import _ACTIVE_VENV_MARKER_VARS
         assert "VIRTUAL_ENV" in _ACTIVE_VENV_MARKER_VARS
         assert "CONDA_PREFIX" in _ACTIVE_VENV_MARKER_VARS
+        assert "CONDA_SHLVL" in _ACTIVE_VENV_MARKER_VARS
+        assert "CONDA_PROMPT_MODIFIER" in _ACTIVE_VENV_MARKER_VARS
+
+    def test_stripped_conda_state_is_self_consistent(self):
+        """No CONDA_SHLVL may survive without CONDA_PREFIX (#82255 invariant)."""
+        from tools.environments.local import _sanitize_subprocess_env
+        half = {
+            "CONDA_SHLVL": "1",
+            "CONDA_PROMPT_MODIFIER": "(base) ",
+            "PATH": "/usr/bin",
+            "HOME": "/home/user",
+        }
+        result = _sanitize_subprocess_env(half, {})
+        assert "CONDA_SHLVL" not in result
+        assert "CONDA_PREFIX" not in result
+        assert "CONDA_PROMPT_MODIFIER" not in result
 
 
 def _make_directory_link(link: Path, target: Path) -> None:

@@ -2661,17 +2661,26 @@ def list_authenticated_providers(
     # same endpoint as a built-in (e.g. a user-defined "my-dashscope" on
     # https://coding-intl.dashscope.aliyuncs.com/v1 collides with the built-in
     # alibaba-coding-plan row when DASHSCOPE_API_KEY is present). Fixes #16970.
-    _builtin_endpoints: set = set()
-
+    _builtin_endpoints: "dict[str, set[str]]" = {}
+    # Effective base URLs of every built-in row we emit (normalized lower+rstrip),
+    # mapped to the set of credential identities that built-in row authenticates
+    # with. Section 4 uses this to hide ``custom_providers`` entries that are true
+    # shadows of a built-in — same endpoint AND same credential. Fixes #16970:
+    # a user-defined "my-dashscope" on https://coding-intl.dashscope.aliyuncs.com/v1
+    # with DASHSCOPE_API_KEY collides with the built-in alibaba-coding-plan row.
+    # Keying on (url, credential) rather than url alone preserves distinct
+    # credentials on a shared endpoint (e.g. an API-key custom provider beside an
+    # OAuth-login built-in on inference-api.nousresearch.com).
     def _norm_url(url: str) -> str:
         return str(url or "").strip().rstrip("/").lower()
 
     def _record_builtin_endpoint(slug: str) -> None:
-        """Record the effective base URL for a built-in provider row.
+        """Record the effective base URL + credential identities for a built-in row.
 
         Prefers the live env-override (e.g. DASHSCOPE_BASE_URL) over the
         static inference_base_url so the dedup matches what a user typing
-        that URL into custom_providers would actually hit."""
+        that URL into custom_providers would actually hit.
+        """
         try:
             from hermes_cli.auth import PROVIDER_REGISTRY as _reg
         except Exception:
@@ -2685,8 +2694,25 @@ def list_authenticated_providers(
         if not url:
             url = getattr(pcfg, "inference_base_url", "") or ""
         normed = _norm_url(url)
-        if normed:
-            _builtin_endpoints.add(normed)
+        if not normed:
+            return
+        creds = _builtin_endpoints.setdefault(normed, set())
+        auth_type = str(getattr(pcfg, "auth_type", "") or "").lower()
+        if auth_type == "oauth_device_code":
+            # OAuth-login built-in (e.g. Nous Portal). A ``custom_providers``
+            # entry is key-based and can never replicate this credential, so
+            # record a sentinel no key-based entry will match — never hide a
+            # distinct-key custom row on the same endpoint.
+            creds.add("oauth")
+            return
+        # API-key built-in: a custom entry shadows it when it authenticates
+        # with the same key. Match either the env var name (key_env form) or
+        # the resolved key value (inline api_key form).
+        for env_var in getattr(pcfg, "api_key_env_vars", ()) or ():
+            val = os.environ.get(env_var, "").strip()
+            if val:
+                creds.add(f"env:{env_var}")
+                creds.add(val)
 
     def _has_fast_aws_sdk_signal() -> bool:
         """Return True when explicit AWS auth config is present.
@@ -3633,6 +3659,7 @@ def list_authenticated_providers(
                     "name": display_name,
                     "api_url": api_url,
                     "api_key": api_key,
+                    "credential_identity": credential_identity,
                     "models": [],
                     "has_explicit_models": False,
                     "discover_models": discover,
@@ -3727,9 +3754,17 @@ def list_authenticated_providers(
             # built-in alibaba-coding-plan row whenever DASHSCOPE_API_KEY is
             # set. The built-in row carries the curated model list, correct
             # auth wiring, and canonical slug — keep it and hide the shadow.
+            # Only hide a TRUE shadow: same endpoint AND matching credential
+            # identity. When the built-in's credentials were not captured
+            # (e.g. env var unset at probe time, OAuth), fall through and
+            # surface the custom row — a missing-cred signal is conservative,
+            # not a license to hide.
             _grp_url_norm = _pair_key[1]
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
-                continue
+                _grp_creds = _builtin_endpoints[_grp_url_norm]
+                _grp_identity = str(grp.get("credential_identity") or "").strip()
+                if _grp_creds and _grp_identity in _grp_creds:
+                    continue
             # Live model discovery from custom provider endpoints (matches
             # Section 3 behavior for user ``providers:`` entries).
             # Also probes when no api_key is set (e.g. local llama.cpp /

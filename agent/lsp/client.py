@@ -240,6 +240,12 @@ class LSPClient:
         self._state: str = "stopped"
         self._initialize_result: Optional[Dict[str, Any]] = None
         self._sync_kind: int = 1  # 1=Full, 2=Incremental
+        # Whether the server advertises (and actually honors) the
+        # ``textDocument/diagnostic`` pull endpoint.  Flipped off either at
+        # initialize (capability absent) or on the first -32601 — servers
+        # that don't support pull would otherwise fail once per call,
+        # forever.
+        self._pull_diagnostics_supported: bool = True
         self._stopping: bool = False
 
         # Push event for waiters.
@@ -427,7 +433,9 @@ class LSPClient:
             timeout=INITIALIZE_TIMEOUT,
         )
         self._initialize_result = result
-        self._sync_kind = self._extract_sync_kind(result.get("capabilities") or {})
+        caps = result.get("capabilities") or {}
+        self._sync_kind = self._extract_sync_kind(caps)
+        self._pull_diagnostics_supported = self._supports_pull_diagnostics(caps)
 
         await self._send_notification("initialized", {})
         if self._init_options:
@@ -449,6 +457,14 @@ class LSPClient:
             if isinstance(change, int):
                 return change
         return 1  # default to Full
+
+    @staticmethod
+    def _supports_pull_diagnostics(capabilities: dict) -> bool:
+        diag = capabilities.get("textDocument")
+        provider = diag.get("diagnostic", {}).get("provider") if isinstance(diag, dict) else None
+        # LSP: the provider entry (bool or registration options) advertises
+        # pull-diagnostics support; absent means push-only.
+        return provider is not None and provider is not False
 
     async def shutdown(self) -> None:
         """Best-effort graceful shutdown.
@@ -818,6 +834,8 @@ class LSPClient:
         Silently no-ops on errors (server may not support the pull
         endpoint).
         """
+        if not self._pull_diagnostics_supported:
+            return
         abs_path = os.path.abspath(path)
         doc = self._docs.get(abs_path)
         sent_version = doc.version if doc else -1
@@ -831,6 +849,16 @@ class LSPClient:
                 timeout=DIAGNOSTICS_REQUEST_TIMEOUT,
             )
         except (LSPRequestError, LSPProtocolError, asyncio.TimeoutError) as e:
+            if isinstance(e, LSPRequestError) and e.code == ERROR_METHOD_NOT_FOUND:
+                # Server rejects the pull endpoint outright — remember and
+                # stop asking, so a push-only server doesn't error once per
+                # diagnostics call for the process lifetime.
+                self._pull_diagnostics_supported = False
+                logger.debug(
+                    "[%s] server has no textDocument/diagnostic support; disabling pull",
+                    self.server_id,
+                )
+                return
             logger.debug("[%s] document diagnostic pull failed: %s", self.server_id, e)
             return
         if not isinstance(result, dict):

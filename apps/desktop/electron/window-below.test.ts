@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { type EnumeratedWindow, enumerationFailureNote, pickWindowBelow } from './window-below'
+import { describeThrown, type EnumeratedWindow, enumerationFailureNote, pickWindowBelow, resolveOutsideAsar } from './window-below'
 
 const win = (pid: number, x = 0, y = 0, width = 800, height = 600, app = `app-${pid}`): EnumeratedWindow => ({
   app,
@@ -124,5 +124,50 @@ describe('enumerationFailureNote', () => {
       expect(note).not.toMatch(/xprop|Wayland/)
       expect(note.length).toBeGreaterThan(0)
     }
+  })
+})
+
+describe('resolveOutsideAsar', () => {
+  // The helper binary get-windows execs cannot run from inside the archive
+  // (execFile on a path through app.asar fails ENOTDIR), so the import must
+  // land on the unpacked copy electron-builder ships beside it.
+  it('redirects a packaged specifier into app.asar.unpacked', () => {
+    expect(
+      resolveOutsideAsar('file:///Applications/Hermes.app/Contents/Resources/app.asar/dist/node_modules/get-windows/index.js')
+    ).toBe('file:///Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist/node_modules/get-windows/index.js')
+  })
+
+  it('leaves a dev-tree specifier alone', () => {
+    const dev = 'file:///Users/dev/hermes-agent/node_modules/get-windows/index.js'
+
+    expect(resolveOutsideAsar(dev)).toBe(dev)
+  })
+
+  // Only the exact archive segment counts — a directory that merely starts
+  // with the name must not be rewritten.
+  it('requires app.asar to be a complete path segment', () => {
+    const lookalike = 'file:///opt/app.asar-tools/node_modules/get-windows/index.js'
+
+    expect(resolveOutsideAsar(lookalike)).toBe(lookalike)
+  })
+})
+
+describe('describeThrown', () => {
+  it('prefixes the code when a thrown Error carries one', () => {
+    const error = Object.assign(new Error('not a directory'), { code: 'ENOTDIR' })
+
+    expect(describeThrown(error)).toBe('ENOTDIR: not a directory')
+  })
+
+  it('falls back to the bare message when an Error has no code', () => {
+    expect(describeThrown(new Error('openWindows exploded'))).toBe('openWindows exploded')
+  })
+
+  it('stringifies a thrown value that is not an Error', () => {
+    expect(describeThrown('plain string throw')).toBe('plain string throw')
+  })
+
+  it('survives a thrown null, which has no properties to read', () => {
+    expect(describeThrown(null)).toBe('null')
   })
 })

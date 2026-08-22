@@ -124,13 +124,83 @@ type GetWindowsModule = {
 
 let getWindowsModule: Promise<GetWindowsModule | null> | null = null
 
+/**
+ * Why enumeration last came up empty, in the enumerator's own words.
+ *
+ * Every way this can fail used to be swallowed by a bare `catch` and reported
+ * as the same generic "Could not enumerate windows on this system." — which is
+ * indistinguishable from a platform that genuinely cannot answer, and sends
+ * anyone debugging it looking at permissions when the real fault was an exec
+ * that never got off the ground. The reason is appended to the error the tool
+ * returns, so it reaches the agent transcript (and `agent.log` on whichever
+ * host runs the backend) without needing the desktop's own log.
+ *
+ * Holds the most recent cause until an enumeration succeeds. Import failures
+ * stay permanent by construction: the module import is memoized, so a failed
+ * load can never be followed by a success, and its reason survives to be
+ * reported on every later call. A transient runtime failure is cleared as soon
+ * as `openWindows()` returns a real list, so a later unexplained null carries
+ * no cause at all and a stale reason can never be attached to it.
+ */
+let lastEnumerationFailure: string | null = null
+
+export const describeThrown = (error: unknown): string => {
+  const message = error instanceof Error ? error.message : String(error)
+  const code = (error as { code?: string } | null)?.code
+
+  return code ? `${code}: ${message}` : message
+}
+
+const noteEnumerationFailure = (reason: string): void => {
+  lastEnumerationFailure = reason
+  console.warn(`[window-below] ${reason}`)
+}
+
+/**
+ * Redirect a resolved module specifier out of `app.asar` so its files exist on
+ * the real filesystem. `/app.asar/` only ever appears as a complete path
+ * segment in a packaged build (electron-builder names the archive exactly
+ * that), so in dev — where nothing is archived — this is a no-op.
+ */
+export const resolveOutsideAsar = (specifier: string): string =>
+  specifier.replace('/app.asar/', '/app.asar.unpacked/')
+
 const loadGetWindows = (): Promise<GetWindowsModule | null> => {
   // get-windows is an optionalDependency: `npm ci` can skip it when its native
   // install fails, including Linux and Windows ARM64 where 9.3.0 has no
   // prebuilt. A missing module is therefore a normal state on those targets,
   // so the lazy import resolves to null instead of rejecting; enumeration then
   // degrades to the failure note instead of an uncaught error.
-  getWindowsModule ??= import('get-windows').catch(() => null)
+  //
+  // The import is redirected out of app.asar in a packaged build. get-windows
+  // does its real work by exec'ing a helper binary whose path it derives from
+  // its own module URL, and execFile cannot run a file that lives inside the
+  // archive — the kernel sees app.asar as a file, so the spawn fails ENOTDIR.
+  // Electron does rewrite asar paths for child_process, but only once that
+  // module has been pulled through the CJS loader, which this ESM main process
+  // never does (every import here is `from 'node:child_process'`). Importing
+  // the unpacked copy directly gives get-windows a real path to derive from
+  // and does not depend on that patch ever being installed. Outside a packaged
+  // build the specifier has no /app.asar/ segment and the replace is a no-op.
+  getWindowsModule ??= (async () => {
+    let specifier
+
+    try {
+      specifier = resolveOutsideAsar(import.meta.resolve('get-windows'))
+    } catch (error) {
+      noteEnumerationFailure(`import.meta.resolve('get-windows') threw ${describeThrown(error)}`)
+
+      return null
+    }
+
+    try {
+      return await import(specifier)
+    } catch (error) {
+      noteEnumerationFailure(`import('${specifier}') threw ${describeThrown(error)}`)
+
+      return null
+    }
+  })()
 
   return getWindowsModule
 }
@@ -160,13 +230,23 @@ async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<Enumera
         ? { accessibilityPermission: false, screenRecordingPermission: titlesAvailable }
         : undefined
     )
-  } catch {
+  } catch (error) {
+    noteEnumerationFailure(`openWindows() threw ${describeThrown(error)}`)
+
     return null
   }
 
   if (!Array.isArray(raw)) {
+    noteEnumerationFailure(`openWindows() returned ${typeof raw}, expected an array`)
+
     return null
   }
+
+  // A real list proves both the loader and the enumerator work, so any cause
+  // recorded earlier in this process describes a condition that has passed.
+  // Import failures keep their permanence here by construction: a memoized
+  // failed import returns null above and never reaches this line.
+  lastEnumerationFailure = null
 
   // get-windows documents openWindows() as front-to-back, and macOS/Windows
   // honor that (CGWindowList / EnumWindows order). Its lib/linux.js, however,
@@ -201,7 +281,9 @@ export async function readWindowBelow(
 
   if (!windows) {
     return {
-      error: enumerationFailureNote(process.platform, process.env),
+      error: lastEnumerationFailure
+        ? `${enumerationFailureNote(process.platform, process.env)} (${lastEnumerationFailure})`
+        : enumerationFailureNote(process.platform, process.env),
       platform: process.platform
     }
   }

@@ -89,6 +89,55 @@ agent:
         assert required in pinned
 
 
+def test_default_spawn_strips_gateway_approval_env(monkeypatch, tmp_path):
+    """Headless workers must not inherit the gateway-approval classification.
+
+    Regression guard for blocked kanban tasks (t_0c500861, 2026-08-06): a
+    worker spawned from a gateway process inherits HERMES_GATEWAY_SESSION=1
+    (and HERMES_EXEC_ASK when set), which classifies it as a gateway approval
+    context. execute_code and dangerous terminal commands then go to a
+    human-approval prompt nobody can answer in headless dispatch — every gated
+    action times out and the task blocks. The spawn must strip both vars so
+    the worker lands in the documented non-interactive non-gateway
+    auto-approve branch (tools/approval.py check_execute_code_guard).
+    """
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "elias"
+    profile.mkdir(parents=True)
+    profile.joinpath("config.yaml").write_text(
+        "platform_toolsets:\n  cli: [terminal, file, code_execution]\n",
+        encoding="utf-8",
+    )
+    root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4245
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["env"] = dict(kwargs.get("env") or {})
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    kb._default_spawn(_make_task(kb, assignee="elias"), str(workspace))
+
+    assert "HERMES_GATEWAY_SESSION" not in captured["env"]
+    assert "HERMES_EXEC_ASK" not in captured["env"]
+    # Sanity: the worker still gets its task-scoped env.
+    assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
+    assert captured["env"]["HERMES_HOME"] == str(profile)
+
+
 def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_path):
     """The dispatcher's pre-``chat`` model flag must reach ``args.model``.
 

@@ -10741,6 +10741,18 @@ def _default_spawn(
     for key in _VAR_MAP:
         env.pop(key, None)
 
+    # A dispatcher-owned worker is headless — it must NEVER be classified as a
+    # gateway/ask approval session. Gateways carry HERMES_GATEWAY_SESSION (and
+    # optionally HERMES_EXEC_ASK) in process env; when inherited, the worker's
+    # execute_code / dangerous-command checks take the gateway branch and go to
+    # a human-approval prompt that nobody can answer in headless dispatch →
+    # every gated action times out and the task blocks (kanban smoke test
+    # t_0c500861, 2026-08-06). Stripping restores the documented
+    # non-interactive non-gateway auto-approve contract
+    # (tools/approval.py check_execute_code_guard / _run_approval_gate).
+    env.pop("HERMES_GATEWAY_SESSION", None)
+    env.pop("HERMES_EXEC_ASK", None)
+
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
     # config.  Without this, `env = dict(os.environ)` copies only the parent's

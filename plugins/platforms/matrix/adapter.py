@@ -1218,6 +1218,10 @@ class MatrixAdapter(BasePlatformAdapter):
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
         self._sync_task: Optional[asyncio.Task] = None
+        # A Matrix access token can be revoked while the gateway keeps running.
+        # Keep one recovery task so concurrent sync/send failures do not create
+        # competing logins for the same stable device.
+        self._auth_relogin_task: Optional[asyncio.Task] = None
         self._invite_join_tasks: Dict[str, asyncio.Task] = {}
         self._closing = False
         self._startup_ts: float = 0.0
@@ -3019,6 +3023,77 @@ class MatrixAdapter(BasePlatformAdapter):
     # Sync loop
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_auth_error(message: str) -> bool:
+        """Return whether Matrix reported a non-recoverable session failure."""
+        text = message.lower()
+        return any(
+            marker in text
+            for marker in (
+                "m_unknown_token",
+                "unknown_token",
+                "token is not active",
+                "unauthorized",
+                "forbidden",
+                "401",
+                "403",
+            )
+        )
+
+    def _schedule_password_relogin(self, reason: str) -> bool:
+        """Schedule one password-login recovery after Matrix revokes a token."""
+        if not self._password:
+            logger.error(
+                "Matrix: permanent auth error: %s — no MATRIX_PASSWORD is "
+                "configured for automatic recovery",
+                reason,
+            )
+            return False
+        if self._auth_relogin_task and not self._auth_relogin_task.done():
+            return True
+        self._auth_relogin_task = asyncio.create_task(
+            self._relogin_with_password(reason)
+        )
+        return True
+
+    async def _relogin_with_password(self, reason: str) -> None:
+        """Recreate the Matrix client with bounded password-login retries."""
+        try:
+            for attempt, delay in enumerate((1, 5, 30), start=1):
+                await asyncio.sleep(delay)
+                if self._closing:
+                    return
+                try:
+                    # The token is known dead.  Clear it so connect() uses the
+                    # configured password and retains the stable device ID.
+                    self._access_token = ""
+                    await self.disconnect()
+                    self._closing = False
+                    if await self.connect():
+                        logger.info(
+                            "Matrix: recovered from auth error with password login"
+                        )
+                        return
+                except Exception as exc:
+                    logger.warning(
+                        "Matrix: password re-login attempt %s failed after %s: %s",
+                        attempt,
+                        reason,
+                        exc,
+                    )
+                logger.warning(
+                    "Matrix: password re-login attempt %s of 3 failed after %s",
+                    attempt,
+                    reason,
+                )
+            logger.error(
+                "Matrix: automatic password re-login failed after 3 attempts; "
+                "check MATRIX_PASSWORD and the bot account session"
+            )
+        finally:
+            if self._auth_relogin_task is asyncio.current_task():
+                self._auth_relogin_task = None
+
     async def _sync_loop(self) -> None:
         """Continuously sync with the homeserver."""
         client = self._client
@@ -3042,11 +3117,12 @@ class MatrixAdapter(BasePlatformAdapter):
                 _sync_msg = getattr(sync_data, "message", None)
                 if _sync_msg and isinstance(_sync_msg, str):
                     _lower = _sync_msg.lower()
-                    if "m_unknown_token" in _lower or "unknown_token" in _lower:
+                    if self._is_auth_error(_lower):
                         logger.error(
-                            "Matrix: permanent auth error from sync: %s — stopping",
+                            "Matrix: permanent auth error from sync: %s — recovering",
                             _sync_msg,
                         )
+                        self._schedule_password_relogin(_sync_msg)
                         return
 
                 if isinstance(sync_data, dict):
@@ -3081,17 +3157,14 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if self._closing:
                     return
-                # Detect permanent auth/permission failures.
-                err_str = str(exc).lower()
-                if (
-                    "401" in err_str
-                    or "403" in err_str
-                    or "unauthorized" in err_str
-                    or "forbidden" in err_str
-                ):
+                # Do not retry a revoked token forever.  Password-backed
+                # configurations can get a new session without gateway restart.
+                err_str = str(exc)
+                if self._is_auth_error(err_str):
                     logger.error(
-                        "Matrix: permanent auth error: %s — stopping sync", exc
+                        "Matrix: permanent auth error: %s — recovering", exc
                     )
+                    self._schedule_password_relogin(err_str)
                     return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
                 await asyncio.sleep(5)

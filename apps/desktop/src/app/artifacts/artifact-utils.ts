@@ -314,6 +314,16 @@ function isArtifactProducerTool(name: string): boolean {
   return ARTIFACT_PRODUCER_TOOL_RE.test(name) || name.startsWith('bfl_flux3_')
 }
 
+function isTerminalTool(name: string): boolean {
+  return name === 'terminal'
+}
+
+// Shell-style tools report produced files as free text under generic keys
+// (`output` / `stdout` / `path`). Their values are scanned as prose (MEDIA
+// tags, markdown links, URLs, absolute paths) instead of being treated as a
+// single path value.
+const SHELL_OUTPUT_KEY_RE = /^(?:output|stdout|path)$/i
+
 function explicitToolArtifactKey(keyPath: string, producerTool: boolean): boolean {
   return keyPath
     .split('.')
@@ -353,9 +363,10 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
 
   const name = toolName(message)
   const producerTool = isArtifactProducerTool(name)
+  const terminalTool = isTerminalTool(name)
 
-  if (text && producerTool) {
-    collectMediaValues(text, pushValue)
+  if (text && (producerTool || terminalTool)) {
+    collectArtifactsFromText(text, pushValue)
   }
 
   if (name === 'browser_vision' && text) {
@@ -373,7 +384,23 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
 
   for (const parsed of payloads) {
     collectStringValues(parsed, 'tool_result', (value, keyPath) => {
-      if (!explicitToolArtifactKey(keyPath, producerTool)) {
+      const segments = keyPath
+        .split('.')
+        .filter(segment => segment && !/^\d+$/.test(segment))
+      const shellOutput = terminalTool && segments.some(segment => SHELL_OUTPUT_KEY_RE.test(segment))
+
+      if (!shellOutput && !explicitToolArtifactKey(keyPath, producerTool)) {
+        return
+      }
+
+      if (shellOutput) {
+        // A shell result is free text: scan it for MEDIA tags, markdown
+        // references, URLs and absolute paths rather than treating the
+        // whole value as one path.
+        if (value) {
+          collectArtifactsFromText(value, pushValue)
+        }
+
         return
       }
 

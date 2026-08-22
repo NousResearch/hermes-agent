@@ -15836,19 +15836,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return self._make_default_profile_message_handler()
         return self._handle_message
 
-    async def _handle_gateway_platform_event(self, event: dict, source) -> None:
-        """Authorize and publish one normalized adapter event to plugin hooks."""
+    async def _handle_gateway_platform_event(self, event: dict, source):
+        """Authorize and publish one normalized adapter event to plugin hooks.
+
+        Returns plugin results for actionable events such as callback queries;
+        observer events may ignore the returned list.
+        """
         try:
             from hermes_cli.lifecycle import has_hook, invoke_hook
 
             if not has_hook("gateway_platform_event"):
-                return
+                return []
             if not self._is_user_authorized(source):
-                return
-            invoke_hook("gateway_platform_event", **event)
+                return []
+            # ``gateway_platform_event`` hooks return a list of action
+            # envelopes. Normalize a legacy/single observer return so one
+            # malformed plugin cannot make the adapter iterate a dict/string.
+            results = invoke_hook("gateway_platform_event", **event)
+            if results is None:
+                return []
+            if isinstance(results, list):
+                return results
+            if isinstance(results, tuple):
+                return list(results)
+            return [results]
         except Exception:
             # Observer failures must never break the adapter's update loop.
             logger.debug("gateway_platform_event hook dispatch failed", exc_info=True)
+            return []
 
     def _make_profile_platform_event_handler(self, profile_name: str):
         """Bind platform-event auth and hook dispatch to one multiplex profile."""

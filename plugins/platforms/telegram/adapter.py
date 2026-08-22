@@ -1244,6 +1244,32 @@ class TelegramAdapter(BasePlatformAdapter):
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or normalized_user_id in allowed_ids
 
+    def _source_from_callback_for_auth(self, query):
+        """Build the authorized source for a Telegram callback query."""
+        from gateway.session import SessionSource
+        user = getattr(query, "from_user", None)
+        message = getattr(query, "message", None)
+        chat = getattr(message, "chat", None)
+        user_id = str(getattr(user, "id", "")).strip() or None
+        chat_id = str(getattr(chat, "id", "")).strip() or user_id
+        chat_type = str(getattr(chat, "type", "dm")).strip().lower() or "dm"
+        if chat_type == "private":
+            chat_type = "dm"
+        elif chat_type == "supergroup":
+            chat_type = "forum" if getattr(message, "message_thread_id", None) else "group"
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=str(getattr(user, "username", "") or getattr(user, "first_name", "") or "").strip() or None,
+            thread_id=(
+                str(getattr(message, "message_thread_id"))
+                if getattr(message, "message_thread_id", None)
+                else None
+            ),
+        )
+
     def _source_from_message_for_auth(self, message: Message):
         """Build the same Telegram source shape the gateway auth path expects.
 
@@ -7126,6 +7152,59 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # Give plugins the first chance to handle callback_query events. The
+        # normalized envelope contains plain data only; the adapter applies
+        # the returned Telegram actions so plugins never receive SDK objects.
+        handler = getattr(self, "_platform_event_handler", None)
+        if handler is not None:
+            try:
+                source = self._source_from_callback_for_auth(query)
+                event = {
+                    "platform": "telegram",
+                    "event_type": "callback_query",
+                    "payload": {
+                        "data": data,
+                        "chat_id": str(query_chat_id) if query_chat_id is not None else None,
+                        "message_id": getattr(query_message, "message_id", None),
+                        "message_text": getattr(query_message, "text", "") if query_message else "",
+                        "user_id": str(getattr(query.from_user, "id", "")),
+                        "user_name": query_user_name,
+                    },
+                }
+                results = await handler(event, source)
+                for result in results or []:
+                    if not isinstance(result, dict) or result.get("action") != "handled":
+                        continue
+                    edit = result.get("edit")
+                    # Acknowledge before applying the edit so Telegram's
+                    # loading spinner is cleared even if edit construction
+                    # or the Telegram edit request fails.
+                    answer = result.get("answer")
+                    try:
+                        await query.answer(text=str(answer) if answer else None)
+                    finally:
+                        if edit:
+                            rows = edit.get("buttons")
+                            markup = None
+                            if rows:
+                                markup = InlineKeyboardMarkup([
+                                    [
+                                        InlineKeyboardButton(
+                                            str(button["label"]),
+                                            callback_data=str(button["data"]),
+                                        )
+                                        for button in row
+                                    ]
+                                    for row in rows
+                                ])
+                            await query.edit_message_text(
+                                text=str(edit.get("text", "")),
+                                reply_markup=markup,
+                            )
+                    return
+            except Exception:
+                logger.debug("[%s] plugin callback dispatch failed", self.name, exc_info=True)
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):

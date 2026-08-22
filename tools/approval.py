@@ -549,6 +549,17 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    # Windows analogues of the two rules above (#69472 follow-up). Neither
+    # is bare English prose like "reboot"/"shutdown" (which need _CMDPOS to
+    # avoid matching inside strings/comments), so plain \b word-boundary
+    # matching is enough here — same style as the Windows tier below in
+    # DANGEROUS_PATTERNS. These were previously undetected entirely (not
+    # even a bypassable approval prompt): power-state change with no
+    # recovery path, and filesystem format with no recovery path, matching
+    # the "wipe the disk or power the box off" floor this list exists for.
+    (r'\b(?:restart|stop)-computer\b', "system shutdown/reboot (PowerShell)"),
+    (r'\bformat-volume\b', "format filesystem (Format-Volume)"),
+    (r'\bformat(?:\.com)?\s+[a-z]:', "format drive (format.com)"),
 ]
 
 # Pre-compiled variant used by the hot-path matcher. Building these at module

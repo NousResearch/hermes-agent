@@ -501,7 +501,9 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         "tool.completed", name, None, None, duration=..., is_error=...,
         result=...)``
       * ``item/agentMessage/delta`` → ``_fire_stream_delta(text)`` so chat
-        adapters can render the assistant's reply as it streams.
+        adapters can render the assistant's reply as it streams. Successfully
+        delivered visible text is tracked per ``itemId`` for completion-time
+        de-duplication.
       * ``item/reasoning/delta`` → ``_fire_reasoning_delta(text)``
       * ``item/completed`` for ``agentMessage`` →
         ``_emit_interim_assistant_message({"role": "assistant",
@@ -517,6 +519,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     # item/started and consumed on item/completed so duration is correct
     # even when codex doesn't report durationMs.
     started: dict[str, tuple[str, dict, float]] = {}
+    streamed_agent_messages: dict[str, str] = {}
 
     def _stable_call_id(item: dict, name: str) -> str:
         """Deterministic tool_call id mirroring CodexEventProjector, so a
@@ -609,10 +612,18 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         fn = getattr(agent, "_fire_stream_delta", None)
         if fn is None:
             return
+        before = getattr(agent, "_current_streamed_assistant_text", "") or ""
         try:
             fn(text)
         except Exception:
             logger.debug("_fire_stream_delta raised", exc_info=True)
+            return
+        after = getattr(agent, "_current_streamed_assistant_text", "") or ""
+        item_id = params.get("itemId") or ""
+        if item_id and after.startswith(before) and len(after) > len(before):
+            streamed_agent_messages[item_id] = (
+                streamed_agent_messages.get(item_id, "") + after[len(before) :]
+            )
 
     def _fire_reasoning_delta(params: dict) -> None:
         text = params.get("delta") or params.get("text") or ""
@@ -628,6 +639,8 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
 
     def _fire_agent_message_completed(item: dict) -> None:
         text = item.get("text") or ""
+        item_id = item.get("id") or ""
+        streamed_text = streamed_agent_messages.pop(item_id, "")
         if not isinstance(text, str) or not text.strip():
             return
         # display.show_commentary=false — mid-turn narration stays off the
@@ -638,8 +651,23 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         emit = getattr(agent, "_emit_interim_assistant_message", None)
         if emit is None:
             return
+        normalize = getattr(agent, "_normalize_interim_visible_text", None)
+        if callable(normalize):
+            visible_text = normalize(text)
+            visible_streamed_text = normalize(streamed_text)
+        else:
+            visible_text = " ".join(text.split())
+            visible_streamed_text = " ".join(streamed_text.split())
+        already_streamed = (
+            True
+            if visible_streamed_text and visible_text.startswith(visible_streamed_text)
+            else None
+        )
         try:
-            emit({"role": "assistant", "content": text})
+            emit(
+                {"role": "assistant", "content": text},
+                already_streamed=already_streamed,
+            )
         except Exception:
             logger.debug(
                 "_emit_interim_assistant_message raised", exc_info=True,
@@ -652,6 +680,9 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         params = note.get("params") or {}
         if not isinstance(params, dict):
             params = {}
+        if method in {"turn/completed", "turn/failed"}:
+            streamed_agent_messages.clear()
+            return
         if method == "item/agentMessage/delta":
             _fire_text_delta(params)
             return
@@ -921,6 +952,19 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    # The app-server bridge publishes every completed agentMessage through the
+    # interim callback so mid-turn commentary remains visible. The last such
+    # item is also Codex's final response, so tell host surfaces when that exact
+    # text was delivered successfully. TUI uses this to settle the preview onto
+    # the terminal message; messaging gateways use it to skip a duplicate send.
+    # Unrelated commentary and callback-free runs remain false.
+    interim_was_delivered = getattr(agent, "_interim_text_was_delivered", None)
+    response_previewed = bool(
+        turn.final_text
+        and callable(interim_was_delivered)
+        and interim_was_delivered(turn.final_text)
+    )
+
     return {
         "final_response": turn.final_text,
         "messages": messages,
@@ -934,6 +978,7 @@ def run_codex_app_server_turn(
             else {}
         ),
         "error": turn.error,
+        "response_previewed": response_previewed,
         # The codex app-server runtime IS an early-return path that bypasses
         # conversation_loop, but we flush the projected assistant/tool messages
         # ourselves above (see the _flush_messages_to_session_db call after

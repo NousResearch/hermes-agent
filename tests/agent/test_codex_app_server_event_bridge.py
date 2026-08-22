@@ -259,10 +259,126 @@ class TestAgentMessageInterimDispatch:
             "text": "I'll check the config first.",
         }))
         agent._emit_interim_assistant_message.assert_called_once_with(
-            {"role": "assistant", "content": "I'll check the config first."}
+            {"role": "assistant", "content": "I'll check the config first."},
+            already_streamed=None,
         )
 
+    def test_distinct_streamed_items_settle_against_their_own_deltas(self):
+        delivered = []
+        agent = _make_stub_agent()
+        agent._current_streamed_assistant_text = ""
+        agent._fire_stream_delta = lambda text: setattr(
+            agent,
+            "_current_streamed_assistant_text",
+            agent._current_streamed_assistant_text + text,
+        )
+        agent._emit_interim_assistant_message = (
+            lambda message, **kwargs: delivered.append((message["content"], kwargs))
+        )
+        agent._normalize_interim_visible_text = lambda text: " ".join(text.split())
+        bridge = make_codex_app_server_event_bridge(agent)
 
+        bridge(
+            {
+                "method": "item/agentMessage/delta",
+                "params": {"itemId": "commentary", "delta": "Checking first."},
+            }
+        )
+        bridge(
+            _item_completed(
+                {
+                    "type": "agentMessage",
+                    "id": "commentary",
+                    "text": "Checking first.",
+                }
+            )
+        )
+        bridge(
+            {
+                "method": "item/agentMessage/delta",
+                "params": {"itemId": "final", "delta": "Done."},
+            }
+        )
+        bridge(
+            _item_completed(
+                {
+                    "type": "agentMessage",
+                    "id": "final",
+                    "text": "Done.",
+                }
+            )
+        )
+
+        assert delivered == [
+            ("Checking first.", {"already_streamed": True}),
+            ("Done.", {"already_streamed": True}),
+        ]
+
+    def test_missing_item_id_uses_turn_stream_fallback(self):
+        agent = _make_stub_agent()
+        agent._current_streamed_assistant_text = ""
+        agent._fire_stream_delta = lambda text: setattr(
+            agent,
+            "_current_streamed_assistant_text",
+            agent._current_streamed_assistant_text + text,
+        )
+        bridge = make_codex_app_server_event_bridge(agent)
+
+        bridge(
+            {
+                "method": "item/agentMessage/delta",
+                "params": {"delta": "Already visible."},
+            }
+        )
+        bridge(
+            _item_completed(
+                {
+                    "type": "agentMessage",
+                    "id": "final",
+                    "text": "Already visible.",
+                }
+            )
+        )
+
+        agent._emit_interim_assistant_message.assert_called_once_with(
+            {"role": "assistant", "content": "Already visible."},
+            already_streamed=None,
+        )
+
+    @pytest.mark.parametrize("terminal_method", ["turn/completed", "turn/failed"])
+    def test_terminal_turn_event_clears_incomplete_item_buffers(
+        self, terminal_method
+    ):
+        agent = _make_stub_agent()
+        agent._current_streamed_assistant_text = ""
+        agent._fire_stream_delta = lambda text: setattr(
+            agent,
+            "_current_streamed_assistant_text",
+            agent._current_streamed_assistant_text + text,
+        )
+        bridge = make_codex_app_server_event_bridge(agent)
+
+        bridge(
+            {
+                "method": "item/agentMessage/delta",
+                "params": {"itemId": "orphan", "delta": "Old turn."},
+            }
+        )
+        bridge({"method": terminal_method, "params": {}})
+        bridge(
+            _item_completed(
+                {
+                    "type": "agentMessage",
+                    "id": "orphan",
+                    "text": "Old turn.",
+                }
+            )
+        )
+
+        agent._emit_interim_assistant_message.assert_called_once_with(
+            {"role": "assistant", "content": "Old turn."},
+            already_streamed=None,
+        )
 
     def test_show_commentary_off_suppresses_interim(self):
         """display.show_commentary=false silences agentMessage interim

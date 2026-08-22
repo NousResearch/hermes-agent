@@ -1934,6 +1934,23 @@ def test_interim_commentary_is_not_marked_already_streamed_without_callbacks(mon
 
 
 
+def test_interim_commentary_accepts_per_item_streamed_override(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    observed = {}
+    agent.interim_assistant_callback = (
+        lambda text, *, already_streamed=False: observed.update(
+            {"text": text, "already_streamed": already_streamed}
+        )
+    )
+
+    agent._emit_interim_assistant_message(
+        {"role": "assistant", "content": "final"},
+        already_streamed=True,
+    )
+
+    assert observed == {"text": "final", "already_streamed": True}
+
+
 def test_interim_content_was_streamed_matches_prefix_not_exact(monkeypatch):
     """_interim_content_was_streamed should return True when the streamed text
     is a PREFIX of the final content (trailing delta added after stream, or

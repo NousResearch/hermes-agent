@@ -2929,11 +2929,45 @@ def _resolve_use_tui(args) -> bool:
         return False
 
 
+def _resolve_model_alias_arg(args) -> None:
+    """Resolve ``--model`` config aliases before the agent is built.
+
+    ``hermes -m <alias>`` was forwarding the raw alias string to the
+    provider API (404), while ``hermes -q`` (oneshot) and the in-session
+    ``/model`` command both resolve ``model_aliases:`` / ``model.aliases:``
+    entries from config.yaml (#82275).  Mutates args in place so both the
+    TUI and the CLI agent build see the resolved model/provider/base_url.
+    """
+    raw = getattr(args, "model", None)
+    if not raw or not isinstance(raw, str) or not raw.strip():
+        return
+    try:
+        from hermes_cli import model_switch as _ms
+
+        _ms._ensure_direct_aliases()
+        direct = _ms.DIRECT_ALIASES.get(raw.strip().lower())
+    except Exception:
+        direct = None
+    if direct is None:
+        return
+    args.model = direct.model
+    if not getattr(args, "provider", None):
+        args.provider = direct.provider
+    if direct.base_url and not getattr(args, "base_url", None):
+        args.base_url = direct.base_url
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = _resolve_use_tui(args)
 
     _apply_safe_mode(args)
+
+    # Resolve `--model` config aliases (config.yaml `model_aliases:` /
+    # `model.aliases:`) before the agent is built — the interactive path
+    # was sending the raw alias string to the provider, unlike `hermes -q`
+    # and the in-session `/model` command (#82275).
+    _resolve_model_alias_arg(args)
 
     # --in DIR: run in DIR. Must happen before any session resolution so the
     # workspace-scoped "latest"/-c lookups key off DIR, and it pins the
@@ -3238,6 +3272,7 @@ def cmd_chat(args):
     kwargs = {
         "model": args.model,
         "provider": getattr(args, "provider", None),
+        "base_url": getattr(args, "base_url", None),
         "reasoning": getattr(args, "reasoning", None),
         "toolsets": args.toolsets,
         "skills": getattr(args, "skills", None),

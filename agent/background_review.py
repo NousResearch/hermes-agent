@@ -398,14 +398,31 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
 # the user-message that the forked review agent receives.  AIAgent exposes
 # them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) for back-compat;
 # the actual text lives here so future edits are one-place.
+_MEMORY_EVIDENCE_RULE = (
+    "\n\nEvidence rule — every entry must be GROUNDED, not inferred:\n"
+    "- Save ONLY facts the user explicitly stated or directly demonstrated in this "
+    "conversation. Before writing an entry, identify the specific user message that "
+    "supports it; if you cannot point to one, do not save it.\n"
+    "- Do NOT infer demographics, personality traits, skill level, emotional state, "
+    "motivations, or preferences from indirect signals (topic choice, tone, phrasing, "
+    "tools used). 'User asked about X' does not mean 'user prefers X' or 'user is a "
+    "beginner/expert at X'.\n"
+    "- Do NOT generalize a one-time request into a standing preference. One correction "
+    "in one context is situational unless the user marks it as general "
+    "('always', 'never', 'from now on', 'remember this').\n"
+    "- When uncertain whether something is stated or inferred, leave it out. A missed "
+    "fact can be re-learned; a fabricated one silently corrupts every future session."
+)
+
 _MEMORY_REVIEW_PROMPT = (
     "Review the conversation above and consider saving to memory if appropriate.\n\n"
     "Focus on:\n"
     "1. Has the user revealed things about themselves — their persona, desires, "
     "preferences, or personal details worth remembering?\n"
     "2. Has the user expressed expectations about how you should behave, their work "
-    "style, or ways they want you to operate?\n\n"
-    "If something stands out, save it using the memory tool. "
+    "style, or ways they want you to operate?"
+    + _MEMORY_EVIDENCE_RULE +
+    "\n\nIf something stands out, save it using the memory tool. "
     "If nothing is worth saving, just say 'Nothing to save.' and stop."
 )
 
@@ -539,7 +556,8 @@ _COMBINED_REVIEW_PROMPT = (
     "**Memory**: who the user is. Did the user reveal persona, "
     "desires, preferences, personal details, or expectations about "
     "how you should behave? Save facts about the user and durable "
-    "preferences with the memory tool.\n\n"
+    "preferences with the memory tool."
+    + _MEMORY_EVIDENCE_RULE + "\n\n"
     "**Skills**: how to do this class of task. Be ACTIVE — most "
     "sessions produce at least one skill update. A pass that does "
     "nothing is a missed learning opportunity, not a neutral outcome.\n\n"

@@ -2626,11 +2626,6 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             )
 
         result_json = json.dumps(result_dict, ensure_ascii=False)
-        # Hint when results were truncated — explicit next offset is clearer
-        # than relying on the model to infer it from total_count vs match count.
-        if result_dict.get("truncated"):
-            next_offset = offset + limit
-            result_json += f"\n\n[Hint: Results truncated. Use offset={next_offset} to see more, or narrow with a more specific pattern or file_glob.]"
         return result_json
     except Exception as e:
         return tool_error(str(e))

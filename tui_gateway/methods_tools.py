@@ -448,8 +448,14 @@ def _(rid, params: dict) -> dict:
             sanitized_env = build_subprocess_env()
             from hermes_cli._subprocess_compat import windows_hide_flags
 
+            exec_cmd = qc.get("command", "")
+            user_args = (arg or "").strip()
+            if user_args:
+                from hermes_cli._subprocess_compat import quote_args
+
+                exec_cmd = f"{exec_cmd} {quote_args(user_args)}"
             r = subprocess.run(
-                qc.get("command", ""),
+                exec_cmd,
                 shell=True,
                 capture_output=True,
                 text=True,

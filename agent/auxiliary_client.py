@@ -6361,6 +6361,30 @@ def resolve_provider_client(
         if provider == "actual":
             return True
         if api_mode == "codex_responses":
+            # Copilot serves each model on exactly one wire: GPT-5+ on the
+            # Responses API, everything else (Claude, Gemini, ...) on Chat
+            # Completions. A profile-level ``api_mode: codex_responses`` is a
+            # statement about the model configured when that line was written,
+            # NOT about whichever model the caller is resolving now. Honouring
+            # it blindly wraps a Claude slot in CodexAuxiliaryClient and every
+            # call dies with HTTP 400 unsupported_api_for_model. That is how a
+            # stale api_mode silently disabled the goal judge while main chat
+            # kept working, surfacing as "completion rejected by judge".
+            # Defer to the provider's own per-model capability check.
+            if provider == "copilot" and model_str:
+                try:
+                    from hermes_cli.models import _should_use_copilot_responses_api
+
+                    if not _should_use_copilot_responses_api(model_str):
+                        logger.debug(
+                            "resolve_provider_client: ignoring api_mode="
+                            "codex_responses for copilot model %s - it is "
+                            "served over chat.completions",
+                            model_str,
+                        )
+                        return False
+                except ImportError:
+                    pass
             return True
         # Auto-detect: api.openai.com + codex model name pattern
         if api_mode and api_mode != "codex_responses":

@@ -128,7 +128,14 @@ def _deliver_pending_steer_before_api(
 
     for idx in range(len(messages) - 1, search_floor, -1):
         message = messages[idx]
-        if not isinstance(message, dict) or message.get("role") != "tool":
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "assistant":
+            # A later assistant makes every earlier steer marker historical
+            # under STEER_CHANNEL_NOTE, so keep the steer pending instead.
+            break
+        if role != "tool":
             continue
 
         from agent.prompt_builder import format_steer_marker
@@ -146,10 +153,9 @@ def _deliver_pending_steer_before_api(
                 continue
 
         logger.info(
-            "Delivered /steer to agent before API call (%d chars, tool index %d): %s",
+            "Delivered /steer to agent before API call (%d chars, tool index %d)",
             len(steer_text),
             idx,
-            steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
         )
         return True
 
@@ -7522,6 +7528,14 @@ def run_conversation(
                                 final_response = _HANDOFF_SKIP_FINAL_RESPONSE
                             _turn_exit_reason = "compaction_handoff_not_actionable"
                             break
+                        # Post-tool compaction rebuilt ``messages`` after the
+                        # batch-level steer drain. Re-anchor before the next
+                        # loop so a steer arriving during compaction can use
+                        # the surviving current-turn tool result.
+                        current_turn_user_idx = reanchor_current_turn_user_idx(
+                            messages, user_message
+                        )
+                        agent._persist_user_message_idx = current_turn_user_idx
                 elif agent.compression_enabled:
                     # Over threshold but compression is blocked (summary-LLM
                     # cooldown or anti-thrashing). Surface a deduped warning so

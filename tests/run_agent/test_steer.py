@@ -629,6 +629,7 @@ class TestPreApiCallSteerDrain:
         assert "focus on error handling" in messages[-1]["content"]
         assert agent._pending_steer is None
         assert "Delivered /steer" in caplog.text
+        assert "focus on error handling" not in caplog.text
 
     def test_pre_api_drain_never_mutates_historical_tool_result(self, caplog):
         agent = _bare_agent()
@@ -647,6 +648,26 @@ class TestPreApiCallSteerDrain:
         assert agent._pending_steer == "do not lose this"
         assert "Delivered /steer" not in caplog.text
 
+    def test_pre_api_drain_never_delivers_before_a_later_assistant(self, caplog):
+        agent = _bare_agent()
+        messages = [
+            {"role": "user", "content": "current request"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "content": "current output", "tool_call_id": "tc1"},
+            {"role": "assistant", "content": "I will continue."},
+            {"role": "user", "content": "[System: continue now]"},
+        ]
+        agent.steer("change direction")
+
+        with caplog.at_level("INFO", logger="agent.conversation_loop"):
+            delivered = self._deliver(agent, messages, current_turn_user_idx=0)
+
+        assert delivered is False
+        assert STEER_MARKER_OPEN not in messages[2]["content"]
+        assert agent._pending_steer == "change direction"
+        assert "Delivered /steer" not in caplog.text
 
 
 class TestSteerMarkerContract:

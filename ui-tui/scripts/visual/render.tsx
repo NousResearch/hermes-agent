@@ -13,8 +13,6 @@ import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { PassThrough } from 'stream'
 
-import { visualOutDir } from './paths.mjs'
-
 import { Box, renderSync, Text } from '@hermes/ink'
 import React, { type ReactElement } from 'react'
 
@@ -23,8 +21,11 @@ import { patchOverlayState, resetOverlayState } from '../../src/app/overlayStore
 import { patchUiState, resetUiState } from '../../src/app/uiStore.js'
 import { FloatingOverlays } from '../../src/components/appOverlays.js'
 import { Banner, SessionPanel } from '../../src/components/branding.js'
+import { Md } from '../../src/components/markdown.js'
 import { fromSkin, type Theme } from '../../src/theme.js'
 import type { SessionInfo } from '../../src/types.js'
+
+import { visualOutDir } from './paths.mjs'
 
 const noop = () => {}
 const pending = () => new Promise<never>(() => {})
@@ -298,11 +299,33 @@ for (const scene of scenes) {
     88
   )
 
+  const codeBlocks = renderAnsi(
+    <Box flexDirection="column" width={88}>
+      <Text bold>Fenced code · normal width</Text>
+      <Md
+        cols={72}
+        t={scene.theme}
+        text={'```python\ndef hello(name: str):\n    print(f"안녕하세요, {name} 👋")\n```'}
+      />
+      <Md
+        cols={72}
+        t={scene.theme}
+        text={'```diff\n@@ -1,2 +1,2 @@\n-old = "before"\n+new = "after"\n```'}
+      />
+      <Text bold>Fenced code · narrow width</Text>
+      <Box width={18}>
+        <Md cols={18} t={scene.theme} text={'```text\n한국어🙂 abcdefghijklmnopqrstuvwxyz\n```'} />
+      </Box>
+    </Box>,
+    88
+  )
+
   page += `<div style="background:${scene.bg};color:${scene.fg};padding:14px;border-radius:6px">`
   page += `<div style="font:bold 12px sans-serif;opacity:.6;margin-bottom:8px;color:${scene.fg}">${scene.name}</div>`
   page += `<pre style="margin:0;white-space:pre">${ansiToHtml(intro, scene.fg, scene.bg)}</pre>`
   page += `<pre style="margin:8px 0 0;white-space:pre">${ansiToHtml(comps, scene.fg, scene.bg)}</pre>`
   page += `<pre style="margin:8px 0 0;white-space:pre">${ansiToHtml(statusLine, scene.fg, scene.bg)}</pre>`
+  page += `<pre style="margin:8px 0 0;white-space:pre">${ansiToHtml(codeBlocks, scene.fg, scene.bg)}</pre>`
   page += `</div>`
 }
 

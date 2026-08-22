@@ -1,6 +1,12 @@
 import { TERMUX_TUI_MODE } from '../config/env.js'
 import type { Msg } from '../types.js'
 
+import {
+  chromeRows,
+  FENCE_CLOSE_RE,
+  FENCE_OPEN_RE,
+  innerContentWidth
+} from './codeBlockLayout.js'
 import { transcriptBodyWidth } from './inputMetrics.js'
 
 const hashText = (text: string) => {
@@ -66,6 +72,133 @@ export const wrappedLines = (text: string, width: number, maxLines: number = MAX
   return n
 }
 
+// Fence-aware body height. Walks `text` linearly (no `split('\n')`, no
+// pre-built fence-span list) and counts rows the way the renderer would
+// paint them. For a `md` / `markdown` fence the renderer recurses with
+// `<Md cols={cols}>` instead of the rounded CodeBlock panel, so its body
+// is prose at the full body width and the panel chrome rows don't apply —
+// the estimator must do the same. For every other language (or no
+// language) the fence is the rounded panel: wrap at the panel's inner
+// width and add the panel's chrome rows. Prose lines keep the original
+// char-count / width formula so existing non-fence estimates are unchanged.
+// The walk is bounded by the same `MAX_ESTIMATE_LINES` cap the prose
+// estimator uses, so a 1M-char single line still returns in O(width) time.
+const MARKDOWN_FENCE_LANGS = new Set(['md', 'markdown'])
+
+export const estimateBodyHeight = (
+  text: string,
+  bodyWidth: number,
+  compact: boolean,
+  maxLines: number = MAX_ESTIMATE_LINES
+): number => {
+  if (!text) {
+    return 1
+  }
+
+  const w = Math.max(1, bodyWidth)
+  const innerW = innerContentWidth(bodyWidth, compact)
+  const charBudget = Math.min(text.length, maxLines * w + maxLines)
+  let n = 0
+  let i = 0
+  let lineStart = 0
+  let inFence = false
+  let fenceChar = ''
+  let fenceLen = 0
+  let fenceLang = ''
+  let fenceContentStart = 0
+
+  const addRows = (rows: number): void => {
+    if (n >= maxLines) {
+      return
+    }
+
+    n += Math.min(rows, maxLines - n)
+  }
+
+  // A fence body's slice ends with the newline that separates the last
+  // content line from the close fence (or end-of-text for an unclosed
+  // fence). `wrappedLines` would otherwise count a phantom empty line at
+  // that trailing newline + the end-of-text it processes on the next
+  // iteration. Strip exactly one trailing newline.
+  const sliceFenceContent = (start: number, end: number): string => {
+    let e = end
+
+    if (e > start && text.charCodeAt(e - 1) === 10) {
+      e--
+    }
+
+    return text.slice(start, e)
+  }
+
+  while (i <= charBudget) {
+    const atEnd = i >= charBudget
+    const isNL = !atEnd && i < text.length && text.charCodeAt(i) === 10
+
+    if (atEnd || isNL) {
+      const lineEnd = i
+      const line = text.slice(lineStart, lineEnd)
+
+      if (inFence) {
+        const closeMatch = line.match(FENCE_CLOSE_RE)
+
+        const isClose =
+          closeMatch && closeMatch[1]![0] === fenceChar && closeMatch[1]!.length >= fenceLen
+
+        if (isClose) {
+          if (MARKDOWN_FENCE_LANGS.has(fenceLang)) {
+            // `md` / `markdown` fences are recursed with `<Md>`, so the body
+            // is prose at the full body width and the rounded panel's
+            // chrome rows don't apply.
+            addRows(wrappedLines(sliceFenceContent(fenceContentStart, lineStart), w, maxLines - n))
+          } else {
+            addRows(
+              wrappedLines(sliceFenceContent(fenceContentStart, lineStart), innerW, maxLines - n)
+            )
+            addRows(chromeRows(bodyWidth, compact, fenceLang.length > 0))
+          }
+
+          inFence = false
+        }
+        // Non-closing lines inside a fence body contribute nothing here —
+        // the wrap walk over the content slice already counted them.
+      } else {
+        const openMatch = line.match(FENCE_OPEN_RE)
+
+        if (openMatch) {
+          inFence = true
+          fenceChar = openMatch[1]![0]
+          fenceLen = openMatch[1]!.length
+          fenceLang = openMatch[2]!.trim().toLowerCase()
+          fenceContentStart = i + 1
+        } else {
+          addRows(Math.max(1, Math.ceil((lineEnd - lineStart) / w)))
+        }
+      }
+
+      lineStart = i + 1
+
+      if (n >= maxLines) {
+        return maxLines
+      }
+    }
+
+    i++
+  }
+
+  // Unclosed fence: the renderer treats the rest of the document as code.
+  // Same md/markdown rule as the closed path.
+  if (inFence) {
+    if (MARKDOWN_FENCE_LANGS.has(fenceLang)) {
+      addRows(wrappedLines(sliceFenceContent(fenceContentStart, lineStart), w, maxLines - n))
+    } else {
+      addRows(wrappedLines(sliceFenceContent(fenceContentStart, lineStart), innerW, maxLines - n))
+      addRows(chromeRows(bodyWidth, compact, fenceLang.length > 0))
+    }
+  }
+
+  return n
+}
+
 export const estimatedMsgHeight = (
   msg: Msg,
   cols: number,
@@ -107,7 +240,11 @@ export const estimatedMsgHeight = (
 
   const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE)
   const text = msg.text
-  let h = wrappedLines(text || ' ', bodyWidth)
+  // Fence-aware so fenced-code panels don't undercount virtual transcript
+  // spacers (see PR #75783 review comment r3694319284). The walk is
+  // bounded by the same MAX_ESTIMATE_LINES cap as `wrappedLines`, so a
+  // multi-megabyte single line still returns in O(width) time.
+  let h = estimateBodyHeight(text || ' ', bodyWidth, compact)
 
   if (!compact && msg.role === 'assistant') {
     // Paragraph gaps add up to 6 extra rows of breathing room. Slice

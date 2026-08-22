@@ -734,6 +734,10 @@ Blocked files show a warning:
 9. **Monitor logs** — check `~/.hermes/logs/` for unauthorized access attempts
 10. **Keep updated** — run `hermes update` regularly for security patches
 
+:::tip Egress credential-injection proxy
+For Docker backends, the [egress proxy](/user-guide/egress/iron-proxy) keeps your real API keys out of the sandbox entirely: the container only sees opaque proxy tokens that resolve against a local TLS-intercepting daemon on the host. Setup is `hermes egress setup && hermes egress start`. **Note:** currently wired for the Docker backend only — Modal, SSH, Daytona, and Singularity are not supported yet.
+:::
+
 ### Securing API Keys
 
 ```bash

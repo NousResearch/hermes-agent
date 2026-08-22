@@ -776,7 +776,7 @@ agent:
 This applies **after** per-platform tool config (`platform_toolsets` written by
 `hermes tools`), so a toolset listed here is always removed — even if a
 platform's saved config still lists it. Use this when you want a single
-switch for "turn X off everywhere" rather than editing 15+ platform rows in
+switch for "turn X off everywhere" rather than editing per-platform rows in
 the `hermes tools` UI.
 
 Leaving the list empty, or omitting the key, is a no-op.

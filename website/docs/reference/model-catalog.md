@@ -38,7 +38,7 @@ Published on every merge to `main` via the existing `deploy-site.yml` GitHub Pag
       "metadata": {},
       "models": [
         {"id": "z-ai/glm-5.2", "default": true},
-        {"id": "anthropic/claude-opus-4.7"},
+        {"id": "anthropic/claude-opus-4.8"},
         {"id": "moonshotai/kimi-k3"}
       ]
     }

@@ -90,7 +90,7 @@ Everything except the dashboard's embedded terminal pane runs natively on Window
 |---|---|---|
 | CLI (`hermes chat`, `hermes setup`, `hermes gateway`, …) | ✓ | ✓ |
 | Interactive TUI (`hermes --tui`) | ✓ | ✓ |
-| Messaging gateway (Telegram, Discord, Slack, WhatsApp, 15+ platforms) | ✓ | ✓ |
+| Messaging gateway (Telegram, Discord, Slack, WhatsApp, 30+ platforms) | ✓ | ✓ |
 | Cron scheduler | ✓ | ✓ |
 | Browser tool (Chromium via Node) | ✓ | ✓ |
 | MCP servers (stdio and HTTP) | ✓ | ✓ |

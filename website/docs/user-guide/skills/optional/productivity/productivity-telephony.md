@@ -315,7 +315,7 @@ Use this when:
 Generate or host audio separately, then:
 
 ```bash
-python3 "$SCRIPT" twilio-call "+155****0000" --audio-url "https://example.com/briefing.mp3"
+python3 "$SCRIPT" twilio-call "+15550120000" --audio-url "https://example.com/briefing.mp3"
 ```
 
 Recommended Hermes TTS -> Twilio Play workflow:

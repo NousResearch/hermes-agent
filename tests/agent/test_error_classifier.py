@@ -364,6 +364,50 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_rotate_credential is True
 
+    def test_429_monthly_spend_limit_is_billing_not_rate_limit(self):
+        """Anthropic surfaces the subscription monthly spend cap as HTTP 429.
+        The default rate_limit policy honors Retry-After (capped at 600s) for
+        api_max_retries attempts before fallback — a ~40-50 minute stall for a
+        cap that cannot clear in that window. The body proves non-transient
+        billing exhaustion, so it must rotate now. (#91091)"""
+        e = MockAPIError(
+            "HTTP 429: This request would exceed your account's monthly spend "
+            "limit. Please try again later.",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_429_monthly_spend_limit_mixed_case_still_billing(self):
+        """Real SDK bodies may title-case the wording ("Monthly Spend Limit")
+        while _BILLING_PATTERNS are lowercase — the 429 branch matches against
+        the lowered message so the classification cannot go dead in
+        production (review on #91091)."""
+        e = MockAPIError(
+            "HTTP 429: This request would exceed your account's Monthly Spend "
+            "Limit.",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_429_spend_limit_takes_priority_over_upstream_disambiguation(self):
+        """A billing-proven 429 must resolve before the OpenRouter upstream
+        disambiguation: the account state is deterministic regardless of any
+        aggregator wrapping in the body. (#91091)"""
+        e = MockAPIError(
+            "Provider returned error: This request would exceed your "
+            "account's monthly spend limit.",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="openrouter")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
     # ── 5xx that are actually request-validation errors ──
     # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
     # request-validation failures with a 5xx status. These are

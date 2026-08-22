@@ -133,6 +133,7 @@ _BILLING_PATTERNS = [
     "account is deactivated",
     "plan does not include",
     "out of extra usage",  # Anthropic OAuth Pro/Max overage bucket depleted (HTTP 400)
+    "monthly spend limit",  # Anthropic subscription monthly cap arrives as HTTP 429 (#91091)
     "out of funds",
     "run out of funds",
     "balance_depleted",
@@ -1321,6 +1322,22 @@ def _classify_by_status(
             return result_fn(
                 FailoverReason.overloaded,
                 retryable=True,
+            )
+        # A 429 whose body proves non-transient billing exhaustion must rotate
+        # now: Anthropic surfaces the subscription monthly spend cap as HTTP
+        # 429, and the default rate_limit policy honors the server's
+        # Retry-After (capped at 600s) for api_max_retries attempts before the
+        # fallback chain is consulted — a ~40-50 minute stall at defaults for
+        # a cap that cannot clear inside that window (#91091). Patterns are
+        # lowercase; match against the lowered message so real SDK bodies
+        # with title-cased wording ("Monthly Spend Limit") classify too
+        # (review on #91091).
+        if any(p in error_msg.lower() for p in _BILLING_PATTERNS):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
             )
         # Distinguish an OpenRouter-aggregator upstream 429 (an upstream model
         # like DeepSeek rate-limited OpenRouter's aggregate traffic) from an

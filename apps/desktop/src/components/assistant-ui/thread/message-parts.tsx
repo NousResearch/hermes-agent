@@ -116,7 +116,7 @@ type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; time
 const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => (
   <>
     <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
-    <MarkdownText />
+    <MarkdownText allowRunCommands />
   </>
 )
 

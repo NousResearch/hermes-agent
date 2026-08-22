@@ -12,10 +12,11 @@ import { triggerHaptic } from '@/lib/haptics'
 import { $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
 
-import { $terminalInjection } from '../store'
+import { $chatTerminalRunRequest, $terminalInjection, cancelChatTerminalRunRequest } from '../store'
 
 import { observeActiveTerminalResize } from './active-resize'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
+import { deliverChatTerminalRunRequest } from './chat-run'
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import {
@@ -431,6 +432,10 @@ export function useTerminalSession({
   const [selection, setSelection] = useState('')
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
   const [shellName, setShellName] = useState('shell')
+
+  const markSessionActivity = useCallback(() => {
+    hasSessionActivityRef.current = true
+  }, [])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -1063,6 +1068,43 @@ export function useTerminalSession({
       termRef.current?.focus()
     })
   }, [active, status])
+
+  // Authorization is valid only while the exact fresh target remains active.
+  // Switching away during PTY startup is cancellation, never deferred execution.
+  useEffect(() => {
+    if (!active || status === 'closed') {
+      cancelChatTerminalRunRequest(id)
+    }
+  }, [active, id, status])
+
+  useEffect(() => {
+    if (!active || status !== 'open') {
+      return
+    }
+
+    const unsubscribe = $chatTerminalRunRequest.subscribe(request => {
+      const sessionId = sessionIdRef.current
+      const terminalApi = window.hermesDesktop?.terminal
+
+      if (!request || request.terminalId !== id || !sessionId || typeof terminalApi?.write !== 'function') {
+        return
+      }
+
+      const delivered = deliverChatTerminalRunRequest(id, sessionId, (ptyId, data) => terminalApi.write(ptyId, data))
+
+      if (!delivered) {
+        return
+      }
+
+      markSessionActivity()
+      termRef.current?.focus()
+    })
+
+    return () => {
+      unsubscribe()
+      cancelChatTerminalRunRequest(id)
+    }
+  }, [active, id, markSessionActivity, status])
 
   return {
     addSelectionToChat,

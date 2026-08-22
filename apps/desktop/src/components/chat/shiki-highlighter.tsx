@@ -1,11 +1,19 @@
 'use client'
 
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-streamdown'
+import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, lazy, Suspense, useMemo } from 'react'
 import type ShikiHighlighter from 'react-shiki'
 
+import { $chatTerminalRunRequest } from '@/app/right-sidebar/store'
+import {
+  hasEmbeddedTerminalBridge,
+  isRunnableChatTerminalCommandText,
+  queueChatCommandInFreshTerminal
+} from '@/app/right-sidebar/terminal/chat-run'
 import { CodeCard, CodeCardBody } from '@/components/chat/code-card'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
+import { Button } from '@/components/ui/button'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { isLikelyProseCodeBlock } from '@/lib/markdown-code'
@@ -15,13 +23,15 @@ import { isLikelyProseCodeBlock } from '@/lib/markdown-code'
  * own the wrapping `<CodeCard>` here and neutralize the upstream
  * `data-streamdown="code-block"` chrome from styles.css. The card is
  * background-only — no header row, no language label — so a fence reads as a
- * tinted slab of the reply; copy is a hover-reveal control in the corner.
+ * tinted slab of the reply; copy and eligible shell Run actions are hover/focus-reveal controls in the corner.
  *
  * `react-shiki` full bundle so all `bundledLanguages` work; theme switches
  * follow the document `color-scheme` via `defaultColor="light-dark()"`.
  */
 interface HermesSyntaxHighlighterProps extends SyntaxHighlighterProps {
   defer?: boolean
+  /** Trusted caller opt-in. Shared markdown surfaces remain copy-only. */
+  runEnabled?: boolean
 }
 
 // `github-dark-dimmed` is GitHub's lower-contrast dark palette — the vivid
@@ -45,6 +55,29 @@ const MAX_HIGHLIGHT_CHARS = 150_000
 const MAX_HIGHLIGHT_LINES = 3_000
 const CHUNK_LINES = 200
 const EST_LINE_PX = 16
+
+// Only explicit shell fences qualify. `console` is intentionally excluded because it
+// commonly mixes prompts/output with commands.
+const RUNNABLE_SHELL_LANGUAGES = new Set([
+  'bash',
+  'bat',
+  'batch',
+  'cmd',
+  'fish',
+  'nu',
+  'nushell',
+  'powershell',
+  'ps1',
+  'pwsh',
+  'sh',
+  'shell',
+  'shellscript',
+  'zsh'
+])
+
+export function isRunnableShellLanguage(language?: string): boolean {
+  return Boolean(language && RUNNABLE_SHELL_LANGUAGES.has(language.toLowerCase()))
+}
 
 // react-shiki (and through it the multi-MB shiki grammar/theme bundle) is the
 // heaviest dependency in the renderer. `shiki-block.tsx` is its only static
@@ -123,11 +156,30 @@ const PlainCode: FC<{ code: string }> = ({ code }) => {
   )
 }
 
+const RunButton: FC<{ command: string; label: string }> = ({ command, label }) => {
+  const pending = useStore($chatTerminalRunRequest)
+
+  return (
+    <Button
+      aria-label={label}
+      className="pointer-events-none opacity-0 group-hover/code:pointer-events-auto group-hover/code:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
+      disabled={pending !== null}
+      onClick={() => queueChatCommandInFreshTerminal(command)}
+      size="xs"
+      type="button"
+      variant="ghost"
+    >
+      {label}
+    </Button>
+  )
+}
+
 export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   components: { Pre },
   language,
   code,
-  defer = false
+  defer = false,
+  runEnabled = false
 }) => {
   const { t } = useI18n()
   const trimmed = (code ?? '').replace(/^\n+/, '').trimEnd()
@@ -144,16 +196,26 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
 
   const plain = defer || exceedsHighlightBudget(trimmed)
 
+  const runnable =
+    runEnabled &&
+    !defer &&
+    hasEmbeddedTerminalBridge() &&
+    isRunnableShellLanguage(language) &&
+    isRunnableChatTerminalCommandText(trimmed)
+
   return (
     <CodeCard data-streaming={defer ? 'true' : undefined}>
-      <CopyButton
-        appearance="inline"
-        className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-0 transition-opacity group-hover/code:opacity-100 focus-visible:opacity-100"
-        iconClassName="size-2.5"
-        label={t.assistant.tool.copyCode}
-        showLabel={false}
-        text={trimmed}
-      />
+      <div className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1">
+        {runnable && <RunButton command={trimmed} label={t.common.run} />}
+        <CopyButton
+          appearance="inline"
+          className="h-5 gap-0 rounded-md px-1 opacity-0 transition-opacity group-hover/code:opacity-100 focus-visible:opacity-100"
+          iconClassName="size-2.5"
+          label={t.assistant.tool.copyCode}
+          showLabel={false}
+          text={trimmed}
+        />
+      </div>
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
         <ExpandableBlock>
           <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">

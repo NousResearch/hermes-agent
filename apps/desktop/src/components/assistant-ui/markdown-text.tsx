@@ -433,6 +433,8 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
 }
 
 interface MarkdownTextSurfaceProps {
+  /** User-authorized shell execution capability. Shared/reasoning surfaces default to off. */
+  allowRunCommands?: boolean
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
   defer?: boolean
@@ -524,6 +526,7 @@ function MarkdownParagraph({
 }
 
 function MarkdownTextSurface({
+  allowRunCommands = false,
   containerClassName,
   containerProps,
   defer,
@@ -629,14 +632,14 @@ function MarkdownTextSurface({
           return (
             <RichCodeBlock
               code={props.code}
-              fallback={<SyntaxHighlighter {...props} defer={isStreaming} />}
+              fallback={<SyntaxHighlighter {...props} defer={isStreaming} runEnabled={allowRunCommands} />}
               language={props.language}
               streaming={isStreaming}
             />
           )
         }
       }) as StreamdownTextComponents,
-    [disableArtifacts, isStreaming]
+    [allowRunCommands, disableArtifacts, isStreaming]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {
@@ -706,8 +709,8 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
   )
 }
 
-const MarkdownTextImpl = () => {
-  return <MarkdownTextSurface defer />
+const MarkdownTextImpl = ({ allowRunCommands = false }: { allowRunCommands?: boolean }) => {
+  return <MarkdownTextSurface allowRunCommands={allowRunCommands} defer />
 }
 
 export const MarkdownText = memo(MarkdownTextImpl)

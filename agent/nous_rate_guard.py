@@ -85,6 +85,19 @@ def record_nous_rate_limit(
         error_context: Structured error context from _extract_api_error_context().
         default_cooldown: Fallback cooldown in seconds when no header data.
     """
+    # Fair-share 429s are scoped to ONE model (see
+    # ``agent.error_classifier.parse_fairshare_refusal``): other Nous models
+    # are available and the credential is healthy.  Recording one here would
+    # block every Nous model for every session, so refuse.  The state file's
+    # schema is deliberately untouched — concurrent sessions on older
+    # versions share it.
+    if isinstance(error_context, dict) and error_context.get("fairshare"):
+        logger.info(
+            "Nous fair-share (model-scoped) 429 — not recording cross-session "
+            "rate limit"
+        )
+        return
+
     now = time.time()
     reset_at = None
 

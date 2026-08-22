@@ -559,6 +559,22 @@ def _nous_entitlement_message(capability: str) -> str:
         return ""
 
 
+def _print_fairshare_upgrade_hint(agent, error_context) -> bool:
+    """Surface a fair-share ``upgrade_url`` once per turn, in the same 💡 style
+    as the Nous entitlement guidance.  Returns True when a line was printed."""
+    url = (error_context or {}).get("upgrade_url") if isinstance(error_context, dict) else None
+    if not url:
+        return False
+    if getattr(agent, "_fairshare_upgrade_hinted_url", None) == url:
+        return False
+    agent._fairshare_upgrade_hinted_url = url
+    agent._vprint(
+        f"{agent.log_prefix}   💡 Higher fair-share rates are available: {url}",
+        force=True,
+    )
+    return True
+
+
 def _print_nous_entitlement_guidance(agent, capability: str) -> bool:
     message = _nous_entitlement_message(capability)
     if not message:
@@ -5345,6 +5361,29 @@ def run_conversation(
                     (is_rate_limited and _wrapped_output_cap_budget is None)
                     or (_is_transport_failure and retry_count >= 2)
                 )
+                # Nous fair-share (model-scoped) 429: the gateway hands us
+                # live "best available" alternates.  Prefer them, in order,
+                # over the static chain; the configured chain remains behind
+                # them for when alternates are empty or all fail.
+                _fairshare_ctx = (
+                    dict(classified.error_context or {})
+                    if (classified.error_context or {}).get("fairshare")
+                    else None
+                )
+                if _should_fallback and _fairshare_ctx is not None:
+                    try:
+                        from agent.chat_completion_helpers import inject_fairshare_alternates
+                        _n_alts = inject_fairshare_alternates(
+                            agent, _fairshare_ctx.get("alternates") or [],
+                        )
+                        if _n_alts:
+                            logger.info(
+                                "Nous fair-share 429 on %s: injected %d alternate(s) "
+                                "ahead of the fallback chain",
+                                _model, _n_alts,
+                            )
+                    except Exception:
+                        logger.debug("fair-share alternate injection failed", exc_info=True)
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
@@ -5362,7 +5401,14 @@ def run_conversation(
                         )
                     )
                     if not pool_may_recover:
-                        if _is_upstream:
+                        if _fairshare_ctx is not None:
+                            _fs_model = _model or "This model"
+                            agent._buffer_status(
+                                f"⚠️ {_fs_model} is at its fair-share limit — "
+                                "switching to another model..."
+                            )
+                            _print_fairshare_upgrade_hint(agent, _fairshare_ctx)
+                        elif _is_upstream:
                             _upstream_name = (classified.error_context or {}).get(
                                 "upstream_provider", "aggregator"
                             )
@@ -5389,6 +5435,21 @@ def run_conversation(
                         else:
                             agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
                         if agent._try_activate_fallback(reason=classified.reason):
+                            if _fairshare_ctx is not None:
+                                agent._buffer_status(
+                                    f"⚠️ {_model or 'Model'} is at its fair-share limit — "
+                                    f"switching to {agent.model}"
+                                )
+                                # The primary's cooldown is normally a fixed
+                                # 60s escalation; the fair-share retry_after is
+                                # honest and exact, so don't restore the primary
+                                # before the gateway says it will readmit us.
+                                _fs_ra = _fairshare_ctx.get("retry_after")
+                                if isinstance(_fs_ra, (int, float)) and _fs_ra > 0:
+                                    agent._rate_limited_until = max(
+                                        getattr(agent, "_rate_limited_until", 0) or 0,
+                                        time.monotonic() + float(_fs_ra),
+                                    )
                             active_system_prompt = _sync_failover_system_message(
                                 agent, api_messages, active_system_prompt)
                             retry_count = 0
@@ -5451,10 +5512,17 @@ def run_conversation(
                 # apart via the 429's own x-ratelimit-* headers and
                 # the last-known-good state captured on the previous
                 # successful response.
+                #
+                # Fair-share 429s are model-scoped and classify as
+                # upstream_rate_limit (never rate_limit), so they can't
+                # reach this block; the explicit check below is
+                # belt-and-suspenders so a future reclassification can't
+                # silently trip the portal-wide breaker for one model.
                 if (
                     is_rate_limited
                     and agent.provider == "nous"
                     and classified.reason == FailoverReason.rate_limit
+                    and not (classified.error_context or {}).get("fairshare")
                     and not recovered_with_pool
                 ):
                     _genuine_nous_rate_limit = False
@@ -6470,6 +6538,19 @@ def run_conversation(
                                 _retry_after = min(float(_ra_raw), 600)
                             except (TypeError, ValueError):
                                 pass
+                    # Fair-share 429: the body's retry_after is exact (header
+                    # is authoritative when present; the classifier already
+                    # preferred it).  Honor it when no header was parsed so a
+                    # user with no fallback waits the honest interval instead
+                    # of a jittered guess.
+                    _fs_ra = (classified.error_context or {}).get("retry_after")
+                    if (
+                        _retry_after is None
+                        and (classified.error_context or {}).get("fairshare")
+                        and isinstance(_fs_ra, (int, float))
+                        and _fs_ra > 0
+                    ):
+                        _retry_after = min(float(_fs_ra), 600)
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
                 if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
@@ -6488,6 +6569,12 @@ def run_conversation(
                         _policy_note = " (Z.AI Coding overload short retry)"
                     _wait_reason = "Provider overloaded" if _is_zai_coding_overload and not is_rate_limited else "Rate limited"
                     _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
+                    if (classified.error_context or {}).get("fairshare"):
+                        _rate_limit_status = (
+                            f"⚠️ {_model or 'Model'} is at its fair-share limit — "
+                            f"retrying in {wait_time:.0f}s (attempt {retry_count + 1}/{max_retries})..."
+                        )
+                        _print_fairshare_upgrade_hint(agent, classified.error_context)
                     # Normal retries are buffered to avoid noisy transient chatter. Long
                     # Z.AI Coding waits are different: they can last minutes, so surface
                     # progress immediately instead of making the TUI look frozen.

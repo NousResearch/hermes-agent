@@ -2403,10 +2403,96 @@ def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
     )
 
 
+# Marker set on fallback-chain entries synthesized from a Nous fair-share
+# 429's ``alternates`` list.  They are live "best available" hints valid for
+# the current turn only, so ``strip_fairshare_alternates`` removes them when
+# the primary runtime is restored.
+FAIRSHARE_ALTERNATE_MARKER = "_fairshare_alternate"
+
+
+def inject_fairshare_alternates(agent, alternates, *, provider: str = "") -> int:
+    """Splice fair-share ``alternates`` into the fallback chain ahead of the
+    static entries, at the current chain position.
+
+    Alternates are Nous model slugs usable as-is against the same endpoint,
+    ordered best rate first, so they are preferred over the configured
+    chain.  Entries already present in the chain (at or after the current
+    index), the model currently in use, and non-string junk are skipped.
+    Returns the number of entries inserted.
+    """
+    provider = (provider or getattr(agent, "provider", "") or "").strip().lower()
+    if not provider or not isinstance(alternates, (list, tuple)):
+        return 0
+    chain = list(getattr(agent, "_fallback_chain", []) or [])
+    index = int(getattr(agent, "_fallback_index", 0) or 0)
+    index = max(0, min(index, len(chain)))
+    current_model = (getattr(agent, "model", "") or "").strip()
+    # Dedupe on (provider, model): a configured static entry for the same
+    # model already covers it, whatever its base_url spelling.
+    existing = {
+        _fallback_entry_key(fb)[:2] for fb in chain[index:] if isinstance(fb, dict)
+    }
+    # Alternates are served by the SAME endpoint with the SAME credential
+    # that just answered the 429, so seed both from the live session rather
+    # than re-resolving auth from disk (which can lag an OAuth refresh).
+    live_base_url = str(getattr(agent, "base_url", "") or "").strip()
+    live_api_key = str(getattr(agent, "api_key", "") or "").strip()
+
+    new_entries = []
+    for alt in alternates:
+        if not isinstance(alt, str):
+            continue
+        model = alt.strip()
+        if not model or model == current_model:
+            continue
+        entry = {"provider": provider, "model": model, FAIRSHARE_ALTERNATE_MARKER: True}
+        if live_base_url:
+            entry["base_url"] = live_base_url
+        if live_api_key:
+            entry["api_key"] = live_api_key
+        key = _fallback_entry_key(entry)[:2]
+        if key in existing:
+            continue
+        existing.add(key)
+        new_entries.append(entry)
+    if not new_entries:
+        return 0
+    agent._fallback_chain = chain[:index] + new_entries + chain[index:]
+    agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
+    return len(new_entries)
+
+
+def strip_fairshare_alternates(agent) -> int:
+    """Remove injected fair-share alternates from the chain, keeping
+    ``_fallback_index`` pointing at the same static entry.  Returns the
+    number of entries removed."""
+    chain = list(getattr(agent, "_fallback_chain", []) or [])
+    if not any(isinstance(fb, dict) and fb.get(FAIRSHARE_ALTERNATE_MARKER) for fb in chain):
+        return 0
+    index = int(getattr(agent, "_fallback_index", 0) or 0)
+    kept = []
+    removed_before_index = 0
+    for pos, fb in enumerate(chain):
+        if isinstance(fb, dict) and fb.get(FAIRSHARE_ALTERNATE_MARKER):
+            if pos < index:
+                removed_before_index += 1
+            continue
+        kept.append(fb)
+    agent._fallback_chain = kept
+    agent._fallback_index = max(0, min(index - removed_before_index, len(kept)))
+    agent._fallback_model = kept[0] if kept else None
+    return len(chain) - len(kept)
+
+
 def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
     """Return a skip reason for fallback entries known to be unusable locally."""
     fb_provider = (fb.get("provider") or "").strip().lower()
     if fb_provider != "nous":
+        return None
+    # An entry carrying its own credential (user-supplied inline key, or a
+    # fair-share alternate seeded from the live session) doesn't depend on
+    # the on-disk Nous auth state.
+    if str(fb.get("api_key") or "").strip():
         return None
     try:
         from hermes_cli.auth import get_provider_auth_state

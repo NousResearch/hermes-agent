@@ -1497,7 +1497,13 @@ def restore_primary_runtime(agent) -> bool:
     The gateway caches agents across messages (``_agent_cache`` in
     ``gateway/run.py``), so this restoration IS needed there too.
     """
+    # Fair-share alternates injected mid-turn are turn-scoped hints; drop
+    # them before the chain is reused so config-driven fallback order is
+    # restored.  (Kept while a cooldown pins us to the fallback below.)
+    from agent.chat_completion_helpers import strip_fairshare_alternates
+
     if not agent._fallback_activated:
+        strip_fairshare_alternates(agent)
         # Reset the chain index even when no fallback was activated this
         # turn.  Without this, a turn where _try_activate_fallback() was
         # called but returned False (chain exhausted or provider not
@@ -1748,6 +1754,7 @@ def restore_primary_runtime(agent) -> bool:
             agent.reasoning_config = dict(saved_reasoning)
 
         # ── Reset fallback chain for the new turn ──
+        strip_fairshare_alternates(agent)
         agent._fallback_activated = False
         agent._fallback_index = 0
         agent._rate_limit_backoff_count = 0  # reset exponential backoff counter

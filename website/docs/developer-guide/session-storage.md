@@ -136,12 +136,46 @@ The FTS5 table is kept in sync via three triggers that fire on INSERT, UPDATE,
 and DELETE of the `messages` table. The current triggers are gated on the
 `fts_rebuild_high_water` / `fts_rebuild_progress` markers in `state_meta` (so a
 background FTS rebuild can proceed without double-indexing) and cover all three
-indexed columns — see `SCHEMA_SQL` in `hermes_state.py` for the exact SQL.
+indexed columns — see `SCHEMA_SQL` in `hermes_state_common.py` for the exact SQL.
+
+
+### Incremental History Revisions
+
+Tools that synchronize, export, back up, or index session history can discover
+changes without rereading every message body. Two deliberately narrow tables
+form the stable contract:
+
+```sql
+SELECT version FROM session_history_contract WHERE singleton = 1;
+SELECT session_id, revision FROM session_history_revisions;
+```
+
+Validate the contract version before reading the inventory. Contract setup and
+legacy-session backfill publish atomically, so a missing version row means the
+database is not ready for incremental consumption.
+
+`revision` is an opaque token. Cache the `(session_id, revision)` inventory and
+reload a session only when its token changes. A newly present ID is a new
+session; an ID missing from the next complete inventory was deleted. The token
+inventory changes in the same transaction as session creation, deletion, and
+metadata changes and every canonical message insert, update, or delete,
+including message movement between sessions. Derived message counters do not
+cause a second token change because the corresponding message mutation already
+invalidates the session. Tokens appear and change for live sessions; deleting a
+session removes its row. A token is intentionally not a timestamp or ordered
+counter, and consumers must only compare it for equality.
+
+When the inventory and changed payloads must represent one instant, read both
+inside one SQLite read transaction. A later writer then lands after that
+snapshot and changes the next inventory rather than producing a mixed view.
+
+The contract is metadata-only: session and message payloads remain in their
+canonical tables, and no append-only change journal accumulates over time.
 
 
 ## Schema Version and Migrations
 
-Current schema version: **23**
+Current schema version: **26**
 
 The `schema_version` table stores a single integer. Simple column additions are handled declaratively by `_reconcile_columns()` (which diffs live columns against `SCHEMA_SQL` and ADDs any missing ones). The version-gated chain is reserved for data migrations and index/FTS changes that can't be expressed declaratively:
 
@@ -163,6 +197,8 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 20 | Per-model usage attribution — seed `session_model_usage` rows from historical per-session aggregate totals |
 | 22 | Task-dimension usage attribution — rebuild `session_model_usage` so the `task` column participates in the PRIMARY KEY |
 | 23 | FTS storage redesign — external-content FTS tables replacing the v11 inline-mode copies (opt-in transition for existing DBs) |
+| 25 | Deduplicate per-session system prompt snapshots into a shared content-addressed table |
+| 26 | Add opaque per-session history revisions for efficient incremental consumers |
 
 Versions not listed above were declarative column additions handled by `_reconcile_columns()` (version bump only, no data migration).
 

@@ -25,6 +25,7 @@ from hermes_state_common import (
     LEGACY_FTS_TRIGRAM_SQL,
     SCHEMA_SQL,
     SCHEMA_VERSION,
+    SESSION_HISTORY_SQL,
     _FTS_CJK_TRIGGERS,
     _FTS_TRIGGERS,
     _ephemeral_child_sql,
@@ -842,6 +843,11 @@ class SessionSchemaMixin:
         # migration was skipped (e.g. due to version renumbering), the
         # column gets created here.
         self._reconcile_columns(cursor)
+
+        # Publish the narrow external history contract atomically. Existing
+        # sessions are backfilled in the same BEGIN IMMEDIATE transaction as
+        # trigger installation, and the contract version row appears last.
+        cursor.executescript(SESSION_HISTORY_SQL)
 
         # Rebuild gateway_routing if it still carries the pre-scope PRIMARY
         # KEY (session_key alone). ADD COLUMN cannot fix a PK, so this is

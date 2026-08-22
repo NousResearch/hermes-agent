@@ -429,6 +429,21 @@ CREATE TABLE IF NOT EXISTS messages (
     display_metadata TEXT
 );
 
+-- Stable, narrow contract for incremental history consumers. Revisions are
+-- opaque: consumers compare them for equality and must not infer ordering.
+-- Keeping only the latest token per live session bounds storage by the number
+-- of sessions instead of the number of history mutations.
+CREATE TABLE IF NOT EXISTS session_history_contract (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_history_revisions (
+    session_id TEXT PRIMARY KEY
+        REFERENCES sessions(id) ON UPDATE CASCADE ON DELETE CASCADE,
+    revision TEXT NOT NULL CHECK (length(revision) = 32)
+);
+
 CREATE TABLE IF NOT EXISTS session_model_usage (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     model TEXT NOT NULL,
@@ -524,6 +539,99 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+"""
+
+
+# Complete setup as one write transaction. The contract row is published last,
+# so an external reader that validates it can never observe missing triggers or
+# a partially backfilled revision inventory during upgrade.
+SESSION_HISTORY_SQL = """
+BEGIN IMMEDIATE;
+
+CREATE TRIGGER IF NOT EXISTS session_history_session_insert
+AFTER INSERT ON sessions
+BEGIN
+    INSERT INTO session_history_revisions (session_id, revision)
+    VALUES (new.id, lower(hex(randomblob(16))))
+    ON CONFLICT(session_id) DO UPDATE SET revision = excluded.revision;
+END;
+
+-- message_count and tool_call_count are derived bookkeeping. Every canonical
+-- mutation that changes them is already covered by a messages trigger below;
+-- excluding their follow-up UPDATE avoids a redundant token write and keeps
+-- the existing FTS corruption-recovery transaction path independent.
+CREATE TRIGGER IF NOT EXISTS session_history_session_update
+AFTER UPDATE OF
+    id, source, user_id, session_key, chat_id, chat_type, thread_id,
+    display_name, origin_json, expiry_finalized, model, model_config,
+    system_prompt, system_prompt_hash, parent_session_id, started_at, ended_at,
+    end_reason, input_tokens, output_tokens, cache_read_tokens,
+    cache_write_tokens, reasoning_tokens, cwd, git_branch, git_repo_root,
+    billing_provider, billing_base_url, billing_mode, estimated_cost_usd,
+    actual_cost_usd, cost_status, cost_source, pricing_version, title,
+    title_source, last_activity_at, last_activity_description,
+    last_activity_provenance, api_call_count, handoff_state, handoff_platform,
+    handoff_error, compression_failure_cooldown_until,
+    compression_failure_error, compression_fallback_streak,
+    compression_ineffective_count, profile_name, rewind_count, archived,
+    pinned, last_read_at
+ON sessions
+BEGIN
+    INSERT INTO session_history_revisions (session_id, revision)
+    VALUES (new.id, lower(hex(randomblob(16))))
+    ON CONFLICT(session_id) DO UPDATE SET revision = excluded.revision;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_history_message_insert
+AFTER INSERT ON messages
+BEGIN
+    INSERT INTO session_history_revisions (session_id, revision)
+    VALUES (new.session_id, lower(hex(randomblob(16))))
+    ON CONFLICT(session_id) DO UPDATE SET revision = excluded.revision;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_history_message_update
+AFTER UPDATE ON messages
+BEGIN
+    INSERT INTO session_history_revisions (session_id, revision)
+    VALUES (new.session_id, lower(hex(randomblob(16))))
+    ON CONFLICT(session_id) DO UPDATE SET revision = excluded.revision;
+END;
+
+-- A message can be reassigned between sessions by a direct SQLite writer.
+-- The general UPDATE trigger records the new owner; this companion trigger
+-- also invalidates the old owner.
+CREATE TRIGGER IF NOT EXISTS session_history_message_move
+AFTER UPDATE OF session_id ON messages
+WHEN old.session_id != new.session_id
+BEGIN
+    INSERT INTO session_history_revisions (session_id, revision)
+    VALUES (old.session_id, lower(hex(randomblob(16))))
+    ON CONFLICT(session_id) DO UPDATE SET revision = excluded.revision;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_history_message_delete
+AFTER DELETE ON messages
+BEGIN
+    INSERT INTO session_history_revisions (session_id, revision)
+    VALUES (old.session_id, lower(hex(randomblob(16))))
+    ON CONFLICT(session_id) DO UPDATE SET revision = excluded.revision;
+END;
+
+INSERT OR IGNORE INTO session_history_revisions (session_id, revision)
+SELECT id, lower(hex(randomblob(16)))
+FROM sessions
+WHERE NOT EXISTS (
+    SELECT 1 FROM session_history_contract
+    WHERE singleton = 1 AND version >= 1
+);
+
+INSERT INTO session_history_contract (singleton, version)
+VALUES (1, 1)
+ON CONFLICT(singleton) DO UPDATE SET
+    version = max(session_history_contract.version, excluded.version);
+
+COMMIT;
 """
 
 

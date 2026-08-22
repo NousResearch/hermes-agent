@@ -3661,6 +3661,32 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
     import re
 
     normalized = _normalize_service_definition(text)
+
+    # The installer may expose the same virtualenv through an alias such as
+    # ``venv -> .venv``.  A console entry point launched through the alias
+    # generates ``venv/bin/python``, while launchd/Python canonicalizes the
+    # running interpreter to ``.venv/bin/python``.  Comparing those strings
+    # literally creates a perpetual stale -> reload -> stale loop even though
+    # both ProgramArguments execute from the same environment.  Resolve only
+    # the executable's parent directory: resolving the executable itself could
+    # chase ``bin/python`` to the base interpreter and incorrectly collapse two
+    # distinct virtualenvs that share that interpreter.
+    def _canonicalize_program_executable(match: re.Match[str]) -> str:
+        raw_path = match.group(2)
+        executable = Path(raw_path)
+        try:
+            canonical = executable.parent.resolve(strict=True) / executable.name
+        except (OSError, RuntimeError):
+            return match.group(0)
+        return f"{match.group(1)}{canonical}{match.group(3)}"
+
+    normalized = re.sub(
+        r"(<key>ProgramArguments</key>\s*<array>\s*<string>)(.*?)(</string>)",
+        _canonicalize_program_executable,
+        normalized,
+        count=1,
+        flags=re.S,
+    )
     return re.sub(
         r"(<key>PATH</key>\s*<string>)(.*?)(</string>)",
         r"\1__HERMES_PATH__\3",

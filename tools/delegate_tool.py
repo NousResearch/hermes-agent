@@ -29,6 +29,7 @@ import threading
 import time
 import weakref
 from concurrent.futures import (
+    Future,
     TimeoutError as FuturesTimeoutError,
 )
 from typing import Any, Dict, List, Optional
@@ -151,6 +152,11 @@ _active_subagents_lock = threading.Lock()
 # subagent_id -> mutable record tracking the live child agent.  Stays only
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: Dict[str, Dict[str, Any]] = {}
+
+# How often _wait_for_child re-checks a running child's registry deadline for
+# a live extend_subagent_timeout() bump — small enough that "give it more
+# time" from the panel feels immediate, large enough not to spin.
+_TIMEOUT_POLL_SECONDS = 1.0
 
 # subagent_id -> {goal, delegation_id, parent_session_id} retained AFTER the
 # child finishes (bounded FIFO). Child-started background processes routinely
@@ -285,6 +291,104 @@ def interrupt_subagent(subagent_id: str) -> bool:
         logger.debug("interrupt_subagent(%s) failed: %s", subagent_id, exc)
         return False
     return True
+
+
+def extend_subagent_timeout(
+    subagent_id: str,
+    *,
+    seconds: Optional[float] = None,
+    disable: bool = False,
+    restore: bool = False,
+) -> bool:
+    """Push out, clear, or restore a single running subagent's hard timeout.
+
+    delegation.child_timeout_seconds is global: someone who re-enables it as a
+    safety net against wedged children has no way to spare one specific child
+    that the Agents panel shows is making real progress, short of raising the
+    cap for every subagent. This lets that one child's deadline move instead
+    — and, since it's easy to disable a cap for the wrong reasons (a subagent
+    that only looked busy), lets the same toggle put it back.
+
+    ``restore`` re-arms a fresh full ``child_timeout_seconds`` window starting
+    now — not the original (likely already past) deadline, which would just
+    fire immediately. ``disable`` (or omitting both ``seconds`` and
+    ``restore``) clears the deadline outright for the rest of this run; a
+    positive ``seconds`` instead pushes the current deadline out by that many
+    seconds. Returns False when the subagent isn't registered or never had a
+    configured cap to begin with (child_timeout_seconds is off, or the child
+    already finished) — there's nothing to toggle.
+    """
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if record is None or record.get("child_timeout_seconds") is None:
+            return False
+        if restore:
+            record["timeout_at"] = time.time() + record["child_timeout_seconds"]
+        elif disable or not seconds or seconds <= 0:
+            record["timeout_at"] = None
+        else:
+            base = record["timeout_at"]
+            record["timeout_at"] = max(base, time.time()) + seconds if base else time.time() + seconds
+        return True
+
+
+def subagent_timeout_active(subagent_id: str) -> Optional[bool]:
+    """Whether ``subagent_id`` currently has an enforced hard timeout.
+
+    ``None`` means there's nothing to report: the subagent isn't registered,
+    or it was never launched under a configured child_timeout_seconds cap in
+    the first place. Lets a caller (subagent.extend_timeout's response) tell
+    the UI which way a toggle just landed without re-deriving that from the
+    applied/disable/restore flags it sent.
+    """
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if record is None or record.get("child_timeout_seconds") is None:
+            return None
+        return record.get("timeout_at") is not None
+
+
+def _wait_for_child(
+    future: "Future[Any]", subagent_id: Optional[str], child_timeout: Optional[float]
+) -> Any:
+    """Block on the child's future, honoring a live deadline bump.
+
+    With no registered subagent_id or no configured cap this is exactly
+    ``future.result(timeout=child_timeout)``. Otherwise the wait is split into
+    short polls against the registry's mutable ``timeout_at`` so a concurrent
+    extend_subagent_timeout() call (subagent.extend_timeout) is picked up
+    instead of the deadline captured at launch firing regardless — including a
+    disable followed later by a restore, so polling continues even while
+    ``timeout_at`` is momentarily None rather than settling into an unbounded
+    wait that a restore could no longer interrupt.
+    """
+    if not subagent_id or child_timeout is None:
+        return future.result(timeout=child_timeout)
+
+    while True:
+        with _active_subagents_lock:
+            record = _active_subagents.get(subagent_id)
+            deadline = record.get("timeout_at") if record is not None else None
+
+        if deadline is None:
+            # No active deadline right now (disabled, or the record is gone).
+            # Keep polling at the same cadence instead of committing to a
+            # single unbounded future.result(timeout=None) — a later
+            # extend_subagent_timeout(restore=True) needs a wait still in
+            # progress to land in, not one that already stopped checking.
+            try:
+                return future.result(timeout=_TIMEOUT_POLL_SECONDS)
+            except FuturesTimeoutError:
+                continue
+
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            raise FuturesTimeoutError()
+
+        try:
+            return future.result(timeout=min(remaining, _TIMEOUT_POLL_SECONDS))
+        except FuturesTimeoutError:
+            continue
 
 
 def steer_subagent(
@@ -2563,6 +2667,11 @@ def _run_single_child(
     # target it by subagent_id (kill, pause, status queries).  Unregistered
     # in the finally block, even when the child raises.  Test doubles that
     # hand us a MagicMock don't carry stable ids; skip registration then.
+    # Computed here (rather than at the future.result() call below) so the
+    # initial deadline can ride along on the registry record and the
+    # subagent.start event the desktop panel uses to decide whether a "give
+    # it more time" action applies to this child at all.
+    child_timeout = _get_child_timeout()
     _raw_sid = getattr(child, "_subagent_id", None)
     _subagent_id = _raw_sid if isinstance(_raw_sid, str) else None
     if _subagent_id:
@@ -2619,6 +2728,20 @@ def _run_single_child(
                 "owner_session_id": owner_session_id,
                 "owner_transport": owner_transport,
                 "owner_session_record": owner_session_record,
+                # Absolute deadline for the hard timeout below, or None when
+                # delegation.child_timeout_seconds is off. Mutable after
+                # registration: extend_subagent_timeout() (subagent.extend_timeout)
+                # can push it out, clear it, or restore it for this one child
+                # without touching the global config.
+                "timeout_at": (
+                    time.time() + child_timeout if child_timeout is not None else None
+                ),
+                # The configured duration itself, kept alongside the mutable
+                # deadline above so a later restore re-arms a fresh full
+                # window from "now" rather than the (likely already past)
+                # original deadline. None here means the same as above: no
+                # cap was ever configured for this child.
+                "child_timeout_seconds": child_timeout,
             }
         )
 
@@ -2671,7 +2794,9 @@ def _run_single_child(
         _heartbeat_thread.start()
         if child_progress_cb:
             try:
-                child_progress_cb("subagent.start", preview=goal)
+                child_progress_cb(
+                    "subagent.start", preview=goal, timeout_seconds=child_timeout
+                )
             except Exception as e:
                 logger.debug("Progress callback start failed: %s", e)
 
@@ -2754,7 +2879,9 @@ def _run_single_child(
         # Run child with an optional hard timeout (off by default —
         # result(timeout=None) blocks until the child finishes). Stuck-child
         # protection comes from the heartbeat staleness monitor instead.
-        child_timeout = _get_child_timeout()
+        # (child_timeout was already resolved above, alongside registration,
+        # so the initial deadline is visible on the registry record before
+        # the child does any work.)
         # Daemon worker (tools.daemon_pool): a timed-out child is abandoned
         # below; a stdlib non-daemon worker would then block interpreter
         # exit at atexit-join time if the child never unwinds.
@@ -2800,7 +2927,7 @@ def _run_single_child(
             _run_with_thread_capture,
         )
         try:
-            result = _child_future.result(timeout=child_timeout)
+            result = _wait_for_child(_child_future, _subagent_id, child_timeout)
         except Exception as _timeout_exc:
             # No consumer boundary remains once this owner stops waiting for
             # the child. Close acceptance before any completion callback and
@@ -2870,9 +2997,13 @@ def _run_single_child(
                     pass
 
             if is_timeout:
+                # duration, not child_timeout: a subagent.extend_timeout call
+                # can push the deadline out mid-run, so the configured cap no
+                # longer equals how long the child actually ran before this
+                # fired.
                 if child_api_calls == 0:
                     _err = (
-                        f"Subagent timed out after {child_timeout}s without "
+                        f"Subagent timed out after {duration}s without "
                         f"making any API call — the child never reached its "
                         f"first LLM request (prompt construction, credential "
                         f"resolution, or transport may be stuck)."
@@ -2881,7 +3012,7 @@ def _run_single_child(
                         _err += f" Diagnostic: {diagnostic_path}"
                 else:
                     _err = (
-                        f"Subagent timed out after {child_timeout}s with "
+                        f"Subagent timed out after {duration}s with "
                         f"{child_api_calls} API call(s) completed — likely "
                         f"stuck on a slow API call, tool call, or unresponsive "
                         f"network request."

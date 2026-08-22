@@ -1385,7 +1385,10 @@ export const en: Translations = {
     ageDays: days => `${days}d ago`,
     durationSeconds: seconds => `${seconds}s`,
     durationMinutes: (minutes, seconds) => `${minutes}m ${seconds}s`,
-    tokens: value => `${value} tok`
+    tokens: value => `${value} tok`,
+    extendTimeout: "Let 'em cook",
+    extendTimeoutRestore: 'Restore timeout',
+    extendTimeoutFailed: 'Failed to extend subagent timeout'
   },
 
   commandCenter: {

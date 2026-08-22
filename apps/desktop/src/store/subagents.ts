@@ -35,6 +35,13 @@ export interface SubagentProgress {
   summary?: string
   /** Active tool while running — cleared on terminal status. */
   currentTool?: string
+  /**
+   * delegation.child_timeout_seconds at spawn time, or undefined when no
+   * hard cap applies to this child. Set once from the native subagent.start
+   * event; a UI uses its presence to decide whether "give it more time" (see
+   * subagent.extend_timeout) means anything for this row.
+   */
+  timeoutSeconds?: number
 }
 
 export interface SubagentNode extends SubagentProgress {
@@ -204,7 +211,8 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     filesWritten: filesWritten.length ? filesWritten : (prev?.filesWritten ?? []),
     stream,
     summary: str(payload.summary) || timeoutSummary(payload) || prev?.summary || undefined,
-    currentTool: TERMINAL.has(status) ? undefined : tool || prev?.currentTool
+    currentTool: TERMINAL.has(status) ? undefined : tool || prev?.currentTool,
+    timeoutSeconds: num(payload.timeout_seconds) ?? prev?.timeoutSeconds
   }
 }
 

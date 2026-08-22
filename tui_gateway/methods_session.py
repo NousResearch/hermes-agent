@@ -3328,6 +3328,37 @@ def _(rid, params: dict) -> dict:
     )
 
 
+@method("subagent.extend_timeout")
+def _(rid, params: dict) -> dict:
+    """Spare a specific running subagent from its configured hard timeout,
+    or put a previously-spared one back under its cap.
+
+    Mirrors subagent.interrupt's shape. Only meaningful for a child running
+    under delegation.child_timeout_seconds — one with no configured cap has
+    no deadline to move, and `applied: false` reports that back instead of
+    pretending the call did something. `active` in the response reflects the
+    resulting state (true = still/again enforced, false = disabled) so a
+    toggle button can flip itself without guessing from the request it sent.
+    """
+    from tools.delegate_tool import extend_subagent_timeout, subagent_timeout_active
+
+    subagent_id = str(params.get("subagent_id") or "").strip()
+    if not subagent_id:
+        return _err(rid, 4000, "subagent_id required")
+    raw_seconds = params.get("seconds")
+    try:
+        seconds = float(raw_seconds) if raw_seconds is not None else None
+    except (TypeError, ValueError):
+        return _err(rid, 4001, "seconds must be a number")
+    restore = bool(params.get("restore", False))
+    disable = bool(params.get("disable", seconds is None and not restore))
+    applied = extend_subagent_timeout(
+        subagent_id, seconds=seconds, disable=disable, restore=restore
+    )
+    active = subagent_timeout_active(subagent_id)
+    return _ok(rid, {"applied": applied, "active": active, "subagent_id": subagent_id})
+
+
 @method("spawn_tree.save")
 def _(rid, params: dict) -> dict:
     session_id = str(params.get("session_id") or "").strip()

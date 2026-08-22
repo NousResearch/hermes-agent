@@ -1463,6 +1463,62 @@ def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypa
     assert "result" not in events[0][2]
 
 
+def test_subagent_start_relays_configured_timeout_seconds(monkeypatch):
+    # Regression: subagent.start's payload is built from an explicit
+    # per-field whitelist (not **_kwargs passthrough), so a new field emitted
+    # by tools/delegate_tool.py (here, extend_subagent_timeout's
+    # timeout_seconds) silently never reaches the desktop unless it's added
+    # to this whitelist too.
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "timeout-relay-test",
+        {"tool_progress_mode": "all"},
+    )
+
+    server._on_tool_progress(
+        "timeout-relay-test",
+        "subagent.start",
+        preview="do the thing",
+        goal="do the thing",
+        subagent_id="sid-1",
+        timeout_seconds=45.0,
+    )
+
+    assert events
+    event_type, sid, payload = events[0]
+    assert event_type == "subagent.start"
+    assert sid == "timeout-relay-test"
+    assert payload["timeout_seconds"] == 45.0
+
+
+def test_subagent_start_omits_timeout_seconds_when_uncapped(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "no-timeout-relay-test",
+        {"tool_progress_mode": "all"},
+    )
+
+    server._on_tool_progress(
+        "no-timeout-relay-test",
+        "subagent.start",
+        preview="do the thing",
+        goal="do the thing",
+        subagent_id="sid-2",
+        timeout_seconds=None,
+    )
+
+    assert events
+    assert "timeout_seconds" not in events[0][2]
+
+
 def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(

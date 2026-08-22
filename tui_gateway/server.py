@@ -6220,6 +6220,12 @@ def _on_tool_progress(
             payload["summary"] = str(_kwargs["summary"])
         if _kwargs.get("duration_seconds") is not None:
             payload["duration_seconds"] = float(_kwargs["duration_seconds"])
+        # Configured delegation.child_timeout_seconds for this child (or absent
+        # when no hard cap applies) — carried on subagent.start so the panel
+        # can offer "give it more time" only where there's a deadline to
+        # spare. See tools/delegate_tool.py::extend_subagent_timeout.
+        if _kwargs.get("timeout_seconds") is not None:
+            payload["timeout_seconds"] = float(_kwargs["timeout_seconds"])
         if preview and event_type == "subagent.tool":
             payload["tool_preview"] = str(preview)
             payload["text"] = str(preview)

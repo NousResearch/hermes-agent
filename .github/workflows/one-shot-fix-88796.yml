@@ -95,6 +95,13 @@ jobs:
           python3 .github/workflows/patch-88796-carrier-idempotence.py
           python3 -m py_compile /tmp/materialize-88796-base.sh
           bash -n /tmp/execute-88796-base.sh
+          # The verified-tree workflow installs the locked test environment into
+          # .venv but does not activate it. The historical carrier deliberately
+          # invokes `python -m pytest`; when a locked venv exists, resolve that
+          # interpreter first instead of silently falling back to /usr/bin/python.
+          if [ -x .venv/bin/python ]; then
+            export PATH="$PWD/.venv/bin:$PATH"
+          fi
           if ! bash /tmp/execute-88796-base.sh; then
             echo '--- generated memory_manager.py syntax context ---'
             nl -ba agent/memory_manager.py | sed -n '400,470p'

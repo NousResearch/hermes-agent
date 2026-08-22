@@ -21,6 +21,7 @@ down:
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -445,8 +446,20 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
             conn, review_id, summary="PR ready",
             expected_run_id=claimed.current_run_id,
         )
-        # Ready-lane task with the same fresh PR comment.
+        # Ready-lane task with the same fresh PR comment. The guard fires
+        # only when a worker run of THIS task posted the comment (#80231):
+        # give the task an executed run (outside the recent_success window)
+        # so the worker-authored PR comment legitimately triggers active_pr.
         ready_id = kb.create_task(conn, title="already PRed", assignee="worker")
+        old = int(time.time()) - 7200
+        kb._synthesize_ended_run(
+            conn, ready_id, outcome="completed", summary="opened PR",
+            metadata={"_ended_at": old},
+        )
+        conn.execute(
+            "UPDATE task_runs SET ended_at = ? WHERE task_id = ?",
+            (old, ready_id),
+        )
         kb.add_comment(conn, ready_id, author="worker", body=pr_comment)
 
         assert kb.check_respawn_guard(conn, ready_id) == "active_pr"

@@ -367,6 +367,136 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kb.check_respawn_guard(conn, tid) is None
 
 
+# ---------------------------------------------------------------------------
+# active_pr respawn guard (#80231)
+# ---------------------------------------------------------------------------
+
+
+def test_active_pr_guard_does_not_block_first_spawn(kanban_home):
+    """A merge-gate/review task referencing an existing PR must spawn once.
+
+    #80231: the active_pr guard fired on ANY PR URL in a recent comment,
+    including the task's own contract (merge-gate tasks say "merge PR #N").
+    A task with zero runs cannot have "already opened a PR" — the guard
+    must not block its first-ever spawn.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="merge reviewed PR #42 into epic",
+            assignee="default",
+        )
+        kb.add_comment(
+            conn,
+            tid,
+            author="orchestrator",
+            body="Merge https://github.com/NousResearch/hermes-agent/pull/42",
+        )
+        kb.promote_task(conn, tid, actor="test")
+
+    with kb.connect() as conn:
+        # No runs yet → guard must NOT fire; the task can spawn.
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_active_pr_guard_fires_after_a_prior_run(kanban_home):
+    """Once a worker has actually run, a PR URL comment still guards.
+
+    The guard's purpose (prevent duplicate PRs from a re-spawn) only makes
+    sense when a prior worker run exists — the zero-run exemption must not
+    weaken that. The PR comment must be authored by a profile that actually
+    executed a run of this task (#80231 preferred direction: "posted by a
+    worker run of that same task"), not by the orchestrator.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="implement feature", assignee="default")
+        # Simulate a prior worker run that posted its PR. Use an old ended_at
+        # so the recent_success guard (window 1h) does not fire first.
+        old = int(time.time()) - 7200
+        kb._synthesize_ended_run(
+            conn, tid, outcome="completed", summary="opened PR #42",
+            metadata={"_ended_at": old},
+        )
+        # Backdate the run row's ended_at.
+        conn.execute(
+            "UPDATE task_runs SET ended_at = ? WHERE task_id = ?",
+            (old, tid),
+        )
+        # The worker run's profile is the task's assignee ("default") — the
+        # PR comment must carry that same author to count as worker-posted.
+        kb.add_comment(
+            conn,
+            tid,
+            author="default",
+            body="PR opened: https://github.com/NousResearch/hermes-agent/pull/42",
+        )
+
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_guard_ignores_contract_comment_after_failed_spawn(kanban_home):
+    """A failed first spawn must not start the 24h active_pr guard.
+
+    #80231 re-review: the previous fix keyed the exemption on ANY run-row
+    existence, so a ``spawn_failed`` row (or a crashed ``running`` stub) made
+    the orchestrator's own contract comment ("merge PR #N") re-trigger the
+    guard for the rest of the window. The guard must fire only on PR URLs
+    posted by a profile that actually executed a run.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="merge reviewed PR #42 into epic",
+            assignee="default",
+        )
+        # Orchestrator contract comment (the card's purpose references the PR).
+        kb.add_comment(
+            conn,
+            tid,
+            author="orchestrator",
+            body="Merge https://github.com/NousResearch/hermes-agent/pull/42",
+        )
+        # A failed first spawn records a spawn_failed run — the worker never
+        # executed, so it never posted a PR comment.
+        kb._synthesize_ended_run(
+            conn, tid, outcome="spawn_failed", summary="spawn failed",
+        )
+        kb.promote_task(conn, tid, actor="test")
+
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_active_pr_guard_requires_matching_author(kanban_home):
+    """A PR-URL comment from an author with no executed run must not guard.
+
+    Even with an executed run present, a comment authored by someone else
+    (operator notes, another task's worker) must not be read as "this task's
+    worker opened a PR".
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="implement feature", assignee="default")
+        old = int(time.time()) - 7200
+        kb._synthesize_ended_run(
+            conn, tid, outcome="completed", summary="opened PR #42",
+            metadata={"_ended_at": old},
+        )
+        conn.execute(
+            "UPDATE task_runs SET ended_at = ? WHERE task_id = ?",
+            (old, tid),
+        )
+        kb.add_comment(
+            conn,
+            tid,
+            author="operator",
+            body="FYI PR: https://github.com/NousResearch/hermes-agent/pull/42",
+        )
+
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
 
 
 

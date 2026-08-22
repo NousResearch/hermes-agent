@@ -20975,8 +20975,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if response:
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
+                        # Deliver media from EVERY assistant segment of this
+                        # turn, not just the final response. A turn that voices
+                        # an answer reveal and then the next question emits two
+                        # [[audio_as_voice]] clips across a tool call boundary;
+                        # scanning only the final segment silently dropped all
+                        # but the last clip.
+                        # select_turn_messages refuses the slice when the
+                        # reported turn boundary is ambiguous (compaction
+                        # re-baselines history_offset to 0), in which case
+                        # collect_turn_media_text falls back to the final
+                        # response and behaviour is unchanged.
+                        from gateway.turn_media import (
+                            collect_turn_media_text,
+                            select_turn_messages,
+                        )
+                        _turn_msgs = select_turn_messages(
+                            agent_messages,
+                            agent_result.get("history_offset"),
+                            history,
+                        )
+                        _media_text = collect_turn_media_text(_turn_msgs, response)
                         await self._deliver_media_from_response(
-                            response, event, _media_adapter,
+                            _media_text, event, _media_adapter,
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).

@@ -10,14 +10,16 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from pptx import Presentation
 
-SKILL = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS = os.path.join(SKILL, "scripts")
-sys.path.insert(0, SCRIPTS)
+REPO = Path(__file__).resolve().parents[2]
+SKILL = REPO / "skills" / "productivity" / "powerpoint"
+SCRIPTS = SKILL / "scripts"
+sys.path.insert(0, str(SCRIPTS))
 
 from pptx_overflow import (  # noqa: E402
     INHERITED_SIZE_PT,
@@ -32,7 +34,7 @@ from pptx_overflow import (  # noqa: E402
 def run(script, *args):
     env = dict(os.environ, LC_ALL="C", PYTHONIOENCODING="utf-8")
     proc = subprocess.run(
-        [sys.executable, os.path.join(SCRIPTS, script), *args],
+        [sys.executable, str(SCRIPTS / script), *args],
         capture_output=True, text=True, encoding="utf-8", env=env)
     assert proc.returncode == 0, f"{script} failed: {proc.stderr}"
     return json.loads(proc.stdout)

@@ -7174,6 +7174,35 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
+    # Resolve the tier into request_overrides here: AIAgent stores
+    # ``service_tier`` but no transport reads that attribute —
+    # ``agent/transports/chat_completions.py`` emits it only from
+    # ``request_overrides``. Passing the tier alone left it stranded on the
+    # agent, so a tier set in config.yaml was reported in session info and
+    # then dropped on the wire unless the user flipped the runtime /fast
+    # toggle (the only other writer of request_overrides).
+    _effective_tier = (
+        service_tier_override
+        if service_tier_override is not None
+        else _load_service_tier()
+    )
+    _tier_overrides = None
+    if _effective_tier:
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        try:
+            _tier_overrides = resolve_fast_mode_overrides(model)
+        except Exception:
+            # Never let this fail agent construction — but say so, otherwise a
+            # broken resolver is indistinguishable from "no tier configured",
+            # which is the same silent-drop class this fix exists to close.
+            logger.debug(
+                "fast-mode override resolution failed for %s (tier=%s)",
+                model,
+                _effective_tier,
+                exc_info=True,
+            )
+            _tier_overrides = None
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
@@ -7195,11 +7224,8 @@ def _make_agent(
             if reasoning_config_override is not None
             else _load_reasoning_config(str(model or ""))
         ),
-        service_tier=(
-            service_tier_override
-            if service_tier_override is not None
-            else _load_service_tier()
-        ),
+        service_tier=_effective_tier,
+        request_overrides=_tier_overrides or {},
         enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
@@ -14286,10 +14312,38 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             return "\n".join(_lines)
         elif name == "fast" and agent:
             mode = arg.lower()
-            if mode in {"fast", "on"}:
-                agent.service_tier = "priority"
-            elif mode in {"normal", "off"}:
-                agent.service_tier = None
+            # Keep request_overrides in lock-step with service_tier. The
+            # transport emits the tier from the overrides, so setting only
+            # service_tier here would leave a session built with a configured
+            # tier still sending it after `/fast off` (reporting normal while
+            # billing the tier), and `/fast on` would relabel without sending.
+            # Popping both keys first also prevents a provider-mismatched pair
+            # (e.g. a stale service_tier alongside Anthropic's speed).
+            # Mirrors the `config.set key=fast` path.
+            if mode in {"fast", "on", "normal", "off"}:
+                _overrides = dict(getattr(agent, "request_overrides", {}) or {})
+                _overrides.pop("service_tier", None)
+                _overrides.pop("speed", None)
+                if mode in {"fast", "on"}:
+                    agent.service_tier = "priority"
+                    from hermes_cli.models import resolve_fast_mode_overrides
+
+                    try:
+                        _resolved = resolve_fast_mode_overrides(
+                            getattr(agent, "model", None)
+                        )
+                    except Exception:
+                        logger.debug(
+                            "fast-mode override resolution failed for %s",
+                            getattr(agent, "model", None),
+                            exc_info=True,
+                        )
+                        _resolved = None
+                    if _resolved:
+                        _overrides.update(_resolved)
+                else:
+                    agent.service_tier = None
+                agent.request_overrides = _overrides
             _emit("session.info", sid, _session_info(agent, session))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()

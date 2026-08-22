@@ -3003,7 +3003,10 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             continue
         active_sources.add(source)
         base_url = env_url or pconfig.inference_base_url
-        if provider == "kimi-coding":
+        # sk-kimi- keys only work on api.kimi.com/coding — same redirect for
+        # both global (kimi-coding) and China-profile (kimi-coding-cn) pools.
+        # Without cn here, cn pool stays stuck on moonshot.cn → 401 forever.
+        if provider in {"kimi-coding", "kimi-coding-cn"}:
             base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
         elif provider == "zai":
             base_url = _resolve_zai_base_url(token, pconfig.inference_base_url, env_url)

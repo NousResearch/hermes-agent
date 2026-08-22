@@ -208,6 +208,7 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from agent.tool_dispatch_helpers import (
+    IMAGE_PLACEHOLDER_TEXT,
     _should_parallelize_tool_batch,  # noqa: F401  # re-exported for tests that `from run_agent import _should_parallelize_tool_batch`
     _is_destructive_command,  # noqa: F401  # re-exported for tests that access `run_agent._is_destructive_command`
     _extract_parallel_scope_path,  # noqa: F401  # re-exported for tests that `from run_agent import _extract_parallel_scope_path`
@@ -2313,13 +2314,18 @@ class AIAgent:
                 if _is_multimodal_tool_result(content):
                     content = _multimodal_text_summary(content)
                 elif isinstance(content, list):
-                    # List of OpenAI-style content parts: strip images, keep text.
+                    # List of OpenAI-style content parts: strip images, keep
+                    # text. The placeholder must NAME ITSELF as a storage
+                    # artifact — "[screenshot]" read like something the
+                    # client sent, misleading every transcript consumer
+                    # (history renderers, exports, later turns) into hunting
+                    # for an image the store never kept (#91548).
                     _txt = []
                     for p in content:
                         if isinstance(p, dict) and p.get("type") == "text":
                             _txt.append(str(p.get("text", "")))
                         elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
-                            _txt.append("[screenshot]")
+                            _txt.append(IMAGE_PLACEHOLDER_TEXT)
                     content = "\n".join(_txt) if _txt else None
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:

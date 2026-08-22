@@ -113,7 +113,7 @@ def test_flush_persist_override_replaces_api_local_multimodal_note(agent):
     agent._flush_messages_to_session_db([{"role": "user", "content": api_content}], [])
 
     batch = agent._session_db.append_messages_batch.call_args.kwargs["messages"]
-    assert batch[0]["content"] == "Describe this screenshot\n[screenshot]"
+    assert batch[0]["content"] == "Describe this screenshot\n[image not retained]"
     assert api_content[0]["text"] == "[MODEL SWITCH NOTE]\n\nDescribe this screenshot"
 
 

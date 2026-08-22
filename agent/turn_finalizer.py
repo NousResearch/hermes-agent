@@ -22,13 +22,78 @@ keep the exact logger name (``"agent.conversation_loop"``).
 
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
 import logging
 import os
+from typing import Any
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
+
+
+_TURN_EXIT_REASON: ContextVar[str] = ContextVar(
+    "hermes_turn_exit_reason", default="unknown"
+)
+
+
+def _begin_turn_finalization() -> Token[str]:
+    """Start an isolated reason scope for one public conversation turn."""
+    return _TURN_EXIT_REASON.set("unknown")
+
+
+def _record_turn_exit_reason(reason: str) -> str:
+    """Publish the existing loop-local reason without changing its value."""
+    _TURN_EXIT_REASON.set(reason)
+    return reason
+
+
+def _current_turn_exit_reason() -> str:
+    """Return the reason associated with the current execution context."""
+    return _TURN_EXIT_REASON.get()
+
+
+def _log_turn_finalization(agent: Any, reason: str, error: BaseException | None) -> None:
+    """Emit the behavior-neutral breadcrumb consumed by future accounting work."""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        safe_session_id = redact_sensitive_text(
+            str(getattr(agent, "session_id", None) or "-"), force=True
+        )
+        safe_reason = redact_sensitive_text(str(reason), force=True)
+    except Exception:
+        # Fail closed: diagnostics must not leak a reason or session identifier
+        # when the central redactor is unavailable.
+        safe_session_id = "[REDACTED]"
+        safe_reason = "[REDACTED]"
+    logging.getLogger("agent.conversation_loop").info(
+        "Turn finalization path reached: session=%s reason=%s exception=%s",
+        safe_session_id,
+        safe_reason,
+        type(error).__name__ if error is not None else "none",
+    )
+
+
+def _complete_turn_finalization(agent: Any, error: BaseException | None) -> None:
+    """Observe one terminal path without replacing its return or exception."""
+    reason = _current_turn_exit_reason()
+    if error is not None and reason == "unknown":
+        reason = f"exception({type(error).__name__})"
+    try:
+        _log_turn_finalization(agent, reason, error)
+    except Exception:
+        # The new observer is diagnostic only. It must never replace a result
+        # or mask the original exception.
+        logging.getLogger("agent.conversation_loop").warning(
+            "Turn finalization path logging failed", exc_info=True
+        )
+
+
+def _reset_turn_finalization(token: Token[str]) -> None:
+    """Restore the caller's ContextVar state after one public turn."""
+    _TURN_EXIT_REASON.reset(token)
 
 
 def _is_pure_tool_call_tail(msg: dict) -> bool:
@@ -172,14 +237,18 @@ def finalize_turn(
         # response-loss blocker)
         if _pending_verification_response_previewed:
             agent._response_was_previewed = True
-        _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
+        _turn_exit_reason = _record_turn_exit_reason(
+            f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
+        )
         iteration_limit_fallback = True
         preserved_verification_fallback = True
     elif final_response is None and budget_fallback_eligible:
         # Budget exhausted — ask the model for a summary via one extra
         # API call with tools stripped.  _handle_max_iterations injects a
         # user message and makes a single toolless request.
-        _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
+        _turn_exit_reason = _record_turn_exit_reason(
+            f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
+        )
         agent._emit_status(
             f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
             "— asking model to summarise"

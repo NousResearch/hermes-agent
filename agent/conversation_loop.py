@@ -91,7 +91,13 @@ from agent.repetition_guard import is_repetition_dominated
 from agent.trajectory import has_incomplete_scratchpad
 # Bind before the turn starts so a source-tree swap cannot load a skewed
 # finalizer at turn end.
-from agent.turn_finalizer import finalize_turn
+from agent.turn_finalizer import (
+    _begin_turn_finalization,
+    _complete_turn_finalization,
+    _record_turn_exit_reason,
+    _reset_turn_finalization,
+    finalize_turn,
+)
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent import empty_response_guard as _empty_guard
 from hermes_constants import PARTIAL_STREAM_STUB_ID
@@ -1763,7 +1769,7 @@ def _notify_context_engine_turn_complete(
         )
 
 
-def run_conversation(
+def _run_conversation_impl(
     agent,
     user_message: Any,
     system_message: str = None,
@@ -1911,7 +1917,7 @@ def run_conversation(
     max_compression_attempts = getattr(agent, "max_compression_attempts", 3)
     _last_preflight_pressure: Optional[int] = None
     _preflight_compression_blocked = _ctx.preflight_compression_blocked
-    _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+    _turn_exit_reason = _record_turn_exit_reason("unknown")  # Diagnostic: why the loop ended
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
     # user-facing result available; it must not be confused with error or
@@ -1973,7 +1979,7 @@ def run_conversation(
         # Check for interrupt request (e.g., user sent new message)
         if agent._interrupt_requested:
             interrupted = True
-            _turn_exit_reason = "interrupted_by_user"
+            _turn_exit_reason = _record_turn_exit_reason("interrupted_by_user")
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
             break
@@ -1988,7 +1994,7 @@ def run_conversation(
         if agent._budget_grace_call:
             agent._budget_grace_call = False
         elif not agent.iteration_budget.consume():
-            _turn_exit_reason = "budget_exhausted"
+            _turn_exit_reason = _record_turn_exit_reason("budget_exhausted")
             if not agent.quiet_mode:
                 agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
             break
@@ -2534,7 +2540,7 @@ def run_conversation(
         if _runtime_context_error:
             final_response = _runtime_context_error
             failed = True
-            _turn_exit_reason = "ollama_runtime_context_too_small"
+            _turn_exit_reason = _record_turn_exit_reason("ollama_runtime_context_too_small")
             append_message(messages, {"role": "assistant", "content": final_response})
             agent._emit_status("❌ Ollama runtime context is too small for Hermes tool use")
             api_call_count -= 1
@@ -2715,7 +2721,7 @@ def run_conversation(
                     )
                     if not final_response:
                         final_response = _HANDOFF_SKIP_FINAL_RESPONSE
-                    _turn_exit_reason = "compaction_handoff_not_actionable"
+                    _turn_exit_reason = _record_turn_exit_reason("compaction_handoff_not_actionable")
                     break
                 continue
         elif (
@@ -6556,7 +6562,7 @@ def run_conversation(
 
         # If the API call was interrupted, skip response processing
         if interrupted:
-            _turn_exit_reason = "interrupted_during_api_call"
+            _turn_exit_reason = _record_turn_exit_reason("interrupted_during_api_call")
             break
 
         if _retry.restart_with_compressed_messages:
@@ -6576,7 +6582,7 @@ def run_conversation(
                 )
                 if not final_response:
                     final_response = _HANDOFF_SKIP_FINAL_RESPONSE
-                _turn_exit_reason = "compaction_handoff_not_actionable"
+                _turn_exit_reason = _record_turn_exit_reason("compaction_handoff_not_actionable")
                 break
             # In-loop compression rebuilt `messages` with fresh compaction
             # copies, so the pre-compression current-turn index is stale.
@@ -6631,7 +6637,7 @@ def run_conversation(
         # (e.g. repeated context-length errors that exhausted retry_count),
         # the `response` variable is still None. Break out cleanly.
         if response is None:
-            _turn_exit_reason = "all_retries_exhausted_no_response"
+            _turn_exit_reason = _record_turn_exit_reason("all_retries_exhausted_no_response")
             print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
             agent._persist_session(messages, conversation_history)
             break
@@ -7307,7 +7313,7 @@ def run_conversation(
                     # nothing was recorded, the cause is genuinely unknown.
                     if getattr(agent, "_last_persistence_error_cause", None) is None:
                         agent._last_persistence_error_cause = "unknown"
-                    _turn_exit_reason = "session_persistence_failed"
+                    _turn_exit_reason = _record_turn_exit_reason("session_persistence_failed")
                     final_response = ""
                     failed = True
                     break
@@ -7336,14 +7342,14 @@ def run_conversation(
                     # A tool result could not be made canonical. Do not send
                     # the in-memory result back to the model or project any
                     # later events from this turn.
-                    _turn_exit_reason = "session_persistence_failed"
+                    _turn_exit_reason = _record_turn_exit_reason("session_persistence_failed")
                     final_response = ""
                     failed = True
                     break
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
-                    _turn_exit_reason = "guardrail_halt"
+                    _turn_exit_reason = _record_turn_exit_reason("guardrail_halt")
                     final_response = agent._toolguard_controlled_halt_response(decision)
                     agent._emit_status(
                         f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
@@ -7470,7 +7476,7 @@ def run_conversation(
                             )
                             if not final_response:
                                 final_response = _HANDOFF_SKIP_FINAL_RESPONSE
-                            _turn_exit_reason = "compaction_handoff_not_actionable"
+                            _turn_exit_reason = _record_turn_exit_reason("compaction_handoff_not_actionable")
                             break
                 elif agent.compression_enabled:
                     # Over threshold but compression is blocked (summary-LLM
@@ -7575,7 +7581,7 @@ def run_conversation(
                         getattr(agent, "_current_streamed_assistant_text", "") or ""
                     )
                     if agent._has_content_after_think_block(_partial_streamed):
-                        _turn_exit_reason = "partial_stream_recovery"
+                        _turn_exit_reason = _record_turn_exit_reason("partial_stream_recovery")
                         _recovered = agent._strip_think_blocks(_partial_streamed).strip()
                         logger.info(
                             "Partial stream content delivered (%d chars) "
@@ -7606,7 +7612,7 @@ def run_conversation(
                     # post-tool nudge below handle that instead of exiting early.
                     fallback = getattr(agent, '_last_content_with_tools', None)
                     if fallback and getattr(agent, '_last_content_tools_all_housekeeping', False):
-                        _turn_exit_reason = "fallback_prior_turn_content"
+                        _turn_exit_reason = _record_turn_exit_reason("fallback_prior_turn_content")
                         logger.info("Empty follow-up after tool calls — using prior turn content as final response")
                         agent._emit_status("↻ Empty response after tool calls — using earlier content as final answer")
                         agent._last_content_with_tools = None
@@ -7886,7 +7892,7 @@ def run_conversation(
                             f"per attempt even when no answer is produced)"
                         )
                     agent._flush_status_buffer()
-                    _turn_exit_reason = "empty_response_exhausted"
+                    _turn_exit_reason = _record_turn_exit_reason("empty_response_exhausted")
                     reasoning_text = agent._extract_reasoning(assistant_message)
                     agent._drop_trailing_empty_response_scaffolding(messages)
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
@@ -8292,7 +8298,9 @@ def run_conversation(
                         exc_info=True,
                     )
 
-                _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
+                _turn_exit_reason = _record_turn_exit_reason(
+                    f"text_response(finish_reason={finish_reason})"
+                )
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                 break
@@ -8382,10 +8390,14 @@ def run_conversation(
                 or api_call_count >= agent.max_iterations - 1
             ):
                 if _is_local_processing_error:
-                    _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
+                    _turn_exit_reason = _record_turn_exit_reason(
+                        f"local_processing_error({error_msg[:80]})"
+                    )
                     final_response = f"I apologize, but I encountered an error while processing the model response: {error_msg}"
                 else:
-                    _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
+                    _turn_exit_reason = _record_turn_exit_reason(
+                        f"error_near_max_iterations({error_msg[:80]})"
+                    )
                     final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
                 # Append as assistant so the history stays valid for
                 # session resume (avoids consecutive user messages).
@@ -8413,6 +8425,45 @@ def run_conversation(
         _pending_verification_response_previewed=_pending_verification_response_previewed,
     )
 
+
+def run_conversation(
+    agent,
+    user_message: Any,
+    system_message: str = None,
+    conversation_history: List[Dict[str, Any]] = None,
+    task_id: str = None,
+    stream_callback: Optional[callable] = None,
+    persist_user_message: Optional[Any] = None,
+    persist_user_timestamp: Optional[float] = None,
+    persist_user_display_kind: Optional[str] = None,
+    persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+    moa_config: Optional[dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Run one turn through a single behavior-neutral finalization path."""
+    token = _begin_turn_finalization()
+    error: BaseException | None = None
+    try:
+        return _run_conversation_impl(
+            agent,
+            user_message,
+            system_message=system_message,
+            conversation_history=conversation_history,
+            task_id=task_id,
+            stream_callback=stream_callback,
+            persist_user_message=persist_user_message,
+            persist_user_timestamp=persist_user_timestamp,
+            persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
+            moa_config=moa_config,
+        )
+    except BaseException as exc:
+        error = exc
+        raise
+    finally:
+        try:
+            _complete_turn_finalization(agent, error)
+        finally:
+            _reset_turn_finalization(token)
 
 
 __all__ = ["run_conversation"]

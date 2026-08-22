@@ -16895,8 +16895,14 @@ def test_session_not_evictable_violating_each_exemption(monkeypatch):
     starting["agent_ready"] = threading.Event()  # not set -> still starting
     assert server._session_is_evictable("s", starting, now) is False
 
+    # A live (non-detached) transport must NOT block eviction — the
+    # transport is a gateway-level liveness signal, not a per-session
+    # activity signal. This is the regression test for #81837: desktop
+    # clients hold a single WebSocket open all day, but their idle
+    # sessions still need to be evicted so the ``on_session_end`` hook
+    # fires for memory providers.
     on_socket = _idle_evictable_session(now) | {"transport": live_transport}
-    assert server._session_is_evictable("s", on_socket, now) is False
+    assert server._session_is_evictable("s", on_socket, now) is True
 
     recent = _idle_evictable_session(now) | {"last_active": now}
     assert server._session_is_evictable("s", recent, now) is False
@@ -16907,6 +16913,142 @@ def test_session_not_evictable_violating_each_exemption(monkeypatch):
     # Pending input request, even when everything else looks idle.
     monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "input")
     assert server._session_is_evictable("s", _idle_evictable_session(now), now) is False
+
+
+def test_standalone_stdio_session_not_evictable_even_when_idle(monkeypatch):
+    """A standalone ``hermes --tui`` session pinned to the real stdio
+    transport is exempt from the idle reaper: there the transport IS a
+    per-session liveness signal, unlike a shared WebSocket."""
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    now = time.time()
+    on_stdio = _idle_evictable_session(now) | {"transport": server._stdio_transport}
+    assert server._session_is_evictable("s", on_stdio, now) is False
+
+
+def test_reap_idle_sessions_skips_standalone_stdio_sessions(monkeypatch):
+    """Standalone ``hermes --tui`` sessions on the real stdio transport must
+    not be reaped by the idle TTL, even when idle past the timeout, while
+    WebSocket-backed idle sessions alongside them still are."""
+    closed = []
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    monkeypatch.setattr(
+        server, "_close_session_by_id",
+        lambda sid, *, end_reason, predicate=None: closed.append((sid, end_reason)),
+    )
+    now = time.time()
+    live_transport = type("T", (), {"_closed": False})()
+    server._sessions.clear()
+    # Idle standalone stdio TUI — must NOT be reaped.
+    server._sessions["stdio_tui"] = _idle_evictable_session(now) | {
+        "transport": server._stdio_transport,
+    }
+    # Idle WebSocket-backed session alongside — must still be reaped.
+    server._sessions["ws_idle"] = _idle_evictable_session(now) | {
+        "transport": live_transport,
+    }
+    try:
+        server._reap_idle_sessions()
+        assert closed == [("ws_idle", "idle_timeout")]
+    finally:
+        server._sessions.clear()
+
+
+def test_reap_idle_sessions_evicts_live_transport_idle_sessions(monkeypatch):
+    """#81837: idle sessions behind a live transport must still be reaped.
+
+    Desktop apps hold a single WebSocket open all day. Before the fix,
+    ``_session_is_evictable`` required ``_transport_is_dead()`` to return
+    True, so idle sessions on a live transport were immortal and the
+    ``on_session_end`` plugin hook never fired for memory providers.
+    """
+    closed = []
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    monkeypatch.setattr(
+        server, "_close_session_by_id",
+        lambda sid, *, end_reason, predicate=None: closed.append((sid, end_reason)),
+    )
+    now = time.time()
+    live_transport = type("T", (), {"_closed": False})()
+    server._sessions.clear()
+    # Live transport, but idle past the 6h TTL — must be reaped.
+    server._sessions["live_idle"] = _idle_evictable_session(now) | {
+        "transport": live_transport,
+    }
+    # Live transport AND recent activity — must NOT be reaped.
+    fresh_live = _idle_evictable_session(now) | {
+        "transport": live_transport,
+        "last_active": now,
+        "created_at": now,
+    }
+    server._sessions["live_fresh"] = fresh_live
+    try:
+        server._reap_idle_sessions()
+        assert closed == [("live_idle", "idle_timeout")]
+    finally:
+        server._sessions.clear()
+
+
+def test_reap_idle_sessions_calls_finalize_and_fires_on_session_end(monkeypatch):
+    """#81837: idle reaper must call ``_finalize_session`` and the
+    ``on_session_end`` plugin hook must fire for memory providers.
+
+    This is the end-to-end behavioural assertion: the reaper path
+    (``_reap_idle_sessions`` → ``_close_session_by_id`` →
+    ``_teardown_session`` → ``_finalize_session``) is the trigger
+    memory providers were waiting on.
+    """
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    monkeypatch.setattr(server, "_enforce_session_cap", lambda: None)
+    monkeypatch.setattr(server, "_reclaim_orphaned_leases", lambda: None)
+
+    # Avoid the delayed ``trim_memory`` import noise.
+    import hermes_cli.mem_trim as mem_trim
+    monkeypatch.setattr(mem_trim, "trim_memory", lambda **kw: True)
+
+    hooks_fired = []
+
+    class _StubAgent:
+        session_id = "sess-1"
+        model = "test-model"
+        platform = "test"
+        _session_messages: list = []
+
+        def _persist_session(self, snapshot):
+            pass
+
+        def commit_memory_session(self, history):
+            hooks_fired.append(("commit_memory", list(history)))
+
+        def close(self):
+            pass
+
+    import hermes_cli.lifecycle as lifecycle
+
+    def fake_invoke_hook(name, **kwargs):
+        hooks_fired.append(("plugin_hook", name, kwargs))
+
+    monkeypatch.setattr(lifecycle, "invoke_hook", fake_invoke_hook)
+
+    now = time.time()
+    session = _idle_evictable_session(now) | {
+        "agent": _StubAgent(),
+        "history": [{"role": "user", "content": "hi"}],
+        "session_key": "test-session",
+    }
+    server._sessions.clear()
+    server._sessions["s"] = session
+    try:
+        server._reap_idle_sessions()
+        # The plugin hook must have fired with ``on_session_end``.
+        hook_events = [h for h in hooks_fired if h[1] == "on_session_end"]
+        assert len(hook_events) == 1, hooks_fired
+        assert hook_events[0][2]["session_id"] == "sess-1"
+        assert hook_events[0][2]["interrupted"] is True
+        assert hook_events[0][2]["model"] == "test-model"
+        # And the agent's commit_memory_session path must have been called.
+        assert any(h[0] == "commit_memory" for h in hooks_fired), hooks_fired
+    finally:
+        server._sessions.clear()
 
 
 def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
@@ -17035,9 +17177,14 @@ def test_lru_reaper_spares_active_delegation_and_evicts_idle_peer(monkeypatch):
 
 
 def test_ttl_reaper_revalidates_session_before_teardown(monkeypatch):
+    """The revalidator must still abort teardown when a race condition
+    flips an exemption back on (e.g. a pending input request appears).
+    Pre-#81837 the only checked race was transport reattachment; now that
+    transport is no longer a per-session activity signal, we flip
+    ``running`` instead — the revalidator still wins.
+    """
     closed = []
     calls = {"count": 0}
-    live_transport = type("T", (), {"_closed": False})()
     original_is_evictable = server._session_is_evictable
     monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
     monkeypatch.setattr(server, "_enforce_session_cap", lambda: None)
@@ -17048,21 +17195,24 @@ def test_ttl_reaper_revalidates_session_before_teardown(monkeypatch):
         lambda session, *, end_reason: closed.append((session, end_reason)),
     )
 
-    def _reattach_after_scan(sid, session, now):
+    def _flip_running_after_scan(sid, session, now):
         calls["count"] += 1
         evictable = original_is_evictable(sid, session, now)
         if calls["count"] == 1:
-            session["transport"] = live_transport
+            # Simulate a prompt.submit racing the reaper: the session
+            # becomes running between the scan and the ownership claim.
+            session["running"] = True
         return evictable
 
-    monkeypatch.setattr(server, "_session_is_evictable", _reattach_after_scan)
+    monkeypatch.setattr(server, "_session_is_evictable", _flip_running_after_scan)
     now = time.time()
     server._sessions.clear()
     server._sessions["ttl-race"] = _idle_evictable_session(now)
 
     try:
         server._reap_idle_sessions()
-        assert server._sessions["ttl-race"]["transport"] is live_transport
+        # Predicate flipped to False on the second call → teardown aborted.
+        assert server._sessions["ttl-race"]["running"] is True
         assert calls["count"] == 2
         assert closed == []
     finally:

@@ -9378,7 +9378,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append("s.archived = 1")
         elif not include_archived:
             where_clauses.append("s.archived = 0")
-        if not include_hidden:
+        if not include_hidden and not archived_only:
+            # The archived-only view is the recovery surface for sessions
+            # that dropped out of every default list. A row that is both
+            # archived and hidden (Bot Mode marks its sessions hidden) must
+            # still be reachable there, otherwise it is unrecoverable from
+            # any UI — only direct DB access can bring it back (#90946).
             where_clauses.append("s.hidden = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""

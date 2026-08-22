@@ -49,3 +49,18 @@ def test_unarchiving_compression_tip_unarchives_projected_root(db):
     assert db.get_session("root")["archived"] == 0
     assert db.get_session("tip")["archived"] == 0
     assert [s["id"] for s in db.list_sessions_rich(order_by_last_active=True)] == ["tip"]
+
+
+def test_archived_only_view_includes_hidden_archived_sessions(db):
+    """The archived-only view is the recovery surface: a session that is both
+    archived and hidden (Bot Mode marks its sessions hidden) must appear
+    there, otherwise it is unreachable from every UI list (#90946)."""
+    db.create_session("plain", source="cli")
+    db.create_session("both", source="cli")
+    assert db.set_session_hidden("both", True) is True
+    assert db.set_session_archived("both", True) is True
+
+    # Default list: hidden rows stay excluded (unchanged behaviour)...
+    assert [s["id"] for s in db.list_sessions_rich(order_by_last_active=True)] == ["plain"]
+    # ...and the archived-only view must surface the archived+hidden row.
+    assert [s["id"] for s in db.list_sessions_rich(order_by_last_active=True, archived_only=True)] == ["both"]

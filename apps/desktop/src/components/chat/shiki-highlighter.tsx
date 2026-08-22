@@ -5,7 +5,6 @@ import { type ComponentProps, type FC, lazy, Suspense, useMemo } from 'react'
 import type ShikiHighlighter from 'react-shiki'
 
 import { CodeCard, CodeCardBody } from '@/components/chat/code-card'
-import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { isLikelyProseCodeBlock } from '@/lib/markdown-code'
@@ -155,26 +154,24 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
         text={trimmed}
       />
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
-        <ExpandableBlock>
-          <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">
-            {plain ? (
-              <PlainCode code={trimmed} />
-            ) : (
-              <LazyShiki
-                addDefaultStyles={false}
-                as="div"
-                colorReplacements={SHIKI_COLOR_REPLACEMENTS}
-                defaultColor="light-dark()"
-                delay={120}
-                language={language || 'text'}
-                showLanguage={false}
-                theme={SHIKI_THEME}
-              >
-                {trimmed}
-              </LazyShiki>
-            )}
-          </Pre>
-        </ExpandableBlock>
+        <Pre className="aui-shiki m-0 max-h-none overflow-x-auto overflow-y-visible bg-transparent p-0">
+          {plain ? (
+            <PlainCode code={trimmed} />
+          ) : (
+            <LazyShiki
+              addDefaultStyles={false}
+              as="div"
+              colorReplacements={SHIKI_COLOR_REPLACEMENTS}
+              defaultColor="light-dark()"
+              delay={120}
+              language={language || 'text'}
+              showLanguage={false}
+              theme={SHIKI_THEME}
+            >
+              {trimmed}
+            </LazyShiki>
+          )}
+        </Pre>
       </CodeCardBody>
     </CodeCard>
   )

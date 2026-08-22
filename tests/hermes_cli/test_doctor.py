@@ -60,9 +60,128 @@ class TestProviderEnvDetection:
         assert _has_provider_env_config(content)
 
 
-    def test_returns_false_when_no_provider_settings(self):
+    def test_detects_provider_setting_from_process_environment(self, monkeypatch):
+        for key in doctor._PROVIDER_ENV_HINTS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-from-secret-source")
+
+        assert _has_provider_env_config("")
+
+    def test_ignores_empty_provider_setting_in_process_environment(self, monkeypatch):
+        for key in doctor._PROVIDER_ENV_HINTS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "   ")
+
+        assert not _has_provider_env_config("")
+
+    def test_returns_false_when_no_provider_settings(self, monkeypatch):
+        for key in doctor._PROVIDER_ENV_HINTS:
+            monkeypatch.delenv(key, raising=False)
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
+
+
+class TestDoctorSecretSourceConfiguration:
+    @staticmethod
+    def _run_until_tool_availability(monkeypatch, home, project):
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+        def no_network(*args, **kwargs):
+            raise RuntimeError("network disabled in doctor configuration test")
+
+        monkeypatch.setattr("httpx.get", no_network)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(
+                SystemExit(0)
+            ),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            with pytest.raises(SystemExit):
+                doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    @pytest.mark.parametrize("create_env_file", [True, False])
+    def test_secret_source_credentials_are_reported_as_configured(
+        self, monkeypatch, tmp_path, create_env_file
+    ):
+        from agent.secret_sources import registry
+        from agent.secret_sources.base import FetchResult, SecretSource
+        from hermes_cli import env_loader
+
+        class DoctorStubSource(SecretSource):
+            name = "doctorstub"
+            label = "Doctor Stub"
+            shape = "bulk"
+
+            def fetch(self, cfg, home_path):
+                return FetchResult(
+                    secrets={"OPENROUTER_API_KEY": "sk-from-secret-source"}
+                )
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        if create_env_file:
+            (home / ".env").write_text("", encoding="utf-8")
+        (home / "config.yaml").write_text(
+            "secrets:\n"
+            "  doctorstub:\n"
+            "    enabled: true\n"
+            "memory: {}\n",
+            encoding="utf-8",
+        )
+        project = tmp_path / "project"
+        project.mkdir()
+
+        for key in doctor._PROVIDER_ENV_HINTS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(registry, "_ensure_builtin_sources", lambda: None)
+        registry._reset_registry_for_tests()
+        env_loader.reset_secret_source_cache()
+        try:
+            assert registry.register_source(DoctorStubSource())
+            env_loader.load_hermes_dotenv(hermes_home=home)
+            assert env_loader.get_secret_source("OPENROUTER_API_KEY") == "doctorstub"
+
+            out = self._run_until_tool_availability(monkeypatch, home, project)
+        finally:
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            registry._reset_registry_for_tests()
+            env_loader.reset_secret_source_cache()
+
+        assert "API key or custom endpoint configured" in out
+        assert f"No API key found in {home}/.env" not in out
+        assert f"{home}/.env file missing" not in out
+        if create_env_file:
+            assert f"{home}/.env not present" not in out
+        else:
+            assert (
+                f"{home}/.env not present (credentials resolved from environment)"
+                in out
+            )
+
+    def test_empty_env_without_resolved_credentials_still_warns(
+        self, monkeypatch, tmp_path
+    ):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / ".env").write_text("", encoding="utf-8")
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir()
+
+        for key in doctor._PROVIDER_ENV_HINTS:
+            monkeypatch.delenv(key, raising=False)
+
+        out = self._run_until_tool_availability(monkeypatch, home, project)
+
+        assert f"No API key found in {home}/.env" in out
 
 
 class TestDoctorToolAvailabilitySummary:

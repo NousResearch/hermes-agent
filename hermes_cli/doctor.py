@@ -262,8 +262,10 @@ def _termux_install_all_fallback_notes() -> list[str]:
 
 
 def _has_provider_env_config(content: str) -> bool:
-    """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
-    return any(key in content for key in _PROVIDER_ENV_HINTS)
+    """Return True when resolved provider auth or endpoint settings exist."""
+    return any(key in content for key in _PROVIDER_ENV_HINTS) or any(
+        str(os.environ.get(key) or "").strip() for key in _PROVIDER_ENV_HINTS
+    )
 
 
 def _honcho_is_configured_for_doctor() -> bool:
@@ -1242,7 +1244,9 @@ def run_doctor(args):
     managed_scope_check()
     # Check ~/.hermes/.env (primary location for user config)
     env_path = HERMES_HOME / '.env'
-    if env_path.exists():
+    env_file_exists = env_path.exists()
+    content = ""
+    if env_file_exists:
         check_ok(f"{_DHH}/.env file exists")
         
         # Prefer UTF-8 (.env is written as UTF-8 elsewhere). Fall back to
@@ -1252,17 +1256,14 @@ def run_doctor(args):
             content = env_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             content = env_path.read_text(encoding="latin-1")
-        if _has_provider_env_config(content):
-            check_ok("API key or custom endpoint configured")
-        else:
-            check_warn(f"No API key found in {_DHH}/.env")
-            issues.append("Run 'hermes setup' to configure API keys")
-    else:
+
+    has_provider_env_config = _has_provider_env_config(content)
+    if not env_file_exists:
         # Also check project root as fallback
         fallback_env = PROJECT_ROOT / '.env'
         if fallback_env.exists():
             check_ok(".env file exists (in project directory)")
-        else:
+        elif not has_provider_env_config:
             check_fail(f"{_DHH}/.env file missing")
             if should_fix:
                 env_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1280,6 +1281,16 @@ def run_doctor(args):
             else:
                 check_info("Run 'hermes setup' to create one")
                 issues.append("Run 'hermes setup' to create .env")
+        else:
+            check_info(
+                f"{_DHH}/.env not present (credentials resolved from environment)"
+            )
+
+    if has_provider_env_config:
+        check_ok("API key or custom endpoint configured")
+    elif env_file_exists:
+        check_warn(f"No API key found in {_DHH}/.env")
+        issues.append("Run 'hermes setup' to configure API keys")
     
     # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
     config_path = HERMES_HOME / 'config.yaml'

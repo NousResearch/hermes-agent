@@ -7232,6 +7232,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
+        # Per-chat voice transcript prefs set via /voice transcribe|transcripts.
+        # {voice_key: {"destination": "channel"|"file"|"both", "to_agent": bool}}
+        # Missing keys fall back to the discord.* config defaults.
+        self._voice_transcript_prefs: Dict[str, dict] = (
+            self._load_voice_transcript_prefs()
+        )
         # Recent voice transcripts per (guild,user) for duplicate suppression.
         # Protects against the same utterance being emitted twice by the voice
         # capture / STT pipeline, which otherwise produces a second delayed reply.
@@ -7464,6 +7470,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
+
+    _VOICE_TRANSCRIPT_PREFS_PATH = _hermes_home / "gateway_voice_transcript_prefs.json"
+
+    def _load_voice_transcript_prefs(self) -> Dict[str, dict]:
+        try:
+            data = json.loads(
+                self._VOICE_TRANSCRIPT_PREFS_PATH.read_text(encoding="utf-8")
+            )
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        result: Dict[str, dict] = {}
+        for key, prefs in data.items():
+            if not isinstance(prefs, dict) or ":" not in str(key):
+                continue
+            clean: dict = {}
+            dest = prefs.get("destination")
+            if dest in ("channel", "file", "both"):
+                clean["destination"] = dest
+            if isinstance(prefs.get("to_agent"), bool):
+                clean["to_agent"] = prefs["to_agent"]
+            if clean:
+                result[str(key)] = clean
+        return result
+
+    def _save_voice_transcript_prefs(self) -> None:
+        try:
+            self._VOICE_TRANSCRIPT_PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self._VOICE_TRANSCRIPT_PREFS_PATH.write_text(
+                json.dumps(self._voice_transcript_prefs, indent=2), encoding="utf-8"
+            )
+        except OSError as e:
+            logger.warning("Failed to save voice transcript prefs: %s", e)
 
     def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
         """Update an adapter's in-memory auto-TTS suppression set if present."""
@@ -22135,6 +22175,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         recent_store[key] = recent[-5:]
         return False
 
+    def _voice_transcript_settings(self, voice_key: str = "") -> tuple:
+        """Resolve voice-transcript routing for a chat.
+
+        Per-chat prefs set via ``/voice transcribe`` / ``/voice transcripts``
+        take precedence; the ``discord.*`` config keys provide the defaults.
+
+        Returns ``(destination, transcript_dir, to_agent)``:
+        - destination: "channel" | "file" | "both"; invalid config values
+          fall back to "channel" (with a warning) so transcripts are never
+          silently lost.
+        - transcript_dir: resolved directory for file output; empty config
+          resolves to ``<hermes_home>/transcripts``.
+        - to_agent: whether transcripts are dispatched to the agent.
+        """
+        destination = "channel"
+        transcript_dir = ""
+        to_agent = True
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            discord_cfg = cfg.get("discord") or {}
+            raw_dest = (
+                str(discord_cfg.get("voice_transcript_destination", "channel"))
+                .strip()
+                .lower()
+            )
+            if raw_dest in ("channel", "file", "both"):
+                destination = raw_dest
+            elif raw_dest:
+                logger.warning(
+                    "Invalid discord.voice_transcript_destination %r; using 'channel'",
+                    raw_dest,
+                )
+            transcript_dir = str(
+                discord_cfg.get("voice_transcript_dir") or ""
+            ).strip()
+            to_agent = bool(discord_cfg.get("voice_transcript_agent_turns", True))
+        except Exception as e:
+            logger.debug("Could not load discord voice transcript config: %s", e)
+        prefs = getattr(self, "_voice_transcript_prefs", {}).get(voice_key) or {}
+        if prefs.get("destination") in ("channel", "file", "both"):
+            destination = prefs["destination"]
+        if isinstance(prefs.get("to_agent"), bool):
+            to_agent = prefs["to_agent"]
+        if not transcript_dir:
+            from hermes_constants import get_hermes_home
+            transcript_dir = os.path.join(str(get_hermes_home()), "transcripts")
+        return destination, transcript_dir, to_agent
+
     async def _handle_voice_channel_input(
         self, guild_id: int, user_id: int, transcript: str
     ):
@@ -22181,14 +22270,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return
 
-        # Show transcript in text channel (after auth, with mention sanitization)
-        try:
-            channel = adapter._client.get_channel(text_ch_id)
-            if channel:
-                safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
-                await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
-        except Exception:
-            pass
+        # Route the transcript per chat prefs (/voice transcripts, /voice
+        # transcribe) with discord.* config as defaults: "channel" posts to
+        # the bound text channel, "file" appends to a local per-guild daily
+        # log and never touches Discord, "both" does both.
+        voice_key = self._voice_key(Platform.DISCORD, str(text_ch_id))
+        destination, transcript_dir, to_agent = self._voice_transcript_settings(
+            voice_key
+        )
+
+        if destination in ("file", "both"):
+            try:
+                os.makedirs(transcript_dir, exist_ok=True)
+                fname = os.path.join(
+                    transcript_dir, f"vc-{guild_id}-{datetime.now():%Y-%m-%d}.log"
+                )
+                speaker = str(user_id)
+                try:
+                    member = adapter._client.get_user(user_id)
+                    if member:
+                        speaker = getattr(member, "display_name", None) or member.name
+                except Exception:
+                    pass
+                with open(fname, "a", encoding="utf-8") as f:
+                    f.write(f"[{datetime.now():%H:%M:%S}] {speaker}: {transcript}\n")
+            except Exception:
+                logger.warning("VC transcript file write failed", exc_info=True)
+
+        if destination in ("channel", "both"):
+            # Show transcript in text channel (after auth, with mention sanitization)
+            try:
+                channel = adapter._client.get_channel(text_ch_id)
+                if channel:
+                    safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+                    await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+            except Exception:
+                pass
+
+        # discord.voice_transcript_agent_turns = false: the transcript has been
+        # captured above; skip agent dispatch entirely so the LLM never sees
+        # voice input (passive stenographer). Typed messages in the bound text
+        # channel still reach the agent normally.
+        if not to_agent:
+            return
 
         # Build a synthetic MessageEvent and feed through the normal pipeline
         # Use SimpleNamespace as raw_message so _get_guild_id() can extract

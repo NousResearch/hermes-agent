@@ -2258,6 +2258,22 @@ DEFAULT_CONFIG = {
         # The adapter also probes clip duration and extends this floor by a
         # padding window, so long TTS readbacks are not cut at exactly 120s.
         "voice_playback_timeout_seconds": 120,
+        # When False, voice-channel transcripts are captured (per
+        # voice_transcript_destination) but NEVER dispatched to the agent —
+        # a passive stenographer for meetings/calls. Typed messages in the
+        # bound text channel still reach the agent normally. Default True
+        # preserves the existing listen-and-respond behavior.
+        "voice_transcript_agent_turns": True,
+        # Where voice-channel transcripts go: "channel" posts them to the
+        # bound text channel (existing behavior), "file" appends them to a
+        # local log (one file per guild per day) and never posts to Discord,
+        # "both" does both. Useful when a call should leave no trace in
+        # Discord, or when the channel would drown in transcript spam.
+        "voice_transcript_destination": "channel",
+        # Directory for "file"/"both" transcript logs. Empty resolves to
+        # <hermes_home>/transcripts. Files are named vc-<guild_id>-<date>.log
+        # with one "[HH:MM:SS] <speaker>: <text>" line per utterance.
+        "voice_transcript_dir": "",
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and

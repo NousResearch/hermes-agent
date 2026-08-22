@@ -4947,9 +4947,14 @@ class DiscordAdapter(BasePlatformAdapter):
             result = await asyncio.to_thread(transcribe_audio, wav_path)
 
             if not result.get("success"):
+                logger.warning("VC STT drop: transcription unsuccessful for user %d: %s", user_id, str(result)[:200])
                 return
             transcript = result.get("transcript", "").strip()
-            if not transcript or is_whisper_hallucination(transcript):
+            if not transcript:
+                logger.info("VC STT drop: empty transcript for user %d", user_id)
+                return
+            if is_whisper_hallucination(transcript):
+                logger.info("VC STT drop: hallucination filter ate transcript for user %d: %r", user_id, transcript[:120])
                 return
 
             logger.info("Voice input from user %d: %s", user_id, transcript[:100])
@@ -5949,7 +5954,7 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._run_simple_slash(interaction, "/reload-skills")
 
         @tree.command(name="voice", description="Toggle voice reply mode")
-        @discord.app_commands.describe(mode="Voice mode: join, channel, leave, on, tts, off, or status")
+        @discord.app_commands.describe(mode="Voice mode: join, channel, leave, on, tts, off, transcribe, transcripts, or status")
         @discord.app_commands.choices(mode=[
             # `join` and `channel` both route to _handle_voice_channel_join in
             # gateway/run.py — expose both in the slash UI so autocomplete
@@ -5961,6 +5966,11 @@ class DiscordAdapter(BasePlatformAdapter):
             discord.app_commands.Choice(name="on — voice reply to voice messages", value="on"),
             discord.app_commands.Choice(name="tts — voice reply to all messages", value="tts"),
             discord.app_commands.Choice(name="off — text only", value="off"),
+            discord.app_commands.Choice(name="transcribe on — transcripts without agent replies", value="transcribe on"),
+            discord.app_commands.Choice(name="transcribe off — listen and respond again", value="transcribe off"),
+            discord.app_commands.Choice(name="transcripts channel — post transcripts to text channel", value="transcripts channel"),
+            discord.app_commands.Choice(name="transcripts file — save transcripts to local files only", value="transcripts file"),
+            discord.app_commands.Choice(name="transcripts both — post to channel and save locally", value="transcripts both"),
             discord.app_commands.Choice(name="status — show current mode", value="status"),
         ])
         async def slash_voice(interaction: discord.Interaction, mode: str = ""):

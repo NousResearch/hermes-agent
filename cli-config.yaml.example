@@ -1195,6 +1195,15 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#   voice_transcript_agent_turns: true   # Dispatch VC transcripts to the agent (default: true).
+#                                        # false = transcribe-only: speech is transcribed and
+#                                        # routed, but the agent never runs on voice input.
+#                                        # Per-chat override: /voice transcribe on|off
+#   voice_transcript_destination: channel  # Where VC transcripts go: channel | file | both
+#                                          # (default: channel). Per-chat: /voice transcripts ...
+#   voice_transcript_dir: ""             # Directory for file transcripts; empty resolves to
+#                                        # <hermes_home>/transcripts. Files are named
+#                                        # vc-<guild_id>-<date>.log, one line per utterance.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

@@ -1987,6 +1987,25 @@ def _park_stashed_changes(stash_ref: str) -> None:
     print(f"  Restore manually with: git stash apply {stash_ref}")
 
 
+def _prompt_answerable() -> bool:
+    """True when a human can actually see and answer an interactive prompt.
+
+    Scheduled Tasks, CI, and hidden-window runs keep stdin OPEN but
+    unattended: ``input()`` then blocks forever instead of raising
+    ``EOFError`` (#92303). Mirror the config-migration prompt's guard:
+    require both stdin and stdout to be TTYs before asking anything.
+    """
+    try:
+        return bool(
+            sys.stdin is not None
+            and sys.stdin.isatty()
+            and sys.stdout is not None
+            and sys.stdout.isatty()
+        )
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
 def _restore_stashed_changes(
     git_cmd: list[str],
     cwd: Path,
@@ -2004,6 +2023,15 @@ def _restore_stashed_changes(
         print("Restore local changes now? [Y/n]")
         if input_fn is not None:
             response = input_fn("Restore local changes now? [Y/n]", "y")
+        elif not _prompt_answerable():
+            # Unattended run (Scheduled Task / CI): stdin stays open but no
+            # one will ever answer, so input() would block forever (#92303).
+            # Park the stash — local source edits must never be silently
+            # re-applied onto updated code; the skip path below prints the
+            # manual restore guidance.
+            print()
+            print("ℹ️  No interactive terminal detected (unattended run) — leaving changes stashed.")
+            response = "n"
         else:
             try:
                 response = input().strip().lower()
@@ -2297,9 +2325,16 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("  This means you may miss updates from NousResearch/hermes-agent.")
         print()
         try:
-            response = (
-                input("Add official repo as 'upstream' remote? [Y/n]: ").strip().lower()
-            )
+            if _prompt_answerable():
+                response = (
+                    input("Add official repo as 'upstream' remote? [Y/n]: ").strip().lower()
+                )
+            else:
+                # Unattended run (#92303): decline rather than blocking on an
+                # open-but-unattended stdin handle. Skipping is side-effect
+                # free; the sync can be re-run interactively any time.
+                print("ℹ️  No interactive terminal detected (unattended run) — skipping upstream setup.")
+                response = "n"
         except (EOFError, KeyboardInterrupt, UnicodeDecodeError):
             print()
             response = "n"

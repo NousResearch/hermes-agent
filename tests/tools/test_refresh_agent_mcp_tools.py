@@ -217,7 +217,9 @@ def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):
     import time
     from hermes_cli import mcp_startup
 
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+    # The discovery slot is keyed per profile home (#67605); an empty map is
+    # "no thread pending" for every profile.
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_threads", {})
     import hermes_cli.config as cfg
     monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": 999.0})
 

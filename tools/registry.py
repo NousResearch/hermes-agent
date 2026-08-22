@@ -881,12 +881,19 @@ class ToolRegistry:
                 self._toolset_checks[toolset] = check_fn
             self._generation += 1
 
-    def deregister(self, name: str) -> None:
+    def deregister(self, name: str, *, scope: Optional[str] = None) -> None:
         """Remove a tool from the registry.
 
         Also cleans up the toolset check if no other tools remain in the
         same toolset.  Used by MCP dynamic tool discovery to nuke-and-repave
         when a server sends ``notifications/tools/list_changed``.
+
+        ``scope`` is the inverse of ``register(scope=...)`` for callers that
+        are not plugins and therefore have no owner to derive a scope from —
+        MCP discovery in a multi-profile process registers each profile's
+        tools into that profile's overlay (#67605) and must remove them from
+        the same one.  Left ``None``, the historical behavior is unchanged:
+        the scope comes from the calling plugin, or the process-global table.
 
         Gated by the same operator opt-in policy ``register(override=True)``
         enforces. Without this, a plugin could bypass that gate entirely by
@@ -903,7 +910,7 @@ class ToolRegistry:
             caller_scope = (
                 self._plugin_scope_of(caller_owner)
                 if caller_owner is not None
-                else None
+                else scope
             )
             target = (
                 self._scoped_tools.get(caller_scope, {})
@@ -913,8 +920,13 @@ class ToolRegistry:
             entry = target.get(name)
             if entry is None and caller_scope is not None:
                 if name in self._tools:
+                    owner_desc = (
+                        f"Scoped plugin module {caller_mod!r}"
+                        if caller_owner is not None
+                        else f"Scoped caller {caller_mod!r}"
+                    )
                     raise PermissionError(
-                        f"Scoped plugin module {caller_mod!r} cannot deregister "
+                        f"{owner_desc} cannot deregister "
                         f"process-global tool {name!r}; register a scoped "
                         "override instead."
                     )

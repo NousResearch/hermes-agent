@@ -673,8 +673,10 @@ def test_profile_scoped_mcp_discovery_uses_target_home(monkeypatch, tmp_path):
 
     seen = []
 
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", False)
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+    # Discovery state is keyed by profile home, so these are a set and a map
+    # rather than a bool and a single thread.
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", set())
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_threads", {})
     # ensure_mcp_discovery_started flips this module global; monkeypatch it so
     # the enablement doesn't leak into sibling tests in this file.
     monkeypatch.setattr(entry, "_mcp_discovery_enabled", False)
@@ -686,13 +688,13 @@ def test_profile_scoped_mcp_discovery_uses_target_home(monkeypatch, tmp_path):
 
     try:
         entry.ensure_mcp_discovery_started()
-        thread = mcp_startup._mcp_discovery_thread
+        # The slot must belong to the selected profile, not the launch home.
+        assert set(mcp_startup._mcp_discovery_threads) == {str(profile_home)}
+        thread = mcp_startup._mcp_discovery_threads[str(profile_home)]
         assert thread is not None
         thread.join(timeout=2)
     finally:
         reset_hermes_home_override(token)
-        mcp_startup._mcp_discovery_thread = None
-        mcp_startup._mcp_discovery_started = False
 
     assert seen == [str(profile_home)]
 

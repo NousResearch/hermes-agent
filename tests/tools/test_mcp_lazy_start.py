@@ -285,7 +285,11 @@ class TestLazyFirstUseConnect:
              patch.object(registry, "deregister") as mock_dereg:
             assert mcp._ensure_lazy_server_connected("playwright") is True
 
-        mock_dereg.assert_called_once_with("mcp_playwright_tool_x")
+        # Deregistration targets the same per-profile registry overlay the
+        # cached manifest registered into (#67605).
+        mock_dereg.assert_called_once_with(
+            "mcp_playwright_tool_x", scope=mcp._mcp_registry_scope()
+        )
 
     def test_lazy_connect_failure_records_cooldown(self):
         mcp._lazy_server_configs["playwright"] = {"command": "npx", "lazy": True}

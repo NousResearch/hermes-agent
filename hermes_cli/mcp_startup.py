@@ -4,11 +4,36 @@ from __future__ import annotations
 
 import threading
 from contextlib import nullcontext
-from typing import Optional
+from typing import Dict, Optional, Set
 
 _mcp_discovery_lock = threading.Lock()
-_mcp_discovery_started = False
-_mcp_discovery_thread: Optional[threading.Thread] = None
+# The discovery slot is per profile home, not per process. It used to be a
+# single ``started`` flag plus a single thread handle, so in a multi-profile
+# process (the dashboard / desktop backend serving several ``HERMES_HOME``
+# profiles) the FIRST profile to reach discovery claimed the slot and every
+# other profile short-circuited on "already started" with zero MCP servers of
+# its own (#67605). Keying by the resolved home mirrors the per-home registry
+# idiom already used in ``tools/registry.py`` and ``hermes_cli/plugins.py``.
+#
+# Default-inert: a single-profile process resolves one key, so there is
+# exactly one entry in each map and behavior is what it was before.
+_mcp_discovery_started: Set[str] = set()
+_mcp_discovery_threads: Dict[str, threading.Thread] = {}
+
+
+def _discovery_scope_key() -> str:
+    """Return the canonical key of the profile owning this discovery slot.
+
+    Follows the context-local ``HERMES_HOME`` override, so a caller scoped to
+    a selected profile claims that profile's slot. Resolution failures fall
+    back to one shared slot — exactly the pre-#67605 process-global behavior.
+    """
+    try:
+        from hermes_constants import hermes_home_key
+
+        return hermes_home_key()
+    except Exception:
+        return ""
 
 
 def _has_configured_mcp_servers() -> bool:
@@ -30,23 +55,29 @@ def _has_configured_mcp_servers() -> bool:
 
 
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
-    """Spawn one shared background MCP discovery thread for this process.
+    """Spawn one shared background MCP discovery thread per profile home.
 
     If the first background discovery run exits without connecting any MCP
     server (for example after startup cancellation / OOM restart), later calls
-    are allowed to retry instead of permanently pinning the process in a
+    are allowed to retry instead of permanently pinning the profile in a
     "discovery already started" state with zero MCP tools.
+
+    The slot is claimed per resolved ``HERMES_HOME``, so in a multi-profile
+    process each profile runs its own discovery instead of the first one to
+    arrive claiming it for everybody (#67605).
     """
-    global _mcp_discovery_started, _mcp_discovery_thread
+    scope = _discovery_scope_key()
 
     with _mcp_discovery_lock:
-        if _mcp_discovery_started:
-            thread = _mcp_discovery_thread
+        if scope in _mcp_discovery_started:
+            thread = _mcp_discovery_threads.get(scope)
             if thread is not None and thread.is_alive():
                 return
             try:
                 from tools.mcp_tool import get_mcp_status
 
+                # Profile-scoped: reports THIS profile's servers, so another
+                # profile's healthy servers can't mask this one's empty slot.
                 status = get_mcp_status() or []
                 if any(entry.get("connected") for entry in status):
                     return
@@ -56,10 +87,10 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
                 "Background MCP discovery previously exited with no connected "
                 "servers; retrying discovery thread"
             )
-            _mcp_discovery_started = False
-            _mcp_discovery_thread = None
+            _mcp_discovery_started.discard(scope)
+            _mcp_discovery_threads.pop(scope, None)
 
-        _mcp_discovery_started = True
+        _mcp_discovery_started.add(scope)
         if not _has_configured_mcp_servers():
             return
 
@@ -107,15 +138,14 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
                     except Exception:
                         pass
                 with _mcp_discovery_lock:
-                    global _mcp_discovery_thread, _mcp_discovery_started
-                    _mcp_discovery_thread = None
+                    _mcp_discovery_threads.pop(scope, None)
 
         thread = threading.Thread(
             target=_discover,
             name=thread_name,
             daemon=True,
         )
-        _mcp_discovery_thread = thread
+        _mcp_discovery_threads[scope] = thread
         thread.start()
 
 
@@ -188,7 +218,7 @@ def wait_for_mcp_discovery(
     ``mcp_single_query_discovery_timeout`` instead (default 15s vs 1.5s
     interactive) because one-shot sessions have no second turn to recover.
     """
-    thread = _mcp_discovery_thread
+    thread = _mcp_discovery_threads.get(_discovery_scope_key())
     if thread is None or not thread.is_alive():
         return
     thread.join(timeout=_resolve_discovery_timeout(timeout, single_query=single_query))
@@ -201,11 +231,11 @@ def mcp_discovery_in_flight() -> bool:
     start discovery through ``start_background_mcp_discovery`` here (the desktop
     app + dashboard WebSocket sidecar via ``tui_gateway/ws.py``, and
     ``hermes dashboard``).  Those processes populate THIS module's
-    ``_mcp_discovery_thread``, not ``tui_gateway.entry``'s, so the late-refresh
+    ``_mcp_discovery_threads``, not ``tui_gateway.entry``'s, so the late-refresh
     scheduler must consult both to decide whether a slow server's tools are
     still pending (see #51587).
     """
-    thread = _mcp_discovery_thread
+    thread = _mcp_discovery_threads.get(_discovery_scope_key())
     return thread is not None and thread.is_alive()
 
 
@@ -217,7 +247,7 @@ def join_mcp_discovery(timeout: "float | None" = None) -> bool:
     ``wait_for_mcp_discovery`` this accepts an unbounded/long wait and reports
     the outcome, for the off-critical-path late-refresh waiter.
     """
-    thread = _mcp_discovery_thread
+    thread = _mcp_discovery_threads.get(_discovery_scope_key())
     if thread is None:
         return True
     thread.join(timeout=timeout)

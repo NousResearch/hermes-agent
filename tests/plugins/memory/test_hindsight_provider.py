@@ -1427,6 +1427,98 @@ class TestSharedEventLoopLifecycle:
         assert provider._client is None
 
 
+class TestOnMemoryWriteRemove:
+    """Tests for on_memory_write with remove action — verifies the resolved
+    content (full entry) is archived, not a substring selector."""
+
+    def test_remove_archives_full_content_not_selector(self, provider):
+        """When removing 'dark mode' from 'User prefers dark mode',
+        the archived content must be the full entry, not the selector."""
+        provider._ensure_writer()
+        full_entry = "User prefers dark mode"
+        provider.on_memory_write(
+            "remove", "memory", full_entry,
+            metadata={"session_id": "s1", "old_text": "dark mode"},
+        )
+        provider._retain_queue.join()
+        # Verify aretain_batch was called with the full entry
+        provider._client.aretain_batch.assert_called_once()
+        call_kwargs = provider._client.aretain_batch.call_args[1]
+        items = call_kwargs["items"]
+        assert len(items) == 1
+        archived_text = items[0]["content"]
+        assert "User prefers dark mode" in archived_text
+        assert "[Memory REMOVED from built-in store]" in archived_text
+        assert "Target: memory" in archived_text
+        # The selector should NOT be the archived text (it may appear in
+        # metadata but the content body should contain the full entry).
+        assert full_entry in archived_text
+
+    def test_remove_tags_include_memory_removed_and_session(self, provider):
+        """Archived removal must include memory-removed + session tags."""
+        provider._ensure_writer()
+        provider.on_memory_write(
+            "remove", "user", "User prefers dark mode",
+            metadata={"session_id": "abc123"},
+        )
+        provider._retain_queue.join()
+        provider._client.aretain_batch.assert_called_once()
+        tags = provider._client.aretain_batch.call_args[1]["items"][0]["tags"]
+        assert "memory-removed" in tags
+        assert "memory-target:user" in tags
+        assert "session:abc123" in tags
+
+    def test_queue_draining_executes_retain(self, provider):
+        """The _retain_queue job must actually call aretain_batch."""
+        provider._ensure_writer()
+        provider.on_memory_write(
+            "remove", "memory", "Some removed fact",
+            metadata={"session_id": "s2"},
+        )
+        assert not provider._retain_queue.empty()
+        provider._retain_queue.join()
+        assert provider._retain_queue.empty()
+        provider._client.aretain_batch.assert_called_once()
+        items = provider._client.aretain_batch.call_args[1]["items"]
+        assert len(items) == 1
+        assert "Some removed fact" in items[0]["content"]
+
+    def test_shutdown_guard_skips_archival(self, provider):
+        """After shutdown is signaled, on_memory_write must not enqueue work."""
+        provider._shutting_down.set()
+        provider.on_memory_write(
+            "remove", "memory", "Should not be archived",
+        )
+        # No writer was ensured, queue should be empty
+        assert provider._retain_queue.empty()
+        provider._client.aretain_batch.assert_not_called()
+
+    def test_add_action_is_skipped(self, provider):
+        """Only 'remove' actions are handled; add/replace are no-ops."""
+        provider.on_memory_write(
+            "add", "memory", "new fact",
+        )
+        provider.on_memory_write(
+            "replace", "user", "updated pref",
+        )
+        # No writer thread needed (no queued work)
+        provider._client.aretain_batch.assert_not_called()
+
+    def test_empty_content_is_skipped(self, provider):
+        """Empty or whitespace-only content must not trigger archival."""
+        provider.on_memory_write("remove", "memory", "")
+        provider.on_memory_write("remove", "memory", "   ")
+        provider._client.aretain_batch.assert_not_called()
+
+    def test_null_bank_id_is_skipped(self, provider):
+        """Without a bank_id, the provider must return early."""
+        provider._bank_id = ""
+        provider.on_memory_write(
+            "remove", "memory", "test",
+        )
+        provider._client.aretain_batch.assert_not_called()
+
+
 class TestShutdown:
     def test_local_embedded_shutdown_closes_inner_async_client_on_shared_loop(self, provider):
         inner_client = _make_mock_client()

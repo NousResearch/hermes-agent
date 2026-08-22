@@ -2374,6 +2374,88 @@ class HindsightMemoryProvider(MemoryProvider):
             self._session_id, self._parent_session_id, reset, self._document_id,
         )
 
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror built-in memory writes to Hindsight for archival.
+
+        Hindsight uses an *archive* strategy for removals: the removed
+        content is retained with a ``memory-removed`` tag so it remains
+        searchable as historical context, rather than being silently lost
+        from semantic memory.
+
+        Uses the *resolved* ``content`` parameter (the full entry text
+        returned by ``MemoryStore.remove()``), not a substring selector.
+        """
+        if action != "remove":
+            return
+        content = (content or "").strip()
+        if not content:
+            return
+        if not self._bank_id:
+            return
+        if self._shutting_down.is_set():
+            return
+        self._archive_removed_memory(content, target, metadata or {})
+
+    def _archive_removed_memory(
+        self,
+        content: str,
+        target: str,
+        metadata: Dict[str, Any],
+    ) -> None:
+        """Archive a removed built-in memory entry via the writer queue.
+
+        Enqueues an ``aretain_batch`` call on the existing writer thread,
+        same pattern as :meth:`sync_turn`.
+
+        Archives the full removed entry (not a substring selector).
+        """
+        archive_body = (
+            f"[Memory REMOVED from built-in store]\n"
+            f"Target: {target}\n"
+            f"Removed: {content}"
+        )
+
+        tags = ["memory-removed", f"memory-target:{target}"]
+        if metadata.get("session_id"):
+            tags.append(f"session:{metadata['session_id']}")
+
+        def _do_archive() -> None:
+            try:
+                item = self._build_retain_kwargs(
+                    archive_body,
+                    context="memory removal from built-in store",
+                    metadata=metadata,
+                    tags=tags,
+                )
+                # _build_retain_kwargs always includes bank_id in the item dict.
+                # aretain_batch expects bank_id only as a top-level parameter,
+                # so pop it from the item to avoid duplication.
+                item.pop("bank_id", None)
+                self._run_hindsight_operation(
+                    lambda client: client.aretain_batch(
+                        bank_id=self._bank_id,
+                        items=[item],
+                    )
+                )
+                logger.debug(
+                    "Hindsight archived removed memory target=%r len=%d",
+                    target, len(content),
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Hindsight archive removed memory failed: %s", exc
+                )
+
+        self._ensure_writer()
+        self._register_atexit()
+        self._retain_queue.put(_do_archive)
+
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
         # Stop accepting new retain jobs first so anyone still calling

@@ -1,3 +1,5 @@
+import base64
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -55,6 +57,80 @@ def _build_agent(monkeypatch):
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
     return agent
+
+
+def _codex_token(account_id: str, marker: str) -> str:
+    """Build a signature-free JWT-shaped fixture with a stable account claim."""
+    payload = {
+        "https://api.openai.com/auth": {"chatgpt_account_id": account_id},
+        "marker": marker,
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    return f"header.{encoded}.signature"
+
+
+def test_sync_credential_pool_identity_rebinds_rotated_same_account_token():
+    from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    old_token = _codex_token("acct-stable", "old")
+    fresh_token = _codex_token("acct-stable", "fresh")
+    pool = CredentialPool(
+        "openai-codex",
+        [
+            PooledCredential(
+                provider="openai-codex",
+                id="codex-singleton",
+                label="Codex",
+                auth_type="oauth",
+                priority=0,
+                source="device_code",
+                access_token=fresh_token,
+                refresh_token="refresh-token",
+            )
+        ],
+    )
+    agent = SimpleNamespace(
+        provider="openai-codex", api_key=old_token, _credential_pool=pool
+    )
+
+    sync_credential_pool_entry_id(agent)
+
+    assert agent._credential_pool_account_identity == "acct-stable"
+    assert agent._credential_pool_entry_id == "codex-singleton"
+
+
+def test_sync_credential_pool_identity_does_not_bind_different_account():
+    from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    pool = CredentialPool(
+        "openai-codex",
+        [
+            PooledCredential(
+                provider="openai-codex",
+                id="other-account",
+                label="Codex",
+                auth_type="oauth",
+                priority=0,
+                source="device_code",
+                access_token=_codex_token("acct-other", "fresh"),
+                refresh_token="refresh-token",
+            )
+        ],
+    )
+    agent = SimpleNamespace(
+        provider="openai-codex",
+        api_key=_codex_token("acct-original", "old"),
+        _credential_pool=pool,
+    )
+
+    sync_credential_pool_entry_id(agent)
+
+    assert agent._credential_pool_account_identity == "acct-original"
+    assert agent._credential_pool_entry_id is None
 
 
 def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
@@ -1368,6 +1444,87 @@ def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
     assert rebuilt["kwargs"]["base_url"] == "https://api.x.ai/v1"
     assert isinstance(agent.client, _RebuiltClient)
     assert agent.api_key == "fresh-xai-token"
+
+
+def test_try_refresh_codex_adopts_new_store_token_for_same_account(monkeypatch):
+    """A long-lived Codex agent may retain an old token after another process
+    rotates the singleton.  The fresh token is safe only for the same account."""
+    agent = _build_agent(monkeypatch)
+    old_token = _codex_token("acct-same", "old")
+    fresh_token = _codex_token("acct-same", "fresh")
+    agent.api_key = old_token
+    agent._credential_pool_account_identity = "acct-same"
+    agent._client_kwargs["api_key"] = old_token
+    force_calls = {"count": 0}
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        if force_refresh:
+            force_calls["count"] += 1
+        return {
+            "api_key": fresh_token,
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+
+    rebuilt = {"count": 0}
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials", _fake_resolve
+    )
+    monkeypatch.setattr(
+        agent,
+        "_replace_primary_openai_client",
+        lambda **_: rebuilt.__setitem__("count", rebuilt["count"] + 1) or True,
+    )
+
+    assert agent._try_refresh_codex_client_credentials(force=True) is True
+    assert agent.api_key == fresh_token
+    assert agent._client_kwargs["api_key"] == fresh_token
+    assert rebuilt["count"] == 1
+    assert force_calls["count"] == 0, (
+        "adopt the already-fresh same-account singleton without consuming "
+        "another single-use refresh token"
+    )
+
+
+def test_try_refresh_codex_refuses_new_store_token_for_different_account(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    old_token = _codex_token("acct-original", "old")
+    other_token = _codex_token("acct-other", "fresh")
+    agent.api_key = old_token
+    agent._credential_pool_account_identity = "acct-original"
+    agent._client_kwargs["api_key"] = old_token
+    force_calls = {"count": 0}
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        if force_refresh:
+            force_calls["count"] += 1
+        return {
+            "api_key": other_token,
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials", _fake_resolve
+    )
+
+    assert agent._try_refresh_codex_client_credentials(force=True) is False
+    assert agent.api_key == old_token
+    assert force_calls["count"] == 0
+
+
+def test_codex_pool_swap_updates_stable_account_identity(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent._credential_pool_account_identity = "acct-old"
+    monkeypatch.setattr(agent, "_replace_primary_openai_client", lambda **_: True)
+    entry = SimpleNamespace(
+        id="new-entry",
+        runtime_api_key=_codex_token("acct-new", "rotated"),
+        runtime_base_url="https://chatgpt.com/backend-api/codex",
+    )
+
+    agent._swap_credential(entry)
+
+    assert agent._credential_pool_entry_id == "new-entry"
+    assert agent._credential_pool_account_identity == "acct-new"
 
 
 def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_differs(monkeypatch):

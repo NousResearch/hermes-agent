@@ -761,6 +761,27 @@ class CredentialPool:
             ]
             return matches[0].id if len(matches) == 1 else None
 
+    def entry_id_for_account_identity(self, account_identity: Any) -> Optional[str]:
+        """Return the unambiguous Codex entry for a stable ChatGPT account id."""
+        if self.provider != "openai-codex":
+            return None
+        expected = str(account_identity or "").strip()
+        if not expected:
+            return None
+        with self._lock:
+            matches = []
+            for entry in self._entries:
+                claims = _decode_jwt_claims(entry.runtime_api_key)
+                auth_claims = claims.get("https://api.openai.com/auth")
+                account_id = (
+                    auth_claims.get("chatgpt_account_id")
+                    if isinstance(auth_claims, dict)
+                    else None
+                )
+                if isinstance(account_id, str) and account_id.strip() == expected:
+                    matches.append(entry)
+            return matches[0].id if len(matches) == 1 else None
+
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
         """Swap an entry in-place by id, preserving sort order.
 
@@ -934,37 +955,54 @@ class CredentialPool:
                 return entry
             store_access = tokens.get("access_token", "")
             store_refresh = tokens.get("refresh_token", "")
-            # Adopt auth.json tokens when either side differs.  Codex refresh
-            # tokens are single-use too, so a fresh refresh_token from
-            # another process means our entry's pair is consumed/stale.
-            #
-            # Also adopt when the store has a refresh_token but no
-            # access_token — another process may have rotated the pair
-            # and the store entry's access_token was already consumed;
-            # the important signal is the refresh_token difference.
             entry_access = entry.access_token or ""
             entry_refresh = entry.refresh_token or ""
-            should_adopt = False
-            if store_access and (
-                store_access != entry_access
+
+            # Access/refresh tokens rotate, but the ChatGPT account claim does
+            # not. Never copy singleton tokens onto a pool entry unless both
+            # sides prove they belong to the same account; otherwise a re-login
+            # to account B could silently reroute a long-lived account-A agent.
+            entry_claims = _decode_jwt_claims(entry_access)
+            store_claims = _decode_jwt_claims(store_access)
+            entry_auth = entry_claims.get("https://api.openai.com/auth")
+            store_auth = store_claims.get("https://api.openai.com/auth")
+            entry_account = (
+                entry_auth.get("chatgpt_account_id")
+                if isinstance(entry_auth, dict)
+                else None
+            )
+            store_account = (
+                store_auth.get("chatgpt_account_id")
+                if isinstance(store_auth, dict)
+                else None
+            )
+            tokens_differ = bool(
+                (store_access and store_access != entry_access)
                 or (store_refresh and store_refresh != entry_refresh)
+            )
+            if tokens_differ and not (
+                isinstance(entry_account, str)
+                and entry_account.strip()
+                and isinstance(store_account, str)
+                and store_account.strip() == entry_account.strip()
             ):
-                should_adopt = True
-            elif (
-                store_refresh
-                and store_refresh != entry_refresh
-                and not store_access
-            ):
-                # Store has only a refresh_token (no access_token) —
-                # another process rotated the pair.  Adopt the
-                # refresh_token so we don't replay the consumed one.
-                logger.info(
-                    "Pool entry %s: auth.json has newer refresh_token "
-                    "but no access_token; adopting refresh_token to "
-                    "avoid replaying consumed token",
+                logger.warning(
+                    "Pool entry %s: refusing Codex auth-store token sync because "
+                    "the stable ChatGPT account identity is missing or differs",
                     entry.id,
                 )
-                should_adopt = True
+                return entry
+
+            # Adopt auth.json tokens only after the stable-account gate above.
+            # A changed refresh token means another process consumed the old
+            # single-use grant even if the access token happened to be reissued.
+            should_adopt = bool(
+                store_access
+                and (
+                    store_access != entry_access
+                    or (store_refresh and store_refresh != entry_refresh)
+                )
+            )
 
             if should_adopt:
                 logger.debug(
@@ -1331,9 +1369,11 @@ class CredentialPool:
                 synced = sync_entry(entry)
                 if self.provider == "openai-codex":
                     if synced is not entry:
-                        entry = synced
-                        if not force and not self._entry_needs_refresh(entry):
-                            return entry
+                        # Another process already rotated the same account's
+                        # singleton while this request was in flight. The sync
+                        # path verified account identity; adopt that token and
+                        # do not consume its fresh single-use refresh grant.
+                        return synced
                     return self._refresh_entry_impl(entry, force=force)
                 if (
                     synced.access_token != entry.access_token

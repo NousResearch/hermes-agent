@@ -1768,6 +1768,105 @@ def _codex_auth_store(access_token: str, refresh_token: str) -> dict:
     }
 
 
+def _codex_account_token(account_id: str, marker: str) -> str:
+    return _jwt_with_claims(
+        {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account_id,
+            },
+            "marker": marker,
+        }
+    )
+
+
+def test_sync_codex_entry_adopts_rotated_token_for_same_account(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    old_token = _codex_account_token("acct-same", "old")
+    fresh_token = _codex_account_token("acct-same", "fresh")
+    _write_auth_store(tmp_path, _codex_auth_store(fresh_token, "refresh-new"))
+    entry = PooledCredential(
+        provider="openai-codex",
+        id="codex-singleton",
+        label="Codex",
+        auth_type="oauth",
+        priority=0,
+        source="device_code",
+        access_token=old_token,
+        refresh_token="refresh-old",
+    )
+    pool = CredentialPool("openai-codex", [entry])
+
+    synced = pool._sync_codex_entry_from_auth_store(entry)
+
+    assert synced.access_token == fresh_token
+    assert synced.refresh_token == "refresh-new"
+
+
+def test_sync_codex_entry_refuses_rotated_token_for_different_account(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    old_token = _codex_account_token("acct-original", "old")
+    other_token = _codex_account_token("acct-other", "fresh")
+    _write_auth_store(tmp_path, _codex_auth_store(other_token, "refresh-other"))
+    entry = PooledCredential(
+        provider="openai-codex",
+        id="codex-singleton",
+        label="Codex",
+        auth_type="oauth",
+        priority=0,
+        source="device_code",
+        access_token=old_token,
+        refresh_token="refresh-old",
+    )
+    pool = CredentialPool("openai-codex", [entry])
+
+    synced = pool._sync_codex_entry_from_auth_store(entry)
+
+    assert synced is entry
+    assert synced.access_token == old_token
+    assert synced.refresh_token == "refresh-old"
+
+
+def test_codex_401_recovery_adopts_same_account_store_token_without_re_refresh(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    old_token = _codex_account_token("acct-same", "old")
+    fresh_token = _codex_account_token("acct-same", "fresh")
+    _write_auth_store(tmp_path, _codex_auth_store(fresh_token, "refresh-new"))
+    entry = PooledCredential(
+        provider="openai-codex",
+        id="codex-singleton",
+        label="Codex",
+        auth_type="oauth",
+        priority=0,
+        source="device_code",
+        access_token=old_token,
+        refresh_token="refresh-old",
+    )
+    pool = CredentialPool("openai-codex", [entry])
+    refresh_posts = {"count": 0}
+
+    def _unexpected_refresh(*args, **kwargs):
+        refresh_posts["count"] += 1
+        raise AssertionError("fresh same-account store token must be adopted directly")
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", _unexpected_refresh)
+
+    recovered = pool.try_refresh_matching(
+        api_key_hint=old_token, credential_id="codex-singleton"
+    )
+
+    assert recovered is not None
+    assert recovered.access_token == fresh_token
+    assert refresh_posts["count"] == 0
+
+
 
 
 

@@ -5778,18 +5778,10 @@ class AIAgent:
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
             return False
 
-        # Guard against silent account swap.
-        #
-        # When an agent is using a non-singleton credential — e.g. a manual
-        # pool entry (``hermes auth add xai-oauth``) whose tokens belong to
-        # a different account than the device_code singleton, or an agent
-        # constructed with an explicit ``api_key=`` arg — force-refreshing
-        # the singleton here and adopting its tokens silently re-routes the
-        # rest of the conversation onto the singleton's account.  The
-        # credential pool's reactive recovery (``_recover_with_credential_pool``)
-        # is the right channel for that case; this path is the
-        # singleton-only fallback used when the pool can't recover, and
-        # MUST only fire when the agent really is on singleton tokens.
+        # Guard against silent account swap. A long-lived Codex agent may hold
+        # the previous access token after another process rotates the shared
+        # singleton. Token inequality is therefore not sufficient: permit the
+        # fresh singleton only when both JWTs name the same stable account.
         try:
             if self.provider == "openai-codex":
                 from hermes_cli.auth import resolve_codex_runtime_credentials
@@ -5809,25 +5801,43 @@ class AIAgent:
 
         singleton_key = str(singleton_now.get("api_key") or "").strip()
         active_key = str(self.api_key or "").strip()
+        adopt_same_account_singleton = False
         if singleton_key and active_key and singleton_key != active_key:
-            logger.debug(
-                "%s singleton tokens differ from the active api_key; "
-                "skipping singleton force-refresh to avoid silent account swap. "
-                "Reactive credential rotation should go through the pool.",
-                self.provider,
-            )
-            return False
+            if self.provider == "openai-codex":
+                from agent.agent_runtime_helpers import codex_account_identity
+
+                active_account = (
+                    getattr(self, "_credential_pool_account_identity", None)
+                    or codex_account_identity(active_key)
+                )
+                singleton_account = codex_account_identity(singleton_key)
+                adopt_same_account_singleton = bool(
+                    active_account
+                    and singleton_account
+                    and active_account == singleton_account
+                )
+            if not adopt_same_account_singleton:
+                logger.debug(
+                    "%s singleton tokens differ from the active api_key/account; "
+                    "skipping singleton force-refresh to avoid silent account swap. "
+                    "Reactive credential rotation should go through the pool.",
+                    self.provider,
+                )
+                return False
 
         try:
-            if self.provider == "openai-codex":
+            old_key = str(self.api_key or "").strip()
+            if adopt_same_account_singleton:
+                # Another process already minted a fresh same-account token.
+                # Reuse it instead of consuming another single-use refresh grant.
+                creds = singleton_now
+            elif self.provider == "openai-codex":
                 from hermes_cli.auth import resolve_codex_runtime_credentials
 
-                old_key = str(self.api_key or "").strip()
                 creds = resolve_codex_runtime_credentials(force_refresh=force)
             else:
                 from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
 
-                old_key = str(self.api_key or "").strip()
                 creds = resolve_xai_oauth_runtime_credentials(force_refresh=force)
         except Exception as exc:
             logger.debug("%s credential refresh failed: %s", self.provider, exc)
@@ -5840,10 +5850,7 @@ class AIAgent:
         if not isinstance(base_url, str) or not base_url.strip():
             return False
 
-        # Defect 2 fix: return False when no NEW token was actually minted.
-        # resolve_codex_runtime_credentials returns the same stale token
-        # when the underlying refresh fails (failure is debug-only).
-        # Comparing the access token (api_key) before/after detects this.
+        # Return False when no new token was actually minted/adopted.
         new_key = api_key.strip()
         if old_key and new_key == old_key:
             logger.debug(
@@ -5853,10 +5860,15 @@ class AIAgent:
             )
             return False
 
-        self.api_key = api_key.strip()
+        self.api_key = new_key
         self.base_url = base_url.strip().rstrip("/")
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
+
+        if self.provider == "openai-codex":
+            from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+
+            sync_credential_pool_entry_id(self)
 
         if not self._replace_primary_openai_client(reason=f"{self.provider}_credential_refresh"):
             return False
@@ -6424,6 +6436,10 @@ class AIAgent:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
         self._credential_pool_entry_id = getattr(entry, "id", None)
+        if self.provider == "openai-codex":
+            from agent.agent_runtime_helpers import codex_account_identity
+
+            self._credential_pool_account_identity = codex_account_identity(runtime_key)
         from hermes_cli.route_identity import normalize_route_base_url
 
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(

@@ -920,21 +920,44 @@ def strip_think_blocks(agent, content: str) -> str:
 
 
 
+def codex_account_identity(access_token: Any) -> Optional[str]:
+    """Return the stable ChatGPT account id carried by a Codex OAuth JWT."""
+    try:
+        from hermes_cli.auth import _decode_jwt_claims
+
+        claims = _decode_jwt_claims(access_token)
+        auth_claims = claims.get("https://api.openai.com/auth")
+        if not isinstance(auth_claims, dict):
+            return None
+        account_id = auth_claims.get("chatgpt_account_id")
+        return account_id.strip() if isinstance(account_id, str) and account_id.strip() else None
+    except Exception:
+        return None
+
+
 def sync_credential_pool_entry_id(agent) -> None:
-    """Rebind ``agent._credential_pool_entry_id`` from the current pool + key.
+    """Rebind stable pool-entry/account identity from the runtime credential.
 
     OAuth refreshes can replace the runtime token before a failed request is
     recovered, so the mutable API-key value alone cannot reliably attribute
-    the failure to its source entry.  This resolves the stable pool-entry ID
-    for the agent's current ``api_key`` and clears it when no pool is bound.
+    the failure to its source entry.  For Codex, ``chatgpt_account_id`` lets
+    the agent retain the binding even when another process already rotated
+    the access token in the shared pool.
     """
     pool = getattr(agent, "_credential_pool", None)
+    account_identity = (
+        codex_account_identity(getattr(agent, "api_key", None))
+        if getattr(agent, "provider", None) == "openai-codex"
+        else None
+    )
+    agent._credential_pool_account_identity = account_identity
     try:
-        agent._credential_pool_entry_id = (
-            pool.entry_id_for_api_key(getattr(agent, "api_key", None))
-            if pool is not None
-            else None
-        )
+        entry_id = None
+        if pool is not None:
+            entry_id = pool.entry_id_for_api_key(getattr(agent, "api_key", None))
+            if entry_id is None and account_identity:
+                entry_id = pool.entry_id_for_account_identity(account_identity)
+        agent._credential_pool_entry_id = entry_id
     except Exception:
         agent._credential_pool_entry_id = None
 

@@ -8,6 +8,7 @@ import {
   fromFallback,
   fromLocalGit,
   isFallbackCommit,
+  payloadForStamp,
   resolveStamp
 } from './write-build-stamp.mjs'
 
@@ -17,6 +18,27 @@ test('fromCI reads GITHUB_SHA / GITHUB_REF_NAME', () => {
     { commit: 'a'.repeat(40), branch: 'release', dirty: false, source: 'ci' }
   )
   assert.equal(fromCI({}), null)
+})
+
+test('payloadForStamp embeds a normalized desktop content hash', () => {
+  const stamp = { commit: 'a'.repeat(40), branch: 'main', dirty: false, source: 'local' }
+  const now = () => new Date('2026-08-21T12:00:00.000Z')
+
+  assert.deepEqual(payloadForStamp(stamp, { HERMES_DESKTOP_CONTENT_HASH: 'B'.repeat(64) }, now), {
+    schemaVersion: 1,
+    commit: 'a'.repeat(40),
+    branch: 'main',
+    builtAt: '2026-08-21T12:00:00.000Z',
+    desktopContentHash: 'b'.repeat(64),
+    dirty: false,
+    source: 'local'
+  })
+})
+
+test('payloadForStamp records null when no valid content hash was supplied', () => {
+  const stamp = { commit: 'a'.repeat(40), branch: 'main', dirty: false, source: 'local' }
+
+  assert.equal(payloadForStamp(stamp, { HERMES_DESKTOP_CONTENT_HASH: 'not-a-hash' }).desktopContentHash, null)
 })
 
 test('fromLocalGit returns null when git rev-parse fails', () => {

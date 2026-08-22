@@ -2025,11 +2025,19 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     
     discord_home = getenv("DISCORD_HOME_CHANNEL")
     if discord_home and Platform.DISCORD in config.platforms:
-        config.platforms[Platform.DISCORD].home_channel = HomeChannel(
+        discord_config = config.platforms[Platform.DISCORD]
+        existing_home = discord_config.home_channel
+        same_home = (
+            existing_home is not None
+            and existing_home.chat_id == discord_home
+        )
+        discord_config.home_channel = HomeChannel(
             platform=Platform.DISCORD,
             chat_id=discord_home,
             name=getenv("DISCORD_HOME_CHANNEL_NAME", "Home"),
             thread_id=getenv("DISCORD_HOME_CHANNEL_THREAD_ID") or None,
+            user_id=existing_home.user_id if existing_home and same_home else None,
+            scope_id=existing_home.scope_id if existing_home and same_home else None,
         )
     
     # Reply threading mode for Discord (off/first/all)

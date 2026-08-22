@@ -58,9 +58,6 @@ class _RecordingSessionDB:
     def complete_handoff(self, session_id):
         self._record("complete_handoff")
 
-    def fail_handoff(self, session_id, error):
-        self._record("fail_handoff")
-
 
 def _make_fake_runner(session_db, *, fail_process=False):
     """Build a minimal object that exposes exactly what the loop body touches.
@@ -90,6 +87,7 @@ def _make_fake_runner(session_db, *, fail_process=False):
             raise RuntimeError("boom")
 
     fake._process_handoff = _process_handoff
+    fake._is_webhook_handoff_row = lambda _row: False
     return fake
 
 

@@ -13369,10 +13369,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # for a dead watcher and spawns a duplicate.
         self._spawn_reconnect_watcher()
 
-        # Start background handoff watcher — picks up CLI sessions marked
-        # handoff_state='pending' in state.db and re-binds them to the
-        # destination platform's home channel, then forges a synthetic user
-        # turn so the agent kicks off the new chat.
+        # Start background handoff watcher — picks up sessions marked
+        # handoff_state='pending' in state.db by a trusted producer, routes
+        # them to the destination platform's home channel, then forges a
+        # synthetic user turn so the agent kicks off the new chat.
         self._spawn_supervised(self._handoff_watcher, "handoff_watcher")
 
         # Start background async-delegation watcher — drains completion events
@@ -13586,23 +13586,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return task
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
-        """Background task that processes pending CLI→gateway session handoffs.
+        """Background task that processes pending session handoffs.
 
         Polls ``state.db`` for sessions in ``handoff_state='pending'`` and,
         for each one:
 
         1. Atomically claims it (pending → running).
         2. Resolves the destination platform's configured home channel.
-        3. Re-binds the gateway's session_key for that home channel to the
-           CLI's existing session_id via ``session_store.switch_session`` so
-           the full role-aware transcript replays on the next agent turn.
+        3. Routes the exact existing session_id to the destination so the full
+           role-aware transcript replays on the next agent turn. Interactive
+           clients retain the existing destination rebind behavior; routed
+           sources atomically move ownership away from their source key.
         4. Forges a synthetic ``MessageEvent`` (``internal=True``) with a
            handoff-notice text and dispatches through the normal gateway
            message pipeline so the agent runs and replies on the platform.
         5. Marks the row ``completed`` (or ``failed`` with ``handoff_error``).
 
-        The CLI process is poll-blocked on the row's terminal state and
-        prints the result to the user.
+        Interactive clients may poll the row's terminal state. Autonomous
+        sources rely on the same durable state for restart recovery.
         """
         # Initial delay so the gateway is fully connected to its platforms
         # before we try to dispatch handoffs through them.
@@ -13617,23 +13618,158 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_id = row.get("id")
                     if not session_id:
                         continue
-                    if not await self._session_db.claim_handoff(session_id):
+                    is_webhook_handoff = self._is_webhook_handoff_row(row)
+                    if is_webhook_handoff:
+                        # AsyncSessionDB offloads the claim to a worker thread,
+                        # so cancelling this watcher does not cancel a SQLite
+                        # UPDATE already in flight. Reconcile the result before
+                        # propagating cancellation: a committed running claim
+                        # must be finalized rather than becoming invisible to
+                        # the pending-only watcher after restart.
+                        claim_task = asyncio.create_task(
+                            self._session_db.claim_handoff(session_id)
+                        )
+                        try:
+                            claimed = await asyncio.shield(claim_task)
+                        except asyncio.CancelledError:
+                            claimed = await claim_task
+                            if claimed:
+                                try:
+                                    cleanup_task = asyncio.create_task(
+                                        self._finalize_failed_webhook_handoff(
+                                            row,
+                                            "handoff claim was cancelled",
+                                        )
+                                    )
+                                    try:
+                                        await asyncio.shield(cleanup_task)
+                                    except asyncio.CancelledError:
+                                        await cleanup_task
+                                except Exception as cleanup_exc:
+                                    logger.error(
+                                        "Cancelled webhook handoff claim cleanup "
+                                        "failed for %s: %s",
+                                        session_id,
+                                        cleanup_exc,
+                                        exc_info=True,
+                                    )
+                            raise
+                    else:
+                        # Preserve the established interactive claim behavior.
+                        claimed = await self._session_db.claim_handoff(session_id)
+                    if not claimed:
                         # Another tick or another gateway already claimed it.
                         continue
                     try:
                         await self._process_handoff(row)
-                        await self._session_db.complete_handoff(session_id)
+                        if is_webhook_handoff:
+                            completed = await self._session_db.complete_running_handoff(
+                                session_id
+                            )
+                            if not completed:
+                                logger.warning(
+                                    "Handoff for session %s finished after its durable "
+                                    "state changed; completion was not published",
+                                    session_id,
+                                )
+                                state = await self._session_db.get_handoff_state(
+                                    session_id
+                                )
+                                if not state or state.get("state") != "completed":
+                                    await self._finalize_failed_webhook_handoff(
+                                        row,
+                                        "handoff completion state changed",
+                                    )
+                        else:
+                            # Preserve the established interactive contract. A
+                            # CLI/TUI timeout can race a slow watcher and write a
+                            # terminal state while this attempt is still running;
+                            # the historical unconditional completion prevents a
+                            # user retry from spawning a second destination thread.
+                            await self._session_db.complete_handoff(session_id)
+                    except asyncio.CancelledError:
+                        if is_webhook_handoff:
+                            try:
+                                await self._finalize_failed_webhook_handoff(
+                                    row,
+                                    "handoff processing was cancelled",
+                                )
+                            except Exception as cleanup_exc:
+                                logger.error(
+                                    "Cancelled webhook handoff cleanup failed for %s: %s",
+                                    session_id,
+                                    cleanup_exc,
+                                    exc_info=True,
+                                )
+                        raise
                     except Exception as exc:
                         logger.warning(
                             "Handoff for session %s failed: %s",
                             session_id, exc, exc_info=True,
                         )
-                        await self._session_db.fail_handoff(session_id, str(exc))
+                        if is_webhook_handoff:
+                            try:
+                                await self._finalize_failed_webhook_handoff(
+                                    row, str(exc)
+                                )
+                            except Exception as cleanup_exc:
+                                logger.error(
+                                    "Failed webhook handoff cleanup for %s: %s",
+                                    session_id,
+                                    cleanup_exc,
+                                    exc_info=True,
+                                )
+                        else:
+                            await self._session_db.fail_handoff(session_id, str(exc))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.debug("Handoff watcher tick error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
+
+    @staticmethod
+    def _is_webhook_handoff_row(row: Dict[str, Any]) -> bool:
+        """Whether *row* owns a live webhook routing key to be moved."""
+        return (
+            str(row.get("source") or "").strip().lower() == "webhook"
+            and bool(row.get("session_key"))
+        )
+
+    async def _finalize_failed_webhook_handoff(
+        self,
+        row: Dict[str, Any],
+        handoff_error: str,
+    ) -> None:
+        """Remove a failed webhook handoff route and end its exact session.
+
+        ``_process_handoff`` records the currently-owned key on the in-memory
+        row immediately after a successful move. Before that point the source
+        key remains authoritative. The expected-session CAS prevents cleanup
+        from deleting a newer owner if either key was rebound concurrently.
+        """
+        session_id = str(row.get("id") or "")
+        session_key = str(
+            row.get("_handoff_active_session_key")
+            or row.get("session_key")
+            or ""
+        )
+        if not session_id:
+            return
+
+        if session_key:
+            finalized = await self.async_session_store.remove_session_route_and_end(
+                session_key,
+                session_id,
+                "webhook_handoff_failed",
+                handoff_error=handoff_error,
+            )
+            if not finalized:
+                raise RuntimeError(
+                    f"handoff cleanup could not finalize {session_id}"
+                )
+            if await self.async_session_store.peek_session_id(session_key) is None:
+                self._evict_cached_agent(session_key)
+                self._release_running_agent_state(session_key)
 
     async def _process_handoff(self, row: Dict[str, Any]) -> None:
         """Execute one handoff row. Raises on failure (caller marks failed)."""
@@ -13641,7 +13777,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from gateway.session import SessionSource, build_session_key
         from gateway.platforms.base import MessageEvent
 
-        cli_session_id = row["id"]
+        handoff_session_id = row["id"]
+        move_source_key = (
+            str(row.get("session_key"))
+            if self._is_webhook_handoff_row(row)
+            else None
+        )
+        if move_source_key:
+            row["_handoff_active_session_key"] = move_source_key
         platform_name = (row.get("handoff_platform") or "").strip().lower()
         if not platform_name:
             raise RuntimeError("handoff_platform is empty")
@@ -13673,7 +13816,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 f"run /sethome on the desired chat first"
             )
 
-        cli_title = row.get("title") or cli_session_id[:8]
+        home_chat_id = str(home.chat_id)
+        handoff_source_profile = (
+            self._handoff_source_profile(row) if move_source_key else None
+        )
+        destination_guild_id = None
+        parent_source = None
+        if move_source_key:
+            destination_guild_id = await self._webhook_handoff_destination_guild_id(
+                platform=platform,
+                adapter=adapter,
+                home=home,
+            )
+            parent_source = SessionSource(
+                platform=platform,
+                chat_id=home_chat_id,
+                chat_name=home.name,
+                chat_type="group",
+                user_id=str(home.user_id) if home.user_id else None,
+                scope_id=str(home.scope_id) if home.scope_id else None,
+                guild_id=destination_guild_id,
+                profile=handoff_source_profile,
+            )
+            self._validate_webhook_handoff_destination_profile(
+                parent_source,
+                handoff_source_profile,
+            )
+            # A relay adapter normally learns the logical platform and tenant
+            # discriminators from inbound traffic. After restart its caches are
+            # cold, but /sethome already persisted the trusted parent identity.
+            # Prime from that parent (not the synthetic system user in the new
+            # thread) before thread creation and final delivery.
+            prime_routing_cache = getattr(adapter, "prime_routing_cache", None)
+            if callable(prime_routing_cache):
+                prime_routing_cache(
+                    MessageEvent(
+                        text="[session handoff routing context]",
+                        source=parent_source,
+                        internal=True,
+                    )
+                )
+
+        session_title = row.get("title") or handoff_session_id[:8]
 
         # Try to create a fresh thread on the destination so the handoff
         # has its own scrollback. Adapter returns None if threading isn't
@@ -13681,7 +13865,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # (no permission, topics-mode off, parent is a DM, etc.). When
         # None we fall through to using the home channel directly — the
         # synthetic turn still lands; just without thread isolation.
-        thread_name = f"Hermes — {cli_title}"
+        thread_name = f"Hermes — {session_title}"
         try:
             new_thread_id = await adapter.create_handoff_thread(
                 str(home.chat_id), thread_name,
@@ -13692,6 +13876,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 platform_name, exc, exc_info=True,
             )
             new_thread_id = None
+
+        # A webhook handoff is an exclusive thread-delivery mode. Falling
+        # back to the configured parent/home channel would both violate that
+        # contract and risk taking ownership of an unrelated live session.
+        # Interactive CLI/TUI handoffs keep their established fallback.
+        if move_source_key and not new_thread_id:
+            raise RuntimeError(
+                f"could not create a handoff thread on {platform_name}"
+            )
 
         # Use the new thread if the adapter created one; otherwise fall
         # back to whatever thread (if any) the home channel was configured
@@ -13708,15 +13901,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # source shape as the user's next real message; otherwise the synthetic
         # handoff turn binds a generic `thread` session key while real replies
         # arrive on a `dm` session key.
-        home_chat_id = str(home.chat_id)
         is_telegram_private_chat = (
             platform == Platform.TELEGRAM
             and looks_like_telegram_private_chat_id(home_chat_id)
         )
 
+        platform_cfg = self.config.platforms.get(platform)
+        extra = platform_cfg.extra if platform_cfg else {}
+        if move_source_key:
+            # Routed webhook sources must use the same global key settings as
+            # normal inbound gateway events. Interactive CLI/TUI handoffs keep
+            # their established platform-extra destination shape below.
+            group_sessions_per_user = getattr(
+                self.config, "group_sessions_per_user", True
+            )
+            thread_sessions_per_user = getattr(
+                self.config, "thread_sessions_per_user", False
+            )
+        else:
+            group_sessions_per_user = extra.get(
+                "group_sessions_per_user", True
+            )
+            thread_sessions_per_user = extra.get(
+                "thread_sessions_per_user", False
+            )
+
         if new_thread_id and not is_telegram_private_chat:
             dest_chat_type = "thread"
-            dest_user_id = "system:handoff"
+            if move_source_key and thread_sessions_per_user:
+                if not home.user_id:
+                    raise RuntimeError(
+                        f"home channel for {platform_name} has no authenticated "
+                        "user identity; run /sethome on the desired chat again"
+                    )
+                dest_user_id = str(home.user_id)
+            else:
+                dest_user_id = "system:handoff"
         else:
             # No thread — assume DM-style for the home channel. For Telegram
             # private-chat topics, use the real user id (same as chat_id) so
@@ -13750,38 +13970,77 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_id=dest_user_id,
             user_name="Handoff",
             thread_id=effective_thread_id,
+            scope_id=home.scope_id if move_source_key else None,
+            guild_id=destination_guild_id if move_source_key else None,
+            parent_chat_id=(
+                home_chat_id if move_source_key and effective_thread_id else None
+            ),
+            profile=handoff_source_profile,
         )
+        if move_source_key:
+            self._validate_webhook_handoff_destination_profile(
+                dest_source,
+                handoff_source_profile,
+            )
 
         # Compute the gateway's session_key for that destination using the
         # same rules its adapters use, so switch_session targets the right
         # entry. For thread destinations build_session_key keys without
         # user_id (thread_sessions_per_user defaults to False) — so the
         # next real user message in the thread shares this same session.
-        platform_cfg = self.config.platforms.get(platform)
-        extra = platform_cfg.extra if platform_cfg else {}
         session_key = build_session_key(
             dest_source,
-            group_sessions_per_user=extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
+            profile=(
+                dest_source.profile
+                if move_source_key
+                and getattr(self.config, "multiplex_profiles", False)
+                else None
+            ),
         )
 
-        # Make sure there's an entry in the session_store for this key. If
-        # the home channel has never been used, get_or_create_session
-        # creates one; switch_session then re-points it.
-        await self.async_session_store.get_or_create_session(dest_source)
-
-        # Re-bind the destination key to the CLI session_id. switch_session
-        # ends the prior session in SQLite and reopens the CLI session under
-        # the new key. The CLI's transcript becomes the active one for the
-        # gateway from this moment on.
-        switched = await self.async_session_store.switch_session(session_key, cli_session_id)
+        if move_source_key:
+            # Routed sources already own this exact session under a source key.
+            # Move the key with expected-owner CAS semantics so one live
+            # transcript cannot remain reachable through both source and
+            # destination. Shield the offloaded DB transaction from task
+            # cancellation; if cancellation arrives at this boundary, wait for
+            # the transaction result so cleanup targets the key that actually
+            # owns the session.
+            move_task = asyncio.create_task(
+                self.async_session_store.move_session_route(
+                    move_source_key,
+                    session_key,
+                    handoff_session_id,
+                    dest_source,
+                )
+            )
+            try:
+                switched = await asyncio.shield(move_task)
+            except asyncio.CancelledError:
+                switched = await move_task
+                if switched is not None:
+                    row["_handoff_active_session_key"] = session_key
+                raise
+            if switched is not None:
+                row["_handoff_active_session_key"] = session_key
+        else:
+            # Interactive handoffs have no gateway source route. Preserve the
+            # established behavior: create/reuse the destination entry and
+            # rebind it to the selected session.
+            await self.async_session_store.get_or_create_session(dest_source)
+            switched = await self.async_session_store.switch_session(
+                session_key, handoff_session_id
+            )
         if switched is None:
             raise RuntimeError(
-                f"could not switch session key {session_key} → {cli_session_id}"
+                f"could not route session key {session_key} → {handoff_session_id}"
             )
 
         # Evict any cached AIAgent for this session_key so the next dispatch
-        # rebuilds it against the CLI session_id (mirrors /resume / /branch).
+        # rebuilds it against the handed-off session ID (mirrors /resume and
+        # /branch for interactive producers).
         self._evict_cached_agent(session_key)
 
         # Cancel any in-flight running-agent state for the destination key
@@ -13789,8 +14048,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._release_running_agent_state(session_key)
 
         synthetic_text = (
-            f"[Session was just handed off from CLI (\"{cli_title}\") to this "
-            f"channel. The full prior conversation history is loaded above. "
+            f"[Session \"{session_title}\" was just handed off to this "
+            f"conversation. The full prior conversation history is loaded above. "
             f"Briefly confirm you're working here and summarize what we were "
             f"working on, so the user can continue from this device.]"
         )
@@ -13802,9 +14061,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         logger.info(
-            "Handoff: dispatching synthetic turn for CLI session %s → %s "
+            "Handoff: dispatching synthetic turn for session %s → %s "
             "(home=%s, thread=%s, session_key=%s)",
-            cli_session_id, platform_name, home.chat_id, effective_thread_id,
+            handoff_session_id, platform_name, home.chat_id, effective_thread_id,
             session_key,
         )
 
@@ -13813,6 +14072,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # lose synchronous error visibility; calling _handle_message inline
         # keeps the success/failure path observable for the watcher.
         response_text = await self._handle_message(synthetic_event)
+        if move_source_key and getattr(
+            synthetic_event, "_agent_run_failed", False
+        ):
+            raise RuntimeError("synthetic destination agent run failed")
         if not response_text:
             # Streaming may have already delivered the response inline.
             # Either way, agent ran without raising — count as success.
@@ -13839,6 +14102,91 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not getattr(result, "success", True):
             err = getattr(result, "error", "send returned success=False")
             raise RuntimeError(f"adapter.send failed: {err}")
+
+    def _handoff_source_profile(self, row: Dict[str, Any]) -> Optional[str]:
+        """Recover the trusted source profile for destination key namespacing."""
+        raw_origin = row.get("origin_json")
+        if raw_origin:
+            try:
+                origin = json.loads(raw_origin) if isinstance(raw_origin, str) else raw_origin
+                if isinstance(origin, dict) and origin.get("profile"):
+                    return str(origin["profile"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        profile = row.get("profile_name")
+        if profile:
+            return str(profile)
+        if getattr(self.config, "multiplex_profiles", False):
+            # Handoff routes are currently default-profile-only. Older pending
+            # rows and unprefixed /webhooks requests may not have persisted an
+            # explicit profile, but their effective namespace is still default.
+            return "default"
+        return None
+
+    async def _webhook_handoff_destination_guild_id(
+        self,
+        *,
+        platform: "Platform",
+        adapter: Any,
+        home: Any,
+    ) -> Optional[str]:
+        """Resolve guild provenance needed to check destination profile routes."""
+        if not getattr(self.config, "multiplex_profiles", False):
+            return str(home.scope_id) if home.scope_id else None
+
+        routes = getattr(self.config, "profile_routes", None) or []
+        guild_routes = [
+            route
+            for route in routes
+            if getattr(route, "enabled", True)
+            and getattr(route, "platform", None) == platform.value
+            and getattr(route, "guild_id", None)
+        ]
+        if not guild_routes:
+            return str(home.scope_id) if home.scope_id else None
+        if home.scope_id:
+            return str(home.scope_id)
+
+        get_chat_info = getattr(adapter, "get_chat_info", None)
+        if not callable(get_chat_info):
+            raise RuntimeError(
+                f"cannot verify {platform.value} home profile routing; "
+                "run /sethome on the desired chat again"
+            )
+        info = await get_chat_info(str(home.chat_id))
+        guild_id = info.get("guild_id") if isinstance(info, dict) else None
+        if not guild_id or (isinstance(info, dict) and info.get("error")):
+            raise RuntimeError(
+                f"cannot verify {platform.value} home profile routing; "
+                "run /sethome on the desired chat again"
+            )
+        return str(guild_id)
+
+    def _validate_webhook_handoff_destination_profile(
+        self,
+        source: "SessionSource",
+        handoff_source_profile: Optional[str],
+    ) -> None:
+        """Reject a destination that organic replies route to another profile."""
+        if not getattr(self.config, "multiplex_profiles", False):
+            return
+
+        from gateway.profile_routing import match_profile_route
+
+        matched = match_profile_route(
+            getattr(self.config, "profile_routes", None) or [],
+            platform=source.platform.value,
+            guild_id=source.guild_id,
+            chat_id=source.chat_id,
+            thread_id=source.thread_id,
+            parent_chat_id=source.parent_chat_id,
+        )
+        if matched and matched.profile != handoff_source_profile:
+            raise RuntimeError(
+                f"handoff destination matches named profile route "
+                f"'{matched.name}' ({matched.profile}); webhook handoff is "
+                "currently default-profile-only"
+            )
 
     async def _session_expiry_watcher(self, interval: int = 300):
         """Background task that finalizes expired sessions.
@@ -20382,6 +20730,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
             )
+            # The adapter lifecycle otherwise sees only whether the rendered
+            # response was delivered. Some autonomous adapters need to know
+            # whether the agent itself completed successfully: failed/partial
+            # results are normalized into helpful text below and can therefore
+            # look like successful transport delivery. Keep this internal and
+            # per-event; it is not serialized or accepted from inbound data.
+            event._agent_run_failed = bool(
+                agent_result.get("failed")
+                or agent_result.get("partial")
+                or agent_result.get("interrupted")
+                or agent_result.get("completed") is False
+            )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # Stop persistent typing indicator now that the agent is done.
@@ -20406,6 +20766,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
             if not self._is_session_run_current(_quick_key, run_generation):
+                event._agent_run_failed = True
                 logger.info(
                     "Discarding stale agent result for %s — generation %d is no longer current",
                     _quick_key or "?",
@@ -21006,6 +21367,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return response
             
         except Exception as e:
+            event._agent_run_failed = True
             # Stop typing indicator on error too, retaining Slack thread/workspace
             # routing so a failed turn cannot leave its status visible.
             try:

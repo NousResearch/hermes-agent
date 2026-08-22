@@ -12,6 +12,7 @@ flip pending → running, and finishes with ``complete_handoff`` or
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import time
 
 import pytest
@@ -75,6 +76,52 @@ class TestHandoffStateDB:
         state = db.get_handoff_state(sid)
         assert state["state"] == "completed"
         assert state["error"] is None
+
+    def test_request_handoff_once_never_reopens_terminal_row(self, db):
+        sid = "sess-request-once"
+        self._make_session(db, sid, source="webhook")
+
+        assert db.request_handoff_once(sid, "discord") is True
+        assert db.claim_handoff(sid) is True
+        assert db.complete_running_handoff(sid) is True
+
+        # A repeated delivery cannot reopen the completed handoff or replace
+        # its destination metadata.
+        assert db.request_handoff_once(sid, "telegram") is False
+        assert db.get_handoff_state(sid) == {
+            "state": "completed",
+            "platform": "discord",
+            "error": None,
+        }
+
+        # Interactive handoffs intentionally retain their existing explicit
+        # retry behavior after a terminal result.
+        assert db.request_handoff(sid, "telegram") is True
+        assert db.get_handoff_state(sid)["state"] == "pending"
+        assert db.get_handoff_state(sid)["platform"] == "telegram"
+
+    def test_concurrent_request_handoff_once_has_one_winner(self, db):
+        sid = "sess-request-once-race"
+        self._make_session(db, sid, source="webhook")
+        contenders = [SessionDB(db_path=db.db_path) for _ in range(8)]
+
+        try:
+            with ThreadPoolExecutor(max_workers=len(contenders)) as pool:
+                futures = [
+                    pool.submit(
+                        contender.request_handoff_once,
+                        sid,
+                        f"platform-{index}",
+                    )
+                    for index, contender in enumerate(contenders)
+                ]
+                results = [future.result() for future in futures]
+        finally:
+            for contender in contenders:
+                contender.close()
+
+        assert sum(results) == 1
+        assert db.get_handoff_state(sid)["state"] == "pending"
 
 
 

@@ -45,6 +45,36 @@ class TestHomeChannelRoundtrip:
         assert restored.user_id == "user-123"
         assert restored.scope_id == "guild-456"
 
+    def test_discord_env_same_home_preserves_authenticated_provenance(
+        self,
+        monkeypatch,
+    ):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=False,
+                    home_channel=HomeChannel(
+                        platform=Platform.DISCORD,
+                        chat_id="channel-123",
+                        name="Persisted home",
+                        user_id="user-123",
+                        scope_id="guild-456",
+                    ),
+                )
+            }
+        )
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "channel-123")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL_NAME", "Legacy mirror")
+
+        _apply_env_overrides(config)
+
+        restored = config.platforms[Platform.DISCORD].home_channel
+        assert restored is not None
+        assert restored.chat_id == "channel-123"
+        assert restored.name == "Legacy mirror"
+        assert restored.user_id == "user-123"
+        assert restored.scope_id == "guild-456"
+
 
 class TestPlatformConfigRoundtrip:
     def test_to_dict_from_dict(self):

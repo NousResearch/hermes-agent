@@ -13,6 +13,7 @@ Each route defines:
   - skills: optional list of skills to load for the agent
   - deliver: where to send the response (github_comment, telegram, etc.)
   - deliver_extra: additional delivery config (repo, pr_number, chat_id)
+  - handoff_to: trusted destination platform for exact-session handoff
   - deliver_only: if true, skip the agent — the rendered prompt IS the
     message that gets delivered.  Use for external push notifications
     (Supabase, monitoring alerts, inter-agent pings) where zero LLM cost
@@ -21,7 +22,8 @@ Each route defines:
 Security:
   - HMAC secret is required per route (validated at startup)
   - Rate limiting per route (fixed-window, configurable)
-  - Idempotency cache prevents duplicate agent runs on webhook retries
+  - Idempotency prevents duplicate agent runs on webhook retries; handoff
+    routes use a durable state.db claim that survives gateway restarts
   - Body size limits checked before reading payload
   - Generic HMAC supports a V2 signature (X-Webhook-Signature-V2) that
     binds a timestamp into the signed data for replay protection; the
@@ -35,6 +37,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import inspect
 import json
 import logging
 import re
@@ -57,6 +60,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
 )
 from gateway.platforms.webhook_filters import (
@@ -131,6 +135,11 @@ DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 _RATE_WINDOW_SECONDS = 60.0
+_SUPPORTED_HANDOFF_TARGETS = frozenset({"discord"})
+_HANDOFF_DELIVERY_STATE_PREFIX = "webhook_handoff_delivery:"
+_EVENT_HANDOFF_TARGET_KEY = "_webhook_handoff_to"
+_EVENT_HANDOFF_MARKER_KEY = "_webhook_handoff_delivery"
+_EVENT_HANDOFF_REQUESTED_KEY = "_webhook_handoff_requested"
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
 _LOOPBACK_HOSTS = frozenset({
@@ -213,6 +222,10 @@ class WebhookAdapter(BasePlatformAdapter):
         self._delivery_info: Dict[str, dict] = {}
         self._delivery_info_created: Dict[str, float] = {}
         self._delivery_info_order: Deque[tuple[float, str]] = deque()
+        # Handoff suppression must last for the whole active run even if a
+        # later POST ages its delivery-info snapshot out of the one-hour TTL.
+        # Entries are removed by on_processing_complete.
+        self._active_handoff_sessions: set[str] = set()
 
         # Reference to gateway runner for cross-platform delivery (set externally)
         self.gateway_runner = None
@@ -245,12 +258,57 @@ class WebhookAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _validate_handoff_target(
+        route_name: str, route: Dict[str, Any]
+    ) -> Optional[str]:
+        """Return a normalized trusted handoff target for one route.
+
+        ``handoff_to`` is control-plane configuration.  It is deliberately
+        read only from the route dict and never passed through webhook payload
+        interpolation.  The first supported destination is Discord; widening
+        this allowlist is an explicit platform-support change, not something a
+        request body can opt into.
+        """
+        if "handoff_to" not in route:
+            return None
+
+        raw_target = route.get("handoff_to")
+        if not isinstance(raw_target, str) or not raw_target.strip():
+            raise ValueError(
+                f"[webhook] Route '{route_name}' has invalid handoff_to; "
+                "expected 'discord'."
+            )
+        target = raw_target.strip().lower()
+        if target not in _SUPPORTED_HANDOFF_TARGETS:
+            raise ValueError(
+                f"[webhook] Route '{route_name}' has unsupported handoff_to "
+                f"target '{raw_target}'. Supported targets: discord."
+            )
+        if route.get("deliver_only"):
+            raise ValueError(
+                f"[webhook] Route '{route_name}' cannot combine handoff_to "
+                "with deliver_only=true."
+            )
+        configured_profile = route.get("profile", "default")
+        if (
+            not isinstance(configured_profile, str)
+            or configured_profile.strip() != "default"
+        ):
+            raise ValueError(
+                f"[webhook] Route '{route_name}' cannot use handoff_to from a "
+                "named multiplex profile. Configure the route on the default "
+                "profile."
+            )
+        return target
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Load agent-created subscriptions before validating
         self._reload_dynamic_routes()
 
         # Validate routes at startup — secret is required per route
         for name, route in self._routes.items():
+            self._validate_handoff_target(name, route)
             secret = route.get("secret", self._global_secret)
             if not secret:
                 raise ValueError(
@@ -373,6 +431,16 @@ class WebhookAdapter(BasePlatformAdapter):
             return SendResult(success=True)
 
         delivery = self._delivery_info.get(chat_id, {})
+        if chat_id in self._active_handoff_sessions or delivery.get("handoff_to"):
+            # Handoff owns delivery exclusively.  The durable watcher creates
+            # the destination thread and delivers there after atomically
+            # moving the exact session; status/final/error messages must not
+            # also leak through the legacy parent-channel delivery path.
+            logger.debug(
+                "[webhook] Suppressing legacy delivery for handoff session %s",
+                chat_id,
+            )
+            return SendResult(success=True)
         deliver_type = delivery.get("deliver", "log")
 
         if deliver_type == "log":
@@ -548,6 +616,11 @@ class WebhookAdapter(BasePlatformAdapter):
                         self._host,
                     )
                     continue
+                try:
+                    self._validate_handoff_target(k, v)
+                except ValueError as exc:
+                    logger.warning("[webhook] Dynamic route '%s' skipped: %s", k, exc)
+                    continue
                 new_dynamic[k] = v
             self._dynamic_routes = new_dynamic
             self._routes = {**self._dynamic_routes, **self._static_routes}
@@ -659,6 +732,14 @@ class WebhookAdapter(BasePlatformAdapter):
         if route_config.get("enabled", True) is False:
             return web.json_response(
                 {"error": f"Route disabled: {route_name}"}, status=403
+            )
+
+        try:
+            handoff_to = self._validate_handoff_target(route_name, route_config)
+        except ValueError as exc:
+            logger.error("[webhook] Invalid route configuration: %s", exc)
+            return web.json_response(
+                {"error": "Webhook route is misconfigured"}, status=500
             )
 
         # ── Auth-before-body ─────────────────────────────────────
@@ -838,16 +919,82 @@ class WebhookAdapter(BasePlatformAdapter):
         )
 
         # ── Idempotency ─────────────────────────────────────────
-        # Skip duplicate deliveries (webhook retries).
         now = time.time()
-        if not self._record_delivery_id(delivery_id, now):
-            logger.info(
-                "[webhook] Skipping duplicate delivery %s", delivery_id
+        handoff_marker = None
+        if handoff_to:
+            # Claim the delivery in state_meta before acknowledging or starting
+            # the agent. Unlike live routing metadata, this tombstone survives
+            # source removal, destination reset/pruning, and compression to a
+            # child session. The INSERT-if-absent is the concurrency boundary:
+            # only its winner may start an agent run for this provider ID.
+            handoff_marker = self._handoff_delivery_marker(
+                profile=profile,
+                route_name=route_name,
+                delivery_id=delivery_id,
             )
-            return web.json_response(
-                {"status": "duplicate", "delivery_id": delivery_id},
-                status=200,
+            delivery_state_key = self._handoff_delivery_state_key(handoff_marker)
+            accepted_state = self._handoff_delivery_state_value(
+                handoff_marker,
+                handoff_to,
+                session_id=None,
             )
+            try:
+                claimed = await self._session_db_call(
+                    "set_meta_if_absent",
+                    delivery_state_key,
+                    accepted_state,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[webhook] Durable handoff delivery claim failed for %s: %s",
+                    delivery_id,
+                    exc,
+                )
+                return web.json_response(
+                    {"error": "Webhook handoff state unavailable"}, status=503
+                )
+
+            if not claimed:
+                try:
+                    stored_state = await self._session_db_call(
+                        "get_meta", delivery_state_key
+                    )
+                    delivery_state = self._parse_handoff_delivery_state(
+                        stored_state,
+                        marker=handoff_marker,
+                        handoff_to=handoff_to,
+                    )
+                    bound_session_id = delivery_state.get("session_id")
+                    if bound_session_id:
+                        await self._recover_unrequested_handoff(
+                            str(bound_session_id), handoff_to
+                        )
+                except Exception as exc:
+                    logger.error(
+                        "[webhook] Durable duplicate recovery failed for %s: %s",
+                        delivery_id,
+                        exc,
+                    )
+                    return web.json_response(
+                        {"error": "Webhook handoff state unavailable"}, status=503
+                    )
+                logger.info(
+                    "[webhook] Skipping durable duplicate delivery %s", delivery_id
+                )
+                return web.json_response(
+                    {"status": "duplicate", "delivery_id": delivery_id},
+                    status=200,
+                )
+        else:
+            # Legacy routes retain their process-local one-hour cache exactly.
+            if not self._record_delivery_id(delivery_id, now):
+                logger.info(
+                    "[webhook] Skipping duplicate delivery %s", delivery_id
+                )
+                return web.json_response(
+                    {"status": "duplicate", "delivery_id": delivery_id},
+                    status=200,
+                )
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we
@@ -920,6 +1067,10 @@ class WebhookAdapter(BasePlatformAdapter):
                 route_config.get("deliver_extra", {}), payload
             ),
         }
+        if handoff_to:
+            deliver_config["handoff_to"] = handoff_to
+            deliver_config["handoff_marker"] = handoff_marker
+            self._active_handoff_sessions.add(session_chat_id)
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
@@ -935,6 +1086,16 @@ class WebhookAdapter(BasePlatformAdapter):
         )
         if profile and isinstance(profile, str):
             source.profile = profile
+        elif handoff_to and getattr(
+            getattr(self.gateway_runner, "config", None),
+            "multiplex_profiles",
+            False,
+        ):
+            # Both the unprefixed webhook URL and /p/default authorize the
+            # same default-profile route. Stamp that effective profile so
+            # session keys and the durable delivery identity cannot diverge
+            # based on which equivalent URL the provider retried.
+            source.profile = "default"
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,
@@ -942,6 +1103,9 @@ class WebhookAdapter(BasePlatformAdapter):
             raw_message=payload,
             message_id=delivery_id,
         )
+        if handoff_to:
+            event.metadata[_EVENT_HANDOFF_TARGET_KEY] = handoff_to
+            event.metadata[_EVENT_HANDOFF_MARKER_KEY] = handoff_marker
 
         logger.info(
             "[webhook] %s event=%s route=%s prompt_len=%d delivery=%s",
@@ -974,16 +1138,13 @@ class WebhookAdapter(BasePlatformAdapter):
     async def on_processing_complete(
         self, event: "MessageEvent", outcome: Any
     ) -> None:
-        """Close the per-delivery webhook session once its run finishes.
+        """Close a one-shot route or durably hand its exact session onward.
 
-        A webhook delivery is one-shot: the ``delivery_id`` is baked into the
-        session key, so the session will never receive a second turn.  Mirror
-        the cron completion path (``cron/scheduler.py`` →
-        ``end_session(..., "cron_complete")``) by marking the session ended
-        when the run completes.  Without this, webhook sessions keep
-        ``ended_at`` NULL forever; ``SessionDB.prune_sessions`` only reaps
-        rows with ``ended_at`` set, so unclosed webhook sessions accumulate
-        unbounded and drive state.db bloat (the ghost-session leak).
+        Legacy webhook deliveries are one-shot: the ``delivery_id`` is baked
+        into the session key, so their rows are ended after the run.  A trusted
+        ``handoff_to`` route instead writes its durable delivery marker and
+        requests the existing handoff watcher, leaving the row open so that
+        watcher can move the exact transcript to the destination thread.
 
         This hook is the one seam that runs at the TRUE end of the run:
         ``BasePlatformAdapter._process_message_background`` fires it after the
@@ -993,7 +1154,333 @@ class WebhookAdapter(BasePlatformAdapter):
         ``end_session()`` is first-reason-wins and no-ops on an already-ended
         row, so this never clobbers a ``compression``/``agent_close`` reason.
         """
-        await self._end_webhook_session(event, event.source.chat_id)
+        handoff_to = event.metadata.get(_EVENT_HANDOFF_TARGET_KEY)
+        if not handoff_to:
+            delivery = self._delivery_info.get(event.source.chat_id, {})
+            handoff_to = delivery.get("handoff_to")
+
+        if not handoff_to:
+            await self._end_webhook_session(event, event.source.chat_id)
+            return
+
+        # Base invokes this hook after every response/error send attempt, so
+        # no more webhook-adapter delivery can occur for this run.
+        self._active_handoff_sessions.discard(event.source.chat_id)
+
+        agent_run_failure_marker = getattr(event, "_agent_run_failed", None)
+        agent_run_succeeded = agent_run_failure_marker is False
+        # Base derives ProcessingOutcome from text-delivery accounting. A
+        # successful agent turn whose truthy response contains only media can
+        # therefore arrive as FAILURE because attachment sends do not call
+        # _record_delivery(). The runner's explicit False stamp is authoritative
+        # for that narrow false-negative; an absent/true stamp remains a genuine
+        # failure, and cancellation is never promoted to success.
+        media_only_agent_success = (
+            outcome is ProcessingOutcome.FAILURE
+            and agent_run_succeeded
+        )
+        if (
+            outcome is ProcessingOutcome.SUCCESS and agent_run_succeeded
+        ) or media_only_agent_success:
+            # AsyncSessionDB writes run off-loop and cannot be cancelled once
+            # SQLite has started them. Keep this task alive through a caller
+            # cancellation and reconcile its durable result before Base invokes
+            # this hook a second time with CANCELLED. A persisted pending row
+            # must remain restart-recoverable, never be reaped by that second
+            # callback while its request commit is still in flight.
+            request_task = asyncio.create_task(
+                self._request_webhook_handoff(event, str(handoff_to))
+            )
+            try:
+                await asyncio.shield(request_task)
+            except asyncio.CancelledError:
+                await request_task
+                raise
+            return
+
+        if event.metadata.get(_EVENT_HANDOFF_REQUESTED_KEY):
+            # Cancellation after a successful durable request is a shutdown
+            # boundary, not a failed webhook run. Leave the pending row for the
+            # watcher (or the next gateway process) to claim exactly once.
+            return
+
+        reason = (
+            "webhook_handoff_cancelled"
+            if outcome is ProcessingOutcome.CANCELLED
+            else "webhook_handoff_failed"
+        )
+        await self._finalize_webhook_handoff(event, reason)
+
+    @staticmethod
+    def _handoff_delivery_marker(
+        *, profile: Optional[str], route_name: str, delivery_id: str
+    ) -> str:
+        """Stable, JSON-safe identity for durable webhook retry detection."""
+        effective_profile = str(profile or "default").strip() or "default"
+        return json.dumps(
+            [effective_profile, str(route_name), str(delivery_id)],
+            separators=(",", ":"),
+        )
+
+    @staticmethod
+    def _handoff_delivery_state_key(marker: str) -> str:
+        digest = hashlib.sha256(marker.encode("utf-8")).hexdigest()
+        return f"{_HANDOFF_DELIVERY_STATE_PREFIX}{digest}"
+
+    @staticmethod
+    def _handoff_delivery_state_value(
+        marker: str,
+        handoff_to: str,
+        *,
+        session_id: Optional[str],
+    ) -> str:
+        return json.dumps(
+            {
+                "marker": marker,
+                "platform": handoff_to,
+                "session_id": session_id,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @staticmethod
+    def _parse_handoff_delivery_state(
+        raw_state: Any,
+        *,
+        marker: str,
+        handoff_to: str,
+    ) -> Dict[str, Any]:
+        try:
+            state = json.loads(raw_state) if isinstance(raw_state, str) else None
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("invalid durable webhook delivery state") from exc
+        if not isinstance(state, dict):
+            raise RuntimeError("durable webhook delivery state is missing")
+        if state.get("marker") != marker or state.get("platform") != handoff_to:
+            raise RuntimeError(
+                "durable webhook delivery belongs to a different route or platform"
+            )
+        session_id = state.get("session_id")
+        if session_id is not None and not isinstance(session_id, str):
+            raise RuntimeError("durable webhook delivery has an invalid session id")
+        return state
+
+    async def _session_store_call(
+        self, method_name: str, *args: Any, **kwargs: Any
+    ) -> Any:
+        """Call a SessionStore method through the runner's async facade."""
+        runner = self.gateway_runner
+        if runner is None:
+            raise RuntimeError("gateway runner is unavailable")
+
+        facade = getattr(runner, "async_session_store", None)
+        if facade is not None:
+            method = getattr(facade, method_name)
+            result = method(*args, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+
+        store = getattr(runner, "session_store", None)
+        if store is None:
+            raise RuntimeError("session store is unavailable")
+        method = getattr(store, method_name)
+        return await asyncio.to_thread(method, *args, **kwargs)
+
+    async def _resolve_webhook_session(
+        self, event: "MessageEvent"
+    ) -> tuple[str, str]:
+        """Resolve the exact routing key and persisted ID for this delivery."""
+        runner = self.gateway_runner
+        if runner is None:
+            raise RuntimeError("gateway runner is unavailable")
+        key_fn = getattr(runner, "_session_key_for_source", None)
+        if not callable(key_fn):
+            raise RuntimeError("gateway session-key resolver is unavailable")
+        session_key = key_fn(event.source)
+        session_id = await self._session_store_call("peek_session_id", session_key)
+        if not session_id:
+            raise RuntimeError(
+                f"no persisted session found for webhook route {session_key}"
+            )
+        return session_key, str(session_id)
+
+    async def _session_db_call(self, method_name: str, *args: Any) -> Any:
+        runner = self.gateway_runner
+        if runner is None:
+            raise RuntimeError("gateway runner is unavailable")
+        session_db = getattr(runner, "_session_db", None)
+        if session_db is None:
+            raise RuntimeError("session database is unavailable")
+        method = getattr(session_db, method_name)
+        result = method(*args)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    async def _recover_unrequested_handoff(
+        self, session_id: str, handoff_to: str
+    ) -> None:
+        """Close the marker-before-request crash gap for a provider retry."""
+        if not session_id:
+            raise RuntimeError("durable duplicate has no session id")
+
+        session_row = await self._session_db_call("get_session", session_id)
+        if not isinstance(session_row, dict) or session_row.get("ended_at") is not None:
+            # The original delivery was finalized or later pruned. Its durable
+            # tombstone still suppresses provider retries, but there is no live
+            # session that should be handed off again.
+            return
+
+        terminal_or_inflight = {"pending", "running", "completed", "failed"}
+        state = await self._session_db_call("get_handoff_state", session_id)
+        state_value = state.get("state") if isinstance(state, dict) else None
+        if state_value in terminal_or_inflight:
+            if state.get("platform") == handoff_to:
+                return
+            raise RuntimeError(
+                "marked session has a handoff for a different platform"
+            )
+        if state_value is not None:
+            raise RuntimeError(f"unknown handoff state '{state_value}'")
+
+        if await self._session_db_call(
+            "request_handoff_once", session_id, handoff_to
+        ):
+            logger.info(
+                "[webhook] Recovered pending handoff for marked session %s",
+                session_id,
+            )
+            return
+
+        # Another gateway may have won the NULL -> pending CAS between our
+        # read and request.  Re-read before failing so that race is idempotent.
+        state = await self._session_db_call("get_handoff_state", session_id)
+        state_value = state.get("state") if isinstance(state, dict) else None
+        if not (
+            isinstance(state, dict)
+            and state_value in terminal_or_inflight
+            and state.get("platform") == handoff_to
+        ):
+            raise RuntimeError("marked session has no durable handoff request")
+
+    async def _request_webhook_handoff(
+        self, event: "MessageEvent", handoff_to: str
+    ) -> None:
+        """Durably request one handoff for the exact completed session."""
+        if event.metadata.get(_EVENT_HANDOFF_REQUESTED_KEY):
+            return
+
+        session_key: Optional[str] = None
+        session_id: Optional[str] = None
+        try:
+            if handoff_to not in _SUPPORTED_HANDOFF_TARGETS:
+                raise RuntimeError(f"unsupported handoff target '{handoff_to}'")
+            session_key, session_id = await self._resolve_webhook_session(event)
+            marker = event.metadata.get(_EVENT_HANDOFF_MARKER_KEY)
+            if not marker:
+                delivery = self._delivery_info.get(event.source.chat_id, {})
+                marker = delivery.get("handoff_marker")
+            if not marker:
+                raise RuntimeError("webhook handoff delivery marker is missing")
+            delivery_state_key = self._handoff_delivery_state_key(str(marker))
+            accepted_state = self._handoff_delivery_state_value(
+                str(marker), handoff_to, session_id=None
+            )
+            bound_state = self._handoff_delivery_state_value(
+                str(marker), handoff_to, session_id=session_id
+            )
+            bound = await self._session_db_call(
+                "compare_and_set_meta",
+                delivery_state_key,
+                accepted_state,
+                bound_state,
+            )
+            if not bound:
+                stored_state = await self._session_db_call(
+                    "get_meta", delivery_state_key
+                )
+                self._parse_handoff_delivery_state(
+                    stored_state,
+                    marker=str(marker),
+                    handoff_to=handoff_to,
+                )
+                if stored_state != bound_state:
+                    raise RuntimeError(
+                        "durable webhook delivery is bound to a different session"
+                    )
+
+            requested = await self._session_db_call(
+                "request_handoff_once", session_id, handoff_to
+            )
+            if requested:
+                event.metadata[_EVENT_HANDOFF_REQUESTED_KEY] = True
+                logger.info(
+                    "[webhook] Requested durable handoff for session %s to %s",
+                    session_id,
+                    handoff_to,
+                )
+                return
+
+            # A repeated completion callback or an ambiguous DB result is safe
+            # only when the exact same request is already durable.  Never reset
+            # a completed/failed row here; CLI/TUI retain their existing retry
+            # semantics through request_handoff().
+            state = await self._session_db_call("get_handoff_state", session_id)
+            if (
+                isinstance(state, dict)
+                and state.get("platform") == handoff_to
+                and state.get("state") in {"pending", "running", "completed"}
+            ):
+                event.metadata[_EVENT_HANDOFF_REQUESTED_KEY] = True
+                return
+            raise RuntimeError("durable webhook handoff request was rejected")
+        except Exception as exc:
+            logger.error(
+                "[webhook] Failed to request handoff for %s: %s",
+                event.source.chat_id,
+                exc,
+            )
+            await self._finalize_webhook_handoff(
+                event,
+                "webhook_handoff_request_failed",
+                session_key=session_key,
+                session_id=session_id,
+            )
+
+    async def _finalize_webhook_handoff(
+        self,
+        event: "MessageEvent",
+        reason: str,
+        *,
+        session_key: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> None:
+        """Atomically unlink and end a failed handoff's exact session."""
+        try:
+            if not session_key or not session_id:
+                session_key, session_id = await self._resolve_webhook_session(event)
+
+            finalized = await self._session_store_call(
+                "remove_session_route_and_end",
+                session_key,
+                session_id,
+                reason,
+            )
+            if not finalized:
+                raise RuntimeError(
+                    f"could not atomically finalize webhook session {session_id}"
+                )
+            logger.warning(
+                "[webhook] Finalized handoff session %s (%s)", session_id, reason
+            )
+        except Exception as exc:
+            logger.error(
+                "[webhook] Failed to finalize handoff session for %s: %s",
+                event.source.chat_id,
+                exc,
+            )
 
     async def _end_webhook_session(
         self, event: "MessageEvent", session_chat_id: str

@@ -1699,6 +1699,59 @@ class SessionStore:
                 ]:
                     del fast_persisted[key]
 
+    def _persist_primary_routing_cas_locked(
+        self,
+        operation,
+        data: Dict[str, Any],
+    ) -> bool:
+        """Run a targeted state.db routing CAS before publishing live state.
+
+        ``operation`` must return ``True`` only when its durable owner
+        predicates succeeded.  The local save lock/generation bookkeeping is
+        shared with full and single-entry writers so an older delayed snapshot
+        from this SessionStore cannot overwrite the committed CAS afterward.
+
+        Caller holds ``_lock``.
+        """
+        generation = self._next_routing_generation_locked()
+        save_lock = getattr(self, "_save_lock", None)
+        if save_lock is None:
+            save_lock = threading.Lock()
+            self._save_lock = save_lock
+
+        with save_lock:
+            try:
+                committed = bool(operation())
+            except Exception as exc:
+                raise RuntimeError(
+                    "state.db routing transition failed"
+                ) from exc
+            if not committed:
+                return False
+
+            # state.db is authoritative. Keep the optional downgrade mirror
+            # current without turning a committed CAS into a reported failure.
+            if getattr(self, "_write_sessions_json", True):
+                try:
+                    self._save_sessions_json(data)
+                except Exception as exc:
+                    logger.warning(
+                        "gateway.session: sessions.json mirror save failed "
+                        "after state.db routing transition: %s",
+                        exc,
+                    )
+
+            self._persisted_routing_generation = generation
+            fast_persisted = getattr(self, "_fast_persisted_entries", None)
+            if fast_persisted:
+                for key in [
+                    key
+                    for key, (revision, _) in fast_persisted.items()
+                    if revision <= generation
+                ]:
+                    del fast_persisted[key]
+            return True
+
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index."""
         import tempfile
@@ -3467,6 +3520,272 @@ class SessionStore:
             # restart-resume freshness gate (#85709).
             self._save()
             return entry
+
+    def move_session_route(
+        self,
+        source_session_key: str,
+        destination_session_key: str,
+        expected_session_id: str,
+        destination_source: SessionSource,
+    ) -> Optional[SessionEntry]:
+        """CAS-move one live route to a destination without changing its session.
+
+        The source must still own ``expected_session_id``.  A missing
+        destination is created directly from ``destination_source`` so the move
+        never creates a throwaway session.  A destination owned by any other
+        session fails closed.  When both keys temporarily point at the expected
+        session, the source is removed and the destination is normalized.
+
+        The sole no-write idempotent success is the fully-moved state: source
+        absent and destination already owning the exact expected session.
+        Structural persistence commits to state.db before the live mapping is
+        published, so a primary-store failure leaves the in-memory routes
+        unchanged and cannot split ownership across state.db/sessions.json.
+        """
+        if (
+            not source_session_key
+            or not destination_session_key
+            or source_session_key == destination_session_key
+            or not expected_session_id
+            or not isinstance(destination_source, SessionSource)
+        ):
+            return None
+
+        moved_entry: Optional[SessionEntry] = None
+        with self._lock:
+            self._ensure_loaded_locked()
+            source_entry = self._entries.get(source_session_key)
+            destination_entry = self._entries.get(destination_session_key)
+
+            if source_entry is None:
+                if (
+                    destination_entry is None
+                    or destination_entry.session_id != expected_session_id
+                ):
+                    return None
+                moved_entry = destination_entry
+            else:
+                if source_entry.session_id != expected_session_id:
+                    return None
+                if (
+                    destination_entry is not None
+                    and destination_entry.session_id != expected_session_id
+                ):
+                    return None
+
+                # The session's counters, reset state, model override, and
+                # durable bookkeeping travel with it.  If an exact destination
+                # already exists, prefer its potentially-newer bookkeeping but
+                # merge source-only markers (such as webhook delivery dedupe).
+                base_entry = destination_entry or source_entry
+                merged_metadata = dict(source_entry.metadata)
+                if destination_entry is not None:
+                    merged_metadata.update(destination_entry.metadata)
+                moved_entry = replace(
+                    base_entry,
+                    session_key=destination_session_key,
+                    session_id=expected_session_id,
+                    origin=destination_source,
+                    display_name=destination_source.chat_name,
+                    platform=destination_source.platform,
+                    chat_type=destination_source.chat_type,
+                    metadata=merged_metadata,
+                )
+
+            candidate = {
+                key: entry.to_dict()
+                for key, entry in self._entries.items()
+                if key not in (source_session_key, destination_session_key)
+            }
+            candidate[destination_session_key] = moved_entry.to_dict()
+
+            db = getattr(self, "_db", None)
+            mover = (
+                getattr(db, "move_gateway_routing_entry_if_owned", None)
+                if db is not None
+                else None
+            )
+            if not callable(mover):
+                raise RuntimeError("state.db routing store is unavailable")
+            committed = self._persist_primary_routing_cas_locked(
+                lambda: mover(
+                    source_session_key,
+                    destination_session_key,
+                    expected_session_id,
+                    json.dumps(moved_entry.to_dict()),
+                    scope=self._routing_scope(),
+                ),
+                candidate,
+            )
+            if not committed:
+                return None
+            self._entries.pop(source_session_key, None)
+            self._entries[destination_session_key] = moved_entry
+
+        # These operations are idempotent and intentionally run for the
+        # already-moved case too, repairing a crash after the routing commit but
+        # before the session row was reopened/rebound.
+        db = getattr(self, "_db", None)
+        if db is not None:
+            try:
+                db.reopen_session(expected_session_id)
+            except Exception as exc:
+                # The routing commit already succeeded, so raising here would
+                # make a cleanup caller incorrectly target the now-absent
+                # source key.  Return the moved entry (as switch_session does)
+                # so any later handoff failure cleans up the destination owner.
+                logger.warning(
+                    "Session DB reopen failed after route move for %s: %s",
+                    expected_session_id,
+                    exc,
+                )
+            self._record_gateway_session_peer(
+                expected_session_id,
+                destination_session_key,
+                destination_source,
+                display_name=moved_entry.display_name if moved_entry else None,
+                include_compression_ancestors=True,
+            )
+
+        return moved_entry
+
+    def remove_session_route(
+        self,
+        session_key: str,
+        expected_session_id: str,
+    ) -> bool:
+        """Durably remove a route only while its expected owner still holds it.
+
+        Missing is an idempotent success.  A route rebound to another session
+        returns ``False`` and is never removed.  As with ``move_session_route``,
+        state.db is the required commit point and the live mapping changes only
+        after that transaction succeeds.
+        """
+        if not session_key or not expected_session_id:
+            return False
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is not None and entry.session_id != expected_session_id:
+                return False
+
+            candidate = {
+                key: current.to_dict()
+                for key, current in self._entries.items()
+                if key != session_key
+            }
+            db = getattr(self, "_db", None)
+            deleter = (
+                getattr(db, "delete_gateway_routing_entry_if_owned", None)
+                if db is not None
+                else None
+            )
+            if not callable(deleter):
+                raise RuntimeError("state.db routing store is unavailable")
+            committed = self._persist_primary_routing_cas_locked(
+                lambda: deleter(
+                    session_key,
+                    expected_session_id,
+                    scope=self._routing_scope(),
+                ),
+                candidate,
+            )
+            if not committed:
+                return False
+            self._entries.pop(session_key, None)
+            return True
+
+    def remove_session_route_and_end(
+        self,
+        session_key: str,
+        expected_session_id: str,
+        end_reason: str,
+        *,
+        handoff_error: Optional[str] = None,
+    ) -> bool:
+        """Atomically remove an owned route and finalize its session lineage.
+
+        The state.db transaction also ends ``expected_session_id`` and, when
+        the current route owner is its verified compression descendant, ends
+        that live descendant. An unrelated newer owner is retained while the
+        old expected session is successfully finalized. Returns ``True`` for
+        either committed outcome and ``False`` only when the expected-state
+        gate rejected cleanup without making changes. The store pops its live
+        route only when state.db reports that the route was actually removed.
+        """
+        if not session_key or not expected_session_id or not end_reason:
+            return False
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            candidate = {
+                key: current.to_dict()
+                for key, current in self._entries.items()
+                if key != session_key
+            }
+            db = getattr(self, "_db", None)
+            finalizer = (
+                getattr(
+                    db,
+                    "delete_gateway_routing_entry_and_end_session_if_owned",
+                    None,
+                )
+                if db is not None
+                else None
+            )
+            if not callable(finalizer):
+                raise RuntimeError("state.db routing store is unavailable")
+            save_lock = getattr(self, "_save_lock", None)
+            if save_lock is None:
+                save_lock = threading.Lock()
+                self._save_lock = save_lock
+            with save_lock:
+                try:
+                    route_removed = finalizer(
+                        session_key,
+                        expected_session_id,
+                        end_reason,
+                        scope=self._routing_scope(),
+                        handoff_error=handoff_error,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(
+                        "state.db routing transition failed"
+                    ) from exc
+
+                if route_removed is None:
+                    return False
+                if route_removed is False:
+                    # Exact-session cleanup committed, but an unrelated newer
+                    # route was deliberately retained. No routing mirror or
+                    # in-memory entry changes are needed.
+                    return True
+
+                generation = self._next_routing_generation_locked()
+                if getattr(self, "_write_sessions_json", True):
+                    try:
+                        self._save_sessions_json(candidate)
+                    except Exception as exc:
+                        logger.warning(
+                            "gateway.session: sessions.json mirror save failed "
+                            "after state.db routing transition: %s",
+                            exc,
+                        )
+                self._persisted_routing_generation = generation
+                fast_persisted = getattr(
+                    self, "_fast_persisted_entries", None
+                )
+                if fast_persisted:
+                    for key in [
+                        key
+                        for key, (revision, _) in fast_persisted.items()
+                        if revision <= generation
+                    ]:
+                        del fast_persisted[key]
+
+            self._entries.pop(session_key, None)
+            return True
 
     def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
         """Switch a session key to point at an existing session ID.

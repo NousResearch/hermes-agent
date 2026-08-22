@@ -5478,6 +5478,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     # ── Gateway routing index (replaces sessions.json, #9006 follow-up) ────
 
+    @staticmethod
+    def _decode_gateway_routing_entry(
+        entry_json: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Return a validated routing payload, or ``None`` for corrupt JSON."""
+        if not entry_json:
+            return None
+        try:
+            data = json.loads(entry_json)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        session_id = data.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            return None
+        return data
+
     def save_gateway_routing_entry(
         self, session_key: str, entry_json: str, *, scope: str = ""
     ) -> None:
@@ -5528,6 +5546,257 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
 
         self._execute_write(_do)
+
+    def move_gateway_routing_entry_if_owned(
+        self,
+        source_session_key: str,
+        destination_session_key: str,
+        expected_session_id: str,
+        destination_entry_json: str,
+        *,
+        scope: str = "",
+    ) -> bool:
+        """Atomically move one durable route while its exact owner is current.
+
+        Only the source and destination rows are touched. The source must own
+        ``expected_session_id`` and the destination must be absent or an exact
+        alias of that same session. A missing source is an idempotent success
+        only when the destination already has the expected owner. Because the
+        checks and writes run under one ``BEGIN IMMEDIATE`` transaction, a
+        stale SessionStore cannot overwrite a newer owner observed in SQLite.
+        """
+        if (
+            not source_session_key
+            or not destination_session_key
+            or source_session_key == destination_session_key
+            or not expected_session_id
+            or not destination_entry_json
+        ):
+            return False
+
+        destination_payload = self._decode_gateway_routing_entry(
+            destination_entry_json
+        )
+        if (
+            destination_payload is None
+            or destination_payload.get("session_id") != expected_session_id
+            or destination_payload.get("session_key") != destination_session_key
+        ):
+            return False
+
+        def _do(conn):
+            source_row = conn.execute(
+                "SELECT entry_json FROM gateway_routing "
+                "WHERE scope = ? AND session_key = ?",
+                (scope, source_session_key),
+            ).fetchone()
+            destination_row = conn.execute(
+                "SELECT entry_json FROM gateway_routing "
+                "WHERE scope = ? AND session_key = ?",
+                (scope, destination_session_key),
+            ).fetchone()
+
+            source_payload = self._decode_gateway_routing_entry(
+                source_row["entry_json"] if source_row is not None else None
+            )
+            destination_current = self._decode_gateway_routing_entry(
+                destination_row["entry_json"]
+                if destination_row is not None
+                else None
+            )
+
+            if source_row is None:
+                return (
+                    destination_current is not None
+                    and destination_current.get("session_id")
+                    == expected_session_id
+                )
+            if (
+                source_payload is None
+                or source_payload.get("session_id") != expected_session_id
+            ):
+                return False
+            if destination_row is not None and (
+                destination_current is None
+                or destination_current.get("session_id") != expected_session_id
+            ):
+                return False
+
+            conn.execute(
+                "DELETE FROM gateway_routing "
+                "WHERE scope = ? AND session_key = ?",
+                (scope, source_session_key),
+            )
+            conn.execute(
+                "INSERT INTO gateway_routing "
+                "(scope, session_key, entry_json, updated_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(scope, session_key) DO UPDATE SET "
+                "entry_json = excluded.entry_json, "
+                "updated_at = excluded.updated_at",
+                (
+                    scope,
+                    destination_session_key,
+                    destination_entry_json,
+                    time.time(),
+                ),
+            )
+            return True
+
+        return self._execute_write(_do)
+
+    def delete_gateway_routing_entry_if_owned(
+        self,
+        session_key: str,
+        expected_session_id: str,
+        *,
+        scope: str = "",
+    ) -> bool:
+        """Delete one durable route only while its exact owner is current.
+
+        Missing is an idempotent success. Corrupt rows and rows owned by a
+        different session fail closed and remain untouched.
+        """
+        if not session_key or not expected_session_id:
+            return False
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT entry_json FROM gateway_routing "
+                "WHERE scope = ? AND session_key = ?",
+                (scope, session_key),
+            ).fetchone()
+            if row is None:
+                return True
+            payload = self._decode_gateway_routing_entry(row["entry_json"])
+            if payload is None or payload.get("session_id") != expected_session_id:
+                return False
+            cursor = conn.execute(
+                "DELETE FROM gateway_routing "
+                "WHERE scope = ? AND session_key = ?",
+                (scope, session_key),
+            )
+            return cursor.rowcount == 1
+
+        return self._execute_write(_do)
+
+    def delete_gateway_routing_entry_and_end_session_if_owned(
+        self,
+        session_key: str,
+        expected_session_id: str,
+        end_reason: str,
+        *,
+        scope: str = "",
+        handoff_error: Optional[str] = None,
+    ) -> Optional[bool]:
+        """Atomically finalize a session and conditionally remove its route.
+
+        The exact expected session is always ended when the transaction is
+        eligible. If the current route owner is that session, or a verified
+        compression descendant of it, the route is removed and the live
+        descendant is ended too. An unrelated rebound is retained while the
+        old expected session is still finalized. Returns ``True`` when the
+        route was removed/already missing, ``False`` when an unrelated route
+        was retained but exact-session cleanup committed, and ``None`` when
+        the transaction was ineligible and made no changes.
+
+        When ``handoff_error`` is supplied, ``expected_session_id`` must still
+        have ``handoff_state='running'`` and its failed/error transition lands
+        in this same transaction. This expected-state gate prevents late
+        cleanup from ending a handoff another watcher already completed.
+        """
+        if not session_key or not expected_session_id or not end_reason:
+            return None
+        now = time.time()
+
+        def _do(conn):
+            expected_row = conn.execute(
+                "SELECT ended_at, end_reason, handoff_state "
+                "FROM sessions WHERE id = ?",
+                (expected_session_id,),
+            ).fetchone()
+            if expected_row is None:
+                return None
+
+            route_row = conn.execute(
+                "SELECT entry_json FROM gateway_routing "
+                "WHERE scope = ? AND session_key = ?",
+                (scope, session_key),
+            ).fetchone()
+
+            if handoff_error is not None and (
+                expected_row["handoff_state"] != "running"
+            ):
+                # A fully committed prior cleanup is the only idempotent
+                # terminal success. Never touch a route after a completed or
+                # otherwise-changed handoff state.
+                if (
+                    route_row is None
+                    and expected_row["handoff_state"] == "failed"
+                    and expected_row["ended_at"] is not None
+                ):
+                    return True
+                return None
+
+            route_owner: Optional[str] = None
+            if route_row is not None:
+                route_payload = self._decode_gateway_routing_entry(
+                    route_row["entry_json"]
+                )
+                if route_payload is not None:
+                    route_owner = route_payload.get("session_id")
+
+            removable_owner: Optional[str] = None
+            if route_owner == expected_session_id:
+                removable_owner = expected_session_id
+            elif route_owner and self._is_compression_ancestor(
+                conn,
+                ancestor_id=expected_session_id,
+                descendant_id=route_owner,
+            ):
+                removable_owner = route_owner
+
+            route_is_safe = route_row is None or removable_owner is not None
+            if removable_owner is not None:
+                conn.execute(
+                    "DELETE FROM gateway_routing "
+                    "WHERE scope = ? AND session_key = ?",
+                    (scope, session_key),
+                )
+
+            # Preserve end_session's first-reason-wins contract. The expected
+            # ancestor may already be compression-ended; the verified live tip
+            # still needs an explicit terminal boundary after its route drops.
+            conn.execute(
+                "UPDATE sessions SET ended_at = ?, end_reason = ? "
+                "WHERE id = ? AND ended_at IS NULL",
+                (now, end_reason, expected_session_id),
+            )
+            if (
+                removable_owner is not None
+                and removable_owner != expected_session_id
+            ):
+                conn.execute(
+                    "UPDATE sessions SET ended_at = ?, end_reason = ? "
+                    "WHERE id = ? AND ended_at IS NULL",
+                    (now, end_reason, removable_owner),
+                )
+
+            if handoff_error is not None:
+                failed = conn.execute(
+                    "UPDATE sessions SET handoff_state = 'failed', "
+                    "handoff_error = ? "
+                    "WHERE id = ? AND handoff_state = 'running'",
+                    (handoff_error[:500], expected_session_id),
+                )
+                if failed.rowcount != 1:
+                    raise RuntimeError(
+                        "handoff state changed during routing cleanup"
+                    )
+
+            return route_is_safe
+
+        return self._execute_write(_do)
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
         """Load routing entries for *scope* as {session_key: entry_json}."""
@@ -12819,6 +13088,45 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
         self._execute_write(_do)
 
+    def set_meta_if_absent(self, key: str, value: str) -> bool:
+        """Insert a state-meta value only when *key* is still absent.
+
+        Returns ``True`` for the single winning insert and ``False`` when a
+        durable value already owns the key.  The primary-key conflict check and
+        insert are one SQLite statement, so independent processes can use this
+        as a request-once claim without a read/write race.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+            return cursor.rowcount > 0
+
+        return self._execute_write(_do)
+
+    def compare_and_set_meta(
+        self,
+        key: str,
+        expected_value: Optional[str],
+        new_value: Optional[str],
+    ) -> bool:
+        """Replace *key* only while its durable value equals *expected_value*.
+
+        SQLite's ``IS`` comparison is intentionally used so ``None`` is a
+        valid expected/current value for callers that store nullable metadata.
+        Absence remains distinct from a present row whose value is NULL; use
+        :meth:`set_meta_if_absent` to claim an absent key.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE state_meta SET value = ? WHERE key = ? AND value IS ?",
+                (new_value, key, expected_value),
+            )
+            return cursor.rowcount > 0
+
+        return self._execute_write(_do)
+
     def retag_kanban_worker_sessions(self, workspaces_root: str) -> int:
         """Retag legacy kanban worker rows from ``cli`` to ``kanban``.
 
@@ -13615,19 +13923,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     #
     # State machine:
     #   None       — no handoff in flight
-    #   "pending"  — CLI requested handoff, gateway hasn't picked it up yet
+    #   "pending"  — a producer requested handoff; gateway hasn't claimed it
     #   "running"  — gateway is processing (session switch + synthetic turn)
     #   "completed"— gateway successfully delivered the synthetic turn
     #   "failed"   — gateway hit an error; reason in handoff_error
     #
-    # The CLI writes "pending" then poll-waits for terminal state. The gateway
-    # watcher transitions pending→running→{completed,failed}.
+    # A producer writes "pending" and may poll-wait for terminal state. The
+    # gateway watcher transitions pending→running→{completed,failed}.
 
     def request_handoff(self, session_id: str, platform: str) -> bool:
         """Mark a session as pending handoff to the given platform.
 
         Returns True if the row was found and not already in flight; False if
-        the session is already in a non-terminal handoff state.
+        the session is already in a non-terminal handoff state. Terminal rows
+        may be requested again; interactive CLI/TUI callers rely on that retry
+        behavior.
         """
         def _do(conn):
             cur = conn.execute(
@@ -13637,6 +13947,26 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "    handoff_error = NULL "
                 "WHERE id = ? AND (handoff_state IS NULL "
                 "                  OR handoff_state IN ('completed', 'failed'))",
+                (platform, session_id),
+            )
+            return cur.rowcount > 0
+        return self._execute_write(_do)
+
+    def request_handoff_once(self, session_id: str, platform: str) -> bool:
+        """Request a handoff only if this session never requested one before.
+
+        This is the durable idempotency boundary for producers such as webhook
+        delivery: the compare-and-set transition accepts only ``NULL`` and
+        never resets a terminal row.  Use :meth:`request_handoff` when an
+        explicit user retry after completion or failure is intended.
+        """
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE sessions "
+                "SET handoff_state = 'pending', "
+                "    handoff_platform = ?, "
+                "    handoff_error = NULL "
+                "WHERE id = ? AND handoff_state IS NULL",
                 (platform, session_id),
             )
             return cur.rowcount > 0
@@ -13689,6 +14019,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             cur = conn.execute(
                 "UPDATE sessions SET handoff_state = 'running' "
                 "WHERE id = ? AND handoff_state = 'pending'",
+                (session_id,),
+            )
+            return cur.rowcount > 0
+        return self._execute_write(_do)
+
+    def complete_running_handoff(self, session_id: str) -> bool:
+        """Atomically complete a handoff only while it remains claimed."""
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE sessions SET handoff_state = 'completed', "
+                "handoff_error = NULL "
+                "WHERE id = ? AND handoff_state = 'running'",
                 (session_id,),
             )
             return cur.rowcount > 0

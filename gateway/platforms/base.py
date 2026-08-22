@@ -4017,8 +4017,8 @@ class BasePlatformAdapter(ABC):
     ) -> Optional[str]:
         """Create a fresh thread under ``parent_chat_id`` for a session handoff.
 
-        Used by the gateway's handoff watcher when transferring a CLI
-        session to a thread-capable platform — the new thread isolates the
+        Used by the gateway's handoff watcher when transferring a session
+        to a thread-capable platform — the new thread isolates the
         handed-off conversation from any pre-existing chat in the home
         channel and gives users a clean per-handoff scrollback.
 

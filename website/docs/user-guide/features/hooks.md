@@ -443,6 +443,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
+| `pre_persist_user_message` | Directive/control | Once per turn on the agent path, before the inbound user message is appended and persisted; a `{"user_message": ...}` return replaces the body (highest `data.priority` wins), and string/`{"context": ...}` returns are appended. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `platform`, `sender_id` | Full user message and conversation history; unlike `pre_llm_call`, returns are written to the durable session-store row. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
@@ -655,7 +656,7 @@ def register(ctx):
 
 ### `pre_llm_call`
 
-Fires **once per turn**, before the tool-calling loop begins. All valid callback returns are aggregated in plugin order and injected into the current turn's user message.
+Fires **once per turn**, before the tool-calling loop begins. All valid callback returns are aggregated in plugin order and injected into the current turn's user message. The injection is **ephemeral** — added at API-call time only, never written to the persisted row (contrast [`pre_persist_user_message`](#pre_persist_user_message), whose returns are **durable**).
 
 **Callback signature:**
 
@@ -731,6 +732,84 @@ def guardrails(**kwargs):
 
 def register(ctx):
     ctx.register_hook("pre_llm_call", guardrails)
+```
+
+---
+
+### `pre_persist_user_message`
+
+Fires **once per turn**, on the agent path, just before the inbound user message is appended and persisted to the session store. Where [`pre_llm_call`](#pre_llm_call) injects **ephemeral** context (added at API-call time only, never written to disk), `pre_persist_user_message` injects **durable** context: its returns are folded into the user message that is written to the session-database row, so the injected block **replays as part of the conversation on later turns and after a restart**.
+
+This is the agent-path analogue of the gateway's [`pre_gateway_dispatch`](#pre_gateway_dispatch) `rewrite`, which mutates the inbound event text before it is dispatched and persisted. Use it when a plugin's context must survive into the durable transcript (e.g. memory recall that should remain visible in replayed history), not just this turn's prompt.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, turn_id: str, user_message: str,
+                conversation_history: list, platform: str,
+                sender_id: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the current session |
+| `turn_id` | `str` | Unique identifier for this turn |
+| `task_id` | `str` | The effective task identifier for this turn |
+| `user_message` | `str` | The user's message for this turn, before this hook's composition |
+| `conversation_history` | `list` | Copy of the message list **before** this turn's user message (OpenAI format) |
+| `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+| `sender_id` | `str` | The sender's identifier, when the host knows it (else empty) |
+
+**Fires:** In `agent/turn_context.py`, inside `build_turn_context()`, after the staged user message is resolved but before the turn's crash-resilience persist and first API call.
+
+**Return value:** Two composable shapes (see `_compose_pre_persist_returns`):
+
+- **Append** — a dict with a `"context"` key, or a plain non-empty string, is appended to the user message (highest-priority replace body first, then appends). This is the common case, symmetric with `pre_llm_call`.
+- **Replace** — a dict `{"user_message": str, "data": {"priority": int}}` replaces the body outright; the highest `priority` wins, ties resolve to the first plugin in discovery order. A winning replace and any appends both apply.
+
+Return `None` for no change. Injected context reaches **both** this turn's prompt and the persisted row.
+
+```python
+# Append durable recall (most common)
+return {"context": "Recalled context:\n- User prefers Python"}
+
+# Plain string (equivalent append)
+return "Recalled context:\n- User prefers Python"
+
+# Replace the persisted body (highest priority wins)
+return {"user_message": "[redacted]", "data": {"priority": 100}}
+
+# No change
+return None
+```
+
+When **multiple plugins** return context, appends are joined with double newlines in plugin discovery order (alphabetical by directory name), after any winning replace.
+
+**Use cases:** Durable memory recall, inbound message normalization/redaction that must persist, agent-path ingress enrichment mirroring gateway `rewrite`.
+
+**Example — durable memory recall:**
+
+```python
+import httpx
+
+MEMORY_API = "https://your-memory-api.example.com"
+
+def recall(session_id, user_message, **kwargs):
+    try:
+        resp = httpx.post(f"{MEMORY_API}/recall", json={
+            "session_id": session_id,
+            "query": user_message,
+        }, timeout=3)
+        memories = resp.json().get("results", [])
+        if not memories:
+            return None
+        text = "Recalled context:\n" + "\n".join(f"- {m['text']}" for m in memories)
+        return {"context": text}
+    except Exception:
+        return None
+
+def register(ctx):
+    ctx.register_hook("pre_persist_user_message", recall)
 ```
 
 ---

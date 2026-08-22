@@ -2207,6 +2207,41 @@ class AIAgent:
                 ):
                     _scan_start += 1
 
+            # A pre_persist_user_message hook may have composed durable context
+            # onto a staged user dict that was ALREADY written and marked by the
+            # CLI close safety-net (_persist_active_session_before_close), before
+            # this turn's hook ran. The append-only scan below cannot re-write a
+            # marked row, so the injected block would reach the live prompt but
+            # not the durable row. Correct that ONE row in place.
+            #
+            # Deliberately handled HERE, ahead of the scan, rather than off the
+            # marked-row branch inside it: `_scan_start` skips an
+            # identity-matched prefix, and the close safety-net's own flush puts
+            # exactly that staged dict into the prefix — so the loop never visits
+            # the row that needs correcting. The signal is one-shot (set in
+            # build_turn_context only when the staged dict was already persisted)
+            # and consumed here, and update_active_message_content targets the
+            # newest active user row itself, so no positional match is needed and
+            # no second row is ever inserted — the staged user turn stays exactly
+            # one row.
+            _durable_rewrite = getattr(
+                self, "_persist_user_message_durable_rewrite", None
+            )
+            if _durable_rewrite is not None:
+                self._persist_user_message_durable_rewrite = None
+                _session_db = getattr(self, "_session_db", None)
+                if _session_db is not None and current_session_id:
+                    try:
+                        _session_db.update_active_message_content(
+                            current_session_id, _durable_rewrite
+                        )
+                    except Exception:
+                        logger.warning(
+                            "pre_persist durable rewrite failed for session=%s",
+                            current_session_id,
+                            exc_info=True,
+                        )
+
             # Collect this flush's new rows and write them in ONE transaction
             # at the end of the scan (see append_messages_batch).
             _batch_rows: List[Dict[str, Any]] = []

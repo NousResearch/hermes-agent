@@ -1578,6 +1578,17 @@ def _resolve_cron_surface_mode(pconfig, logical_platform_name: str) -> str:
     return "thread"
 
 
+def _cron_button_metadata(job: dict) -> dict | None:
+    buttons = job.get("buttons")
+    if not buttons:
+        return None
+    return {
+        "job_id": str(job.get("id", "")),
+        "job_name": str(job.get("name") or job.get("id") or "cron job"),
+        "buttons": buttons,
+    }
+
+
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
 
@@ -3229,6 +3240,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             route_via_dm_topic = is_ambiguous_telegram_topic and _is_channel_dm_topic(
                 runtime_adapter, chat_id, loop, job["id"],
             )
+            cron_buttons = _cron_button_metadata(job)
             if route_via_dm_topic:
                 # Genuine Bot API channel Direct-Messages topic (#22773 mode 2):
                 # routed via direct_messages_topic_id, no bare thread_id.
@@ -3270,6 +3282,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 route_metadata.setdefault("scope_id", str(origin["scope_id"]))
                 media_metadata = dict(media_metadata or {})
                 media_metadata.setdefault("scope_id", str(origin["scope_id"]))
+            if cron_buttons:
+                route_metadata["cron_buttons"] = cron_buttons
 
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.

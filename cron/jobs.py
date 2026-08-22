@@ -509,6 +509,40 @@ def _coerce_job_text(value: Any, fallback: str = "") -> str:
     return str(value)
 
 
+def normalize_buttons(buttons: Optional[Any]) -> Optional[List[Dict[str, str]]]:
+    """Normalize optional cron inline-button definitions.
+
+    Storage shape is a flat list of ``{text, value}`` mappings. A plain string
+    becomes both the visible label and the callback value. Invalid or blank
+    entries are ignored; labels/values are trimmed before storage.
+    """
+    if not buttons:
+        return None
+    if isinstance(buttons, str):
+        buttons = [buttons]
+    elif not isinstance(buttons, list):
+        return None
+
+    normalized: List[Dict[str, str]] = []
+    for item in buttons:
+        if isinstance(item, str):
+            text = item.strip()
+            value = text
+        elif isinstance(item, dict):
+            text = str(item.get("text") or item.get("label") or "").strip()
+            value = str(item.get("value") or item.get("data") or text).strip()
+        else:
+            continue
+        if not text:
+            continue
+        if not value:
+            value = text
+        normalized.append({"text": text[:80], "value": value[:120]})
+        if len(normalized) >= 20:
+            break
+    return normalized or None
+
+
 def _schedule_display_for_job(job: Dict[str, Any]) -> str:
     display = _coerce_job_text(job.get("schedule_display")).strip()
     if display:
@@ -557,6 +591,8 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     # half-paused record (enabled=true + state/paused_at) cannot render as
     # "paused" while the fleet is still live. See effective_job_state().
     normalized["state"] = effective_job_state(normalized)
+
+    normalized["buttons"] = normalize_buttons(normalized.get("buttons"))
 
     return normalized
 
@@ -1833,6 +1869,7 @@ def create_job(
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    buttons: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1900,6 +1937,8 @@ def create_job(
                 exactly like config-set effort. Inert with ``no_agent=True``
                 (no LLM call to configure). None/empty = unset (job follows
                 config resolution, pre-existing behavior).
+        buttons: Optional inline buttons to attach when the delivery platform
+                supports them. Stored as ``[{"text": ..., "value": ...}]``.
 
     Returns:
         The created job dict
@@ -1937,13 +1976,12 @@ def create_job(
     normalized_monitor_script = normalized_monitor_script or None
     normalized_monitor_url = str(monitor_url).strip() if isinstance(monitor_url, str) else None
     normalized_monitor_url = normalized_monitor_url or None
+    normalized_buttons = normalize_buttons(buttons)
 
-    # Monitor-mode validation: exactly one source, and monitor mode only
-    # makes sense when there IS an agent to suppress/wake.
-    # no_agent jobs are meaningless without a script — the script IS the job.
-    # Surface these as clear ValueErrors at create time so bad configs never
-    # reach the scheduler (shared with update_job, see
-    # _validate_job_mode_invariants).
+    # Surface execution-mode invariants as clear ValueErrors at create time so
+    # bad configs never reach the scheduler (shared with update_job, see
+    # _validate_job_mode_invariants). Monitor mode needs exactly one source and
+    # a real agent to suppress/wake; no_agent jobs need a script to execute.
     _validate_job_mode_invariants(
         normalized_monitor_script,
         normalized_monitor_url,
@@ -2036,6 +2074,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "buttons": normalized_buttons,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
@@ -2160,6 +2199,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["reasoning_effort"] = _normalize_reasoning_effort(
                     updates["reasoning_effort"]
                 )
+            if "buttons" in updates:
+                updates["buttons"] = normalize_buttons(updates.get("buttons"))
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

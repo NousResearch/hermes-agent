@@ -290,7 +290,10 @@ Context database by Volcengine (ByteDance) with filesystem-style knowledge hiera
 | **Data storage** | Self-hosted (local or cloud) |
 | **Cost** | Free (open-source, AGPL-3.0) |
 
-**Tools (6):** `viking_search` (semantic search), `viking_read` (tiered: abstract/overview/full), `viking_browse` (filesystem navigation), `viking_remember` (store facts), `viking_forget` (delete a memory file by exact `viking://` URI), `viking_add_resource` (ingest URLs/docs)
+**Tools:** discovered directly from the running OpenViking server through MCP.
+Hermes prefixes them with `mcp__openviking__`, for example
+`mcp__openviking__find`, `mcp__openviking__search`, and
+`mcp__openviking__read`.
 
 **Setup:**
 ```bash
@@ -301,22 +304,23 @@ openviking-server
 
 # Then configure Hermes
 hermes memory setup    # select "openviking"
-# Or manually:
-hermes config set memory.provider openviking
 ```
 
-`hermes memory setup` can reuse or copy connection values from
-`~/.openviking/ovcli.conf`. Manual setup uses the active profile's `.env` file;
-for the default profile that is `~/.hermes/.env`, and for named profiles use
-`~/.hermes/profiles/<profile>/.env`.
+OpenViking 0.4.1 or newer is required for the MCP tool and actor-peer contract
+used by Hermes. Existing profiles can continue automatic REST lifecycle work
+against some older servers during migration, but new setup, or rerunning
+setup, requires OpenViking 0.4.1 or newer.
 
-```text
-OPENVIKING_ENDPOINT=http://127.0.0.1:1933
-# OPENVIKING_API_KEY=...
-# OPENVIKING_ACCOUNT=default
-# OPENVIKING_USER=default
-# OPENVIKING_AGENT=hermes
-```
+`hermes memory setup` can import connection values from an existing
+`ovcli.conf` profile or create a new connection. Setup configures automatic
+recall and capture over REST and direct HTTP MCP tools at `<endpoint>/mcp`. It
+stores non-secret connection settings in the active Hermes profile's
+`config.yaml` and stores only `OPENVIKING_API_KEY` in that profile's `.env`.
+Both connections use this same key. No MCP proxy or separate OpenViking Agent
+Plugin is required.
+
+Run setup again to change the endpoint or import a different OpenViking
+profile. Later edits to `ovcli.conf` do not change the imported Hermes profile.
 
 OpenViking server settings live in `ov.conf` (`--config`,
 `OPENVIKING_CONFIG_FILE`, or `~/.openviking/ov.conf`). Client connection values
@@ -327,9 +331,15 @@ live in `ovcli.conf` (`OPENVIKING_CLI_CONFIG_FILE` or
 - Tiered context loading: L0 (~100 tokens) → L1 (~2k) → L2 (full)
 - Automatic memory extraction on session commit (profile, preferences, entities, events, cases, patterns)
 - `viking://` URI scheme for hierarchical knowledge browsing
+- Server-managed MCP tools that update when Hermes next connects to OpenViking
 
-`OPENVIKING_ACCOUNT` and `OPENVIKING_USER` are used for local/trusted mode.
-`OPENVIKING_AGENT` is Hermes' peer ID in OpenViking for peer-scoped memories.
+Account and user settings are used for local/trusted mode. The agent setting is
+Hermes' peer ID in OpenViking for peer-scoped memories.
+
+After upgrading an existing Hermes profile, run `hermes memory setup` once to
+replace the removed `viking_*` native tools with the direct MCP connection.
+Automatic lifecycle memory remains compatible with legacy linked profiles
+during this migration.
 
 ---
 
@@ -659,7 +669,7 @@ hermes memory setup
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
-| **OpenViking** | Self-hosted | Free | 6 | `openviking` + server | Filesystem hierarchy + tiered loading |
+| **OpenViking** | Self-hosted | Free | Server MCP | OpenViking server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud/Self-hosted | Free/Paid | 4 | `mem0ai` | Server-side LLM extraction + self-hosted/OSS modes |
 | **Hindsight** | Cloud/Local | Free/Paid | 3 | `hindsight-client` | Knowledge graph + reflect synthesis |
 | **Holographic** | Local | Free | 2 | None | HRR algebra + trust scoring |
@@ -675,7 +685,7 @@ Each provider's data is isolated per [profile](/user-guide/profiles):
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
-- **Env var providers** (OpenViking) are configured via each profile's `.env` file
+- **OpenViking** stores non-secret settings in each profile's `config.yaml` and its API key in that profile's `.env`
 
 ## Building a Memory Provider
 

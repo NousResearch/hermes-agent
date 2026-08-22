@@ -4,7 +4,6 @@ import socket
 import stat
 import threading
 import time
-import zipfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -75,7 +74,7 @@ def _allow_setup_validation(monkeypatch, *, root_access: bool = False):
     monkeypatch.setattr(
         openviking_module,
         "_validate_openviking_setup_values",
-        lambda values, *, require_api_key=False: (
+        lambda values, *, require_api_key=False, require_mcp=False: (
             True,
             "",
             "root" if root_access else ("user" if values.get("api_key") else None),
@@ -241,37 +240,135 @@ def test_connection_values_omit_stale_identity_for_user_key_with_root_key():
     assert values["user"] == ""
 
 
-def test_link_ovcli_profile_removes_stale_inline_config(tmp_path):
+def test_persist_connection_configures_direct_mcp_and_one_secret_source(tmp_path):
     env_path = tmp_path / ".env"
-    env_path.write_text("OPENVIKING_ENDPOINT=http://old.test\nOTHER_KEY=keep\n", encoding="utf-8")
-    config = {"memory": {}}
+    env_path.write_text(
+        "OPENVIKING_ENDPOINT=http://old.test\n"
+        "OPENVIKING_ACCOUNT=old-account\n"
+        "OPENVIKING_API_KEY=old-key\n"
+        "OTHER_KEY=keep\n",
+        encoding="utf-8",
+    )
+    config = {
+        "memory": {},
+        "mcp_servers": {
+            "openviking": {
+                "command": "old-proxy",
+                "args": ["--old"],
+                "transport": "sse",
+                "enabled": False,
+                "timeout": 45,
+                "headers": {
+                    "authorization": "Bearer old-key",
+                    "X-API-Key": "old-key",
+                    "X-Custom": "keep",
+                },
+            }
+        },
+    }
     provider_config = {
-        "use_ovcli_config": False,
+        "use_ovcli_config": True,
+        "ovcli_config_path": "/old/ovcli.conf",
         "endpoint": "http://stale.test",
         "api_key": "stale-key",
         "account": "default",
         "user": "default",
         "agent": "stale-agent",
         "api_key_type": "root",
+        "recall_limit": 8,
     }
-    ovcli_path = tmp_path / "ovcli.conf.VPS_ROOT"
+    values = {
+        "endpoint": "https://openviking.example/base",
+        "api_key": "new-user-key",
+        "account": "",
+        "user": "",
+        "agent": "hermes-work",
+    }
 
-    openviking_module._link_ovcli_profile(
+    openviking_module._persist_openviking_connection(
         config=config,
         provider_config=provider_config,
         env_path=env_path,
-        ovcli_path=ovcli_path,
+        values=values,
     )
 
     assert config["memory"]["openviking"] == {
-        "use_ovcli_config": True,
-        "ovcli_config_path": str(ovcli_path),
+        "use_ovcli_config": False,
+        "endpoint": "https://openviking.example/base",
+        "agent": "hermes-work",
+        "recall_limit": 8,
     }
-    assert "OPENVIKING_ENDPOINT" not in env_path.read_text(encoding="utf-8")
-    assert "OTHER_KEY=keep" in env_path.read_text(encoding="utf-8")
+    mcp_config = config["mcp_servers"]["openviking"]
+    assert mcp_config == {
+        "url": "https://openviking.example/base/mcp",
+        "headers": {
+            "X-Custom": "keep",
+            "Authorization": "Bearer ${OPENVIKING_API_KEY}",
+            "X-API-Key": "${OPENVIKING_API_KEY}",
+            "X-OpenViking-Actor-Peer": "hermes-work",
+        },
+        "enabled": False,
+        "strict_redirect_headers": True,
+        "timeout": 45,
+    }
+    assert "new-user-key" not in json.dumps(config)
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "OPENVIKING_API_KEY=new-user-key" in env_text
+    assert "OPENVIKING_ENDPOINT" not in env_text
+    assert "OPENVIKING_ACCOUNT" not in env_text
+    assert "OTHER_KEY=keep" in env_text
 
 
-def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tmp_path, monkeypatch):
+def test_direct_mcp_uses_default_local_identity_without_api_key():
+    config = {}
+
+    openviking_module._configure_openviking_mcp(config, {
+        "endpoint": "localhost",
+        "api_key": "",
+        "account": "",
+        "user": "",
+        "agent": "",
+    })
+
+    entry = config["mcp_servers"]["openviking"]
+    assert entry["url"] == "http://localhost:1933/mcp"
+    assert entry["enabled"] is True
+    assert entry["headers"]["X-OpenViking-Account"] == "default"
+    assert entry["headers"]["X-OpenViking-User"] == "default"
+    assert entry["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+
+
+@pytest.mark.parametrize("enabled", [False, "false", "no", "off", "0"])
+def test_direct_mcp_preserves_boolean_like_disabled_policy(enabled):
+    config = {"mcp_servers": {"openviking": {"enabled": enabled}}}
+
+    openviking_module._configure_openviking_mcp(config, {
+        "endpoint": "http://127.0.0.1:1933",
+        "api_key": "",
+        "account": "",
+        "user": "",
+        "agent": "hermes",
+    })
+
+    assert config["mcp_servers"]["openviking"]["enabled"] is False
+
+
+@pytest.mark.parametrize("enabled", [True, "true", "yes", "on", "1", 0])
+def test_direct_mcp_defaults_other_boolean_like_policy_to_enabled(enabled):
+    config = {"mcp_servers": {"openviking": {"enabled": enabled}}}
+
+    openviking_module._configure_openviking_mcp(config, {
+        "endpoint": "http://127.0.0.1:1933",
+        "api_key": "",
+        "account": "",
+        "user": "",
+        "agent": "hermes",
+    })
+
+    assert config["mcp_servers"]["openviking"]["enabled"] is True
+
+
+def test_post_setup_existing_profile_picker_validates_and_imports_saved_profile(tmp_path, monkeypatch):
     _clear_openviking_env(monkeypatch)
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
@@ -293,8 +390,9 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
 
     validate_calls = []
 
-    def validate_values(values, *, require_api_key=False):
+    def validate_values(values, *, require_api_key=False, require_mcp=False):
         validate_calls.append(dict(values))
+        assert require_mcp is True
         return True, "", "user"
 
     monkeypatch.setattr(
@@ -319,12 +417,123 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
     }]
     assert config["memory"]["provider"] == "openviking"
     assert config["memory"]["openviking"] == {
-        "use_ovcli_config": True,
-        "ovcli_config_path": str(saved_path),
+        "use_ovcli_config": False,
+        "endpoint": "https://vps.example",
+        "agent": "hermes",
+    }
+    assert config["mcp_servers"]["openviking"]["url"] == "https://vps.example/mcp"
+    assert config["mcp_servers"]["openviking"]["headers"] == {
+        "Authorization": "Bearer ${OPENVIKING_API_KEY}",
+        "X-API-Key": "${OPENVIKING_API_KEY}",
+        "X-OpenViking-Actor-Peer": "hermes",
     }
     env_text = env_path.read_text(encoding="utf-8")
-    assert "OPENVIKING_" not in env_text
+    assert "OPENVIKING_API_KEY=user-key" in env_text
+    assert "OPENVIKING_ENDPOINT" not in env_text
     assert "OTHER_KEY=keep" in env_text
+
+
+def test_dashboard_save_migrates_linked_profile_and_keeps_mcp_in_sync(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    ovcli_path = tmp_path / "ovcli.conf.work"
+    ovcli_path.write_text(
+        json.dumps({
+            "url": "https://old.example",
+            "api_key": "linked-key",
+            "agent_id": "old-agent",
+        }),
+        encoding="utf-8",
+    )
+    config = {
+        "memory": {
+            "provider": "honcho",
+            "openviking": {
+                "use_ovcli_config": True,
+                "ovcli_config_path": str(ovcli_path),
+                "recall_limit": 7,
+            },
+        },
+        "mcp_servers": {
+            "openviking": {
+                "enabled": False,
+            },
+        },
+    }
+    saved = []
+
+    from hermes_cli import config as config_module
+
+    monkeypatch.setattr(config_module, "load_config", lambda: config)
+    monkeypatch.setattr(config_module, "save_config", lambda value: saved.append(value))
+
+    OpenVikingMemoryProvider().save_config(
+        {
+            "endpoint": "https://new.example/openviking",
+            "account": "",
+            "user": "",
+            "agent": "new-agent",
+            "recall_limit": 9,
+        },
+        str(hermes_home),
+    )
+
+    assert saved == [config]
+    assert config["memory"]["provider"] == "honcho"
+    assert config["memory"]["openviking"] == {
+        "use_ovcli_config": False,
+        "endpoint": "https://new.example/openviking",
+        "agent": "new-agent",
+        "recall_limit": 9,
+    }
+    assert config["mcp_servers"]["openviking"]["url"] == (
+        "https://new.example/openviking/mcp"
+    )
+    assert config["mcp_servers"]["openviking"]["enabled"] is False
+    assert "linked-key" not in json.dumps(config)
+    assert (hermes_home / ".env").read_text(encoding="utf-8") == (
+        "OPENVIKING_API_KEY=linked-key\n"
+    )
+
+
+def test_dashboard_save_preserves_disabled_mcp_in_real_profile_config(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_API_KEY", "profile-key")
+
+    from hermes_cli import config as config_module
+
+    config_module.save_config({
+        "memory": {
+            "provider": "honcho",
+            "openviking": {
+                "endpoint": "https://openviking.example",
+                "agent": "hermes",
+            },
+        },
+        "mcp_servers": {
+            "openviking": {
+                "url": "https://openviking.example/mcp",
+                "enabled": False,
+            },
+        },
+    })
+
+    OpenVikingMemoryProvider().save_config(
+        {"recall_limit": 9},
+        str(hermes_home),
+    )
+
+    saved = config_module.load_config_readonly()
+    assert saved["memory"]["provider"] == "honcho"
+    assert saved["memory"]["openviking"]["recall_limit"] == 9
+    assert saved["mcp_servers"]["openviking"]["url"] == (
+        "https://openviking.example/mcp"
+    )
+    assert saved["mcp_servers"]["openviking"]["enabled"] is False
 
 
 def test_local_setup_recommends_user_api_key_before_unauthenticated_mode(monkeypatch):
@@ -336,7 +545,7 @@ def test_local_setup_recommends_user_api_key_before_unauthenticated_mode(monkeyp
     monkeypatch.setattr(
         openviking_module,
         "_validate_openviking_setup_values",
-        lambda values, *, require_api_key=False: (True, "", "user"),
+        lambda values, *, require_api_key=False, require_mcp=False: (True, "", "user"),
     )
     credential_menu = {}
 
@@ -679,62 +888,148 @@ def test_initialize_autostarts_local_openviking_in_background_when_runtime_healt
     assert any("starting in the background" in message for message in statuses)
 
 
-def test_tool_search_sorts_by_raw_score_across_buckets():
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ({}, "missing"),
+        ({"mcp_servers": {"openviking": {"enabled": False}}}, "disabled"),
+        ({"mcp_servers": {"openviking": {"enabled": "false"}}}, "disabled"),
+        ({"mcp_servers": {"openviking": {"enabled": "no"}}}, "disabled"),
+        ({"mcp_servers": {"openviking": {"enabled": "off"}}}, "disabled"),
+        ({"mcp_servers": {"openviking": {"enabled": "0"}}}, "disabled"),
+        ({"mcp_servers": {"openviking": {"url": ""}}}, "missing"),
+        (
+            {"mcp_servers": {"openviking": {"enabled": 0, "command": "openviking-mcp"}}},
+            "configured",
+        ),
+        ({"mcp_servers": {"openviking": {"command": "openviking-mcp"}}}, "configured"),
+        (
+            {"mcp_servers": {"openviking": {"url": "http://127.0.0.1:1933/mcp"}}},
+            "configured",
+        ),
+    ],
+)
+def test_openviking_mcp_tools_state_distinguishes_user_policy(monkeypatch, config, expected):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config_readonly", lambda: config)
+
+    assert openviking_module._openviking_mcp_tools_state() == expected
+
+
+@pytest.mark.parametrize(
+    ("mcp_state", "expected_warnings"),
+    [
+        (
+            "missing",
+            [
+                "OpenViking automatic memory is active, but explicit OpenViking MCP "
+                "tools are not configured. Run `hermes memory setup` with OpenViking "
+                "0.4.1 or newer to enable them."
+            ],
+        ),
+        ("disabled", []),
+        ("configured", []),
+        ("unknown", []),
+    ],
+)
+def test_initialize_mcp_migration_warning_respects_config_state(
+    monkeypatch,
+    tmp_path,
+    mcp_state,
+    expected_warnings,
+):
+    settings = {
+        "endpoint": "http://127.0.0.1:1933",
+        "api_key": "",
+        "account": "default",
+        "user": "default",
+        "agent": "hermes",
+    }
+    monkeypatch.setattr(
+        openviking_module,
+        "_resolve_connection_settings",
+        lambda provider_config=None: settings,
+    )
+    monkeypatch.setattr(openviking_module, "_VikingClient", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr(
+        openviking_module,
+        "_classify_runtime_openviking_health",
+        lambda client, endpoint: ("healthy", ""),
+    )
+    monkeypatch.setattr(openviking_module, "_openviking_mcp_tools_state", lambda: mcp_state)
+    monkeypatch.setattr(openviking_module, "_MCP_MIGRATION_WARNING_EMITTED", False)
+    monkeypatch.setattr(OpenVikingMemoryProvider, "_acquire_run_lock", lambda self: None)
+    monkeypatch.setattr(OpenVikingMemoryProvider, "_recover_pending_sessions", lambda self: None)
+
+    warnings = []
+    for session_id in ("session-1", "session-2"):
+        OpenVikingMemoryProvider().initialize(
+            session_id,
+            hermes_home=str(tmp_path),
+            platform="cli",
+            warning_callback=warnings.append,
+        )
+
+    assert warnings == expected_warnings
+
+
+def test_provider_exposes_no_native_tools():
     provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    provider._client.post.return_value = {
-        "result": {
-            "memories": [
-                {"uri": "viking://memories/1", "score": 0.9003, "abstract": "memory result"},
-            ],
-            "resources": [
-                {"uri": "viking://resources/1", "score": 0.9004, "abstract": "resource result"},
-            ],
-            "skills": [
-                {"uri": "viking://skills/1", "score": 0.8999, "abstract": "skill result"},
-            ],
-            "total": 3,
-        }
+
+    assert provider.get_tool_schemas() == []
+
+
+def test_openviking_retrieval_tools_are_excluded_from_session_capture():
+    provider = OpenVikingMemoryProvider()
+
+    retrieval_tools = {
+        "mcp__openviking__find",
+        "mcp__openviking__search",
+        "mcp__openviking__recall",
+        "mcp__openviking__read",
+        "mcp__openviking__list",
+        "mcp__openviking__tree",
+        "mcp__openviking__grep",
+        "mcp__openviking__glob",
+        # Preserve old-session protection after the native tools are removed.
+        "viking_search",
+        "viking_read",
+        "viking_browse",
+    }
+    write_tools = {
+        "mcp__openviking__remember",
+        "mcp__openviking__write",
+        "mcp__openviking__edit",
+        "mcp__openviking__add_resource",
+        "mcp__openviking__forget",
     }
 
-    result = json.loads(provider._tool_search({"query": "ranking"}))
-
-    assert [entry["uri"] for entry in result["results"]] == [
-        "viking://resources/1",
-        "viking://memories/1",
-        "viking://skills/1",
-    ]
-    assert [entry["score"] for entry in result["results"]] == [0.9, 0.9, 0.9]
-    assert result["total"] == 3
+    assert all(provider._is_openviking_recall_tool_name(name) for name in retrieval_tools)
+    assert not any(provider._is_openviking_recall_tool_name(name) for name in write_tools)
 
 
-def test_tool_add_resource_rejects_hermes_credential_file_upload(tmp_path, monkeypatch):
-    import agent.file_safety as fs
-
-    hermes_home = tmp_path / "hermes_home"
-    hermes_home.mkdir()
-    auth_json = hermes_home / "auth.json"
-    auth_json.write_text('{"OPENROUTER_API_KEY":"sk-test-secret"}', encoding="utf-8")
-    monkeypatch.setattr(fs, "_hermes_home_path", lambda: hermes_home)
-
+def test_system_prompt_names_mcp_tools_only_when_configured(monkeypatch):
     provider = OpenVikingMemoryProvider()
+    provider._endpoint = "http://127.0.0.1:1933"
     provider._client = MagicMock()
+    provider._client.get.return_value = {"result": [{"uri": "viking://resources"}]}
+    monkeypatch.setattr(provider, "_ensure_client", lambda: provider._client)
 
-    result = json.loads(provider._tool_add_resource({"url": str(auth_json)}))
+    monkeypatch.setattr(openviking_module, "_openviking_mcp_tools_configured", lambda: True)
+    prompt = provider.system_prompt_block()
 
-    assert "error" in result
-    assert "credential store" in result["error"]
-    provider._client.upload_temp_file.assert_not_called()
-    provider._client.post.assert_not_called()
+    assert "mcp__openviking__find" in prompt
+    assert "mcp__openviking__search" in prompt
+    assert "mcp__openviking__read" in prompt
+    assert "viking_search" not in prompt
+    assert "viking_read" not in prompt
+    assert "viking_browse" not in prompt
 
+    monkeypatch.setattr(openviking_module, "_openviking_mcp_tools_configured", lambda: False)
+    prompt_without_mcp = provider.system_prompt_block()
 
-def test_get_tool_schemas_omits_profile_and_keeps_narrow_forget_tools():
-    provider = OpenVikingMemoryProvider()
-
-    names = [schema["name"] for schema in provider.get_tool_schemas()]
-
-    assert "viking_profile" not in names
-    assert "viking_forget" in names
+    assert "mcp__openviking__" not in prompt_without_mcp
 
 
 def test_viking_client_delete_uses_identity_headers(monkeypatch):
@@ -947,6 +1242,64 @@ def test_modern_openviking_identity_does_not_probe_openapi():
     assert state == "modern"
     assert health["version"] == "0.2.10"
     client.openapi_payload.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("version", "supported"),
+    [
+        ("0.4.0", False),
+        ("0.4.1", True),
+        ("0.4.1.dev1", True),
+        ("0.5.0", True),
+        ("", False),
+    ],
+)
+def test_direct_mcp_requires_openviking_0_4_1(version, supported):
+    ok, message = openviking_module._validate_openviking_mcp_version({"version": version})
+
+    assert ok is supported
+    if supported:
+        assert message == ""
+    else:
+        assert "0.4.1 or newer" in message
+
+
+def test_direct_mcp_rejects_root_key_in_api_key_mode(monkeypatch):
+    class RootKeyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def health_payload(self):
+            return {
+                "status": "ok",
+                "healthy": True,
+                "version": "0.4.1",
+                "auth_mode": "api_key",
+            }
+
+        def validate_auth(self):
+            pass
+
+        def validate_root_access(self):
+            pass
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", RootKeyClient)
+
+    valid, message, role = openviking_module._validate_openviking_setup_values(
+        {
+            "endpoint": "https://openviking.example",
+            "api_key": "root-key",
+            "account": "acct",
+            "user": "alice",
+        },
+        require_api_key=True,
+        require_mcp=True,
+    )
+
+    assert valid is False
+    assert role is None
+    assert "root API keys cannot use data-plane MCP tools" in message
+    assert "user API key" in message
 
 
 def test_legacy_health_requires_openviking_openapi_identity_before_auth(monkeypatch):

@@ -9,11 +9,11 @@ Context database by Volcengine (ByteDance) with filesystem-style knowledge hiera
   then `openviking-server doctor`)
 - OpenViking server running and reachable from Hermes
 
-OpenViking 0.2.10 or newer is recommended. For backward compatibility,
-Hermes can identify older servers that expose the legacy status-only health
-response, but only when anonymous OpenAPI metadata also identifies the service
-as OpenViking. OpenViking 0.2.6 and earlier are deprecated for this integration;
-upgrade them to receive the current health contract and compatibility fixes.
+OpenViking 0.4.1 or newer is required for the MCP tool and actor-peer contract
+used by Hermes.
+Existing Hermes profiles can still run automatic memory lifecycle hooks
+against some older servers, but explicit OpenViking tools will not be
+available. New setup, or rerunning setup, requires OpenViking 0.4.1 or newer.
 
 ## Setup
 
@@ -31,27 +31,13 @@ Then configure Hermes:
 hermes memory setup    # select "openviking"
 ```
 
-The setup can link to an existing `~/.openviking/ovcli.conf`, copy its current
-connection values into Hermes, or create a minimal `ovcli.conf` when one does
-not exist.
+Setup can import an existing `ovcli.conf` profile or create a new connection.
+It then configures both parts of the integration:
 
-Or manually:
+- automatic recall, capture, and session lifecycle through OpenViking REST;
+- explicit tools through Hermes' direct HTTP MCP client at `<endpoint>/mcp`.
 
-```bash
-hermes config set memory.provider openviking
-```
-
-Add the connection settings to the active profile's `.env` file. For the
-default profile that is `~/.hermes/.env`; for a named profile use
-`~/.hermes/profiles/<profile>/.env`.
-
-```text
-OPENVIKING_ENDPOINT=http://127.0.0.1:1933
-# OPENVIKING_API_KEY=...
-# OPENVIKING_ACCOUNT=default
-# OPENVIKING_USER=default
-# OPENVIKING_AGENT=hermes
-```
+No local MCP proxy or OpenViking Agent Plugin is required.
 
 ## Config
 
@@ -64,40 +50,34 @@ OpenViking's server config is separate from Hermes:
   `account`, and `user`. It is read from `OPENVIKING_CLI_CONFIG_FILE` or
   `~/.openviking/ovcli.conf`.
 
-Hermes-side provider config is read from environment variables in the active
-profile's `.env`:
-
-| Env Var | Default | Description |
-|---------|---------|-------------|
-| `OPENVIKING_ENDPOINT` | `http://127.0.0.1:1933` | Server URL |
-| `OPENVIKING_API_KEY` | (none) | User/admin API key for authenticated servers |
-| `OPENVIKING_ACCOUNT` | `default` | Tenant account for local/trusted mode |
-| `OPENVIKING_USER` | `default` | Tenant user for local/trusted mode |
-| `OPENVIKING_AGENT` | `hermes` | Hermes peer ID in OpenViking, used for peer-scoped memories |
+Hermes stores the non-secret endpoint and identity settings under
+`memory.openviking` in the active profile's `config.yaml`. It stores only
+`OPENVIKING_API_KEY` in the active profile's `.env`. The provider REST client
+and MCP headers both resolve that same variable, so key rotation cannot update
+one connection without the other.
 
 When `OPENVIKING_API_KEY` is set, Hermes lets OpenViking derive account/user
 identity from the key. In local or trusted deployments without an API key,
-Hermes sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
+Hermes sends the configured account and user identity headers.
 
-## Tools
+Run `hermes memory setup` again to change the endpoint or import a different
+OpenViking CLI profile. Direct edits to `ovcli.conf` do not change an existing
+Hermes profile after import.
 
-| Tool | Description |
-|------|-------------|
-| `viking_search` | Semantic search with fast/deep/auto modes |
-| `viking_read` | Read content at a viking:// URI (abstract/overview/full) |
-| `viking_browse` | Filesystem-style navigation (list/tree/stat) |
-| `viking_remember` | Store a fact directly with OpenViking `content/write` |
-| `viking_forget` | Delete one exact `viking://` memory file URI |
-| `viking_add_resource` | Ingest URLs/docs into the knowledge base |
+## MCP Tools
 
-## Memory Writes And Deletes
+Hermes discovers tools from the running OpenViking server. Their Hermes names
+use the `mcp__openviking__<tool>` prefix, for example
+`mcp__openviking__find`, `mcp__openviking__search`, and
+`mcp__openviking__read`. New or changed OpenViking MCP tools become available
+the next time Hermes connects; the memory plugin does not duplicate their
+schemas or implementations.
 
-`viking_remember` writes directly to OpenViking with `POST /api/v1/content/write`
-and `mode=create`. It creates peer-scoped memory files under
-`viking://user/peers/${OPENVIKING_AGENT}/memories/...`; OpenViking may return a
-canonical user-scoped form such as
-`viking://user/default/peers/${OPENVIKING_AGENT}/memories/...` in API-key mode.
-Explicit remembers do not depend on session commit extraction.
+The exact tool surface and argument contracts are owned by the installed
+OpenViking version. This includes retrieval, browsing, memory and content
+writes, editing, deletion, resource ingestion, and code-oriented search tools.
+
+## Memory Writes
 
 Hermes built-in `memory` tool additions are mirrored to OpenViking after the
 local memory operation succeeds:
@@ -107,16 +87,14 @@ local memory operation succeeds:
 | `add` | `content/write` with `mode=create` under the configured peer memory namespace |
 
 Built-in `replace` and `remove` operations are not mirrored because Hermes
-native memory entries do not yet carry stable OpenViking file URIs. Use
-`viking_forget` when the user explicitly asks to delete a specific OpenViking
-memory URI.
+native memory entries do not yet carry stable OpenViking file URIs. Use the
+OpenViking MCP tools when the user asks for an explicit OpenViking write,
+change, or deletion.
 
-`viking_forget` is intentionally narrow. It only accepts concrete user memory
-file URIs, such as
-`viking://user/peers/hermes/memories/preferences/mem_abc123.md` or the canonical
-`viking://user/default/peers/hermes/memories/preferences/mem_abc123.md`. Files
-directly under `memories/`, such as `viking://user/default/memories/profile.md`,
-are also allowed because OpenViking supports them. The tool rejects directories,
-resources, skills, sessions, generated summary files, and URIs with query
-strings or fragments. Use OpenViking's MCP, CLI, or admin APIs for broader
-resource and directory cleanup.
+## Upgrading Existing Hermes Profiles
+
+The former `viking_*` native tool schemas are no longer exposed. After updating
+Hermes, run `hermes memory setup`, select OpenViking, and import or enter the
+same connection. Setup creates the direct MCP entry and preserves automatic
+recall and capture. Existing linked `ovcli.conf` configurations remain readable
+for lifecycle compatibility until they are imported this way.

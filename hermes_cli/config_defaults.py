@@ -4434,7 +4434,7 @@ OPTIONAL_ENV_VARS = {
     "OPENVIKING_API_KEY": {
         "description": "OpenViking API key (leave blank for local dev mode)",
         "prompt": "OpenViking API key",
-        "tools": ["viking_search"],
+        "tools": ["mcp__openviking__find"],
         "password": True,
         "category": "tool",
     },

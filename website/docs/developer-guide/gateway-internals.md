@@ -227,13 +227,17 @@ When a memory provider plugin (e.g., Honcho) is enabled:
 
 1. Gateway creates an `AIAgent` per message with the session ID
 2. The `MemoryManager` initializes the provider with the session context
-3. Provider tools (e.g., `honcho_profile`, `viking_search`) are routed through:
+3. Native provider tools (for example, `honcho_profile`) are routed through:
 
 ```text
 AIAgent._invoke_tool()
   → self._memory_manager.handle_tool_call(name, args)
     → provider.handle_tool_call(name, args)
 ```
+
+OpenViking is a hybrid integration: its automatic recall, capture, and session
+lifecycle use the memory provider, while its explicit tools are discovered from
+the OpenViking `/mcp` endpoint and use the normal Hermes MCP route.
 
 4. On session end/reset, `on_session_end()` fires for cleanup and final data flush
 

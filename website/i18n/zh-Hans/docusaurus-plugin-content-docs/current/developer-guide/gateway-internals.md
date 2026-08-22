@@ -223,13 +223,15 @@ Hook 从 `gateway/builtin_hooks/`（扩展点 — 当前发行版中为空；`_r
 
 1. Gateway 为每条消息创建一个带会话 ID 的 `AIAgent`
 2. `MemoryManager` 使用会话上下文初始化提供者
-3. 提供者工具（如 `honcho_profile`、`viking_search`）通过以下路径路由：
+3. 原生提供者工具（如 `honcho_profile`）通过以下路径路由：
 
 ```text
 AIAgent._invoke_tool()
   → self._memory_manager.handle_tool_call(name, args)
     → provider.handle_tool_call(name, args)
 ```
+
+OpenViking 使用混合集成方式：自动召回、捕获和会话生命周期由内存提供者处理；显式工具从 OpenViking 的 `/mcp` 端点发现，并使用 Hermes 的标准 MCP 路由。
 
 4. 会话结束/重置时，`on_session_end()` 触发以进行清理和最终数据刷写
 

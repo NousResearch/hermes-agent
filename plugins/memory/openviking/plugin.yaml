@@ -1,6 +1,6 @@
 name: openviking
 version: 2.0.0
-description: "OpenViking context database — session-managed memory with automatic extraction, tiered retrieval, and filesystem-style knowledge browsing."
+description: "OpenViking context database — automatic lifecycle memory with direct server-managed MCP tools."
 pip_dependencies:
   - httpx
 requires_env: []

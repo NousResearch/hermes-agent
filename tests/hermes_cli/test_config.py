@@ -548,7 +548,7 @@ class TestMemoryProviderEnvVarsRegistry:
         "MEM0_API_KEY": "mem0_search",
         "RETAINDB_API_KEY": "retaindb_search",
         "BRV_API_KEY": "brv_query",
-        "OPENVIKING_API_KEY": "viking_search",
+        "OPENVIKING_API_KEY": "mcp__openviking__find",
     }
 
     def test_memory_provider_keys_are_catalogued(self):

@@ -271,7 +271,7 @@ hermes honcho sync
 | **数据存储** | 自托管（本地或云端） |
 | **费用** | 免费（开源，AGPL-3.0） |
 
-**工具：** `viking_search`（语义搜索）、`viking_read`（分层：摘要/概览/全文）、`viking_browse`（文件系统导航）、`viking_remember`（存储事实）、`viking_add_resource`（导入 URL/文档）
+**工具：** Hermes 通过 MCP 直接从运行中的 OpenViking 服务器发现工具。工具名称使用 `mcp__openviking__` 前缀，例如 `mcp__openviking__find`、`mcp__openviking__search` 和 `mcp__openviking__read`。
 
 **安装：**
 ```bash
@@ -281,15 +281,21 @@ openviking-server
 
 # 然后配置 Hermes
 hermes memory setup    # 选择 "openviking"
-# 或手动配置：
-hermes config set memory.provider openviking
-echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
 ```
+
+Hermes 使用的 MCP 工具和 actor-peer 契约要求 OpenViking 0.4.1 或更高版本。迁移期间，现有配置仍可在部分旧版服务器上继续运行基于 REST 的自动内存生命周期；新设置或重新运行设置则要求 OpenViking 0.4.1 或更高版本。
+
+`hermes memory setup` 可以导入现有 `ovcli.conf` 配置，也可以创建新连接。设置过程会配置基于 REST 的自动召回和捕获，并配置 `<endpoint>/mcp` 上的直接 HTTP MCP 工具。非机密连接设置保存在当前 Hermes 配置的 `config.yaml` 中，只有 `OPENVIKING_API_KEY` 保存在该配置的 `.env` 中。两个连接使用同一个密钥，不需要 MCP 代理或单独安装 OpenViking Agent Plugin。
+
+如需更改端点或导入其他 OpenViking 配置，请再次运行设置。导入后再直接修改 `ovcli.conf` 不会更改 Hermes 配置。
 
 **主要特性：**
 - 分层上下文加载：L0（约 100 tokens）→ L1（约 2k）→ L2（完整）
 - 会话提交时自动提取记忆（profile、偏好、实体、事件、案例、模式）
 - `viking://` URI 方案用于层级知识浏览
+- 由服务器管理的 MCP 工具；Hermes 下次连接 OpenViking 时会加载更新
+
+升级现有 Hermes 配置后，请运行一次 `hermes memory setup`，用直接 MCP 连接替换已移除的 `viking_*` 原生工具。迁移期间，自动内存生命周期仍兼容旧的 `ovcli.conf` 链接配置。
 
 ---
 
@@ -548,7 +554,7 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 | 提供者 | 存储 | 费用 | 工具数 | 依赖 | 独特特性 |
 |----------|---------|------|-------|-------------|----------------|
 | **Honcho** | 云端 | 付费 | 5 | `honcho-ai` | 辩证用户建模 + 会话范围上下文 |
-| **OpenViking** | 自托管 | 免费 | 5 | `openviking` + 服务器 | 文件系统层级 + 分层加载 |
+| **OpenViking** | 自托管 | 免费 | 服务器 MCP | OpenViking 服务器 | 文件系统层级 + 分层加载 |
 | **Mem0** | 云端 | 付费 | 3 | `mem0ai` | 服务端 LLM 提取 |
 | **Hindsight** | 云端/本地 | 免费/付费 | 3 | `hindsight-client` | 知识图谱 + reflect 合成 |
 | **Holographic** | 本地 | 免费 | 2 | 无 | HRR 代数 + 信任评分 |
@@ -563,7 +569,7 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 - **本地存储提供者**（Holographic、ByteRover）使用 `$HERMES_HOME/` 路径，各 profile 路径不同
 - **配置文件提供者**（Honcho、Mem0、Hindsight、Supermemory）将配置存储在 `$HERMES_HOME/` 中，每个 profile 拥有独立凭证
 - **云端提供者**（RetainDB）自动派生 profile 范围的项目名称
-- **环境变量提供者**（OpenViking）通过每个 profile 的 `.env` 文件配置
+- **OpenViking** 将非机密设置保存在每个 profile 的 `config.yaml` 中，并将 API 密钥保存在该 profile 的 `.env` 中
 
 ## 构建记忆提供者
 

@@ -1124,7 +1124,7 @@ agent:
 #
 # If not set, defaults are:
 #   cli:           hermes-cli            (everything + cronjob management)
-#   telegram:      hermes-telegram       (terminal, file, web, vision, image, tts, browser, skills, todo, cronjob, messaging)
+#   telegram:      hermes-telegram       (terminal, file, web, vision, image, tts, browser, skills, todo, cronjob)
 #   discord:       hermes-discord        (same as telegram)
 #   whatsapp:      hermes-whatsapp       (same as telegram)
 #   slack:         hermes-slack          (same as telegram)
@@ -1133,6 +1133,10 @@ agent:
 #   qqbot:            hermes-qqbot            (same as telegram)
 #   teams:            hermes-teams            (same as telegram)
 #   google_chat:      hermes-google_chat      (same as telegram)
+#
+# Outbound agent messaging is never part of a default preset. Opt in only on
+# platforms where the agent may proactively send messages or reactions:
+#   telegram: [hermes-telegram, messaging]
 #
 platform_toolsets:
   cli: [hermes-cli]

@@ -4,6 +4,7 @@ import toolsets as toolsets_mod
 from tools.registry import ToolRegistry
 from toolsets import (
     TOOLSETS,
+    _HERMES_CORE_TOOLS,
     get_toolset,
     resolve_toolset,
     resolve_multiple_toolsets,
@@ -199,6 +200,11 @@ class TestToolsetConsistency:
             assert "tools" in ts, f"{name} missing tools"
             assert "includes" in ts, f"{name} missing includes"
 
+
+    def test_messaging_is_an_explicit_non_core_toolset(self):
+        """Outbound sends must never ride along with every platform's core tools."""
+        assert TOOLSETS["messaging"]["tools"] == ["send_message"]
+        assert "send_message" not in _HERMES_CORE_TOOLS
 
     def test_hermes_platforms_share_core_tools(self):
         """All hermes-* platform toolsets share the same core tools.

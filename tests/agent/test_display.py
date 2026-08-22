@@ -1,6 +1,7 @@
 """Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
 import json
+import re
 import pytest
 from unittest.mock import MagicMock
 
@@ -240,6 +241,102 @@ class TestEditDiffPreview:
         assert any("a/file2.py" in line for line in rendered)
         assert not any("a/file7.py" in line for line in rendered)
         assert "additional file" in rendered[-1]
+
+
+class TestInlineDiffColors:
+    """Inline diffs are colored only when the output supports it."""
+
+    @pytest.fixture(autouse=True)
+    def reset_diff_colors(self, monkeypatch):
+        monkeypatch.setattr(display_module, "_diff_colors_cached", None)
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+    @staticmethod
+    def _diff():
+        return (
+            "--- a/x.ts\n"
+            "+++ b/x.ts\n"
+            "@@ -1 +1 @@\n"
+            " context\n"
+            "-old line\n"
+            "+new line\n"
+        )
+
+    @staticmethod
+    def _stdout(is_tty):
+        class _Stdout:
+            def isatty(self):
+                return is_tty
+
+        return _Stdout()
+
+    @staticmethod
+    def _strip_ansi(line):
+        return re.sub(r"\x1b\[[0-9;]*m", "", line)
+
+    def test_non_tty_output_has_no_ansi(self, monkeypatch):
+        monkeypatch.setattr(display_module.sys, "stdout", self._stdout(False))
+
+        rendered = _render_inline_unified_diff(self._diff())
+
+        assert rendered == [
+            "a/x.ts → b/x.ts",
+            "@@ -1 +1 @@",
+            " context",
+            "-old line",
+            "+new line",
+        ]
+        assert all("\x1b" not in line for line in rendered)
+
+    def test_no_color_overrides_tty_and_force_color(self, monkeypatch):
+        monkeypatch.setattr(display_module.sys, "stdout", self._stdout(True))
+        monkeypatch.setenv("NO_COLOR", "1")
+        monkeypatch.setenv("FORCE_COLOR", "1")
+
+        rendered = _render_inline_unified_diff(self._diff())
+
+        assert all("\x1b" not in line for line in rendered)
+
+    def test_force_color_overrides_non_tty(self, monkeypatch):
+        monkeypatch.setattr(display_module.sys, "stdout", self._stdout(False))
+        monkeypatch.setenv("FORCE_COLOR", "1")
+
+        rendered = _render_inline_unified_diff(self._diff())
+
+        assert all("\x1b[" in line for line in rendered)
+        assert all(line.endswith("\x1b[0m") for line in rendered)
+
+    def test_tty_output_preserves_text_and_adds_color(self, monkeypatch):
+        monkeypatch.setattr(display_module.sys, "stdout", self._stdout(False))
+        plain = _render_inline_unified_diff(self._diff())
+
+        monkeypatch.setattr(display_module.sys, "stdout", self._stdout(True))
+        colored = _render_inline_unified_diff(self._diff())
+
+        assert [self._strip_ansi(line) for line in colored] == plain
+        assert all("\x1b[0m" not in line for line in plain)
+
+    def test_non_tty_summary_has_no_dangling_reset(self, monkeypatch):
+        monkeypatch.setattr(display_module.sys, "stdout", self._stdout(False))
+
+        rendered = _summarize_rendered_diff_sections(self._diff(), max_lines=0)
+
+        assert rendered == [
+            "… omitted 5 diff line(s) across 1 additional file(s)/section(s)"
+        ]
+        assert all("\x1b" not in line for line in rendered)
+
+    def test_broken_isatty_is_treated_as_non_tty(self, monkeypatch):
+        class _BrokenStdout:
+            def isatty(self):
+                raise RuntimeError("isatty unavailable")
+
+        monkeypatch.setattr(display_module.sys, "stdout", _BrokenStdout())
+
+        rendered = _render_inline_unified_diff(self._diff())
+
+        assert all("\x1b" not in line for line in rendered)
 
 
 class TestBuildToolLabel:

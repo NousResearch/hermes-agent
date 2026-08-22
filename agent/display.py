@@ -42,9 +42,30 @@ def _display_url(value: Any) -> str:
 _diff_colors_cached: dict[str, str] | None = None
 
 
+def _diff_color_enabled() -> bool:
+    """Return whether inline diff colors should be emitted."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
+
+
 def _diff_ansi() -> dict[str, str]:
     """Return ANSI escapes for diff display, resolved from the active skin."""
     global _diff_colors_cached
+    if not _diff_color_enabled():
+        return {
+            "dim": "",
+            "file": "",
+            "hunk": "",
+            "minus": "",
+            "plus": "",
+            "reset": "",
+        }
     if _diff_colors_cached is not None:
         return _diff_colors_cached
 
@@ -85,7 +106,7 @@ def _diff_ansi() -> dict[str, str]:
 
     _diff_colors_cached = {
         "dim": dim, "file": file_c, "hunk": hunk,
-        "minus": minus, "plus": plus,
+        "minus": minus, "plus": plus, "reset": _ANSI_RESET,
     }
     return _diff_colors_cached
 
@@ -96,6 +117,7 @@ def _diff_file():  return _diff_ansi()["file"]
 def _diff_hunk():  return _diff_ansi()["hunk"]
 def _diff_minus(): return _diff_ansi()["minus"]
 def _diff_plus():  return _diff_ansi()["plus"]
+def _diff_reset(): return _diff_ansi()["reset"]
 _MAX_INLINE_DIFF_FILES = 6
 _MAX_INLINE_DIFF_LINES = 80
 
@@ -968,19 +990,22 @@ def _render_inline_unified_diff(diff: str) -> list[str]:
         if raw_line.startswith("+++ "):
             to_file = raw_line[4:].strip()
             if from_file or to_file:
-                rendered.append(f"{_diff_file()}{from_file or 'a/?'} → {to_file or 'b/?'}{_ANSI_RESET}")
+                rendered.append(
+                    f"{_diff_file()}{from_file or 'a/?'} → "
+                    f"{to_file or 'b/?'}{_diff_reset()}"
+                )
             continue
         if raw_line.startswith("@@"):
-            rendered.append(f"{_diff_hunk()}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_hunk()}{raw_line}{_diff_reset()}")
             continue
         if raw_line.startswith("-"):
-            rendered.append(f"{_diff_minus()}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_minus()}{raw_line}{_diff_reset()}")
             continue
         if raw_line.startswith("+"):
-            rendered.append(f"{_diff_plus()}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_plus()}{raw_line}{_diff_reset()}")
             continue
         if raw_line.startswith(" "):
-            rendered.append(f"{_diff_dim()}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_dim()}{raw_line}{_diff_reset()}")
             continue
         if raw_line:
             rendered.append(raw_line)
@@ -1046,7 +1071,7 @@ def _summarize_rendered_diff_sections(
         summary = f"… omitted {omitted_lines} diff line(s)"
         if omitted_files:
             summary += f" across {omitted_files} additional file(s)/section(s)"
-        rendered.append(f"{_diff_hunk()}{summary}{_ANSI_RESET}")
+        rendered.append(f"{_diff_hunk()}{summary}{_diff_reset()}")
 
     return rendered
 

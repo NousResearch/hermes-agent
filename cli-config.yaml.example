@@ -1180,6 +1180,24 @@ platform_toolsets:
 #       # Render live tool calls as Slack-native plan/task cards. This explicit
 #       # opt-in works even though Slack text tool_progress defaults to off.
 #       native_task_cards: false
+#       # Namespace prefix for every generated Slack slash command. Slack
+#       # slash commands are workspace-global and NOT namespaced, so two
+#       # gateway apps in one workspace fight over generic names like
+#       # /model or /new — Slack routes each to whichever app was installed
+#       # most recently. Setting a prefix registers /myorg-model,
+#       # /myorg-hermes, ... instead; the gateway strips it again on the way
+#       # in, so behaviour is unchanged.
+#       #
+#       # Empty (the default) keeps the historical unprefixed names.
+#       # Sanitized to Slack's charset (a-z, 0-9, -, _); a trailing - or _
+#       # is preserved, so "myorg-" gives /myorg-model rather than
+#       # /myorgmodel. Keep it short: prefix + command must stay within
+#       # Slack's 32-character limit, and names that overflow are dropped
+#       # from the manifest (still reachable via /<prefix>hermes <command>).
+#       #
+#       # Changing this requires reinstalling/updating the Slack app with a
+#       # regenerated manifest (`hermes slack manifest`).
+#       command_prefix: ""
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

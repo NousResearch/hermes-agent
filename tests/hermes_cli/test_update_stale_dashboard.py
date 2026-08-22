@@ -88,7 +88,7 @@ def _ps_runner(stdout: str):
     return _side_effect
 
 
-def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeypatch):
+def _write_valid_ssh_backend_lock(tmp_path, monkeypatch) -> int:
     pid = 4242
     ownership_id = "a" * 32
     spawn_nonce = "b" * 16
@@ -110,6 +110,11 @@ def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeyp
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_DESKTOP_CHILD_PID", raising=False)
+    return pid
+
+
+def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeypatch):
+    pid = _write_valid_ssh_backend_lock(tmp_path, monkeypatch)
 
     def assert_owned_pid_is_excluded(*, exclude_pids=None):
         assert exclude_pids is not None
@@ -121,6 +126,25 @@ def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeyp
         side_effect=assert_owned_pid_is_excluded,
     ):
         result = _kill_stale_dashboard_processes(restart_managed=True)
+
+    assert result == {"matched": [], "killed": [], "failed": []}
+
+
+def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(
+    tmp_path,
+    monkeypatch,
+):
+    pid = _write_valid_ssh_backend_lock(tmp_path, monkeypatch)
+
+    def assert_owned_pid_is_not_excluded(*, exclude_pids=None):
+        assert exclude_pids is None or pid not in exclude_pids
+        return []
+
+    with patch(
+        "hermes_cli.main._find_stale_dashboard_pids",
+        side_effect=assert_owned_pid_is_not_excluded,
+    ):
+        result = _kill_stale_dashboard_processes(restart_managed=False)
 
     assert result == {"matched": [], "killed": [], "failed": []}
 

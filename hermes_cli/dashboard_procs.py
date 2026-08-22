@@ -374,11 +374,12 @@ def _kill_stale_dashboard_processes(
             except (ValueError, TypeError):
                 pass
 
-    # An SSH-owned backend belongs to an attached Desktop client even when the
-    # updater runs from an unrelated remote shell with no Desktop child PID.
-    # Honor the same validated ownership records as the orphan reaper; killing
-    # one permanently strands that client's fixed SSH port-forward.
-    exclude |= _lock_owned_serve_pids()
+    if restart_managed:
+        # An SSH-owned backend belongs to an attached Desktop client even when
+        # the updater runs from an unrelated remote shell with no Desktop child
+        # PID. Honor the same validated ownership records as the orphan reaper;
+        # killing one permanently strands that client's fixed SSH port-forward.
+        exclude |= _lock_owned_serve_pids()
 
     pids = _m()._find_stale_dashboard_pids(exclude_pids=exclude or None)
     if not pids:

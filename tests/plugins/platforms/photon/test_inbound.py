@@ -183,6 +183,39 @@ async def test_caf_attachment_named_promoted_to_voice(
 
 
 @pytest.mark.asyncio
+async def test_caf_attachment_with_opaque_metadata_promoted_to_voice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CAF magic bytes override opaque attachment metadata from iMessage."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    raw = _CAF_BYTES
+    event = _caf_attachment_event(
+        {
+            "name": "(unnamed)",
+            "mimeType": "application/octet-stream",
+            "size": len(raw),
+            "data": base64.b64encode(raw).decode("ascii"),
+            "encoding": "base64",
+        }
+    )
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.message_type == MessageType.VOICE
+    assert ev.text == "(voice)"
+    assert len(ev.media_urls) == 1
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.suffix == ".caf"
+        assert cached.read_bytes() == raw
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
 async def test_fffc_placeholder_no_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

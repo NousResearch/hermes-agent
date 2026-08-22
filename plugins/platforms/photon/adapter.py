@@ -1259,10 +1259,23 @@ class PhotonAdapter(BasePlatformAdapter):
             name = payload.get("name") or ("voice" if is_voice else "(unnamed)")
             mime = payload.get("mimeType") or ""
             # Promote CAF attachments to VOICE (iMessage voice notes use CAF).
-            # Check both filename and MIME: the sidecar may send "(unnamed)"
-            # when no name is supplied, so the MIME type is the reliable signal.
-            if not is_voice and (name.lower().endswith(".caf") or mime == "audio/x-caf"):
+            # Upstream metadata is not reliable: live Spectrum events may call
+            # them unnamed application/octet-stream attachments. Check name,
+            # MIME, and the CAF file signature before choosing the gateway type.
+            caf_magic = False
+            data_b64 = payload.get("data")
+            if isinstance(data_b64, str) and data_b64:
+                try:
+                    caf_magic = base64.b64decode(data_b64[:8]).startswith(b"caff")
+                except (ValueError, TypeError):
+                    pass
+            if not is_voice and (
+                name.lower().endswith(".caf")
+                or mime == "audio/x-caf"
+                or caf_magic
+            ):
                 is_voice = True
+                mime = "audio/x-caf"
             mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
             cached = _cache_inbound_attachment(
                 payload, name, mime, force_audio=is_voice

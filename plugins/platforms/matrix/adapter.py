@@ -141,6 +141,36 @@ from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
 
+try:  # mautrix is an optional extra; keep import-time safe without it
+    from mautrix.util.logging import SILLY as _MAUTRIX_SILLY, TRACE as _MAUTRIX_TRACE
+except ImportError:  # pragma: no cover — matches mautrix 0.21.x values
+    _MAUTRIX_TRACE = 5
+    _MAUTRIX_SILLY = 1
+
+
+class _MautrixCryptoLogger(logging.LoggerAdapter):
+    """Provide mautrix's non-standard trace levels on a stdlib logger.
+
+    ``OlmMachine`` types its logger as mautrix's ``TraceLogger`` and calls
+    ``trace()``/``silly()`` while handling encrypted to-device events. Those
+    methods only exist when the ``mau.crypto`` logger was created after
+    mautrix installed its custom logger class — nothing guarantees that in
+    this process, where ``logging.getLogger("mau.crypto")`` can return a
+    plain stdlib ``Logger``. A missing ``trace()`` then raises
+    ``AttributeError`` inside the crypto handler and the room-key event is
+    dropped before it is processed, silently breaking E2EE decryption.
+    """
+
+    def trace(self, msg: Any, *args: Any, **kwargs: Any) -> None:
+        self.log(_MAUTRIX_TRACE, msg, *args, **kwargs)
+
+    def silly(self, msg: Any, *args: Any, **kwargs: Any) -> None:
+        self.log(_MAUTRIX_SILLY, msg, *args, **kwargs)
+
+
+def _mautrix_crypto_logger() -> _MautrixCryptoLogger:
+    return _MautrixCryptoLogger(logging.getLogger("mau.crypto"), {})
+
 _MATRIX_VOICE_WAVEFORM_BINS = 30
 
 
@@ -1956,7 +1986,14 @@ class MatrixAdapter(BasePlatformAdapter):
                             )
 
                     crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)
-                    olm = OlmMachine(client, crypto_store, crypto_state)
+                    # Pass an explicit compatibility logger: in this process
+                    # ``mau.crypto`` may be a plain stdlib Logger without
+                    # mautrix's trace()/silly() extensions, and a missing
+                    # trace() aborts encrypted to-device key events.
+                    olm = OlmMachine(
+                        client, crypto_store, crypto_state,
+                        log=_mautrix_crypto_logger(),
+                    )
                     olm.share_keys_min_trust = TrustState.UNVERIFIED
                     olm.send_keys_min_trust = TrustState.UNVERIFIED
 

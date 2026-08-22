@@ -33,6 +33,7 @@ from hermes_state import (
     _MAX_MALFORMED_BACKUPS,
     _MAX_PERSISTENT_REPAIR_ATTEMPTS,
     _REPAIR_BACKUP_MIN_FREE_BYTES,
+    _backup_content_identity,
     _backup_db_file,
     _db_fingerprint,
     _existing_malformed_backups,
@@ -677,3 +678,107 @@ def test_prune_removes_journal_sidecars_too(tmp_path):
     # And every surviving backup keeps its journal.
     for survivor in kept:
         assert survivor.with_name(survivor.name + "-journal").exists()
+
+
+# ---------------------------------------------------------------------------
+# Backup identity vs repair-epoch fingerprint are different equivalence
+# relations (the forensic dedupe must NOT reuse _db_fingerprint).
+# ---------------------------------------------------------------------------
+
+
+def test_backup_not_deduped_after_interior_page_write(tmp_path):
+    """An interior-page write must force a fresh forensic backup.
+
+    ``_db_fingerprint`` deliberately samples only head/tail and masks commit
+    counters so an ordinary write does not re-key the repair budget. If the
+    forensic dedupe reused THAT identity, a live writer committing new rows
+    into an interior page (size preserved, first/last 64KiB untouched) would
+    be handed the STALE earlier backup as "identical" — a recovery point that
+    predates real user data. The dedupe must use ``_backup_content_identity``
+    (whole file), which detects the interior change.
+    """
+    # Larger than 2x the 64KiB head/tail sample so a middle region exists
+    # outside the sampled windows.
+    db = tmp_path / "state.db"
+    db.write_bytes(b"SQLite format 3\x00" + os.urandom(300_000))
+    size = db.stat().st_size
+    roomy = type(
+        "Usage", (), {"total": 500_000_000_000, "used": 0, "free": 400_000_000_000}
+    )()
+
+    with patch("shutil.disk_usage", return_value=roomy):
+        first, err = _backup_db_file(db)
+    assert err is None and first is not None
+
+    # Mutate an interior byte far from both sampled windows; keep size + mtime.
+    raw = bytearray(db.read_bytes())
+    mid = len(raw) // 2
+    raw[mid] ^= 0xFF
+    st = db.stat()
+    db.write_bytes(bytes(raw))
+    os.utime(db, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert db.stat().st_size == size
+
+    # Guard the test's own premise: the repair-epoch fingerprint is BLIND to
+    # this change (that is why it must not be the dedupe key), while the
+    # backup-content identity SEES it.
+    assert _backup_content_identity(db) != _backup_content_identity(first)
+
+    with patch("shutil.disk_usage", return_value=roomy):
+        second, err = _backup_db_file(db)
+    assert err is None and second is not None
+    assert second != first, "an interior-page write was wrongly deduped to a stale backup"
+    assert len(_existing_malformed_backups(db)) == 2
+
+
+def test_publication_failure_leaves_no_countable_partial_bundle(tmp_path):
+    """A mid-publish os.replace failure must not leave a countable main backup.
+
+    The bundle is published sidecars-first, main-DB-last (the main name is the
+    commit marker ``_existing_malformed_backups`` counts). If a promotion after
+    the first fails, cleanup must roll back every already-published
+    destination — otherwise an incomplete bundle (main present, a sidecar
+    missing) survives, passes the #69603 hard stop, and is deduped/reused as a
+    legitimate forensic copy on the next pass.
+
+    Distinct from ``test_failed_copy_leaves_no_countable_debris``, which fails
+    during ``copy2`` (before any ``os.replace``); this exercises the
+    publication window.
+    """
+    db = _damaged_db(tmp_path, size=200_000)
+    db.with_name(db.name + "-wal").write_bytes(os.urandom(50_000))
+    roomy = type(
+        "Usage", (), {"total": 500_000_000_000, "used": 0, "free": 400_000_000_000}
+    )()
+
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def replace_fails_after_first(src, dst, *a, **kw):
+        # Let the first promotion (a sidecar) land, fail the next one.
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError(28, "No space left on device")
+        return real_replace(src, dst, *a, **kw)
+
+    with patch("shutil.disk_usage", return_value=roomy), \
+            patch("os.replace", replace_fails_after_first):
+        try:
+            _backup_db_file(db)
+        except OSError:
+            pass  # the failure is re-raised by design; we assert on-disk state
+
+    # No countable main backup, and no orphaned promoted sidecar, may survive.
+    assert not _existing_malformed_backups(db), "a partial bundle was left countable"
+    promoted = [
+        p for p in tmp_path.iterdir()
+        if ".malformed-backup-" in p.name and p.name != "state.db"
+    ]
+    assert not promoted, f"partial promoted files survived: {promoted}"
+
+    # A later clean pass must still succeed and must not dedupe onto debris.
+    with patch("shutil.disk_usage", return_value=roomy):
+        path, reason = _backup_db_file(db)
+    assert reason is None and path is not None
+    strays = list(tmp_path.glob("*.backup-staging-*"))
+    assert not strays, f"staging debris survived: {strays}"

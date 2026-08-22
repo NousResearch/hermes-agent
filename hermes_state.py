@@ -1989,6 +1989,71 @@ def _db_fingerprint(db_path: Path) -> "Optional[str]":
         return None
 
 
+def _backup_content_identity(db_path: Path) -> "Optional[str]":
+    """Recovery-image identity for forensic-backup dedupe: whole-file + sidecars.
+
+    This is a DIFFERENT equivalence relation from :func:`_db_fingerprint`, and
+    the two MUST NOT be conflated. ``_db_fingerprint`` answers "same repair
+    epoch?" — it masks SQLite's commit counters and samples only the head/tail
+    so an ordinary write does not mint a fresh repair budget. That is exactly
+    the wrong predicate for "may I reuse an existing forensic copy?": a live
+    writer can commit new transcript/session rows into an *interior* page while
+    preserving file size and leaving the first/last 64 KiB untouched, so two
+    materially different recovery images share one ``_db_fingerprint``. Reusing
+    a backup on that basis hands the operator a snapshot that predates real
+    user data (and #87409 shows a failed in-place repair can still VACUUM
+    canonical tables away), so the forensic copy must claim byte identity, not
+    epoch identity.
+
+    So this digests the ENTIRE main file plus every present sidecar
+    (``-wal``/``-shm``/``-journal``) — the WAL can hold committed frames not yet
+    checkpointed, so it is part of the recovery image. The cost is an O(n) read;
+    on a miss the caller is about to do an O(n) *write* (the full raw copy), so
+    the read is the cheaper half and never the dominant cost. Runs under
+    ``offline_file_access`` for the same POSIX-advisory-lock reason as
+    ``_db_fingerprint``; returns ``None`` when a live connection makes the read
+    unsafe (caller then declines to dedupe and takes a fresh backup — the safe
+    side, never a false reuse).
+    """
+    try:
+        from hermes_cli.sqlite_safe_read import (
+            LiveConnectionError,
+            offline_file_access,
+        )
+    except ImportError:
+        @contextmanager
+        def offline_file_access(_path, **_kw):
+            yield
+
+        class LiveConnectionError(Exception):
+            pass
+
+    def _hash_whole(path: Path, hasher: "Any") -> None:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                hasher.update(chunk)
+
+    try:
+        hasher = hashlib.sha256()
+        with offline_file_access(db_path, what="backup-identity"):
+            # Length-delimit every member (main file included) so the
+            # concatenation is prefix-free — otherwise a main-file tail could
+            # coincide with a main+sidecar split and dedupe two different
+            # recovery images together.
+            hasher.update(f"\0main:{db_path.stat().st_size}\0".encode())
+            _hash_whole(db_path, hasher)
+            for suffix in _DB_SIDECAR_SUFFIXES:
+                sidecar = db_path.with_name(db_path.name + suffix)
+                if sidecar.exists():
+                    hasher.update(f"\0{suffix}:{sidecar.stat().st_size}\0".encode())
+                    _hash_whole(sidecar, hasher)
+        return hasher.hexdigest()
+    except LiveConnectionError:
+        return None
+    except OSError:
+        return None
+
+
 def _read_repair_ledger(db_path: Path) -> "Dict[str, Any]":
     try:
         raw = json.loads(_repair_ledger_path(db_path).read_text(encoding="utf-8"))
@@ -2171,24 +2236,38 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
                     pass
         # Dedupe (#86747): a repair loop used to copy the SAME damaged bytes
         # on every restart — ~900MB a pass, 89GB over 11 days in the
-        # reporting install. If the newest existing backup already matches
-        # this file, reuse it.
+        # reporting install. If the newest existing backup is byte-identical to
+        # the current recovery image, reuse it.
         #
         # Matching on mtime made this dedupe miss exactly when it mattered
         # most: the malformed-SCHEMA class still accepts writes, so live
         # writers and the in-place repair strategies move mtime between
         # passes and every pass wrote another full-size copy (2.3GB in 20
-        # minutes). Compare the content fingerprint instead, which is stable
-        # while the damaged bytes are.
+        # minutes).
+        #
+        # Use ``_backup_content_identity`` (whole file + sidecars), NOT the
+        # repair-epoch ``_db_fingerprint``. They are different equivalence
+        # relations: the fingerprint masks commit counters and samples only
+        # head/tail so an ordinary interior-page write does not re-key the
+        # repair budget — but that same write DOES change the recovery image,
+        # and deduping on the fingerprint would hand back a stale backup that
+        # predates the write. A forensic copy must prove byte identity, so it
+        # pays the O(n) read (cheaper than the O(n) write it avoids on a hit).
         try:
-            src_fp = _db_fingerprint(db_path)
-            for existing in _existing_malformed_backups(db_path)[:1]:
-                if src_fp is not None and _db_fingerprint(existing) == src_fp:
-                    logger.info(
-                        "Reusing existing forensic backup %s (identical to the "
-                        "damaged DB).", existing,
-                    )
-                    return existing, None
+            # Only hash the source when there is actually a candidate to dedupe
+            # against — on the common first-corruption pass there is no prior
+            # backup, and hashing the (possibly multi-GB) source then would be
+            # pure waste right before the copy reads it again anyway.
+            existing_backups = _existing_malformed_backups(db_path)[:1]
+            if existing_backups:
+                src_id = _backup_content_identity(db_path)
+                for existing in existing_backups:
+                    if src_id is not None and _backup_content_identity(existing) == src_id:
+                        logger.info(
+                            "Reusing existing forensic backup %s (identical to the "
+                            "damaged DB).", existing,
+                        )
+                        return existing, None
         except OSError:
             pass
         # Disk guard: this is a full raw copy of a possibly multi-GB DB plus
@@ -2239,24 +2318,49 @@ def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
         # the dedupe could hand a partial back as the official ``backup_path``,
         # passing the #69603 hard-stop gate with no real forensic copy on disk.
         staging = db_path.with_name(f"{db_path.name}.backup-staging-{stamp}")
-        staged: "List[Tuple[Path, Path]]" = []
+        # (staging_src, final_dst) pairs. ORDER MATTERS for publication: the
+        # main-DB backup name is the bundle's commit marker —
+        # ``_existing_malformed_backups`` matches ``{db}.malformed-backup-*``
+        # and excludes only the ``-wal``/``-shm``/``-journal`` suffixes, so the
+        # main file appearing is what makes the bundle "count". Sidecars are
+        # therefore staged/published FIRST and the main DB LAST, so a failure
+        # partway through never leaves a countable main backup standing over a
+        # missing sidecar (an incomplete recovery image that would pass the
+        # #69603 hard stop and dedupe as legitimate on the next pass).
+        staged_sidecars: "List[Tuple[Path, Path, Path]]" = []
+        for suffix in _DB_SIDECAR_SUFFIXES:
+            sidecar = db_path.with_name(db_path.name + suffix)
+            if sidecar.exists():
+                side_staging = staging.with_name(staging.name + suffix)
+                side_dst = backup_path.with_name(backup_path.name + suffix)
+                staged_sidecars.append((sidecar, side_staging, side_dst))
+        main_pair = (staging, backup_path)
+        published: "List[Path]" = []
+        all_staging_srcs = [staging] + [s for _src, s, _d in staged_sidecars]
         try:
             shutil.copy2(db_path, staging)
-            staged.append((staging, backup_path))
-            for suffix in _DB_SIDECAR_SUFFIXES:
-                sidecar = db_path.with_name(db_path.name + suffix)
-                if sidecar.exists():
-                    side_staging = staging.with_name(staging.name + suffix)
-                    shutil.copy2(sidecar, side_staging)
-                    staged.append(
-                        (side_staging, backup_path.with_name(backup_path.name + suffix))
-                    )
-            for src, dst in staged:
+            for sidecar, side_staging, _side_dst in staged_sidecars:
+                shutil.copy2(sidecar, side_staging)
+            # Publish sidecars first, main DB LAST (the commit marker), so a
+            # mid-publish failure never leaves a countable-but-incomplete bundle.
+            publish_order = [
+                (s, d) for _src, s, d in staged_sidecars
+            ] + [main_pair]
+            for src, dst in publish_order:
                 os.replace(src, dst)
+                published.append(dst)
         except Exception:
-            for src, _ in staged:
+            # Roll back BOTH unpublished staging files AND anything already
+            # promoted — the old code unlinked only staging srcs, so a failure
+            # after the main os.replace left the official backup_path on disk.
+            for src in all_staging_srcs:
                 try:
                     src.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            for dst in published:
+                try:
+                    dst.unlink(missing_ok=True)
                 except OSError:
                     pass
             try:

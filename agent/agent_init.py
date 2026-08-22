@@ -1897,10 +1897,14 @@ def init_agent(
                         "platform": platform or "cli",
                         "hermes_home": str(get_hermes_home()),
                         "agent_context": "primary",
+                        # Providers may emit status from background workers after
+                        # gateway/TUI construction has finished.  _emit_status
+                        # resolves the surface callback at emission time, so this
+                        # remains valid when that callback is bound later.
+                        "status_callback": agent._emit_status,
                     }
                     if _init_kwargs["platform"] == "cli":
                         _init_kwargs["warning_callback"] = agent._emit_warning
-                        _init_kwargs["status_callback"] = agent._emit_status
                     # Thread session title for memory provider scoping
                     # (e.g. honcho uses this to derive chat-scoped session keys)
                     if agent._session_db:
@@ -1936,10 +1940,6 @@ def init_agent(
                         _init_kwargs["agent_workspace"] = "hermes"
                     except Exception:
                         pass
-                    # NOTE: status_callback (for the deterministic retain
-                    # indicator) is wired above, CLI-only — gateway status is
-                    # delivered on a different path (see the platform=="cli"
-                    # block), and the indicator no-ops when it's absent.
                     agent._memory_manager.initialize_all(**_init_kwargs)
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:

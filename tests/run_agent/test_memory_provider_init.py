@@ -93,7 +93,7 @@ def test_close_shuts_down_memory_provider():
     agent._memory_manager.shutdown_all.assert_called_once()
 
 
-def test_aiagent_forwards_user_id_alt_to_memory_provider():
+def test_aiagent_forwards_gateway_identity_and_late_bound_status_bridge():
     provider = RecordingMemoryProvider()
     cfg = {"memory": {"provider": "recording"}, "agent": {}}
 
@@ -125,7 +125,13 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert provider.init_kwargs["user_id_alt"] == "union-id"
     assert provider.init_kwargs["platform"] == "feishu"
     assert "warning_callback" not in provider.init_kwargs
-    assert "status_callback" not in provider.init_kwargs
+    assert callable(provider.init_kwargs["status_callback"])
+
+    status_events = []
+    agent.status_callback = lambda kind, text: status_events.append((kind, text))
+    provider.init_kwargs["status_callback"]("saving to memory")
+
+    assert status_events == [("lifecycle", "saving to memory")]
 
 
 class CoreShadowProvider:

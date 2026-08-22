@@ -9557,13 +9557,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, _redact_telegram_error_text(e))
 
     def _effective_update_message(self, update: Update) -> Optional[Message]:
-        """Return the message-like payload for normal messages and channel posts.
+        """Return the payload for new messages and channel posts only.
 
         Telegram exposes channel broadcasts as ``update.channel_post`` rather
-        than ``update.message``.  MessageHandler filters can still dispatch
+        than ``update.message``. MessageHandler filters can still dispatch
         those updates, so handlers must use ``effective_message`` to avoid
         consuming channel posts without ever building a gateway event.
+
+        Edited messages are deliberately ignored. Telegram can emit spurious
+        ``edited_message`` updates for metadata-only changes such as member-tag
+        updates, and replaying their original text could re-run side-effecting
+        commands such as ``/stop`` or ``/restart``.
         """
+        if (
+            getattr(update, "edited_message", None) is not None
+            or getattr(update, "edited_channel_post", None) is not None
+        ):
+            return None
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

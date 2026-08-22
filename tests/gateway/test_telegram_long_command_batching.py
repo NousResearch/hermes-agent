@@ -67,6 +67,31 @@ def _make_update(text):
     return SimpleNamespace(update_id=1, message=_make_message(text), effective_message=None)
 
 
+def _make_edited_update(text, edited_field):
+    message = _make_message(text)
+    return SimpleNamespace(
+        update_id=2,
+        message=None,
+        channel_post=None,
+        edited_message=message if edited_field == "edited_message" else None,
+        edited_channel_post=message if edited_field == "edited_channel_post" else None,
+        effective_message=message,
+    )
+
+
+@pytest.mark.parametrize("edited_field", ("edited_message", "edited_channel_post"))
+@pytest.mark.parametrize("command", ("/restart", "/new", "/stop"))
+@pytest.mark.asyncio
+async def test_edited_command_is_not_dispatched(edited_field, command):
+    adapter = _make_adapter()
+
+    await adapter._handle_command(
+        _make_edited_update(command, edited_field), SimpleNamespace()
+    )
+
+    adapter.handle_message.assert_not_awaited()  # type: ignore[attr-defined]
+
+
 @pytest.mark.asyncio
 async def test_short_command_dispatched_immediately():
     adapter = _make_adapter()

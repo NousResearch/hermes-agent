@@ -122,6 +122,41 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         # no-key-required should be used
 
+    def test_command_backed_codex_provider_keeps_required_headers(self, tmp_path):
+        """Auxiliary calls must preserve host and per-provider auth headers."""
+        _write_config(tmp_path, {
+            "model": {"default": "gpt-test"},
+            "providers": {
+                "codex-passive": {
+                    "api": "https://chatgpt.com/backend-api/codex",
+                    "transport": "codex_responses",
+                    "key_cmd": "print-token",
+                    "models": {"gpt-test": {}},
+                    "extra_headers": {"ChatGPT-Account-ID": "acct-test"},
+                },
+            },
+        })
+        token_provider = lambda: "header.payload.signature"
+        with (
+            patch(
+                "agent.command_token_source.build_command_token_provider",
+                return_value=token_provider,
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("codex-passive", "gpt-test")
+
+        assert client is not None
+        assert model == "gpt-test"
+        assert mock_openai.call_args.kwargs["api_key"] is token_provider
+        headers = mock_openai.call_args.kwargs["default_headers"]
+        assert headers["User-Agent"].startswith("codex_cli_rs/")
+        assert headers["originator"] == "codex_cli_rs"
+        assert headers["ChatGPT-Account-ID"] == "acct-test"
+
 
 
 class TestResolveProviderClientModelNormalization:

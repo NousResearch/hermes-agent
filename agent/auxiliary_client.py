@@ -6677,9 +6677,20 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                if base_url_host_matches(openai_base, "chatgpt.com"):
+                    _extra2["default_headers"] = _codex_cloudflare_headers(custom_key)
                 _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
                 if _headers2:
                     _extra2["default_headers"] = _headers2
+                # Match the main-agent construction path: named providers may
+                # require endpoint-specific auth or routing headers. Apply them
+                # last so the most specific config wins over host and global
+                # defaults. Values may be credentials, so never log them.
+                from hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
+                apply_custom_provider_extra_headers_to_client_kwargs(
+                    _extra2,
+                    _clean_base2,
+                )
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")

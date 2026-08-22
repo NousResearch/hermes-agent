@@ -2363,6 +2363,55 @@ def _transcribe_openai(
 # ---------------------------------------------------------------------------
 
 
+_BIAS_TOKEN_SPLIT = re.compile(r"[,\s]+")
+_BIAS_SPLIT_WARNED: set = set()
+
+
+def _resolve_mistral_context_bias() -> list:
+    """Resolve the Voxtral vocabulary bias: ``stt.mistral.context_bias`` then
+    ``stt.context_bias``.
+
+    Each entry must be a single token: the API answers 400 to any item holding
+    a space or a comma. A multi-word entry is therefore split into its tokens
+    here rather than sent as-is — left alone, one misconfigured line would cost
+    a refused request plus a retry on *every* transcription.
+    """
+    stt_config = _load_stt_config()
+    for source in (_get_stt_section(stt_config, "mistral"), stt_config):
+        raw = source.get("context_bias")
+        if not isinstance(raw, (list, tuple)):
+            continue
+        terms: list = []
+        for entry in raw:
+            tokens = [tok for tok in _BIAS_TOKEN_SPLIT.split(str(entry).strip()) if tok]
+            if len(tokens) > 1 and str(entry) not in _BIAS_SPLIT_WARNED:
+                # Once per distinct entry: a misconfiguration deserves to be
+                # seen, not to be repeated on every voice message.
+                _BIAS_SPLIT_WARNED.add(str(entry))
+                logger.warning(
+                    "STT context_bias entry %r is not a single token — sending "
+                    "it as %s instead. Split it in the config to silence this.",
+                    entry, tokens,
+                )
+            terms.extend(tokens)
+        if terms:
+            return terms
+    return []
+
+
+def _may_be_context_bias_rejection(err: Exception) -> bool:
+    """Whether *err* is worth one retry without the vocabulary.
+
+    A candidate test, not a verdict. The server names the vocabulary only
+    sometimes, so a bare 400 has to qualify too — which means this alone cannot
+    tell a refused vocabulary from an unrelated bad request. What settles it is
+    the retry itself, in :func:`_transcribe_mistral`. 5xx, timeouts and auth
+    errors never qualify.
+    """
+    message = str(err).lower()
+    return "context_bias" in message or "context bias" in message or "status 400" in message
+
+
 def _transcribe_mistral(
     file_path: str,
     model_name: str,
@@ -2379,6 +2428,14 @@ def _transcribe_mistral(
     if not api_key:
         return {"success": False, "transcript": "", "error": "MISTRAL_API_KEY not set"}
 
+    if prompt:
+        # Voxtral has no ``prompt`` parameter — the SDK signature is strict and
+        # would raise TypeError. ``context_bias`` below is the live equivalent.
+        logger.debug(
+            "STT provider 'mistral' does not support transcription prompts — "
+            "proceeding without the prompt."
+        )
+
     try:
         try:
             from tools.lazy_deps import ensure as _lazy_ensure
@@ -2387,29 +2444,55 @@ def _transcribe_mistral(
             pass
         from mistralai.client import Mistral
 
-        with Mistral(api_key=api_key) as client:
-            with open(file_path, "rb") as audio_file:
-                complete_kwargs: Dict[str, Any] = {
-                    "model": model_name,
-                    "file": {"content": audio_file, "file_name": Path(file_path).name},
-                }
-                # Language: hook override > stt.mistral.language >
-                # stt.language > env > auto.
-                language = language or _resolve_stt_language("mistral")
-                if language:
-                    complete_kwargs["language"] = language
-                if prompt:
-                    # Only send the prompt when set so the no-hook, no-config
-                    # request stays byte-identical to today's.
-                    complete_kwargs["prompt"] = prompt
-                result = client.audio.transcriptions.complete(**complete_kwargs)
+        # Language: hook override > stt.mistral.language > stt.language > env > auto.
+        language = language or _resolve_stt_language("mistral")
+        context_bias = _resolve_mistral_context_bias()
 
-            transcript_text = _extract_transcript_text(result)
-            logger.info(
-                "Transcribed %s via Mistral API (%s, %d chars)",
-                Path(file_path).name, model_name, len(transcript_text),
+        def _complete(bias):
+            """One request. Reopens the file — a retry can't reuse a read handle."""
+            with Mistral(api_key=api_key) as client:
+                with open(file_path, "rb") as audio_file:
+                    complete_kwargs: Dict[str, Any] = {
+                        "model": model_name,
+                        "file": {"content": audio_file, "file_name": Path(file_path).name},
+                    }
+                    if language:
+                        complete_kwargs["language"] = language
+                    if bias:
+                        complete_kwargs["context_bias"] = bias
+                    return client.audio.transcriptions.complete(**complete_kwargs)
+
+        try:
+            result = _complete(context_bias)
+        except Exception as bias_err:
+            # A vocabulary the server refuses (bad shape, too many terms) must
+            # never cost the transcription: retry once without it. Anything
+            # that isn't the vocabulary's fault falls through untouched.
+            if not (context_bias and _may_be_context_bias_rejection(bias_err)):
+                raise
+            try:
+                result = _complete([])
+            except Exception:
+                # It fails without the vocabulary too, so the vocabulary was
+                # not the problem: report the original error, and never claim
+                # the operator's configuration was at fault.
+                raise bias_err from None
+            # Only now is the diagnosis earned — the same request succeeded
+            # once the vocabulary was dropped.
+            logger.warning(
+                "Mistral refused the transcription vocabulary (%d terms) — "
+                "transcribed without it: %s", len(context_bias), bias_err,
             )
-            return {"success": True, "transcript": transcript_text, "provider": "mistral"}
+            context_bias = []
+
+        transcript_text = _extract_transcript_text(result)
+        logger.info(
+            "Transcribed %s via Mistral API (%s, %d chars, language=%s, vocabulary=%s)",
+            Path(file_path).name, model_name, len(transcript_text),
+            language or "auto",
+            ("%d terms" % len(context_bias)) if context_bias else "none",
+        )
+        return {"success": True, "transcript": transcript_text, "provider": "mistral"}
 
     except PermissionError:
         return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}

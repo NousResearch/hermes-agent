@@ -158,8 +158,11 @@ class TestPromptThreading:
         _, kwargs = mock_client.audio.transcriptions.create.call_args
         assert kwargs["prompt"] == PROMPT
 
-    def test_prompt_reaches_mistral(self, monkeypatch, tmp_path):
-        """Unit-level: _transcribe_mistral forwards prompt to the SDK call."""
+    def test_prompt_is_never_forwarded_to_mistral(self, monkeypatch, tmp_path):
+        """Mistral is the exception in this class: Voxtral has no ``prompt``
+        parameter at all, and the SDK signature is strict — forwarding one
+        raises TypeError. The hook's prompt is accepted and dropped here;
+        ``context_bias`` is the live equivalent."""
         audio = _make_audio(tmp_path)
         monkeypatch.setenv("MISTRAL_API_KEY", "mk-test")
         # Never attempt a lazy install in tests.
@@ -180,7 +183,7 @@ class TestPromptThreading:
 
         assert result["success"] is True
         _, kwargs = mock_client.audio.transcriptions.complete.call_args
-        assert kwargs["prompt"] == PROMPT
+        assert "prompt" not in kwargs
 
 
 # ---------------------------------------------------------------------------

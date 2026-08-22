@@ -2542,6 +2542,25 @@ Hermes uses two different context scopes:
 - Hermes automatically seeds a default `SOUL.md` if one does not already exist.
 - All loaded context files are capped at `context_file_max_chars` characters (default 20,000) with smart truncation.
 
+Context-file loading can also be skipped per platform while keeping the
+profile SOUL identity and memory:
+
+```yaml
+gateway:
+  platforms:
+    desktop:
+      skip_context_files: true
+```
+
+`gateway.platforms.<platform>.skip_context_files` (honored by the messaging
+gateway and the Desktop app) skips the working directory's project
+instructions — `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, etc. — for sessions
+on that platform while still loading the profile `SOUL.md` and memory. This
+is useful when a Desktop backend launches from the Hermes install tree and a
+non-coding profile would otherwise inherit the repository's contributor
+instructions. `HERMES_IGNORE_RULES` remains the stronger all-rules escape
+hatch: it skips project context, SOUL, and memory together.
+
 See also:
 - [Personality & SOUL.md](/user-guide/features/personality)
 - [Context Files](/user-guide/features/context-files)

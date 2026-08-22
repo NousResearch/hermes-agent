@@ -19,7 +19,7 @@ Two-part fix, both covered here:
 
 import asyncio
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -631,3 +631,389 @@ class TestReconnectClockCarriesAcrossFlaps:
         assert attention[0]["platform_state"] == "retrying"
         # Still queued: escalation is a signal, never a circuit breaker.
         assert Platform.TELEGRAM in runner._failed_platforms
+
+
+class TestOneEpisodeEscalatesOnce:
+    """A flapping platform must warn once per episode, not once per flap.
+
+    ``_reconnect_clock_start`` carries WHEN the trouble started across a brief
+    bind. On its own that has a side effect nobody asked for: the queue entry
+    is still destroyed on every bind, and with it the per-entry
+    ``attention_flagged`` marker that makes the watcher's escalation fire once.
+    The requeued entry is therefore un-flagged with a ``queued_at`` already
+    past the threshold, so the very next watcher pass warns again. At the
+    reporter's 30-120s bind cadence that is order 10^3 warnings and status
+    writes a day, where before the carry there were none.
+
+    The mirror problem is the status write on the way out: the successful
+    reconnect branch cleared ``needs_attention`` unconditionally, so `hermes
+    status` and fleet monitoring watched the platform blink healthy on every
+    bind in the middle of an episode the gateway had already declared
+    unhealthy.
+
+    Both halves are the same missing idea -- a bind is not a recovery until it
+    lasts -- so the flag now survives the bind and is retired by
+    ``_expire_stable_recoveries`` once the stability window proves it.
+    """
+
+    # -- _carried_attention_flag -------------------------------------------
+
+    def test_a_flap_inside_the_window_carries_the_escalation(self):
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+
+        now = time.monotonic()
+        runner._note_reconnect_recovery(
+            Platform.TELEGRAM,
+            {"queued_at": now - 9000, "attention_flagged": True},
+            now,
+        )
+
+        assert runner._carried_attention_flag(Platform.TELEGRAM, now + 5) is True, (
+            "the platform was already declared NEEDS_ATTENTION and has been "
+            "back for five seconds; re-announcing it on every bind is noise"
+        )
+
+    def test_a_sustained_recovery_drops_the_escalation(self):
+        """The next outage is a new episode and gets its own first warning."""
+        import gateway.run as run_module
+
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+        window = run_module._RECONNECT_STABLE_AFTER_SECONDS
+
+        now = time.monotonic()
+        runner._note_reconnect_recovery(
+            Platform.TELEGRAM,
+            {"queued_at": now - 9000, "attention_flagged": True},
+            now,
+        )
+
+        assert runner._carried_attention_flag(Platform.TELEGRAM, now + window + 1) is False
+
+    def test_no_history_carries_no_escalation(self):
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+
+        assert runner._carried_attention_flag(Platform.TELEGRAM) is False
+
+    def test_an_unflagged_flap_carries_no_escalation(self):
+        """The both-directions half: carrying is conditional, not automatic."""
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+
+        now = time.monotonic()
+        runner._note_reconnect_recovery(Platform.TELEGRAM, {"queued_at": now - 60}, now)
+
+        assert runner._carried_attention_flag(Platform.TELEGRAM, now + 5) is False, (
+            "a platform that never crossed the threshold must not inherit an "
+            "escalation it never earned"
+        )
+
+    def test_a_zero_window_carries_no_escalation(self, monkeypatch):
+        import gateway.run as run_module
+
+        monkeypatch.setattr(run_module, "_RECONNECT_STABLE_AFTER_SECONDS", 0)
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+
+        runner._note_reconnect_recovery(
+            Platform.TELEGRAM,
+            {"queued_at": time.monotonic() - 9000, "attention_flagged": True},
+        )
+
+        assert runner._carried_attention_flag(Platform.TELEGRAM) is False
+
+    def test_a_two_tuple_mark_still_reads(self):
+        """Marks written before this change are a 2-tuple; do not crash on one."""
+        runner = _make_runner()
+        now = time.monotonic()
+        runner._recent_platform_recoveries = {Platform.TELEGRAM: (now - 9000, now)}
+
+        assert runner._carried_attention_flag(Platform.TELEGRAM, now + 5) is False
+        assert runner._reconnect_clock_start(Platform.TELEGRAM, now + 5) == now - 9000
+
+    # -- the requeue --------------------------------------------------------
+
+    def _flap_once(self, runner, monkeypatch, flagged):
+        """Recover, drop the entry, fail again -- the two real calls."""
+        import gateway.run as run_module
+
+        threshold = run_module._RECONNECT_ATTENTION_AFTER_SECONDS
+        info = {
+            "config": PlatformConfig(enabled=True, token="test"),
+            "attempts": 3,
+            "next_retry": time.monotonic(),
+            "queued_at": time.monotonic() - threshold - 10,
+            "attention_flagged": flagged,
+        }
+        runner._failed_platforms[Platform.TELEGRAM] = info
+        runner._note_reconnect_recovery(Platform.TELEGRAM, info)
+        del runner._failed_platforms[Platform.TELEGRAM]
+
+        adapter = MagicMock()
+        adapter.platform = Platform.TELEGRAM
+        adapter.fatal_error_retryable = True
+        assert runner._queue_retryable_fatal_platform(adapter) is True
+        return runner._failed_platforms[Platform.TELEGRAM]
+
+    def _requeue_runner(self, monkeypatch):
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+        monkeypatch.setattr(runner, "_adapter_credential_claim", lambda p, a: None)
+        monkeypatch.setattr(runner, "_adapter_listener_claim", lambda p, a: None)
+        monkeypatch.setattr(runner, "_ensure_reconnect_watcher_running", lambda: None)
+        return runner
+
+    def test_the_requeued_entry_arrives_already_flagged(self, monkeypatch):
+        runner = self._requeue_runner(monkeypatch)
+        requeued = self._flap_once(runner, monkeypatch, flagged=True)
+
+        assert requeued["attention_flagged"] is True, (
+            "the escalation belongs to the episode, not to the queue entry; "
+            "a five second bind must not buy a second warning"
+        )
+
+    def test_an_unflagged_episode_requeues_unflagged(self, monkeypatch):
+        """The guard is not over-tight: a first spell still gets its warning."""
+        runner = self._requeue_runner(monkeypatch)
+        requeued = self._flap_once(runner, monkeypatch, flagged=False)
+
+        assert requeued["attention_flagged"] is False
+        assert _reconnect_needs_attention(requeued, time.monotonic()) is True, (
+            "carrying the clock is what #92247 fixed and must still hold"
+        )
+
+    def test_a_run_of_flaps_warns_once_not_once_each(self, monkeypatch):
+        """The headline count, over the exact predicate the watcher uses.
+
+        Five binds in a row against a platform that is hours into trouble. The
+        watcher escalates when ``not info["attention_flagged"] and
+        _reconnect_needs_attention(info, now)``, so counting the passes where
+        that is true counts the warnings the operator would actually receive.
+        """
+        runner = self._requeue_runner(monkeypatch)
+
+        warnings = 0
+        flagged = False
+        for _ in range(5):
+            entry = self._flap_once(runner, monkeypatch, flagged=flagged)
+            now = time.monotonic()
+            if not entry.get("attention_flagged") and _reconnect_needs_attention(entry, now):
+                warnings += 1
+                entry["attention_flagged"] = True
+            flagged = bool(entry.get("attention_flagged"))
+
+        assert warnings == 1, (
+            f"one episode, one warning; got {warnings} -- one per flap is the "
+            "alert churn the carried clock would otherwise introduce"
+        )
+
+    # -- _expire_stable_recoveries -----------------------------------------
+
+    def _capture_status(self, monkeypatch):
+        """Record what actually reaches the runtime-status file.
+
+        Deliberately NOT a stub on ``_update_platform_runtime_status``: the
+        whole point of passing ``None`` / ``_UNSET`` is that that method then
+        omits the field, so stubbing it out would test the sentinel rather than
+        the behaviour an operator sees.
+        """
+        writes = []
+        monkeypatch.setattr(
+            "gateway.status.write_runtime_status",
+            lambda **kw: writes.append(kw),
+        )
+        return writes
+
+
+    def test_the_sweep_clears_the_flag_once_the_recovery_holds(self, monkeypatch):
+        import gateway.run as run_module
+
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+        writes = self._capture_status(monkeypatch)
+
+        now = time.monotonic()
+        window = run_module._RECONNECT_STABLE_AFTER_SECONDS
+        runner._recent_platform_recoveries[Platform.TELEGRAM] = (
+            now - 9000,
+            now - window - 1,
+            True,
+        )
+
+        runner._expire_stable_recoveries(now)
+
+        assert Platform.TELEGRAM not in runner._recent_platform_recoveries
+        assert len(writes) == 1, (
+            "a bind that outlived the stability window is the recovery; "
+            f"something has to say so, and nothing else visits it. got {writes!r}"
+        )
+        assert writes[0]["platform"] == "telegram"
+        assert writes[0]["needs_attention"] is False
+        assert writes[0]["retrying_since"] is None
+
+    def test_the_sweep_leaves_a_platform_that_flapped_again_alone(self, monkeypatch):
+        import gateway.run as run_module
+
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+        writes = self._capture_status(monkeypatch)
+
+        now = time.monotonic()
+        window = run_module._RECONNECT_STABLE_AFTER_SECONDS
+        runner._recent_platform_recoveries[Platform.TELEGRAM] = (
+            now - 9000,
+            now - window - 1,
+            True,
+        )
+        # It is back in the queue: the episode is not over, whatever the
+        # timestamps say about the last bind.
+        runner._failed_platforms[Platform.TELEGRAM] = {"queued_at": now - 9000}
+
+        runner._expire_stable_recoveries(now)
+
+        assert writes == [], (
+            "declaring a currently-failing platform healthy is the exact blink "
+            "this change exists to stop"
+        )
+        assert Platform.TELEGRAM in runner._recent_platform_recoveries
+
+    def test_the_sweep_is_silent_for_an_unflagged_recovery(self, monkeypatch):
+        """No flag was ever set, so there is nothing to clear and no write."""
+        import gateway.run as run_module
+
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+        writes = self._capture_status(monkeypatch)
+
+        now = time.monotonic()
+        window = run_module._RECONNECT_STABLE_AFTER_SECONDS
+        runner._recent_platform_recoveries[Platform.TELEGRAM] = (
+            now - 200,
+            now - window - 1,
+            False,
+        )
+
+        runner._expire_stable_recoveries(now)
+
+        assert Platform.TELEGRAM not in runner._recent_platform_recoveries
+        assert writes == []
+
+    # -- the watcher --------------------------------------------------------
+
+    def _reconnect_runner(self, monkeypatch):
+        runner = _make_runner()
+        runner._recent_platform_recoveries = {}
+        runner._busy_text_mode = "off"
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        runner._primary_message_handler = MagicMock(return_value=MagicMock())
+        runner._primary_platform_event_handler = MagicMock(return_value=MagicMock())
+        runner._handle_adapter_fatal_error = MagicMock()
+        runner._handle_active_session_busy_message = MagicMock()
+        runner._handle_reaction_event = MagicMock()
+        runner._recover_telegram_topic_thread_id = MagicMock()
+        runner._make_adapter_auth_check = MagicMock(return_value=MagicMock())
+        runner._handle_voice_channel_input = MagicMock()
+        runner._schedule_resume_pending_sessions = MagicMock()
+        runner._create_adapter = MagicMock(return_value=MagicMock())
+        runner._connect_adapter_with_timeout = AsyncMock(return_value=True)
+        return runner
+
+    async def _run_one_watcher_pass(self, runner):
+        real_sleep = asyncio.sleep
+        call_count = 0
+
+        async def fake_sleep(n):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                runner._running = False
+            await real_sleep(0)
+
+        with patch("gateway.run.build_channel_directory", create=True):
+            with patch("asyncio.sleep", side_effect=fake_sleep):
+                await runner._platform_reconnect_watcher()
+
+    @pytest.mark.asyncio
+    async def test_a_bind_mid_episode_does_not_declare_the_platform_healthy(
+        self, monkeypatch
+    ):
+        writes = self._capture_status(monkeypatch)
+        runner = self._reconnect_runner(monkeypatch)
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="test"),
+            "attempts": 40,
+            "next_retry": time.monotonic() - 1,
+            "queued_at": time.monotonic() - 9000,
+            "attention_flagged": True,
+        }
+
+        await self._run_one_watcher_pass(runner)
+
+        connected = [kw for kw in writes if kw.get("platform_state") == "connected"]
+        assert connected, f"the reconnect must still be reported; got {writes!r}"
+        assert "needs_attention" not in connected[0], (
+            "at bind time this is indistinguishable from the next flap; "
+            "clearing here is what made the platform blink healthy every "
+            f"30-120s mid-episode. got {connected[0]!r}"
+        )
+        assert "retrying_since" not in connected[0], (
+            "the episode's start time is still the truth until the recovery "
+            f"proves itself. got {connected[0]!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unescalated_reconnect_still_clears_immediately(self, monkeypatch):
+        """The other direction: an ordinary blip keeps today's exact behaviour.
+
+        Nothing was ever flagged, so there is nothing to protect and no reason
+        to make an operator wait out the stability window for a clean status.
+        """
+        writes = self._capture_status(monkeypatch)
+        runner = self._reconnect_runner(monkeypatch)
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="test"),
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+            "queued_at": time.monotonic() - 30,
+        }
+
+        await self._run_one_watcher_pass(runner)
+
+        connected = [kw for kw in writes if kw.get("platform_state") == "connected"]
+        assert connected, f"the reconnect must still be reported; got {writes!r}"
+        assert connected[0]["needs_attention"] is False
+        assert connected[0]["retrying_since"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_watcher_sweeps_even_with_an_empty_queue(self, monkeypatch):
+        """Where the sweep sits in the loop is the whole point of it.
+
+        A platform that recovered has left ``_failed_platforms``. If the sweep
+        ran after the empty-queue early-out, the one case it exists for -- the
+        last platform recovering alone -- is the one case it would never see,
+        and the flag would stay set until the next unrelated outage.
+        """
+        import gateway.run as run_module
+
+        writes = self._capture_status(monkeypatch)
+        runner = self._reconnect_runner(monkeypatch)
+        now = time.monotonic()
+        window = run_module._RECONNECT_STABLE_AFTER_SECONDS
+        runner._recent_platform_recoveries[Platform.TELEGRAM] = (
+            now - 9000,
+            now - window - 1,
+            True,
+        )
+        assert runner._failed_platforms == {}
+
+        await self._run_one_watcher_pass(runner)
+
+        assert len(writes) == 1, (
+            "with nothing queued the watcher still owes the recovered platform "
+            f"its all-clear. got {writes!r}"
+        )
+        assert writes[0]["platform"] == "telegram"
+        assert writes[0]["needs_attention"] is False
+        assert writes[0]["retrying_since"] is None

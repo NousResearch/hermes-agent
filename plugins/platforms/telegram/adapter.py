@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import faulthandler
 import inspect
+import io
 import json
 import logging
 import os
@@ -23,6 +24,36 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+# Text-file extensions whose bytes we normalize for Telegram delivery. Telegram
+# clients guess the charset of text documents and render UTF-8 without a BOM as
+# mojibake (e.g. Turkish ğ/ş/ı/ç/ö/ü). Prepending a UTF-8 BOM forces correct
+# decoding. Binary files are never touched (extension whitelist + UTF-8 check).
+_TEXT_EXTENSIONS_FOR_UTF8_BOM = frozenset({
+    ".md", ".markdown", ".txt", ".json", ".csv", ".tsv", ".log", ".yaml", ".yml",
+    ".toml", ".ini", ".cfg", ".conf", ".xml", ".html", ".htm", ".css", ".js",
+    ".ts", ".jsx", ".tsx", ".py", ".sh", ".bash", ".zsh", ".sql", ".r", ".rb",
+    ".go", ".rs", ".java", ".c", ".h", ".cpp", ".hpp", ".env", ".gitignore",
+    ".editorconfig", ".tex", ".srt", ".vtt", ".rest", ".m3u", ".lst",
+})
+
+
+def _ensure_utf8_bom(file_path: str, fileobj):
+    """Return fileobj unchanged unless it is a UTF-8 text file without a BOM,
+    in which case return a new stream with a UTF-8 BOM prepended."""
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext not in _TEXT_EXTENSIONS_FOR_UTF8_BOM:
+        return fileobj
+    data = fileobj.read()
+    if data.startswith(b"\xef\xbb\xbf"):
+        fileobj.seek(0)
+        return fileobj
+    try:
+        data.decode("utf-8")
+    except (UnicodeDecodeError, ValueError):
+        fileobj.seek(0)
+        return fileobj
+    return io.BytesIO(b"\xef\xbb\xbf" + data)
 
 
 def _redact_telegram_error_text(error: object) -> str:
@@ -8058,11 +8089,12 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
             with open(file_path, "rb") as f:
+                doc = _ensure_utf8_bom(file_path, f)
                 msg = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_document,
                     {
                         "chat_id": normalize_telegram_chat_id(chat_id),
-                        "document": f,
+                        "document": doc,
                         "filename": display_name,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
@@ -8073,7 +8105,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     metadata,
                     reply_to_id,
                     "document",
-                    reset_media=lambda: f.seek(0),
+                    reset_media=lambda: doc.seek(0),
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:

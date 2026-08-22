@@ -9,6 +9,7 @@ We mock the telegram module at import time to avoid collection errors.
 """
 
 import asyncio
+import io
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,7 +29,7 @@ from gateway.platforms.base import (
 # Mock the telegram package if it's not installed
 # ---------------------------------------------------------------------------
 # Now we can safely import
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter, _ensure_utf8_bom  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +131,37 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
     )
+
+
+class TestEnsureUtf8Bom:
+    """Unit tests for the UTF-8 BOM normalizer used by send_document."""
+
+    def test_prepends_bom_to_utf8_text_file(self):
+        payload = "Rapor: ğ ş ı ç ö ü İŞĞÇÖÜ".encode("utf-8")
+        out = _ensure_utf8_bom("/tmp/rapor.md", io.BytesIO(payload))
+        got = out.read()
+        assert got.startswith(b"\xef\xbb\xbf")
+        assert got[3:] == payload
+
+    def test_preserves_existing_bom(self):
+        payload = "içerik".encode("utf-8")
+        out = _ensure_utf8_bom("/tmp/bom.md", io.BytesIO(b"\xef\xbb\xbf" + payload))
+        assert out.read() == b"\xef\xbb\xbf" + payload
+
+    def test_leaves_binary_extension_untouched(self):
+        raw = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+        out = _ensure_utf8_bom("/tmp/img.png", io.BytesIO(raw))
+        assert out.read() == raw
+
+    def test_leaves_non_utf8_bytes_untouched(self):
+        raw = b"\xff\xfe\x00\x00binary"
+        out = _ensure_utf8_bom("/tmp/bad.md", io.BytesIO(raw))
+        assert out.read() == raw
+
+    def test_leaves_unknown_extension_untouched(self):
+        payload = "data".encode("utf-8")
+        out = _ensure_utf8_bom("/tmp/data.bin", io.BytesIO(payload))
+        assert out.read() == payload
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +430,23 @@ class TestSendDocument:
         assert call_kwargs["chat_id"] == 12345
         assert call_kwargs["filename"] == "report.pdf"
         assert call_kwargs["caption"] == "Here's the report"
+
+    @pytest.mark.asyncio
+    async def test_send_document_prepends_utf8_bom_for_text_files(self, connected_adapter, tmp_path):
+        """UTF-8 text documents are sent with a BOM so Telegram clients decode
+        non-ASCII text (e.g. Turkish) correctly instead of as mojibake."""
+        test_file = tmp_path / "rapor.md"
+        payload = "Rapor: ğ ş ı ç ö ü".encode("utf-8")
+        test_file.write_bytes(payload)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 200
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        await connected_adapter.send_document(chat_id="12345", file_path=str(test_file))
+
+        sent = connected_adapter._bot.send_document.call_args[1]["document"].read()
+        assert sent == b"\xef\xbb\xbf" + payload
 
     @pytest.mark.asyncio
     async def test_send_document_custom_filename(self, connected_adapter, tmp_path):

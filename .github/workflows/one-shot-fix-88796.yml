@@ -49,11 +49,26 @@ jobs:
                   body.append(line[len(prefix):])
               else:
                   body.append('')
-          Path('/tmp/materialize-88796-base.sh').write_text(
-              '\n'.join(body) + '\n', encoding='utf-8'
+          shell = '\n'.join(body) + '\n'
+
+          open_marker = "python3 - <<'PY'\n"
+          if shell.count(open_marker) != 1:
+              raise SystemExit(f'expected one Python materializer heredoc, found {shell.count(open_marker)}')
+          materializer_start = shell.index(open_marker) + len(open_marker)
+          close_marker = '\nPY\n'
+          materializer_end = shell.index(close_marker, materializer_start)
+          materializer = shell[materializer_start:materializer_end] + '\n'
+          Path('/tmp/materialize-88796-base.sh').write_text(materializer, encoding='utf-8')
+
+          executable_shell = (
+              shell[: shell.index(open_marker)]
+              + 'python3 /tmp/materialize-88796-base.sh\n'
+              + shell[materializer_end + len(close_marker):]
           )
+          Path('/tmp/execute-88796-base.sh').write_text(executable_shell, encoding='utf-8')
           PY
 
           python3 .github/workflows/patch-88796-carrier-idempotence.py
-          bash -n /tmp/materialize-88796-base.sh
-          bash /tmp/materialize-88796-base.sh
+          python3 -m py_compile /tmp/materialize-88796-base.sh
+          bash -n /tmp/execute-88796-base.sh
+          bash /tmp/execute-88796-base.sh

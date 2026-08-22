@@ -22,6 +22,7 @@ import { useModelControls } from './use-model-controls'
 
 const setGlobalModel = vi.fn()
 const notifyError = vi.fn()
+const confirmModelSwitch = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: vi.fn(),
@@ -41,8 +42,12 @@ vi.mock('@/store/session-states', async importOriginal => {
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
+      common: {
+        confirm: 'Confirm'
+      },
       desktop: {
-        modelSwitchFailed: 'Model switch failed'
+        modelSwitchFailed: 'Model switch failed',
+        modelSwitchConfirmTitle: 'Confirm model switch'
       }
     }
   })
@@ -50,6 +55,10 @@ vi.mock('@/i18n', () => ({
 
 vi.mock('@/store/notifications', () => ({
   notifyError: (...args: Parameters<typeof notifyError>) => notifyError(...args)
+}))
+
+vi.mock('@/store/confirm', () => ({
+  confirm: (...args: Parameters<typeof confirmModelSwitch>) => confirmModelSwitch(...args)
 }))
 
 type Controls = ReturnType<typeof useModelControls>
@@ -73,6 +82,7 @@ function Harness({
 
 describe('useModelControls', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
     setCurrentModel('')
@@ -269,6 +279,68 @@ describe('useModelControls', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 
+  it('asks for confirmation and retries a guarded model switch', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('gpt-5.6-sol')
+    setCurrentProvider('openai-codex')
+    confirmModelSwitch.mockResolvedValueOnce(true)
+
+    const requestGateway = vi
+      .fn()
+      .mockResolvedValueOnce({
+        confirm_required: true,
+        confirm_message: 'This contributor model may use prompts and completions for training.'
+      })
+      .mockResolvedValueOnce({ confirm_required: false, value: 'muse-spark-1.2-contributor-free' })
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(
+      controls.selectModel({ model: 'muse-spark-1.2-contributor-free', provider: 'opencode-free' })
+    ).resolves.toBe(true)
+
+    expect(confirmModelSwitch).toHaveBeenCalledWith({
+      confirmLabel: 'Confirm',
+      description: 'This contributor model may use prompts and completions for training.',
+      title: 'Confirm model switch'
+    })
+    expect(requestGateway).toHaveBeenNthCalledWith(2, 'config.set', {
+      confirm_expensive_model: true,
+      session_id: 'session-1',
+      key: 'model',
+      value: 'muse-spark-1.2-contributor-free --provider opencode-free --global'
+    })
+    expect($currentModel.get()).toBe('muse-spark-1.2-contributor-free')
+    expect($currentProvider.get()).toBe('opencode-free')
+  })
+
+  it('rolls back a guarded model switch when confirmation is declined', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('gpt-5.6-sol')
+    setCurrentProvider('openai-codex')
+    confirmModelSwitch.mockResolvedValueOnce(false)
+
+    const requestGateway = vi.fn().mockResolvedValueOnce({
+      confirm_required: true,
+      confirm_message: 'This contributor model may use prompts and completions for training.'
+    })
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(
+      controls.selectModel({ model: 'muse-spark-1.2-contributor-free', provider: 'opencode-free' })
+    ).resolves.toBe(false)
+
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect($currentModel.get()).toBe('gpt-5.6-sol')
+    expect($currentProvider.get()).toBe('openai-codex')
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
   it('keeps a mid-turn pick painted and skips the refetch that would repaint the old model', async () => {
     // The gateway queues a switch made during a turn and applies it at the next
     // turn start. Invalidating now would answer with the still-running model
@@ -365,8 +437,8 @@ describe('useModelControls', () => {
     })
   })
 
-  it('stores a no-session pick as UI state with no gateway or global write', async () => {
-    const requestGateway = vi.fn()
+  it('preflights a no-session pick without writing the profile default', async () => {
+    const requestGateway = vi.fn(async () => ({ confirm_required: false }) as never)
     let controls!: Controls
 
     render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
@@ -378,13 +450,49 @@ describe('useModelControls', () => {
       })
     ).resolves.toBe(true)
 
-    // The pick is plain UI state; session.create ships it later. Nothing touches
-    // the gateway or the profile default here.
+    // The gateway call only resolves model guards. --session with no session
+    // cannot persist the profile default; session.create ships the UI pick later.
     expect($currentModel.get()).toBe('claude-sonnet-4.6')
     expect($currentProvider.get()).toBe('anthropic')
     expect(getCurrentModelSource()).toBe('manual')
-    expect(requestGateway).not.toHaveBeenCalled()
+    expect(requestGateway).toHaveBeenCalledWith('config.set', {
+      session_id: '',
+      key: 'model',
+      value: 'claude-sonnet-4.6 --provider anthropic --session'
+    })
     expect(setGlobalModel).not.toHaveBeenCalled()
+  })
+
+  it('asks for confirmation before keeping a guarded no-session pick', async () => {
+    setCurrentModel('gpt-5.6-sol')
+    setCurrentProvider('openai-codex')
+    confirmModelSwitch.mockResolvedValueOnce(true)
+
+    const requestGateway = vi
+      .fn()
+      .mockResolvedValueOnce({
+        confirm_required: true,
+        confirm_message: 'This contributor model may use prompts and completions for training.'
+      })
+      .mockResolvedValueOnce({ confirm_required: false })
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(
+      controls.selectModel({ model: 'muse-spark-1.2-contributor-free', provider: 'opencode-free' })
+    ).resolves.toBe(true)
+
+    expect(confirmModelSwitch).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenNthCalledWith(2, 'config.set', {
+      confirm_expensive_model: true,
+      session_id: '',
+      key: 'model',
+      value: 'muse-spark-1.2-contributor-free --provider opencode-free --session'
+    })
+    expect($currentModel.get()).toBe('muse-spark-1.2-contributor-free')
+    expect($currentProvider.get()).toBe('opencode-free')
   })
 
   it('updates only the active profile new-chat cache', async () => {

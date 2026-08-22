@@ -12395,6 +12395,15 @@ def test_config_set_model_defers_while_running(monkeypatch):
         return {"value": raw, "warning": ""}
 
     monkeypatch.setattr(server, "_apply_model_switch", _fake_apply)
+    monkeypatch.setattr(
+        server,
+        "_preflight_deferred_model_switch",
+        lambda *_args, **_kwargs: {
+            "value": "anthropic/claude-sonnet-4.6",
+            "warning": "",
+            "confirm_required": False,
+        },
+    )
 
     server._sessions["sid"] = _session(running=True)
     try:
@@ -12419,6 +12428,77 @@ def test_config_set_model_defers_while_running(monkeypatch):
         )
         pending = server._sessions["sid"].get("pending_model_switch")
         assert pending and pending["raw"] == "anthropic/claude-sonnet-4.6"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_set_model_requires_confirmation_before_deferring_while_running(monkeypatch):
+    """A guarded model must not be queued mid-turn until the caller confirms."""
+
+    def _fake_preflight(raw, *, parsed_flags, confirm_expensive_model):
+        assert raw == "muse-spark-1.2-contributor-free --provider opencode-free"
+        assert parsed_flags.explicit_provider == "opencode-free"
+        assert confirm_expensive_model is False
+        return {
+            "value": "muse-spark-1.2-contributor-free",
+            "warning": "Training data warning",
+            "confirm_required": True,
+            "confirm_message": "Training data warning",
+        }
+
+    monkeypatch.setattr(server, "_preflight_deferred_model_switch", _fake_preflight)
+    server._sessions["sid"] = _session(running=True)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "muse-spark-1.2-contributor-free --provider opencode-free",
+                },
+            }
+        )
+        assert not resp.get("error")
+        assert resp["result"]["confirm_required"] is True
+        assert resp["result"]["confirm_message"] == "Training data warning"
+        assert "pending_model_switch" not in server._sessions["sid"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_set_model_defers_guarded_model_after_confirmation(monkeypatch):
+    """The confirmed retry keeps the acknowledgement with the queued switch."""
+
+    def _fake_preflight(raw, *, parsed_flags, confirm_expensive_model):
+        assert confirm_expensive_model is True
+        return {
+            "value": parsed_flags.model_input,
+            "warning": "",
+            "confirm_required": False,
+        }
+
+    monkeypatch.setattr(server, "_preflight_deferred_model_switch", _fake_preflight)
+    server._sessions["sid"] = _session(running=True)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "muse-spark-1.2-contributor-free --provider opencode-free",
+                    "confirm_expensive_model": True,
+                },
+            }
+        )
+        assert not resp.get("error")
+        assert resp["result"]["deferred"] is True
+        pending = server._sessions["sid"]["pending_model_switch"]
+        assert pending["confirm_expensive_model"] is True
+        assert pending["display_model"] == "muse-spark-1.2-contributor-free"
     finally:
         server._sessions.pop("sid", None)
 

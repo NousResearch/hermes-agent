@@ -5288,6 +5288,24 @@ def _apply_pending_model_switch(sid: str, session: dict) -> None:
         )
 
 
+def _preflight_deferred_model_switch(
+    raw: str,
+    *,
+    parsed_flags: Any,
+    confirm_expensive_model: bool,
+) -> dict:
+    """Resolve and guard a busy-session switch without touching its live agent."""
+    return _apply_model_switch(
+        "",
+        {"agent": None},
+        raw,
+        confirm_expensive_model=confirm_expensive_model,
+        pin_session_override=False,
+        parsed_flags=parsed_flags,
+        persist_override=False,
+    )
+
+
 class CompressionLockHeld(Exception):
     """Raised by _compress_session_history when compression skipped due
     to a concurrent lock on the session's compression_locks row."""
@@ -12042,8 +12060,30 @@ def _(rid, params: dict) -> dict:
                 # the new model without waiting for the swap or interrupting.
                 if session.get("running"):
                     parsed = parse_model_switch_args(value)
+                    preflight = _preflight_deferred_model_switch(
+                        value,
+                        parsed_flags=parsed,
+                        confirm_expensive_model=bool(
+                            params.get("confirm_expensive_model", False)
+                        ),
+                    )
+                    if preflight.get("confirm_required"):
+                        return _ok(
+                            rid,
+                            {
+                                "key": key,
+                                "value": preflight["value"],
+                                "warning": preflight.get("warning", ""),
+                                "confirm_required": True,
+                                "confirm_message": preflight.get(
+                                    "confirm_message", ""
+                                ),
+                                "scope": "session",
+                                "deferred": False,
+                            },
+                        )
                     try:
-                        pending_model = parsed.model_input
+                        pending_model = preflight.get("value") or parsed.model_input
                     except Exception:
                         pending_model = str(value)
                     session["pending_model_switch"] = {

@@ -6,6 +6,7 @@ import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
 import { manualPickRemoved, modelOptionsQueryKey } from '@/lib/model-options'
+import { confirm } from '@/store/confirm'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -25,6 +26,12 @@ import type { ModelOptionsResponse } from '@/types/hermes'
 interface ModelControlsOptions {
   queryClient: QueryClient
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+}
+
+interface ModelSwitchResponse {
+  confirm_message?: string
+  confirm_required?: boolean
+  deferred?: boolean
 }
 
 export function useModelControls({ queryClient, requestGateway }: ModelControlsOptions) {
@@ -211,10 +218,55 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         liveGatewayProfile
       )
 
-      // No live session yet: the pick is pure UI state. session.create reads
-      // $currentModel/$currentProvider and applies it as that session's override.
-      if (!liveSessionId) {
-        return true
+      const rollbackSelection = () => {
+        if (touchesPrimary) {
+          setCurrentModel(prevModel)
+          setCurrentProvider(prevProvider)
+          setCurrentModelSource(prevSource)
+        } else {
+          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
+            ...state,
+            model: prevModel,
+            provider: prevProvider
+          }))
+        }
+
+        updateModelOptionsCache(
+          liveSessionId,
+          prevProvider,
+          prevModel,
+          touchesPrimary && !liveSessionId,
+          liveGatewayProfile
+        )
+      }
+
+      const requestConfirmedSwitch = async (params: Record<string, unknown>) => {
+        let result = await requestGateway<ModelSwitchResponse>('config.set', params)
+
+        if (!result?.confirm_required) {
+          return result
+        }
+
+        const confirmed = await confirm({
+          title: copy.modelSwitchConfirmTitle,
+          description: result.confirm_message?.trim() || copy.modelSwitchFailed,
+          confirmLabel: t.common.confirm
+        })
+
+        if (!confirmed) {
+          return null
+        }
+
+        result = await requestGateway<ModelSwitchResponse>('config.set', {
+          ...params,
+          confirm_expensive_model: true
+        })
+
+        if (result?.confirm_required) {
+          throw new Error(result.confirm_message?.trim() || copy.modelSwitchFailed)
+        }
+
+        return result
       }
 
       try {
@@ -232,14 +284,29 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         //  - MoA (mixture-of-agents) presets: a transient orchestration choice
         //    that must never become the persisted global gateway default.
         const isSessionOnlyPreset = (selection.provider || '').toLowerCase() === 'moa'
-        const persistsAsDefault = touchesPrimary && !isSessionOnlyPreset
+        const persistsAsDefault = Boolean(liveSessionId) && touchesPrimary && !isSessionOnlyPreset
         const scope = persistsAsDefault ? '--global' : '--session'
 
-        const result = await requestGateway<{ deferred?: boolean }>('config.set', {
-          session_id: liveSessionId,
+        const params = {
+          session_id: liveSessionId || '',
           key: 'model',
           value: `${selection.model} --provider ${selection.provider} ${scope}`
-        })
+        }
+
+        const result = await requestConfirmedSwitch(params)
+
+        if (result === null) {
+          rollbackSelection()
+
+          return false
+        }
+
+        // A draft selection has now passed the same model guards as a live
+        // switch. session.create reads the optimistic UI state and applies it
+        // as the new session's override; this preflight must not persist it.
+        if (!liveSessionId) {
+          return true
+        }
 
         // A pick made DURING a turn is queued by the gateway and applied at the
         // next turn start (`deferred`). Re-fetching now would answer with the
@@ -261,31 +328,20 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
           return true
         }
 
-        if (touchesPrimary) {
-          setCurrentModel(prevModel)
-          setCurrentProvider(prevProvider)
-          setCurrentModelSource(prevSource)
-        } else if (liveSessionId) {
-          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-            ...state,
-            model: prevModel,
-            provider: prevProvider
-          }))
-        }
-
-        updateModelOptionsCache(
-          liveSessionId,
-          prevProvider,
-          prevModel,
-          touchesPrimary && !liveSessionId,
-          liveGatewayProfile
-        )
+        rollbackSelection()
         notifyError(err, copy.modelSwitchFailed)
 
         return false
       }
     },
-    [copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
+    [
+      copy.modelSwitchConfirmTitle,
+      copy.modelSwitchFailed,
+      queryClient,
+      requestGateway,
+      t.common.confirm,
+      updateModelOptionsCache
+    ]
   )
 
   return { applySavedMainModel, refreshCurrentModel, selectModel }

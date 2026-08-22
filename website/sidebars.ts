@@ -15,6 +15,7 @@ const sidebars: SidebarsConfig = {
         'getting-started/nix-setup',
         'getting-started/updating',
         'getting-started/learning-path',
+        'getting-started/official-domains',
       ],
     },
     {

@@ -1155,7 +1155,23 @@ def _print_update_completion(message: str) -> None:
     print(f"{message}{_branch_head_suffix()}")
     action_id = os.environ.get("HERMES_ACTION_ID", "")
     if len(action_id) == 32 and all(char in "0123456789abcdef" for char in action_id):
-        print(f"=== hermes-update completed {action_id} ===")
+        receipt = f"=== hermes-update completed {action_id} ==="
+        print(receipt)
+        # The Desktop's completion detection tails the *action* log
+        # (hermes-update.log), not update.log. The stdout mirror to the
+        # action log can break mid-run (gateway restart, fd churn), which
+        # leaves the receipt only in update.log — the Desktop then times out
+        # and reports "Backend update failed" even though the update
+        # succeeded. Write the receipt straight to the action log so it is
+        # always matchable after the dashboard restarts (#81116).
+        try:
+            action_log = get_hermes_home() / "logs" / "hermes-update.log"
+            action_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(action_log, "a", encoding="utf-8", errors="replace") as log_fh:
+                log_fh.write(f"\n{receipt}\n")
+        except Exception:
+            # Best-effort only — the mirrored print above is the primary path.
+            pass
 
 
 def _called_process_error_cmd_parts(exc: subprocess.CalledProcessError) -> list[str]:

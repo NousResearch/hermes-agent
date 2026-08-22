@@ -2782,6 +2782,52 @@ def _standalone_error(resp: Any) -> Dict[str, Any]:
     return {"error": error, "error_class": error_class, "retryable": retryable}
 
 
+# Cron jobs, notification fanout, and `hermes send` all deliver through
+# _standalone_send; a brief Photon overflow or connection reset would
+# otherwise drop a scheduled message outright.
+_STANDALONE_SEND_RETRIES = 1
+_STANDALONE_RETRY_BASE_DELAY_SECONDS = 2.0
+
+
+async def _standalone_post_with_retry(
+    client: Any,
+    url: str,
+    body: Dict[str, Any],
+    headers: Dict[str, str],
+) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """POST to the sidecar, retrying transient Photon failures with backoff.
+
+    Returns ``(data, None)`` on success or ``(None, error_dict)`` once the
+    retries are spent or the failure is classified permanent.
+    """
+    last_error: Optional[Dict[str, Any]] = None
+    for attempt in range(_STANDALONE_SEND_RETRIES + 1):
+        resp = await client.post(url, json=body, headers=headers)
+        if resp.status_code == 200:
+            try:
+                data = resp.json() or {}
+            except Exception:
+                data = {}
+            if isinstance(data, dict) and data.get("ok"):
+                return data, None
+        last_error = _standalone_error(resp)
+        if attempt >= _STANDALONE_SEND_RETRIES:
+            break
+        retryable = bool(last_error.get("retryable")) or PhotonAdapter._is_retryable_error(
+            last_error.get("error")
+        )
+        if not retryable:
+            break
+        delay = _STANDALONE_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
+        logger.warning(
+            "[photon] standalone send failed (attempt %d/%d, retrying in %.1fs): %s",
+            attempt + 1, _STANDALONE_SEND_RETRIES + 1, delay,
+            last_error.get("error"),
+        )
+        await asyncio.sleep(delay)
+    return None, last_error
+
+
 async def _standalone_send(
     pconfig: PlatformConfig,
     chat_id: str,
@@ -2854,14 +2900,11 @@ async def _standalone_send(
                     }
                     if _markdown_enabled() and not _richlink_candidate(message):
                         send_body["format"] = "markdown"
-                    resp = await client.post(
-                        f"{base}/send", json=send_body, headers=headers,
+                    data, error = await _standalone_post_with_retry(
+                        client, f"{base}/send", send_body, headers,
                     )
-                    if resp.status_code != 200:
-                        return _standalone_error(resp)
-                    data = resp.json() or {}
-                    if not data.get("ok"):
-                        return _standalone_error(resp)
+                    if error is not None:
+                        return error
                     last_message_id = data.get("messageId")
 
             # 2. Each attachment as a separate /send-attachment call.

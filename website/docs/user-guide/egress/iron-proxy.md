@@ -60,6 +60,11 @@ proxy:
   # binaries downloaded, no docker mounts added, no subprocess started.
   enabled: false
 
+  # Let every named profile under this Hermes installation reuse the default
+  # profile's running daemon, CA, token mappings, and allowlist. This setting
+  # is read only from the default/root profile and is off by default.
+  share_with_profiles: false
+
   # Tunnel listener port. Sandboxes hit http://host.docker.internal:<port>.
   tunnel_port: 9090
 
@@ -102,6 +107,30 @@ proxy:
   # and Nous Research.
   extra_allowed_hosts: []
 ```
+
+### Sharing one daemon with named profiles
+
+Profiles stay isolated by default. To make the default profile's egress policy
+available to Bot Mode and `gateway.multiplex_profiles` profiles, enable sharing
+in the default profile's `config.yaml` and start its daemon:
+
+```yaml
+proxy:
+  enabled: true
+  share_with_profiles: true
+```
+
+```bash
+hermes egress start
+```
+
+Named profiles whose own `proxy.enabled` is false then route Docker sandboxes
+through the default profile's daemon and reuse its CA, proxy-token mappings,
+and allowlist. A named profile with `proxy.enabled: true` keeps using its own
+daemon instead. Egress management commands remain profile-scoped: start, stop,
+setup, reload, and config writes from a named profile never mutate the shared
+default daemon. Disable `share_with_profiles` in the default profile to restore
+strict per-profile isolation.
 
 ### Default allowed upstream hosts
 

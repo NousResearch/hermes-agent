@@ -280,7 +280,11 @@ _NON_BEARER_PROVIDERS: Tuple[str, ...] = (
 
 `_egress_proxy_args_for_docker` is Docker-specific.  Backends that want similar wiring need their own analogue that:
 
-1. Reads `load_config().get("proxy", {})`; returns empty args if `enabled` is false.
+1. Reads `load_config().get("proxy", {})`. If the active named profile has no
+   local proxy, resolve `get_default_hermes_root()` under a context-local
+   `HERMES_HOME` override and use that root only when both `enabled` and
+   `share_with_profiles` are true. Never mutate the process environment, and
+   always reset the context override. A profile-local enabled proxy wins.
 2. Calls `iron_proxy.get_status()`; surfaces `enforce` semantics on `configured` / `pid` / `listening` / `ca_cert_path` failure paths.
 3. Calls `iron_proxy.load_mappings()`; refuses to mount if empty AND `enforce_on_docker: true`.
 4. Sets the seven env vars (HTTPS_PROXY, NO_PROXY, REQUESTS_CA_BUNDLE, SSL_CERT_FILE, CURL_CA_BUNDLE, NODE_EXTRA_CA_CERTS, HERMES_EGRESS_PROXY) and the per-mapping `HERMES_PROXY_TOKEN_<NAME>` vars.

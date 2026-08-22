@@ -394,6 +394,38 @@ _PRIVDROP_CAP_ARGS = [
 ]
 
 
+def _resolve_egress_proxy_owner() -> tuple[dict, Path | None] | None:
+    """Return the effective proxy config and optional shared-owner home."""
+    from hermes_cli.config import load_config
+
+    proxy_cfg = load_config().get("proxy") or {}
+    if proxy_cfg.get("enabled"):
+        return proxy_cfg, None
+
+    from hermes_constants import (
+        get_default_hermes_root,
+        get_hermes_home,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    default_home = get_default_hermes_root()
+    if get_hermes_home().resolve() == default_home.resolve():
+        return None
+
+    token = set_hermes_home_override(default_home)
+    try:
+        default_proxy_cfg = load_config().get("proxy") or {}
+    finally:
+        reset_hermes_home_override(token)
+    if not (
+        default_proxy_cfg.get("enabled")
+        and default_proxy_cfg.get("share_with_profiles")
+    ):
+        return None
+    return default_proxy_cfg, default_home
+
+
 def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str]]:
     """Build the docker mount/env/host args needed to route a sandbox through
     the iron-proxy egress firewall.
@@ -427,12 +459,25 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
         logger.debug("Egress proxy plumbing unavailable: %s", exc)
         return ([], {}, [])
 
-    cfg = load_config()
-    proxy_cfg = cfg.get("proxy") or {}
-    if not proxy_cfg.get("enabled"):
+    resolved = _resolve_egress_proxy_owner()
+    if resolved is None:
         return ([], {}, [])
+    proxy_cfg, shared_owner_home = resolved
+    shared_from_default = shared_owner_home is not None
+    owner_token = None
+    if shared_owner_home is not None:
+        from hermes_constants import set_hermes_home_override
 
-    status = ip.get_status()
+        owner_token = set_hermes_home_override(shared_owner_home)
+    try:
+        status = ip.get_status()
+        mappings = ip.load_mappings()
+    finally:
+        if owner_token is not None:
+            from hermes_constants import reset_hermes_home_override
+
+            reset_hermes_home_override(owner_token)
+
     enforce = bool(proxy_cfg.get("enforce_on_docker", True))
 
     if not status.configured:
@@ -446,9 +491,14 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
         return ([], {}, [])
 
     if not (status.pid and status.listening):
+        start_hint = (
+            "Start it from the default profile with `hermes egress start`."
+            if shared_from_default
+            else "Start it with `hermes egress start`."
+        )
         msg = (
             f"iron-proxy is enabled but not running on port {status.tunnel_port}. "
-            "Start it with `hermes egress start`."
+            f"{start_hint}"
         )
         if enforce:
             raise RuntimeError(msg)
@@ -476,7 +526,6 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
     # indistinguishable from an upstream outage from inside the sandbox
     # (every request returns 403).  Refuse to mount with empty mappings
     # rather than ship a broken sandbox.
-    mappings = ip.load_mappings()
     if not mappings:
         msg = (
             "iron-proxy is configured but mappings.json is empty or "
@@ -576,11 +625,13 @@ def _egress_reuse_fingerprint(
 
 
 def _egress_enforce_on_docker(default: bool = True) -> bool:
-    """Read proxy.enforce_on_docker with fail-safe defaulting."""
+    """Read the effective proxy owner's enforcement policy fail-safely."""
     try:
-        from hermes_cli.config import load_config as _load_cfg
-
-        return bool((_load_cfg().get("proxy") or {}).get("enforce_on_docker", default))
+        resolved = _resolve_egress_proxy_owner()
+        if resolved is None:
+            return default
+        proxy_cfg, _ = resolved
+        return bool(proxy_cfg.get("enforce_on_docker", default))
     except (ImportError, OSError):
         return default
     except Exception:
@@ -1138,24 +1189,6 @@ class DockerEnvironment(BaseEnvironment):
         #   behavior) but we log a warning naming both config sources.
         # - When the user override is identical to the egress value, no-op.
         if egress_env_overrides:
-            try:
-                from hermes_cli.config import load_config as _load_cfg_for_collision
-                _proxy_cfg = (_load_cfg_for_collision().get("proxy") or {})
-            except (ImportError, OSError):
-                _proxy_cfg = {}
-            except Exception as _e:  # noqa: BLE001 — narrowed below via yaml import
-                # yaml.YAMLError from a malformed config.yaml.  We import
-                # lazily because PyYAML is a soft dep in some test envs.
-                try:
-                    import yaml  # noqa: F401
-                except ImportError:
-                    raise
-                logger.warning(
-                    "Could not read proxy config for egress collision check: %s",
-                    _e,
-                )
-                _proxy_cfg = {}
-            _enforce_egress = bool(_proxy_cfg.get("enforce_on_docker", True))
             # Egress-controlling env vars that affect the proxy posture.
             _critical_proxy_control = {
                 "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
@@ -1163,21 +1196,21 @@ class DockerEnvironment(BaseEnvironment):
                 "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE",
                 "NODE_EXTRA_CA_CERTS",
             }
-            # stephenschoettler #2: also block docker_env from injecting
-            # real provider keys.  `docker_env: {OPENROUTER_API_KEY: sk-real}`
-            # in config.yaml puts the live secret into the sandbox while
-            # egress is nominally enforced — defeats the entire feature.
-            # Pull the mapped real_env_name from each token mapping at
-            # call time so this stays in sync with whatever the operator
-            # has configured.
-            _critical_provider_keys: set[str] = set()
-            try:
-                from agent.proxy_sources import iron_proxy as _ip_for_mappings
-                _critical_provider_keys = {
-                    m.real_env_name for m in _ip_for_mappings.load_mappings()
-                }
-            except Exception:  # noqa: BLE001 — best-effort collision check
-                pass
+            # Also block docker_env from injecting real provider keys.
+            # Derive these from the already-resolved egress environment so a
+            # shared proxy keeps using its owner's mappings after the temporary
+            # HERMES_HOME scope has been reset.
+            _proxy_token_values = {
+                value
+                for key, value in egress_env_overrides.items()
+                if key.startswith("HERMES_PROXY_TOKEN_")
+            }
+            _critical_provider_keys = {
+                key
+                for key, value in egress_env_overrides.items()
+                if not key.startswith("HERMES_PROXY_TOKEN_")
+                and value in _proxy_token_values
+            }
             _critical = _critical_proxy_control | _critical_provider_keys
             _collisions = sorted(
                 k for k in _critical
@@ -1217,19 +1250,7 @@ class DockerEnvironment(BaseEnvironment):
         # false, docker_env wins (back-compat for users who deliberately
         # opt out).  In both cases the collision check above has already
         # surfaced any disagreement.
-        try:
-            from hermes_cli.config import load_config as _load_cfg_for_precedence
-            _enforce_egress_merge = bool(
-                (_load_cfg_for_precedence().get("proxy") or {})
-                .get("enforce_on_docker", True)
-            )
-        except (ImportError, OSError):
-            _enforce_egress_merge = True
-        except Exception:  # noqa: BLE001 — yaml.YAMLError or similar
-            # Malformed config.yaml; fail-safe to enforced.
-            _enforce_egress_merge = True
-
-        if _enforce_egress_merge and egress_env_overrides:
+        if _enforce_egress and egress_env_overrides:
             merged_env = dict(self._env)
             merged_env.update(egress_env_overrides)
         else:

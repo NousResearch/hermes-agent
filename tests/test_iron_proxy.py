@@ -661,6 +661,129 @@ def test_docker_egress_node_options_uses_sentinel(hermes_home, monkeypatch):
     )
 
 
+def _configure_running_proxy(home, *, token_value, share_with_profiles=False):
+    from hermes_cli.config import load_config, save_config
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    scope = set_hermes_home_override(home)
+    try:
+        cfg = load_config()
+        cfg["proxy"].update(
+            enabled=True,
+            enforce_on_docker=True,
+            share_with_profiles=share_with_profiles,
+        )
+        save_config(cfg)
+
+        state = ip._proxy_state_dir()
+        ca = state / "ca.crt"
+        ca.write_text("fake-ca", encoding="utf-8")
+        (state / "ca.key").write_text("fake-key", encoding="utf-8")
+        mapping = ip.TokenMapping(
+            proxy_token=token_value,
+            real_env_name="OPENROUTER_API_KEY",
+            upstream_hosts=("openrouter.ai",),
+        )
+        ip.write_proxy_config(
+            ip.build_proxy_config(
+                mappings=[mapping],
+                ca_cert=ca,
+                ca_key=state / "ca.key",
+                tunnel_port=9090,
+            )
+        )
+        ip.write_mappings([mapping])
+        (state / "iron-proxy.pid").write_text("99999", encoding="utf-8")
+        return ca
+    finally:
+        reset_hermes_home_override(scope)
+
+
+def test_docker_egress_reuses_opted_in_default_proxy(tmp_path, monkeypatch):
+    from hermes_constants import get_hermes_home
+    from tools.environments.docker import _egress_proxy_args_for_docker
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "bot"
+    profile.mkdir(parents=True)
+    default_ca = _configure_running_proxy(
+        root,
+        token_value="shared-token",
+        share_with_profiles=True,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setattr(ip, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(ip, "_port_listening", lambda host, port: True)
+
+    volumes, env, hosts = _egress_proxy_args_for_docker()
+
+    assert volumes == [
+        "-v",
+        f"{default_ca}:/etc/ssl/certs/hermes-egress-ca.crt:ro",
+    ]
+    assert env["OPENROUTER_API_KEY"] == "shared-token"
+    assert hosts == ["--add-host", "host.docker.internal:host-gateway"]
+    assert get_hermes_home() == profile
+
+
+def test_docker_egress_keeps_default_proxy_isolated_without_opt_in(
+    tmp_path, monkeypatch,
+):
+    from tools.environments.docker import _egress_proxy_args_for_docker
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "bot"
+    profile.mkdir(parents=True)
+    _configure_running_proxy(root, token_value="private-token")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setattr(ip, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(ip, "_port_listening", lambda host, port: True)
+
+    assert _egress_proxy_args_for_docker() == ([], {}, [])
+
+
+def test_docker_egress_prefers_profile_local_proxy(tmp_path, monkeypatch):
+    from tools.environments.docker import _egress_proxy_args_for_docker
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "bot"
+    profile.mkdir(parents=True)
+    _configure_running_proxy(
+        root,
+        token_value="shared-token",
+        share_with_profiles=True,
+    )
+    profile_ca = _configure_running_proxy(profile, token_value="local-token")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setattr(ip, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(ip, "_port_listening", lambda host, port: True)
+
+    volumes, env, _ = _egress_proxy_args_for_docker()
+
+    assert volumes[1].startswith(str(profile_ca))
+    assert env["OPENROUTER_API_KEY"] == "local-token"
+
+
+def test_shared_proxy_uses_default_owner_enforcement(tmp_path, monkeypatch):
+    from hermes_cli.config import load_config, save_config
+    from tools.environments.docker import _egress_enforce_on_docker
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "bot"
+    profile.mkdir(parents=True)
+    _configure_running_proxy(
+        root,
+        token_value="shared-token",
+        share_with_profiles=True,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    cfg = load_config()
+    cfg["proxy"]["enforce_on_docker"] = False
+    save_config(cfg)
+
+    assert _egress_enforce_on_docker() is True
+
+
 # ---------------------------------------------------------------------------
 # v3: ensure_audit_log fails loud on OSError (P2 promise mismatch)
 # ---------------------------------------------------------------------------

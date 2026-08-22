@@ -749,6 +749,27 @@ def test_extra_args_proxy_override_refuses_under_egress(monkeypatch):
         _make_dummy_env(extra_args=["-e", "HTTPS_PROXY="])
 
 
+def test_enforced_egress_rejects_docker_env_provider_key(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: (
+            [],
+            {
+                "OPENROUTER_API_KEY": "shared-proxy-token",
+                "HERMES_PROXY_TOKEN_OPENROUTER_API_KEY": "shared-proxy-token",
+            },
+            [],
+        ),
+    )
+    monkeypatch.setattr(docker_env, "_egress_enforce_on_docker", lambda: True)
+    _mock_subprocess_run(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="docker_env.*OPENROUTER_API_KEY"):
+        _make_dummy_env(env={"OPENROUTER_API_KEY": "real-provider-key"})
+
+
 def test_reuse_starts_stopped_container_before_attaching(monkeypatch):
     """A labeled container in ``exited`` state must be restarted via
     ``docker start`` before the new Hermes process uses it. Without this

@@ -3554,6 +3554,11 @@ DEFAULT_CONFIG = {
         # mounts are added, no binaries are auto-installed — feature is a
         # complete no-op.
         "enabled": False,
+        # Let named profiles reuse this profile's running daemon, CA, token
+        # mappings, and allowlist.  Only the default/root profile's value is
+        # authoritative; named profiles keep their own proxy when enabled.
+        # Management commands remain scoped to the owning profile.
+        "share_with_profiles": False,
         # Tunnel listener port.  Sandboxes get `HTTPS_PROXY=http://<host>:<port>`.
         # 9090 is the default; collide-aware setup wizard can reassign.
         "tunnel_port": 9090,

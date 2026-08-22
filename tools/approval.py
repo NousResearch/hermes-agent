@@ -2350,6 +2350,7 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
+_permanent_allowlist_rules: list[dict] = []
 
 
 # =========================================================================
@@ -2805,6 +2806,14 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
         return any(alias in session_approvals for alias in aliases)
 
 
+def is_session_approved(session_key: str, pattern_key: str) -> bool:
+    """Check whether a pattern is approved in this session only."""
+    aliases = _approval_key_aliases(pattern_key)
+    with _lock:
+        session_approvals = _session_approved.get(session_key, set())
+        return any(alias in session_approvals for alias in aliases)
+
+
 def approve_permanent(pattern_key: str):
     """Add a pattern to the permanent allowlist."""
     with _lock:
@@ -2814,7 +2823,11 @@ def approve_permanent(pattern_key: str):
 def load_permanent(patterns: set):
     """Bulk-load permanent allowlist entries from config."""
     with _lock:
-        _permanent_approved.update(patterns)
+        for pattern in patterns:
+            if isinstance(pattern, str):
+                _permanent_approved.add(pattern)
+            elif isinstance(pattern, dict):
+                _permanent_allowlist_rules.append(pattern)
 
 
 # Shell control characters that make a command compound when they appear
@@ -2894,21 +2907,129 @@ def _has_allowlist_shell_operator(command: str) -> bool:
     return has_reinterpretable and bool(_REINTERPRETED_ARGUMENT_RE.search(command))
 
 
+def _split_simple_command(command: str) -> list[str] | None:
+    """Shell-split one non-compound command for policy matching."""
+    if _has_allowlist_shell_operator(command):
+        return None
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return None
+
+
+def _rule_command_matches(command: str, argv: list[str], pattern: str) -> bool:
+    """Match a policy rule's command pattern against a simple command."""
+    pattern = (pattern or "").strip()
+    if not pattern:
+        return False
+    verb = argv[0] if argv else ""
+    if command == pattern or verb == pattern:
+        return True
+    if any(ch in pattern for ch in "*?["):
+        return (
+            fnmatch.fnmatchcase(command, pattern)
+            or fnmatch.fnmatchcase(verb, pattern)
+        )
+    return False
+
+
+def _is_path_shaped_arg(arg: str) -> bool:
+    """Return True for shell args that are likely filesystem paths."""
+    if not arg or arg == "--":
+        return False
+    lowered = arg.lower()
+    if lowered.startswith((
+        "~/", "$home/", "${home}/", "$hermes_home/", "${hermes_home}/",
+        "/", "./", "../", "~\\", "$home\\", "${home}\\",
+        "$hermes_home\\", "${hermes_home}\\", "\\",
+    )):
+        return True
+    if re.match(r"^[a-z]:[/\\]", arg, re.IGNORECASE):
+        return True
+    return "/" in arg or "\\" in arg
+
+
+def _normalize_policy_path(value: str) -> str:
+    """Expand common roots and normalize separators for glob matching."""
+    value = value.strip()
+    try:
+        from hermes_constants import get_hermes_home
+        hermes_home = str(get_hermes_home().expanduser())
+    except Exception:
+        hermes_home = os.environ.get("HERMES_HOME", "")
+    for prefix in ("$HERMES_HOME", "${HERMES_HOME}", "$hermes_home", "${hermes_home}"):
+        if value.startswith(prefix):
+            value = hermes_home + value[len(prefix):]
+            break
+    value = os.path.expanduser(os.path.expandvars(value))
+    return value.replace("\\", "/").rstrip("/")
+
+
+def _path_glob_matches(path_arg: str, glob_pattern: str) -> bool:
+    path = _normalize_policy_path(path_arg)
+    pattern = _normalize_policy_path(glob_pattern)
+    if fnmatch.fnmatchcase(path, pattern):
+        return True
+    if pattern.endswith("/**"):
+        root = pattern[:-3].rstrip("/")
+        return path == root or path.startswith(root + "/")
+    return False
+
+
+def _entry_path_globs(entry: dict) -> list[str]:
+    raw = entry.get("args_glob", entry.get("path_glob", []))
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [
+        item for item in raw
+        if isinstance(item, str) and _is_path_shaped_arg(item)
+    ]
+
+
+def _entry_path_args_allowed(entry: dict, argv: list[str]) -> bool:
+    """Verify every path-shaped arg is covered by a structured allowlist rule."""
+    globs = _entry_path_globs(entry)
+    if not globs:
+        return True
+    path_args = [arg for arg in argv[1:] if _is_path_shaped_arg(arg)]
+    if not path_args:
+        return False
+    return all(
+        any(_path_glob_matches(arg, glob_pattern) for glob_pattern in globs)
+        for arg in path_args
+    )
+
+
+def _structured_policy_entry_matches(command: str, argv: list[str], entry: dict) -> bool:
+    pattern = entry.get("pattern", entry.get("command", ""))
+    if not isinstance(pattern, str):
+        return False
+    if not _rule_command_matches(command, argv, pattern):
+        return False
+    return _entry_path_args_allowed(entry, argv)
+
+
 def _command_matches_permanent_allowlist(command: str) -> bool:
     """Return True when command_allowlist contains this command or a glob.
 
     Permanent approvals historically store dangerous-pattern keys such as
     ``recursive delete``. Manual entries in ``command_allowlist`` are command
-    text, and may include shell-style wildcards like ``podman *``.
+    text, and may include shell-style wildcards like ``podman *``. Structured
+    entries may additionally scope a verb to path-shaped arguments, e.g.
+    ``{"pattern": "chmod", "args_glob": ["~/.hermes/**"]}``.
     """
     command = (command or "").strip()
     if not command:
         return False
-    if _has_allowlist_shell_operator(command):
+    argv = _split_simple_command(command)
+    if argv is None:
         return False
 
     with _lock:
         patterns = tuple(_permanent_approved)
+        structured_rules = tuple(_permanent_allowlist_rules)
 
     for pattern in patterns:
         if not isinstance(pattern, str):
@@ -2920,7 +3041,58 @@ def _command_matches_permanent_allowlist(command: str) -> bool:
             return True
         if any(ch in pattern for ch in "*?[") and fnmatch.fnmatchcase(command, pattern):
             return True
+    for entry in structured_rules:
+        if isinstance(entry, dict) and _structured_policy_entry_matches(command, argv, entry):
+            return True
     return False
+
+
+def _configured_approval_required(command: str) -> tuple[bool, str | None, str | None]:
+    """Return a configured approval requirement match, if any.
+
+    Rules live in ``approvals.command_approval_required``. The legacy top-level
+    ``command_approval_required`` key is also accepted for simple deployments.
+    String entries match exact commands, command globs, or a bare verb. Dict
+    entries use the same ``pattern`` / ``args_glob`` shape as structured
+    allowlist entries.
+    """
+    command = (command or "").strip()
+    if not command:
+        return (False, None, None)
+    argv = _split_simple_command(command)
+    if argv is None:
+        return (False, None, None)
+    try:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly() or {}
+    except Exception as exc:
+        logger.warning("Failed to load approval-required command rules: %s", exc)
+        return (False, None, None)
+
+    approvals = config.get("approvals", {}) or {}
+    rules = approvals.get("command_approval_required")
+    if rules is None:
+        rules = config.get("command_approval_required", [])
+    if isinstance(rules, (str, dict)):
+        rules = [rules]
+    if not isinstance(rules, list):
+        return (False, None, None)
+
+    for entry in rules:
+        label = None
+        matched = False
+        if isinstance(entry, str):
+            label = entry.strip()
+            matched = _rule_command_matches(command, argv, label)
+        elif isinstance(entry, dict):
+            label_raw = entry.get("description") or entry.get("pattern") or entry.get("command")
+            label = str(label_raw).strip() if label_raw is not None else ""
+            matched = _structured_policy_entry_matches(command, argv, entry)
+        if matched:
+            label = label or "configured command policy"
+            description = f"configured approval-required command ({label})"
+            return (True, f"configured approval: {label}", description)
+    return (False, None, None)
 
 
 
@@ -2937,10 +3109,12 @@ def load_permanent_allowlist() -> set:
     try:
         from hermes_cli.config import load_config_readonly
         config = load_config_readonly()
-        patterns = set(config.get("command_allowlist", []) or [])
-        if patterns:
-            load_permanent(patterns)
-        return patterns
+        entries = config.get("command_allowlist", []) or []
+        if isinstance(entries, (str, dict)):
+            entries = [entries]
+        if isinstance(entries, list) and entries:
+            load_permanent(entries)
+        return {entry for entry in entries if isinstance(entry, str)}
     except Exception as e:
         logger.warning("Failed to load permanent allowlist: %s", e)
         return set()
@@ -2951,7 +3125,13 @@ def save_permanent_allowlist(patterns: set):
     try:
         from hermes_cli.config import load_config, save_config
         config = load_config()
-        config["command_allowlist"] = list(patterns)
+        existing = config.get("command_allowlist", []) or []
+        if isinstance(existing, (str, dict)):
+            existing = [existing]
+        structured = [entry for entry in existing if isinstance(entry, dict)]
+        config["command_allowlist"] = sorted(
+            pattern for pattern in patterns if isinstance(pattern, str)
+        ) + structured
         save_config(config)
     except Exception as e:
         logger.warning("Could not save allowlist: %s", e)
@@ -3421,6 +3601,7 @@ def _run_approval_gate(
     cron_deny_message: str,
     single_query_deny_message: str,
     autoapprove_log_prefix: str,
+    allow_permanent: bool = True,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
 ) -> dict:
@@ -3453,6 +3634,8 @@ def _run_approval_gate(
             (-q) session hits this gate under ``single_query_mode: deny``.
         autoapprove_log_prefix: Log line prefix for the non-interactive
             auto-approve warning (identifies command vs plugin origin).
+        allow_permanent: Whether the user can persist an approval beyond the
+            current session.
         fail_closed_when_no_human: When True, a non-interactive non-gateway
             context that is NOT a cron session (e.g. a bare script with
             HERMES_INTERACTIVE unset) BLOCKS instead of auto-approving. The
@@ -3473,7 +3656,8 @@ def _run_approval_gate(
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
+    approved = is_approved if allow_permanent else is_session_approved
+    if approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
     approval_callback = _resolve_cli_approval_callback(approval_callback)
@@ -3564,7 +3748,7 @@ def _run_approval_gate(
                 "pattern_key": pattern_key,
                 "pattern_keys": [pattern_key],
                 "description": redact_sensitive_text(description),
-                "allow_permanent": True,
+                "allow_permanent": allow_permanent,
                 "allow_session": True,
             }
             decision = _await_gateway_decision(
@@ -3608,8 +3792,9 @@ def _run_approval_gate(
                 approve_session(session_key, pattern_key)
             elif choice == "always":
                 approve_session(session_key, pattern_key)
-                approve_permanent(pattern_key)
-                save_permanent_allowlist(_permanent_approved)
+                if allow_permanent:
+                    approve_permanent(pattern_key)
+                    save_permanent_allowlist(_permanent_approved)
             return {"approved": True, "message": None}
 
         # No notify callback: interactive CLI with a panel callback should
@@ -3626,6 +3811,7 @@ def _run_approval_gate(
                 "command": display_target,
                 "pattern_key": pattern_key,
                 "description": description,
+                "allow_permanent": allow_permanent,
             })
             return {
                 "approved": False,
@@ -3633,6 +3819,7 @@ def _run_approval_gate(
                 "status": "approval_required",
                 "command": display_target,
                 "description": description,
+                "allow_permanent": allow_permanent,
                 "message": (
                     f"⚠️ This action is potentially dangerous ({description}). "
                     f"Asking the user for approval.\n\n**Target:**\n```\n{display_target}\n```"
@@ -3648,8 +3835,12 @@ def _run_approval_gate(
         session_key=session_key,
         surface="cli",
     )
-    choice = prompt_dangerous_approval(display_target, description,
-                                       approval_callback=approval_callback)
+    choice = prompt_dangerous_approval(
+        display_target,
+        description,
+        allow_permanent=allow_permanent,
+        approval_callback=approval_callback,
+    )
     _fire_approval_hook(
         "post_approval_response",
         command=display_target,
@@ -3694,8 +3885,9 @@ def _run_approval_gate(
         approve_session(session_key, pattern_key)
     elif choice == "always":
         approve_session(session_key, pattern_key)
-        approve_permanent(pattern_key)
-        save_permanent_allowlist(_permanent_approved)
+        if allow_permanent:
+            approve_permanent(pattern_key)
+            save_permanent_allowlist(_permanent_approved)
 
     return {"approved": True, "message": None}
 
@@ -3759,10 +3951,14 @@ def check_dangerous_command(command: str, env_type: str,
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
-    if _command_matches_permanent_allowlist(command):
+    required, required_key, required_desc = _configured_approval_required(command)
+    if not required and _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if required:
+        is_dangerous, pattern_key, description = True, required_key, required_desc
+    else:
+        is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return {"approved": True, "message": None}
 
@@ -3788,6 +3984,7 @@ def check_dangerous_command(command: str, env_type: str,
         autoapprove_log_prefix=(
             "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
         ),
+        allow_permanent=not required,
     )
 
 
@@ -4393,7 +4590,8 @@ def check_all_command_guards(command: str, env_type: str,
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
-    if _command_matches_permanent_allowlist(command):
+    required, required_key, required_desc = _configured_approval_required(command)
+    if not required and _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
     approval_callback = _resolve_cli_approval_callback(approval_callback)
@@ -4488,7 +4686,8 @@ def check_all_command_guards(command: str, env_type: str,
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
-                if is_dangerous:
+                if required or is_dangerous:
+                    description = required_desc if required else description
                     return {
                         "approved": False,
                         "message": (
@@ -4598,7 +4797,9 @@ def check_all_command_guards(command: str, env_type: str,
     # --- Phase 2: Decide ---
 
     # Collect warnings that need approval
-    warnings = []  # list of (pattern_key, description, is_tirith)
+    # Entries retain their source so configured approval requirements cannot
+    # be smart-approved or converted into a permanent allowlist entry.
+    warnings = []  # list of (pattern_key, description, is_tirith, is_required)
 
     session_key = get_current_session_key()
 
@@ -4612,11 +4813,15 @@ def check_all_command_guards(command: str, env_type: str,
         tirith_key = f"tirith:{rule_id}"
         tirith_desc = _format_tirith_description(tirith_result)
         if not is_approved(session_key, tirith_key):
-            warnings.append((tirith_key, tirith_desc, True))
+            warnings.append((tirith_key, tirith_desc, True, False))
+
+    if required:
+        if not is_session_approved(session_key, required_key):
+            warnings.append((required_key, required_desc, False, True))
 
     if is_dangerous:
         if not is_approved(session_key, pattern_key):
-            warnings.append((pattern_key, description, False))
+            warnings.append((pattern_key, description, False, False))
 
     # Nothing to warn about
     if not warnings:
@@ -4627,13 +4832,16 @@ def check_all_command_guards(command: str, env_type: str,
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
     # (openai/codex#13860).
     smart_denied_for_owner = False
-    if approval_mode == "smart":
-        combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+    if (
+        approval_mode == "smart"
+        and not any(is_required for *_, is_required in warnings)
+    ):
+        combined_desc_for_llm = "; ".join(desc for _, desc, _, _ in warnings)
         observer_payload = _prepare_smart_approval_observer(
             command=command,
             description=combined_desc_for_llm,
             pattern_key=warnings[0][0],
-            pattern_keys=[key for key, _, _ in warnings],
+            pattern_keys=[key for key, _, _, _ in warnings],
             session_key=session_key,
         )
         verdict = _smart_approve(command, combined_desc_for_llm)
@@ -4670,9 +4878,9 @@ def check_all_command_guards(command: str, env_type: str,
     # --- Phase 3: Approval ---
 
     # Combine descriptions for a single approval prompt
-    combined_desc = "; ".join(desc for _, desc, _ in warnings)
+    combined_desc = "; ".join(desc for _, desc, _, _ in warnings)
     primary_key = warnings[0][0]
-    all_keys = [key for key, _, _ in warnings]
+    all_keys = [key for key, _, _, _ in warnings]
     # "Always" is offered when at least one warning is a dangerous-pattern
     # key that the persistence layer would actually allowlist permanently.
     # Pure-tirith findings are session-max by design (no broad permanent
@@ -4681,7 +4889,10 @@ def check_all_command_guards(command: str, env_type: str,
     # tirith) previously hid Always too, even though choosing it would
     # correctly persist the pattern key and downgrade the tirith key to
     # session — the UI was stricter than the persistence layer.
-    has_permanent_capable = any(not is_t for _, _, is_t in warnings)
+    has_permanent_capable = any(
+        not is_tirith and not is_required
+        for _, _, is_tirith, is_required in warnings
+    )
 
     # An explicitly selected plugin transport replaces every built-in prompt
     # surface (CLI/TUI/gateway/ACP). Detection, allowed scopes, persistence,
@@ -4730,9 +4941,9 @@ def check_all_command_guards(command: str, env_type: str,
                     "user_consent": False,
                 }
             if not smart_denied_for_owner:
-                for key, _, is_tirith in warnings:
+                for key, _, is_tirith, is_required in warnings:
                     if transport_choice == "session" or (
-                        transport_choice == "always" and is_tirith
+                        transport_choice == "always" and (is_tirith or is_required)
                     ):
                         approve_session(session_key, key)
                     elif transport_choice == "always":
@@ -4844,8 +5055,10 @@ def check_all_command_guards(command: str, env_type: str,
             # older client returns "session" or "always". Manual and ESCALATE
             # choices retain their existing persistence semantics.
             if not smart_denied_for_owner:
-                for key, _, is_tirith in warnings:
-                    if choice == "session" or (choice == "always" and is_tirith):
+                for key, _, is_tirith, is_required in warnings:
+                    if choice == "session" or (
+                        choice == "always" and (is_tirith or is_required)
+                    ):
                         approve_session(session_key, key)
                     elif choice == "always":
                         approve_session(session_key, key)
@@ -4879,6 +5092,7 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": _disp_combined_desc,
+                "allow_permanent": has_permanent_capable and not smart_denied_for_owner,
             }
             if smart_denied_for_owner:
                 pending_data.update(smart_denied=True, allow_permanent=False)
@@ -4890,6 +5104,7 @@ def check_all_command_guards(command: str, env_type: str,
                 "approval_pending": True,
                 "command": _disp_command,
                 "description": _disp_combined_desc,
+                "allow_permanent": has_permanent_capable and not smart_denied_for_owner,
                 "message": (
                     f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```\n\n"
                     "STOP: do NOT re-run, rephrase, or re-issue this command — each "
@@ -4971,8 +5186,10 @@ def check_all_command_guards(command: str, env_type: str,
     # Smart-DENY owner overrides are one-operation scoped. Preserve existing
     # persistence for manual mode and smart ESCALATE.
     if not smart_denied_for_owner:
-        for key, _, is_tirith in warnings:
-            if choice == "session" or (choice == "always" and is_tirith):
+        for key, _, is_tirith, is_required in warnings:
+            if choice == "session" or (
+                choice == "always" and (is_tirith or is_required)
+            ):
                 # tirith: session only (no permanent broad allowlisting)
                 approve_session(session_key, key)
             elif choice == "always":

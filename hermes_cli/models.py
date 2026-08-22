@@ -383,6 +383,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.5",
         "glm-4.5-flash",
     ],
+    "zai-coding-plan": [
+        "glm-5.3",
+        "glm-5.2",
+        "glm-5.1",
+        "glm-5",
+        "glm-4.7",
+        "glm-4.5",
+        "glm-4.5-air",
+    ],
     "xai": _xai_curated_models(),
     "nvidia": [
         # NVIDIA flagship reasoning models
@@ -1234,6 +1243,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (V3, R1, coder, direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI Grok (Direct API)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu direct API)"),
+    ProviderEntry("zai-coding-plan", "Z.AI / GLM (Coding Plan)", "Z.AI Coding Plan (GLM subscription tier, coding endpoint)"),
     ProviderEntry("kimi-coding",    "Kimi / Kimi Coding Plan",  "Kimi Coding Plan (api.kimi.com & Moonshot API)"),
     ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Domestic direct API)"),
     ProviderEntry("stepfun",        "StepFun Step Plan",       "StepFun Step Plan (Agent / coding models via Step Plan API)"),
@@ -1385,6 +1395,9 @@ _PROVIDER_ALIASES = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    "glm-coding": "zai-coding-plan",
+    "zai-coding": "zai-coding-plan",
+    "z-ai-coding": "zai-coding-plan",
     "github": "copilot",
     "github-copilot": "copilot",
     "github-models": "copilot",

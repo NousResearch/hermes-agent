@@ -380,6 +380,42 @@ class TestDmClassification:
         assert CHANNEL not in a._channel_state
         assert a._may_reclassify_as_dm(CHANNEL) is False
 
+    @pytest.mark.asyncio
+    async def test_unfetched_metadata_group_never_reclassifies_as_dm(self, adapter):
+        """#87899: with BUZZ_CHANNELS unset (watch-all mode), a group whose
+        metadata has not been fetched must default to group — a p-tagged,
+        un-mentioned message can no longer latch it to the DM/home channel."""
+        adapter._channel_meta.pop(CHANNEL)  # metadata not yet loaded
+        assert adapter.channels == []       # watch-all: no explicit BUZZ_CHANNELS
+        assert adapter._may_reclassify_as_dm(CHANNEL) is False
+        await self._poll_with(
+            adapter, CHANNEL,
+            _tagged_event("e1", CHANNEL, content="plain reply without mention", p=SELF_PUBKEY),
+        )
+        assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_dm_latch_waits_for_loaded_metadata(self, adapter):
+        """Without metadata the DM latch never fires; once the relay's
+        channels-list metadata loads with the DM shape (name "DM", empty
+        description) the same message shape latches as before."""
+        adapter._channel_meta.pop(DM_CHANNEL)  # metadata not yet loaded
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="here's a test message", p=SELF_PUBKEY),
+        )
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "group"
+        adapter._channel_meta[DM_CHANNEL] = {
+            "channel_id": DM_CHANNEL, "name": "DM", "description": "",
+        }
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _tagged_event("e2", DM_CHANNEL, content="still no mention",
+                          created_at=1001, p=SELF_PUBKEY),
+        )
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+
 
 # ── Sending ───────────────────────────────────────────────────────────────
 

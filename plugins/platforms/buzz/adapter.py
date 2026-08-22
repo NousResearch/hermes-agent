@@ -1089,12 +1089,17 @@ class BuzzAdapter(BasePlatformAdapter):
 
         Known real community channels (real name or non-empty description in
         ``channels list``) must never turn into DMs just because a message
-        p-tags us.  A conversation with no metadata at all is trusted only
-        when the user did not explicitly configure it as a watched channel.
+        p-tags us.  A conversation with no metadata at all is assumed to be a
+        group channel: with ``BUZZ_CHANNELS`` unset (watch-all mode) every
+        channel legitimately has no configured entry, so keying off
+        ``channel_id not in self.channels`` there would tag each un-fetched
+        group as a DM candidate and latch its replies to the home/DM channel
+        (#87899).  Relay-materialized DMs are still caught once their
+        ``channels list`` metadata loads (name "DM", empty description).
         """
         meta = self._channel_meta.get(channel_id)
         if meta is None:
-            return channel_id not in self.channels
+            return False
         name = str(meta.get("name") or "").strip()
         description = str(meta.get("description") or "").strip()
         return name == "DM" and not description

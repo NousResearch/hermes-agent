@@ -365,6 +365,15 @@ class TestResumePendingSystemNote:
         # Keep native multimodal persistence in control of captionless media.
         assert persisted is None
 
+    def test_whitespace_real_event_defers_to_native_persistence(self):
+        """Blank-ish real input must not recreate sanitizer-healed rows."""
+        message, persisted = _prepare_resume_pending_message(
+            "restart_timeout", "   ", interactive=True, startup_resume=False
+        )
+
+        assert "Address the user's NEW message" in message
+        assert persisted is None
+
 
     def test_resume_pending_fires_without_tool_tail(self):
         """Key improvement over PR #9934: the restart-resume note fires

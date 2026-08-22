@@ -1027,7 +1027,15 @@ def _prepare_resume_pending_message(
     )
     # A real captionless media event may have no string to persist; only the synthetic
     # startup wake persists the recovery scaffold itself.
-    persist_message = recovery_message if startup_resume else (message or None)
+    persist_message = (
+        recovery_message
+        if startup_resume
+        else (
+            message
+            if isinstance(message, str) and message.strip()
+            else None
+        )
+    )
     return recovery_message, persist_message
 
 

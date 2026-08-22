@@ -1128,6 +1128,26 @@ class ShellFileOperations(FileOperations):
         
         return path
     
+    @staticmethod
+    def _quote_shell_arg(arg: str) -> str:
+        """Quote an arbitrary shell argument without path normalization."""
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
+
+    @staticmethod
+    def _rg_pattern_stdin(pattern: str) -> str:
+        """Encode one ripgrep pattern for stdin pattern-file transport."""
+        pattern = pattern.replace("\r", r"\r").replace("\n", r"\n")
+        # Payload backends accept an unterminated final pattern. Heredoc
+        # backends add their own newline before the delimiter, so appending
+        # one here would create a blank second pattern that matches every
+        # line. Keep the empty regex truthy so stdin is still connected.
+        return pattern or "\n"
+
+    @staticmethod
+    def _grep_pattern_stdin(pattern: str) -> str:
+        """Encode one grep pattern without reinterpreting backslash escapes."""
+        return pattern or "\n"
+
     def _escape_shell_arg(self, arg: str) -> str:
         """Escape a string for safe use in shell commands.
 
@@ -1142,8 +1162,7 @@ class ShellFileOperations(FileOperations):
         from tools.environments.local import _bash_safe_path
 
         arg = _bash_safe_path(arg)
-        # Use single quotes and escape any single quotes in the string
-        return "'" + arg.replace("'", "'\"'\"'") + "'"
+        return self._quote_shell_arg(arg)
 
     def _escape_native_tool_arg(self, arg: str) -> str:
         """Escape a path argument destined for a NATIVE Windows binary.
@@ -1171,7 +1190,7 @@ class ShellFileOperations(FileOperations):
 
         if _IS_WINDOWS and arg:
             arg = _msys_to_windows_path(arg).replace("\\", "/")
-        return "'" + arg.replace("'", "'\"'\"'") + "'"
+        return self._quote_shell_arg(arg)
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.
@@ -2910,12 +2929,14 @@ class ShellFileOperations(FileOperations):
             extra = len(per_file) - cap
             return shown + (f" (+{extra} more)" if extra > 0 else "")
 
-        glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        glob_expr = f" --glob {self._quote_shell_arg(file_glob)}" if file_glob else ""
+        pattern_stdin = self._rg_pattern_stdin(pattern)
         probe = self._exec(
-            f"rg -i --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
-            f"2>/dev/null | head -50",
+            f"{{ rg -i --count-matches{glob_expr} -f - "
+            f"{self._escape_native_tool_arg(path)} "
+            "2>/dev/null | head -50; }",
             timeout=30,
+            stdin_data=pattern_stdin,
         )
         ci_total, ci_paths = _tally(probe.stdout)
         if ci_total > 0:
@@ -2929,10 +2950,11 @@ class ShellFileOperations(FileOperations):
         # returning a bare zero (bench case: match in .hidden/ silently
         # missing from results).
         hidden = self._exec(
-            f"rg --hidden --no-ignore --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
-            f"2>/dev/null | head -50",
+            f"{{ rg --hidden --no-ignore --count-matches{glob_expr} "
+            f"-f - {self._escape_native_tool_arg(path)} "
+            "2>/dev/null | head -50; }",
             timeout=30,
+            stdin_data=pattern_stdin,
         )
         h_total, h_paths = _tally(hidden.stdout)
         if h_total > 0:
@@ -2943,10 +2965,11 @@ class ShellFileOperations(FileOperations):
             )
         if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
             fixed = self._exec(
-                f"rg -F --count-matches{glob_expr} "
-                f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
-                f"2>/dev/null | head -50",
+                f"{{ rg -F --count-matches{glob_expr} "
+                f"-f - {self._escape_native_tool_arg(path)} "
+                "2>/dev/null | head -50; }",
                 timeout=30,
+                stdin_data=pattern_stdin,
             )
             f_total, f_paths = _tally(fixed.stdout)
             if f_total > 0:
@@ -2997,7 +3020,7 @@ class ShellFileOperations(FileOperations):
         if not has_hidden_path_ancestor:
             pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
 
-        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._quote_shell_arg(search_pattern)} " \
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
@@ -3005,7 +3028,7 @@ class ShellFileOperations(FileOperations):
 
         if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._quote_shell_arg(search_pattern)} " \
                         f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
@@ -3062,7 +3085,7 @@ class ShellFileOperations(FileOperations):
         fetch_limit = limit + offset
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
-            f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
+            f"rg --files --sortr=modified -g {self._quote_shell_arg(glob_pattern)} "
             f"{self._escape_native_tool_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
@@ -3073,7 +3096,7 @@ class ShellFileOperations(FileOperations):
         if not all_files and not limit_reason:
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
-                f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
+                f"rg --files -g {self._quote_shell_arg(glob_pattern)} "
                 f"{self._escape_native_tool_arg(path)} 2>/dev/null "
                 f"| head -n {fetch_limit}"
             )
@@ -3148,7 +3171,7 @@ class ShellFileOperations(FileOperations):
         
         # Add file glob filter (must be quoted to prevent shell expansion)
         if file_glob:
-            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
+            cmd_parts.extend(["--glob", self._quote_shell_arg(file_glob)])
         
         # Output mode handling
         if output_mode == "files_only":
@@ -3156,8 +3179,10 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")  # Count per file
         
-        # Add pattern and path
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        # Read the pattern from stdin so Git Bash never has to encode regex
+        # backslashes into a native Windows argv. Literal newlines are
+        # converted to regex escapes by _pattern_stdin.
+        cmd_parts.extend(["-f", "-"])
         # rg is a native Windows binary when installed via winget/cargo/choco:
         # it needs the C:/... path form, not the MSYS /c/... form (which
         # nothing converts back — Hermes sets MSYS_NO_PATHCONV for its bash).
@@ -3174,8 +3199,12 @@ class ShellFileOperations(FileOperations):
         # error code (2) and making the guard below unreachable. rg handles a
         # truncating head cleanly (exit 0 on SIGPIPE), so pipefail does not
         # introduce false errors on a successful-but-truncated search.
-        cmd = "set -o pipefail; " + " ".join(cmd_parts)
-        result = self._exec(cmd, timeout=60)
+        cmd = "set -o pipefail; { " + " ".join(cmd_parts) + "; }"
+        result = self._exec(
+            cmd,
+            timeout=60,
+            stdin_data=self._rg_pattern_stdin(pattern),
+        )
         stdout, limit_reason = _search_stdout_and_limit(result)
 
         # _exec merges stderr into stdout (stderr=subprocess.STDOUT), so rg's
@@ -3275,6 +3304,13 @@ class ShellFileOperations(FileOperations):
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""
+        # grep is line-oriented and cannot represent a cross-line regex in a
+        # pattern file. Return a clean zero so _search_content can attach its
+        # existing guidance instead of risking a false match (GNU grep
+        # interprets regex `\\n` as the letter `n`).
+        if _pattern_has_regex_newline(pattern):
+            return SearchResult(total_count=0)
+
         cmd_parts = ["grep", "-rnHE"]  # -H forces filenames; -E matches rg regex behavior
         
         # Exclude hidden directories (matching ripgrep's default behavior).
@@ -3287,7 +3323,7 @@ class ShellFileOperations(FileOperations):
         
         # Add file pattern filter (must be quoted to prevent shell expansion)
         if file_glob:
-            cmd_parts.extend(["--include", self._escape_shell_arg(file_glob)])
+            cmd_parts.extend(["--include", self._quote_shell_arg(file_glob)])
         
         # Output mode handling
         if output_mode == "files_only":
@@ -3295,12 +3331,13 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")
         
-        # Add pattern and path. grep applies --exclude-dir to the command-line
+        # Read the pattern from stdin so shell argument transport cannot alter
+        # its regex escapes. grep applies --exclude-dir to the command-line
         # search root too, so passing the default relative root ``.`` causes
         # ``.*`` to exclude the entire search. Anchor relative paths at the
         # shell's live cwd; quoting $PWD separately keeps user paths escaped
         # while working across local, container, and remote backends.
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        cmd_parts.extend(["-f", "-"])
         is_absolute = path.startswith(("/", "\\\\")) or bool(
             re.match(r"^[A-Za-z]:[\\/]", path)
         )
@@ -3322,8 +3359,12 @@ class ShellFileOperations(FileOperations):
         # A truncating head makes grep exit 141 (SIGPIPE) on an otherwise
         # successful search; the strict `== 2` guard below ignores that, so
         # pipefail does not turn truncated results into false errors.
-        cmd = "set -o pipefail; " + " ".join(cmd_parts)
-        result = self._exec(cmd, timeout=60)
+        cmd = "set -o pipefail; { " + " ".join(cmd_parts) + "; }"
+        result = self._exec(
+            cmd,
+            timeout=60,
+            stdin_data=self._grep_pattern_stdin(pattern),
+        )
         stdout, limit_reason = _search_stdout_and_limit(result)
 
         # _exec merges stderr into stdout, so grep's diagnostic lines

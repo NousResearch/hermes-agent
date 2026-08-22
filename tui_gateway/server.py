@@ -7952,6 +7952,128 @@ def _fail_inflight_turn(
     session["inflight_turn"] = turn
 
 
+_TURN_FAILURE_DETAIL_LIMIT = 240
+# Shortest run of the submitted prompt that counts as the provider quoting it
+# back. Long enough that shared boilerplate ("Invalid request for model ") does
+# not trip it, short enough to catch a quoted sentence.
+_TURN_PROMPT_ECHO_WINDOW = 24
+# Ceiling on the prompt we shingle. An @-expanded prompt can carry a whole
+# file; the failure path must stay cheap.
+_TURN_PROMPT_ECHO_MAX_PROMPT = 65536
+
+
+def _strip_prompt_echo(message: str, prompt: Any) -> str:
+    """Blank runs of the submitted prompt that ``message`` quotes back.
+
+    Secret redaction and prompt omission are different contracts, and only the
+    first one is pattern-based. A provider 4xx that echoes the request carries
+    ordinary private prose -- a paragraph about a person, a pasted file from an
+    ``@`` reference -- that matches no credential pattern and would otherwise
+    reach the log intact. This closes that path directly: anything the message
+    shares with the prompt for ``_TURN_PROMPT_ECHO_WINDOW`` characters or more
+    becomes ``<prompt>``.
+
+    Shingle-set matching, not a diff: cost is linear in both strings, which
+    matters because this runs on every failed turn and an ``@`` reference can
+    make the prompt arbitrarily long. The JSON-escaped form of the prompt is
+    shingled too, since a provider that hands back its own request body often
+    hands it back escaped.
+
+    Verbatim echo is what this stops. A paraphrase, a re-encoding (base64, a
+    different unicode normalization) or a summary of the prompt would survive,
+    so this is a floor and not a proof; the guarantee it does give is that the
+    prompt cannot reach the record by being quoted.
+    """
+    if not message or not prompt:
+        return message
+    needle = " ".join(str(prompt).split())[:_TURN_PROMPT_ECHO_MAX_PROMPT]
+    window = _TURN_PROMPT_ECHO_WINDOW
+    if len(needle) < window or len(message) < window:
+        return message
+    shingles = {needle[i:i + window] for i in range(len(needle) - window + 1)}
+    try:
+        escaped = json.dumps(needle)[1:-1]
+    except Exception:
+        escaped = ""
+    if escaped and escaped != needle:
+        shingles.update(
+            escaped[i:i + window] for i in range(len(escaped) - window + 1)
+        )
+    out: list[str] = []
+    i = 0
+    n = len(message)
+    while i <= n - window:
+        if message[i:i + window] in shingles:
+            j = i + window
+            while j < n and message[j - window + 1:j + 1] in shingles:
+                j += 1
+            out.append("<prompt>")
+            i = j
+        else:
+            out.append(message[i])
+            i += 1
+    out.append(message[i:])
+    return "".join(out)
+
+
+def _turn_failure_detail(error: Any, reason: Any = None, prompt: Any = None) -> str:
+    """Render why a turn failed, for the ``tui turn finished`` bookend.
+
+    Returns ``""`` when there is nothing to say, otherwise a fragment that
+    already carries its own leading space, so the caller can append it to the
+    record unconditionally.
+
+    #86865 added the bookend to trace compression rotations, so it logs
+    identities and a coarse ``status`` and deliberately logs no content.
+    #89117 is what the missing cause costs: a report consisting of two lines
+    reading ``status=error error_retained=True duration=0.9s`` with no way to
+    tell a provider 4xx from a budget wall from a crashed finalizer. The
+    returned-error path -- the one a 0.9 s failure almost always takes --
+    emits no other log line at all; only the exception path prints to stderr,
+    which is why the quiet failures are the ones that get filed.
+
+    Content discipline follows #86865's, and it takes two separate steps
+    because it is two separate contracts. ``redact_sensitive_text`` removes
+    credentials, which are pattern-shaped. It does nothing about a 4xx body
+    that quotes the request back, because ordinary private prose is not
+    pattern-shaped -- so ``_strip_prompt_echo`` removes that separately, using
+    the submitted ``prompt`` itself as the thing to look for. The invariant the
+    two of them keep is: this record may gain failure classification and
+    provider detail, and may not newly persist the user's own content.
+
+    ``prompt`` is optional so the helper stays callable from a path that has no
+    prompt in scope, but the turn paths always pass it; without it, only the
+    secret contract is enforced.
+    """
+    reason_text = str(reason or "").strip()
+    message = str(error or "").strip()
+    if isinstance(error, BaseException):
+        message = message or type(error).__name__
+    if not message and not reason_text:
+        return ""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        message = redact_sensitive_text(message, force=True)
+    except Exception:
+        # A redactor that cannot run must not be able to leak the raw
+        # message into the log by failing open.
+        message = "<unredactable>"
+    message = " ".join(message.split())
+    # After the collapse, so both sides are compared in the same shape, and
+    # before the truncation, so a quote that starts inside the kept prefix
+    # cannot survive by being cut mid-run.
+    message = _strip_prompt_echo(message, prompt)
+    if len(message) > _TURN_FAILURE_DETAIL_LIMIT:
+        message = message[:_TURN_FAILURE_DETAIL_LIMIT] + "\u2026"
+    out = ""
+    if reason_text:
+        out += " failure_reason=%s" % " ".join(reason_text.split())
+    if message:
+        out += " cause=%r" % message
+    return out
+
+
 # ── Auto-continue: resume a turn killed by a process/machine death ────
 #
 # A turn that concludes — success, handled error, interrupt — clears its
@@ -10802,6 +10924,16 @@ def _run_prompt_submit(
         # True once a failed turn's snapshot was retained for resume replay —
         # tells the finally below to skip the normal inflight clear.
         turn_error_retained = False
+        # One-line cause for the "tui turn finished" bookend below. The record
+        # fires from a `finally`, where neither `result` nor the caught
+        # exception is reliably in scope, so both failure paths stash their
+        # cause here on the way past.
+        turn_error_detail = ""
+        # What this turn actually submitted, kept only so the cause can be
+        # checked for quoting it back (see _strip_prompt_echo). Bound here
+        # rather than read from the turn body because the exception path can
+        # fire before the prompt is resolved.
+        turn_prompt_text = ""
         # Durable crash marker: written before the turn runs, retired the
         # moment its outcome reaches the client (see _retire_turn_marker).
         # Any concluded turn — success, handled error, interrupt — retires
@@ -10896,6 +11028,11 @@ def _run_prompt_submit(
                     )
                     return
                 prompt = ctx.message
+
+            # After @-expansion on purpose: an injected file's contents are
+            # exactly the kind of private material a provider echo would carry
+            # back, and they are not in `text`.
+            turn_prompt_text = prompt if isinstance(prompt, str) else ""
 
             # Decide image routing per-turn based on active provider/model.
             # "native" → pass pixels to the main model as OpenAI-style content
@@ -11310,6 +11447,11 @@ def _run_prompt_submit(
                         error_surface=_error_surface,
                     )
                     turn_error_retained = True
+                    turn_error_detail = _turn_failure_detail(
+                        (result.get("error") if isinstance(result, dict) else raw),
+                        (result.get("failure_reason") if isinstance(result, dict) else None),
+                        turn_prompt_text,
+                    )
                 else:
                     _clear_inflight_turn(session)
             if status == "error":
@@ -11505,6 +11647,9 @@ def _run_prompt_submit(
                 # the failed turn for resume replay.
                 _emit_terminal_turn_error(sid, session, e)
                 turn_error_retained = True
+                turn_error_detail = _turn_failure_detail(
+                    e, type(e).__name__, turn_prompt_text
+                )
             except Exception as emit_exc:
                 print(
                     f"[gateway-turn] terminal error emit failed: "
@@ -11580,7 +11725,8 @@ def _run_prompt_submit(
             # without reaching this finally.
             logger.info(
                 "tui turn finished: ui_session=%s session_key=%s "
-                "agent_session_id=%s status=%s error_retained=%s duration=%.1fs",
+                "agent_session_id=%s status=%s error_retained=%s duration=%.1fs"
+                "%s",
                 sid,
                 session.get("session_key") or "",
                 getattr(agent, "session_id", "") or "",
@@ -11595,6 +11741,7 @@ def _run_prompt_submit(
                 else ("error" if turn_error_retained else "complete"),
                 turn_error_retained,
                 time.monotonic() - _turn_started_monotonic,
+                turn_error_detail,
             )
             # Backstop for turns that never reached a terminal frame (the
             # frame paths retire the marker as they emit).

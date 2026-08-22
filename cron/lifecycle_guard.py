@@ -145,6 +145,23 @@ def _is_cloud_placeholder_path(path: Path) -> bool:
 _DATA_SINK_EXECUTABLES = frozenset(
     {"grep", "egrep", "fgrep", "rg", "ag", "ack", "journalctl", "sqlite3", "psql"}
 )
+# Executables that accept an inline execution flag (-c/-e) and may run arbitrary code.
+_INTERPRETER_INLINE_EXECUTABLES = frozenset({"python", "python2", "python3", "perl", "ruby", "node"})
+# Markers inside the payload that indicate actual execution (must NOT be masked).
+_INTERPRETER_PAYLOAD_EXEC_MARKERS = (
+    "os.system",
+    "os.popen",
+    "subprocess",
+    "Popen",
+    "exec(",
+    "eval(",
+    "system(",
+    "spawn",
+    "popen",
+    "run(",
+    "sh -c",
+    "bash -c",
+)
 # Argument shapes that can smuggle execution back INTO a data sink: command
 # and process substitution anywhere, sqlite3 dot-commands (`.shell ...`),
 # psql backslash escapes (`\! ...`). Any hit disables masking for the whole
@@ -303,6 +320,15 @@ def _mask_data_sink_arguments(text: str) -> str:
                     rebuilt.extend(segment[: index + 1])
                     rebuilt.extend("arg" for _ in arguments)
                     continue
+            # NEW: interpreter inline execution flag handling
+            if index is not None and Path(segment[index]).name in _INTERPRETER_INLINE_EXECUTABLES:
+                if index + 1 < len(segment) and segment[index + 1] in ("-c", "-e"):
+                    payload = segment[index + 2 :]
+                    if not any(marker in " ".join(payload) for marker in _INTERPRETER_PAYLOAD_EXEC_MARKERS):
+                        changed = True
+                        rebuilt.extend(segment[: index + 2])
+                        rebuilt.extend("arg" for _ in payload)
+                        continue
             rebuilt.extend(segment)
         lines_out.append(" ".join(rebuilt))
     if not changed:

@@ -417,16 +417,15 @@ def decompose_task(
                 "routing to default_assignee %r",
                 task_id, idx, assignee, default_assignee,
             )
-        parents = entry.get("parents") or []
-        if not isinstance(parents, list):
-            parents = []
-        # Clean parent indices: drop non-int and out-of-range.
-        clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
+        # Omission means no dependencies. Supplied values must reach the DB
+        # validator unchanged so malformed graphs fail atomically instead of
+        # being silently rewritten into different execution plans.
+        parents = entry["parents"] if "parents" in entry else []
         children.append({
             "title": title.strip()[:200],
             "body": body.strip(),
             "assignee": chosen,
-            "parents": clean_parents,
+            "parents": parents,
         })
 
     try:
@@ -440,7 +439,12 @@ def decompose_task(
                 auto_promote=auto_promote,
             )
     except ValueError as exc:
-        return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")
+        if getattr(exc, "rejection_event_committed", False):
+            # The DB marks only the exception raised after its transaction
+            # durably records one rejection on the still-current triage root.
+            return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")
+        logger.exception("decompose: DB validation error on task %s", task_id)
+        return DecomposeOutcome(task_id, False, "DB error: ValueError")
     except Exception as exc:
         logger.exception("decompose: DB error on task %s", task_id)
         return DecomposeOutcome(task_id, False, f"DB error: {type(exc).__name__}")

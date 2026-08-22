@@ -2232,6 +2232,12 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     via this function), so persist-mode idle envs are similarly no-op'd —
     only the orphan reaper at next startup reclaims them.
     """
+    # The environment was stored under the RESOLVED container key
+    # (``_resolve_container_task_id`` — e.g. a raw API session ID collapses
+    # to "default"), so the lookup here must resolve the same way. Popping
+    # the raw task_id missed the entry and leaked the env on
+    # AIAgent.close() / per-turn cleanup (#91440).
+    task_id = _resolve_container_task_id(task_id)
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock
     # so other tool calls aren't blocked.

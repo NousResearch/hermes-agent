@@ -974,7 +974,9 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
 
     env = _make_dummy_env(task_id="session-close-test")
     container_id = env._container_id
-    terminal_tool._active_environments["session-close-test"] = env
+    # Mirror the real write path: terminal_tool stores envs under the
+    # RESOLVED container key (a raw session id collapses to "default").
+    terminal_tool._active_environments["default"] = env
 
     cleanup_calls = []
     real_run = docker_env.subprocess.run
@@ -988,7 +990,7 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     try:
         terminal_tool.cleanup_vm("session-close-test")
     finally:
-        terminal_tool._active_environments.pop("session-close-test", None)
+        terminal_tool._active_environments.pop("default", None)
 
     stops = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "stop"]
     rms = [c for c in cleanup_calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"]
@@ -1000,6 +1002,33 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
         f"cleanup_vm() default must not docker rm a persist-mode container; "
         f"got: {rms}"
     )
+
+
+def test_cleanup_vm_resolves_container_key(monkeypatch):
+    """Regression #91440: environments are stored under the RESOLVED
+    container key (``_resolve_container_task_id`` collapses raw API session
+    ids to ``"default"``), but ``cleanup_vm`` popped the RAW id — so the
+    pop missed, the env leaked out of tracking, and ``AIAgent.close()``
+    never reached the persist-mode no-op/cleanup logic at all."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run(monkeypatch)
+    _install_fake_thread(monkeypatch)
+
+    from tools import terminal_tool
+
+    env = _make_dummy_env(task_id="default")
+    terminal_tool._active_environments["default"] = env
+    try:
+        # AIAgent.close() passes the RAW session id; the entry lives under
+        # the resolved key. The lookup must resolve the same way.
+        terminal_tool.cleanup_vm("raw-api-session-id")
+        assert "default" not in terminal_tool._active_environments, (
+            "cleanup_vm(raw_session_id) must remove the env stored under the "
+            "resolved container key, not leak it"
+        )
+    finally:
+        terminal_tool._active_environments.pop("default", None)
 
 
 def test_cleanup_with_persist_disabled_stops_and_rms(monkeypatch):

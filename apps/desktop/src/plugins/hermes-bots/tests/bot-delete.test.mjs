@@ -100,9 +100,9 @@ test('integration: a deleted bot is removed from plugin-local state and the rost
 })
 
 test('regression: the bot context menu exposes a destructive delete action and confirmation', () => {
-  assert.match(pluginSource, /ContextMenuItem, \{[\s\S]*?variant: 'destructive'[\s\S]*?children: 'Delete'/)
+  assert.match(pluginSource, /ContextMenuItem, \{[\s\S]*?variant: 'destructive'[\s\S]*?children: k\.menu\.delete/)
   assert.match(pluginSource, /bot\.is_default \? null : jsx\(ContextMenuSeparator/)
   assert.match(pluginSource, /ConfirmDialog/)
-  assert.match(pluginSource, /title: 'Delete bot and profile\?'/)
-  assert.match(pluginSource, /This will permanently delete the bot[\s\S]*?and its associated Hermes profile at[\s\S]*?This cannot be undone\./)
+  assert.match(pluginSource, /title: k\.pane\.deleteBotTitle/)
+  assert.match(pluginSource, /k\.pane\.deleteBotDescPrefix[\s\S]*?k\.pane\.deleteBotDescMid[\s\S]*?k\.pane\.deleteBotDescSuffix/)
 })

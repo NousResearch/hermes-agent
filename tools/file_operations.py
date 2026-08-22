@@ -3163,10 +3163,10 @@ class ShellFileOperations(FileOperations):
         # nothing converts back — Hermes sets MSYS_NO_PATHCONV for its bash).
         cmd_parts.append(self._escape_native_tool_arg(path))
         
-        # Fetch extra rows so we can report the true total before slicing.
-        # For context mode, rg emits separator lines ("--") between groups,
-        # so we grab generously and filter in Python.
-        fetch_limit = limit + offset + 200 if context > 0 else limit + offset
+        # Fetch one extra row so a full page is distinguishable from a
+        # complete result (total == offset+limit is not truncation).
+        # Context mode already over-fetches for "--" group separators.
+        fetch_limit = limit + offset + (200 if context > 0 else 1)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
         # `set -o pipefail` so rg's exit status propagates through `| head`.
@@ -3206,7 +3206,7 @@ class ShellFileOperations(FileOperations):
             return SearchResult(
                 files=page,
                 total_count=total,
-                truncated=bool(limit_reason),
+                truncated=total > offset + limit or bool(limit_reason),
                 limit_reason=limit_reason,
                 warning=_ml_note,
             )
@@ -3313,8 +3313,10 @@ class ShellFileOperations(FileOperations):
                 search_root += f"/{self._escape_shell_arg(relative_path)}"
         cmd_parts.append(search_root)
         
-        # Fetch generously so we can compute total before slicing
-        fetch_limit = limit + offset + (200 if context > 0 else 0)
+        # Fetch one extra row so a full page is distinguishable from a
+        # complete result (total == offset+limit is not truncation).
+        # Context mode already over-fetches for "--" group separators.
+        fetch_limit = limit + offset + (200 if context > 0 else 1)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
         # `set -o pipefail` so grep's exit status propagates through `| head`
@@ -3348,7 +3350,7 @@ class ShellFileOperations(FileOperations):
             return SearchResult(
                 files=page,
                 total_count=total,
-                truncated=bool(limit_reason),
+                truncated=total > offset + limit or bool(limit_reason),
                 limit_reason=limit_reason,
             )
         

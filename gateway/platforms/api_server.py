@@ -2254,6 +2254,51 @@ class APIServerAdapter(BasePlatformAdapter):
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
 
+    def _parse_session_continuation_id(
+        self, raw: Any
+    ) -> tuple[Optional[str], Optional["web.Response"]]:
+        """Validate a caller-supplied session ID before loading its transcript."""
+        if raw is None:
+            return None, None
+        if not isinstance(raw, str):
+            return None, web.json_response(
+                _openai_error("Invalid session ID", code="invalid_session_id"),
+                status=400,
+            )
+        session_id = raw.strip()
+        if not session_id:
+            return None, None
+
+        # Session continuation exposes persisted conversation history. Keep
+        # every transport behind the same explicit API-key boundary rather
+        # than relying on _check_auth's unsupported no-key/manual-wiring path.
+        if not self._api_key:
+            logger.warning(
+                "Session continuation rejected: no API key configured. "
+                "Set API_SERVER_KEY to enable session continuity."
+            )
+            return None, web.json_response(
+                _openai_error(
+                    "Session continuation requires API key authentication. "
+                    "Configure API_SERVER_KEY to enable this feature."
+                ),
+                status=403,
+            )
+
+        from gateway.session import _is_path_unsafe
+
+        if re.search(r'[\r\n\x00]', session_id) or _is_path_unsafe(session_id):
+            return None, web.json_response(
+                _openai_error("Invalid session ID", code="invalid_session_id"),
+                status=400,
+            )
+        if len(session_id) > self._MAX_SESSION_HEADER_LEN:
+            return None, web.json_response(
+                _openai_error("Session ID too long", code="invalid_session_id"),
+                status=400,
+            )
+        return session_id, None
+
     def _parse_session_key_header(
         self, request: "web.Request"
     ) -> tuple[Optional[str], Optional["web.Response"]]:
@@ -5035,37 +5080,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # only allowed when the API key is configured and the request is
         # authenticated.  Without this gate, any unauthenticated client could
         # read arbitrary session history by guessing/enumerating session IDs.
-        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        provided_session_id, session_id_err = self._parse_session_continuation_id(
+            request.headers.get("X-Hermes-Session-Id")
+        )
+        if session_id_err is not None:
+            return session_id_err
         if provided_session_id:
-            if not self._api_key:
-                logger.warning(
-                    "Session continuation via X-Hermes-Session-Id rejected: "
-                    "no API key configured.  Set API_SERVER_KEY to enable "
-                    "session continuity."
-                )
-                return web.json_response(
-                    _openai_error(
-                        "Session continuation requires API key authentication. "
-                        "Configure API_SERVER_KEY to enable this feature."
-                    ),
-                    status=403,
-                )
-            # Sanitize: reject control characters that could enable header
-            # injection, and path-traversal-shaped IDs that would escape the
-            # sessions directory when interpolated into on-disk artifact
-            # filenames (session snapshots, request dumps). Mirrors the native
-            # gateway's entry-boundary guard (gateway.session._is_path_unsafe).
-            from gateway.session import _is_path_unsafe
-            if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
-                return web.json_response(
-                    {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
-                    status=400,
-                )
-            if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
-                return web.json_response(
-                    {"error": {"message": "Session ID too long", "type": "invalid_request_error"}},
-                    status=400,
-                )
             session_id = provided_session_id
             try:
                 db = await self._ensure_session_db_async()
@@ -7524,6 +7544,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, str]] = []
+        conversation_history_provided = "conversation_history" in body
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
@@ -7565,7 +7586,23 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
-        session_id = body.get("session_id") or stored_session_id
+        requested_session_id = body.get("session_id")
+        if (
+            not conversation_history_provided
+            and not conversation_history
+            and requested_session_id
+        ):
+            requested_session_id, session_id_err = self._parse_session_continuation_id(
+                requested_session_id
+            )
+            if session_id_err is not None:
+                return session_id_err
+            if requested_session_id:
+                conversation_history = await self._conversation_history_for_session(
+                    requested_session_id
+                )
+
+        session_id = requested_session_id or stored_session_id
         route = self._resolve_route(body.get("model"))
         agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
         selection_error = self._request_route_conflict_error(

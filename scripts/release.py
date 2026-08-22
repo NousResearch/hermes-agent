@@ -44,6 +44,10 @@ PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 # This dict is kept only so existing history keeps resolving; the effective
 # AUTHOR_MAP below merges it with the directory (directory wins).
 LEGACY_AUTHOR_MAP = {
+    "agent@Agents-Mac-mini.local": "skip-agent",  # moved here from contributors/emails/: its filename case-collides
+    # with agent@agents-Mac-mini.local on case-insensitive filesystems (NTFS/APFS), which leaves Windows
+    # checkouts permanently dirty (#88168). The directory keeps the lowercase spelling; this mixed-case
+    # twin cannot exist as a file there. The audit/workflow text fallbacks also treat an entry here as mapped.
     "declanbatesmith@outlook.com": "cat-thats-fat",  # PR #60489 (desktop: first-run remote connection option)
     "drbs2004@me.com": "cat-thats-fat",  # PR #60489 (desktop: first-run remote connection option; historical merge email)
     "122438640+ragingbulld@users.noreply.github.com": "ragingbulld",  # PR #65606 salvage (non-finite API wait deadlines; #65746)

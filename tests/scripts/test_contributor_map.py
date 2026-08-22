@@ -116,3 +116,37 @@ def test_cli_entrypoint_end_to_end(tmp_path):
     assert proc.returncode == 0, proc.stderr
     out = (tmp_path / "contributors" / "emails" / "cli@example.com").read_text(encoding="utf-8")
     assert out.splitlines()[0] == "cliperson"
+
+
+def test_no_case_colliding_mapping_filenames():
+    """#88168: two contributors/emails/ files differing only by letter case
+    cannot coexist on case-insensitive filesystems (NTFS, default APFS) —
+    the checkout stays permanently dirty on Windows and breaks release
+    gates. Mixed-case emails that collide with a directory entry belong in
+    LEGACY_AUTHOR_MAP instead (the audit/workflow text fallbacks accept that).
+    """
+    import subprocess as _sp
+
+    proc = _sp.run(
+        ["git", "ls-tree", "-r", "--name-only", "HEAD", "contributors/emails/"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    )
+    names = [line for line in proc.stdout.splitlines() if line.strip()]
+    folded: dict[str, str] = {}
+    collisions = []
+    for name in names:
+        key = name.lower()
+        if key in folded:
+            collisions.append(f"{folded[key]} <-> {name}")
+        folded.setdefault(key, name)
+    assert not collisions, (
+        "case-colliding contributors/emails/ filenames (they break Windows "
+        f"checkouts): {collisions}"
+    )
+
+
+def test_mixed_case_mapping_twin_resolves_via_legacy_map():
+    """The mixed-case twin retired from the directory (#88168) must still
+    resolve for release-notes attribution via LEGACY_AUTHOR_MAP."""
+    assert release.AUTHOR_MAP.get("agent@Agents-Mac-mini.local") == "skip-agent"
+    assert release.AUTHOR_MAP.get("agent@agents-Mac-mini.local") == "momomojo"

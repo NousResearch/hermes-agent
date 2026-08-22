@@ -7239,6 +7239,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+        # Whole-file auto voice replies run after the text delivery attempt.
+        # Track them separately so same-session replies stay ordered and
+        # shutdown can drain them before disconnecting their adapters.
+        self._voice_reply_tasks: set[asyncio.Task] = set()
+        self._voice_reply_tails: Dict[str, asyncio.Task] = {}
 
         # Event-loop liveness heartbeat (#66892): rewritten every 30s while
         # the loop is dispatching. External supervisors use the file mtime /
@@ -8649,6 +8654,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if any(
             not t.done() and not getattr(t, "_hermes_supervised_watcher", False)
             for t in self._background_tasks
+        ):
+            return True
+        if any(
+            not t.done()
+            for t in getattr(self, "_voice_reply_tasks", set())
         ):
             return True
         try:
@@ -15121,6 +15131,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if cancel_completion_batches is not None:
                 await cancel_completion_batches()
 
+            _drain_voice_replies = getattr(
+                self, "_drain_voice_reply_tasks", None
+            )
+            if callable(_drain_voice_replies):
+                _voice_drained = await _drain_voice_replies(
+                    self._adapter_disconnect_timeout_secs()
+                )
+                if not _voice_drained:
+                    logger.warning(
+                        "Timed out draining auto voice replies; cancelled pending "
+                        "voice work before adapter teardown"
+                    )
+
             for platform, adapter in list(self.adapters.items()):
                 await self._bounded_adapter_teardown(adapter, platform)
 
@@ -20946,7 +20969,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 response = ""
 
-            # Auto voice reply: send TTS audio before the text response
+            # Auto voice reply: synthesize after the adapter attempts the text
+            # delivery. Slow whole-file TTS must not hold the text response on
+            # the agent-handler critical path (#81162).
             _already_sent = bool(agent_result.get("already_sent"))
             # Skip when streaming TTS already delivered audio for this turn (#60671).
             _stts_adapter = self._adapter_for_source(source)
@@ -20958,7 +20983,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 not _streaming_tts_done
                 and self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent)
             ):
-                await self._send_voice_reply(event, response)
+                _text_delivery_gate = asyncio.Event()
+                if _already_sent:
+                    _text_delivery_gate.set()
+                else:
+                    # BasePlatformAdapter releases this immediately after the
+                    # final text send attempt, with a finally fallback for
+                    # suppressed/error paths.
+                    event._hermes_auto_voice_text_delivered = _text_delivery_gate
+                try:
+                    self._schedule_voice_reply(
+                        self._voice_reply_delivery_key(event),
+                        event,
+                        response,
+                        _text_delivery_gate,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to schedule auto voice reply: %s",
+                        exc,
+                        exc_info=True,
+                    )
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -22295,7 +22340,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
-        """Generate TTS audio and send as a voice message before the text reply."""
+        """Generate TTS audio and send it after the text delivery attempt."""
         audio_path = None
         actual_paths: List[str] = []
         try:
@@ -22384,6 +22429,107 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     os.unlink(p)
                 except OSError:
                     pass
+
+    def _schedule_voice_reply(
+        self,
+        delivery_key: str,
+        event: MessageEvent,
+        text: str,
+        text_delivery_gate: asyncio.Event,
+    ) -> asyncio.Task:
+        """Schedule one ordered whole-file auto voice reply.
+
+        A per-session predecessor chain keeps voice replies in turn order
+        without serializing unrelated chats. The text-delivery gate keeps a
+        fast TTS backend from overtaking the corresponding text response.
+        """
+        tasks = getattr(self, "_voice_reply_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._voice_reply_tasks = tasks
+        tails = getattr(self, "_voice_reply_tails", None)
+        if tails is None:
+            tails = {}
+            self._voice_reply_tails = tails
+
+        predecessor = tails.get(delivery_key)
+
+        async def _run_ordered() -> None:
+            if predecessor is not None:
+                try:
+                    await asyncio.shield(predecessor)
+                except asyncio.CancelledError:
+                    # A cancelled predecessor should not poison a later reply.
+                    # Preserve cancellation directed at this task itself.
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise
+                except Exception:
+                    # _send_voice_reply is best-effort and normally contains
+                    # its own failures. Keep the FIFO moving if an unexpected
+                    # predecessor exception escapes.
+                    pass
+            await text_delivery_gate.wait()
+            await self._send_voice_reply(event, text)
+
+        task = asyncio.create_task(
+            _run_ordered(),
+            name=f"gateway-auto-voice:{delivery_key}",
+        )
+        tasks.add(task)
+        tails[delivery_key] = task
+
+        def _finished(done: asyncio.Task) -> None:
+            tasks.discard(done)
+            if tails.get(delivery_key) is done:
+                tails.pop(delivery_key, None)
+            if done.cancelled():
+                return
+            try:
+                done.result()
+            except Exception:
+                logger.warning("Auto voice reply task failed", exc_info=True)
+
+        task.add_done_callback(_finished)
+        return task
+
+    @staticmethod
+    def _voice_reply_delivery_key(event: MessageEvent) -> str:
+        """Return the visible route whose voice replies must stay ordered."""
+        source = event.source
+        platform = getattr(source.platform, "value", source.platform)
+        return ":".join(
+            str(part or "")
+            for part in (
+                platform,
+                source.profile,
+                source.scope_id,
+                source.chat_id,
+                source.thread_id,
+            )
+        )
+
+    async def _drain_voice_reply_tasks(self, timeout: float) -> bool:
+        """Drain auto voice replies before adapter teardown, then cancel late work."""
+        tasks = {
+            task
+            for task in getattr(self, "_voice_reply_tasks", set())
+            if not task.done()
+        }
+        if not tasks:
+            return True
+
+        _done, pending = await asyncio.wait(
+            tasks,
+            timeout=max(0.0, float(timeout)),
+        )
+        if not pending:
+            return True
+
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        return False
 
     async def _deliver_media_from_response(
         self,

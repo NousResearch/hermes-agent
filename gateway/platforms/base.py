@@ -6300,6 +6300,11 @@ class BasePlatformAdapter(ABC):
             if getattr(result, "success", False):
                 delivery_succeeded = True
 
+        def _release_deferred_auto_voice_reply() -> None:
+            gate = getattr(event, "_hermes_auto_voice_text_delivered", None)
+            if isinstance(gate, asyncio.Event):
+                gate.set()
+
         # Reuse the interrupt event set by handle_message() (which marks
         # the session active before spawning this task to prevent races).
         # Fall back to a new Event only if the entry was removed externally.
@@ -6615,6 +6620,10 @@ class BasePlatformAdapter(ABC):
                         reply_to=_reply_anchor,
                         metadata=_final_thread_metadata,
                     )
+                    # Runner-managed whole-file auto-TTS waits here so slow
+                    # synthesis cannot delay text and fast synthesis cannot
+                    # overtake the corresponding final response (#81162).
+                    _release_deferred_auto_voice_reply()
                     _record_delivery(result)
                     if _obligation_id is not None:
                         try:
@@ -6901,6 +6910,10 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
+            # Release tasks when text was suppressed, failed before send, or
+            # returned through a non-standard adapter path. Shutdown still
+            # owns a bounded drain if synthesis itself remains slow.
+            _release_deferred_auto_voice_reply()
             # Stop typing before any deferred callback work.  Post-delivery
             # callbacks may perform platform I/O; a stuck callback must not
             # leave the typing refresh task running indefinitely.

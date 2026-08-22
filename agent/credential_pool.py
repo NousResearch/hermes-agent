@@ -122,6 +122,7 @@ SUPPORTED_POOL_STRATEGIES = {
 # 429 (rate-limited), 402 (billing/quota), and other failures cool down after 1 hour.
 # Provider-supplied reset_at timestamps override these defaults.
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
+EXHAUSTED_TTL_402_SECONDS = 2 * 60           # 2 minutes — 402 Payment Required
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 # When a pool has no other credential to rotate to (the offending key is the
@@ -339,6 +340,12 @@ def _exhausted_ttl(
     """
     if error_code == 401:
         return EXHAUSTED_TTL_401_SECONDS
+    if error_code == 402:
+        # PAYG/prepaid accounts recover as soon as the balance is recharged;
+        # a short TTL lets the pool self-heal within minutes instead of
+        # benching the key for an hour. If still unfunded, the next request
+        # re-marks the credential with a fresh TTL.
+        return EXHAUSTED_TTL_402_SECONDS
     base = EXHAUSTED_TTL_429_SECONDS if error_code == 429 else EXHAUSTED_TTL_DEFAULT_SECONDS
     # Unverified billing (#82154): the same 400 body can be a content-filter
     # rejection of the request itself, in which case the credential is healthy
@@ -353,7 +360,7 @@ def _exhausted_ttl(
     # edge-throttle, 5xx server, or unknown). Billing exhaustion — whether
     # classified as such or self-evident from a 402 — is a genuine depletion
     # where a quick retry can't help, so it keeps the full bench.
-    is_billing = error_code == 402 or failure_reason == FAILURE_REASON_BILLING
+    is_billing = failure_reason == FAILURE_REASON_BILLING
     if sole_credential and not is_billing:
         return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
     return base

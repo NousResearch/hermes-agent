@@ -715,6 +715,16 @@ class AIAgent:
             except Exception as exc:
                 logger.debug("context engine on_session_reset during transition: %s", exc)
 
+        # On a full session reset (/new), also call clear_session_cache() so
+        # engines that retain a per-session cache (DAG-based engines such as
+        # LCM) can purge it independently of any retention policy embedded
+        # in on_session_reset().  The default implementation is a no-op.
+        if reset_engine and hasattr(engine, "clear_session_cache"):
+            try:
+                engine.clear_session_cache()
+            except Exception as exc:
+                logger.debug("context engine clear_session_cache during transition: %s", exc)
+
         should_start = bool(
             old_session_id
             or previous_messages is not None

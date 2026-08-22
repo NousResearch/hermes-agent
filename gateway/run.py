@@ -5752,6 +5752,23 @@ class TurnRunner:
 
         if agent is None:
             # Config changed or first message — create fresh agent
+            # Build cross-channel context digest for multiplex profiles
+            cross_channel_digest = ""
+            profile_name = getattr(ctx.source, "profile", None)
+            if profile_name and ctx.session_id:
+                cross_channel_digest = self._build_cross_channel_context_digest(
+                    profile_name=profile_name,
+                    current_session_id=ctx.session_id,
+                    user_config=ctx.user_config,
+                )
+
+            # Combine with existing ephemeral prompt
+            if cross_channel_digest:
+                if combined_ephemeral:
+                    combined_ephemeral = combined_ephemeral + "\n\n" + cross_channel_digest
+                else:
+                    combined_ephemeral = cross_channel_digest
+
             agent = ctx.AIAgent(
                 model=turn_route["model"],
                 **turn_route["runtime"],
@@ -19003,6 +19020,120 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
         return source
+
+    def _build_cross_channel_context_digest(
+        self,
+        profile_name: str,
+        current_session_id: str,
+        user_config: dict,
+    ) -> str:
+        """Build a compact read-only digest of recent activity from sibling sessions.
+
+        This is used for multiplex profiles where the same profile is reachable
+        via multiple channels (e.g., Telegram + Buzz). When enabled via
+        agent.cross_channel_context.enabled, a session will see a digest of
+        recent messages from its sibling sessions at session start.
+
+        Args:
+            profile_name: The profile name to search for sibling sessions.
+            current_session_id: The current session's ID to exclude from the digest.
+            user_config: The user config dict to read cross_channel_context settings.
+
+        Returns:
+            A formatted digest string, or empty string if disabled/no siblings.
+        """
+        # Check if cross-channel context is enabled
+        agent_cfg = user_config.get("agent") or {}
+        cross_channel_cfg = agent_cfg.get("cross_channel_context") or {}
+        if not cross_channel_cfg.get("enabled", False):
+            return ""
+
+        # Check if multiplex_profiles is enabled (required for this feature)
+        gateway_cfg = user_config.get("gateway") or {}
+        if not gateway_cfg.get("multiplex_profiles", False):
+            return ""
+
+        if not profile_name or not current_session_id:
+            return ""
+
+        max_messages = cross_channel_cfg.get("max_messages_per_channel", 10)
+        max_chars = cross_channel_cfg.get("max_digest_chars", 4000)
+
+        # Get the session database
+        session_db = getattr(self._session_db, "_db", self._session_db)
+        if session_db is None:
+            return ""
+
+        try:
+            # Find sibling sessions for the same profile
+            sibling_sessions = session_db.find_sessions_by_profile(
+                profile_name=profile_name,
+                exclude_session_id=current_session_id,
+                active_only=True,
+                limit=10,  # Limit to 10 most recent sibling sessions
+            )
+        except Exception:
+            return ""
+
+        if not sibling_sessions:
+            return ""
+
+        # Build digest from sibling sessions
+        digest_parts = []
+        total_chars = 0
+
+        for sess in sibling_sessions:
+            sess_id = sess.get("id")
+            if not sess_id:
+                continue
+
+            try:
+                # Get recent messages from this session
+                messages = session_db.get_messages(
+                    session_id=sess_id,
+                    include_compacted=True,
+                    latest=True,
+                    limit=max_messages,
+                )
+            except Exception:
+                continue
+
+            if not messages:
+                continue
+
+            # Format session info
+            platform = sess.get("source", "unknown")
+            chat_name = sess.get("display_name") or sess.get("chat_id", "unknown")
+            session_key = sess.get("session_key", "")
+
+            # Build a compact representation
+            session_header = f"[{platform}] {chat_name}"
+            if session_key:
+                session_header += f" ({session_key})"
+
+            session_parts = [session_header]
+            for msg in reversed(messages):  # Chronological order
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if not content:
+                    continue
+                # Truncate long messages
+                if len(content) > 500:
+                    content = content[:500] + "..."
+                session_parts.append(f"  {role}: {content}")
+
+            session_text = "\n".join(session_parts)
+            if total_chars + len(session_text) > max_chars:
+                break
+
+            digest_parts.append(session_text)
+            total_chars += len(session_text)
+
+        if not digest_parts:
+            return ""
+
+        digest = "\n\n---\n\n".join(digest_parts)
+        return f"Cross-channel context digest (read-only, from sibling sessions of profile '{profile_name}'):\n\n{digest}"
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""

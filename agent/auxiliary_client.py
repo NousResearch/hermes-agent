@@ -6131,6 +6131,28 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
 # below — never look up auth env vars ad-hoc.
 
 
+class _AsyncACPShim:
+    """Make a synchronous ACP client awaitable for async callers.
+
+    Runs the blocking create() on a worker thread so the event loop is not
+    stalled by the subprocess round-trip. Everything else proxies through.
+    """
+
+    def __init__(self, sync_client):
+        self._sync = sync_client
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(create=self._acreate))
+
+    async def _acreate(self, **kwargs):
+        import asyncio
+
+        return await asyncio.to_thread(
+            self._sync.chat.completions.create, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._sync, name)
+
+
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Convert a sync client to its async counterpart, preserving Codex routing.
 
@@ -6159,7 +6181,11 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     try:
         from agent.copilot_acp_client import CopilotACPClient
         if isinstance(sync_client, CopilotACPClient):
-            return sync_client, model
+            # The ACP client is synchronous. Returning it unchanged makes every
+            # async caller (async_call_llm, vision_analyze, ...) crash the
+            # moment it awaits chat.completions.create():
+            #   TypeError: object SimpleNamespace can't be used in 'await' expression
+            return _AsyncACPShim(sync_client), model
     except ImportError:
         pass
 

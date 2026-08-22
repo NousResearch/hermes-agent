@@ -5,11 +5,15 @@ import path from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 
 import {
+  classifyInboundAccessBeforeMedia,
   expandWhatsAppIdentifiers,
+  matchesInboundWhatsAppGroup,
   matchesAllowedUser,
   normalizeWhatsAppIdentifier,
   parseAllowedUsers,
+  prepareInboundMediaDispatch,
 } from './allowlist.js';
+import { extractBridgeEvent } from './bridge_helpers.js';
 
 test('normalizeWhatsAppIdentifier strips jid syntax and plus prefix', () => {
   assert.equal(normalizeWhatsAppIdentifier('+19175395595@s.whatsapp.net'), '19175395595');
@@ -56,6 +60,119 @@ test('matchesAllowedUser treats * as allow-all wildcard', () => {
   } finally {
     rmSync(sessionDir, { recursive: true, force: true });
   }
+});
+
+test('group intake follows group policy and group-JID allowlist independently of DM users', () => {
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
+
+  try {
+    const groupAllowedUsers = parseAllowedUsers('120363001234567890@g.us');
+    const base = {
+      chatId: '120363001234567890@g.us',
+      groupAllowedUsers,
+      sessionDir,
+    };
+
+    assert.equal(matchesInboundWhatsAppGroup({ ...base, groupPolicy: 'allowlist' }), true);
+    assert.equal(matchesInboundWhatsAppGroup({ ...base, chatId: 'other@g.us', groupPolicy: 'allowlist' }), false);
+    assert.equal(matchesInboundWhatsAppGroup({ ...base, chatId: 'other@g.us', groupPolicy: 'open' }), true);
+    assert.equal(matchesInboundWhatsAppGroup({ ...base, groupPolicy: 'disabled' }), false);
+    assert.equal(matchesInboundWhatsAppGroup({ ...base, groupPolicy: 'pairing' }), false);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('blocked ordinary group is rejected before media handling', () => {
+  const result = classifyInboundAccessBeforeMedia({
+    isGroup: true,
+    fromMe: false,
+    chatId: '120363009999999999@g.us',
+    senderId: '15551230000@s.whatsapp.net',
+    dmPolicy: 'allowlist',
+    allowedUsers: parseAllowedUsers('*'),
+    groupPolicy: 'allowlist',
+    groupAllowedUsers: parseAllowedUsers('120363001234567890@g.us'),
+    sessionDir: '',
+  });
+
+  assert.deepEqual(result, {
+    allowed: false,
+    reason: 'group_policy_rejected_before_media',
+  });
+});
+
+test('allowed ordinary group passes the pre-media access check', () => {
+  const result = classifyInboundAccessBeforeMedia({
+    isGroup: true,
+    fromMe: false,
+    chatId: '120363001234567890@g.us',
+    senderId: '15551230000@s.whatsapp.net',
+    dmPolicy: 'allowlist',
+    allowedUsers: new Set(),
+    groupPolicy: 'allowlist',
+    groupAllowedUsers: parseAllowedUsers('120363001234567890@g.us'),
+    sessionDir: '',
+  });
+
+  assert.deepEqual(result, { allowed: true });
+});
+
+test('dispatch boundary never calls media downloader for a rejected ordinary group', async () => {
+  let downloadCalls = 0;
+  let writeCalls = 0;
+  const dispatch = prepareInboundMediaDispatch({
+    isGroup: true,
+    fromMe: false,
+    chatId: '120363009999999999@g.us',
+    senderId: '15551230000@s.whatsapp.net',
+    dmPolicy: 'allowlist',
+    allowedUsers: parseAllowedUsers('*'),
+    groupPolicy: 'allowlist',
+    groupAllowedUsers: parseAllowedUsers('120363001234567890@g.us'),
+    sessionDir: '',
+    downloadMedia: async () => {
+      downloadCalls += 1;
+      return Buffer.from('blocked media');
+    },
+  });
+  assert.equal(dispatch.access.allowed, false);
+
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    await extractBridgeEvent({
+      msg: {
+        key: {
+          id: 'blocked-group-image',
+          remoteJid: '120363009999999999@g.us',
+          participant: '15551230000@s.whatsapp.net',
+          fromMe: false,
+        },
+        messageTimestamp: 123,
+        message: {
+          imageMessage: {
+            caption: 'must not reach disk',
+            mimetype: 'image/jpeg',
+          },
+        },
+      },
+      chatId: '120363009999999999@g.us',
+      senderId: '15551230000@s.whatsapp.net',
+      senderNumber: '15551230000',
+      isGroup: true,
+      downloadMedia: dispatch.downloadMedia,
+      writeMediaFile: async () => {
+        writeCalls += 1;
+        return '/tmp/blocked.jpg';
+      },
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(downloadCalls, 0);
+  assert.equal(writeCalls, 0);
 });
 
 test('matchesAllowedUser rejects everyone when allowlist is empty (#8389)', () => {

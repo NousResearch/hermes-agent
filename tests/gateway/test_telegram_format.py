@@ -25,6 +25,24 @@ from plugins.platforms.telegram.adapter import (  # noqa: E402
 )
 
 
+def _assert_balanced_mdv2_code_entities(text: str) -> None:
+    """Assert that every unescaped MarkdownV2 code delimiter is closed."""
+    delimiter = None
+    index = 0
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text.startswith("```", index):
+            delimiter = None if delimiter == "```" else "```"
+            index += 3
+            continue
+        if text[index] == "`":
+            delimiter = None if delimiter == "`" else "`"
+        index += 1
+    assert delimiter is None, f"unclosed {delimiter} code entity in {text!r}"
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -119,6 +137,33 @@ class TestFormatMessageCodeBlocks:
         result = adapter.format_message(text)
         # \\ in input → \\\\ in output (each \ escaped once)
         assert r"`\\\\server\\share`" in result
+
+    def test_nested_backticks_preserve_markdownv2_formatting(self, adapter):
+        text = (
+            "**Раздел**\n"
+            "- `**жирный**`, `*курсив*`, `~~зачёркнутый~~`, `||спойлер||`\n"
+            "- `` `код` `` и ``` блоки кода ```\n"
+            "- `[ссылка](url)`, заголовки `##`\n"
+            "**Вывод**\n"
+            "5. Не мешай `**` и эмодзи внутри одной строки — каша."
+        )
+
+        result = adapter.format_message(text)
+
+        assert "*Раздел*" in result
+        assert r"\`\` `код` \`\`" in result
+        assert r"`**`" in result
+        _assert_balanced_mdv2_code_entities(result)
+
+    def test_double_backtick_span_collapses_to_telegram_inline_code(self, adapter):
+        result = adapter.format_message("Use ``value`` now")
+
+        assert result == "Use `value` now"
+
+    def test_inline_code_does_not_span_newlines(self, adapter):
+        result = adapter.format_message("`orphan\n(foo)`")
+
+        assert result == "\\`orphan\n\\(foo\\)\\`"
 
 
 @pytest.mark.asyncio

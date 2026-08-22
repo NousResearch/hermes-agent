@@ -8448,10 +8448,19 @@ class TelegramAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 2) Protect inline code (`...`)
-        #    Escape \ inside inline code per MarkdownV2 spec.
+        # 2) Protect inline code (`...`).  Telegram only supports single-
+        #    backtick spans, so collapse GFM's double-backtick form when its
+        #    content does not itself contain backticks.
         text = re.sub(
-            r'(`[^`]+`)',
+            r'``([^`\r\n]+)``',
+            lambda m: _ph(f'`{m.group(1)}`'.replace('\\', '\\\\')),
+            text,
+        )
+        #    Do not start inside a longer backtick run or cross a line boundary.
+        #    This leaves the outer ticks in `` `code` `` as escaped literals
+        #    while preserving the inner span as Telegram inline code.
+        text = re.sub(
+            r'(?<!`)(`[^`\r\n]+`)',
             lambda m: _ph(m.group(0).replace('\\', '\\\\')),
             text,
         )
@@ -8536,7 +8545,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # 12) Safety net: escape unescaped ( ) { } that slipped through
         #     placeholder processing.  Split the text into code/non-code
         #     segments so we never touch content inside ``` or ` spans.
-        _code_split = re.split(r'(```[\s\S]*?```|`[^`]+`)', text)
+        _code_split = re.split(r'(```[\s\S]*?```|`[^`\r\n]+`)', text)
         _safe_parts = []
         for _idx, _seg in enumerate(_code_split):
             if _idx % 2 == 1:

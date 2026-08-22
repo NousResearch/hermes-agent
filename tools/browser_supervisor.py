@@ -100,11 +100,19 @@ DIALOG_BRIDGE_URL_PATTERN = f"http://{DIALOG_BRIDGE_HOST}/*"
 # intercept via Fetch.requestPaused. Works on Browserbase (whose CDP proxy
 # auto-dismisses REAL native dialogs) because the native dialogs never fire
 # in the first place — the overrides take precedence.
+#
+# When the XHR cannot be intercepted, each override calls the native dialog it
+# replaced instead of answering on the page's behalf. Suppressing the native
+# dialog is only safe while the bridge can actually answer it.
 _DIALOG_BRIDGE_SCRIPT = r"""
 (() => {
   if (window.__hermesDialogBridgeInstalled) return;
   window.__hermesDialogBridgeInstalled = true;
   const ENDPOINT = "http://hermes-dialog-bridge.invalid/";
+  // Distinguishes "the bridge could not answer" from "the agent answered
+  // cancel". Collapsing the two is what made an uninterceptable XHR look
+  // like a dismissed dialog to the page.
+  const UNAVAILABLE = {};
   function ask(kind, message, defaultPrompt) {
     try {
       const xhr = new XMLHttpRequest();
@@ -117,33 +125,41 @@ _DIALOG_BRIDGE_SCRIPT = r"""
       });
       xhr.open("GET", ENDPOINT + "?" + params.toString(), false);  // sync
       xhr.send(null);
-      if (xhr.status !== 200) return null;
+      if (xhr.status !== 200) return UNAVAILABLE;
       const body = xhr.responseText || "";
       let parsed;
-      try { parsed = JSON.parse(body); } catch (e) { return null; }
+      try { parsed = JSON.parse(body); } catch (e) { return UNAVAILABLE; }
       if (kind === "alert") return undefined;
       if (kind === "confirm") return Boolean(parsed && parsed.accept);
       if (kind === "prompt") {
         if (!parsed || !parsed.accept) return null;
         return parsed.prompt_text == null ? "" : String(parsed.prompt_text);
       }
-      return null;
+      return UNAVAILABLE;
     } catch (e) {
-      // If the bridge is unreachable, fall back to the native call so the
-      // page still sees *some* behavior (the backend will auto-dismiss).
-      return null;
+      // Fetch.requestPaused never fired for this request — no supervisor
+      // attached, the backend owns the Fetch domain, or the browser refused
+      // the request before it reached the network stack. Fall through to the
+      // native dialog so the supervisor can still capture it via
+      // Page.javascriptDialogOpening.
+      return UNAVAILABLE;
     }
   }
   const realAlert   = window.alert;
   const realConfirm = window.confirm;
   const realPrompt  = window.prompt;
-  window.alert   = function(message) { ask("alert",   message, ""); };
+  window.alert   = function(message) {
+    if (ask("alert", message, "") === UNAVAILABLE) realAlert.call(window, message);
+  };
   window.confirm = function(message) {
     const r = ask("confirm", message, "");
+    if (r === UNAVAILABLE) return realConfirm.call(window, message);
     return r === null ? false : Boolean(r);
   };
   window.prompt  = function(message, def) {
-    const r = ask("prompt", message, def == null ? "" : def);
+    const d = def == null ? "" : def;
+    const r = ask("prompt", message, d);
+    if (r === UNAVAILABLE) return realPrompt.call(window, message, d);
     return r === null ? null : String(r);
   };
   // onbeforeunload — we can't really synchronously prompt the user from this

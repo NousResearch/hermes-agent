@@ -547,7 +547,7 @@ browser_cdp(
 | Browserbase | ✓ | ✓ 完整工作流（通过注入的 XHR 桥接） |
 | Camofox / 默认本地 agent-browser | ✗ | ✗（无 CDP 端点） |
 
-**在 Browserbase 上的工作原理。** Browserbase 的 CDP 代理会在约 10ms 内在服务端自动关闭真实的原生对话框，因此无法使用 `Page.handleJavaScriptDialog`。监督器通过 `Page.addScriptToEvaluateOnNewDocument` 注入一段小脚本，将 `window.alert`/`confirm`/`prompt` 替换为同步 XHR。我们通过 `Fetch.enable` 拦截这些 XHR — 页面 JS 线程在 XHR 上保持阻塞，直到我们用 Agent 的响应调用 `Fetch.fulfillRequest`。`prompt()` 的返回值原样传回页面 JS。
+**在 Browserbase 上的工作原理。** Browserbase 的 CDP 代理会在约 10ms 内在服务端自动关闭真实的原生对话框，因此无法使用 `Page.handleJavaScriptDialog`。监督器通过 `Page.addScriptToEvaluateOnNewDocument` 注入一段小脚本，将 `window.alert`/`confirm`/`prompt` 替换为同步 XHR。我们通过 `Fetch.enable` 拦截这些 XHR — 页面 JS 线程在 XHR 上保持阻塞，直到我们用 Agent 的响应调用 `Fetch.fulfillRequest`。`prompt()` 的返回值原样传回页面 JS。如果该 XHR 无法被拦截，覆盖函数会转而调用真实的对话框，因此它仍会呈现给 Agent，而不是被静默地当作“取消”处理。
 
 **对话框策略**在 `config.yaml` 的 `browser.dialog_policy` 下配置：
 

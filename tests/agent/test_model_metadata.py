@@ -686,6 +686,24 @@ class TestFetchEndpointModelMetadata:
         not_found.close.assert_called_once()
         success.close.assert_called_once()
 
+    def test_parses_nested_capabilities_context_window(self):
+        import agent.model_metadata as mm
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "data": [{
+                "id": "test/model",
+                "capabilities": {"contextWindow": 272_000},
+            }]
+        }
+
+        with patch("agent.model_metadata.requests.get", return_value=response):
+            result = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
+
+        assert result["test/model"]["context_length"] == 272_000
+        response.close.assert_called_once()
+
 
 # =========================================================================
 # Nous Portal context-window resolution (provider="nous")

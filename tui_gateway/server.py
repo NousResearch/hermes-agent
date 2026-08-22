@@ -2290,7 +2290,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     return _err(rid, 5032, err) if err else None
 
 
-def _start_agent_build(sid: str, session: dict) -> None:
+def _start_agent_build(sid: str, session: dict, speculative: bool = False) -> None:
     """Start building the real AIAgent for a TUI session, once.
 
     Classic `hermes` shows the prompt before constructing AIAgent; the TUI used
@@ -2299,6 +2299,15 @@ def _start_agent_build(sid: str, session: dict) -> None:
     the shell responsive by deferring this work until the first prompt (or any
     command that actually needs the agent), while retaining the same ready/error
     event contract for the frontend.
+
+    ``speculative`` marks a build kicked off only to pre-warm a session the
+    user is *browsing* (cold resume / hydration), not one they have decided to
+    continue. When such a pre-warm fails — most often because the session's
+    stored model/provider is no longer available to the current install — we
+    must NOT spam the intrusive ``error`` event: the user opened the session to
+    *read* it, and the failure is irrelevant until they actually send a turn.
+    The error is still recorded on the session, so the prompt path surfaces it
+    properly at the moment the user tries to continue.
     """
     ready = session.get("agent_ready")
     if ready is None:
@@ -2486,7 +2495,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
             _schedule_mcp_late_refresh(sid, agent)
         except Exception as e:
             current["agent_error"] = str(e)
-            _emit("error", sid, {"message": f"agent init failed: {e}"})
+            if not speculative:
+                # A speculative pre-warm (browsing a resumed session) that fails
+                # because the stored model/provider is unavailable must stay
+                # silent: the user is only reading the transcript, not continuing
+                # it. The recorded agent_error surfaces on the actual prompt path.
+                _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
@@ -2571,7 +2585,7 @@ def _sess_building(params, rid):
     s, err = _sess_nowait(params, rid)
     if err:
         return (None, err)
-    _start_agent_build(params.get("session_id") or "", s)
+    _start_agent_build(params.get("session_id") or "", s, speculative=True)
     return (s, None)
 
 
@@ -8708,7 +8722,7 @@ def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
     def _run():
         session = _sessions.get(sid)
         if session is not None:
-            _start_agent_build(sid, session)
+            _start_agent_build(sid, session, speculative=True)
 
     timer = threading.Timer(delay, _run)
     timer.daemon = True
@@ -8753,7 +8767,7 @@ def _schedule_resume_hydration(
                 },
             )
             _maybe_schedule_auto_continue(sid, session, stored_id)
-            _start_agent_build(sid, session)
+            _start_agent_build(sid, session, speculative=True)
         except Exception as exc:
             if _sessions.get(sid) is not session:
                 return

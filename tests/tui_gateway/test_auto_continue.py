@@ -234,7 +234,7 @@ def test_older_agent_still_gets_the_post_turn_stamp(emits, turn_env, marker_home
 @pytest.fixture()
 def schedule_env(monkeypatch, marker_home):
     monkeypatch.setattr(server.threading, "Thread", _InlineThread)
-    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session, **kwargs: None)
     monkeypatch.setattr(server, "_wait_agent", lambda session, rid, timeout=30.0: None)
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
     submitted: list = []

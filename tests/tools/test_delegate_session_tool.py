@@ -390,3 +390,22 @@ def test_runtime_dispatch_passes_parent_agent(monkeypatch):
     assert calls.get("parent_agent") is agent
     assert calls.get("action") == "list"
     assert raw == '{"ok": true}'
+
+
+def test_registry_dispatch_resolves_bound_parent(monkeypatch):
+    """Registry dispatch (no explicit parent_agent) must fall back to the
+    turn-bound active parent instead of failing with 'requires a parent
+    agent context'."""
+    from agent.subagent_lifecycle import bind_subagent_parent
+    from tools import registry as reg
+
+    entry = reg.registry.get_entry("delegate_session")
+    owner = Parent("registry-owner")
+    with bind_subagent_parent(owner):
+        result = entry.handler({"action": "list"})
+    payload_result = json.loads(result)
+    assert payload_result.get("success") is True, payload_result
+
+    # Without a bound parent the explicit error is preserved.
+    err = entry.handler({"action": "list"})
+    assert "requires a parent agent context" in err.lower()

@@ -617,6 +617,25 @@ DELEGATE_SESSION_SCHEMA = {
 }
 
 
+def _resolve_parent_agent(parent_agent: Any) -> Any:
+    """Fall back to the turn-bound active parent when not explicitly forwarded.
+
+    The generic registry dispatch path (handle_function_call -> registry.dispatch)
+    cannot forward the agent object, so a delegate_session call routed through it
+    would otherwise always fail with "requires a parent agent context". The
+    conversation loop binds the parent for the duration of each turn, which is
+    exactly the context a live tool call executes in.
+    """
+    if parent_agent is not None:
+        return parent_agent
+    try:
+        from agent.subagent_lifecycle import get_active_subagent_parent
+
+        return get_active_subagent_parent()
+    except Exception:
+        return None
+
+
 registry.register(
     name="delegate_session",
     toolset="delegation_session",
@@ -628,7 +647,7 @@ registry.register(
         context=args.get("context"),
         message=args.get("message"),
         timeout=args.get("timeout"),
-        parent_agent=kw.get("parent_agent"),
+        parent_agent=_resolve_parent_agent(kw.get("parent_agent")),
     ),
     check_fn=check_delegate_session_requirements,
     emoji="🔁",

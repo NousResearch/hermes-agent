@@ -920,6 +920,58 @@ plug into `agent/context_engine.py`; image-gen providers into
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 companion repo, not in this tree.
 
+### Bot Mode (`apps/desktop/src/plugins/hermes-bots/`)
+
+The desktop "Bots" experience ships bundled in-tree. Each bot is a Hermes
+agent **profile** with a persistent identity. Its design rests on one settled
+invariant that has been regressed twice, cost users real conversation
+history both times, and is not open for re-litigation in a routine PR:
+
+**One bot = ONE canonical forever-chat ("Bot Chat"), ever.** The full
+lifecycle when a bot row is clicked:
+
+1. **A live pin ALWAYS and ONLY wins.** If the bot's pinned session resolves
+   (verified through the backend's `preferred_session` resolver), open it.
+   Nothing overrides it — not recency, not a newer visible session, not a
+   title mismatch on a pin that carries real history (grandfathered chats
+   stay adopted).
+2. **No/dead pin → adopt before mint.** Look up the profile's existing
+   `Bot Chat` session by title via `session.list include_hidden:true` (the
+   state DB's unique-title index makes this an exact registry lookup) and
+   re-pin it. Only if none exists, create one.
+3. **Create-time title conflict → adopt.** A failed/conflicting create means
+   the canonical session already exists — register that session as the pin.
+   Never mint a differently-titled replacement. (`set_session_title`
+   silently drops conflicting titles — returns 0 rows — which is how the
+   2026-08 infinite fork loop started.)
+
+Why recency must never win (the #91791 → #92042 lesson): canonical Bot
+Chats are **unconditionally hidden** from the Sessions sidebar, so the bot
+row is the ONLY door to the forever-chat. A "newest visible session wins"
+preference doesn't re-order two equivalent entry points — it walls the
+entire relationship off behind a row that previews one session and opens
+another, and any stray draft that catches a prompt captures the row.
+Side-chats started via "New chat with this agent" are not plumbing-titled,
+stay visible in the Sessions sidebar, and are reachable there; they are
+never the bot row's target.
+
+Corollaries for reviewers:
+
+- There is no per-bot session browser, by explicit design (removed in
+  #90732). Do not add one back.
+- A pinned session with real messages is the user's conversation whatever
+  its title says; only a pin resolving to an *empty* stray draft counts as
+  corrupted metadata.
+- Reject any PR that consults recency, visibility, or "where the user left
+  off" while the pin is alive — reports that motivate such a change are
+  almost always about side-chats, and the fix belongs in the Sessions
+  sidebar (hide-sweep false positives), not in the bot row's target.
+
+Regression tests encoding this contract:
+`tests/bot-row-opens-canonical-chat.test.mjs`,
+`tests/canonical-chat-adopt-before-mint.test.mjs`,
+`tests/canonical-chat-pin.test.mjs`, `tests/hide-bot-chats.test.mjs`.
+
 ---
 
 ## Skills

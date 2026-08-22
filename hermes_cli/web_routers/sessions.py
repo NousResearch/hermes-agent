@@ -22,6 +22,10 @@ from fastapi import APIRouter, HTTPException, Query, Request  # noqa: F401
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
+from agent.compaction_display import (
+    _COMPACTION_INTERNAL_FIELDS,
+    project_compaction_message_for_display,
+)
 from hermes_cli.web_deps import late
 from hermes_cli.web_models import (
     BulkDeleteSessions,
@@ -48,6 +52,27 @@ _prune_sessions = late("_prune_sessions")
 _read_session_import_body = late("_read_session_import_body")
 _session_latest_descendant = late("_session_latest_descendant")
 _strip_session_list_rows = late("_strip_session_list_rows")
+
+
+def _project_dashboard_message(message: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove model-only compaction scaffolding from a dashboard message.
+
+    Mirrors ``gateway/platforms/api_server.py``'s ``_project_client_message``:
+    standalone handoffs have no transcript content and are kept as hidden
+    empty rows (not dropped) so callers paginating this endpoint see stable
+    message identities/counts. Merged handoffs keep only the real prior-tail
+    content that precedes the internal summary delimiter. Tool calls and
+    reasoning are dropped from both shapes — a carrier's inherited state is
+    historical bookkeeping, not something the dashboard should render.
+    """
+    projected = project_compaction_message_for_display(message)
+    if projected is None:
+        projected = message.copy()
+        for internal_key in _COMPACTION_INTERNAL_FIELDS:
+            projected.pop(internal_key, None)
+        projected["content"] = ""
+        projected["display_kind"] = "hidden"
+    return projected
 
 
 @list_router.get("/api/sessions")
@@ -642,6 +667,13 @@ async def get_session_messages(
     if result is None:
         raise HTTPException(status_code=404, detail="Session not found")
     sid, _limit, messages = result
+    # Strip model-only compaction scaffolding (handoff boilerplate, inherited
+    # tool_calls/reasoning carriers) before this reaches the dashboard —
+    # matches the projection every other client-facing history surface
+    # (tui_gateway, gateway/run.py, the OpenAI-compatible api_server) already
+    # applies. Row identities/count are preserved (see
+    # _project_dashboard_message) so pagination math here is unaffected.
+    messages = [_project_dashboard_message(m) for m in messages]
     return {
         "session_id": sid,
         "messages": messages,

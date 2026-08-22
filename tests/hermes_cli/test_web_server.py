@@ -2132,6 +2132,176 @@ class TestWebServerEndpoints:
             "msg 499",
         ]
 
+    def test_get_session_messages_strips_compaction_scaffolding(self):
+        """Model-only compaction carriers (handoff boilerplate, inherited
+        tool_calls/reasoning) must not reach the dashboard — matches the
+        projection every other client-facing history surface (tui_gateway,
+        gateway/run.py, the OpenAI-compatible api_server) already applies.
+        """
+        from agent.context_compressor import (
+            HISTORICAL_TASK_HEADING,
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+            _SUMMARY_END_MARKER,
+        )
+        from hermes_state import SessionDB
+
+        standalone_summary = (
+            f"{SUMMARY_PREFIX}\n\n"
+            f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+        merged_carrier = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            "Refactor complete.\n\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n\n"
+            f"{standalone_summary}"
+        )
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="dashboard-compaction-leak", source="cli")
+            db.append_messages_batch(
+                "dashboard-compaction-leak",
+                [
+                    {
+                        # assistant role: reasoning_content/codex_reasoning_items
+                        # only persist for assistant rows (verified against
+                        # SessionDB directly) — user-role would make these
+                        # stripping assertions vacuously true either way.
+                        "role": "assistant",
+                        "content": standalone_summary,
+                        "tool_calls": [{"id": "stale"}],
+                        "reasoning_content": "internal compression reasoning",
+                        "codex_reasoning_items": [{"type": "reasoning", "id": "internal"}],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": merged_carrier,
+                        "tool_calls": [{"id": "prior-call"}],
+                        "finish_reason": "tool_calls",
+                    },
+                    {"role": "user", "content": "test the browser controller again"},
+                ],
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/dashboard-compaction-leak/messages")
+        assert resp.status_code == 200
+        messages = resp.json()["messages"]
+        assert len(messages) == 3
+
+        # Standalone handoff: hidden empty row, not the raw ~700-word
+        # "[CONTEXT COMPACTION — REFERENCE ONLY]" boilerplate, and no
+        # inherited carrier fields.
+        assert messages[0]["content"] == ""
+        assert messages[0]["display_kind"] == "hidden"
+        assert "tool_calls" not in messages[0]
+        assert "reasoning_content" not in messages[0]
+        assert "codex_reasoning_items" not in messages[0]
+
+        # Merged carrier: only the real prior-tail content survives.
+        assert messages[1]["content"] == "Refactor complete."
+        assert "tool_calls" not in messages[1]
+        assert "finish_reason" not in messages[1]
+        assert "PRIOR CONTEXT" not in messages[1]["content"]
+        assert "CONTEXT COMPACTION" not in messages[1]["content"]
+
+        # A genuinely live message is untouched.
+        assert messages[2]["content"] == "test the browser controller again"
+
+        rendered = " ".join(str(m.get("content") or "") for m in messages)
+        assert "CONTEXT COMPACTION" not in rendered
+        assert "REFERENCE ONLY" not in rendered
+
+    def test_get_session_messages_hidden_summary_preserves_pagination_count(self):
+        """A hidden standalone-handoff row must still count toward
+        ``pagination.returned`` — the projection hides content, it must not
+        change row identities/counts (callers paginate by row, not by
+        visible content)."""
+        from agent.context_compressor import (
+            HISTORICAL_TASK_HEADING,
+            SUMMARY_PREFIX,
+            _SUMMARY_END_MARKER,
+        )
+        from hermes_state import SessionDB
+
+        standalone_summary = (
+            f"{SUMMARY_PREFIX}\n\n"
+            f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="dashboard-compaction-count", source="cli")
+            db.append_messages_batch(
+                "dashboard-compaction-count",
+                [
+                    {"role": "user", "content": standalone_summary},
+                    {"role": "user", "content": "live q"},
+                    {"role": "assistant", "content": "live a"},
+                ],
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/dashboard-compaction-count/messages")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["pagination"]["returned"] == 3
+        assert len(payload["messages"]) == 3
+
+    def test_export_session_keeps_full_fidelity_compaction_content(self):
+        """The dashboard's /export endpoint is round-trip-compatible with
+        /api/sessions/import (see import_sessions_endpoint's docstring:
+        "Import one or more sessions exported from the dashboard or CLI").
+        Unlike /messages (a display surface), export must stay full-fidelity
+        — stripping compaction carrier state here would silently corrupt a
+        re-imported session's recovery history. This locks that scope
+        decision in as a regression guard.
+        """
+        from agent.context_compressor import (
+            HISTORICAL_TASK_HEADING,
+            SUMMARY_PREFIX,
+            _SUMMARY_END_MARKER,
+        )
+        from hermes_state import SessionDB
+
+        standalone_summary = (
+            f"{SUMMARY_PREFIX}\n\n"
+            f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="export-compaction-fidelity", source="cli")
+            db.append_messages_batch(
+                "export-compaction-fidelity",
+                [
+                    {
+                        # assistant role: reasoning_content only persists for
+                        # assistant rows (verified against SessionDB directly).
+                        "role": "assistant",
+                        "content": standalone_summary,
+                        "tool_calls": [{"id": "stale"}],
+                        "reasoning_content": "internal compression reasoning",
+                    },
+                ],
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/export-compaction-fidelity/export")
+        assert resp.status_code == 200
+        message = resp.json()["messages"][0]
+        assert message["content"] == standalone_summary
+        assert message["tool_calls"] == [{"id": "stale"}]
+        assert message["reasoning_content"] == "internal compression reasoning"
+
     def test_export_session_streams_bounded_message_pages(self, monkeypatch):
         from hermes_state import SessionDB
 

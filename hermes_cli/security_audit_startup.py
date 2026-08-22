@@ -84,15 +84,68 @@ def _iter_sshd_config_lines() -> list[str]:
     return lines
 
 
+def _sshd_is_listening() -> Optional[bool]:
+    """Is an SSH daemon actually accepting connections?
+
+    Returns True/False only when positively determined, and None when the
+    answer is unknowable from here. Callers must treat None as "assume it is
+    running" so a detection gap can never silence a real finding.
+
+    Config presence is not evidence of a running daemon: macOS ships
+    /etc/ssh/sshd_config whether or not Remote Login is enabled.
+    """
+    import socket
+
+    port = 22
+    listen_addrs: list[str] = []
+    for line in _iter_sshd_config_lines():
+        m = re.match(r"(?i)^Port\s+(\d+)", line)
+        if m:
+            port = int(m.group(1))
+        m = re.match(r"(?i)^ListenAddress\s+(\S+)", line)
+        if m:
+            listen_addrs.append(m.group(1).lower())
+
+    # An explicit bind to a non-loopback address cannot be probed from here.
+    for a in listen_addrs:
+        if not (
+            a.startswith("0.0.0.0")
+            or a.startswith("::")
+            or a.startswith("127.")
+            or a in ("*", "localhost")
+        ):
+            return None
+
+    refused = 0
+    for host, family in (("127.0.0.1", socket.AF_INET), ("::1", socket.AF_INET6)):
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.settimeout(0.35)
+        try:
+            sock.connect((host, port))
+            return True
+        except ConnectionRefusedError:
+            refused += 1
+        except OSError:
+            pass  # unreachable family or timeout — inconclusive for this host
+        finally:
+            sock.close()
+    return False if refused else None
+
+
 def _ssh_password_auth_enabled() -> Optional[str]:
     """Warn when an SSH daemon has password authentication enabled.
 
     Password auth on a public SSH daemon is the classic brute-force surface
     and pairs badly with a root-capable agent box. POSIX-only; returns None
-    when there's no sshd config to read (e.g. Windows, or SSH not installed).
+    when there's no sshd config to read (e.g. Windows, or SSH not installed)
+    or when no daemon is actually listening.
     """
     lines = _iter_sshd_config_lines()
     if not lines:
+        return None
+    # No daemon accepting connections means no brute-force surface. Only skip
+    # on a positive "not listening"; None (inconclusive) still warns.
+    if _sshd_is_listening() is False:
         return None
     # Last directive wins in sshd_config. Default (no directive) is "yes".
     verdict = "yes"

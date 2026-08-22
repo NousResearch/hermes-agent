@@ -225,3 +225,212 @@ class TestProviderShutdown:
         assert provider._store is None
         assert MemoryStore._shared == {}
 
+    def test_shutdown_keeps_sibling_provider_alive(self, db_path):
+        from plugins.memory.holographic import HolographicMemoryProvider
+
+        a = HolographicMemoryProvider(config={"db_path": str(db_path)})
+        b = HolographicMemoryProvider(config={"db_path": str(db_path)})
+        a.initialize("session-a")
+        b.initialize("session-b")
+        assert MemoryStore._shared[str(db_path)]["refs"] == 2
+
+        a.shutdown()
+        # Sibling still holds a live, writable connection.
+        assert MemoryStore._shared[str(db_path)]["refs"] == 1
+        assert b._store is not None
+        b._store.add_fact("write after sibling shutdown")
+        b.shutdown()
+        assert MemoryStore._shared == {}
+
+
+class TestProviderRetrieverDimAgreement:
+    """The provider must not construct FactRetriever with the raw configured
+    hrr_dim — MemoryStore may have adopted a different persisted dim, and the
+    retriever must agree with the store or every query is rejected as a
+    dimension mismatch (issue #68682 follow-up)."""
+
+    def test_provider_retriever_uses_store_adopted_dim(self, db_path):
+        from plugins.memory.holographic import HolographicMemoryProvider
+
+        # First session: persist hrr_dim=256.
+        seed = HolographicMemoryProvider(config={"db_path": str(db_path), "hrr_dim": 256})
+        seed.initialize("seed-session")
+        seed._store.add_fact("Peppi works on the backend team.", category="project")
+        seed.shutdown()
+
+        # Second session: config now says 1024, but the DB already has 256.
+        provider = HolographicMemoryProvider(config={"db_path": str(db_path), "hrr_dim": 1024})
+        try:
+            provider.initialize("later-session")
+            assert provider._store.hrr_dim == 256
+            assert provider._retriever.hrr_dim == 256
+            # Must not raise, and must actually find the seeded fact.
+            results = provider._retriever.search("backend", min_trust=0.0)
+            assert isinstance(results, list)
+        finally:
+            provider.shutdown()
+
+
+class TestHrrDimPersistence:
+    """A stored hrr_dim must survive process restarts. Before this fix,
+    hrr_dim came only from the constructor/config, so a config change
+    between sessions silently mixed vector dimensions across facts and
+    crashed similarity() (issue #68682)."""
+
+    def test_fresh_store_persists_constructor_dim(self, db_path):
+        store = MemoryStore(db_path, hrr_dim=512)
+        try:
+            row = store._conn.execute(
+                "SELECT value FROM _meta WHERE key = 'hrr_dim'"
+            ).fetchone()
+            assert row is not None
+            assert int(row["value"]) == 512
+        finally:
+            store.close()
+
+    def test_reopen_adopts_persisted_dim_over_new_config(self, db_path):
+        store = MemoryStore(db_path, hrr_dim=256)
+        store.close()
+
+        # Simulate a later session with a *different* configured hrr_dim.
+        store2 = MemoryStore(db_path, hrr_dim=1024)
+        try:
+            assert store2.hrr_dim == 256
+        finally:
+            store2.close()
+
+    def test_rebuild_all_vectors_updates_persisted_dim(self, db_path):
+        pytest.importorskip("numpy")  # add_fact/rebuild build vectors via numpy
+        store = MemoryStore(db_path, hrr_dim=256)
+        try:
+            store.add_fact("a fact to migrate")
+            store.rebuild_all_vectors(dim=1024)
+            row = store._conn.execute(
+                "SELECT value FROM _meta WHERE key = 'hrr_dim'"
+            ).fetchone()
+            assert int(row["value"]) == 1024
+        finally:
+            store.close()
+
+        store2 = MemoryStore(db_path, hrr_dim=999)
+        try:
+            assert store2.hrr_dim == 1024
+        finally:
+            store2.close()
+
+    def test_rebuild_bank_skips_corrupt_vector_without_crashing(self, db_path):
+        """A legacy mixed-dim DB must not crash add_fact/_rebuild_bank — a
+        stray vector at the wrong dimension must be skipped, counted, and
+        excluded from the bank's fact_count, not fed into hrr.bundle()."""
+        np = pytest.importorskip("numpy")
+
+        store = MemoryStore(db_path, hrr_dim=1024)
+        try:
+            store.add_fact("A fact with a valid 1024-dim vector.", category="mix")
+            # Simulate a leftover fact vector from a prior 256-dim session by
+            # writing a mismatched-length blob directly.
+            bad_vec = np.zeros(256, dtype=np.float64)
+            store._conn.execute(
+                "INSERT INTO facts (content, category, hrr_vector) VALUES (?, ?, ?)",
+                ("A corrupt fact from an old session.", "mix", bad_vec.tobytes()),
+            )
+            store._conn.commit()
+
+            # Must not raise (bundle() broadcasting different-length vectors).
+            store._rebuild_bank("mix")
+
+            row = store._conn.execute(
+                "SELECT fact_count FROM memory_banks WHERE bank_name = 'cat:mix'"
+            ).fetchone()
+            assert row["fact_count"] == 1  # only the accepted 1024-dim vector
+        finally:
+            store.close()
+
+    def test_second_instance_on_shared_connection_adopts_dim(self, db_path):
+        """A second MemoryStore attaching to an already-initialised shared
+        connection must adopt the same persisted dim as the first instance,
+        not keep its own constructor value. _init_db (and therefore dim
+        adoption) only runs once per shared connection — the fix must sync
+        the dim onto every later attacher, not just the first."""
+        a = MemoryStore(db_path, hrr_dim=256)
+        try:
+            b = MemoryStore(db_path, hrr_dim=1024)
+            try:
+                assert b.hrr_dim == 256
+                assert a.hrr_dim == b.hrr_dim
+            finally:
+                b.close()
+        finally:
+            a.close()
+
+
+class TestLegacyDatabaseAdoption:
+    """#68908 sweeper review, second pass: opening a PRE-_meta database must
+    adopt the dimension its existing banks were built with, not the current
+    configuration — otherwise new writes at the configured dim sit beside
+    legacy vectors, the exact mixing _load_or_persist_hrr_dim() prevents."""
+
+    def test_legacy_db_adopts_banks_dim_over_config(self, db_path):
+        pytest.importorskip("numpy")
+        # Build a real 256-dim database (facts + banks), then erase _meta to
+        # simulate a database created before dimension metadata existed.
+        store = MemoryStore(db_path, hrr_dim=256)
+        store.add_fact("An old fact from the 256-dim era.", category="hist")
+        store._conn.execute("DELETE FROM _meta WHERE key = 'hrr_dim'")
+        store._conn.commit()
+        store.close()
+
+        # A later session configured at 1024 opens the legacy database.
+        store2 = MemoryStore(db_path, hrr_dim=1024)
+        try:
+            assert store2.hrr_dim == 256, (
+                "legacy banks are 256-dim; adopting the configured 1024 "
+                "would mix dimensions in one database"
+            )
+            row = store2._conn.execute(
+                "SELECT value FROM _meta WHERE key = 'hrr_dim'"
+            ).fetchone()
+            assert int(row["value"]) == 256
+        finally:
+            store2.close()
+
+    def test_interrupted_rebuild_leaves_recoverable_state(self, db_path):
+        """#68908 sweeper review: a rebuild interrupted between vector
+        rewrites and _persist_hrr_dim() leaves partial new-dim vectors
+        beside the OLD persisted dim. That state must be non-crashing and
+        self-quarantining: reopening adopts the old dim, and bank rebuild
+        skips (not bundles) the partial new-dim vectors. Full recovery is
+        an explicit rebuild_all_vectors() — pinned here so the documented
+        metadata-last mitigation stays real."""
+        np = pytest.importorskip("numpy")
+
+        store = MemoryStore(db_path, hrr_dim=256)
+        store.add_fact("Fact one, fully in the 256 era.", category="mix")
+        store.add_fact("Fact two, about to be half-migrated.", category="mix")
+        # Simulate a crash mid-rebuild to 1024: ONE fact's vector was
+        # rewritten at the new dim, then the process died before
+        # _persist_hrr_dim — _meta still says 256.
+        new_dim_vec = np.zeros(1024, dtype=np.float64)
+        store._conn.execute(
+            "UPDATE facts SET hrr_vector = ? WHERE rowid = "
+            "(SELECT rowid FROM facts LIMIT 1)",
+            (new_dim_vec.tobytes(),),
+        )
+        store._conn.commit()
+        store.close()
+
+        # Reopen: must adopt the persisted (old) dim and rebuild the bank
+        # without crashing on the stray 1024-dim vector.
+        store2 = MemoryStore(db_path, hrr_dim=256)
+        try:
+            assert store2.hrr_dim == 256
+            store2._rebuild_bank("mix")  # must not raise
+            row = store2._conn.execute(
+                "SELECT fact_count FROM memory_banks WHERE bank_name = 'cat:mix'"
+            ).fetchone()
+            assert row is not None and row["fact_count"] == 1, (
+                "the partial new-dim vector must be quarantined (skipped), "
+                "leaving only the consistent old-dim vector in the bank"
+            )
+        finally:
+            store2.close()

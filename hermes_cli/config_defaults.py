@@ -1316,6 +1316,9 @@ DEFAULT_CONFIG = {
         # seconds, and with this off the user stares at a spinner the whole
         # time even though tokens are streaming. Set false for quiet output.
         "show_reasoning": True,
+        # Keep the compact thinking/tools panels by default. Set true in the
+        # TUI to retain each reasoning block beside the tool it led to.
+        "interleave_thinking": False,
         # When reasoning display is on, the post-response "Reasoning" recap box
         # collapses long thinking to the first 10 lines. Set true to print the
         # complete thinking text uncollapsed (live streaming is always full).

@@ -83,6 +83,7 @@ export interface ConfigDisplayConfig {
   details_mode?: string
   /** Focus view (/focus) — display-only reduced-output mode. */
   focus_view?: boolean
+  interleave_thinking?: boolean
   inline_diffs?: boolean
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>

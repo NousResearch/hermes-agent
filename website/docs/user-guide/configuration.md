@@ -1818,6 +1818,7 @@ display:
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
   show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
+  interleave_thinking: false # TUI: retain chronological reasoning → tool-call order
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
   timestamps: false       # When true, prefixes user and assistant labels with timestamps in the CLI / TUI transcript

@@ -54,6 +54,10 @@ from agent.secret_sources._cache import (
     FetchResult,
     is_valid_env_name,
 )
+from agent.secret_sources._binary_security import (
+    probe_version as _probe_binary_version,
+    resolve_executable as _resolve_executable,
+)
 from agent.secret_sources.base import ErrorKind, SecretSource
 from agent.secret_sources.base import get_source_environment
 
@@ -72,6 +76,13 @@ _OP_RUN_TIMEOUT = 30
 # the value to the child as OP_SERVICE_ACCOUNT_TOKEN, which is what `op` itself
 # looks for.
 _DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
+
+# 1Password does not publish a single version pinned by Hermes, so PATH
+# binaries must at least identify a conventional semantic version.  The
+# shared POSIX PATH policy requires a root-owned trust chain; users who
+# intentionally install ``op`` in a profile-local directory can set an
+# absolute ``binary_path`` instead.
+_OP_VERSION_PATTERN = r"(?<![0-9])\d+\.\d+\.\d+(?![0-9])"
 
 # ANSI stripping for `op` diagnostics we surface uses the shared
 # tools.ansi_strip.strip_ansi (full ECMA-48: CSI, OSC, DCS/SOS/PM/APC,
@@ -211,18 +222,31 @@ def _refs_fingerprint(references: Dict[str, str]) -> str:
 def find_op(binary_path: str = "") -> Optional[Path]:
     """Resolve a usable ``op`` binary, or None.
 
-    When ``binary_path`` is set it is used verbatim and PATH is NOT consulted
-    — pinning an absolute path is a way to avoid trusting whatever ``op`` shows
-    up first on ``PATH``.  A pinned-but-missing path returns None (the caller
-    surfaces a clear error) rather than silently falling back.
+    When ``binary_path`` is set it is canonicalised, checked for a private
+    canonical parent chain, and PATH is NOT consulted — pinning an absolute
+    path is a way to avoid trusting whatever ``op`` shows up first on ``PATH``.
+    A pinned-but-missing or untrusted path returns None (the caller surfaces a
+    clear error) rather than silently falling back.
     """
     if binary_path:
-        pinned = Path(binary_path)
-        if pinned.exists() and os.access(pinned, os.X_OK):
-            return pinned
-        return None
+        # Explicit configuration is still canonicalised so a relative path or
+        # a later symlink swap cannot redirect the child to an arbitrary CWD
+        # entry.  The resolved target is what callers execute.
+        return _resolve_executable(
+            binary_path, check_explicit_parent_dirs=True
+        )
     found = shutil.which("op")
-    return Path(found) if found else None
+    if not found:
+        return None
+    resolved = _resolve_executable(
+        found, check_parent_dirs=True, reject_current_owner=True
+    )
+    if resolved is None or not _probe_binary_version(
+        resolved, _OP_VERSION_PATTERN
+    ):
+        logger.warning("refusing untrusted op PATH binary")
+        return None
+    return resolved
 
 
 # ---------------------------------------------------------------------------

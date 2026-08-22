@@ -162,7 +162,7 @@ def _reload_updated_runtime_modules() -> None:
         logger.debug("Could not refresh update runtime modules: %s", exc)
 
 
-def _reload_config_modules() -> None:
+def _reload_config_modules() -> list[str]:
     """Force-reload modules from disk after git pull.
 
     ``hermes update`` runs in the PRE-pull Python process. After ``git pull``
@@ -187,6 +187,7 @@ def _reload_config_modules() -> None:
     import importlib
 
     importlib.invalidate_caches()
+    failed: list[str] = []
     for mod_name in (
         "hermes_cli.config_defaults",
         "hermes_cli.config",
@@ -199,7 +200,16 @@ def _reload_config_modules() -> None:
             try:
                 importlib.reload(mod)
             except Exception as exc:
-                logger.debug("Could not reload %s for fresh post-update code: %s", mod_name, exc)
+                # warning, not debug: a failed reload here surfaces seconds
+                # later as a stale version check and a silently skipped
+                # migration (#90945) — leave a trail.
+                logger.warning(
+                    "Could not reload %s for fresh post-update code: %s",
+                    mod_name,
+                    exc,
+                )
+                failed.append(mod_name)
+    return failed
 
 
 def _run_config_check_fresh() -> tuple:
@@ -207,11 +217,27 @@ def _run_config_check_fresh() -> tuple:
 
     See ``_reload_config_modules`` for why this is necessary.
     Returns ``(current_ver, latest_ver)``.
+
+    If a required module failed to reload, the version check runs against the
+    STALE module — it would report the config as current and silently skip a
+    migration (#90945). Print an explicit warning so the user knows to run
+    ``hermes doctor --fix`` after the update instead of trusting the check.
     """
-    _reload_config_modules()
+    failed = _reload_config_modules()
     from hermes_cli.config import check_config_version
 
-    return check_config_version()
+    current_ver, latest_ver = check_config_version()
+    if failed:
+        print()
+        print(
+            "  ⚠ Could not reload updated config modules: "
+            + ", ".join(failed)
+        )
+        print(
+            "    The config-version check may be stale. After the update, "
+            "run `hermes doctor --fix` to apply any pending config migration."
+        )
+    return current_ver, latest_ver
 
 
 def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False) -> dict:
@@ -219,8 +245,23 @@ def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False)
 
     See ``_reload_config_modules`` for why this is necessary.
     Returns the migration results dict.
+
+    If a required module failed to reload, migrating against the STALE
+    modules would apply the wrong schema step — refuse and point the user at
+    ``hermes doctor --fix`` (fresh process) instead (#90945).
     """
-    _reload_config_modules()
+    failed = _reload_config_modules()
+    if failed:
+        print()
+        print(
+            "  ⚠ Could not reload updated config modules: "
+            + ", ".join(failed)
+        )
+        print(
+            "    Config migration skipped. Run `hermes doctor --fix` in a "
+            "fresh process to apply any pending config migration."
+        )
+        return {"skipped": True, "reason": "config-module reload failed"}
     from hermes_cli.config import migrate_config
 
     return migrate_config(interactive=interactive, quiet=quiet)

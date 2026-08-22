@@ -101,6 +101,21 @@ class SessionPortabilityMixin:
         # compute it generically rather than hardcoding the successor char.
         prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
 
+        # The range `[prefix, prefix_hi)` matches every id whose literal text
+        # starts with ``cron_{job_id}_``. Cron job ids are free-form
+        # (``cron/jobs.py`` coerces the user/hand-edited ``id`` verbatim), so a
+        # job whose id is an underscore-extension of another (``backup`` vs
+        # ``backup_weekly``) sorts its runs INSIDE the parent's range. A run's
+        # remainder after the prefix is a bounded token — either a
+        # ``%Y%m%d_%H%M%S`` timestamp (``cron/scheduler.run_job``) or a
+        # ``%08d`` run index (the test/device seeding path). Both start with at
+        # least 8 digits. An extended job's runs carry a textual label there
+        # (``weekly_<ts>``), which fails this predicate. GLOB treats '_' as a
+        # literal (unlike LIKE), so requiring 8 leading digits exactly matches
+        # every legitimate run suffix and nothing else. This is a post-filter on
+        # the already-bounded range scan, not a new full scan.
+        ts_glob = "[0-9]" * 8 + "*"
+
         query = f"""
             SELECT s.*,
                 COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved,
@@ -116,11 +131,15 @@ class SessionPortabilityMixin:
             FROM sessions s
             LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
             WHERE s.source = 'cron' AND s.id >= ? AND s.id < ?
+              AND substr(s.id, ? + 1) GLOB ?
             ORDER BY s.started_at DESC, s.id DESC
             LIMIT ? OFFSET ?
         """
         with self._lock:
-            cursor = self._conn.execute(query, (prefix, prefix_hi, limit, offset))
+            cursor = self._conn.execute(
+                query,
+                (prefix, prefix_hi, len(prefix), ts_glob, limit, offset),
+            )
             rows = cursor.fetchall()
 
         runs: List[Dict[str, Any]] = []

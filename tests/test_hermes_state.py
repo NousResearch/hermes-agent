@@ -5040,3 +5040,49 @@ class TestFts5SanitizerCharacterClass:
         # text; keep % intact there (pre-existing contract).
         sanitized = self._sanitize("完成50%")
         assert "%" in sanitized
+# =========================================================================
+# Cron run-history job filtering
+# =========================================================================
+
+class TestCronJobRunsFiltering:
+    """Regression for #92133: list_cron_job_runs must not return another
+    job's runs when one job id is an underscore-extension of another."""
+
+    def _seed(self, db):
+        # 'backup' and 'backup_weekly' — second is an extension of the first.
+        rows = [
+            ("cron_backup_20260822_120000_a", "cron", 1.0),
+            ("cron_backup_20260822_130000_b", "cron", 2.0),
+            # These belong to backup_weekly, but their literal text starts with
+            # 'cron_backup_' so they sort inside backup's id range.
+            ("cron_backup_weekly_20260822_140000_c", "cron", 3.0),
+            ("cron_backup_weekly_20260822_150000_d", "cron", 4.0),
+            # Unrelated job must never leak either.
+            ("cron_report_20260822_160000_e", "cron", 5.0),
+        ]
+        db._conn.executemany(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            rows,
+        )
+        db._conn.commit()
+
+    def test_parent_job_does_not_include_extended_job_runs(self, db):
+        self._seed(db)
+        runs = db.list_cron_job_runs("backup", limit=10)
+        ids = [r["id"] for r in runs]
+        assert "cron_backup_20260822_120000_a" in ids
+        assert "cron_backup_20260822_130000_b" in ids
+        # The backup_weekly runs must NOT leak into backup.
+        for leak in ("cron_backup_weekly_20260822_140000_c",
+                     "cron_backup_weekly_20260822_150000_d"):
+            assert leak not in ids
+
+    def test_extended_job_returns_its_own_runs_only(self, db):
+        self._seed(db)
+        runs = db.list_cron_job_runs("backup_weekly", limit=10)
+        ids = [r["id"] for r in runs]
+        assert "cron_backup_weekly_20260822_140000_c" in ids
+        assert "cron_backup_weekly_20260822_150000_d" in ids
+        # Parent backup runs and unrelated jobs stay out.
+        assert "cron_backup_20260822_120000_a" not in ids
+        assert "cron_report_20260822_160000_e" not in ids

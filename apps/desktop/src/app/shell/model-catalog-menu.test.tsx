@@ -106,3 +106,53 @@ describe('the catalog owns model curation', () => {
     expect($modelVisibilityOpen.get()).toBe(true)
   })
 })
+
+describe('unavailable models are inert', () => {
+  it('greys out and disables a provider without usable credentials', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['gemini-3.1-pro'],
+          name: 'Google',
+          slug: 'google',
+          authenticated: false,
+          warning: 'Add an API key to use Google models'
+        }
+      ]
+    })
+
+    const select = renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    // The provider's warning is surfaced on the row.
+    expect(screen.getByText(/Add an API key/)).toBeTruthy()
+
+    // Clicking the unauthenticated row must not commit a selection.
+    fireEvent.click(screen.getByText(/Gemini 3\.1 Pro/i))
+    expect(select).not.toHaveBeenCalled()
+  })
+
+  it('disables a tier-locked model but leaves its siblings selectable', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['gemini-3.1-pro', 'gemini-2.5-flash'],
+          name: 'Google',
+          slug: 'google',
+          unavailable_models: ['gemini-3.1-pro']
+        }
+      ]
+    })
+
+    const select = renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    // The locked model is inert…
+    fireEvent.click(screen.getByText(/Gemini 3\.1 Pro/i))
+    expect(select).not.toHaveBeenCalled()
+
+    // …while the available sibling still selects normally.
+    fireEvent.click(screen.getByText(/Gemini 2\.5 Flash/i))
+    expect(select).toHaveBeenCalledWith('gemini-2.5-flash', 'google')
+  })
+})

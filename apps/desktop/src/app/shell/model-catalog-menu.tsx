@@ -192,6 +192,15 @@ export function ModelCatalogMenu({
   )
 
   const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {
+    // Unavailable rows (provider not authenticated, or the model locked for the
+    // account's tier) are inert — no switch and no preset write on any path
+    // (click, keyboard commit, or the hover edit submenu).
+    const providerUnavailable = provider.authenticated === false
+    const modelLocked = provider.unavailable_models?.includes(family.id) ?? false
+    if (providerUnavailable || modelLocked) {
+      return
+    }
+
     const caps = provider.capabilities?.[family.id]
     const preset = controller.presetFor(provider.slug, family.id)
 
@@ -405,6 +414,14 @@ export function ModelCatalogMenu({
                     const name = modelDisplayParts(family.id).name
                     const caps = group.provider.capabilities?.[family.id]
 
+                    // A row is unavailable when the provider has no usable
+                    // credentials (authenticated === false) or this specific
+                    // model is locked for the account's tier (Nous free-tier
+                    // gating). Gray it out and make it inert.
+                    const providerUnavailable = group.provider.authenticated === false
+                    const modelLocked = group.provider.unavailable_models?.includes(family.id) ?? false
+                    const isUnavailable = providerUnavailable || modelLocked
+
                     // Effective settings for this row: the live choice when it's
                     // the active model, otherwise its remembered preset. Row
                     // label AND submenu read from these so they never disagree.
@@ -429,8 +446,10 @@ export function ModelCatalogMenu({
                     // Clicking the row commits the model and closes; the edit
                     // submenu (reasoning/fast) is reached by HOVER, so you can
                     // tweak those without the click dismissing everything.
+                    const rowKey = `${group.provider.slug}:${family.id}`
+                    const rowKbProps = kbRowProps(rowKey)
                     const activate = () => {
-                      if (!isCurrent) {
+                      if (!isCurrent && !isUnavailable) {
                         void selectFamily(family, group.provider)
                       }
 
@@ -438,8 +457,14 @@ export function ModelCatalogMenu({
                     }
 
                     return (
-                      <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
+                      <DropdownMenuSub key={rowKey}>
                         <DropdownMenuSubTrigger
+                          {...rowKbProps}
+                          className={cn(
+                            rowKbProps.className,
+                            isUnavailable && 'text-(--ui-text-tertiary) opacity-50'
+                          )}
+                          disabled={isUnavailable}
                           hideChevron
                           onClick={activate}
                           onKeyDown={event => {
@@ -447,14 +472,18 @@ export function ModelCatalogMenu({
                               activate()
                             }
                           }}
-                          {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
                           <span className="min-w-0 flex-1 truncate">
                             <HighlightMatches query={search} text={name} />
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                            {providerUnavailable && group.provider.warning ? (
+                              <span className="text-(--ui-text-tertiary) ml-1">({group.provider.warning})</span>
+                            ) : null}
                           </span>
                           {isCurrent ? (
                             <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
+                          ) : modelLocked ? (
+                            <Codicon className="ml-auto text-(--ui-text-tertiary)" name="lock" size="0.625rem" />
                           ) : null}
                         </DropdownMenuSubTrigger>
                         <ModelEditSubmenu

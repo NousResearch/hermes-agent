@@ -161,7 +161,7 @@ def test_kanban_create_body_scrubbed_api_key(worker_env):
     from hermes_cli import kanban_db as kb
     secret = "sk-" + "a" * 30
     out = json.loads(kt._handle_create({
-        "title": "rotate the gateway key",
+        "title": f"rotate {secret} now",
         "assignee": "test-worker",
         "body": f"complete using {secret}",
     }))
@@ -175,6 +175,11 @@ def test_kanban_create_body_scrubbed_api_key(worker_env):
     assert secret not in (task.body or "")
     # Head/tail mask survives for debuggability (same rule as other paths).
     assert "sk-" in (task.body or "")
+    # Titles are free text too and masked under the same contract —
+    # a key pasted into a title would otherwise survive in board listings
+    # and dispatcher logs (review follow-up on #92354).
+    assert secret not in (task.title or "")
+    assert "sk-" in (task.title or "")
 
 
 def test_kanban_create_secret_free_body_passthrough(worker_env):

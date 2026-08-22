@@ -95,6 +95,7 @@ Thread safety:
 """
 
 import asyncio
+import contextlib
 import contextvars
 import concurrent.futures
 import errno
@@ -2364,6 +2365,7 @@ class MCPServerTask:
         "_registered_tool_names", "_auth_type", "_refresh_lock",
         "_rpc_lock", "_pending_refresh_tasks",
         "_pending_call_context",
+        "_inflight_tasks", "_reconnecting",
         "_lifecycle_started_at", "_last_tool_call_at",
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported", "_list_cache_meta",
@@ -2422,6 +2424,19 @@ class MCPServerTask:
         # gateway-platform attribution and routes the approval prompt
         # to the right surface (Telegram, Slack, etc.).
         self._pending_call_context: Optional[contextvars.Context] = None
+        # In-flight user-visible RPC tasks (asyncio.Task running
+        # session.call_tool / read_resource / get_prompt / list_* on the MCP
+        # loop). Tracked so a reconnect/shutdown teardown can FAIL them cleanly
+        # instead of orphaning their run_coroutine_threadsafe futures: the SDK
+        # does not always fail a pending request when its streams close, so an
+        # orphaned future makes the calling agent thread poll to the full
+        # tool_timeout (hours). Also used to suppress the keepalive while a
+        # request is active (a busy server is provably alive). Single-loop
+        # access, so no lock needed. ``_reconnecting`` flags a deliberate
+        # teardown so a cancelled request surfaces a retryable error rather
+        # than a raw cancel.
+        self._inflight_tasks: set[asyncio.Task] = set()
+        self._reconnecting: bool = False
         now = time.monotonic()
         self._lifecycle_started_at: float = now
         self._last_tool_call_at: float = now
@@ -2885,6 +2900,12 @@ class MCPServerTask:
             float(self._config.get("keepalive_interval", _DEFAULT_KEEPALIVE_INTERVAL)),
         )
 
+        # Entering a healthy wait state means the session is established and
+        # ready, so clear any lingering "deliberate teardown" flag from a
+        # prior cycle. New in-flight requests on this fresh session must not
+        # be treated as reconnect casualties by their CancelledError handlers.
+        self._reconnecting = False
+
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
         try:
@@ -2921,8 +2942,21 @@ class MCPServerTask:
                 # in that case fall back to the pre-ping ``list_tools`` probe
                 # for the rest of this connection rather than reconnect-looping.
                 if self.session:
+                    # CRITICAL: never probe while a user-visible RPC is in
+                    # flight. The stdio transport is a SINGLE JSON-RPC stream;
+                    # a concurrent ping/list_tools wedges the in-flight
+                    # call_tool/read_resource/get_prompt, which then times out
+                    # → false reconnect → the request is orphaned and the agent
+                    # hangs to tool_timeout (root cause of multi-thousand-second
+                    # hangs). A server actively serving a request is provably
+                    # alive, so skip this cycle. We also run the probe under the
+                    # SAME _rpc_lock that the request handlers use, so a request
+                    # starting concurrently can never overlap the keepalive.
+                    if self._rpc_lock.locked() or self._inflight_tasks:
+                        continue
                     try:
-                        await self._keepalive_probe()
+                        async with self._rpc_lock:
+                            await self._keepalive_probe()
                     except Exception as exc:
                         root = _unwrap_exception_group(exc)
                         logger.warning(
@@ -2946,9 +2980,38 @@ class MCPServerTask:
                         pass
 
         if self._shutdown_event.is_set():
+            self._fail_inflight_calls("shutdown")
             return "shutdown"
         self._reconnect_event.clear()
+        self._fail_inflight_calls("reconnect")
         return "reconnect"
+
+    def _fail_inflight_calls(self, reason: str) -> None:
+        """Cancel in-flight user-visible RPC tasks before the session tears down.
+
+        The MCP session is about to close (reconnect/shutdown). Any pending
+        ``session.call_tool`` / ``read_resource`` / ``get_prompt`` /
+        ``list_*`` await would otherwise be orphaned: the SDK does not always
+        fail the request when its streams close, so the
+        ``run_coroutine_threadsafe`` future never resolves and the calling
+        agent thread polls to the full ``tool_timeout`` (up to hours). We flag
+        a deliberate teardown and cancel the tasks; the handlers convert that
+        cancellation into a clean, retryable error so the agent recovers and
+        the next request runs on the freshly rebuilt session (self-healing).
+        Runs on the MCP event loop, same as the request tasks, so no lock
+        needed.
+        """
+        if not self._inflight_tasks:
+            return
+        self._reconnecting = True
+        pending = [t for t in self._inflight_tasks if not t.done()]
+        if pending:
+            logger.warning(
+                "MCP server '%s': failing %d in-flight request(s) due to %s",
+                self.name, len(pending), reason,
+            )
+        for task in pending:
+            task.cancel()
 
     async def _wait_for_reconnect_or_shutdown(
         self, timeout: Optional[float] = None
@@ -5743,6 +5806,50 @@ def _mark_server_call_started(server: Any) -> None:
         mark_tool_call()
 
 
+def _track_inflight_rpc(server, server_name: str, op: str):
+    """Async context manager: register the running task as an in-flight RPC.
+
+    Every user-visible MCP request (tool call, resource read/list, prompt
+    get/list) runs on the MCP event loop inside ``server._rpc_lock``. Wrapping
+    the request in this context manager:
+
+      * adds the current task to ``server._inflight_tasks`` so
+        ``_wait_for_lifecycle_event`` skips the keepalive while the request is
+        active and ``_fail_inflight_calls`` can cancel it on teardown; and
+      * converts the resulting ``CancelledError`` into a clean, retryable
+        ``RuntimeError`` when the cancel came from a deliberate reconnect/
+        shutdown teardown (``server._reconnecting``), so the agent re-runs the
+        request on the freshly rebuilt session instead of hanging to
+        ``tool_timeout`` or propagating a raw cancel.
+
+    The set/discard is single-loop, so no lock is needed.
+    """
+
+    @contextlib.asynccontextmanager
+    async def _cm():
+        task = asyncio.current_task()
+        if task is not None:
+            server._inflight_tasks.add(task)
+        try:
+            yield
+        except asyncio.CancelledError:
+            # A deliberate reconnect/shutdown teardown cancelled us (see
+            # _fail_inflight_calls). Convert to a clean, retryable error
+            # instead of propagating a raw cancellation, so the agent retries
+            # on the freshly rebuilt session.
+            if getattr(server, "_reconnecting", False):
+                raise RuntimeError(
+                    f"MCP server '{server_name}' reconnected during "
+                    f"{op} (transport reset); retry the request."
+                ) from None
+            raise
+        finally:
+            if task is not None:
+                server._inflight_tasks.discard(task)
+
+    return _cm()
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -5820,16 +5927,17 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         async def _call():
             _mark_server_call_started(server)
-            async with server._rpc_lock:
-                # Snapshot the agent's context so an elicitation callback
-                # triggered during this call (fired on the MCP recv loop
-                # task, which doesn't inherit our contextvars) can replay
-                # it and detect the gateway platform / session for routing.
-                server._pending_call_context = contextvars.copy_context()
-                try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
-                finally:
-                    server._pending_call_context = None
+            async with _track_inflight_rpc(server, server_name, "tools/call"):
+                async with server._rpc_lock:
+                    # Snapshot the agent's context so an elicitation callback
+                    # triggered during this call (fired on the MCP recv loop
+                    # task, which doesn't inherit our contextvars) can replay
+                    # it and detect the gateway platform / session for routing.
+                    server._pending_call_context = contextvars.copy_context()
+                    try:
+                        result = await server.session.call_tool(tool_name, arguments=args)
+                    finally:
+                        server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably
             # healthy at the transport level (even if the tool itself
             # returned isError). Clear the rapid-drop budget (#62212).
@@ -6020,10 +6128,11 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
 
         async def _call():
             _mark_server_call_started(server)
-            async with server._rpc_lock:
-                all_resources = await _paginate_full_list(
-                    server.session.list_resources, "resources", server_name
-                )
+            async with _track_inflight_rpc(server, server_name, "resources/list"):
+                async with server._rpc_lock:
+                    all_resources = await _paginate_full_list(
+                        server.session.list_resources, "resources", server_name
+                    )
             resources = []
             for r in all_resources:
                 entry = {}
@@ -6083,8 +6192,9 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
 
         async def _call():
             _mark_server_call_started(server)
-            async with server._rpc_lock:
-                result = await server.session.read_resource(uri)
+            async with _track_inflight_rpc(server, server_name, "resources/read"):
+                async with server._rpc_lock:
+                    result = await server.session.read_resource(uri)
             # read_resource returns ReadResourceResult with .contents list
             parts: List[str] = []
             contents = result.contents if hasattr(result, "contents") else []
@@ -6140,10 +6250,11 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
 
         async def _call():
             _mark_server_call_started(server)
-            async with server._rpc_lock:
-                all_prompts = await _paginate_full_list(
-                    server.session.list_prompts, "prompts", server_name
-                )
+            async with _track_inflight_rpc(server, server_name, "prompts/list"):
+                async with server._rpc_lock:
+                    all_prompts = await _paginate_full_list(
+                        server.session.list_prompts, "prompts", server_name
+                    )
             prompts = []
             for p in all_prompts:
                 entry = {}
@@ -6206,8 +6317,9 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
 
         async def _call():
             _mark_server_call_started(server)
-            async with server._rpc_lock:
-                result = await server.session.get_prompt(name, arguments=arguments)
+            async with _track_inflight_rpc(server, server_name, "prompts/get"):
+                async with server._rpc_lock:
+                    result = await server.session.get_prompt(name, arguments=arguments)
             # GetPromptResult has .messages list
             messages = []
             for msg in (result.messages if hasattr(result, "messages") else []):

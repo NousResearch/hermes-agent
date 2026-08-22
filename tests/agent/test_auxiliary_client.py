@@ -4623,3 +4623,165 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+
+class _AuxXaiOAuth403(Exception):
+    """xAI OAuth 403 ``unauthenticated:bad-credentials`` (stale access JWT)."""
+
+    status_code = 403
+
+    def __init__(self, message="Error code: 403 - {'code': 'unauthenticated:bad-credentials', 'error': 'The OAuth2 access token could not be validated.'}"):
+        super().__init__(message)
+
+
+class TestXaiOAuthAux403Recovery:
+    """Auxiliary xAI OAuth 403 ``bad-credentials`` must refresh + retry like
+    the main agent loop, instead of failing silently (issue #84845).
+
+    The main agent refreshes the same credential and succeeds; the aux path
+    (call_llm with no provider override → ``auto`` inheriting the main
+    xai-oauth runtime) used to classify the 403 as auth but never reach a
+    working refresh, then walked the OpenRouter/Nous fallback dead end.
+    """
+
+    def _pool(self, refreshed=None, rotated=None):
+        class _Pool:
+            def __init__(self):
+                self.refresh_calls = 0
+                self.rotate_calls = []
+
+            def has_credentials(self):
+                return True
+
+            def try_refresh_current(self):
+                self.refresh_calls += 1
+                return refreshed
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                self.rotate_calls.append(kwargs)
+                return rotated
+
+        return _Pool()
+
+    def test_auto_route_403_bad_credentials_refreshes_and_retries(self):
+        """Auto-routed xai-oauth 403 bad-credentials → refresh xai-oauth
+        credentials, evict the stale cached client, retry once with a fresh
+        client (mirror of the main agent refresh, #84845)."""
+        stale_client = MagicMock()
+        stale_client.base_url = "https://api.x.ai/v1"
+        stale_client.chat.completions.create.side_effect = _AuxXaiOAuth403()
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://api.x.ai/v1"
+        fresh_client.chat.completions.create.return_value = _DummyResponse("xai-recovered")
+
+        pool = self._pool(refreshed=SimpleNamespace(id="xai-entry", runtime_api_key="fresh-jwt"))
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", "grok-4.5", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                side_effect=[(stale_client, "grok-4.5"), (fresh_client, "grok-4.5")],
+            ),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+        ):
+            resp = call_llm(
+                task="address_gate",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "xai-recovered"
+        # The dedicated xai-oauth refresh branch must have fired — the bug
+        # was that auto-routed xai-oauth calls never reached it.
+        mock_refresh.assert_called_once_with("xai-oauth")
+        assert fresh_client.chat.completions.create.call_count == 1
+
+    def test_explicit_403_pool_refresh_fails_singleton_fallback_recovers(self):
+        """Explicit xai-oauth 403 where the pool entry cannot refresh itself
+        (stale/zombie refresh token, failed JWT never matches an entry) must
+        fall back to the auth-store force refresh — the same recovery the
+        main agent performs — and retry once."""
+        stale_client = MagicMock()
+        stale_client.base_url = "https://api.x.ai/v1"
+        stale_client.api_key = "expired-jwt"
+        stale_client.chat.completions.create.side_effect = _AuxXaiOAuth403()
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://api.x.ai/v1"
+        fresh_client.chat.completions.create.return_value = _DummyResponse("xai-pool-fallback")
+
+        pool = self._pool(refreshed=None, rotated=None)  # nothing refreshable/rotatable
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("xai-oauth", "grok-4.5", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                side_effect=[(stale_client, "grok-4.5"), (fresh_client, "grok-4.5")],
+            ),
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(None, None, ""),
+            ),
+        ):
+            resp = call_llm(
+                task="address_gate",
+                provider="xai-oauth",
+                model="grok-4.5",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "xai-pool-fallback"
+        assert fresh_client.chat.completions.create.call_count == 1
+
+    def test_403_no_refresh_possible_raises_clear_error(self):
+        """403 bad-credentials with no refresh path available (dead singleton
+        tokens too) must surface the original auth error — not silently
+        succeed with a stale client and not walk the OpenRouter/Nous fallback
+        as a 'payment' error."""
+        stale_client = MagicMock()
+        stale_client.base_url = "https://api.x.ai/v1"
+        stale_client.api_key = "expired-jwt"
+        stale_client.chat.completions.create.side_effect = _AuxXaiOAuth403()
+
+        pool = self._pool(refreshed=None, rotated=None)
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", "grok-4.5", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(stale_client, "grok-4.5"),
+            ),
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_main_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch("agent.auxiliary_client._try_payment_fallback", return_value=(None, None, "")),
+        ):
+            with pytest.raises(Exception) as exc_info:
+                call_llm(
+                    task="address_gate",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+
+        assert "bad-credentials" in str(exc_info.value)
+

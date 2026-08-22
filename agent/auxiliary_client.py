@@ -4727,12 +4727,30 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         if refreshed is not None:
             _evict_cached_clients(normalized)
             return True
+        # The pool entry could not refresh itself (stale/zombie refresh
+        # token, or the failed JWT matches no entry's runtime key).  For
+        # OAuth-backed providers the auth-store singleton can still
+        # force-refresh the live session — the same recovery the main agent
+        # loop performs — so try it before rotating/giving up (#84845).
+        if _refresh_provider_credentials(normalized):
+            _evict_cached_clients(normalized)
+            return True
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else 401,
             error_context=error_context,
             api_key_hint=hint,
         )
         if next_entry is not None:
+            _evict_cached_clients(normalized)
+            return True
+        # Nothing refreshed or rotated, but the pool still holds a
+        # credential entry (single-entry pool whose refresh token went
+        # stale, or entries whose runtime keys the main agent just rotated
+        # on disk).  Evict the stale cached client and retry once: the
+        # rebuild re-resolves the pool's current entry / auth store, which
+        # may now hold a fresh JWT (#84845).  The retry is bounded to one
+        # attempt — a second failure falls through to the fallback chain.
+        if pool.has_credentials():
             _evict_cached_clients(normalized)
             return True
         return False
@@ -5013,6 +5031,16 @@ def _auth_refresh_provider_for_route(
         return "anthropic"
     if base_url_host_matches(client_base_url, "inference-api.nousresearch.com"):
         return "nous"
+    # xAI Grok OAuth access JWTs rotate every ~6h; an auto-routed auxiliary
+    # call that inherits the main xai-oauth runtime must hit the dedicated
+    # refresh branch on 403 bad-credentials, exactly like the main agent
+    # loop (#84845). Without this, the refresh is skipped and the stale
+    # cached bearer keeps 403ing until process restart.
+    if (
+        base_url_host_matches(client_base_url, "api.x.ai")
+        or base_url_host_matches(client_base_url, "grok.com")
+    ):
+        return "xai-oauth"
     return normalized
 
 

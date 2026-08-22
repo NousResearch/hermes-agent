@@ -101,6 +101,37 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     assert f"{project_dir}:/workspace" in run_args_str
 
 
+@pytest.mark.parametrize("host_cwd_kind", ["parent", "exact"])
+def test_auto_mount_refuses_cwd_containing_hermes_home(
+    monkeypatch, tmp_path, host_cwd_kind
+):
+    """A writable workspace mount must never expose the live Hermes database."""
+    host_home = tmp_path / "home"
+    hermes_home = host_home / ".hermes"
+    hermes_home.mkdir(parents=True)
+    host_cwd = host_home if host_cwd_kind == "parent" else hermes_home
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with pytest.raises(
+        docker_env.EnvironmentConnectionError,
+        match="contains HERMES_HOME",
+    ) as excinfo:
+        _make_dummy_env(
+            cwd="/workspace",
+            host_cwd=str(host_cwd),
+            auto_mount_cwd=True,
+        )
+
+    assert "terminal.cwd" in excinfo.value.retry_hint
+    assert not any(
+        isinstance(call[0], list) and call[0][1:2] == ["run"]
+        for call in calls
+    )
+
+
 def test_non_persistent_cleanup_removes_container(monkeypatch):
     """When persist_across_processes=false, cleanup() must docker stop AND
     docker rm so containers don't leak across hermes processes.

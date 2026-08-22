@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from hermes_constants import get_hermes_home
 from tools.environments.base import (
     BaseEnvironment,
     EnvironmentConnectionError,
@@ -913,6 +914,23 @@ class DockerEnvironment(BaseEnvironment):
             logger.warning("docker_volumes config is not a list: %r", volumes)
             volumes = []
 
+        host_cwd_abs = (
+            os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        )
+        if auto_mount_cwd and host_cwd_abs and os.path.isdir(host_cwd_abs):
+            mounted_cwd = Path(host_cwd_abs).resolve()
+            hermes_home = get_hermes_home().expanduser().resolve()
+            if hermes_home.is_relative_to(mounted_cwd):
+                raise EnvironmentConnectionError(
+                    "Refusing to mount the configured host cwd into Docker because "
+                    f"it contains HERMES_HOME ({hermes_home}). A container with a "
+                    "different SQLite runtime could corrupt the live Hermes state database.",
+                    retry_hint=(
+                        "Set terminal.cwd to a project directory outside HERMES_HOME, "
+                        "or disable terminal.docker_mount_cwd_to_workspace."
+                    ),
+                )
+
         # Fail fast if Docker is not available.
         _ensure_docker_available()
 
@@ -966,7 +984,6 @@ class DockerEnvironment(BaseEnvironment):
             else:
                 logger.warning("Docker volume '%s' missing colon, skipping", vol)
 
-        host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
         bind_host_cwd = (
             auto_mount_cwd
             and bool(host_cwd_abs)

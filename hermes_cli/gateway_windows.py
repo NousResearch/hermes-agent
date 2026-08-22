@@ -468,12 +468,15 @@ def _build_gateway_vbs_script(
 
     ``wscript.exe`` is a GUI-subsystem executable with no console, so this
     launcher receives no console control events. It ``Run``s the console
-    ``python.exe`` with window style 0 (hidden): the gateway owns a single
-    hidden console — never shown, never CTRL_CLOSE'd at logon, and inherited
-    by every console-subsystem descendant (git, gh, node, …) so none of them
-    allocate a visible flashing conhost (#54220/#56747; the previous
-    console-less pythonw.exe gateway forced exactly that per-descendant
-    flash). No cmd.exe anywhere in the chain. Mirrors
+    ``python.exe`` with window style 0 (hidden) and waits for it: the gateway
+    owns a single hidden console — never shown, never CTRL_CLOSE'd at logon,
+    and inherited by every console-subsystem descendant (git, gh, node, …) so
+    none of them allocate a visible flashing conhost (#54220/#56747; the
+    previous console-less pythonw.exe gateway forced exactly that
+    per-descendant flash). Waiting is required because Task Scheduler's
+    ``RestartOnFailure`` policy can only observe the VBS process; propagating
+    the Python exit code lets a watchdog exit 75 trigger the configured
+    restart. No cmd.exe anywhere in the chain. Mirrors
     ``_build_gateway_cmd_script`` (same env + argv via
     ``_resolve_detached_python``).
     """
@@ -494,7 +497,7 @@ def _build_gateway_vbs_script(
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim sh, env, existing_pp",
+        "Dim sh, env, existing_pp, exitCode",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({_quote_vbs_string('HERMES_HOME')}) = {_quote_vbs_string(hermes_home)}",
@@ -510,10 +513,11 @@ def _build_gateway_vbs_script(
         f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {_quote_vbs_string(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async. The
-        # console python's one console is created hidden and inherited by all
-        # descendants, so nothing ever flashes.
-        f"sh.Run {_quote_vbs_string(command_line)}, 0, False",
+        # Window style 0 = hidden; bWaitOnReturn True keeps Task Scheduler
+        # attached to this VBS supervisor. Propagate Python's exit code so the
+        # task's RestartOnFailure policy can restart watchdog exit 75.
+        f"exitCode = sh.Run({_quote_vbs_string(command_line)}, 0, True)",
+        "WScript.Quit exitCode",
     ]
     return "\r\n".join(lines) + "\r\n"
 

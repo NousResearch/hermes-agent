@@ -53,6 +53,32 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
     assert exit_codes == []
 
 
+def test_loop_liveness_watchdog_persists_thread_dump(tmp_path, monkeypatch):
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    exit_codes = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    with patch("gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append):
+        handle = start_loop_liveness_watchdog(
+            loop,
+            probe_interval=0.01,
+            probe_timeout=0.01,
+            max_strikes=1,
+            exit_code=75,
+        )
+        assert handle is not None
+        handle.join(timeout=2.0)
+
+    assert not handle.is_alive()
+    assert exit_codes == [75]
+    dump = tmp_path / "logs" / "gateway-shutdown-watchdog.log"
+    assert dump.is_file()
+    text = dump.read_text(encoding="utf-8")
+    assert "loop_liveness_watchdog_fired" in text
+    assert "faulthandler dump" in text
+    assert "Current thread" in text
+
+
 def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
     probe_scheduled = threading.Event()

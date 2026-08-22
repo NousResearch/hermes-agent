@@ -193,6 +193,16 @@ sandbox so the absolute paths in the worker context are reachable.
 
 ## Quick start
 
+:::warning Review the dispatch contract before starting the gateway
+Kanban workers are full OS processes. When `kanban.dispatch_in_gateway` is
+enabled, a running gateway automatically claims Ready and Review tasks and
+starts workers under each assignee profile's enabled tools and approval policy.
+When `kanban.auto_decompose` is enabled, Triage tasks can also fan out into
+multiple child tasks automatically. Run `hermes kanban init` and review its
+effective-mode and concurrency-cap summary before starting the gateway; inspect
+task descriptions and assignee authority before enabling automatic dispatch.
+:::
+
 The commands below are **you** (the human) setting up the board and creating tasks. Once a task is assigned, the dispatcher spawns the assigned profile as a worker, and from there **the model drives the task through `kanban_*` tool calls, not CLI commands** — see [How workers interact with the board](#how-workers-interact-with-the-board).
 
 ```bash

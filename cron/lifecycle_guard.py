@@ -59,7 +59,7 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # `start` is intentionally excluded: starting a gateway from inside a
     # gateway is benign (a no-op or "already running" error), and a
     # legitimate cron job might start a sibling profile's gateway.
-    r"(?:hermes\s+gateway\s+(?:restart|stop))"
+    r"(?:hermes\s+gateway\s+(?:restart|stop)\b)"
     # Branch B: launchctl ops on a hermes-gateway label. macOS launchd
     # labels look like `ai.hermes.gateway` / `hermes-gateway`. Requiring the
     # gateway identifier prevents blocking unrelated hermes services (e.g.
@@ -77,8 +77,10 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both
     # token orders because real reproductions show both.
-    r"|(?:p?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
-    r"|(?:p?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    # Leading \b ensures we match "pkill" or "kill" as whole words, not as
+    # suffixes of other words (e.g. "skill" -> "kill").
+    r"|(?:\bp?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
+    r"|(?:\bp?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
 )
 
 
@@ -177,10 +179,60 @@ _BINARY_SNIFF_BYTES = 4096
 _ReadRemoteScriptFn = Callable[[str], Optional[str]]
 
 
+def _split_logical_lines(text: str) -> list[str]:
+    """Split text on newlines that are not inside quotes.
+
+    A newline inside a quoted string (single or double quotes) is data,
+    not a command separator. Handles escaped quotes within strings.
+    """
+    lines = []
+    current = []
+    in_single = False
+    in_double = False
+    escape = False
+
+    for ch in text:
+        if escape:
+            current.append(ch)
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            current.append(ch)
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            current.append(ch)
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            current.append(ch)
+            continue
+        if ch == "\n" and not in_single and not in_double:
+            lines.append("".join(current))
+            current = []
+            continue
+        current.append(ch)
+
+    if current:
+        lines.append("".join(current))
+    return lines
+
+
 def _iter_command_segments(command: str) -> Iterator[list[str]]:
-    """Yield shell-tokenized command segments, honoring quotes and comments."""
+    """Yield shell-tokenized command segments, honoring quotes and comments.
+
+    A newline inside a quoted token is data, not a command separator.
+    First split on logical lines (newlines outside quotes), then tokenize
+    each logical line with shlex. If a logical line cannot be tokenized
+    (unbalanced quotes), fall back to per-physical-line tokenization for
+    that logical line.
+    """
     normalized = command.replace("\\\n", "")
-    for line in normalized.splitlines() or [normalized]:
+    logical_lines = _split_logical_lines(normalized)
+
+    for line in logical_lines:
+        # Try to tokenize the logical line as a whole.
         try:
             lexer = shlex.shlex(
                 line,
@@ -191,6 +243,31 @@ def _iter_command_segments(command: str) -> Iterator[list[str]]:
             lexer.commenters = "#"
             tokens = list(lexer)
         except ValueError:
+            # Fall back to per-physical-line tokenization for this logical line.
+            # This handles cases where quotes are unbalanced across lines.
+            for physical_line in line.splitlines():
+                try:
+                    lexer = shlex.shlex(
+                        physical_line,
+                        posix=True,
+                        punctuation_chars=";&|()",
+                    )
+                    lexer.whitespace_split = True
+                    lexer.commenters = "#"
+                    tokens = list(lexer)
+                except ValueError:
+                    continue
+
+                segment: list[str] = []
+                for token in tokens:
+                    if token and set(token) <= _CONTROL_CHARS:
+                        if segment:
+                            yield segment
+                            segment = []
+                        continue
+                    segment.append(token)
+                if segment:
+                    yield segment
             continue
 
         segment: list[str] = []

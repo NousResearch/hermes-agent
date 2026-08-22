@@ -41,6 +41,21 @@ export const onScrollToBottomRequest = (handler: () => void) => {
 
 export const requestScrollToBottom = () => handlers.forEach(handler => handler())
 
+// Timeline rail → transcript list. The rail lists prompts the DOM page has
+// not mounted yet; the list raises its render budget (or store window) so
+// the subsequent scroll can find `[data-message-id]`.
+const revealHandlers = new Set<(id: string) => void>()
+
+export const onRevealMessageRequest = (handler: (id: string) => void) => {
+  revealHandlers.add(handler)
+
+  return () => void revealHandlers.delete(handler)
+}
+
+export const requestRevealMessage = (id: string) => {
+  revealHandlers.forEach(handler => handler(id))
+}
+
 // Inline edit grows a sticky human bubble. Fire on pointerdown so the viewport
 // escapes stick-to-bottom before focus/layout; close clears the edit flag when
 // the inline composer unmounts.

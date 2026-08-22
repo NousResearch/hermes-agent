@@ -22,6 +22,7 @@ import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import {
+  onRevealMessageRequest,
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
@@ -32,6 +33,7 @@ import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
 
+import { renderBudgetToRevealGroup, shouldClampTranscriptBudget } from './transcript-budget'
 import { resolveShowEarlierAction, useTranscriptWindow } from './transcript-window'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
@@ -433,9 +435,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     setBudgetSessionKey(sessionKey)
     setHadGroups(hasGroups)
     setRenderBudget(FIRST_PAINT_BUDGET)
-  } else if (renderBudget > paneBudget) {
+  } else if (shouldClampTranscriptBudget(paneLifecycle === 'hot-hidden', renderBudget, paneBudget)) {
     // Apply the hidden budget during render so React never first commits the
-    // stale full transcript after this pane moves to the background.
+    // stale full transcript after this pane moves to the background. Guarded
+    // on hot-hidden: a visible pane's Show-earlier / timeline-reveal growth
+    // must survive the next render.
     setRenderBudget(paneBudget)
   } else if (hadGroups !== hasGroups) {
     setHadGroups(hasGroups)
@@ -566,6 +570,31 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   // Floating jump button (outside this subtree) → return to the bottom.
   useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [scrollToBottom])
+
+  // Timeline rail lists every user prompt in the assistant-ui store, but only
+  // the current DOM page is mounted. A click on an older dash must raise the
+  // budget (or pull another store page) before scrollToPrompt can find a node.
+  const revealHandlerRef = useRef<(id: string) => void>(() => {})
+
+  revealHandlerRef.current = (id: string) => {
+    if (paneLifecycle !== 'visible') {
+      return
+    }
+
+    const needed = renderBudgetToRevealGroup(groups, id)
+
+    if (needed != null) {
+      if (needed > renderBudget) {
+        setRenderBudget(needed)
+      }
+    } else if (olderAvailable) {
+      expandWindow()
+    }
+
+    stopScroll()
+  }
+
+  useEffect(() => onRevealMessageRequest(id => revealHandlerRef.current(id)), [])
 
   // Waking from display: hidden (HUD mode hides the main window; OS hide does
   // the same to any window): rAF and ResizeObserver may have been frozen, so

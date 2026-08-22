@@ -37,6 +37,20 @@ describe('deriveTimelineEntries', () => {
       ]).map(e => e.id)
     ).toEqual(['u3'])
   })
+
+  it('drops context-compaction handoffs that are not human prompts', () => {
+    expect(
+      deriveTimelineEntries([
+        { id: 'u1', role: 'user', text: 'first prompt' },
+        {
+          id: 'c1',
+          role: 'user',
+          text: '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted'
+        },
+        { id: 'u2', role: 'user', text: 'after compaction' }
+      ]).map(e => e.id)
+    ).toEqual(['u1', 'u2'])
+  })
 })
 
 describe('sameTimelineEntries', () => {

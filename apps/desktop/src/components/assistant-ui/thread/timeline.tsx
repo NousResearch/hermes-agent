@@ -4,6 +4,7 @@ import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'reac
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { requestRevealMessage } from '@/store/thread-scroll'
 
 import {
   activeTimelineIndex,
@@ -110,18 +111,43 @@ function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
 export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
   (root?.closest('[data-session-anchor]') ?? document).querySelector<HTMLElement>(VIEWPORT)
 
-function scrollToPrompt(root: HTMLElement | null, id: string) {
+function scrollToPrompt(root: HTMLElement | null, id: string): boolean {
   const viewport = ownViewport(root)
   const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
 
   if (!viewport || !node) {
-    return
+    return false
   }
 
   const top = viewport.scrollTop + (node.getBoundingClientRect().top - viewport.getBoundingClientRect().top) - 8
 
   triggerHaptic('selection')
   jumpScroll(viewport, Math.max(0, top))
+
+  return true
+}
+
+const REVEAL_WAIT_FRAMES = 45
+
+function jumpToPrompt(root: HTMLElement | null, id: string): void {
+  if (scrollToPrompt(root, id)) {
+    return
+  }
+
+  requestRevealMessage(id)
+
+  let frames = 0
+
+  const wait = () => {
+    if (scrollToPrompt(root, id) || ++frames > REVEAL_WAIT_FRAMES) {
+      return
+    }
+
+    requestRevealMessage(id)
+    requestAnimationFrame(wait)
+  }
+
+  requestAnimationFrame(wait)
 }
 
 /**
@@ -212,7 +238,7 @@ const ActiveThreadTimeline: FC = () => {
   const [open, setOpen] = useState(false)
   const closeTimerRef = useRef<number | undefined>(undefined)
   const rootRef = useRef<HTMLDivElement | null>(null)
-  const jump = useCallback((id: string) => scrollToPrompt(rootRef.current, id), [])
+  const jump = useCallback((id: string) => jumpToPrompt(rootRef.current, id), [])
 
   // Hover sync lives on the DOM, not in React state — the tick and its popover
   // row are siblings in different subtrees, so a shared index-keyed paint() lights

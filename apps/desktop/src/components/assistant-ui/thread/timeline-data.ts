@@ -13,6 +13,7 @@ export interface TimelineEntry {
 
 // Injected as user messages for alternation; not human prompts (thread.tsx).
 const PROCESS_NOTIFICATION_RE = /^\[IMPORTANT: Background process [\s\S]*\]$/
+const COMPACTION_HANDOFF_RE = /^\[CONTEXT (?:COMPACTION|SUMMARY)/
 
 const PREVIEW_MAX = 120
 
@@ -36,7 +37,7 @@ export function deriveTimelineEntries(messages: readonly TimelineSourceMessage[]
 
     const text = message.text.trim()
 
-    if (!text || PROCESS_NOTIFICATION_RE.test(text)) {
+    if (!text || PROCESS_NOTIFICATION_RE.test(text) || COMPACTION_HANDOFF_RE.test(text)) {
       continue
     }
 

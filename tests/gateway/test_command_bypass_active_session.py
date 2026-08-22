@@ -125,6 +125,31 @@ class TestCommandBypassActiveSession:
         assert any("handled:reset" in r for r in adapter.sent_responses)
 
     @pytest.mark.asyncio
+    async def test_new_stops_existing_typing_before_sending_response(self):
+        """The active-session shortcut must not refresh typing during send."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        old_processing = asyncio.create_task(asyncio.Event().wait())
+        old_typing = asyncio.create_task(asyncio.Event().wait())
+        adapter._session_tasks[sk] = old_processing
+        adapter._session_typing_tasks[sk] = old_typing
+
+        async def _assert_typing_stopped(chat_id, content, **kwargs):
+            assert old_typing.done()
+            adapter.sent_responses.append(content)
+
+        adapter._send_with_retry = _assert_typing_stopped
+
+        await adapter.handle_message(_make_event("/new"))
+
+        assert old_typing.cancelled()
+        assert old_processing.cancelled()
+        assert sk not in adapter._session_typing_tasks
+        assert any("handled:new" in r for r in adapter.sent_responses)
+
+    @pytest.mark.asyncio
     async def test_approve_bypasses_guard(self):
         """/approve must bypass (deadlock prevention)."""
         adapter = _make_adapter()
@@ -438,4 +463,3 @@ class TestBypassWithBotnameSuffix:
             "/stop@MyHermesBot was queued instead of bypassing"
         )
         assert any("handled:stop" in r for r in adapter.sent_responses)
-

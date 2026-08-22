@@ -2,11 +2,13 @@
 
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import patch
 
 import pytest
 
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
+from gateway.hooks import HookRegistry
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource
 from gateway.response_filters import (
@@ -74,6 +76,38 @@ def _runner(monkeypatch, tmp_path):
         lambda *_args, **_kwargs: 100_000,
     )
     return runner
+
+
+def _runner_with_hook(monkeypatch, tmp_path, handler_code):
+    runner = _runner(monkeypatch, tmp_path)
+    hooks_dir = tmp_path / "hooks"
+    hook_dir = hooks_dir / "agent-end-test"
+    hook_dir.mkdir(parents=True)
+    (hook_dir / "HOOK.yaml").write_text(
+        "name: agent-end-test\nevents: ['agent:end']\n"
+    )
+    (hook_dir / "handler.py").write_text(handler_code)
+    registry = HookRegistry()
+    with patch("gateway.hooks.HOOKS_DIR", hooks_dir):
+        registry.discover_and_load()
+    runner.hooks = registry
+    return runner
+
+
+def _agent_result(text, **extra):
+    return {
+        "final_response": text,
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": text},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+        **extra,
+    }
 
 
 def test_exact_silence_tokens_are_intentional_silence():
@@ -195,3 +229,114 @@ async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path)
     )
     assert end_context["model"] == "gpt-5.6-terra"
     assert end_context["provider"] == "openai-codex"
+
+
+@pytest.mark.asyncio
+async def test_agent_end_hook_delivers_full_mutated_response(monkeypatch, tmp_path):
+    original = "body " * 150
+    runner = _runner_with_hook(
+        monkeypatch,
+        tmp_path,
+        "def handle(_event_type, context):\n"
+        "    context['response'] = 'REVISED: ' + context['response']\n",
+    )
+    runner._run_agent = AsyncMock(return_value=_agent_result(original))
+
+    delivered = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert delivered.startswith("REVISED:")
+    assert original in delivered
+    assert len(delivered) > 500
+
+
+@pytest.mark.asyncio
+async def test_agent_end_hook_can_silence_with_empty_response(monkeypatch, tmp_path):
+    runner = _runner_with_hook(
+        monkeypatch,
+        tmp_path,
+        "def handle(_event_type, context):\n    context['response'] = ''\n",
+    )
+    runner._run_agent = AsyncMock(return_value=_agent_result("original"))
+
+    delivered = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert delivered == ""
+
+
+@pytest.mark.asyncio
+async def test_agent_end_hook_can_remove_response_key(monkeypatch, tmp_path):
+    runner = _runner_with_hook(
+        monkeypatch,
+        tmp_path,
+        "def handle(_event_type, context):\n    context.pop('response', None)\n",
+    )
+    runner._run_agent = AsyncMock(return_value=_agent_result("original"))
+
+    delivered = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert delivered == "original"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [{"bad": 1}, None])
+async def test_agent_end_hook_ignores_non_string_response_mutations(
+    monkeypatch, tmp_path, value
+):
+    runner = _runner_with_hook(
+        monkeypatch,
+        tmp_path,
+        "def handle(_event_type, context):\n    context['response'] = VALUE\n".replace(
+            "VALUE", repr(value)
+        ),
+    )
+    runner._run_agent = AsyncMock(return_value=_agent_result("original"))
+
+    delivered = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert delivered == "original"
+
+
+@pytest.mark.asyncio
+async def test_agent_end_hook_context_preserves_model_and_provider(
+    monkeypatch, tmp_path
+):
+    observed = {}
+    runner = _runner_with_hook(
+        monkeypatch,
+        tmp_path,
+        "def handle(_event_type, context):\n"
+        "    OBSERVED.update(context)\n",
+    )
+    handler = runner.hooks._handlers["agent:end"][0]
+    handler.__globals__["OBSERVED"] = observed
+    runner._run_agent = AsyncMock(
+        return_value=_agent_result("original", model="test-model", provider="test-provider")
+    )
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert observed["model"] == "test-model"
+    assert observed["provider"] == "test-provider"
+
+
+@pytest.mark.asyncio
+async def test_agent_end_hook_without_hooks_preserves_response(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    original = "control response"
+    runner._run_agent = AsyncMock(return_value=_agent_result(original))
+
+    delivered = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert delivered == original

@@ -1799,6 +1799,133 @@ def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
         _print_info("    Cloud browsers: browser-use auth login  (or set BROWSER_USE_API_KEY)")
 
 
+def _download_verified_wheel(
+    url: str,
+    expected_sha256: str,
+    *,
+    label: str,
+) -> Optional[str]:
+    """Download a wheel and verify its pinned sha256 before install.
+
+    Supply-chain hardening: the wheel is Python code (installed via pip,
+    which executes build/import hooks), shipped from a third-party release
+    rather than PyPI. Pin its sha256 so a tampered/replaced release can't be
+    installed silently.
+
+    Returns the local path of the verified wheel (caller must remove it), or
+    None on download failure / digest mismatch / timeout. Never returns a path
+    for unverified bytes.
+    """
+    import tempfile as _tf
+    import hashlib as _hl
+
+    _fd, wheel_path = _tf.mkstemp(prefix=f"{label}-", suffix=".whl")
+    os.close(_fd)
+    verified = False
+    try:
+        dl = subprocess.run(
+            ["curl", "-fsSL", "--connect-timeout", "10", "--max-time", "120",
+             "-o", wheel_path, url],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        if dl.returncode != 0:
+            _print_warning(
+                f"    {label} wheel download failed: "
+                f"{(dl.stderr or '').strip()[:200]}"
+            )
+            return None
+        actual_sha = _hl.sha256(open(wheel_path, "rb").read()).hexdigest()
+        if actual_sha != expected_sha256:
+            _print_warning(
+                f"    {label} wheel sha256 mismatch "
+                f"(expected {expected_sha256[:12]}…, got {actual_sha[:12]}…) — "
+                "refusing to install a possibly tampered release"
+            )
+            return None
+        verified = True
+        return wheel_path
+    except subprocess.TimeoutExpired:
+        _print_warning(f"    {label} wheel download timed out (>120s)")
+        return None
+    finally:
+        # Verified paths are owned by the caller (removed after install);
+        # failure paths clean up here so no temp wheel is left behind.
+        if not verified:
+            try:
+                os.remove(wheel_path)
+            except OSError:
+                pass
+
+
+def _install_kittentts_verified() -> bool:
+    """Download + verify + install KittenTTS and its pinned soundfile dep.
+
+    Shared by the `hermes tools post-setup kittentts` hook and the
+    interactive `hermes setup tts` flow, so both paths pass through the same
+    fail-closed digest gate. soundfile is a runtime dependency of kittentts;
+    it is installed from an official PyPI wheel pinned by version + sha256
+    (not resolved by bare name), so a compromised package index can't smuggle
+    in an executable dependency alongside the verified kittentts wheel.
+    """
+    wheel_url = (
+        "https://github.com/KittenML/KittenTTS/releases/download/"
+        "0.8.1/kittentts-0.8.1-py3-none-any.whl"
+    )
+    _KITTENTTS_WHEEL_SHA256 = (
+        "482a436c4f1f3192153710376e459ff3689517ebcda7c2b051e2fd4187b41851"
+    )
+    # Official PyPI wheel for soundfile 0.14.0 (py2.py3-none-any). Hash from
+    # PyPI JSON API 2026-08-14. If upstream bumps the version, update BOTH
+    # the URL and this hash together.
+    soundfile_url = (
+        "https://files.pythonhosted.org/packages/b1/d1/"
+        "5e338af9ca6ed0786cd5bb03f6d60de1c325728c1189014f3b59aae7403c/"
+        "soundfile-0.14.0-py2.py3-none-any.whl"
+    )
+    _SOUNDFILE_WHEEL_SHA256 = (
+        "8ba81ae3a89fd5ab3bef8a8eb481fbbe794e806309675a89b4df48b8d31908a8"
+    )
+
+    _print_info("    Installing kittentts (~25-80MB model, CPU-only)...")
+
+    wheel_path = _download_verified_wheel(
+        wheel_url, _KITTENTTS_WHEEL_SHA256, label="kittentts"
+    )
+    if wheel_path is None:
+        return False
+    soundfile_path = _download_verified_wheel(
+        soundfile_url, _SOUNDFILE_WHEEL_SHA256, label="soundfile"
+    )
+    if soundfile_path is None:
+        try:
+            os.remove(wheel_path)
+        except OSError:
+            pass
+        return False
+
+    try:
+        result = _pip_install(["-U", wheel_path, soundfile_path, "--quiet"], timeout=300)
+        if result.returncode == 0:
+            _print_success("    kittentts installed (wheels sha256 verified)")
+            _print_info("    Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo")
+            _print_info("    Models: KittenML/kitten-tts-nano-0.8-int8 (25MB), micro (41MB), mini (80MB)")
+            return True
+        _print_warning("    kittentts install failed:")
+        _print_info(f"      {(result.stderr or '').strip()[:300]}")
+        _print_info(f"    Run manually: uv pip install -U '{wheel_url}'")
+        return False
+    except subprocess.TimeoutExpired:
+        _print_warning("    kittentts install timed out (>5min)")
+        _print_info(f"    Run manually: uv pip install -U '{wheel_url}'")
+        return False
+    finally:
+        for _p in (wheel_path, soundfile_path):
+            try:
+                os.remove(_p)
+            except OSError:
+                pass
+
+
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     from hermes_constants import find_node_executable
@@ -1977,24 +2104,11 @@ def _run_post_setup(post_setup_key: str):
             return
         except ImportError:
             pass
-        _print_info("    Installing kittentts (~25-80MB model, CPU-only)...")
-        wheel_url = (
-            "https://github.com/KittenML/KittenTTS/releases/download/"
-            "0.8.1/kittentts-0.8.1-py3-none-any.whl"
-        )
-        try:
-            result = _pip_install(["-U", wheel_url, "soundfile", "--quiet"], timeout=300)
-            if result.returncode == 0:
-                _print_success("    kittentts installed")
-                _print_info("    Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo")
-                _print_info("    Models: KittenML/kitten-tts-nano-0.8-int8 (25MB), micro (41MB), mini (80MB)")
-            else:
-                _print_warning("    kittentts install failed:")
-                _print_info(f"      {(result.stderr or '').strip()[:300]}")
-                _print_info(f"    Run manually: uv pip install -U '{wheel_url}' soundfile")
-        except subprocess.TimeoutExpired:
-            _print_warning("    kittentts install timed out (>5min)")
-            _print_info(f"    Run manually: uv pip install -U '{wheel_url}' soundfile")
+        # Shared fail-closed installer: download + sha256 verify + install.
+        # `subprocess` is module-scope inside _download_verified_wheel, so the
+        # UnboundLocalError trap (branch-local `import subprocess` elsewhere in
+        # this function) cannot recur.
+        _install_kittentts_verified()
 
     elif post_setup_key == "piper":
         try:

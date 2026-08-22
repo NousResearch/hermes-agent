@@ -993,31 +993,19 @@ def _install_neutts_deps() -> bool:
 
 
 def _install_kittentts_deps() -> bool:
-    """Install KittenTTS dependencies with user approval. Returns True on success."""
+    """Install KittenTTS dependencies with user approval. Returns True on success.
 
-    wheel_url = (
-        "https://github.com/KittenML/KittenTTS/releases/download/"
-        "0.8.1/kittentts-0.8.1-py3-none-any.whl"
-    )
+    Routes through the shared fail-closed installer (hermes_cli.tools_config)
+    so the interactive setup flow cannot bypass the wheel sha256 gate that
+    ``hermes tools post-setup kittentts`` uses (PR #82891 review, P1/P2).
+    """
     print()
     print_info("Installing kittentts Python package (~25-80MB model downloaded on first use)...")
     print()
 
-    from hermes_cli.tools_config import _pip_install
+    from hermes_cli.tools_config import _install_kittentts_verified
 
-    try:
-        result = _pip_install(["-U", wheel_url, "soundfile", "--quiet"], timeout=300)
-    except Exception as e:
-        print_error(f"Failed to install kittentts: {e}")
-        print_info(f"Try manually: uv pip install -U '{wheel_url}' soundfile")
-        return False
-    if result.returncode == 0:
-        print_success("kittentts installed successfully")
-        return True
-    err = (result.stderr or "").strip()
-    print_error(f"Failed to install kittentts: {err[:300] if err else 'install failed'}")
-    print_info(f"Try manually: uv pip install -U '{wheel_url}' soundfile")
-    return False
+    return _install_kittentts_verified()
 
 
 def _xai_oauth_logged_in_for_setup() -> bool:

@@ -204,8 +204,16 @@ class TestCodeExecutionBlocked:
 class TestCompletionConsumed:
     """Test that wait/log consume completion notifications while poll stays read-only."""
 
-    def test_wait_marks_completion_consumed(self, registry):
-        """wait() returning exited status marks session as consumed."""
+    def test_wait_preserves_notify_completion(self, registry):
+        """wait() on a notify_on_complete process must NOT mark it consumed.
+
+        The synchronous wait() result is the agent's own copy of the outcome.
+        Marking _completion_consumed here would also suppress the user-facing
+        autonomous delivery (the desktop/tui poller and gateway watcher both
+        gate on is_completion_consumed), so the user never learns the long
+        task finished. notify_on_complete is an explicit promise to surface a
+        notification on exit — wait() must not silently break it.
+        """
         s = _make_session(sid="proc_wait", notify_on_complete=True, output="done")
         s.exited = True
         s.exit_code = 0
@@ -221,8 +229,9 @@ class TestCompletionConsumed:
         result = registry.wait("proc_wait", timeout=1)
         assert result["status"] == "exited"
 
-        # Now the completion is marked as consumed
-        assert registry.is_completion_consumed("proc_wait")
+        # notify_on_complete survives wait(): the user-facing notification is
+        # still deliverable (the desktop/tui poller checks is_completion_consumed).
+        assert not registry.is_completion_consumed("proc_wait")
 
 
     def test_poll_observed_does_not_suppress_gateway_watcher(self, registry):
@@ -248,9 +257,10 @@ class TestCompletionConsumed:
         registry.poll("proc_run2")
         assert "proc_run2" not in registry._poll_observed
 
-    def test_wait_and_log_still_skip_cli_drain(self, registry):
-        """wait()/read_log() consume the output, so the CLI drain skips their
-        completions via _completion_consumed (the original #8228 contract)."""
+    def test_wait_and_log_preserve_notify_delivery(self, registry):
+        """wait()/read_log() consume the agent's own copy of the result, but a
+        notify_on_complete process keeps its user-facing completion queued so the
+        autonomous delivery (desktop/tui poller, gateway watcher) still fires."""
         for sid, action in (("proc_w", "wait"), ("proc_l", "log")):
             s = _make_session(sid=sid, notify_on_complete=True, output="done")
             s.exited = True
@@ -262,8 +272,9 @@ class TestCompletionConsumed:
                 registry.wait(sid, timeout=1)
             else:
                 registry.read_log(sid)
-            assert registry.is_completion_consumed(sid)
-        assert registry.drain_notifications() == []
+            assert not registry.is_completion_consumed(sid)
+        # The completion events remain deliverable — not drained as consumed.
+        assert len(registry.drain_notifications()) == 2
 
 
 # ---------------------------------------------------------------------------

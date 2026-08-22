@@ -2876,7 +2876,14 @@ def terminal_tool(
         # never restart. This mirrors the `hermes gateway restart` guard in
         # hermes_cli/gateway.py and the cron-path guard in hermes_cli/cron.py,
         # but applies unconditionally (force=True cannot help here).
-        if os.environ.get("_HERMES_GATEWAY") == "1":
+        # Gate on the SUPERVISED-gateway probe, not the raw _HERMES_GATEWAY
+        # marker: gateway.run sets it at import time, so it leaks into every
+        # process that merely imports gateway.run (hermes serve --isolated,
+        # CLI, web server) which are NOT the gateway and must be able to
+        # restart it.
+        from tools.process_registry import _is_supervised_gateway_process
+
+        if _is_supervised_gateway_process():
             from cron.lifecycle_guard import (
                 _MAX_REFERENCED_SCRIPT_BYTES,
                 contains_gateway_lifecycle_command_or_referenced_script,

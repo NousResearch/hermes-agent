@@ -332,17 +332,39 @@ def _resolve_inference_base_url(
     return ""
 
 
-def _should_probe_ollama_vision(provider: str, base_url: str) -> bool:
-    """True when the active provider likely fronts a local Ollama server."""
+def _should_probe_ollama_vision(
+    provider: str,
+    base_url: str,
+    api_key: str = "",
+) -> bool:
+    """True when the active provider likely fronts a local Ollama server.
+
+    Server-fingerprint probing is only meaningful for *local* endpoints —
+    remote OpenAI-compatible APIs (sglang, vLLM, etc.) should never be probed,
+    and probing them without an api_key sprays 401s at the inference backend
+    (issue #89863).
+    """
     p = (provider or "").strip().lower()
     if p == "ollama":
         return True
     if not base_url:
         return False
+    # Remote endpoints must never be fingerprinted: the probe waterfall is
+    # only valid for local/LM-Studio/Ollama boxes. Non-Ollama remotes (sglang,
+    # vLLM, OpenAI-compat) expose Ollama-compat endpoints that can misidentify
+    # and, without an api_key, return 401 on every leg (issue #89863).
+    if p != "ollama":
+        try:
+            from agent.model_metadata import is_local_endpoint
+
+            if not is_local_endpoint(base_url):
+                return False
+        except Exception:
+            return False
     try:
         from agent.model_metadata import detect_local_server_type
 
-        return detect_local_server_type(base_url) == "ollama"
+        return detect_local_server_type(base_url, api_key=api_key) == "ollama"
     except Exception:
         return False
 
@@ -448,11 +470,24 @@ def _lookup_supports_vision(
     base_url = _resolve_inference_base_url(cfg, provider)
     if not base_url and (provider or "").strip().lower() == "ollama":
         base_url = "http://localhost:11434/v1"
-    if _should_probe_ollama_vision(provider, base_url):
+
+    # Resolve the runtime api_key so probe requests at keyed endpoints carry
+    # Authorization and don't spray 401s (issue #89863).
+    resolved_api_key = ""
+    try:
+        from agent.auxiliary_client import _runtime_main_value
+
+        resolved_api_key = str(_runtime_main_value("api_key") or "").strip()
+    except Exception:
+        pass
+
+    if _should_probe_ollama_vision(provider, base_url, api_key=resolved_api_key):
         try:
             from agent.model_metadata import query_ollama_supports_vision
 
-            ollama_vision = query_ollama_supports_vision(model, base_url)
+            ollama_vision = query_ollama_supports_vision(
+                model, base_url, api_key=resolved_api_key
+            )
             if ollama_vision is not None:
                 return ollama_vision
         except Exception as exc:  # pragma: no cover - defensive

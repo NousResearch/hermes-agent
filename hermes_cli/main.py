@@ -479,6 +479,7 @@ from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.monitoring import build_monitoring_parser
+from hermes_cli.subcommands.behavior import build_behavior_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
@@ -12284,6 +12285,33 @@ def cmd_monitoring(args):
     sys.exit(2)
 
 
+def cmd_behavior(args):
+    # Config gate — opt-in, default off.
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config() or {}
+    except Exception:
+        cfg = {}
+    behavior_cfg = cfg.get("behavior") or {}
+    if not behavior_cfg.get("enabled"):
+        print(
+            "Behavioral analysis is disabled. Enable it in config.yaml "
+            "under `behavior.enabled: true`"
+        )
+        return
+    try:
+        from hermes_state import SessionDB
+        from agent.behavioral_insights import BehavioralAnalyzer
+
+        db = SessionDB()
+        analyzer = BehavioralAnalyzer(db, behavior_cfg)
+        report = analyzer.generate(days=args.days, source=args.source)
+        print(analyzer.format_terminal(report))
+        db.close()
+    except Exception as e:
+        print(f"Error generating behavioral analysis: {e}")
+
+
 def cmd_skills(args):
     # Route 'config' action to skills_config module
     if getattr(args, "skills_action", None) == "config":
@@ -13811,6 +13839,11 @@ def main():
     # =========================================================================
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
+
+    # =========================================================================
+    # behavior command  (parser built in hermes_cli/subcommands/behavior.py)
+    # =========================================================================
+    build_behavior_parser(subparsers, cmd_behavior=cmd_behavior)
 
     # =========================================================================
     # claw command  (parser built in hermes_cli/subcommands/claw.py)

@@ -13912,6 +13912,7 @@ def _model_picker_context(agent):
 
 _LIVE_SESSION_DIRECT_COMMANDS = frozenset(
     {
+        "behavior",
         "clear",
         "compress",
         "effort",
@@ -14144,6 +14145,31 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
         response = _methods["session.status"]("status", {"session_id": sid})
         if response.get("error"):
             return str(response["error"].get("message") or "status unavailable")
+        return str(response.get("result", {}).get("output") or "")
+    if name == "behavior":
+        # Parse --days / --source / positional-days (same logic as CLI/gateway)
+        days = 30
+        source = None
+        parts = arg.split()
+        i = 0
+        while i < len(parts):
+            if parts[i] == "--days" and i + 1 < len(parts):
+                try:
+                    days = int(parts[i + 1])
+                except ValueError:
+                    return f"Invalid --days value: {parts[i + 1]}"
+                i += 2
+            elif parts[i] == "--source" and i + 1 < len(parts):
+                source = parts[i + 1]
+                i += 2
+            elif parts[i].isdigit():
+                days = int(parts[i])
+                i += 1
+            else:
+                i += 1
+        response = _methods["behavior.get"]("behavior", {"days": days, "source": source})
+        if response.get("error"):
+            return str(response["error"].get("message") or "behavior unavailable")
         return str(response.get("result", {}).get("output") or "")
     if name == "context":
         if session is None:
@@ -15410,6 +15436,76 @@ def _(rid, params: dict) -> dict:
 # ── Methods: insights ────────────────────────────────────────────────
 
 
+@method("insights.get")
+def _(rid, params: dict) -> dict:
+    days = params.get("days", 30)
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5017)
+    try:
+        cutoff = time.time() - days * 86400
+        rows = [
+            s
+            for s in db.list_sessions_rich(limit=500, compact_rows=True)
+            if (s.get("started_at") or 0) >= cutoff
+        ]
+        return _ok(
+            rid,
+            {
+                "days": days,
+                "sessions": len(rows),
+                "messages": sum(s.get("message_count", 0) for s in rows),
+            },
+        )
+    except Exception as e:
+        return _err(rid, 5017, str(e))
+
+
+# ── Methods: behavior ────────────────────────────────────────────────
+
+
+@method("behavior.get")
+def _(rid, params: dict) -> dict:
+    """Behavioral analysis report for the TUI (terminal-formatted output).
+
+    Mirrors the CLI's ``_show_behavior`` and the gateway's
+    ``_handle_behavior_command``.  The TUI is single-user (like the CLI),
+    so ``user_id=None`` is passed to ``generate()`` — no cross-user
+    filtering is needed and no user_id parameter is accepted.
+    """
+    days = params.get("days", 30)
+    source = params.get("source")
+    # Config gate — opt-in, default off (same as CLI/gateway).
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config() or {}
+    except Exception:
+        cfg = {}
+    behavior_cfg = cfg.get("behavior") or {}
+    if not behavior_cfg.get("enabled"):
+        return _ok(
+            rid,
+            {
+                "output": (
+                    "Behavioral analysis is disabled. Enable it in config.yaml "
+                    "under `behavior.enabled: true`"
+                )
+            },
+        )
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5029)
+    try:
+        from agent.behavioral_insights import BehavioralAnalyzer
+
+        analyzer = BehavioralAnalyzer(db, behavior_cfg)
+        # TUI is single-user; user_id=None means no user filtering.
+        report = analyzer.generate(days=days, source=source, user_id=None)
+        result = analyzer.format_terminal(report)
+        return _ok(rid, {"output": result})
+    except Exception as e:
+        return _err(rid, 5029, str(e))
 # ── Methods: rollback ────────────────────────────────────────────────
 
 

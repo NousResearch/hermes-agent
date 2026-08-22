@@ -1238,6 +1238,56 @@ def _pricing_entry_from_metadata(
     )
 
 
+def _configured_endpoint_api_key(
+    provider: Optional[str],
+    base_url: Optional[str],
+) -> str:
+    """Resolve a configured route's key without crossing endpoint boundaries.
+
+    Pricing is also recomputed outside live inference (for example by
+    ``hermes insights``), where callers only retain provider/base URL metadata.
+    Resolve the current profile's credential only when its configured endpoint
+    is exactly the route being probed. This prevents a stale or attacker-chosen
+    billing URL from receiving a credential for another provider.
+    """
+    if not base_url:
+        return ""
+    try:
+        from hermes_cli.config import (
+            get_compatible_custom_providers,
+            get_env_value_prefer_dotenv,
+            load_config,
+        )
+        from hermes_cli.providers import resolve_provider_full
+        from hermes_cli.route_identity import normalize_route_base_url
+
+        config = load_config()
+        if not isinstance(config, dict) or not provider:
+            return ""
+        user_providers = config.get("providers")
+        if not isinstance(user_providers, dict):
+            user_providers = {}
+        resolved = resolve_provider_full(
+            provider,
+            user_providers=user_providers,
+            custom_providers=get_compatible_custom_providers(config),
+        )
+        if resolved is None or (
+            normalize_route_base_url(resolved.base_url)
+            != normalize_route_base_url(base_url)
+        ):
+            return ""
+        for env_name in resolved.api_key_env_vars:
+            secret = str(get_env_value_prefer_dotenv(env_name) or "").strip()
+            if secret:
+                return secret
+    except Exception:
+        # Pricing lookup is best-effort and must never break the agent or
+        # insights generation because config/credential resolution failed.
+        return ""
+    return ""
+
+
 def get_pricing_entry(
     model_name: str,
     provider: Optional[str] = None,
@@ -1257,8 +1307,12 @@ def get_pricing_entry(
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
     if route.base_url:
+        endpoint_api_key = api_key or _configured_endpoint_api_key(
+            provider or route.provider,
+            route.base_url,
+        )
         entry = _pricing_entry_from_metadata(
-            fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),
+            fetch_endpoint_model_metadata(route.base_url, api_key=endpoint_api_key),
             route.model,
             source_url=f"{route.base_url.rstrip('/')}/models",
             pricing_version="openai-compatible-models-api",

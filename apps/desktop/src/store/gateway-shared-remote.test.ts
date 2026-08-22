@@ -41,7 +41,6 @@ const {
   $gateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
-  ensureActiveGatewayOpen,
   ensureGatewayForProfile,
   setPrimaryGateway
 } = await import('./gateway')
@@ -113,7 +112,7 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
     expect($gateway.get()).not.toBe(primary)
   })
 
-  it('refreshes the active connection after a pooled profile reconnect succeeds', async () => {
+  it('does not publish on a failed first dial, but a retried activation succeeds once the reconnect works (issue #92265)', async () => {
     const connection = {
       authMode: 'token',
       baseUrl: 'https://worker.invalid',
@@ -130,14 +129,19 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
 
     gatewayMocks.connect.mockRejectedValueOnce(new Error('temporarily offline')).mockResolvedValueOnce(undefined)
 
+    // First attempt: the dial fails transiently. Per the fix, this must
+    // NOT publish the closed gateway as the active connection -- the
+    // prior behavior here (publish immediately, closed socket and all)
+    // is exactly the bug #92265 reports.
+    await ensureGatewayForProfile('worker')
+
+    expect(gatewayMocks.setConnection).not.toHaveBeenCalled()
+
+    // Retrying the activation (e.g. the user selects the profile again,
+    // or an app-level retry) succeeds on the second dial and publishes.
     await ensureGatewayForProfile('worker')
 
     expect(gatewayMocks.setConnection).toHaveBeenCalledOnce()
-    expect(gatewayMocks.setConnection).toHaveBeenLastCalledWith(connection)
-
-    await ensureActiveGatewayOpen()
-
-    expect(gatewayMocks.setConnection).toHaveBeenCalledTimes(2)
     expect(gatewayMocks.setConnection).toHaveBeenLastCalledWith(connection)
   })
 })

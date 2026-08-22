@@ -13,6 +13,11 @@ export interface QueuedPromptEntry {
   displayText?: string
   attachments: ComposerAttachment[]
   queuedAt: number
+  /** Persisted entries restored by a later Desktop process require an explicit
+   * user send. A queue is an immediate sequencing aid, not a delayed-job
+   * scheduler; silently auto-draining an old entry after restart can submit a
+   * stale prompt into a rebound or recycled session. */
+  requiresManualSend?: boolean
 }
 
 /** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
@@ -37,7 +42,16 @@ const load = (): QueueState => {
     const raw = window.localStorage.getItem(STORAGE_KEY)
     const parsed = raw ? JSON.parse(raw) : null
 
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as QueueState) : {}
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed as QueueState).map(([sessionKey, entries]) => [
+        sessionKey,
+        Array.isArray(entries) ? entries.map(entry => ({ ...entry, requiresManualSend: true })) : []
+      ])
+    )
   } catch {
     return {}
   }
@@ -363,6 +377,10 @@ export interface AutoDrainInput {
  */
 export const shouldAutoDrain = ({ isBusy, parked, queueLength }: AutoDrainInput): boolean =>
   !isBusy && !parked && queueLength > 0
+
+/** Restored queue entries stay available for review/manual send, but never fire
+ * merely because Desktop restarted, reconnected, or rebound a runtime id. */
+export const canAutoDrainQueuedPrompt = (entry: QueuedPromptEntry): boolean => !entry.requiresManualSend
 
 /** Auto-drain attempts for one entry before we stop retrying and toast. The
  * entry stays queued for a manual send; a remount/reconnect resets the count. */

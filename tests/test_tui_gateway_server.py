@@ -2373,6 +2373,67 @@ def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):
     assert server._load_enabled_toolsets() == ["web", "terminal", "memory"]
 
 
+def test_load_enabled_toolsets_honors_profile_capability_pin_before_posture(
+    monkeypatch,
+):
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+    import hermes_cli.config as config_mod
+    import hermes_cli.plugins as plugins_mod
+    import hermes_cli.tools_config as tools_config_mod
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding"])
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"tools": {"enabled_toolsets": ["web", "plugin_demo"]}},
+    )
+    discovered = []
+    monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: discovered.append(True))
+    monkeypatch.setattr(
+        tools_config_mod, "enabled_mcp_server_names", lambda _cfg: {"github"}
+    )
+
+    assert server._load_enabled_toolsets("desktop") == [
+        "desktop_ui",
+        "github",
+        "plugin_demo",
+        "project",
+        "web",
+    ]
+    assert discovered == [True]
+
+
+def test_load_enabled_toolsets_reads_pin_from_active_profile_config(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+    import hermes_cli.plugins as plugins_mod
+
+    profile_home = tmp_path / "profiles" / "reviewer"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "tools:\n"
+        "  enabled_toolsets:\n"
+        "    - memory\n"
+        "    - web\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding"])
+    monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        assert server._load_enabled_toolsets("tui") == ["memory", "project", "web"]
+    finally:
+        reset_hermes_home_override(token)
+
+
 def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, nope")
     monkeypatch.setitem(

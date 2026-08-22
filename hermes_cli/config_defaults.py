@@ -3362,10 +3362,10 @@ DEFAULT_CONFIG = {
     # OAuth or XAI_API_KEY) AND the x_search toolset is enabled in
     # `hermes tools`. These settings tune the backing Responses API call.
     "x_search": {
-        # xAI model used for the Responses call. grok-4.5 is the
+        # xAI model used for the Responses call. grok-4.6 is the
         # recommended default; any Grok model with x_search tool
         # access works.
-        "model": "grok-4.5",
+        "model": "grok-4.6",
         # Optional reasoning effort sent to xAI Responses API models that
         # support it. Leave null to preserve the selected model's default.
         "reasoning_effort": None,

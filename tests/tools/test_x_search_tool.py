@@ -70,7 +70,7 @@ def test_x_search_posts_responses_request(monkeypatch):
     tool_def = captured["json"]["tools"][0]
     assert captured["url"] == "https://api.x.ai/v1/responses"
     assert captured["headers"]["User-Agent"] == f"Hermes-Agent/{__version__}"
-    assert captured["json"]["model"] == "grok-4.5"
+    assert captured["json"]["model"] == "grok-4.6"
     assert captured["json"]["store"] is False
     assert "reasoning" not in captured["json"]
     assert tool_def["type"] == "x_search"
@@ -80,6 +80,41 @@ def test_x_search_posts_responses_request(monkeypatch):
     assert tool_def["enable_image_understanding"] is True
     assert result["success"] is True
     assert result["answer"] == "People on X are discussing xAI's latest launch."
+
+
+def test_x_search_explicit_model_override_reaches_request(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse({"output_text": "result", "citations": []})
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(x_search_tool(query="latest xAI news", model="grok-4.6"))
+
+    assert result["success"] is True
+    assert result["model"] == "grok-4.6"
+    assert captured["json"]["model"] == "grok-4.6"
+
+
+def test_x_search_rejects_non_grok_model_override_before_request(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    calls = {"post": 0}
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr(
+        "requests.post",
+        lambda *args, **kwargs: calls.__setitem__("post", calls["post"] + 1),
+    )
+
+    result = json.loads(x_search_tool(query="latest xAI news", model="not-grok"))
+
+    assert result["error"] == "x_search model must be a Grok model ID"
+    assert calls["post"] == 0
 
 
 def test_x_search_rejects_conflicting_handle_filters(monkeypatch):
@@ -431,4 +466,3 @@ def test_x_search_bearer_requests_prefer_api_key_from_shared_resolver(monkeypatc
     _api_key, _base_url, source = _resolve_xai_bearer()
     assert captured.get("prefer_api_key") is True
     assert source == "xai"
-

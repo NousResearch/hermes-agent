@@ -36,6 +36,7 @@ import importlib
 import json
 import logging
 import os
+import platform
 import queue
 import sys
 import threading
@@ -591,6 +592,23 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     }
     if current_base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
+
+    # macOS Apple Silicon: PyTorch MPS pre-allocates 4GB+ IOAccelerator
+    # memory for tiny embedding models, causing system-wide memory exhaustion
+    # on 8GB machines. Force CPU mode unless the user explicitly opts out
+    # via embeddings_local_force_cpu / reranker_local_force_cpu = false.
+    # See issues #7135, #8972 — daemon also hangs on startup with MPS.
+    is_macos_arm = platform.system() == "Darwin" and platform.machine() == "arm64"
+    force_cpu_embeddings = config.get("embeddings_local_force_cpu")
+    force_cpu_reranker = config.get("reranker_local_force_cpu")
+    if force_cpu_embeddings is not None or is_macos_arm:
+        env_values["HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU"] = (
+            "false" if force_cpu_embeddings is False else "true"
+        )
+    if force_cpu_reranker is not None or is_macos_arm:
+        env_values["HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU"] = (
+            "false" if force_cpu_reranker is False else "true"
+        )
 
     idle_timeout = (
         config.get("idle_timeout")
@@ -1207,6 +1225,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
             {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
+            {"key": "embeddings_local_force_cpu", "description": "Force CPU embeddings in the embedded daemon. Default true on macOS Apple Silicon (MPS leaks 4GB+ IOAccelerator memory on 8GB machines, issues #7135/#8972); set false to allow MPS/GPU. Other platforms default to the daemon's own choice.", "default": None, "when": {"mode": "local_embedded"}},
+            {"key": "reranker_local_force_cpu", "description": "Force CPU reranking in the embedded daemon. Default true on macOS Apple Silicon (same MPS memory issue); set false to allow MPS/GPU.", "default": None, "when": {"mode": "local_embedded"}},
         ]
 
     def _get_client(self):

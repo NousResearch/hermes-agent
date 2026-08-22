@@ -342,6 +342,61 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
 
+    def test_embedded_profile_env_forces_cpu_on_macos_arm(self, monkeypatch):
+        monkeypatch.setattr("plugins.memory.hindsight.platform.system", lambda: "Darwin")
+        monkeypatch.setattr("plugins.memory.hindsight.platform.machine", lambda: "arm64")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        assert env["HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU"] == "true"
+        assert env["HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU"] == "true"
+
+    def test_embedded_profile_env_cpu_opt_out_respected(self, monkeypatch):
+        # Explicit false opts out of the macOS ARM64 CPU default.
+        monkeypatch.setattr("plugins.memory.hindsight.platform.system", lambda: "Darwin")
+        monkeypatch.setattr("plugins.memory.hindsight.platform.machine", lambda: "arm64")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "embeddings_local_force_cpu": False,
+            "reranker_local_force_cpu": False,
+        })
+
+        assert env["HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU"] == "false"
+        assert env["HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU"] == "false"
+
+    def test_embedded_profile_env_no_cpu_env_on_non_macos(self, monkeypatch):
+        # Non-Apple platforms are left to the daemon's own choice unless
+        # the user explicitly sets a value.
+        monkeypatch.setattr("plugins.memory.hindsight.platform.system", lambda: "Linux")
+        monkeypatch.setattr("plugins.memory.hindsight.platform.machine", lambda: "x86_64")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        assert "HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU" not in env
+        assert "HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU" not in env
+
+    def test_embedded_profile_env_explicit_cpu_value_on_any_platform(self, monkeypatch):
+        # Explicit true works on any platform, not just macOS ARM64.
+        monkeypatch.setattr("plugins.memory.hindsight.platform.system", lambda: "Linux")
+        monkeypatch.setattr("plugins.memory.hindsight.platform.machine", lambda: "x86_64")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "embeddings_local_force_cpu": True,
+        })
+
+        assert env["HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU"] == "true"
+        assert "HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU" not in env
+
 
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
@@ -413,6 +468,9 @@ class TestPostSetup:
         monkeypatch.setattr("getpass.getpass", lambda prompt="": "sk-local-test")
         saved_configs = []
         monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved_configs.append(cfg.copy()))
+        # Pin platform so the profile env is deterministic across machines.
+        monkeypatch.setattr("plugins.memory.hindsight.platform.system", lambda: "Linux")
+        monkeypatch.setattr("plugins.memory.hindsight.platform.machine", lambda: "x86_64")
 
         provider = HindsightMemoryProvider()
         provider.post_setup(str(hermes_home), {"memory": {}})

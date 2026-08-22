@@ -26,7 +26,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, unquote
+from urllib.parse import unquote
 
 import httpx
 
@@ -425,7 +425,7 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _sse_listener(self) -> None:
         """Listen for SSE events from signal-cli daemon."""
-        url = f"{self.http_url}/api/v1/events?account={quote(self.account, safe='')}"
+        url = f"{self.http_url}/api/v1/events"
         backoff = SSE_RETRY_DELAY_INITIAL
 
         while self._running:
@@ -535,6 +535,25 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _handle_envelope(self, envelope: dict) -> None:
         """Process an incoming signal-cli envelope."""
+        # Outer-account gate: with the parameterless SSE endpoint
+        # (/api/v1/events without ?account=), signal-cli streams events from
+        # ALL registered accounts in multi-account mode. The outer event
+        # object carries the owning account (signal-cli sets "account" to the
+        # manager's self number — see JsonReceiveMessageHandler). Discard
+        # events belonging to a different account before unwrapping so a
+        # message received on another account cannot be dispatched here.
+        outer_account = envelope.get("account")
+        if (
+            outer_account
+            and self._account_normalized
+            and outer_account != self._account_normalized
+        ):
+            logger.debug(
+                "Signal: ignoring envelope for other account %s (adapter account %s)",
+                redact_phone(outer_account), redact_phone(self._account_normalized),
+            )
+            return
+
         # Unwrap nested envelope if present
         envelope_data = envelope.get("envelope", envelope)
 

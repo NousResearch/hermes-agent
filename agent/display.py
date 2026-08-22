@@ -1312,6 +1312,7 @@ class KawaiiSpinner:
 # =========================================================================
 
 _ERROR_SUFFIX_MAX_LEN = 48
+_NULL_ERROR_FIELD_RE = re.compile(r'"error"\s*:\s*null\b', re.IGNORECASE)
 
 
 def _trim_error(msg: str) -> str:
@@ -1376,6 +1377,10 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     if not isinstance(result, str):
         return False, ""
     lower = result[:500].lower()
+    if isinstance(data, (dict, list)):
+        # Ignore only the parsed success shape from #91166. Keep the legacy
+        # fallback for every other error/failed key and value.
+        lower = _NULL_ERROR_FIELD_RE.sub("", lower)
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
         return True, " [error]"
 

@@ -78,6 +78,7 @@ def _make_runner(tmp_path):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
+    runner._voice_saved_modes = {}
     runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"
     runner._session_db = None
     runner.session_store = MagicMock()
@@ -574,6 +575,37 @@ class TestVoiceChannelCommands:
 
 
     @pytest.mark.asyncio
+    async def test_join_preserves_saved_voice_only_mode(self, runner):
+        """A previously saved voice_only mode must survive /voice join (#81041).
+
+        Regression: /voice join unconditionally overwrote the channel's voice
+        mode with "all", silently degrading a saved voice_only session to
+        speaking every typed reply in the VC.
+        """
+        mock_channel = MagicMock()
+        mock_channel.name = "General"
+        mock_adapter = AsyncMock()
+        mock_adapter.join_voice_channel = AsyncMock(return_value=True)
+        mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
+        mock_adapter._voice_text_channels = {}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_input_callback = None
+        event = self._make_discord_event()
+        event.source.chat_type = "group"
+        event.source.chat_name = "Hermes Server / #general"
+        runner.adapters[event.source.platform] = mock_adapter
+
+        # Operator previously opted into voice_only (voice in -> voice out;
+        # text in -> text out). The join must not clobber it.
+        runner._voice_mode["discord:123"] = "voice_only"
+
+        result = await runner._handle_voice_channel_join(event)
+
+        assert "joined" in result.lower()
+        assert runner._voice_mode["discord:123"] == "voice_only"
+
+
+    @pytest.mark.asyncio
     async def test_join_missing_voice_dependencies(self, runner):
         """Missing PyNaCl/davey should return a user-actionable install hint."""
         mock_channel = MagicMock()
@@ -607,6 +639,45 @@ class TestVoiceChannelCommands:
         assert "left" in result.lower()
         assert runner._voice_mode["discord:123"] == "off"
         mock_adapter.leave_voice_channel.assert_called_once_with(111)
+
+    @pytest.mark.asyncio
+    async def test_leave_then_join_restores_saved_voice_only_mode(self, runner):
+        """voice_only mode must survive disconnect -> reconnect (#81041).
+
+        Regression: leave/timeout unconditionally overwrote the saved mode
+        with "off". A voice_only session that disconnects and rejoins came
+        back silent; the join reply then advertised the degraded state.
+        """
+        mock_channel = MagicMock()
+        mock_channel.name = "General"
+        mock_adapter = AsyncMock()
+        mock_adapter.join_voice_channel = AsyncMock(return_value=True)
+        mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
+        mock_adapter.leave_voice_channel = AsyncMock()
+        mock_adapter._voice_text_channels = {}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_input_callback = None
+        event = self._make_discord_event()
+        event.source.chat_type = "group"
+        event.source.chat_name = "Hermes Server / #general"
+        runner.adapters[event.source.platform] = mock_adapter
+
+        # Operator opted into voice_only, joins, disconnects, then rejoins.
+        runner._voice_mode["discord:123"] = "voice_only"
+
+        first = await runner._handle_voice_channel_join(event)
+        assert "voice_only" in first
+
+        await runner._handle_voice_channel_leave(event)
+        assert runner._voice_mode["discord:123"] == "voice_only"
+        assert "discord:123" not in runner._voice_saved_modes
+
+        second = await runner._handle_voice_channel_join(event)
+        assert "voice_only" in second
+        assert "silent" not in second.lower()
+        assert runner._voice_mode["discord:123"] == "voice_only"
+        assert runner._voice_saved_modes["discord:123"] == "voice_only"
 
     # -- _handle_voice_channel_input --
 

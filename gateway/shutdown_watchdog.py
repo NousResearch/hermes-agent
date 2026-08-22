@@ -48,6 +48,12 @@ DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S = 5.0
 DEFAULT_LOOP_WATCHDOG_INTERVAL_S = 30.0
 DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
+# 3 sustained misses (~90-120s of loop block) escalate. The false-positive
+# class that motivated raising this (the watchdog's own on-loop heartbeat
+# fsync stalling the loop it monitors) is fixed at the root by the off-loop
+# heartbeat write + two-witness probe (#90502), so the default stays tight
+# for genuine wedges. Deployments with legitimately slow loops can tune via
+# gateway.loop_watchdog_* in config.yaml.
 DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")

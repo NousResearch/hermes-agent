@@ -2689,6 +2689,9 @@ from gateway.platforms.base import (
 )
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
+    DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
+    DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
+    DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
     _arm_loop_floor_timer,
     arm_shutdown_watchdog,
     loop_heartbeat_forever,
@@ -12349,7 +12352,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         watchdog = getattr(self, "_loop_liveness_watchdog", None)
         if watchdog is None or not watchdog.is_alive():
             try:
-                self._loop_liveness_watchdog = start_loop_liveness_watchdog(loop)
+                # getattr defaults cover the config=None / bare-object test
+                # path; config-loaded values are already validated+clamped
+                # by GatewayConfig.from_dict, so no re-clamping here.
+                interval = getattr(
+                    config,
+                    "loop_watchdog_probe_interval_s",
+                    DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
+                )
+                timeout = getattr(
+                    config,
+                    "loop_watchdog_probe_timeout_s",
+                    DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
+                )
+                strikes = getattr(
+                    config,
+                    "loop_watchdog_max_strikes",
+                    DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
+                )
+                self._loop_liveness_watchdog = start_loop_liveness_watchdog(
+                    loop,
+                    probe_interval=float(interval),
+                    probe_timeout=float(timeout),
+                    max_strikes=int(strikes),
+                )
             except Exception:
                 logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
 

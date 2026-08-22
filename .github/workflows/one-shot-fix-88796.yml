@@ -49,23 +49,31 @@ jobs:
                   body.append(line[len(prefix):])
               else:
                   body.append('')
-          shell = '\n'.join(body) + '\n'
 
-          open_marker = "python3 - <<'PY'\n"
-          if shell.count(open_marker) != 1:
-              raise SystemExit(f'expected one Python materializer heredoc, found {shell.count(open_marker)}')
-          materializer_start = shell.index(open_marker) + len(open_marker)
-          close_marker = '\nPY\n'
-          materializer_end = shell.index(close_marker, materializer_start)
-          materializer = shell[materializer_start:materializer_end] + '\n'
+          opens = [i for i, line in enumerate(body) if line.strip() == "python3 - <<'PY'"]
+          if len(opens) != 1:
+              raise SystemExit(f'expected one Python materializer heredoc, found {len(opens)}')
+          open_index = opens[0]
+          closes = [
+              i
+              for i in range(open_index + 1, len(body))
+              if body[i].strip() == 'PY'
+          ]
+          if len(closes) != 1:
+              raise SystemExit(f'expected one Python materializer close, found {len(closes)}')
+          close_index = closes[0]
+
+          materializer = '\n'.join(body[open_index + 1:close_index]) + '\n'
           Path('/tmp/materialize-88796-base.sh').write_text(materializer, encoding='utf-8')
 
-          executable_shell = (
-              shell[: shell.index(open_marker)]
-              + 'python3 /tmp/materialize-88796-base.sh\n'
-              + shell[materializer_end + len(close_marker):]
+          executable = (
+              body[:open_index]
+              + ['python3 /tmp/materialize-88796-base.sh']
+              + body[close_index + 1:]
           )
-          Path('/tmp/execute-88796-base.sh').write_text(executable_shell, encoding='utf-8')
+          Path('/tmp/execute-88796-base.sh').write_text(
+              '\n'.join(executable) + '\n', encoding='utf-8'
+          )
           PY
 
           python3 .github/workflows/patch-88796-carrier-idempotence.py

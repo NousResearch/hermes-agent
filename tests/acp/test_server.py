@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import pytest
 
 import acp
+from acp.exceptions import RequestError
 from acp.agent.router import build_agent_router
 from acp.schema import (
     AgentCapabilities,
@@ -16,9 +17,11 @@ from acp.schema import (
     AgentThoughtChunk,
     AuthenticateResponse,
     AvailableCommandsUpdate,
+    CloseSessionResponse,
     Implementation,
     InitializeResponse,
     LoadSessionResponse,
+    McpCapabilities,
     NewSessionResponse,
     PromptResponse,
     ResumeSessionResponse,
@@ -98,6 +101,17 @@ class TestInitialize:
         assert isinstance(resp, InitializeResponse)
         assert resp.protocol_version == acp.PROTOCOL_VERSION
 
+    @pytest.mark.asyncio
+    async def test_initialize_advertises_implemented_capabilities(self, agent):
+        resp = await agent.initialize(protocol_version=1)
+
+        caps = resp.agent_capabilities
+        assert caps.prompt_capabilities.embedded_context is True
+        assert isinstance(caps.mcp_capabilities, McpCapabilities)
+        assert caps.mcp_capabilities.http is True
+        assert caps.mcp_capabilities.sse is True
+        assert caps.session_capabilities.close is not None
+
 
 
 
@@ -147,17 +161,22 @@ class TestAuthenticate:
             "acp_adapter.server.detect_provider",
             lambda: "openrouter",
         )
-        resp = await agent.authenticate(method_id="totally-invalid-method")
-        assert resp is None
+        with pytest.raises(RequestError) as exc_info:
+            await agent.authenticate(method_id="totally-invalid-method")
+
+        assert exc_info.value.code == -32602
+        assert exc_info.value.data == {"methodId": "totally-invalid-method"}
 
     @pytest.mark.asyncio
-    async def test_authenticate_without_provider(self, agent, monkeypatch):
+    async def test_authenticate_without_provider_requires_auth(self, agent, monkeypatch):
         monkeypatch.setattr(
             "acp_adapter.server.detect_provider",
             lambda: None,
         )
-        resp = await agent.authenticate(method_id="openrouter")
-        assert resp is None
+        with pytest.raises(RequestError) as exc_info:
+            await agent.authenticate(method_id="openrouter")
+
+        assert exc_info.value.code == -32000
 
     @pytest.mark.asyncio
     async def test_authenticate_accepts_terminal_setup_after_provider_configured(self, agent, monkeypatch):
@@ -282,9 +301,20 @@ class TestSessionOps:
 
 
     @pytest.mark.asyncio
-    async def test_load_session_not_found_returns_none(self, agent):
-        resp = await agent.load_session(cwd="/tmp", session_id="bogus")
-        assert resp is None
+    async def test_load_session_not_found_raises_resource_error(self, agent):
+        with pytest.raises(RequestError) as exc_info:
+            await agent.load_session(cwd="/tmp", session_id="bogus")
+
+        assert exc_info.value.code == -32002
+        assert exc_info.value.data == {"sessionId": "bogus"}
+
+    @pytest.mark.asyncio
+    async def test_resume_session_not_found_raises_resource_error(self, agent):
+        with pytest.raises(RequestError) as exc_info:
+            await agent.resume_session(cwd="/tmp", session_id="bogus")
+
+        assert exc_info.value.code == -32002
+        assert exc_info.value.data == {"sessionId": "bogus"}
 
 
 
@@ -292,7 +322,8 @@ class TestSessionOps:
 
 
     @pytest.mark.asyncio
-    async def test_resume_session_replays_persisted_history_to_client(self, agent):
+    async def test_resume_session_does_not_replay_persisted_history(self, agent):
+        """ACP resume reconnects without replay; only session/load replays."""
         mock_conn = MagicMock(spec=acp.Client)
         mock_conn.session_update = AsyncMock()
         agent._conn = mock_conn
@@ -308,11 +339,95 @@ class TestSessionOps:
 
         assert isinstance(resp, ResumeSessionResponse)
         updates = [call.kwargs["update"] for call in mock_conn.session_update.await_args_list]
-        assert any(
-            isinstance(update, UserMessageChunk)
-            and update.content.text == "So tell me the current state"
-            for update in updates
+        assert not any(isinstance(update, UserMessageChunk) for update in updates)
+
+    @pytest.mark.asyncio
+    async def test_close_session_cancels_and_unloads_but_keeps_history(self, agent):
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [{"role": "user", "content": "keep me"}]
+        state.is_running = True
+        state.current_prompt_text = "keep me"
+        state.idle_event.clear()
+        state.agent.interrupt.side_effect = lambda: (
+            setattr(state, "is_running", False),
+            state.idle_event.set(),
         )
+        agent.session_manager.save_session(state.session_id)
+
+        resp = await agent.close_session(state.session_id)
+
+        assert isinstance(resp, CloseSessionResponse)
+        assert state.cancel_event.is_set()
+        state.agent.interrupt.assert_called_once()
+        assert state.session_id not in agent.session_manager._sessions
+        assert agent.session_manager._get_db().get_session(state.session_id) is not None
+
+        from tools.approval import approve_session, is_approved
+
+        approve_session(state.session_id, "dangerous_pattern")
+        assert is_approved(state.session_id, "dangerous_pattern")
+        restored = agent.session_manager.get_session(state.session_id)
+        await agent.close_session(restored.session_id)
+        assert not is_approved(state.session_id, "dangerous_pattern")
+
+    @pytest.mark.asyncio
+    async def test_close_session_waits_for_running_turn_to_finish(self, agent):
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.is_running = True
+        state.idle_event.clear()
+
+        close_task = asyncio.create_task(agent.close_session(state.session_id))
+        await asyncio.sleep(0.01)
+
+        assert not close_task.done()
+        try:
+            with pytest.raises(RequestError) as exc_info:
+                await agent.prompt(
+                    prompt=[TextContentBlock(type="text", text="race the close")],
+                    session_id=state.session_id,
+                )
+            assert exc_info.value.code == -32002
+        finally:
+            state.is_running = False
+            state.idle_event.set()
+
+        assert isinstance(await close_task, CloseSessionResponse)
+
+    @pytest.mark.asyncio
+    async def test_close_session_not_found_raises_resource_error(self, agent):
+        with pytest.raises(RequestError) as exc_info:
+            await agent.close_session("bogus")
+
+        assert exc_info.value.code == -32002
+        assert exc_info.value.data == {"sessionId": "bogus"}
+
+    @pytest.mark.asyncio
+    async def test_close_timeout_remains_retryable_and_blocks_prompts(self, agent):
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.is_running = True
+        state.idle_event.clear()
+
+        with patch("acp_adapter.server._CLOSE_SESSION_TIMEOUT_SECONDS", 0.01):
+            with pytest.raises(RequestError) as exc_info:
+                await agent.close_session(state.session_id)
+        assert exc_info.value.code == -32603
+        try:
+            assert state.closing is True
+            assert state.close_in_progress is False
+            assert state.session_id in agent.session_manager._sessions
+            with pytest.raises(RequestError):
+                await agent.prompt(
+                    prompt=[TextContentBlock(type="text", text="must stay blocked")],
+                    session_id=state.session_id,
+                )
+        finally:
+            state.is_running = False
+            state.idle_event.set()
+
+        assert isinstance(await agent.close_session(state.session_id), CloseSessionResponse)
 
 
 
@@ -336,6 +451,14 @@ class TestListAndFork:
         fork_resp = await agent.fork_session(cwd="/forked", session_id=new_resp.session_id)
         assert fork_resp.session_id
         assert fork_resp.session_id != new_resp.session_id
+
+    @pytest.mark.asyncio
+    async def test_fork_session_not_found_raises_resource_error(self, agent):
+        with pytest.raises(RequestError) as exc_info:
+            await agent.fork_session(cwd="/forked", session_id="bogus")
+
+        assert exc_info.value.code == -32002
+        assert exc_info.value.data == {"sessionId": "bogus"}
 
     @pytest.mark.asyncio
     async def test_list_sessions_includes_title_and_updated_at(self, agent):
@@ -391,6 +514,20 @@ class TestSessionConfiguration:
 
         assert mode_result == {}
         assert config_result["configOptions"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["model", "mode", "config"])
+    async def test_session_configuration_not_found_raises_resource_error(self, agent, method):
+        with pytest.raises(RequestError) as exc_info:
+            if method == "model":
+                await agent.set_session_model("openrouter:test", "bogus")
+            elif method == "mode":
+                await agent.set_session_mode("default", "bogus")
+            else:
+                await agent.set_config_option("approval_mode", "bogus", "auto")
+
+        assert exc_info.value.code == -32002
+        assert exc_info.value.data == {"sessionId": "bogus"}
 
 
 

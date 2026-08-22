@@ -41,7 +41,7 @@ Stdout is reserved for ACP JSON-RPC transport. Human-readable logs go to stderr.
 Responsibilities:
 
 - initialize / authenticate
-- new/load/resume/fork/list/cancel session methods
+- new/load/resume/fork/list/cancel/close session methods
 - prompt execution
 - session model switching
 - wiring sync AIAgent callbacks into ACP async notifications
@@ -58,12 +58,15 @@ Each session stores:
 - `model`
 - `history`
 - `cancel_event`
+- runtime queue/lock/interrupted-prompt state
+- `mode` and `config_options`
 
 The manager is thread-safe and supports:
 
 - create
 - get
 - remove
+- unload (preserving persisted history)
 - fork
 - list
 - cleanup
@@ -76,7 +79,8 @@ The manager is thread-safe and supports:
 Bridged callbacks:
 
 - `tool_progress_callback`
-- `thinking_callback` (currently set to `None` in the ACP bridge — reasoning is forwarded through `step_callback` instead)
+- `reasoning_callback` (provider/model reasoning; `thinking_callback` is set to
+  `None` so local waiting-status text does not become an ACP thought)
 - `step_callback`
 
 Because `AIAgent` runs in a worker thread while ACP I/O lives on the main event loop, the bridge uses:
@@ -92,6 +96,7 @@ asyncio.run_coroutine_threadsafe(...)
 Mapping:
 
 - `allow_once` -> Hermes `once`
+- `allow_session` -> Hermes `session`
 - `allow_always` -> Hermes `always`
 - reject options -> Hermes `deny`
 
@@ -117,7 +122,7 @@ new_session(cwd)
   -> bind task_id/session_id to cwd override
 
 prompt(..., session_id)
-  -> extract text from ACP content blocks
+  -> convert text/image/resource blocks into model content
   -> reset cancel event
   -> install callbacks + approval bridge
   -> run AIAgent in ThreadPoolExecutor
@@ -130,8 +135,18 @@ prompt(..., session_id)
 `cancel(session_id)`:
 
 - sets the session cancel event
-- calls `agent.interrupt()` when available
+- requests a hard agent interrupt
 - causes the prompt response to return `stop_reason="cancelled"`
+
+### Load, resume, and close
+
+- `load_session()` restores persisted state and replays history before its
+  response.
+- `resume_session()` restores state without replaying history.
+- `close_session()` cancels active work, clears session approvals, and unloads
+  the live session while preserving its `state.db` transcript for a later load.
+  ACP-provided MCP servers are reference-counted and selectively released after
+  their last owning session closes.
 
 ### Forking
 
@@ -169,9 +184,12 @@ ACP temporarily installs an approval callback on the terminal tool during prompt
 
 ## Current limitations
 
-- ACP sessions are persisted to the shared `~/.hermes/state.db` (SessionDB) and transparently restored across process restarts; they appear in `session_search`
-- non-text prompt blocks are currently ignored for request text extraction
-- editor-specific UX varies by ACP client implementation
+- Audio prompt blocks are not converted into model input.
+- Linked resources must be local files to be read directly; embedded and local
+  resources are bounded to 512 KiB when inlined.
+- History replay reconstructs text, reasoning, and tool activity but does not
+  reconstruct prior image/audio attachments.
+- Editor-specific UX varies by ACP client implementation.
 
 ## Related files
 

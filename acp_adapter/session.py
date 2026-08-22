@@ -20,7 +20,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
-from threading import Lock
+from threading import Event, Lock
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -181,6 +181,15 @@ class SessionState:
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    mode: str = "default"
+    config_options: Dict[str, Any] = field(default_factory=dict)
+    idle_event: Any = field(default_factory=Event)
+    closing: bool = False
+    close_in_progress: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.is_running:
+            self.idle_event.set()
 
 
 class SessionManager:
@@ -241,6 +250,20 @@ class SessionManager:
         # Attempt to restore from database.
         return self._restore(session_id)
 
+    def unload_session(self, session_id: str) -> Optional[SessionState]:
+        """Unload one active session while preserving its persisted history."""
+        with self._lock:
+            state = self._sessions.get(session_id)
+        if state is None:
+            return None
+        self._persist(state)
+        with self._lock:
+            if self._sessions.get(session_id) is not state:
+                return None
+            self._sessions.pop(session_id, None)
+        _clear_task_cwd(session_id)
+        return state
+
     def remove_session(self, session_id: str) -> bool:
         """Remove a session from memory and database. Returns True if it existed."""
         with self._lock:
@@ -272,6 +295,8 @@ class SessionManager:
             model=getattr(agent, "model", original.model) or original.model,
             history=copy.deepcopy(original.history),
             cancel_event=threading.Event(),
+            mode=original.mode,
+            config_options=copy.deepcopy(original.config_options),
         )
         with self._lock:
             self._sessions[new_id] = state
@@ -432,7 +457,7 @@ class SessionManager:
 
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
-        session_meta = {"cwd": state.cwd}
+        session_meta: Dict[str, Any] = {"cwd": state.cwd}
         provider = getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
@@ -442,6 +467,9 @@ class SessionManager:
             session_meta["base_url"] = base_url.strip()
         if isinstance(api_mode, str) and api_mode.strip():
             session_meta["api_mode"] = api_mode.strip()
+        session_meta["mode"] = state.mode
+        if state.config_options:
+            session_meta["config_options"] = state.config_options
         cwd_json = json.dumps(session_meta)
 
         try:
@@ -452,7 +480,7 @@ class SessionManager:
                     session_id=state.session_id,
                     source="acp",
                     model=model_str,
-                    model_config={"cwd": state.cwd},
+                    model_config=session_meta,
                 )
             else:
                 # Update model_config (contains cwd) if changed.
@@ -532,6 +560,8 @@ class SessionManager:
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
+        restored_mode = "default"
+        restored_config_options: Dict[str, Any] = {}
         mc = row.get("model_config")
         if mc:
             try:
@@ -541,6 +571,12 @@ class SessionManager:
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
+                    raw_mode = meta.get("mode")
+                    if isinstance(raw_mode, str) and raw_mode:
+                        restored_mode = raw_mode
+                    raw_options = meta.get("config_options")
+                    if isinstance(raw_options, dict):
+                        restored_config_options = dict(raw_options)
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -579,6 +615,8 @@ class SessionManager:
             model=model or getattr(agent, "model", "") or "",
             history=history,
             cancel_event=threading.Event(),
+            mode=restored_mode,
+            config_options=restored_config_options,
         )
         with self._lock:
             self._sessions[session_id] = state

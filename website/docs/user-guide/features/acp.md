@@ -243,11 +243,12 @@ older installs. As a manual fallback, configure Buzz's agent command as
 
 #### Model picker
 
-Buzz Desktop (v0.5.1+) renders Hermes' full model menu in the agent's runtime
-settings. The list comes from Hermes itself over ACP: it shows every model
-from providers you have authenticated in Hermes (the same inventory behind
-`hermes model` and the `/model` command), so a model missing from the menu
-means its provider has no credentials configured on the Hermes side.
+Buzz Desktop (v0.5.1+) renders Hermes' ACP model menu in the agent's runtime
+settings. The list comes from the same configured-provider inventory used by
+`hermes model` and `/model`, with named custom endpoints appended. To keep the
+editor selector bounded, Hermes exposes at most 200 models per provider; a
+missing model can therefore mean either that its provider is not configured or
+that it falls beyond that provider's ACP selector cap.
 
 Entry IDs take the form `provider:model` (e.g. `openrouter:z-ai/glm-5.1`), or
 `custom:<name>:<model>` for custom OpenAI-compatible endpoints defined in
@@ -297,13 +298,14 @@ do not set them by hand in `.env` or `config.yaml`.
 
 | Variable | Value | Effect |
 |----------|-------|--------|
-| `HERMES_ACP_SKIP_CONFIGURED_MCP` | `1` | Skip starting the **globally configured** MCP servers from `config.yaml` before the ACP JSON-RPC loop begins. |
+| `HERMES_ACP_SKIP_CONFIGURED_MCP` | `1` | Skip background discovery of the **globally configured** MCP servers from `config.yaml`. |
 
-Hermes normally starts every MCP server configured in `config.yaml` before it
-enters the ACP JSON-RPC loop. A host that owns MCP itself — passing the
-session's servers explicitly through `session/new` — does not need that global
-startup, and an unrelated slow or interactive MCP server would otherwise delay
-`initialize`. Setting the marker to exactly `1` lets such a host skip it.
+Hermes normally starts configured MCP discovery in a background thread so a
+slow or interactive server cannot block `initialize`. Session construction
+waits briefly for fast servers and performs a pre-first-turn late refresh for
+servers that finish afterward. A host that owns MCP itself — passing the
+session's servers explicitly through `session/new` — can set the marker to
+exactly `1` to skip global discovery entirely.
 
 Only the global `config.yaml` discovery is skipped. **MCP servers supplied by
 the ACP session through `session/new` are still registered**, so a host loses
@@ -313,7 +315,9 @@ disable MCP.
 
 ## Session behavior
 
-ACP sessions are tracked by the ACP adapter's in-memory session manager while the server is running.
+ACP sessions are tracked in memory while active and persisted in the shared
+`~/.hermes/state.db`. They survive ACP process restarts, appear in
+`session_search`, and can be returned by `session/list`.
 
 Each session stores:
 
@@ -322,8 +326,16 @@ Each session stores:
 - selected model
 - current conversation history
 - cancel event
+- selected edit-approval mode and ACP config-option state
 
-The underlying `AIAgent` still uses Hermes' normal persistence/logging paths, but ACP `list/load/resume/fork` are scoped to the currently running ACP server process.
+`session/load` restores a persisted session and replays its transcript before
+the RPC response. `session/resume` reconnects without transcript replay, as
+required by ACP v1. `session/fork` copies backend history under a new session
+ID. `session/close` cancels active work, revokes session-scoped command
+approvals, and unloads runtime resources without deleting persisted history.
+ACP-supplied MCP connections are reference-counted: a connection is released
+when its last ACP session closes, while globally configured or otherwise
+pre-existing MCP servers remain available.
 
 ## Working directory behavior
 
@@ -331,11 +343,15 @@ ACP sessions bind the editor's cwd to the Hermes task ID so file and terminal to
 
 ## Approvals
 
-Dangerous terminal commands can be routed back to the editor as approval prompts. ACP approval options are simpler than the CLI flow:
+Dangerous terminal commands can be routed back to the editor as approval
+prompts. Hermes can expose these option IDs:
 
 - allow once
+- allow for session
 - allow always
 - deny
+- deny always (when supported by the ACP client SDK; currently treated as a
+  one-call denial by Hermes)
 
 Whether you actually see a prompt is up to the host. A host is free to answer the
 request programmatically instead of showing it to you, in which case these
@@ -344,9 +360,9 @@ treat that path as unattended execution regardless of your `approvals` setting.
 
 On timeout or error, the approval bridge denies the request.
 
-### Session-scoped edit auto-approval
+### Session-scoped approval and edit modes
 
-ACP exposes a third tier between *allow once* and *allow always*: **Allow for session**. Picking it from the editor's permission prompt records the approval inside the current ACP session only — every subsequent matching command in that session goes through without prompting, but a new ACP session (or restarting the editor) resets the slate and re-prompts the first time.
+ACP exposes a third tier between *allow once* and *allow always*: **Allow for session**. Picking it from a permission prompt records the matching dangerous-command approval inside the current ACP session only. The selected editor mode (`Default`, `Accept Edits`, or `Don't Ask`) is a separate file-edit policy: it controls `write_file` and `patch`, never dangerous terminal commands. Modes and ACP config selections persist with the session; command-pattern approvals remain process-local.
 
 | Option | Editor label | Scope | Persisted across restarts |
 |---|---|---|---|

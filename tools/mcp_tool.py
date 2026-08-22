@@ -113,7 +113,7 @@ import time
 from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
-from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
+from typing import Any, Coroutine, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from tools.registry import tool_error
@@ -4214,6 +4214,7 @@ class MCPServerTask:
 
 _servers: Dict[str, MCPServerTask] = {}
 _server_connecting: set[str] = set()
+_server_releasing: set[str] = set()
 _server_connect_errors: Dict[str, str] = {}
 # Lazy MCP startup (#56832): servers whose tools were registered from the
 # on-disk schema cache without spawning/connecting. Keyed by server name;
@@ -5722,6 +5723,8 @@ def _get_connected_server_for_call(server_name: str) -> Optional[MCPServerTask]:
     handlers all trigger the deferred spawn (#56832).
     """
     with _lock:
+        if server_name in _server_releasing:
+            return None
         server = _servers.get(server_name)
         is_lazy = server_name in _lazy_server_configs
     if is_lazy and (server is None or server.session is None):
@@ -7220,6 +7223,91 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def get_registered_mcp_server_names() -> set[str]:
+    """Return a thread-safe snapshot of live, lazy, and connecting servers."""
+    with _lock:
+        return set(_servers) | set(_lazy_server_configs) | set(_server_connecting)
+
+
+def release_mcp_servers(server_names: Iterable[str]) -> List[str]:
+    """Release selected MCP servers without disturbing unrelated connections.
+
+    Callers are responsible for ownership/refcount decisions. Live servers stay
+    registered until transport shutdown succeeds, and calls are blocked through
+    ``_server_releasing`` during that interval. This makes a scheduling failure
+    or timeout retryable without losing the only tracked server handle.
+    """
+    names = {str(name).strip() for name in server_names if str(name).strip()}
+    if not names:
+        return []
+
+    with _lock:
+        live_servers = {
+            name: _servers[name]
+            for name in names
+            if name in _servers
+        }
+        lazy_tools = {
+            name: list(_lazy_server_tool_names.get(name, []))
+            for name in names
+            if name in _lazy_server_configs or name in _lazy_server_tool_names
+        }
+        selected = set(live_servers) | set(lazy_tools)
+        _server_releasing.update(selected)
+
+    try:
+        if live_servers:
+            async def _shutdown_selected() -> None:
+                results = await asyncio.gather(
+                    *(server.shutdown() for server in live_servers.values()),
+                    return_exceptions=True,
+                )
+                failures = [
+                    (name, result)
+                    for name, result in zip(live_servers, results)
+                    if isinstance(result, BaseException)
+                ]
+                if failures:
+                    details = "; ".join(f"{name}: {result}" for name, result in failures)
+                    raise RuntimeError(f"MCP selective shutdown failed: {details}")
+
+            _run_on_mcp_loop(_shutdown_selected, timeout=15)
+    except BaseException:
+        with _lock:
+            _server_releasing.difference_update(selected)
+        raise
+
+    with _lock:
+        for name, server in live_servers.items():
+            if _servers.get(name) is server:
+                _servers.pop(name, None)
+        for name in selected:
+            _lazy_server_configs.pop(name, None)
+            _lazy_server_fingerprints.pop(name, None)
+            _lazy_server_tool_names.pop(name, None)
+            _server_connecting.discard(name)
+            _server_connect_errors.pop(name, None)
+            _server_connect_retry_after.pop(name, None)
+            _server_connect_failures.pop(name, None)
+            _server_error_counts.pop(name, None)
+            _server_breaker_opened_at.pop(name, None)
+            _server_trust_levels.pop(name, None)
+            _tool_read_only_hints.pop(name, None)
+            _parallel_safe_servers.discard(name)
+        _server_releasing.difference_update(selected)
+
+    if lazy_tools:
+        from tools.registry import registry
+
+        for tool_names in lazy_tools.values():
+            for tool_name in tool_names:
+                registry.deregister(tool_name)
+                _forget_mcp_tool_server(tool_name)
+
+    return sorted(selected)
+
 
 def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     """Connect to explicit MCP servers and register their tools.

@@ -16,6 +16,7 @@ from typing import Any, Deque, Optional
 from urllib.parse import unquote, urlparse
 
 import acp
+from acp.exceptions import RequestError
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
@@ -25,6 +26,7 @@ from acp.schema import (
     AvailableCommandsUpdate,
     BlobResourceContents,
     ClientCapabilities,
+    CloseSessionResponse,
     EmbeddedResourceContentBlock,
     ForkSessionResponse,
     ImageContentBlock,
@@ -33,6 +35,7 @@ from acp.schema import (
     InitializeResponse,
     ListSessionsResponse,
     LoadSessionResponse,
+    McpCapabilities,
     McpServerHttp,
     McpServerSse,
     McpServerStdio,
@@ -46,6 +49,7 @@ from acp.schema import (
     SetSessionModeResponse,
     ResourceContentBlock,
     SessionCapabilities,
+    SessionCloseCapabilities,
     SessionForkCapabilities,
     SessionInfoUpdate,
     SessionListCapabilities,
@@ -241,6 +245,7 @@ _LIST_SESSIONS_PAGE_SIZE = 50
 # the total; aggregator providers stay intentionally uncapped inside the shared
 # inventory, and the current model is always kept via the fallback insert below.
 ACP_MAX_MODELS_PER_PROVIDER = 200
+_CLOSE_SESSION_TIMEOUT_SECONDS = 30.0
 _MAX_ACP_RESOURCE_BYTES = 512 * 1024
 _TEXT_RESOURCE_MIME_PREFIXES = ("text/",)
 _TEXT_RESOURCE_MIME_TYPES = {
@@ -253,6 +258,11 @@ _TEXT_RESOURCE_MIME_TYPES = {
     "application/toml",
     "application/sql",
 }
+
+
+def _session_not_found(session_id: str) -> RequestError:
+    """Return a wire-visible JSON-RPC error for an unknown ACP session."""
+    return RequestError(-32002, "Resource not found", {"sessionId": session_id})
 
 
 def _resource_display_name(uri: str, name: str | None = None, title: str | None = None) -> str:
@@ -670,6 +680,10 @@ class HermesACPAgent(acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self._mcp_ownership_lock = asyncio.Lock()
+        self._session_mcp_servers: dict[str, set[str]] = {}
+        self._mcp_server_refcounts: dict[str, int] = defaultdict(int)
+        self._external_mcp_servers: set[str] = set()
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -1129,32 +1143,163 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list[McpServerStdio | McpServerHttp | McpServerSse] | None,
     ) -> None:
         """Register ACP-provided MCP servers and refresh the agent tool surface."""
-        if not mcp_servers:
+        if mcp_servers is None:
             return
 
+        config_map: dict[str, dict] = {}
+        for server in mcp_servers:
+            name = server.name
+            if isinstance(server, McpServerStdio):
+                config = {
+                    "command": server.command,
+                    "args": list(server.args),
+                    "env": {item.name: item.value for item in server.env},
+                }
+            else:
+                config = {
+                    "url": server.url,
+                    "headers": {item.name: item.value for item in server.headers},
+                }
+                if isinstance(server, McpServerSse):
+                    config["transport"] = "sse"
+            config_map[name] = config
+
+        requested_names = set(config_map)
+        persistent_names: set[str] = set()
+        if os.environ.get("HERMES_ACP_SKIP_CONFIGURED_MCP") != "1":
+            try:
+                from hermes_cli.config import load_config
+
+                persistent_names = {
+                    str(name)
+                    for name, config in (load_config().get("mcp_servers") or {}).items()
+                    if not isinstance(config, dict) or config.get("enabled", True) is not False
+                }
+            except Exception:
+                logger.debug("Could not inspect configured MCP ownership", exc_info=True)
+        release_names: set[str] = set()
+        old_names: set[str] = set()
+        added: set[str] = set()
+        removed: set[str] = set()
+        preexisting: set[str] = set()
+        newly_registered: set[str] = set()
+        ownership_updated = False
         try:
-            from tools.mcp_tool import register_mcp_servers
+            from tools.mcp_tool import (
+                get_registered_mcp_server_names,
+                register_mcp_servers,
+                release_mcp_servers,
+            )
 
-            config_map: dict[str, dict] = {}
-            for server in mcp_servers:
-                name = server.name
-                if isinstance(server, McpServerStdio):
-                    config = {
-                        "command": server.command,
-                        "args": list(server.args),
-                        "env": {item.name: item.value for item in server.env},
-                    }
+            # Registration and ownership publication are one serialized unit:
+            # otherwise two concurrent sessions can mistake the first session's
+            # just-connected server for a pre-existing external owner.
+            async with self._mcp_ownership_lock:
+                with state.runtime_lock:
+                    if state.closing:
+                        raise _session_not_found(state.session_id)
+                preexisting = (
+                    await asyncio.to_thread(get_registered_mcp_server_names)
+                ) | persistent_names
+                if config_map:
+                    await asyncio.to_thread(register_mcp_servers, config_map)
+                old_names = self._session_mcp_servers.get(state.session_id, set())
+                added = requested_names - old_names
+                removed = old_names - requested_names
+                newly_registered = added - preexisting
+                for name in added:
+                    if name in preexisting and self._mcp_server_refcounts.get(name, 0) == 0:
+                        self._external_mcp_servers.add(name)
+                    self._mcp_server_refcounts[name] += 1
+                for name in removed:
+                    remaining = self._mcp_server_refcounts.get(name, 0) - 1
+                    if remaining > 0:
+                        self._mcp_server_refcounts[name] = remaining
+                    else:
+                        self._mcp_server_refcounts.pop(name, None)
+                        if name not in self._external_mcp_servers:
+                            release_names.add(name)
+                if requested_names:
+                    self._session_mcp_servers[state.session_id] = requested_names
                 else:
-                    config = {
-                        "url": server.url,
-                        "headers": {item.name: item.value for item in server.headers},
-                    }
-                config_map[name] = config
-
-            await asyncio.to_thread(register_mcp_servers, config_map)
+                    self._session_mcp_servers.pop(state.session_id, None)
+                ownership_updated = True
+                if release_names:
+                    try:
+                        await asyncio.to_thread(
+                            release_mcp_servers, sorted(release_names)
+                        )
+                    except Exception:
+                        cleanup_failed: set[str] = set()
+                        if newly_registered:
+                            try:
+                                await asyncio.to_thread(
+                                    release_mcp_servers,
+                                    sorted(newly_registered),
+                                )
+                            except Exception:
+                                cleanup_failed = set(newly_registered)
+                                logger.warning(
+                                    "Session %s: failed to roll back newly registered ACP MCP servers: %s",
+                                    state.session_id,
+                                    ", ".join(sorted(cleanup_failed)),
+                                    exc_info=True,
+                                )
+                        for name in added - cleanup_failed:
+                            remaining = self._mcp_server_refcounts.get(name, 0) - 1
+                            if remaining > 0:
+                                self._mcp_server_refcounts[name] = remaining
+                            else:
+                                self._mcp_server_refcounts.pop(name, None)
+                        for name in removed:
+                            self._mcp_server_refcounts[name] += 1
+                        restored_names = set(old_names) | cleanup_failed
+                        if restored_names:
+                            self._session_mcp_servers[state.session_id] = restored_names
+                        else:
+                            self._session_mcp_servers.pop(state.session_id, None)
+                        logger.warning(
+                            "Session %s: failed to replace ACP MCP servers; restored prior ownership",
+                            state.session_id,
+                            exc_info=True,
+                        )
+                        return
+        except RequestError:
+            raise
         except Exception:
+            cleanup_failed: set[str] = set()
+            if ownership_updated:
+                async with self._mcp_ownership_lock:
+                    if newly_registered:
+                        try:
+                            await asyncio.to_thread(
+                                release_mcp_servers, sorted(newly_registered)
+                            )
+                        except Exception:
+                            # Keep any connection whose compensating release
+                            # failed owned so a later close can retry cleanup.
+                            cleanup_failed = set(newly_registered)
+                            logger.warning(
+                                "Session %s: failed to roll back newly registered ACP MCP servers: %s",
+                                state.session_id,
+                                ", ".join(sorted(cleanup_failed)),
+                                exc_info=True,
+                            )
+                    for name in added - cleanup_failed:
+                        remaining = self._mcp_server_refcounts.get(name, 0) - 1
+                        if remaining > 0:
+                            self._mcp_server_refcounts[name] = remaining
+                        else:
+                            self._mcp_server_refcounts.pop(name, None)
+                    for name in removed:
+                        self._mcp_server_refcounts[name] += 1
+                    restored_names = set(old_names) | cleanup_failed
+                    if restored_names:
+                        self._session_mcp_servers[state.session_id] = restored_names
+                    else:
+                        self._session_mcp_servers.pop(state.session_id, None)
             logger.warning(
-                "Session %s: failed to register ACP MCP servers",
+                "Session %s: failed to register or release ACP MCP servers",
                 state.session_id,
                 exc_info=True,
             )
@@ -1164,9 +1309,15 @@ class HermesACPAgent(acp.Agent):
             from model_tools import get_tool_definitions
             from agent.memory_manager import inject_memory_provider_tools
 
+            prior_explicit_toolsets = {f"mcp-{name}" for name in old_names}
+            base_toolsets = [
+                name
+                for name in (getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"])
+                if name not in prior_explicit_toolsets
+            ]
             enabled_toolsets = _expand_acp_enabled_toolsets(
-                getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
-                mcp_server_names=[server.name for server in mcp_servers],
+                base_toolsets,
+                mcp_server_names=sorted(requested_names),
             )
             state.agent.enabled_toolsets = enabled_toolsets
             disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
@@ -1193,6 +1344,32 @@ class HermesACPAgent(acp.Agent):
                 state.session_id,
                 exc_info=True,
             )
+
+    async def _release_session_mcp_servers(self, session_id: str) -> None:
+        """Drop one session's MCP ownership and release last-owned servers."""
+        from tools.mcp_tool import release_mcp_servers
+
+        release_names: set[str] = set()
+        async with self._mcp_ownership_lock:
+            owned = self._session_mcp_servers.pop(session_id, set())
+            for name in owned:
+                remaining = self._mcp_server_refcounts.get(name, 0) - 1
+                if remaining > 0:
+                    self._mcp_server_refcounts[name] = remaining
+                else:
+                    self._mcp_server_refcounts.pop(name, None)
+                    if name not in self._external_mcp_servers:
+                        release_names.add(name)
+            if release_names:
+                try:
+                    await asyncio.to_thread(release_mcp_servers, sorted(release_names))
+                except Exception:
+                    # Keep ownership retryable when transport cleanup fails. The
+                    # session remains live and a later session/close can try again.
+                    self._session_mcp_servers[session_id] = set(owned)
+                    for name in owned:
+                        self._mcp_server_refcounts[name] += 1
+                    raise
 
     def _schedule_mcp_late_refresh(self, state: SessionState) -> None:
         """Refresh the agent's tool snapshot when background MCP discovery lands late.
@@ -1316,8 +1493,10 @@ class HermesACPAgent(acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=HERMES_VERSION),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
-                prompt_capabilities=PromptCapabilities(image=True),
+                mcp_capabilities=McpCapabilities(http=True, sse=True),
+                prompt_capabilities=PromptCapabilities(image=True, embedded_context=True),
                 session_capabilities=SessionCapabilities(
+                    close=SessionCloseCapabilities(),
                     fork=SessionForkCapabilities(),
                     list=SessionListCapabilities(),
                     resume=SessionResumeCapabilities(),
@@ -1334,7 +1513,7 @@ class HermesACPAgent(acp.Agent):
         # Hermes' threat model (ACP is stdio-only, local-trust), but poor
         # API hygiene and confusing if ACP ever grows multi-method auth.
         if not isinstance(method_id, str):
-            return None
+            raise RequestError.invalid_params({"methodId": method_id})
         normalized_method = method_id.strip().lower()
         provider = detect_provider()
 
@@ -1342,10 +1521,14 @@ class HermesACPAgent(acp.Agent):
             # Terminal auth launches Hermes setup/model selection out-of-band.
             # Only report success once that flow has produced usable runtime
             # credentials for the normal ACP session.
-            return AuthenticateResponse() if provider else None
+            if not provider:
+                raise RequestError.auth_required()
+            return AuthenticateResponse()
 
-        if not provider or normalized_method != provider:
-            return None
+        if not provider:
+            raise RequestError.auth_required()
+        if normalized_method != provider:
+            raise RequestError.invalid_params({"methodId": method_id})
         return AuthenticateResponse()
 
     # ---- Session management -------------------------------------------------
@@ -1619,7 +1802,7 @@ class HermesACPAgent(acp.Agent):
         state = self.session_manager.update_cwd(session_id, cwd)
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
-            return None
+            raise _session_not_found(session_id)
         await self._register_session_mcp_servers(state, mcp_servers)
         self._schedule_mcp_late_refresh(state)
         logger.info("Loaded session %s", session_id)
@@ -1666,23 +1849,14 @@ class HermesACPAgent(acp.Agent):
     ) -> ResumeSessionResponse:
         state = self.session_manager.update_cwd(session_id, cwd)
         if state is None:
-            logger.warning("resume_session: session %s not found, creating new", session_id)
-            state = self.session_manager.create_session(cwd=cwd)
+            logger.warning("resume_session: session %s not found", session_id)
+            raise _session_not_found(session_id)
         await self._register_session_mcp_servers(state, mcp_servers)
         self._schedule_mcp_late_refresh(state)
         logger.info("Resumed session %s", state.session_id)
-        # See `load_session` above for the spec rationale — replay must
-        # complete before the response so clients receive the full transcript
-        # within the request's lifetime.
-        try:
-            await self._replay_session_history(state)
-        except Exception:
-            logger.warning(
-                "ACP history replay raised during session/resume for %s — "
-                "resume will still succeed, partial transcript may be missing",
-                state.session_id,
-                exc_info=True,
-            )
+        # ACP session/resume reconnects without replaying prior messages.
+        # Clients that need the transcript use session/load, which replays it
+        # synchronously before returning.
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
         return ResumeSessionResponse(
@@ -1692,6 +1866,60 @@ class HermesACPAgent(acp.Agent):
                 state.session_id, getattr(state.agent, "session_id", state.session_id)
             ),
         )
+
+    async def close_session(
+        self, session_id: str, **kwargs: Any
+    ) -> CloseSessionResponse:
+        """Cancel active work and unload the session without deleting history."""
+        state = self.session_manager.get_session(session_id)
+        if state is None:
+            logger.warning("close_session: session %s not found", session_id)
+            raise _session_not_found(session_id)
+        with state.runtime_lock:
+            if state.close_in_progress:
+                raise RequestError.internal_error(
+                    {"sessionId": session_id, "reason": "close already in progress"}
+                )
+            first_attempt = not state.closing
+            state.closing = True
+            state.close_in_progress = True
+            state.queued_prompts.clear()
+        try:
+            if first_attempt:
+                from tools.approval import clear_session as clear_approval_session
+
+                clear_approval_session(session_id)
+            await self.cancel(session_id)
+            with state.runtime_lock:
+                running = state.is_running
+            if running:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(state.idle_event.wait),
+                        timeout=_CLOSE_SESSION_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError as exc:
+                    raise RequestError.internal_error(
+                        {"sessionId": session_id, "reason": "turn did not stop before close timeout"}
+                    ) from exc
+            try:
+                await self._release_session_mcp_servers(session_id)
+            except Exception as exc:
+                logger.warning(
+                    "Session %s: failed to release ACP MCP servers",
+                    session_id,
+                    exc_info=True,
+                )
+                raise RequestError.internal_error(
+                    {"sessionId": session_id, "reason": "MCP resource release failed"}
+                ) from exc
+            if self.session_manager.unload_session(session_id) is None:
+                raise _session_not_found(session_id)
+            logger.info("Closed session %s", session_id)
+            return CloseSessionResponse()
+        finally:
+            with state.runtime_lock:
+                state.close_in_progress = False
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         state = self.session_manager.get_session(session_id)
@@ -1722,16 +1950,17 @@ class HermesACPAgent(acp.Agent):
         **kwargs: Any,
     ) -> ForkSessionResponse:
         state = self.session_manager.fork_session(session_id, cwd=cwd)
-        new_id = state.session_id if state else ""
-        if state is not None:
-            await self._register_session_mcp_servers(state, mcp_servers)
+        if state is None:
+            logger.warning("fork_session: session %s not found", session_id)
+            raise _session_not_found(session_id)
+        new_id = state.session_id
+        await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Forked session %s -> %s", session_id, new_id)
-        if new_id:
-            self._schedule_available_commands_update(new_id)
+        self._schedule_available_commands_update(new_id)
         return ForkSessionResponse(
             session_id=new_id,
-            models=self._build_model_state(state) if state is not None else None,
-            modes=self._session_modes(state) if state is not None else None,
+            models=self._build_model_state(state),
+            modes=self._session_modes(state),
         )
 
     async def list_sessions(
@@ -1798,6 +2027,9 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.error("prompt: session %s not found", session_id)
             return PromptResponse(stop_reason="refusal")
+        with state.runtime_lock:
+            if state.closing:
+                raise _session_not_found(session_id)
 
         user_text = _extract_text(prompt).strip()
         user_content = _content_blocks_to_openai_user_content(prompt)
@@ -1880,6 +2112,8 @@ class HermesACPAgent(acp.Agent):
         redirected = False
         queued_depth: int | None = None
         with state.runtime_lock:
+            if state.closing:
+                raise _session_not_found(session_id)
             if state.is_running:
                 if (
                     text_only_prompt
@@ -1906,6 +2140,7 @@ class HermesACPAgent(acp.Agent):
                     queued_depth = len(state.queued_prompts)
             else:
                 state.is_running = True
+                state.idle_event.clear()
                 state.current_prompt_text = user_text or "[Image attachment]"
 
         if redirected:
@@ -2127,6 +2362,7 @@ class HermesACPAgent(acp.Agent):
             with state.runtime_lock:
                 state.is_running = False
                 state.current_prompt_text = ""
+                state.idle_event.set()
             return PromptResponse(stop_reason="end_turn")
 
         if result.get("messages"):
@@ -2187,6 +2423,7 @@ class HermesACPAgent(acp.Agent):
         with state.runtime_lock:
             state.is_running = False
             state.current_prompt_text = ""
+            state.idle_event.set()
 
         while True:
             with state.runtime_lock:
@@ -2599,7 +2836,7 @@ class HermesACPAgent(acp.Agent):
             )
             return SetSessionModelResponse()
         logger.warning("Session %s: model switch requested for missing session", session_id)
-        return None
+        raise _session_not_found(session_id)
 
     async def set_session_mode(
         self, mode_id: str, session_id: str, **kwargs: Any
@@ -2608,7 +2845,7 @@ class HermesACPAgent(acp.Agent):
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.warning("Session %s: mode switch requested for missing session", session_id)
-            return None
+            raise _session_not_found(session_id)
         normalized_mode = str(mode_id or "").strip()
         if normalized_mode not in self._MODE_TO_EDIT_APPROVAL_POLICY:
             normalized_mode = self._MODE_DEFAULT
@@ -2624,7 +2861,7 @@ class HermesACPAgent(acp.Agent):
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.warning("Session %s: config update requested for missing session", session_id)
-            return None
+            raise _session_not_found(session_id)
 
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)

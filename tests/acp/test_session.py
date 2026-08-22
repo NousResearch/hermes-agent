@@ -259,6 +259,44 @@ class TestListAndCleanup:
         # Removing again returns False
         assert manager.remove_session(state.session_id) is False
 
+    def test_unload_session_keeps_persisted_history(self, manager):
+        state = manager.create_session()
+        state.history = [{"role": "user", "content": "keep me"}]
+        manager.save_session(state.session_id)
+
+        unloaded = manager.unload_session(state.session_id)
+
+        assert unloaded is state
+        assert state.session_id not in manager._sessions
+        assert manager._get_db().get_session(state.session_id) is not None
+        restored = manager.get_session(state.session_id)
+        assert restored is not None
+        assert restored.history[0]["content"] == "keep me"
+
+    def test_session_ui_state_survives_restore(self, manager):
+        state = manager.create_session()
+        state.mode = "accept_edits"
+        state.config_options = {"custom": "value"}
+        manager.save_session(state.session_id)
+        manager.unload_session(state.session_id)
+
+        restored = manager.get_session(state.session_id)
+
+        assert restored is not None
+        assert restored.mode == "accept_edits"
+        assert restored.config_options == {"custom": "value"}
+
+    def test_fork_copies_session_ui_state(self, manager):
+        state = manager.create_session()
+        state.mode = "dont_ask"
+        state.config_options = {"custom": True}
+
+        forked = manager.fork_session(state.session_id, cwd="/tmp/fork")
+
+        assert forked is not None
+        assert forked.mode == "dont_ask"
+        assert forked.config_options == {"custom": True}
+
 
 # ---------------------------------------------------------------------------
 # persistence — sessions survive process restarts (via SessionDB)

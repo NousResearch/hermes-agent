@@ -7,15 +7,18 @@ Exercises the full flow through the ACP server layer:
     session_update events arrive at the mock client
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import acp
+from acp.exceptions import RequestError
 from acp.schema import (
     EnvVariable,
     HttpHeader,
     McpServerHttp,
+    McpServerSse,
     McpServerStdio,
     NewSessionResponse,
     PromptResponse,
@@ -106,6 +109,26 @@ class TestMcpRegistrationE2E:
         assert state.agent.tools == fake_tools
         assert state.agent.valid_tool_names == {
             "mcp_test_fs_read", "mcp_test_fs_write", "mcp_test_api_search", "terminal"
+        }
+
+    @pytest.mark.asyncio
+    async def test_sse_server_preserves_sse_transport(self, acp_agent):
+        server = McpServerSse(
+            name="events",
+            url="https://example.test/sse",
+            headers=[HttpHeader(name="X-Test", value="1")],
+        )
+        registered = {}
+
+        with patch("tools.mcp_tool.get_registered_mcp_server_names", return_value=set()), \
+             patch("tools.mcp_tool.register_mcp_servers", side_effect=lambda cfg: registered.update(cfg) or []), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            await acp_agent.new_session(cwd="/tmp", mcp_servers=[server])
+
+        assert registered["events"] == {
+            "url": "https://example.test/sse",
+            "headers": {"X-Test": "1"},
+            "transport": "sse",
         }
 
     @pytest.mark.asyncio
@@ -311,3 +334,132 @@ class TestSessionLifecycleMcpE2E:
 
         assert fork_resp.session_id != ""
         assert "api" in registered
+
+    @pytest.mark.asyncio
+    async def test_close_releases_session_mcp_after_last_owner(self, acp_agent):
+        server = McpServerStdio(name="owned", command="/bin/test", args=[], env=[])
+        released = []
+
+        with patch("tools.mcp_tool.get_registered_mcp_server_names", return_value=set()), \
+             patch("tools.mcp_tool.register_mcp_servers", return_value=[]), \
+             patch("tools.mcp_tool.release_mcp_servers", side_effect=lambda names: released.extend(names)), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            first = await acp_agent.new_session(cwd="/tmp", mcp_servers=[server])
+            second = await acp_agent.new_session(cwd="/tmp", mcp_servers=[server])
+            await acp_agent.close_session(first.session_id)
+            assert released == []
+            await acp_agent.close_session(second.session_id)
+
+        assert released == ["owned"]
+
+    @pytest.mark.asyncio
+    async def test_close_mcp_release_failure_keeps_ownership_retryable(self, acp_agent):
+        server = McpServerStdio(name="retry", command="/bin/test", args=[], env=[])
+        attempts = []
+
+        def release(names):
+            attempts.append(list(names))
+            if len(attempts) == 1:
+                raise RuntimeError("release failed")
+
+        with patch("tools.mcp_tool.get_registered_mcp_server_names", return_value=set()), \
+             patch("tools.mcp_tool.register_mcp_servers", return_value=[]), \
+             patch("tools.mcp_tool.release_mcp_servers", side_effect=release), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            resp = await acp_agent.new_session(cwd="/tmp", mcp_servers=[server])
+            with pytest.raises(RequestError) as exc_info:
+                await acp_agent.close_session(resp.session_id)
+            assert exc_info.value.code == -32603
+            assert resp.session_id in acp_agent.session_manager._sessions
+            assert acp_agent._session_mcp_servers[resp.session_id] == {"retry"}
+            await acp_agent.close_session(resp.session_id)
+
+        assert attempts == [["retry"], ["retry"]]
+
+    @pytest.mark.asyncio
+    async def test_mcp_replacement_release_failure_rolls_back_ownership(self, acp_agent):
+        old_server = McpServerStdio(name="old", command="/bin/old", args=[], env=[])
+        new_server = McpServerStdio(name="new", command="/bin/new", args=[], env=[])
+        release_attempts = []
+
+        def release(names):
+            release_attempts.append(list(names))
+            if list(names) == ["old"]:
+                raise RuntimeError("release failed")
+
+        with patch("tools.mcp_tool.get_registered_mcp_server_names", return_value=set()), \
+             patch("tools.mcp_tool.register_mcp_servers", return_value=[]), \
+             patch("tools.mcp_tool.release_mcp_servers", side_effect=release), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            created = await acp_agent.new_session(cwd="/tmp", mcp_servers=[old_server])
+            await acp_agent.load_session(
+                "/tmp", created.session_id, [new_server]
+            )
+
+        assert acp_agent._session_mcp_servers[created.session_id] == {"old"}
+        assert acp_agent._mcp_server_refcounts == {"old": 1}
+        assert release_attempts == [["old"], ["new"]]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["load", "resume"])
+    async def test_closing_session_rejects_mcp_reregistration(self, acp_agent, method):
+        created = await acp_agent.new_session(cwd="/tmp")
+        state = acp_agent.session_manager.get_session(created.session_id)
+        server = McpServerStdio(name="new", command="/bin/test", args=[], env=[])
+
+        with patch("tools.mcp_tool.get_registered_mcp_server_names", return_value=set()), \
+             patch("tools.mcp_tool.register_mcp_servers", return_value=[]), \
+             patch("tools.mcp_tool.release_mcp_servers", return_value=[]), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            await acp_agent._mcp_ownership_lock.acquire()
+            try:
+                if method == "load":
+                    task = asyncio.create_task(
+                        acp_agent.load_session("/tmp", created.session_id, [server])
+                    )
+                else:
+                    task = asyncio.create_task(
+                        acp_agent.resume_session("/tmp", created.session_id, [server])
+                    )
+                await asyncio.sleep(0)
+                with state.runtime_lock:
+                    state.closing = True
+            finally:
+                acp_agent._mcp_ownership_lock.release()
+
+            with pytest.raises(RequestError) as exc_info:
+                await task
+
+        assert exc_info.value.code == -32002
+        assert created.session_id not in acp_agent._session_mcp_servers
+        assert acp_agent._mcp_server_refcounts == {}
+
+    @pytest.mark.asyncio
+    async def test_close_preserves_preexisting_mcp_server(self, acp_agent):
+        server = McpServerStdio(name="shared", command="/bin/test", args=[], env=[])
+        released = []
+
+        with patch("tools.mcp_tool.get_registered_mcp_server_names", return_value={"shared"}), \
+             patch("tools.mcp_tool.register_mcp_servers", return_value=[]), \
+             patch("tools.mcp_tool.release_mcp_servers", side_effect=lambda names: released.extend(names)), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            resp = await acp_agent.new_session(cwd="/tmp", mcp_servers=[server])
+            await acp_agent.close_session(resp.session_id)
+
+        assert released == []
+
+    @pytest.mark.asyncio
+    async def test_close_preserves_globally_configured_mcp_server(self, acp_agent, monkeypatch):
+        server = McpServerStdio(name="configured", command="/bin/test", args=[], env=[])
+        released = []
+        monkeypatch.delenv("HERMES_ACP_SKIP_CONFIGURED_MCP", raising=False)
+
+        with patch("tools.mcp_tool.get_registered_mcp_server_names", return_value=set()), \
+             patch("tools.mcp_tool.register_mcp_servers", return_value=[]), \
+             patch("tools.mcp_tool.release_mcp_servers", side_effect=lambda names: released.extend(names)), \
+             patch("hermes_cli.config.load_config", return_value={"mcp_servers": {"configured": {}}}), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            resp = await acp_agent.new_session(cwd="/tmp", mcp_servers=[server])
+            await acp_agent.close_session(resp.session_id)
+
+        assert released == []

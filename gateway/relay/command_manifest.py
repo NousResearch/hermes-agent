@@ -46,8 +46,15 @@ def _opt(name: str, description: str, *, choices: List[str] | None = None) -> Di
 
 
 def build_relay_command_manifest() -> List[Dict[str, Any]]:
-    """The relay lane's Discord slash-command manifest (native-tree mirror)."""
-    return [
+    """The relay lane's Discord slash-command manifest (native-tree mirror).
+
+    Built-in commands are declared statically below (with full sub-command
+    structure where needed).  Plugin-registered commands (via
+    ``PluginContext.register_command``) are appended automatically — any
+    plugin command whose name already appears in the static list is skipped
+    so hand-authored sub-command definitions take precedence.
+    """
+    static: List[Dict[str, Any]] = [
         {"name": "new", "description": "Start a new conversation"},
         {"name": "reset", "description": "Reset your Hermes session"},
         {
@@ -142,4 +149,81 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
             "description": "Run a prompt in the background",
             "options": [_opt("text", "The prompt to run")],
         },
+        {
+            "name": "disk-cleanup",
+            "description": "Track and clean up ephemeral Hermes session files",
+            "options": [
+                {
+                    "type": 1,
+                    "name": "status",
+                    "description": "Per-category breakdown + top-10 largest tracked files",
+                },
+                {
+                    "type": 1,
+                    "name": "dry-run",
+                    "description": "Preview what quick/deep would delete (no deletions)",
+                },
+                {
+                    "type": 1,
+                    "name": "quick",
+                    "description": "Run safe cleanup now (no prompts)",
+                },
+                {
+                    "type": 1,
+                    "name": "deep",
+                    "description": "Run quick, then list items that need confirmation",
+                },
+                {
+                    "type": 1,
+                    "name": "track",
+                    "description": "Manually add a path to tracking",
+                    "options": [
+                        _opt("path", "File or directory path to track"),
+                        _opt(
+                            "category",
+                            "Category",
+                            choices=[
+                                "temp",
+                                "test",
+                                "research",
+                                "download",
+                                "chrome-profile",
+                                "cron-output",
+                                "other",
+                            ],
+                        ),
+                    ],
+                },
+                {
+                    "type": 1,
+                    "name": "forget",
+                    "description": "Stop tracking a path (does not delete)",
+                    "options": [_opt("path", "Path to stop tracking")],
+                },
+            ],
+        },
     ]
+
+    # ── Append plugin-registered commands ──────────────────────────────
+    try:
+        from hermes_cli.plugins import get_plugin_commands
+
+        plugin_cmds = get_plugin_commands()
+    except Exception:
+        plugin_cmds = {}
+
+    static_names = {cmd["name"] for cmd in static}
+    for name, entry in plugin_cmds.items():
+        if name in static_names:
+            continue  # static definition with sub-commands takes priority
+        desc = (entry.get("description") or "").strip()
+        cmd: Dict[str, Any] = {
+            "name": name,
+            "description": desc if desc else "Plugin command",
+        }
+        args_hint = (entry.get("args_hint") or "").strip()
+        if args_hint:
+            cmd["options"] = [_opt("args", args_hint)]
+        static.append(cmd)
+
+    return static

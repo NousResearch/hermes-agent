@@ -100,6 +100,61 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     return normalized
 
 
+
+
+def _normalize_runtime_mounts(runtime_mounts: list[dict] | None) -> list[dict[str, object]]:
+    """Validate infrastructure-owned bind mounts before Docker CLI assembly."""
+    if runtime_mounts is None:
+        return []
+    if not isinstance(runtime_mounts, list):
+        raise ValueError("runtime_mounts must be a list")
+    normalized: list[dict[str, object]] = []
+    targets: set[str] = set()
+    for index, mount in enumerate(runtime_mounts):
+        if not isinstance(mount, dict):
+            raise ValueError(f"runtime mount #{index} must be a mapping")
+        source = str(mount.get("source") or "").strip()
+        target = str(mount.get("target") or "").strip()
+        if not source or not target:
+            raise ValueError(f"runtime mount #{index} requires source and target")
+        # The dispatcher/runtime layer already canonicalizes local sources.  At
+        # this point source may be a translated path on a remote Docker host,
+        # so do not os.path.exists() it from the Hermes machine.
+        if not target.startswith("/"):
+            raise ValueError(f"runtime mount #{index} target must be absolute")
+        if "," in source or "," in target:
+            raise ValueError("runtime mount paths containing commas are unsupported")
+        if target in targets:
+            raise ValueError(f"duplicate runtime mount target: {target}")
+        targets.add(target)
+        normalized.append({
+            "source": source,
+            "target": target,
+            "read_only": bool(mount.get("read_only", False)),
+            "purpose": str(mount.get("purpose") or "runtime"),
+        })
+    return normalized
+
+
+def _runtime_mount_args(runtime_mounts: list[dict] | None) -> tuple[list[str], set[str]]:
+    """Render strict Docker ``--mount type=bind`` argv for runtime mounts.
+
+    ``--mount`` fails when a bind source is missing instead of silently creating
+    an empty host directory like ``-v`` can.  That failure mode is essential for
+    Kanban durability: a wrong host path must fail the worker, never create an
+    ephemeral-looking success somewhere else.
+    """
+    mounts = _normalize_runtime_mounts(runtime_mounts)
+    args: list[str] = []
+    targets: set[str] = set()
+    for mount in mounts:
+        spec = f"type=bind,src={mount['source']},dst={mount['target']}"
+        if mount["read_only"]:
+            spec += ",readonly"
+        args.extend(["--mount", spec])
+        targets.add(str(mount["target"]))
+    return args, targets
+
 def _load_hermes_env_vars() -> dict[str, str]:
     """Load ~/.hermes/.env values without failing Docker command execution."""
     try:
@@ -878,6 +933,7 @@ class DockerEnvironment(BaseEnvironment):
         persistent_filesystem: bool = False,
         task_id: str = "default",
         volumes: list = None,
+        runtime_mounts: list[dict] | None = None,
         forward_env: list[str] | None = None,
         env: dict | None = None,
         network: bool = True,
@@ -900,6 +956,7 @@ class DockerEnvironment(BaseEnvironment):
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
+        self._runtime_mounts = _normalize_runtime_mounts(runtime_mounts)
         self._init_unset_passthrough_names: tuple[str, ...] = ()
         self._container_id: Optional[str] = None
         self._labels: dict[str, str] = {}
@@ -949,9 +1006,19 @@ class DockerEnvironment(BaseEnvironment):
         # mode uses tmpfs (ephemeral, fast, gone on cleanup).
         from tools.environments.base import get_sandbox_dir
 
+        # Dispatcher/runtime mounts are infrastructure-owned and authoritative.
+        # When present, user/profile docker_volumes are ignored so a shared
+        # worker profile cannot widen a task's host filesystem view.
+        runtime_volume_args, runtime_targets = _runtime_mount_args(self._runtime_mounts)
+        volume_args = list(runtime_volume_args)
+        workspace_explicitly_mounted = "/workspace" in runtime_targets
+        if self._runtime_mounts and volumes:
+            logger.warning(
+                "Ignoring profile docker_volumes because task-scoped runtime mounts are active"
+            )
+            volumes = []
+
         # User-configured volume mounts (from config.yaml docker_volumes)
-        volume_args = []
-        workspace_explicitly_mounted = False
         for vol in (volumes or []):
             if not isinstance(vol, str):
                 logger.warning("Docker volume entry is not a string: %r", vol)

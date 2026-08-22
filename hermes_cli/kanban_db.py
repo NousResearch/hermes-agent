@@ -10763,6 +10763,23 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Dispatcher-owned terminal runtime contract (#91568).  This is
+    # deliberately NOT TERMINAL_DOCKER_VOLUMES: worker profile config may
+    # override that shared env var.  The dedicated envelope is validated again
+    # in terminal_tool after profile config is loaded, giving it explicit
+    # task-runtime precedence.
+    from hermes_cli.kanban_runtime import (
+        KANBAN_TERMINAL_RUNTIME_ENV,
+        build_kanban_terminal_runtime,
+        encode_kanban_terminal_runtime,
+    )
+    env[KANBAN_TERMINAL_RUNTIME_ENV] = encode_kanban_terminal_runtime(
+        build_kanban_terminal_runtime(
+            task_id=task.id,
+            workspace_kind=task.workspace_kind or "scratch",
+            workspace=workspace,
+        )
+    )
     # Tag the worker's session so it lands in state.db as `kanban`, not as an
     # untitled `cli` row. A worker is a dispatcher-owned run whose transcript is
     # read on the board and in `hermes kanban log` — it is not a conversation

@@ -376,10 +376,98 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
     """Return True when a Docker sandbox exposes host paths through bind mounts."""
     if config.get("env_type") != "docker":
         return False
+    if config.get("docker_runtime_mounts"):
+        return True
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
         return True
     return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
 
+
+
+def _kanban_runtime_context_allowed() -> bool:
+    """Whether this in-process context may inherit the dispatcher's container.
+
+    The dispatcher-owned worker itself and delegate_task children share one
+    sandbox.  An unrelated cron agent launched in-process from that worker must
+    *not* inherit the worker's task mount.
+    """
+    try:
+        from agent.delegation_context import (
+            is_delegated_child_context,
+            is_dispatcher_owned_worker_context,
+        )
+
+        return bool(is_dispatcher_owned_worker_context() or is_delegated_child_context())
+    except Exception:
+        return True
+
+
+def _load_kanban_runtime(path_map: list | None = None) -> tuple[dict, list[dict]] | None:
+    """Decode the dispatcher runtime after profile config has been bridged.
+
+    A present-but-invalid envelope is a hard error.  Falling back to tmpfs here
+    would recreate #91568: the worker could report success while artifacts
+    vanish when the container exits.
+    """
+    from hermes_cli.kanban_runtime import (
+        KANBAN_TERMINAL_RUNTIME_ENV,
+        KanbanRuntimeError,
+        decode_kanban_terminal_runtime,
+        translate_runtime_mounts,
+    )
+
+    raw = os.getenv(KANBAN_TERMINAL_RUNTIME_ENV, "").strip()
+    if not raw or not _kanban_runtime_context_allowed():
+        return None
+    task_id = os.getenv("HERMES_KANBAN_TASK", "").strip()
+    workspace = os.getenv("HERMES_KANBAN_WORKSPACE", "").strip()
+    source = os.getenv("HERMES_SESSION_SOURCE", "").strip().lower()
+    if source != "kanban" or not task_id or not workspace:
+        raise RuntimeError(
+            "Kanban terminal runtime is present without dispatcher-owned "
+            "HERMES_SESSION_SOURCE/task/workspace identity; refusing host mounts"
+        )
+    try:
+        runtime = decode_kanban_terminal_runtime(
+            raw,
+            expected_task_id=task_id,
+            expected_workspace=workspace,
+        )
+        mounts = translate_runtime_mounts(
+            runtime,
+            path_map=path_map or [],
+            docker_host=os.getenv("DOCKER_HOST"),
+        )
+    except KanbanRuntimeError as exc:
+        raise RuntimeError(f"invalid Kanban Docker runtime: {exc}") from exc
+    return runtime, mounts
+
+
+def _active_kanban_runtime_container_key() -> str | None:
+    """Return a deterministic per-Kanban-task container key when applicable.
+
+    Container identity is local process bookkeeping, so it deliberately decodes
+    the envelope without performing Docker-host path translation.  Translation
+    happens later in _get_env_config after the worker profile's path map is
+    available.
+    """
+    from hermes_cli.kanban_runtime import (
+        KANBAN_TERMINAL_RUNTIME_ENV,
+        decode_kanban_terminal_runtime,
+    )
+
+    raw = os.getenv(KANBAN_TERMINAL_RUNTIME_ENV, "").strip()
+    if not raw or not _kanban_runtime_context_allowed():
+        return None
+    task_id = os.getenv("HERMES_KANBAN_TASK", "").strip()
+    workspace = os.getenv("HERMES_KANBAN_WORKSPACE", "").strip()
+    source = os.getenv("HERMES_SESSION_SOURCE", "").strip().lower()
+    if source != "kanban" or not task_id or not workspace:
+        raise RuntimeError("invalid dispatcher identity for Kanban terminal runtime")
+    runtime = decode_kanban_terminal_runtime(
+        raw, expected_task_id=task_id, expected_workspace=workspace
+    )
+    return f"kanban:{runtime['task_id']}"
 
 def _check_all_guards(command: str, env_type: str,
                       has_host_access: bool = False) -> dict:
@@ -1390,6 +1478,10 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     ``delegate_task`` children keep sharing the parent's container via the
     alias registry (``register_container_alias``).
     """
+    kanban_key = _active_kanban_runtime_container_key()
+    if kanban_key is not None:
+        return kanban_key
+
     if task_id and _has_isolation_overrides(task_id):
         return task_id
     if task_id and _docker_session_isolation_enabled():
@@ -1619,12 +1711,14 @@ def _get_env_config() -> Dict[str, Any]:
     if docker_backend:
         docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
         docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
+        docker_host_path_map = _parse_env_var("TERMINAL_DOCKER_HOST_PATH_MAP", "[]", json.loads, "valid JSON")
         docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
         docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
         docker_shm_size = os.getenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
     else:
         docker_forward_env = []
         docker_volumes = []
+        docker_host_path_map = []
         docker_env = {}
         docker_extra_args = []
         docker_shm_size = "1g"
@@ -1667,6 +1761,19 @@ def _get_env_config() -> Dict[str, Any]:
                         cwd, env_type, default_cwd)
             cwd = default_cwd
 
+    # A dispatcher-owned Kanban runtime is applied AFTER terminal profile
+    # config resolution.  It is the complete host-bind authority for this
+    # worker: profile docker_volumes are intentionally discarded so a shared
+    # worker profile cannot widen the task's filesystem view.
+    docker_runtime_mounts = []
+    if docker_backend and os.getenv("HERMES_KANBAN_TERMINAL_RUNTIME"):
+        loaded_runtime = _load_kanban_runtime(docker_host_path_map)
+        if loaded_runtime is not None:
+            _runtime, docker_runtime_mounts = loaded_runtime
+            docker_volumes = []
+            host_cwd = None
+            cwd = "/workspace"
+
     return {
         "env_type": env_type,
         "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
@@ -1701,6 +1808,8 @@ def _get_env_config() -> Dict[str, Any]:
         "container_disk": container_disk,        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
         "docker_volumes": docker_volumes,
+        "docker_runtime_mounts": docker_runtime_mounts,
+        "docker_host_path_map": docker_host_path_map,
         "docker_env": docker_env,
         "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
         "docker_network": os.getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
@@ -1764,6 +1873,7 @@ def _container_config_from_config(config: Dict[str, Any]) -> dict:
         "modal_mode": config.get("modal_mode", "auto"),
         "vercel_runtime": config.get("vercel_runtime", ""),
         "docker_volumes": config.get("docker_volumes", []),
+        "docker_runtime_mounts": config.get("docker_runtime_mounts", []),
         "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
         "docker_forward_env": config.get("docker_forward_env", []),
         "docker_env": config.get("docker_env", {}),
@@ -1827,15 +1937,19 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         # "default" container and RL/benchmark override sandboxes keep their
         # existing lifecycle.
         session_scoped = (
-            _docker_session_isolation_enabled()
-            and task_id != "default"
-            and not _has_isolation_overrides(task_id)
+            bool(cc.get("docker_runtime_mounts"))
+            or (
+                _docker_session_isolation_enabled()
+                and task_id != "default"
+                and not _has_isolation_overrides(task_id)
+            )
         )
         docker_env_obj = _DockerEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
             volumes=volumes,
+            runtime_mounts=cc.get("docker_runtime_mounts", []),
             host_cwd=host_cwd,
             auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
             forward_env=docker_forward_env,

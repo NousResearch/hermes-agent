@@ -340,6 +340,14 @@ terminal:
   #   profile - force HERMES_HOME/home for strict per-profile CLI config isolation
   home_mode: "auto"
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
+  # For remote DOCKER_HOST deployments, Kanban runtime mounts fail closed unless
+  # each local project root has an explicit Docker-host translation.  Identity
+  # mappings are allowed and document that both machines intentionally use the
+  # same path. This setting translates paths only; it does not itself mount them.
+  docker_host_path_map: []
+  # docker_host_path_map:
+  #   - local_root: /srv/hermes-projects
+  #     host_root: /mnt/user/projects
   lifetime_seconds: 300
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.

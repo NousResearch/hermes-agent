@@ -294,6 +294,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
     "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    "TERMINAL_DOCKER_HOST_PATH_MAP",
     # HERMES_TOOL_PROGRESS_MODE is deprecated (replaced by display.tool_progress
     # in config.yaml) but STILL READ at runtime by the gateway as a back-compat
     # fallback, so it must stay known to reload/compat paths. The boolean
@@ -3509,6 +3510,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "container_disk": "TERMINAL_CONTAINER_DISK",
     "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
     "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+    "docker_host_path_map": "TERMINAL_DOCKER_HOST_PATH_MAP",
     "docker_env": "TERMINAL_DOCKER_ENV",
     "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
     "docker_network": "TERMINAL_DOCKER_NETWORK",

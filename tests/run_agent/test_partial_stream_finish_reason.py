@@ -789,3 +789,34 @@ class TestSendTimePadMultimodalSafety:
         assert out[2]["content"] == ""
         # input list untouched (repair is copy-on-write)
         assert api_messages[1]["content"] == ""
+
+
+class TestPortalLastOneWithoutDone:
+    """#90848: complete Portal streams can end with lastOne=true and no
+    finish_reason / [DONE]. That is a clean terminal, not a drop."""
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_last_one_usage_frame_is_a_clean_stop(self, _mock_close, mock_create):
+        def _portal_stream():
+            yield _make_stream_chunk(content="LONGCAT_OK")
+            yield SimpleNamespace(
+                choices=[],
+                model="meituan/longcat-2.0:free",
+                usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+                lastOne=True,
+            )
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _portal_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+        response = agent._interruptible_streaming_api_call({})
+
+        assert getattr(response, "id", None) != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == "LONGCAT_OK"

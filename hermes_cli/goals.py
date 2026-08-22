@@ -1402,6 +1402,79 @@ def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Additive autopilot honesty signals folded into the /goal loop
+# ──────────────────────────────────────────────────────────────────────
+#
+# These two helpers are the salvaged, reconciled pieces of PR #51565. They are
+# consulted from ``GoalManager.evaluate_after_turn`` and are strictly additive:
+# both fail soft, neither can flip the loop-vs-stop decision, and neither
+# bypasses the turn budget. They exist so the established /goal Ralph loop gains
+# the PR's genuinely-useful honesty tooling WITHOUT a second orchestration
+# engine, a YOLO auto-enable, or an unbounded continuation loop.
+
+
+def _apply_deception_addendum(
+    base_prompt: Optional[str], last_response: str
+) -> Tuple[Optional[str], str]:
+    """Sharpen a continuation prompt when the last response shows a cheat tell.
+
+    Runs the pure-heuristic (no model call) deception scan over the agent's last
+    response. When a known reward-seeking pattern fires (claim-without-evidence,
+    await-user handoff, scope-shrink, effort excuse, ...), append a short CAUGHT
+    sentence naming the behavior to the continuation directive so the next turn
+    is told exactly what it was caught doing. Returns ``(prompt, note)`` where
+    ``note`` is the human-readable addendum (empty when clean). Fail-soft: any
+    error returns the base prompt unchanged.
+    """
+    if not base_prompt or not last_response:
+        return base_prompt, ""
+    try:
+        from agent.autopilot import deception as _deception
+
+        signal = _deception.scan(last_response)
+        if not signal.detected:
+            return base_prompt, ""
+        addendum = signal.directive_addendum()
+        if not addendum:
+            return base_prompt, ""
+        return base_prompt + "\n" + addendum.strip(), addendum.strip()
+    except Exception as exc:  # noqa: BLE001 — honesty signal must never break the loop
+        logger.debug("goal: deception scan failed (%s)", exc)
+        return base_prompt, ""
+
+
+def _record_goal_adr(
+    session_id: str,
+    state: "GoalState",
+    *,
+    verdict: str,
+    reason: str,
+    deception_note: str = "",
+) -> None:
+    """Append one judge decision to the off-by-default autopilot ADR log.
+
+    Fully opt-in (``HERMES_AUTOPILOT_ADR=1`` / ``autopilot.adr`` config) and
+    fail-soft (an ADR error can never break a run). No-op when disabled.
+    """
+    try:
+        from agent.autopilot import adr as _adr
+
+        if not _adr.adr_enabled():
+            return
+        _adr.record_decision(
+            None,
+            kind="continue" if verdict == "continue" else verdict,
+            goal=state.goal,
+            verdict=verdict,
+            gap=reason,
+            rationale=(deception_note or ""),
+            source="goal-judge",
+        )
+    except Exception as exc:  # noqa: BLE001 — ADR must never break a run
+        logger.debug("goal: ADR record failed (%s)", exc)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # GoalManager — the orchestration surface CLI + gateway talk to
 # ──────────────────────────────────────────────────────────────────────
 
@@ -2088,10 +2161,26 @@ class GoalManager:
             }
 
         save_goal(self.session_id, state)
+        base_prompt = self.next_continuation_prompt()
+        # Additive honesty signals (reconciled autopilot pieces, both opt-in and
+        # fail-soft): sharpen the continuation directive when the last response
+        # shows a known reward-seeking cheat pattern, and record the judge's
+        # decision to the off-by-default ADR log. Neither can change the
+        # loop-vs-stop decision or bypass the turn budget above.
+        continuation_prompt, deception_note = _apply_deception_addendum(
+            base_prompt, last_response
+        )
+        _record_goal_adr(
+            self.session_id,
+            state,
+            verdict="continue",
+            reason=reason,
+            deception_note=deception_note,
+        )
         return {
             "status": "active",
             "should_continue": True,
-            "continuation_prompt": self.next_continuation_prompt(),
+            "continuation_prompt": continuation_prompt,
             "verdict": "continue",
             "reason": reason,
             "message": (

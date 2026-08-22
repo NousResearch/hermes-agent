@@ -446,6 +446,11 @@ include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*",
 
 [tool.setuptools.package-data]
 hermes_cli = ["observability/schemas/*.json", "data/*.json"]
+# The autopilot deception detector loads its pattern dictionary from a YAML
+# shipped beside the module (agent/autopilot/deception.py reads it via
+# Path(__file__).with_name("deception_patterns.yaml")). Without this the wheel
+# carries the module but not the dictionary, and the detector loads empty.
+"agent.autopilot" = ["*.yaml"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
 # status phrases fall back to the tiny hardcoded set and the Telegram

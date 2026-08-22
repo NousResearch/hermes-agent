@@ -1826,6 +1826,8 @@ export const ar = defineLocale({
     urlPlaceholder: 'https://example.com',
     urlHintPre: 'سيقرأ Hermes الرابط ضمن السياق.',
     attach: 'إرفاق',
+    editRefTitle: 'تعديل المرجع',
+    editRefDesc: 'تم النقر المزدوج على مرجع — عدّل قيمته في مكانها.',
     queued: count => `${count} في الطابور`,
     attachmentOnly: 'إرفاق فقط',
     emptyTurn: 'اكتب رسالة أو أرفق ملفا.',

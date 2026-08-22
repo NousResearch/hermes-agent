@@ -2512,6 +2512,8 @@ export const zh: Translations = {
     urlPlaceholder: 'https://example.com/post',
     urlHintPre: '请包含完整 URL，例如 ',
     attach: '附加',
+    editRefTitle: '编辑引用',
+    editRefDesc: '双击了引用——就地修改其值。',
     queued: count => `${count} 条排队`,
     queuedPaused: count => `${count} 条排队 — 已暂停`,
     attachmentOnly: '仅附件回合',

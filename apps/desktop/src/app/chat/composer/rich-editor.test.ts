@@ -9,7 +9,10 @@ import {
   refChipElement,
   renderComposerContents,
   replaceBeforeCaret,
-  RICH_INPUT_SLOT
+  replaceRefChipValue,
+  replaceSlashChipValue,
+  RICH_INPUT_SLOT,
+  slashChipElement
 } from './rich-editor'
 import { placeCaretAtEnd } from './test-utils'
 
@@ -367,6 +370,113 @@ describe('deleteSelectionInEditor', () => {
     expect(composerPlainText(editor)).toBe('')
     expect(selection.getRangeAt(0).collapsed).toBe(true)
     expect(deleteSelectionInEditor(editor)).toBe(false)
+
+    editor.remove()
+  })
+})
+
+describe('replaceRefChipValue', () => {
+  it('rewrites a url chip value in place, re-deriving the display label', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    const chip = refChipElement('url', 'https://project.samokat.ru/browse/ACC-77201')
+    editor.append(chip)
+    document.body.append(editor)
+
+    expect(replaceRefChipValue(chip, 'https://project.samokat.ru/browse/ACC-77202')).toBe(true)
+    expect(chip.dataset.refId).toBe('https://project.samokat.ru/browse/ACC-77202')
+    expect(chip.dataset.refText).toBe('@url:`https://project.samokat.ru/browse/ACC-77202`')
+    expect(chip.title).toBe('https://project.samokat.ru/browse/ACC-77202')
+    // The pill now reads as the same reference with the corrected value.
+    expect(composerPlainText(editor)).toBe('@url:`https://project.samokat.ru/browse/ACC-77202`')
+    // The node survived the edit — no flicker into a rebuilt chip.
+    expect(editor.querySelector('[data-ref-kind="url"]')).toBe(chip)
+
+    editor.remove()
+  })
+
+  it('re-quotes a value that gains a space', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    const chip = refChipElement('file', 'a.ts')
+    editor.append(chip)
+    document.body.append(editor)
+
+    expect(replaceRefChipValue(chip, 'src/main file.ts')).toBe(true)
+    expect(chip.dataset.refText).toBe('@file:`src/main file.ts`')
+    expect(chip.title).toBe('src/main file.ts')
+    expect(composerPlainText(editor)).toBe('@file:`src/main file.ts`')
+
+    editor.remove()
+  })
+
+  it('refuses to blank out a reference value', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    const chip = refChipElement('url', 'https://example.com')
+    editor.append(chip)
+    document.body.append(editor)
+
+    expect(replaceRefChipValue(chip, '   ')).toBe(false)
+    // A blanked value is a delete, not an edit — the chip stays put.
+    expect(chip.dataset.refId).toBe('https://example.com')
+    expect(composerPlainText(editor)).toBe('@url:`https://example.com`')
+
+    editor.remove()
+  })
+
+  it('does not touch a slash command chip', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    const chip = slashChipElement('/clean', 'command')
+    editor.append(chip)
+    document.body.append(editor)
+
+    expect(replaceRefChipValue(chip, '/other')).toBe(false)
+    expect(chip.dataset.refText).toBe('/clean')
+
+    editor.remove()
+  })
+})
+
+describe('replaceSlashChipValue', () => {
+  it('rewrites a slash chip value in place, tracking it as the label', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    const chip = slashChipElement('/clean', 'command')
+    editor.append(chip)
+    document.body.append(editor)
+
+    expect(replaceSlashChipValue(chip, '/goal ship it')).toBe(true)
+    expect(chip.dataset.refText).toBe('/goal ship it')
+    expect(composerPlainText(editor)).toBe('/goal ship it')
+    expect(editor.querySelector('[data-slash-kind]')).toBe(chip)
+
+    editor.remove()
+  })
+
+  it('refuses to blank out a slash command', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    const chip = slashChipElement('/clean', 'command')
+    editor.append(chip)
+    document.body.append(editor)
+
+    expect(replaceSlashChipValue(chip, '  ')).toBe(false)
+    expect(chip.dataset.refText).toBe('/clean')
+
+    editor.remove()
+  })
+
+  it('does not touch a reference chip', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    const chip = refChipElement('url', 'https://example.com')
+    editor.append(chip)
+    document.body.append(editor)
+
+    expect(replaceSlashChipValue(chip, '/x')).toBe(false)
+    expect(chip.dataset.refText).toBe('@url:`https://example.com`')
 
     editor.remove()
   })

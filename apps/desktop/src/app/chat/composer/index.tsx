@@ -1,6 +1,6 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
+import { type ClipboardEvent, type FormEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
@@ -68,7 +68,10 @@ import {
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
-  RICH_INPUT_SLOT
+  replaceRefChipValue,
+  replaceSlashChipValue,
+  RICH_INPUT_SLOT,
+  unquoteRef
 } from './rich-editor'
 import { useComposerScope } from './scope'
 import { ComposerStatusStack } from './status-stack'
@@ -269,11 +272,26 @@ export function ChatBar({
   }, [activeQueueSessionKey, resetUndoHistory])
 
   // "Add URL" dialog — open/value state, autofocus, and submit (host onAddUrl or
-  // an @url: directive into the draft).
-  const { openUrlDialog, setUrlOpen, setUrlValue, submitUrl, urlInputRef, urlOpen, urlValue } = useComposerUrlDialog({
-    insertText,
-    onAddUrl
-  })
+  // an @url: directive into the draft). The same dialog also edits an existing
+  // reference chip in place (double-click): the field opens pre-filled with the
+  // chip's value and submit rewrites that chip rather than inserting a new one.
+  const applyChipEdit = (chip: HTMLElement, value: string) =>
+    chip.dataset.slashKind ? replaceSlashChipValue(chip, value) : replaceRefChipValue(chip, value)
+
+  const { beginChipEdit, chipEdit, openUrlDialog, setUrlOpen, setUrlValue, submitUrl, urlInputRef, urlOpen, urlValue } =
+    useComposerUrlDialog({
+      applyChipEdit,
+      insertText,
+      onAddUrl,
+      recordChipEditUndo: () => recordUndoPoint(),
+      syncEditorToDraft: () => {
+        const editor = editorRef.current
+
+        if (editor) {
+          flushEditorToDraft(editor)
+        }
+      }
+    })
 
   // The queue engine — queued turns, in-place editing, the shared drain lock,
   // and bounded auto-drain. Consumes the draft API and writes `queueEditRef`.
@@ -548,6 +566,29 @@ export function ChatBar({
     recordUndoPoint()
     insertComposerContentsAtCaret(event.currentTarget, pathifyRefs(linkifyUrls(pastedText)), scope)
     scheduleFlushEditorToDraft(event.currentTarget)
+  }
+
+  // Double-click a reference chip to edit its value. Chips are atomic
+  // (`contenteditable="false"`), so the caret cannot enter one — the dialog is
+  // the only way to correct a reference mid-draft. `data-ref-text` holds the
+  // serialized form (`@url:`https://…`` or a bare `/clean`); strip the
+  // `@kind:` prefix and any quoting to open the dialog on the raw value.
+  const handleEditorDoubleClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (inputDisabled) {
+      return
+    }
+
+    const chip = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-ref-text]') : null
+    const editor = event.currentTarget
+
+    if (!chip || !editor.contains(chip) || !chip.dataset.refText) {
+      return
+    }
+
+    const serialized = chip.dataset.refText
+    const raw = serialized.startsWith('@') ? serialized.replace(/^@[\w-]+:/, '') : serialized
+
+    beginChipEdit(chip, unquoteRef(raw))
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -1041,6 +1082,7 @@ export function ChatBar({
           // hint would sit behind the preedit text the whole time (#75960).
           beginComposerComposition(event.currentTarget)
         }}
+        onDoubleClick={handleEditorDoubleClick}
         onDragOver={handleInputDragOver}
         onDrop={handleInputDrop}
         onFocus={() => markActiveComposer(scope.target)}
@@ -1351,6 +1393,7 @@ export function ChatBar({
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>
 
       <UrlDialog
+        chipEdit={chipEdit}
         inputRef={urlInputRef}
         onChange={setUrlValue}
         onOpenChange={setUrlOpen}

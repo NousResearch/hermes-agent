@@ -1964,6 +1964,8 @@ export const zhHant = defineLocale({
     urlPlaceholder: 'https://example.com/post',
     urlHintPre: '請輸入完整 URL，例如 ',
     attach: '附加',
+    editRefTitle: '編輯引用',
+    editRefDesc: '雙擊了引用——就地修改其值。',
     queued: count => `${count} 個排隊中`,
     queuedPaused: count => `${count} 個排隊中 — 已暫停`,
     attachmentOnly: '僅附件回合',

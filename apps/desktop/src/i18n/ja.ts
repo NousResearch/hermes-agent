@@ -2028,6 +2028,8 @@ export const ja = defineLocale({
     urlPlaceholder: 'https://example.com/post',
     urlHintPre: '完全な URL を入力してください。例: ',
     attach: '添付',
+    editRefTitle: '参照を編集',
+    editRefDesc: '参照をダブルクリックしました — その値をその場で変更します。',
     queued: count => `${count} 件キュー済み`,
     queuedPaused: count => `${count} 件キュー済み — 一時停止中`,
     attachmentOnly: '添付のみのターン',

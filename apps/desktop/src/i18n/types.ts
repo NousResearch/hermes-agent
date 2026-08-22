@@ -1966,6 +1966,8 @@ export interface Translations {
     urlPlaceholder: string
     urlHintPre: string
     attach: string
+    editRefTitle: string
+    editRefDesc: string
     queued: (count: number) => string
     queuedPaused: (count: number) => string
     attachmentOnly: string

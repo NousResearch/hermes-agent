@@ -525,6 +525,70 @@ export function deleteSelectionInEditor(editor: HTMLElement) {
   return true
 }
 
+/** Set the visible label (the chip's trailing text node) to `label`. A chip's
+ *  first child is its glyph (an `<svg>`), so only the text nodes carry the
+ *  label — and they can be several after Chromium fragments them, so rewrite
+ *  every one rather than assuming a single node. */
+function setChipLabel(chip: HTMLElement, label: string) {
+  for (const node of Array.from(chip.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      node.textContent = label
+    }
+  }
+}
+
+/** Rewrite an existing reference chip's value in place (double-click edit).
+ *  The chip node and its glyph stay — only the serialized value (`data-ref-
+ *  text`), the resolved id, the `title`, and the visible label change, so the
+ *  pill reads as the same reference with a corrected value instead of
+ *  flickering into a rebuilt node. Returns false when `chip` is not a
+ *  `@kind:` reference (a slash command, or a blanked value).
+ *
+ *  `newValue` is the raw, unquoted value; quoting and the display label are
+ *  re-derived exactly as `refChipElement` would, so the edited chip is
+ *  byte-identical to one freshly committed with the same value. */
+export function replaceRefChipValue(chip: HTMLElement, newValue: string): boolean {
+  const kind = chip.dataset.refKind
+
+  if (!kind || chip.dataset.slashKind) {
+    return false
+  }
+
+  const id = newValue.trim()
+
+  if (!id) {
+    return false
+  }
+
+  chip.dataset.refId = id
+  chip.dataset.refText = `@${kind}:${quoteRefValue(id)}`
+  chip.title = id
+  setChipLabel(chip, refChipLabel(kind, id))
+
+  return true
+}
+
+/** Rewrite an existing slash command chip's value in place. The command is the
+ *  whole `data-ref-text` (a no-arg `/skill`, or a committed `/cmd arg`), so the
+ *  edited text replaces it verbatim and the visible label tracks it. Returns
+ *  false when `chip` is not a slash chip or the value blanks out. */
+export function replaceSlashChipValue(chip: HTMLElement, newValue: string): boolean {
+  if (!chip.dataset.slashKind) {
+    return false
+  }
+
+  const command = newValue.trim()
+
+  if (!command) {
+    return false
+  }
+
+  chip.dataset.refText = command
+  setChipLabel(chip, command)
+
+  return true
+}
+
 /** Serialize a draft string into chip-HTML for the contenteditable surface. */
 export function composerHtml(text: string) {
   let cursor = 0

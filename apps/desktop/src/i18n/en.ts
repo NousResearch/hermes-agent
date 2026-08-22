@@ -2329,6 +2329,8 @@ export const en: Translations = {
     urlPlaceholder: 'https://example.com/post',
     urlHintPre: 'Include the full URL, e.g. ',
     attach: 'Attach',
+    editRefTitle: 'Edit reference',
+    editRefDesc: 'Double-clicked a reference — change its value in place.',
     queued: count => `${count} Queued`,
     queuedPaused: count => `${count} Queued — paused`,
     attachmentOnly: 'Attachment-only turn',

@@ -27,6 +27,9 @@ Security:
     binds a timestamp into the signed data for replay protection; the
     legacy body-only V1 (X-Webhook-Signature) is deprecated but still
     accepted with a warning, since it has no replay protection
+  - Standard Webhooks (webhook-id/webhook-timestamp/webhook-signature)
+    is accepted via the Svix-compatible validator: same signed content
+    "{id}.{timestamp}.{raw_body}" and "v1,<base64-hmac>" format
   - Set secret to "INSECURE_NO_AUTH" to skip validation (testing only)
 """
 
@@ -833,7 +836,10 @@ class WebhookAdapter(BasePlatformAdapter):
             "X-GitHub-Delivery",
             request.headers.get(
                 "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+                request.headers.get(
+                    "webhook-id",
+                    request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+                ),
             ),
         )
 
@@ -1074,15 +1080,17 @@ class WebhookAdapter(BasePlatformAdapter):
                 or request.headers.get(name.upper(), "")
             )
 
-        # Svix / AgentMail:
+        # Svix / AgentMail / Standard Webhooks:
         #   svix-id: msg_...
         #   svix-timestamp: unix seconds
         #   svix-signature: v1,<base64-hmac> [v1,<base64-hmac> ...]
+        # Standard Webhooks providers such as GitLab use the same signed
+        # content and v1 signature format with webhook-* header names.
         # Signed content is: "{id}.{timestamp}.{raw_body}".  Svix secrets
         # usually start with "whsec_" and the remainder is base64-encoded.
-        svix_id = _header("svix-id")
-        svix_timestamp = _header("svix-timestamp")
-        svix_signature = _header("svix-signature")
+        svix_id = _header("svix-id") or _header("webhook-id")
+        svix_timestamp = _header("svix-timestamp") or _header("webhook-timestamp")
+        svix_signature = _header("svix-signature") or _header("webhook-signature")
         if svix_id or svix_timestamp or svix_signature:
             return self._validate_svix_signature(
                 body=body,

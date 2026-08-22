@@ -3391,8 +3391,79 @@ def _rich_text_from_ansi(text: str) -> _RichText:
 
 
 def _strip_markdown_syntax(text: str) -> str:
-    """Best-effort markdown marker removal for plain-text display."""
+    """Best-effort markdown marker removal for plain-text display.
+
+    Code spans and fenced code blocks — including fenced blocks nested inside
+    blockquotes — are protected while prose markers are removed.  Python
+    identifiers and operators share their characters with Markdown emphasis,
+    so running the prose regexes over code corrupts otherwise verbatim output
+    (``__name__`` renders as ``name``, ``a**2`` is eaten as bold).  Fence
+    markers are still dropped and inline backticks still unwrapped, as
+    before — only the *contents* are protected from being interpreted as
+    markdown.  See issue #84377.
+    """
     plain = _rich_text_from_ansi(text or "").plain
+    # Shelve code spans before marker removal: fence markers are dropped and
+    # inline backticks unwrapped, but the code bodies are restored verbatim
+    # after the prose regexes have run.  The placeholder token contains NO
+    # markdown metacharacters (no `_`, `*`, `~`, `#`, `[`, `]`, `` ` ``), so
+    # no prose regex can touch it — dunder identifiers and ``**`` operators
+    # inside code are never interpreted as markdown emphasis.
+    _shelved: list[str] = []
+    _CODE_PLACEHOLDER = "\x00HERMESCODE{}\x00"
+
+    def _shelve(match: re.Match[str]) -> str:
+        _shelved.append(match.group(1))
+        return _CODE_PLACEHOLDER.format(len(_shelved) - 1)
+
+    # Fenced blocks: drop the fence lines (keeping any info string, matching
+    # the old fence-marker-only removal) and shelve the body verbatim.  The
+    # fence regex also accepts blockquote prefixes (``> ``` ``), since models
+    # commonly wrap code snippets in blockquotes when quoting docs.
+    _out_lines: list[str] = []
+    _in_fence = False
+    _fence_char = ""
+    _fence_len = 0
+    _fence_body: list[str] = []
+    for _line in plain.split("\n"):
+        _fm = re.match(r"^(\s*(?:>\s*)*)(`{3,}|~{3,})", _line)
+        if _fm is None:
+            if _in_fence:
+                _fence_body.append(_line)
+            else:
+                _out_lines.append(_line)
+            continue
+        _prefix = _fm.group(1)
+        _marker = _fm.group(2)
+        _trailing = _line[_fm.end():]
+        if not _in_fence:
+            _in_fence = True
+            _fence_char = _marker[0]
+            _fence_len = len(_marker)
+            _fence_body = []
+            if _trailing.strip():
+                _out_lines.append(_prefix + _trailing.lstrip())
+        elif (
+            _marker[0] == _fence_char
+            and len(_marker) >= _fence_len
+            and not _trailing.strip()
+        ):
+            _in_fence = False
+            _shelved.append("\n".join(_fence_body))
+            _out_lines.append(_CODE_PLACEHOLDER.format(len(_shelved) - 1))
+        else:
+            # Different fence char, shorter marker, or trailing content:
+            # CommonMark treats it as body content, not a closer.
+            _fence_body.append(_line)
+    if _in_fence:
+        # Unterminated block — body stays visible, just protected.
+        _shelved.append("\n".join(_fence_body))
+        _out_lines.append(_CODE_PLACEHOLDER.format(len(_shelved) - 1))
+    plain = "\n".join(_out_lines)
+
+    # Inline code spans: unwrap the backticks but protect the contents.
+    plain = re.sub(r"`([^`]*)`", _shelve, plain)
+
     # Avoid stripping cron-style expressions like "* * * * *" as if they were
     # Markdown horizontal rules. CommonMark treats three or more "*" as an HR,
     # but in Hermes output it's common to display cron schedules verbatim.
@@ -3403,8 +3474,6 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"^\s{0,3}(?:\*\s*){3}\s*$", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s{0,3}#{1,6}\s+", "", plain, flags=re.MULTILINE)
     # Preserve blockquotes, lists, and checkboxes because they carry structure.
-    plain = re.sub(r"(```+|~~~+)", "", plain)
-    plain = re.sub(r"`([^`]*)`", r"\1", plain)
     plain = re.sub(r"!\[([^\]]*)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", plain)
     plain = re.sub(r"\*\*\*([^*]+)\*\*\*", r"\1", plain)
@@ -3417,6 +3486,12 @@ def _strip_markdown_syntax(text: str) -> str:
     plain = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", plain)
     plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
     plain = re.sub(r"\n{3,}", "\n\n", plain)
+
+    # Restore shelved code verbatim.
+    def _restore(match: re.Match[str]) -> str:
+        return _shelved[int(match.group(1))]
+
+    plain = re.sub(_CODE_PLACEHOLDER.format(r"(\d+)"), _restore, plain)
     return plain.strip("\n")
 
 
@@ -5122,6 +5197,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # populated only while `_in_stream_table` is True.
         self._stream_table_buf: list[str] = []
         self._in_stream_table = False
+        # Fenced-code buffer.  Streamed lines inside ``` / ~~~ fences are
+        # held here and stripped as ONE block on close, so the emphasis
+        # regexes never see code bodies — per-line stripping ate literal
+        # asterisks in code (see #84377).  Mirrors the table-block
+        # buffering above; `_stream_fence_char`/`_stream_fence_len` record
+        # the opener so a closer must match char and length.
+        self._stream_fence_buf: list[str] = []
+        self._stream_in_fence = False
+        self._stream_fence_char = ""
+        self._stream_fence_len = 0
         self._pending_edit_snapshots = {}
         self._last_input_mode_recovery = 0.0
         self._input_mode_recovery_notice_shown = False
@@ -7929,6 +8014,47 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
 
+            # Fenced-code blocks: buffer until the closing fence, then
+            # strip the WHOLE block at once.  Per-line stripping lets the
+            # emphasis regexes eat literal asterisks inside code (see
+            # #84377) because a lone body line is not recognised as code.
+            # Blockquote prefixes (``> ``` ``) are accepted too, matching
+            # _strip_markdown_syntax.
+            _fm = re.match(r"^(\s*(?:>\s*)*)(`{3,}|~{3,})", line)
+            if _fm is not None:
+                _marker = _fm.group(2)
+                _trailing = line[_fm.end():]
+                if not getattr(self, "_stream_in_fence", False):
+                    # Opening fence (info string, if any, is kept by the
+                    # block-level stripper on close).
+                    self._stream_in_fence = True
+                    self._stream_fence_char = _marker[0]
+                    self._stream_fence_len = len(_marker)
+                    self._stream_fence_buf = [line]
+                elif (
+                    _marker[0] == getattr(self, "_stream_fence_char", "")
+                    and len(_marker) >= getattr(self, "_stream_fence_len", 3)
+                    and not _trailing.strip()
+                ):
+                    # Closing fence: strip and emit the whole block.
+                    self._stream_fence_buf.append(line)
+                    joined = "\n".join(self._stream_fence_buf)
+                    self._stream_in_fence = False
+                    self._stream_fence_buf = []
+                    if self.final_response_markdown == "strip":
+                        joined = _strip_markdown_syntax(joined)
+                    for ln in joined.split("\n"):
+                        _emit_one(ln)
+                else:
+                    # Different fence char, shorter marker, or trailing
+                    # content on a fence line: CommonMark treats it as
+                    # body content.
+                    self._stream_fence_buf.append(line)
+                continue
+            if getattr(self, "_stream_in_fence", False):
+                self._stream_fence_buf.append(line)
+                continue
+
             # Hold table-shaped lines in a side-buffer so we can re-pad
             # the whole block once it ends.  Streaming line-by-line, we
             # cannot re-align mid-table without reflowing already-printed
@@ -7994,6 +8120,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         _tc = getattr(self, "_stream_text_ansi", "")
 
+        # If the stream ended inside a fenced-code block, flush the
+        # buffered block now (body stays protected from the emphasis
+        # regexes — matches the unterminated-fence handling in
+        # _strip_markdown_syntax).
+        if getattr(self, "_stream_in_fence", False):
+            # Fold any trailing partial line into the block so it is
+            # stripped as code, not per-line (which would eat literal
+            # asterisks in an unterminated fence).
+            _fence_buf = getattr(self, "_stream_fence_buf", [])
+            if self._stream_buf:
+                _fence_buf.append(self._stream_buf)
+                self._stream_buf = ""
+            joined = "\n".join(_fence_buf)
+            self._stream_in_fence = False
+            self._stream_fence_buf = []
+            if self.final_response_markdown == "strip":
+                joined = _strip_markdown_syntax(joined)
+            for ln in joined.split("\n"):
+                _cprint(f"{_STREAM_PAD}{_tc}{ln}{_RST}" if _tc else f"{_STREAM_PAD}{ln}")
+
         # If the stream buffer has a trailing partial line that looks like
         # a table row, fold it into the table buffer so the whole block
         # gets re-aligned together.  Otherwise the final row prints raw
@@ -8044,6 +8190,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._deferred_content = ""
         self._stream_table_buf = []
         self._in_stream_table = False
+        self._stream_fence_buf = []
+        self._stream_in_fence = False
+        self._stream_fence_char = ""
+        self._stream_fence_len = 0
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""

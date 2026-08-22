@@ -1492,11 +1492,17 @@ def init_agent(
             # Per-provider extra HTTP headers (providers.<name>.extra_headers /
             # custom_providers[].extra_headers) — proxies, gateways, custom
             # auth. Applied last so the most specific config level wins.
+            # Pass agent.model so a base_url shared by several named custom
+            # providers resolves headers from the entry that actually owns
+            # the requested model, instead of always the first one declared
+            # (see hermes-webui#7176 / PR #7177 for the matching WebUI-side
+            # provider-selection fix this mirrors).
             # SECURITY: values may carry credentials — never log them.
             apply_custom_provider_extra_headers_to_client_kwargs(
                 client_kwargs,
                 _cp_base_url,
                 _cp_entries,
+                model_id=agent.model,
             )
         except Exception:
             logger.debug("custom-provider TLS resolution skipped", exc_info=True)

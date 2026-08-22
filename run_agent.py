@@ -6377,6 +6377,11 @@ class AIAgent:
         # Per-provider extra HTTP headers (providers.<name>.extra_headers /
         # custom_providers[].extra_headers) — applied last so the most
         # specific config level survives credential swaps and rebuilds too.
+        # Pass self.model so a base_url shared by several named custom
+        # providers resolves headers from the entry that actually owns the
+        # current model, instead of always the first one declared (mirrors
+        # the model-aware provider selection hermes-webui performs — see
+        # hermes-webui#7176 / PR #7177).
         # SECURITY: values may carry credentials — never log them.
         if self.api_mode not in ("anthropic_messages", "bedrock_converse"):
             try:
@@ -6386,6 +6391,7 @@ class AIAgent:
 
                 apply_custom_provider_extra_headers_to_client_kwargs(
                     self._client_kwargs, base_url,
+                    model_id=getattr(self, "model", None),
                 )
             except Exception:
                 logger.debug("custom-provider extra_headers skipped", exc_info=True)

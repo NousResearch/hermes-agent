@@ -1744,12 +1744,30 @@ def get_custom_provider_extra_headers(
     base_url: str,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
     config: Optional[Dict[str, Any]] = None,
+    *,
+    model_id: Optional[str] = None,
 ) -> Dict[str, str]:
     """Return ``extra_headers`` from a matching ``providers`` / ``custom_providers`` entry.
 
     Matches the entry whose normalized route identity equals *base_url*,
     mirroring :func:`get_custom_provider_tls_settings`, and returns its
     ``extra_headers`` dict, or ``{}`` when no entry matches or declares none.
+
+    Multiple named entries commonly share ONE physical ``base_url`` (an
+    internal gateway fronting several APIs/api_modes on one host). When
+    ``model_id`` is supplied, prefer the entry that actually owns that model
+    (via its ``model`` field or ``models`` allowlist) over plain base_url
+    declaration order — this mirrors the model-aware provider selection
+    ``hermes-webui`` already performs (see NousResearch/hermes-agent#7176 /
+    hermes-webui PR #7177) so the headers actually sent match the entry that
+    was selected for the request, not just whichever shares the endpoint and
+    happens to be declared first. Without this, entry B can be correctly
+    selected for mode/key/endpoint while its sibling A's ``extra_headers``
+    (e.g. distinct ``CF-Access-Client-Id``/``Secret`` per route) are applied
+    instead, reproducing the same opaque upstream auth failure the model-aware
+    fix was meant to eliminate. Falls back to the first base_url match when no
+    entry claims the model, or when ``model_id`` is not supplied, preserving
+    prior behavior for existing callers.
 
     SECURITY: header values routinely carry credentials (Cloudflare Access
     service tokens, proxy auth, custom bearer schemes). Callers must never
@@ -1764,12 +1782,47 @@ def get_custom_provider_extra_headers(
         return {}
 
     target_url = normalize_route_base_url(base_url)
+    matches: List[Dict[str, Any]] = []
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
         entry_url = normalize_route_base_url(entry.get("base_url"))
         if not entry_url or entry_url != target_url:
             continue
+        matches.append(entry)
+    if not matches:
+        return {}
+
+    wanted_model = str(model_id or "").strip()
+    if wanted_model:
+        for entry in matches:
+            entry_model = str(entry.get("model") or "").strip()
+            owned_ids: set = set()
+            models = entry.get("models")
+            if isinstance(models, dict):
+                owned_ids.update(k for k in models if isinstance(k, str))
+            elif isinstance(models, list):
+                for item in models:
+                    if isinstance(item, dict):
+                        candidate = item.get("id") or item.get("model") or item.get("name")
+                    else:
+                        candidate = item
+                    candidate = str(candidate or "").strip()
+                    if candidate:
+                        owned_ids.add(candidate)
+            if entry_model:
+                owned_ids.add(entry_model)
+            if wanted_model in owned_ids:
+                # The owning entry may declare no headers of its own — that
+                # is meaningful and must not fall through to a
+                # differently-scoped sibling's headers.
+                return normalize_extra_headers(entry.get("extra_headers"))
+
+    # No model_id, or no shared-base_url entry claims the model: fall back
+    # to base_url-only matching. Bug #74465: an earlier entry matching the
+    # same URL but without extra_headers (or with an explicit but empty
+    # dict) must not shadow a later entry that DOES declare real headers.
+    for entry in matches:
         headers = normalize_extra_headers(entry.get("extra_headers"))
         if headers:
             return headers
@@ -1781,6 +1834,8 @@ def apply_custom_provider_extra_headers_to_client_kwargs(
     base_url: str,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
     config: Optional[Dict[str, Any]] = None,
+    *,
+    model_id: Optional[str] = None,
 ) -> None:
     """Merge per-provider ``extra_headers`` onto OpenAI client ``default_headers``.
 
@@ -1789,9 +1844,16 @@ def apply_custom_provider_extra_headers_to_client_kwargs(
     when the base_url matches no ``providers`` / ``custom_providers`` entry or
     the entry declares no headers.
 
+    ``model_id``, when supplied, is forwarded to
+    ``get_custom_provider_extra_headers`` so a ``base_url`` shared by several
+    named custom providers resolves headers from the entry that actually owns
+    the requested model, instead of always the first one declared.
+
     SECURITY: values may carry credentials — never log them.
     """
-    extra_headers = get_custom_provider_extra_headers(base_url, custom_providers, config)
+    extra_headers = get_custom_provider_extra_headers(
+        base_url, custom_providers, config, model_id=model_id
+    )
     if not extra_headers:
         return
     merged = dict(client_kwargs.get("default_headers") or {})

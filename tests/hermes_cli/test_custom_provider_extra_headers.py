@@ -244,3 +244,135 @@ def test_fetch_api_models_sends_extra_headers_to_models_probe(monkeypatch):
     assert captured["headers"]["authorization"] == "Bearer proxy-key"
     assert captured["headers"]["sleeve-harness"] == "hermes"
     assert captured["headers"]["sleeve-base-url"] == "http://localhost:8081/v1"
+
+
+# ---------------------------------------------------------------------------
+# Model-aware header selection for a base_url shared by several named
+# custom_providers[] entries (mirrors hermes-webui#7176 / PR #7177's
+# provider-selection fix — see that PR's review for the header-drop defect
+# this closes: a shared endpoint's resolved entry B could have its
+# extra_headers silently replaced by sibling entry A's headers because
+# get_custom_provider_extra_headers() only matched by base_url).
+# ---------------------------------------------------------------------------
+
+
+SHARED_URL = "https://gateway.example/v1"
+
+_SHARED_ENTRIES = [
+    {
+        "name": "Gateway OpenAI Chat",
+        "base_url": SHARED_URL,
+        "extra_headers": {"CF-Access-Client-Id": "openai-chat-id"},
+        "models": {"gpt-5": {}, "gpt-5-mini": {}},
+    },
+    {
+        "name": "Gateway Claude",
+        "base_url": SHARED_URL,
+        "extra_headers": {"CF-Access-Client-Id": "claude-id"},
+        "models": {"claude-sonnet-5@default": {}, "claude-opus-5@default": {}},
+    },
+]
+
+
+def test_get_custom_provider_extra_headers_prefers_owning_entry_with_model_id():
+    """When two entries share one base_url, model_id must select the
+    entry's headers that actually owns the requested model, not just the
+    first declared entry."""
+    headers = get_custom_provider_extra_headers(
+        SHARED_URL, custom_providers=_SHARED_ENTRIES, model_id="claude-sonnet-5@default"
+    )
+    assert headers == {"CF-Access-Client-Id": "claude-id"}
+
+    headers_openai = get_custom_provider_extra_headers(
+        SHARED_URL, custom_providers=_SHARED_ENTRIES, model_id="gpt-5"
+    )
+    assert headers_openai == {"CF-Access-Client-Id": "openai-chat-id"}
+
+
+def test_get_custom_provider_extra_headers_falls_back_without_model_id():
+    """Existing callers that don't pass model_id keep the prior
+    first-declared-entry behavior — no behavior change for them."""
+    headers = get_custom_provider_extra_headers(
+        SHARED_URL, custom_providers=_SHARED_ENTRIES,
+    )
+    assert headers == {"CF-Access-Client-Id": "openai-chat-id"}
+
+
+def test_get_custom_provider_extra_headers_unclaimed_model_falls_back_to_first():
+    """A model_id that no shared entry claims falls back to the first
+    base_url match, preserving prior behavior rather than failing closed."""
+    headers = get_custom_provider_extra_headers(
+        SHARED_URL, custom_providers=_SHARED_ENTRIES, model_id="totally-unknown-model",
+    )
+    assert headers == {"CF-Access-Client-Id": "openai-chat-id"}
+
+
+def test_get_custom_provider_extra_headers_owning_entry_without_headers_returns_empty():
+    """If the entry that owns the requested model declares NO extra_headers
+    of its own, its sibling's headers must NOT leak in — the absence of
+    headers on the owning entry is itself meaningful and must not silently
+    fall back to a differently-scoped entry's headers."""
+    entries = [
+        {
+            "name": "Gateway OpenAI Chat",
+            "base_url": SHARED_URL,
+            "extra_headers": {"CF-Access-Client-Id": "openai-chat-id"},
+            "models": {"gpt-5": {}},
+        },
+        {
+            "name": "Gateway Claude",
+            "base_url": SHARED_URL,
+            # No extra_headers on the Claude entry.
+            "models": {"claude-sonnet-5@default": {}},
+        },
+    ]
+    headers = get_custom_provider_extra_headers(
+        SHARED_URL, custom_providers=entries, model_id="claude-sonnet-5@default",
+    )
+    assert headers == {}
+
+
+def test_get_custom_provider_extra_headers_singular_model_field_owns_headers():
+    """Ownership via the singular ``model`` field (not just ``models``
+    allowlist) also selects the correct entry's headers."""
+    entries = [
+        {
+            "name": "A",
+            "base_url": SHARED_URL,
+            "model": "model-a",
+            "extra_headers": {"X-Which": "a"},
+        },
+        {
+            "name": "B",
+            "base_url": SHARED_URL,
+            "model": "model-b",
+            "extra_headers": {"X-Which": "b"},
+        },
+    ]
+    assert get_custom_provider_extra_headers(
+        SHARED_URL, custom_providers=entries, model_id="model-b",
+    ) == {"X-Which": "b"}
+    assert get_custom_provider_extra_headers(
+        SHARED_URL, custom_providers=entries, model_id="model-a",
+    ) == {"X-Which": "a"}
+
+
+def test_apply_extra_headers_model_id_selects_owning_entry_headers():
+    """End-to-end: apply_custom_provider_extra_headers_to_client_kwargs with
+    model_id merges the OWNING entry's headers, not the first declared."""
+    client_kwargs = {"api_key": "x", "base_url": SHARED_URL}
+    apply_custom_provider_extra_headers_to_client_kwargs(
+        client_kwargs, SHARED_URL, custom_providers=_SHARED_ENTRIES,
+        model_id="claude-sonnet-5@default",
+    )
+    assert client_kwargs["default_headers"] == {"CF-Access-Client-Id": "claude-id"}
+
+
+def test_apply_extra_headers_without_model_id_keeps_prior_behavior():
+    """apply_custom_provider_extra_headers_to_client_kwargs without model_id
+    is unchanged: first declared entry sharing the base_url wins."""
+    client_kwargs = {"api_key": "x", "base_url": SHARED_URL}
+    apply_custom_provider_extra_headers_to_client_kwargs(
+        client_kwargs, SHARED_URL, custom_providers=_SHARED_ENTRIES,
+    )
+    assert client_kwargs["default_headers"] == {"CF-Access-Client-Id": "openai-chat-id"}

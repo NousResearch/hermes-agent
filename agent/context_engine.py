@@ -487,3 +487,35 @@ class ContextEngine(ABC):
         )
         self.threshold_percent = self._base_threshold_percent
         self.threshold_tokens = int(context_length * self.threshold_percent)
+
+    # -- Optional: post-generation enforcement hook (additive; default no-op) --
+    #
+    # This lets a retrieval-first engine audit/enforce the model's reply
+    # (citation check, verification, regenerate, refuse) *after* it returns.
+    # Pre-request context injection is handled separately by ``select_context()``.
+    # Built-in ContextCompressor and LCM do not override this, so behaviour is
+    # unchanged for existing engines. The host calls it only when the engine
+    # actually overrides it (the base no-op is short-circuited).
+
+    def capabilities(self) -> Dict[str, bool]:
+        """Advertise optional host-integration features this engine supports.
+
+        The only key the host understands is ``enforce_response``: set it to
+        ``True`` to opt into the regenerate branch of the post-generation
+        enforcement hook (accept/replace never require the flag). Default:
+        none (the host honors only accept/replace from ``enforce_response``)."""
+        return {}
+
+    def enforce_response(self, answer: str, messages: List[Dict[str, Any]],
+                         model: str = "", **kwargs) -> Dict[str, Any]:
+        """Audit the model's reply against the verbatim record.
+
+        ``kwargs`` may include ``final=True`` on the host's last allowed attempt
+        (the engine should then refuse rather than ask for another regeneration).
+
+        Return one of:
+          ``{"action": "accept"}``                       : ship the answer as-is
+          ``{"action": "regenerate", "message": <str>}`` : re-prompt with a correction
+          ``{"action": "replace", "text": <str>}``       : ship a safe replacement (refuse)
+        Default: accept (no enforcement)."""
+        return {"action": "accept"}

@@ -294,6 +294,99 @@ class TestThirdPartyAnthropicGateway:
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
 
+class TestCustomProviderOpenAIWireCapability:
+    """Explicit model capability works without provider, host, or family guesses."""
+
+    @staticmethod
+    def _configured_agent(*, enabled: bool, api_mode: str = "chat_completions"):
+        agent = _make_agent(
+            provider="custom:edge-router",
+            base_url="https://models.example.net/v1",
+            api_mode=api_mode,
+            model="vendor-agnostic-model",
+        )
+        agent._custom_providers = [
+            {
+                "name": "edge-router",
+                "base_url": "https://models.example.net/v1",
+                "models": {
+                    "vendor-agnostic-model": {"prompt_caching": enabled},
+                },
+            }
+        ]
+        return agent
+
+    def test_explicit_true_enables_envelope_layout_on_chat_completions(self):
+        agent = self._configured_agent(enabled=True)
+
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_explicit_false_disables_markers_on_chat_completions(self):
+        agent = self._configured_agent(enabled=False)
+
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_undeclared_chat_completions_route_stays_conservative(self):
+        agent = self._configured_agent(enabled=True)
+        agent._custom_providers[0]["models"]["vendor-agnostic-model"] = {
+            "context_length": 131072,
+        }
+
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_unrelated_custom_route_skips_capability_lookup(self, monkeypatch):
+        agent = self._configured_agent(enabled=True)
+        agent.provider = "openrouter"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "openai/gpt-5.4"
+
+        def unexpected_lookup(**_kwargs):
+            pytest.fail("unrelated built-in route performed custom capability lookup")
+
+        monkeypatch.setattr(
+            "hermes_cli.config.get_custom_provider_model_capability",
+            unexpected_lookup,
+        )
+
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    @pytest.mark.parametrize("api_mode", ["codex_responses", "bedrock_converse"])
+    def test_explicit_true_does_not_cross_into_other_wire_protocols(self, api_mode):
+        agent = self._configured_agent(enabled=True, api_mode=api_mode)
+
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_modern_providers_yaml_is_honored_during_early_init(
+        self, tmp_path, monkeypatch
+    ):
+        import textwrap
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            textwrap.dedent(
+                """
+                providers:
+                  edge-router:
+                    api: https://models.example.net/v1
+                    transport: openai_chat
+                    models:
+                      vendor-agnostic-model:
+                        prompt_caching: true
+                """
+            )
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        agent = _make_agent(
+            provider="edge-router",
+            base_url="https://models.example.net/v1",
+            api_mode="chat_completions",
+            model="vendor-agnostic-model",
+        )
+
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+
 class TestMiniMaxAnthropicWire:
     """MiniMax's own model family on its Anthropic-compatible endpoint.
 

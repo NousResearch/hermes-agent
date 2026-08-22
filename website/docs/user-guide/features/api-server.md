@@ -444,6 +444,8 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 
 Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
 
+**Session history replay:** if a run provides `session_id` but *none* of the explicit history mechanisms (`conversation_history`, `previous_response_id`, or a multi-message `input` array), Hermes automatically loads the persisted transcript for that session so the run continues the conversation instead of starting amnesiac — mirroring the `/api/sessions/{session_id}/chat` endpoints. Explicit history always wins; `conversation_history: []` means "fresh run" and suppresses replay. Auto-loaded history is tail-windowed to the last 100 messages (compaction summaries preserved) so a long transcript cannot exceed the model context. Clients that use `session_id` purely as a tracking/telemetry token and want each run stateless can opt out with `"load_session_history": false`.
+
 ### GET /v1/runs/\{run_id\}
 
 Poll the current run state. This is useful for dashboards that need status without holding an SSE connection open, or for UIs that reconnect after navigation.

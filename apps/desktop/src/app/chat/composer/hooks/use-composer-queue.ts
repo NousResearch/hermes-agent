@@ -15,6 +15,7 @@ import {
   MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
+  reorderQueuedPrompts,
   type QueuedPromptEntry,
   removeQueuedPrompt,
   shouldAutoDrain,
@@ -286,6 +287,21 @@ export function useComposerQueue({
     [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
   )
 
+  // Reorder the visible queue after a drag-and-drop interaction. The store
+  // accepts the full id list in the new order and writes it back; the slice
+  // subscription refreshes the queue for this session automatically.
+  const onReorderQueue = useCallback(
+    (ids: string[]) => {
+      if (!activeQueueSessionKey) {
+        return
+      }
+
+      const reordered = reorderQueuedPrompts(activeQueueSessionKey, ids)
+      triggerHaptic(reordered ? 'success' : 'selection')
+    },
+    [activeQueueSessionKey]
+  )
+
   // Deliver a queued entry as a mid-turn redirect — the queue-panel sibling of
   // the composer's steer-on-Enter. No interrupt, no drain lock: a redirect
   // rides the live turn (the gateway either restarts the active request with
@@ -416,6 +432,7 @@ export function useComposerQueue({
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,
+    onReorderQueue,
     queueCurrentDraft,
     queueEdit,
     queueParked,

@@ -112,6 +112,13 @@ _USER_BOUNDARY_END_REASONS = (
 # transport cannot block the session-stall watcher pass (notify-only path;
 # on timeout the latch stays clear and the next tick retries).
 _STALL_NOTIFY_SEND_TIMEOUT_SECONDS = 15.0
+# Initial wait for the stream consumer before the gateway decides whether to
+# send its own "final" response. If the consumer has entered a final-delivery
+# attempt, that attempt becomes the single writer and is awaited to completion:
+# platform adapters own their retry/timeout policy, and an arbitrary second
+# gateway ceiling only reintroduces the duplicate-send race when RetryAfter is
+# longer than that ceiling.
+_STREAM_FINAL_WAIT_BASE_TIMEOUT_SECONDS = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 _GATEWAY_HYGIENE_PLATFORM = "gateway_hygiene"
@@ -6715,6 +6722,51 @@ class TurnRunner:
             # True preserves the skip-db behaviour for the standard runtime.
             "agent_persisted": (ctx.result_holder[0].get("agent_persisted", True) if ctx.result_holder[0] else True),
         }
+
+
+async def _await_stream_task_before_final_decision(stream_task, stream_consumer) -> None:
+    """Wait for the stream consumer's task before any duplicate-send decision.
+
+    A flat short timeout here races an in-flight platform flood-control
+    retry: Telegram can mandate a ``retry_after`` wait of several minutes on the
+    consumer's final send/edit, and giving up early leaves
+    ``final_response_sent`` / ``final_content_delivered`` False (the attempt
+    hasn't resolved yet) — the caller then sends its own "final" response,
+    and if the abandoned send still reaches the platform, the user gets a
+    duplicate. Once the consumer reports an active final-delivery attempt
+    (``final_delivery_in_progress``), it is the single writer: wait for that
+    platform call to settle under the adapter's own retry/timeout policy.
+    Never treat "in flight" itself as delivered — only a completed send sets
+    the flags the caller checks afterward.
+
+    Uses ``asyncio.wait`` rather than ``asyncio.wait_for``: the latter
+    cancels the awaited task on timeout and waits for it to fully unwind
+    *before* raising ``TimeoutError``, so by the time a caller's except
+    clause runs, the consumer's cancellation handling (and
+    ``final_delivery_in_progress``) has already completed — the in-flight
+    check would always see it as False. ``asyncio.wait`` just reports
+    done/pending on timeout without touching the task, so the flag reflects
+    genuinely live state when checked.
+    """
+    done, _ = await asyncio.wait(
+        {stream_task}, timeout=_STREAM_FINAL_WAIT_BASE_TIMEOUT_SECONDS,
+    )
+    if stream_task in done:
+        return
+    if stream_consumer is not None and getattr(
+        stream_consumer, "final_delivery_in_progress", False,
+    ):
+        # No gateway-level total ceiling here. The platform adapter already
+        # owns bounded retries and request timeouts. Starting a second writer
+        # while its first final send is still alive cannot improve delivery;
+        # under flood control it deterministically schedules a duplicate.
+        await asyncio.wait({stream_task})
+        return
+    stream_task.cancel()
+    try:
+        await stream_task
+    except asyncio.CancelledError:
+        pass
 
 
 
@@ -28036,10 +28088,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _stream_consumer:
                 _stream_consumer.finish()
             if stream_task:
-                try:
-                    await asyncio.wait_for(stream_task, timeout=5.0)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    stream_task.cancel()
+                await _await_stream_task_before_final_decision(stream_task, _stream_consumer)
 
         _elapsed = time.time() - _start
         if not _run_still_current():
@@ -29623,13 +29672,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _sc = stream_consumer_holder[0]
                     if _sc and stream_task:
                         try:
-                            await asyncio.wait_for(stream_task, timeout=5.0)
-                        except (asyncio.TimeoutError, asyncio.CancelledError):
-                            stream_task.cancel()
-                            try:
-                                await stream_task
-                            except asyncio.CancelledError:
-                                pass
+                            await _await_stream_task_before_final_decision(stream_task, _sc)
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
                     # The queued branch needs raw ``result`` for interruption,
@@ -29840,14 +29883,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except asyncio.CancelledError:
                         pass
                 else:
-                    try:
-                        await asyncio.wait_for(stream_task, timeout=5.0)
-                    except (asyncio.TimeoutError, asyncio.CancelledError):
-                        stream_task.cancel()
-                        try:
-                            await stream_task
-                        except asyncio.CancelledError:
-                            pass
+                    await _await_stream_task_before_final_decision(
+                        stream_task, stream_consumer_holder[0],
+                    )
             
             # Unconditional abort + bounded wait for the streaming-TTS
             # consumer (#60671 hardening).  Covers cancellation / exception

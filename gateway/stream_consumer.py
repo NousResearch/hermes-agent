@@ -286,6 +286,12 @@ class GatewayStreamConsumer:
         # streaming, even if the final edit (cursor removal etc.)
         # subsequently failed.
         self._final_content_delivered = False
+        # True for the duration of the got_done final-delivery attempt below
+        # (send/edit calls that may block on a platform flood-control retry).
+        # The gateway's duplicate-send decision waits on this instead of
+        # abandoning an in-flight send after a flat short timeout; see the
+        # ``final_delivery_in_progress`` property and the gateway wait helper.
+        self._final_delivery_in_progress = False
         # Exact cleaned payload of the turn-final delivery that set the flags
         # above.  The gateway compares this against the completed
         # ``final_response`` before trusting the flags: a *successful* finalize
@@ -406,6 +412,18 @@ class GatewayStreamConsumer:
         """True when the final response content reached the user, even if
         the subsequent cosmetic edit (cursor removal) failed."""
         return self._final_content_delivered
+
+    @property
+    def final_delivery_in_progress(self) -> bool:
+        """True while a final-delivery send/edit attempt is still unresolved.
+
+        A platform flood-control retry can hold this send for minutes.
+        Callers deciding whether to send their own duplicate "final"
+        response must let the adapter-owned attempt settle rather than checking
+        ``final_response_sent`` / ``final_content_delivered`` while they are
+        still guaranteed False because the attempt hasn't returned yet.
+        """
+        return self._final_delivery_in_progress
 
     async def _notify_before_finalize(self) -> None:
         """Run the pre-finalize hook exactly once, swallowing hook errors."""
@@ -969,6 +987,17 @@ class GatewayStreamConsumer:
                 # so trailing text that was waiting for a potential open
                 # tag is not lost.
                 if got_done:
+                    # From here on this iteration only finalizes and returns
+                    # (whole-response send/edit, overflow-chunk tail, or the
+                    # got_done block below) — every exit path can block on a
+                    # platform flood-control retry. Set for the rest of this
+                    # run() call (cleared in the outer finally) so the
+                    # gateway's duplicate-send decision (gateway/run.py) can
+                    # wait out an in-flight attempt instead of racing it —
+                    # final_response_sent / final_content_delivered are
+                    # still guaranteed False here because the attempt hasn't
+                    # returned yet.
+                    self._final_delivery_in_progress = True
                     self._flush_think_buffer()
 
                     # Intentional-silence suppression.  When the agent chose
@@ -1400,6 +1429,10 @@ class GatewayStreamConsumer:
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
         finally:
+            # run() is exiting for good on every path through this finally
+            # (normal return, cancellation, or exception) — nothing further
+            # will attempt final delivery, so clear the in-flight marker.
+            self._final_delivery_in_progress = False
             # Safety net: if run() exits (normal return, cancellation, or
             # exception) while a _FLUSH barrier is still queued or was consumed
             # but not yet signaled, wake any waiters now. Without this a caller

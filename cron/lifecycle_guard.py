@@ -179,11 +179,11 @@ _ReadRemoteScriptFn = Callable[[str], Optional[str]]
 
 def _iter_command_segments(command: str) -> Iterator[list[str]]:
     """Yield shell-tokenized command segments, honoring quotes and comments."""
-    normalized = command.replace("\\\n", "")
-    for line in normalized.splitlines() or [normalized]:
+
+    def _tokenize(command_text: str) -> Iterator[list[str]]:
         try:
             lexer = shlex.shlex(
-                line,
+                command_text,
                 posix=True,
                 punctuation_chars=";&|()",
             )
@@ -191,7 +191,7 @@ def _iter_command_segments(command: str) -> Iterator[list[str]]:
             lexer.commenters = "#"
             tokens = list(lexer)
         except ValueError:
-            continue
+            return
 
         segment: list[str] = []
         for token in tokens:
@@ -203,6 +203,27 @@ def _iter_command_segments(command: str) -> Iterator[list[str]]:
             segment.append(token)
         if segment:
             yield segment
+
+    # Normalize line continuations.
+    normalized = _SHELL_LINE_CONTINUATION.sub(" ", command)
+    # Drop shebang metadata lines before command-separator normalization.
+    normalized = re.sub(r"(?m)^\s*#!.*(?:\r?\n|$)", "", normalized)
+
+    # Normalize remaining newlines as shell command separators while preserving quoted
+    # multi-line arguments (shlex treats punctuation chars as separators only when
+    # not quoted).
+    normalized = normalized.replace("\r\n", "\n").replace("\n", ";")
+
+    parsed = False
+    for segment in _tokenize(normalized):
+        parsed = True
+        yield segment
+    if parsed:
+        return
+
+    for line in normalized.split(";") if normalized else [normalized]:
+        yield from _tokenize(line)
+
 
 
 def _command_token_index(segment: list[str]) -> Optional[int]:

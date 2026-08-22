@@ -695,6 +695,25 @@ class TestLifecycleGuardModule:
         )
         assert result is False
 
+    def test_multiline_python_c_command_does_not_false_positive(self):
+        """#85557: a multi-line python -c payload with a db path should not be
+        re-tokenized as a shell script reference and should return False."""
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        command = (
+            "ls /opt/data/*.db; python3 -c \"\n"
+            "import sqlite3\n"
+            "c = sqlite3.connect('/opt/data/state.db')\n"
+            "print(1)\n"
+            "\""
+        )
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(command)
+            is False
+        )
+
     def test_nul_byte_in_path_token_does_not_crash_guard(self):
         """Residual #76762 class: when a NUL byte survives into the *path
         token itself* (tokenized binary-adjacent command text), ``os.open``

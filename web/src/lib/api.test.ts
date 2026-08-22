@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, fetchJSON } from "./api";
+import { api, fetchJSON, setManagementProfile } from "./api";
 
 const reloadMocks = vi.hoisted(() => ({
   attemptDashboardTokenReloadOnce: vi.fn(() => false),
@@ -16,6 +16,7 @@ vi.mock("./dashboard-auth-reload", () => ({
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
 beforeEach(() => {
+  setManagementProfile("");
   reloadMocks.attemptDashboardTokenReloadOnce.mockReset();
   reloadMocks.attemptDashboardTokenReloadOnce.mockReturnValue(false);
   reloadMocks.clearDashboardTokenReloadAttempt.mockReset();
@@ -115,6 +116,29 @@ describe("api.getModelOptions", () => {
       "/api/model/options?profile=default&refresh=1&include_unconfigured=1",
       expect.objectContaining({ credentials: "include" }),
     );
+  });
+});
+
+describe("api webhook profile scope", () => {
+  it("sends the selected profile to every webhook endpoint", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("worker beta");
+
+    await api.getWebhooks();
+    await api.enableWebhooks();
+    await api.createWebhook({ name: "incoming" });
+    await api.deleteWebhook("incoming");
+    await api.setWebhookEnabled("incoming", false);
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/webhooks?profile=worker%20beta",
+      "/api/webhooks/enable?profile=worker%20beta",
+      "/api/webhooks?profile=worker%20beta",
+      "/api/webhooks/incoming?profile=worker%20beta",
+      "/api/webhooks/incoming/enabled?profile=worker%20beta",
+    ]);
   });
 });
 

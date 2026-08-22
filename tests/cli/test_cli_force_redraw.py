@@ -426,3 +426,21 @@ class TestFocusRegainRedraw:
         bare_cli._schedule_focus_regain_redraw(min_interval=0.0)
 
         assert calls == ["redraw", "redraw"]
+
+    def test_first_redraw_fires_even_with_small_monotonic_clock(
+        self, bare_cli, monkeypatch
+    ):
+        """The first-ever redraw must fire regardless of monotonic's epoch.
+
+        time.monotonic() starts from an arbitrary point (boot on Linux); on a
+        fresh CI VM it can be smaller than min_interval. The old 0.0 sentinel
+        turned that into ``now - 0.0 < min_interval`` and silently swallowed
+        the FIRST redraw (CI run 32494557030 — both retry attempts failed).
+        """
+        calls = []
+        bare_cli._force_full_redraw = lambda: calls.append("redraw")
+        monkeypatch.setattr(cli_mod.time, "monotonic", lambda: 3.0)
+
+        bare_cli._schedule_focus_regain_redraw(min_interval=60.0)
+
+        assert calls == ["redraw"]

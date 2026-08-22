@@ -5440,7 +5440,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         
         # History file for persistent input recall across sessions
         self._history_file = _hermes_home / ".hermes_history"
-        self._last_invalidate: float = 0.0  # throttle UI repaints
+        self._last_invalidate: float | None = None  # throttle UI repaints (None = never; monotonic epoch is arbitrary)
         self._app = None
 
         # State shared by interactive run() and single-query chat mode.
@@ -5668,7 +5668,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if getattr(self, "_resize_recovery_pending", False):
             return
         now = time.monotonic()
-        if hasattr(self, "_app") and self._app and (now - getattr(self, "_last_invalidate", 0.0)) >= min_interval:
+        # None sentinel, not 0.0 — monotonic's epoch is arbitrary (boot on
+        # Linux), so on a fresh VM ``now`` can be < min_interval and a 0.0
+        # sentinel would swallow the first repaint (same class as
+        # _schedule_focus_regain_redraw below).
+        _last = getattr(self, "_last_invalidate", None)
+        if hasattr(self, "_app") and self._app and (_last is None or now - _last >= min_interval):
             self._last_invalidate = now
             try:
                 self._app.invalidate()
@@ -5760,8 +5765,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         per ``min_interval`` seconds.
         """
         now = time.monotonic()
-        last = getattr(self, "_last_focus_regain_redraw", 0.0)
-        if now - last < min_interval:
+        # Sentinel is None, not 0.0: time.monotonic() counts from an
+        # arbitrary epoch (boot on Linux). On a fresh VM (CI runners,
+        # containers) ``now`` can be smaller than ``min_interval``, and a
+        # 0.0 sentinel would make ``now - 0.0 < min_interval`` suppress the
+        # FIRST redraw ever requested (CI run 32494557030: monotonic < 60s
+        # made the min_interval=60 rate-limit test fail both attempts).
+        last = getattr(self, "_last_focus_regain_redraw", None)
+        if last is not None and now - last < min_interval:
             return
         self._last_focus_regain_redraw = now
         self._force_full_redraw()

@@ -543,11 +543,21 @@ def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
     """
     from plugins.web.keyless_mcp import extract_with_failover
 
+    # Without one-to-one result/URL parity, we cannot safely determine which
+    # URL each result represents. Bail out rather than risk re-fetching a
+    # policy-blocked URL through the keyless ring.
+    if len(results) != len(urls):
+        logger.warning(
+            "web_extract backend '%s' returned %d result(s) for %d URL(s); "
+            "skipping rescue to preserve policy-block invariants",
+            provider_name,
+            len(results),
+            len(urls),
+        )
+        return results
+
     # Partition out policy blocks. Rescue only genuine backend failures.
-    if len(results) == len(urls):
-        rescue_idx = [i for i, r in enumerate(results) if not _policy_blocked_result(r)]
-    else:  # defensive: provider broke order parity — treat all as rescueable
-        rescue_idx = list(range(len(results)))
+    rescue_idx = [i for i, r in enumerate(results) if not _policy_blocked_result(r)]
     if not rescue_idx:
         return results  # every failure is an intentional policy block
 

@@ -20,7 +20,7 @@ def test_copilot_runtime_api_mode_uses_target_model_over_stale_config_default(mo
 
     monkeypatch.setattr(
         "hermes_cli.models.copilot_model_api_mode",
-        lambda model, api_key=None: "codex_responses" if str(model).startswith("gpt-5") else "chat_completions",
+        lambda model, api_key=None, base_url=None: "codex_responses" if str(model).startswith("gpt-5") else "chat_completions",
     )
 
     assert rp._copilot_runtime_api_mode(
@@ -35,7 +35,7 @@ def test_copilot_runtime_api_mode_still_uses_default_without_target(monkeypatch)
 
     monkeypatch.setattr(
         "hermes_cli.models.copilot_model_api_mode",
-        lambda model, api_key=None: "codex_responses" if str(model).startswith("gpt-5") else "chat_completions",
+        lambda model, api_key=None, base_url=None: "codex_responses" if str(model).startswith("gpt-5") else "chat_completions",
     )
 
     assert rp._copilot_runtime_api_mode(
@@ -48,7 +48,9 @@ def test_copilot_runtime_api_mode_still_uses_default_without_target(monkeypatch)
 @pytest.mark.parametrize(
     ("configured_model", "target_model", "expected_mode"),
     [
-        ("gpt-5.5", "claude-opus-4.8", "chat_completions"),
+        # Claude on Copilot routes to the Anthropic Messages endpoint
+        # (/v1/messages) for the real ~1M input window.
+        ("gpt-5.5", "claude-opus-4.8", "anthropic_messages"),
         ("gpt-5.5", "gemini-3-pro-preview", "chat_completions"),
         ("claude-opus-4.8", "gpt-5.5", "codex_responses"),
     ],

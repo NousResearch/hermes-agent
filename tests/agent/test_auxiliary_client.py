@@ -3079,6 +3079,108 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
         assert message_item["id"] == "msg_short_but_connection_scoped"
 
 
+class TestAuxiliaryCrossIssuerReasoningGuard:
+    """_CodexCompletionsAdapter must drop reasoning items minted by a
+    *different* Responses issuer than this auxiliary endpoint, mirroring the
+    guard already applied on the main-turn transport
+    (agent/transports/codex.py::convert_messages/build_kwargs).
+
+    Auxiliary calls (context compression, flush_memories, MoA aggregation)
+    replay real conversation history through this adapter instead of the
+    main transport. If the main turn ran on one Responses issuer (e.g.
+    ChatGPT Codex OAuth) and ``auxiliary.<task>`` is configured to a
+    *different* issuer (e.g. xAI or GitHub Copilot Responses), replaying the
+    foreign-issued ``encrypted_content`` blob gets HTTP 400
+    ``invalid_encrypted_content`` and breaks the auxiliary call — unless
+    this adapter classifies its own endpoint and passes it as
+    ``current_issuer_kind`` into the shared converter.
+    """
+
+    @staticmethod
+    def _build_adapter(base_url):
+        from types import SimpleNamespace
+
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        message_item = SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(type="output_text", text="hi")],
+        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    status="completed", id="resp_test",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                ),
+            ),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
+
+        captured_kwargs = {}
+
+        def _create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeCreateStream()
+
+        real_client = MagicMock()
+        real_client.base_url = base_url
+        real_client.responses.create = _create
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+        return adapter, captured_kwargs
+
+    @staticmethod
+    def _replay_messages_with_foreign_reasoning(issuer_kind: str):
+        return [
+            {"role": "user", "content": "oi"},
+            {
+                "role": "assistant",
+                "content": "resposta",
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "encrypted_content": "BLOB_FROM_OTHER_ISSUER",
+                        "_issuer_kind": issuer_kind,
+                    }
+                ],
+            },
+            {"role": "user", "content": "segunda pergunta"},
+        ]
+
+    def test_drops_reasoning_minted_by_a_different_issuer(self):
+        # Main turn ran on ChatGPT Codex OAuth; this auxiliary call targets
+        # xAI's Responses endpoint — a different issuer that cannot decrypt
+        # a Codex-minted blob.
+        adapter, captured = self._build_adapter(base_url="https://api.x.ai")
+        adapter.create(
+            messages=self._replay_messages_with_foreign_reasoning("codex_backend")
+        )
+        reasoning_items = [
+            item for item in captured["input"] if item.get("type") == "reasoning"
+        ]
+        assert reasoning_items == []
+
+    def test_keeps_reasoning_minted_by_the_same_issuer(self):
+        # Same-issuer replay (both legs on ChatGPT Codex OAuth) must still
+        # work — the guard only drops *foreign* items.
+        adapter, captured = self._build_adapter(
+            base_url="https://chatgpt.com/backend-api/codex"
+        )
+        adapter.create(
+            messages=self._replay_messages_with_foreign_reasoning("codex_backend")
+        )
+        reasoning_items = [
+            item for item in captured["input"] if item.get("type") == "reasoning"
+        ]
+        assert len(reasoning_items) == 1
+        assert reasoning_items[0]["encrypted_content"] == "BLOB_FROM_OTHER_ISSUER"
+
+
 class TestVisionAutoSkipsKimiCoding:
     """_resolve_auto vision branch skips providers that have no vision on
     their main endpoint (e.g. Kimi Coding Plan /coding) and falls through

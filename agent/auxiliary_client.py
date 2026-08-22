@@ -1497,7 +1497,10 @@ class _CodexCompletionsAdapter:
         # assistant tool calls as `function_call` items and tool results as
         # `function_call_output` items with a valid call_id, so every
         # Responses path normalizes tool history identically and cannot drift.
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from agent.codex_responses_adapter import (
+            _chat_messages_to_responses_input,
+            _classify_responses_issuer,
+        )
         from utils import base_url_host_matches
 
         instructions = "You are a helpful assistant."
@@ -1519,6 +1522,31 @@ class _CodexCompletionsAdapter:
         # build_kwargs, so they need the same guard applied independently.
         _host_for_input = str(getattr(self._client, "base_url", "") or "")
         _is_github_for_input = base_url_host_matches(_host_for_input, "githubcopilot.com")
+        _is_xai_for_input = base_url_host_matches(_host_for_input, "x.ai") or base_url_host_matches(
+            _host_for_input, "api.x.ai"
+        )
+        _is_codex_backend_for_input = (
+            base_url_host_matches(_host_for_input, "chatgpt.com")
+            and "/backend-api/codex" in _host_for_input.lower()
+        )
+        # Cross-issuer guard: this adapter replays real conversation history
+        # (including reasoning items minted by whatever Responses endpoint
+        # served the main turn) into an auxiliary endpoint that may be a
+        # *different* provider (e.g. main turn on ChatGPT Codex OAuth,
+        # auxiliary.<task> pointed at xAI or GitHub Copilot). Without
+        # classifying this endpoint's issuer here, the guard in
+        # _chat_messages_to_responses_input defaults to inert
+        # (current_issuer_kind=None) and every foreign encrypted_content
+        # blob is replayed verbatim, which the endpoint cannot decrypt and
+        # rejects with HTTP 400 invalid_encrypted_content — breaking context
+        # compression / flush_memories / MoA aggregation calls that happen
+        # to run right after a mid-session provider switch.
+        _issuer_for_input = _classify_responses_issuer(
+            is_xai_responses=_is_xai_for_input,
+            is_github_responses=_is_github_for_input,
+            is_codex_backend=_is_codex_backend_for_input,
+            base_url=_host_for_input,
+        )
         # Auxiliary calls never send ``context_management`` (native
         # compaction is a main-turn feature), so they must never replay a
         # compaction checkpoint from the replayed history nor let one
@@ -1527,6 +1555,7 @@ class _CodexCompletionsAdapter:
         input_items = _chat_messages_to_responses_input(
             replay_messages,
             is_github_responses=_is_github_for_input,
+            current_issuer_kind=_issuer_for_input,
             native_compaction_eligible=False,
         )
 

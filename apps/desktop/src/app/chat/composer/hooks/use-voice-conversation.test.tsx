@@ -264,3 +264,170 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     expect(monitorCalls.length).toBe(armed)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Mute semantics — #74337 class: muting mid-conversation must be respected
+// (no re-arm while muted) AND reversible (unmute returns the loop to
+// listening), with the mic never wedging into a stuck state after playback.
+// ---------------------------------------------------------------------------
+
+function renderWithReply() {
+  let reply: { id: string; pending: boolean; text: string } | null = null
+  const onBusyChange: { current: (busy: boolean) => void } = { current: () => undefined }
+
+  const hook = renderHook(
+    ({ busy }: HookProps) =>
+      useVoiceConversation({
+        busy,
+        consumePendingResponse: vi.fn(),
+        enabled: true,
+        onSubmit: async () => {
+          // Mirrors the real app: submitting a turn makes the agent busy, and
+          // the reply only appears once the turn ends (busy flips false).
+          reply = { id: 'reply-1', pending: true, text: 'Hello back' }
+          onBusyChange.current(true)
+        },
+        onTranscribeAudio: async () => 'Hello',
+        pendingResponse: () => (busy ? null : reply)
+      }),
+    { initialProps: { busy: false } }
+  )
+
+  onBusyChange.current = busy => hook.rerender({ busy })
+
+  return {
+    completeReply() {
+      if (reply) {
+        reply = { ...reply, pending: false }
+      }
+    },
+    finishTurn() {
+      onBusyChange.current(false)
+    },
+    hook
+  }
+}
+
+async function beginTurn(hook: ReturnType<typeof renderWithReply>['hook']) {
+  await act(async () => {
+    await hook.result.current.start()
+  })
+  await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+
+  micHandle.stop.mockResolvedValueOnce({
+    audio: new Blob(['q'], { type: 'audio/webm' }),
+    durationMs: 900,
+    heardSpeech: true
+  })
+
+  await act(async () => {
+    hook.result.current.stopTurn()
+  })
+  await waitFor(() => expect(hook.result.current.status).toBe('thinking'))
+}
+
+describe('useVoiceConversation mute semantics', () => {
+  beforeEach(() => {
+    monitorCalls.length = 0
+    vi.clearAllMocks()
+    micHandle.start.mockResolvedValue(undefined)
+    micHandle.stop.mockResolvedValue(null)
+  })
+
+  afterEach(cleanup)
+
+  it('muting while listening cancels the recorder and keeps the mic off until unmute', async () => {
+    const { hook } = renderConversation()
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+    expect(micHandle.start).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      hook.result.current.toggleMute()
+    })
+
+    expect(hook.result.current.muted).toBe(true)
+    expect(hook.result.current.status).toBe('idle')
+    expect(micHandle.cancel).toHaveBeenCalled()
+
+    // The drive loop must not re-open the mic while muted.
+    await act(async () => {
+      await new Promise(resolve => window.setTimeout(resolve, 50))
+    })
+    expect(micHandle.start).toHaveBeenCalledTimes(1)
+
+    // Unmuting re-arms the loop without a manual stop/start.
+    act(() => {
+      hook.result.current.toggleMute()
+    })
+
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+    expect(micHandle.start).toHaveBeenCalledTimes(2)
+  })
+
+  it('a reply completing while muted is never spoken and unmute re-arms into the next turn', async () => {
+    const { completeReply, finishTurn, hook } = renderWithReply()
+
+    await beginTurn(hook)
+
+    // Mute during generation; the turn's reply is held, not spoken.
+    act(() => {
+      hook.result.current.toggleMute()
+    })
+    expect(hook.result.current.muted).toBe(true)
+    expect(hook.result.current.status).toBe('idle')
+
+    // The turn ends and the reply becomes available — but muted gates speech.
+    await act(async () => {
+      finishTurn()
+    })
+    expect(hook.result.current.status).toBe('idle')
+    expect(micHandle.start).toHaveBeenCalledTimes(1)
+
+    // Unmute: the held reply plays (fallback path), then the mic re-arms.
+    act(() => {
+      hook.result.current.toggleMute()
+    })
+
+    await waitFor(() => expect(hook.result.current.status).toBe('speaking'))
+    completeReply()
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+    expect(micHandle.start).toHaveBeenCalledTimes(2)
+  })
+
+  it('muting during reply playback does not wedge the loop; unmute returns it to listening', async () => {
+    const { completeReply, finishTurn, hook } = renderWithReply()
+
+    await beginTurn(hook)
+    // Turn ends → the (pending) reply lands → live speech opens and the
+    // fallback poll holds 'speaking' until the reply completes.
+    await act(async () => {
+      finishTurn()
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('speaking'))
+
+    // User mutes mid-playback to silence the rest of the reply.
+    act(() => {
+      hook.result.current.toggleMute()
+    })
+    expect(hook.result.current.muted).toBe(true)
+
+    // Reply completes while muted → settle runs, but no re-arm while muted.
+    completeReply()
+    await waitFor(() => expect(hook.result.current.status).toBe('idle'))
+    await act(async () => {
+      await new Promise(resolve => window.setTimeout(resolve, 50))
+    })
+    expect(micHandle.start).toHaveBeenCalledTimes(1)
+
+    // Unmute returns the loop to listening — no manual stop/start needed.
+    act(() => {
+      hook.result.current.toggleMute()
+    })
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+    expect(micHandle.start).toHaveBeenCalledTimes(2)
+  })
+})

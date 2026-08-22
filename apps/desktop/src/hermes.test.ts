@@ -370,6 +370,24 @@ describe('Hermes REST helpers', () => {
     expect(request.timeoutMs).toBeGreaterThanOrEqual(60 * 60 * 1000)
   })
 
+  it('allows Settings to bound its optional live model metadata probe', async () => {
+    api.mockResolvedValue({})
+
+    await getGlobalModelInfo(null, { timeoutMs: 5_000 })
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/model/info', timeoutMs: 5_000 }))
+  })
+
+  it('allows Settings to bound its optional model-options probe', async () => {
+    api.mockResolvedValue({})
+
+    await getGlobalModelOptions({ timeoutMs: 5_000 })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/api/model/options?explicit_only=1', timeoutMs: 5_000 })
+    )
+  })
+
   it('keeps the liveness poll on the short default so a dead backend fails fast', async () => {
     api.mockResolvedValue({})
     api.mockClear()

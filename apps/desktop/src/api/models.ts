@@ -10,11 +10,11 @@ import type {
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
 
-export function getGlobalModelInfo(profile?: null | string): Promise<ModelInfoResponse> {
+export function getGlobalModelInfo(profile?: null | string, opts?: { timeoutMs?: number }): Promise<ModelInfoResponse> {
   return hermesApi<ModelInfoResponse>({
     ...profileScoped(profile),
     path: '/api/model/info',
-    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    timeoutMs: opts?.timeoutMs ?? STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -30,6 +30,7 @@ export function getGlobalModelOptions(
     refresh?: boolean
     includeUnconfigured?: boolean
     explicitOnly?: boolean
+    timeoutMs?: number
   },
   profile?: null | string
 ): Promise<ModelOptionsResponse> {
@@ -50,7 +51,7 @@ export function getGlobalModelOptions(
   return hermesApi<ModelOptionsResponse>({
     ...profileScoped(profile),
     path: params.size > 0 ? `/api/model/options?${params.toString()}` : '/api/model/options',
-    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    timeoutMs: opts?.timeoutMs ?? STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 

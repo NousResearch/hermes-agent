@@ -186,6 +186,8 @@ interface ModelSettingsProps {
   scopeProfile?: null | string
 }
 
+const MODEL_SETTINGS_METADATA_TIMEOUT_MS = 5_000
+
 export function ModelSettings({ onMainModelChanged, scopeProfile = null }: ModelSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.model
@@ -233,47 +235,118 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
       setLoading(true)
       setError('')
 
-      try {
-        const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
-          getGlobalModelInfo(scopeProfile),
-          getGlobalModelOptions(undefined, scopeProfile),
-          getAuxiliaryModels(scopeProfile),
-          getMoaModels(scopeProfile).catch(() => null)
-        ])
+      const isCurrent = () => profileEpoch.current === epoch
 
-        if (profileEpoch.current !== epoch) {
+      const reportFailure = (reason: unknown) => {
+        if (!isCurrent()) {
           return
         }
 
-        setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
-        setProviders(modelOptions.providers || [])
+        const message = reason instanceof Error ? reason.message : String(reason)
+        setError(prev => (prev ? `${prev}\n${message}` : message))
+      }
 
-        if (replaceSelection) {
-          setSelectedProvider(modelInfo.provider)
-          setSelectedModel(modelInfo.model)
-        } else {
-          setSelectedProvider(prev => prev || modelInfo.provider)
-          setSelectedModel(prev => prev || modelInfo.model)
+      let modelInfoSettled = false
+      let modelInfoAvailable = false
+      let auxiliaryMainFallback: { model: string; provider: string } | null = null
+
+      const publishAuxiliaryMainFallback = () => {
+        if (!isCurrent() || !modelInfoSettled || modelInfoAvailable || !auxiliaryMainFallback?.model) {
+          return
         }
 
-        setAuxiliary(auxiliaryModels)
-        setMoa(moaModels)
+        const fallback = auxiliaryMainFallback
+        setMainModel(prev => prev ?? fallback)
+        setSelectedProvider(prev => (prev.length > 0 ? prev : fallback.provider))
+        setSelectedModel(prev => (prev.length > 0 ? prev : fallback.model))
+      }
 
-        if (moaModels) {
-          setSelectedMoaPreset(prev => (prev && moaModels.presets[prev] ? prev : moaModels.default_preset))
-        }
+      const modelInfoRequest = getGlobalModelInfo(scopeProfile, {
+        timeoutMs: MODEL_SETTINGS_METADATA_TIMEOUT_MS
+      })
+        .then(modelInfo => {
+          if (!isCurrent()) {
+            return
+          }
 
+          modelInfoAvailable = Boolean(modelInfo.provider || modelInfo.model)
+
+          if (!modelInfoAvailable) {
+            return
+          }
+
+          setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
+
+          if (replaceSelection) {
+            setSelectedProvider(modelInfo.provider)
+            setSelectedModel(modelInfo.model)
+          } else {
+            setSelectedProvider(prev => (prev.length > 0 ? prev : modelInfo.provider))
+            setSelectedModel(prev => (prev.length > 0 ? prev : modelInfo.model))
+          }
+        })
+        .catch(reportFailure)
+        .finally(() => {
+          modelInfoSettled = true
+          publishAuxiliaryMainFallback()
+
+          if (isCurrent()) {
+            setLoading(false)
+          }
+        })
+
+      const modelOptionsRequest = getGlobalModelOptions({ timeoutMs: MODEL_SETTINGS_METADATA_TIMEOUT_MS }, scopeProfile)
+        .then(modelOptions => {
+          if (isCurrent()) {
+            setProviders(modelOptions.providers || [])
+          }
+        })
+        .catch(reportFailure)
+
+      const auxiliaryModelsRequest = getAuxiliaryModels(scopeProfile)
+        .then(auxiliaryModels => {
+          if (!isCurrent()) {
+            return
+          }
+
+          setAuxiliary(auxiliaryModels)
+
+          if (auxiliaryModels.main?.model) {
+            auxiliaryMainFallback = {
+              model: auxiliaryModels.main.model,
+              provider: auxiliaryModels.main.provider
+            }
+            publishAuxiliaryMainFallback()
+          }
+        })
+        .catch(reportFailure)
+        .finally(() => {
+          if (isCurrent()) {
+            setLoading(false)
+          }
+        })
+
+      const moaModelsRequest = getMoaModels(scopeProfile)
+        .then(moaModels => {
+          if (!isCurrent()) {
+            return
+          }
+
+          setMoa(moaModels)
+
+          if (moaModels) {
+            setSelectedMoaPreset(prev => (prev && moaModels.presets[prev] ? prev : moaModels.default_preset))
+          }
+        })
+        .catch(() => undefined)
+
+      await Promise.allSettled([modelInfoRequest, modelOptionsRequest, auxiliaryModelsRequest, moaModelsRequest])
+
+      if (isCurrent()) {
         // The config record loads via its own shared query; a model switch can
         // change it server-side (aux slots), so nudge that cache to refetch.
         void invalidateHermesConfig(scopeProfile)
-      } catch (err) {
-        if (profileEpoch.current === epoch) {
-          setError(err instanceof Error ? err.message : String(err))
-        }
-      } finally {
-        if (profileEpoch.current === epoch) {
-          setLoading(false)
-        }
+        setLoading(false)
       }
     },
     [scopeProfile]
@@ -898,7 +971,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
             )}
           </div>
         )}
-        {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
+        {error && <div className="mt-2 whitespace-pre-line text-xs text-destructive">{error}</div>}
         {switchStaleAux.length > 0 && (
           <div className="mt-2">
             <StaleAuxWarning

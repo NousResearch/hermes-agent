@@ -10733,7 +10733,17 @@ def _default_spawn(
     profile_arg = normalize_profile_name(task.assignee)
 
     prompt = f"work kanban task {task.id}"
-    env = dict(os.environ)
+    # A kanban worker is a model-driving child process.  Start from the
+    # centralized non-terminal spawn environment rather than copying the
+    # gateway's process environment wholesale: gateway / relay credentials
+    # never belong in a worker, and provider credentials may only be inherited
+    # by a single-profile deployment.  In multiplex mode the worker reloads
+    # its assignee profile's .env at startup instead.
+    from agent.secret_scope import is_multiplex_active
+    from tools.environments.local import hermes_subprocess_env
+
+    multiplex_active = is_multiplex_active()
+    env = hermes_subprocess_env(inherit_credentials=not multiplex_active)
     # The dispatcher is detached from every conversation. Its worker must never
     # inherit routing mirrored by a previous gateway turn, even before the first
     # session binds ContextVars in this process.
@@ -10751,14 +10761,31 @@ def _default_spawn(
     # profile-specific config entirely.  Fixes profile-scoped fallback_providers
     # being invisible to kanban workers.
     from hermes_cli.profiles import resolve_profile_env
+    from tools.env_passthrough import scope_subprocess_env_to_profile
+
+    profile_secrets: dict[str, str] = {}
     try:
-        env["HERMES_HOME"] = resolve_profile_env(profile_arg)
+        profile_home = resolve_profile_env(profile_arg)
+        env["HERMES_HOME"] = profile_home
+        from agent.secret_scope import build_profile_secret_scope
+        from hermes_constants import apply_subprocess_home_env
+
+        profile_secrets = build_profile_secret_scope(Path(profile_home))
+        # hermes_subprocess_env() applied the HOME policy before the assignee
+        # profile was known. Reapply it after HERMES_HOME is finalized so
+        # terminal.home_mode=profile points at the worker's profile, not the
+        # dispatcher's.
+        apply_subprocess_home_env(env)
     except FileNotFoundError:
         # Profile dir doesn't exist — defer resolution to the CLI's
         # _apply_profile_override() via HERMES_PROFILE (set below).
         # This only happens in test fixtures where the isolated
         # HERMES_HOME never had profiles created.
         pass
+    # A missing profile has no authorized secrets: in multiplex mode this
+    # still removes credential-shaped leftovers from the dispatcher rather
+    # than letting an eventual CLI fallback inherit another profile's value.
+    env = scope_subprocess_env_to_profile(env, profile_secrets)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

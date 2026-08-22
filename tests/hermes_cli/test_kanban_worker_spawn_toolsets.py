@@ -89,6 +89,158 @@ agent:
         assert required in pinned
 
 
+def test_default_spawn_uses_secondary_profile_secret_not_default(monkeypatch, tmp_path):
+    """A multiplex dispatcher may have booted with the default profile's
+    environment.  A worker assigned to another profile must not inherit an
+    undeclared arbitrary password from that parent process (GH #82936)."""
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "elias"
+    profile.mkdir(parents=True)
+    profile.joinpath(".env").write_text("SERVICE_PASSWORD=elias-secret\n", encoding="utf-8")
+    root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("SERVICE_PASSWORD", "default-profile-secret")
+
+    from agent import secret_scope as ss
+    ss.set_multiplex_active(True)
+
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4243
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["env"] = dict(kwargs.get("env") or {})
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    try:
+        kb._default_spawn(_make_task(kb, assignee="elias"), str(workspace))
+    finally:
+        ss.set_multiplex_active(False)
+
+    assert captured["env"]["SERVICE_PASSWORD"] == "elias-secret"
+
+
+def test_default_spawn_drops_undeclared_default_profile_secret(monkeypatch, tmp_path):
+    """A worker for a profile with no matching secret must fail closed rather
+    than inherit the default profile's process-global value (GH #82936)."""
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "elias").mkdir(parents=True)
+    root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("SERVICE_PASSWORD", "default-profile-secret")
+
+    from agent import secret_scope as ss
+    from hermes_cli import kanban_db as kb
+
+    ss.set_multiplex_active(True)
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4245
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["env"] = dict(kwargs.get("env") or {})
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    try:
+        kb._default_spawn(_make_task(kb, assignee="elias"), str(workspace))
+    finally:
+        ss.set_multiplex_active(False)
+
+    assert "SERVICE_PASSWORD" not in captured["env"]
+
+
+def test_default_spawn_multiplex_strips_gateway_and_provider_credentials(monkeypatch, tmp_path):
+    """A worker must not inherit dispatcher credentials for another profile."""
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "elias").mkdir(parents=True)
+    root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    leaked = {
+        "ANTHROPIC_API_KEY": "default-provider-key",
+        "TELEGRAM_BOT_TOKEN": "gateway-bot-token",
+        "GATEWAY_RELAY_SECRET": "relay-secret",
+        "GH_TOKEN": "github-token",
+        "AUXILIARY_VISION_API_KEY": "auxiliary-key",
+        "_HERMES_FORCE_ANTHROPIC_API_KEY": "forced-provider-key",
+    }
+    for name, value in leaked.items():
+        monkeypatch.setenv(name, value)
+
+    from agent import secret_scope as ss
+    from hermes_cli import kanban_db as kb
+
+    ss.set_multiplex_active(True)
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4246
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["env"] = dict(kwargs.get("env") or {})
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    try:
+        kb._default_spawn(_make_task(kb, assignee="elias"), str(workspace))
+    finally:
+        ss.set_multiplex_active(False)
+
+    for name in leaked:
+        assert name not in captured["env"]
+
+
+def test_default_spawn_single_profile_keeps_provider_but_not_gateway_secrets(monkeypatch, tmp_path):
+    """Single-profile deployments may legitimately source provider auth from
+    the service environment, but workers never need gateway credentials."""
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "elias").mkdir(parents=True)
+    root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "service-provider-key")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "gateway-bot-token")
+    monkeypatch.setenv("GATEWAY_RELAY_SECRET", "relay-secret")
+    monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "auxiliary-key")
+
+    from agent import secret_scope as ss
+    from hermes_cli import kanban_db as kb
+
+    ss.set_multiplex_active(False)
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4247
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["env"] = dict(kwargs.get("env") or {})
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    kb._default_spawn(_make_task(kb, assignee="elias"), str(workspace))
+
+    assert captured["env"]["ANTHROPIC_API_KEY"] == "service-provider-key"
+    for name in ("TELEGRAM_BOT_TOKEN", "GATEWAY_RELAY_SECRET", "AUXILIARY_VISION_API_KEY"):
+        assert name not in captured["env"]
+
+
 def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_path):
     """The dispatcher's pre-``chat`` model flag must reach ``args.model``.
 

@@ -1071,6 +1071,84 @@ class TestPythonhomeSanitized:
 
 
 class TestProfileScopedPassthrough:
+    def test_make_run_env_drops_foreign_secret_shaped_value_in_multiplex(self, monkeypatch):
+        """A secondary profile must not hand a default profile's arbitrary
+        password to a terminal child merely because its name is not in the
+        provider-specific blocklist (GH #82936)."""
+        from agent import secret_scope as ss
+        from tools.environments.local import _make_run_env
+
+        monkeypatch.setenv("SERVICE_PASSWORD", "default-profile-secret")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({})
+        try:
+            result = _make_run_env({})
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert "SERVICE_PASSWORD" not in result
+
+    def test_make_run_env_uses_current_profile_secret_shaped_value(self, monkeypatch):
+        """The isolation guard must not prevent a terminal from receiving a
+        same-named credential explicitly defined by the routed profile."""
+        from agent import secret_scope as ss
+        from tools.environments.local import _make_run_env
+
+        monkeypatch.setenv("SERVICE_PASSWORD", "default-profile-secret")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"SERVICE_PASSWORD": "secondary-profile-secret"})
+        try:
+            result = _make_run_env({})
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert result["SERVICE_PASSWORD"] == "secondary-profile-secret"
+
+    def test_background_subprocess_env_also_drops_foreign_secret(self):
+        """The shared background/PTY environment factory must use the same
+        profile boundary as foreground terminal execution."""
+        from agent import secret_scope as ss
+        from tools.environments.local import _sanitize_subprocess_env
+
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({})
+        try:
+            result = _sanitize_subprocess_env(
+                {"PATH": "/usr/bin", "SERVICE_PASSWORD": "default-profile-secret"}
+            )
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert "SERVICE_PASSWORD" not in result
+
+    def test_multiplex_drops_ambient_ssh_and_aws_credentials(self, monkeypatch):
+        """Multiplexing is a profile boundary, not the trusted single-user
+        operator shell exception that normally permits ssh-agent and AWS."""
+        from agent import secret_scope as ss
+        from tools.environments.local import _make_run_env
+
+        inherited = {
+            "SSH_AUTH_SOCK": "/private/tmp/agent.sock",
+            "AWS_ACCESS_KEY_ID": "AKIADEFAULTPROFILE",
+            "AWS_SECRET_ACCESS_KEY": "default-profile-secret",
+            "AWS_SESSION_TOKEN": "default-profile-token",
+        }
+        for name, value in inherited.items():
+            monkeypatch.setenv(name, value)
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({})
+        try:
+            result = _make_run_env({})
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        for name in inherited:
+            assert name not in result
+
     def test_make_run_env_uses_active_profile_for_passthrough(self, monkeypatch):
         """Allowlisted values must come from the routed profile, not os.environ."""
         from agent import secret_scope as ss

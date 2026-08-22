@@ -217,7 +217,11 @@ _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 # the agent terminal — not just Bedrock users, since the registry is iterated
 # unconditionally — and (b) be unrecoverable, because env_passthrough.py
 # refuses to re-allow anything in this blocklist (GHSA-rhgp-j443-p4rf).  See
-# issue #32314 discussion.
+# issue #32314 discussion.  One deliberate exception exists: when profile
+# multiplexing is active, credential-shaped ambient values are resolved only
+# from the routed profile's secret scope.  They are no longer the user's one
+# trusted shell; carrying them into another profile would defeat multiplex
+# isolation (#82936).
 _AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({
     "AWS_BEARER_TOKEN_BEDROCK",
 })
@@ -472,10 +476,12 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     try:
         from tools.env_passthrough import (
             is_env_passthrough as _is_passthrough,
+            resolve_profile_scoped_subprocess_value as _resolve_profile_scoped_value,
             resolve_passthrough_value as _resolve_passthrough_value,
         )
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
+        _resolve_profile_scoped_value = lambda _name, fallback: fallback  # noqa: E731
         _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
 
     sanitized: dict[str, str] = {}
@@ -488,7 +494,11 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         passthrough = _is_passthrough(key)
         if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
             continue
-        resolved = _resolve_passthrough_value(key, value) if passthrough else value
+        resolved = (
+            _resolve_passthrough_value(key, value)
+            if passthrough
+            else _resolve_profile_scoped_value(key, value)
+        )
         if resolved is not None:
             sanitized[key] = resolved
 
@@ -504,7 +514,11 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             passthrough = _is_passthrough(key)
             if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
                 continue
-            resolved = _resolve_passthrough_value(key, value) if passthrough else value
+            resolved = (
+                _resolve_passthrough_value(key, value)
+                if passthrough
+                else _resolve_profile_scoped_value(key, value)
+            )
             if resolved is not None:
                 sanitized[key] = resolved
 
@@ -1285,10 +1299,12 @@ def _make_run_env(env: dict) -> dict:
     try:
         from tools.env_passthrough import (
             is_env_passthrough as _is_passthrough,
+            resolve_profile_scoped_subprocess_value as _resolve_profile_scoped_value,
             resolve_passthrough_value as _resolve_passthrough_value,
         )
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
+        _resolve_profile_scoped_value = lambda _name, fallback: fallback  # noqa: E731
         _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
 
     merged = dict(os.environ | env)
@@ -1305,7 +1321,11 @@ def _make_run_env(env: dict) -> dict:
             passthrough = _is_passthrough(k)
             if k in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
                 continue
-            value = _resolve_passthrough_value(k, v) if passthrough else v
+            value = (
+                _resolve_passthrough_value(k, v)
+                if passthrough
+                else _resolve_profile_scoped_value(k, v)
+            )
             if value is not None:
                 run_env[k] = value
     path_key = _path_env_key(run_env)

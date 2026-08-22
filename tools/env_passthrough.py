@@ -28,6 +28,66 @@ from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
+
+# Keep this conservative, and aligned with the established execute_code
+# subprocess boundary.  In a multiplexed gateway an unrecognised value with
+# one of these names may belong to the profile that booted the process, not
+# the profile whose child is being spawned.
+_SECRET_ENV_NAME_PARTS = (
+    "KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "PASSWD", "AUTH",
+    "DSN", "WEBHOOK", "CREDS", "BEARER", "APIKEY",
+)
+
+
+def is_secret_shaped_env_name(name: str) -> bool:
+    """Whether ``name`` conventionally carries a credential value."""
+    return any(part in name.upper() for part in _SECRET_ENV_NAME_PARTS)
+
+
+def resolve_profile_scoped_subprocess_value(name: str, fallback: str | None) -> str | None:
+    """Resolve a secret-shaped child env value without crossing profiles.
+
+    Multiplexed terminal children may inherit the default profile's process
+    environment.  For credential-shaped names, the routed profile's scope is
+    authoritative; a miss therefore removes the value rather than falling
+    back to a potentially foreign ``os.environ`` entry.  Ordinary variables
+    keep the historical shell environment behavior.
+    """
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+    if not is_multiplex_active() or not is_secret_shaped_env_name(name):
+        return fallback
+    scope = current_secret_scope()
+    if scope is None:
+        return None
+    return scope.get(name)
+
+
+def scope_subprocess_env_to_profile(
+    env: dict[str, str], profile_secrets: dict[str, str]
+) -> dict[str, str]:
+    """Replace multiplexed child credentials with a named profile's values.
+
+    Used before Kanban starts a fresh worker process: unlike an in-turn
+    terminal it has no active ContextVar scope yet, but it knows the assignee
+    profile.  Only secret-shaped values are changed; ordinary environment
+    compatibility stays intact.  Outside multiplexing this is a no-op.
+    """
+    from agent.secret_scope import is_multiplex_active
+
+    if not is_multiplex_active():
+        return env
+    scoped = dict(env)
+    for name in tuple(scoped):
+        if not is_secret_shaped_env_name(name):
+            continue
+        value = profile_secrets.get(name)
+        if value is None:
+            scoped.pop(name, None)
+        else:
+            scoped[name] = value
+    return scoped
+
 # Session-scoped set of env var names that should pass through to sandboxes.
 # Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.
 _allowed_env_vars_var: ContextVar[set[str]] = ContextVar("_allowed_env_vars")

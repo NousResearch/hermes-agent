@@ -6128,7 +6128,7 @@ class TurnRunner:
             cmd = approval_data.get("command", "")
             desc = approval_data.get("description", "dangerous command")
 
-# Check approval delegation — route to admin if enabled
+            # Check approval delegation — route to admin if enabled
             try:
                 from gateway.approval_delegation import (
                     is_delegation_enabled, is_admin_user, get_admins,

@@ -5818,6 +5818,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
                 return tool_error(f"MCP server '{server_name}' is not connected")
 
+        # Set by _call() when the MCP tool itself returns isError. The RPC
+        # round-trip completed in that case, so the transport is healthy and
+        # the result must not count against the transport circuit breaker.
+        tool_error_encountered = False
+
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
@@ -5839,6 +5844,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # MCP CallToolResult has .content (list of content blocks) and
             # .is_error (.isError before mcp 2.0)
             if mcp_field(result, "is_error", "isError", False):
+                nonlocal tool_error_encountered
+                tool_error_encountered = True
                 error_text = ""
                 for block in (result.content or []):
                     if getattr(block, "text", None):
@@ -5969,7 +5976,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             try:
                 parsed = json.loads(result)
                 if "error" in parsed:
-                    _bump_server_error(server_name)
+                    if tool_error_encountered:
+                        _reset_server_error(server_name)
+                    else:
+                        _bump_server_error(server_name)
                 else:
                     _reset_server_error(server_name)  # success — reset
             except (json.JSONDecodeError, TypeError):

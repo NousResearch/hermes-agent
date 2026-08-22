@@ -96,9 +96,80 @@ def _cleanup(mcp_tool_module, name: str) -> None:
         mcp_tool_module._server_breaker_opened_at.pop(name, None)
 
 
+def _tool_error_result(text: str):
+    """Return an MCP result whose RPC succeeded but whose tool rejected the call."""
+    result = MagicMock()
+    result.is_error = True
+    block = MagicMock()
+    block.text = text
+    block.type = "text"
+    result.content = [block]
+    result.structured_content = None
+    result.meta = None
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def test_tool_errors_do_not_trip_transport_breaker(monkeypatch, tmp_path):
+    """A completed RPC returning isError proves the transport is healthy."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    calls = {"count": 0}
+
+    async def _call_tool_error(*_args, **_kwargs):
+        calls["count"] += 1
+        return _tool_error_result(f"bad parameter {calls['count']}")
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_error)
+    mcp_tool._ensure_mcp_loop()
+    try:
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+        for expected in range(1, 5):
+            parsed = json.loads(handler({}))
+            assert f"bad parameter {expected}" in parsed["error"]
+
+        assert calls["count"] == 4, "the fourth call must reach the healthy transport"
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+        assert mcp_tool._server_breaker_opened_at.get("srv") is None
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
+def test_tool_error_resets_prior_transport_strikes(monkeypatch, tmp_path):
+    """Any completed round-trip closes a breaker that has not opened yet."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    behavior = {"transport_down": True}
+
+    async def _call_tool(*_args, **_kwargs):
+        if behavior["transport_down"]:
+            raise RuntimeError("transport down")
+        return _tool_error_result("tool denied")
+
+    _install_stub_server(mcp_tool, "srv", _call_tool)
+    mcp_tool._ensure_mcp_loop()
+    try:
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+        handler({})
+        handler({})
+        assert mcp_tool._server_error_counts.get("srv") == 2
+
+        behavior["transport_down"] = False
+        assert "tool denied" in json.loads(handler({}))["error"]
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0
+        assert mcp_tool._server_breaker_opened_at.get("srv") is None
+    finally:
+        _cleanup(mcp_tool, "srv")
 
 
 def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):

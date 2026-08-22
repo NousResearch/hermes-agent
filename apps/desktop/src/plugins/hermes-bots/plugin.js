@@ -207,6 +207,10 @@ function focusedMentionProfile() {
 /** Group-chat rooms: { [group]: { log: [{from:{kind,name},text,at}], watermarks:{[member]:idx}, epoch, running } }.
  *  Log + watermarks persist via plugin storage; epoch/running are runtime-only. */
 const $groupChats = atom({})
+// Runtime-only room drive ownership. One drain owns a room at a time; sends
+// received while it awaits a member turn coalesce by thread and run only after
+// that drain releases the member session.
+const groupChatDrives = new Map()
 /** Group whose room view is open in the Bots pane (secondary navigation
  *  inside the pane; a normal row click returns to the roster). */
 const $groupChatWorkspace = atom(null)
@@ -278,6 +282,7 @@ const GROUP_ACTIVITY_LABELS = {
   failed: 'hit an error',
   cancelled: 'turn interrupted by a newer message',
   settled: 'turn settled',
+  capped: 'reached the room limit',
   delivered: 'delivered a late reply'
 }
 
@@ -4673,8 +4678,10 @@ function trimGroupChatLog(log, watermarks, limit = GROUP_CHAT_HISTORY_LIMIT * 4)
   const drop = log.length - limit
   const trimmed = {}
 
-  for (const [name, index] of Object.entries(watermarks || {})) {
-    trimmed[name] = Math.max(0, index - drop)
+  for (const [name, boundary] of Object.entries(watermarks || {})) {
+    // Immutable ids survive positional trimming; numeric values are retained
+    // only for rooms persisted by older builds.
+    trimmed[name] = typeof boundary === 'number' ? Math.max(0, boundary - drop) : boundary
   }
 
   return { log: log.slice(drop), watermarks: trimmed }
@@ -4745,6 +4752,7 @@ async function disbandGroupChat(group, members) {
   // the user just discarded.
   const all = { ...$groupChats.get() }
   const prior = all[group] || {}
+  groupChatDrives.delete(group)
 
   delete all[group]
   // Keep a runtime-only tombstone while a drive may still be mid-turn; it
@@ -4838,6 +4846,12 @@ async function renameGroupChat(oldName, newName, members) {
 
   if (!next || next === oldName) {
     return oldName
+  }
+
+  // Re-keying runtime ownership while a submit is held can orphan queued work.
+  if (groupChatDrives.get(oldName)?.active) {
+    host.notify({ kind: 'error', message: 'Wait for the group turn to finish before renaming it.' })
+    return null
   }
 
   // Renames are explicit user intent: reject a collision honestly instead of
@@ -5434,6 +5448,7 @@ async function runGroupChatRounds(group, members, thread) {
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
   let posted = 0
+  let outcome = 'capped'
 
   try {
     for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
@@ -5478,10 +5493,12 @@ async function runGroupChatRounds(group, members, thread) {
         const room = $groupChats.get()[group] || { log: [], watermarks: {} }
         const memberKey = groupMemberKey(member)
         const markKey = `${thread}::${memberKey}`
-        const seen = room.watermarks[markKey] || 0
+        const boundary = room.watermarks[markKey]
+        const boundaryIndex =
+          typeof boundary === 'string' ? room.log.findIndex(entry => entry.id === boundary) + 1 : Number(boundary || 0)
         // Delta: NEW room entries, narrowed to this thread — the member's
         // turn sees only the conversation it's part of.
-        const delta = room.log.slice(seen).filter(e => groupThreadOf(e) === thread)
+        const delta = room.log.slice(Math.max(0, boundaryIndex)).filter(e => groupThreadOf(e) === thread)
 
         if (!delta.length) {
           continue
@@ -5499,6 +5516,9 @@ async function runGroupChatRounds(group, members, thread) {
         // into the member's session so the model sees the pixels, not just
         // the transcript's [attached image: …] marker.
         const deltaImages = delta.flatMap(e => (Array.isArray(e.images) ? e.images : []))
+        // Freeze the exact stable boundary included in this prompt. Entries
+        // appended during the await must remain unseen.
+        const deliveredThrough = room.log.at(-1)?.id || room.log.length
 
         // Surface WHO is on turn (runtime-only, like running/epoch) so the
         // room shows "Radar is thinking…" instead of a generic working line —
@@ -5509,30 +5529,41 @@ async function runGroupChatRounds(group, members, thread) {
         })
 
         let reply = null
+        let accepted = false
 
         try {
           reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages)
+          accepted = true
         } catch {
           recordGroupActivity(group, { kind: 'failed', member: member.name, thread })
           reply = null // a failed turn is a pass, never a room error
         }
 
-        // The member has now seen everything up to the pre-reply log length.
-        updateGroupChat(group, r => {
-          r.watermarks[markKey] = r.log.length
-          return r
-        })
+        if (accepted) {
+          updateGroupChat(group, r => {
+            r.watermarks[markKey] = deliveredThrough
+            return r
+          })
+        }
 
         if (reply !== null && !isGroupPassText(reply)) {
-          appendGroupChatEntry(
+          const postedEntry = appendGroupChatEntry(
             group,
             { kind: 'member', name: member.name, ...(member.remoteSource ? { source: member.connectionLabel || member.connectionId } : {}) },
             reply,
             thread
           )
-          // Its own message counts as seen too.
+          // Its own message is seen only when nothing arrived ahead of it.
           updateGroupChat(group, r => {
-            r.watermarks[markKey] = r.log.length
+            if (typeof deliveredThrough === 'number') {
+              if (r.log.length === deliveredThrough + 1) r.watermarks[markKey] = r.log.length
+              return r
+            }
+            const deliveredIndex = r.log.findIndex(entry => entry.id === deliveredThrough)
+            const nextEntry = r.log[deliveredIndex + 1]
+            if (nextEntry?.id === postedEntry.id) {
+              r.watermarks[markKey] = postedEntry.id
+            }
             return r
           })
           posted += 1
@@ -5541,12 +5572,13 @@ async function runGroupChatRounds(group, members, thread) {
       }
 
       if (spokeThisRound === 0) {
+        outcome = 'settled'
         return // everyone passed — the conversation settled
       }
     }
   } finally {
     if (isCurrent()) {
-      recordGroupActivity(group, { kind: 'settled', member: null, thread })
+      recordGroupActivity(group, { kind: outcome, member: null, thread })
       updateGroupChat(group, r => {
         r.running = false
         r.turn = null
@@ -5629,37 +5661,53 @@ function sendToGroupChat(group, members, text, thread, images) {
   })
   appendGroupChatEntry(group, { kind: 'user', name: 'You' }, trimmed, target, attached)
 
-  const wasRunning = ($groupChats.get()[group] || {}).running === true
+  recordGroupActivity(group, { kind: 'queued', member: 'You', thread: target })
+  queueGroupChatDrive(group, members, target)
 
+  return target
+}
+
+function queueGroupChatDrive(group, members, thread) {
+  let drive = groupChatDrives.get(group)
+  if (!drive) {
+    drive = { active: false, pending: new Map() }
+    groupChatDrives.set(group, drive)
+  }
+  drive.pending.set(thread, members)
+  if (drive.active) return
+
+  drive.active = true
   updateGroupChat(group, room => {
     room.epoch = (room.epoch || 0) + 1
     room.running = true
     return room
   })
-
-  recordGroupActivity(group, { kind: 'queued', member: 'You', thread: target })
-
-  if (!wasRunning) {
-    void runGroupChatRounds(group, members, target).catch(() => {
-      updateGroupChat(group, r => {
-        r.running = false
-        return r
-      })
+  void (async () => {
+    try {
+      while (drive.pending.size) {
+        const [nextThread, nextMembers] = drive.pending.entries().next().value
+        drive.pending.delete(nextThread)
+        await runGroupChatRounds(group, nextMembers, nextThread)
+        if (($groupChats.get()[group] || {}).tombstone) break
+        if (drive.pending.size) {
+          updateGroupChat(group, room => {
+            room.epoch = (room.epoch || 0) + 1
+            room.running = true
+            return room
+          })
+        }
+      }
+    } finally {
+      drive.active = false
+      if (groupChatDrives.get(group) === drive && !drive.pending.size) groupChatDrives.delete(group)
+    }
+  })().catch(() => {
+    updateGroupChat(group, room => {
+      room.running = false
+      room.turn = null
+      return room
     })
-  } else {
-    // A loop is live; it bails at its next boundary. Chain the fresh loop
-    // after a short settle so exactly one drive owns the room.
-    setTimeout(() => {
-      void runGroupChatRounds(group, members, target).catch(() => {
-        updateGroupChat(group, r => {
-          r.running = false
-          return r
-        })
-      })
-    }, 250)
-  }
-
-  return target
+  })
 }
 
 /** Share one in-flight async operation across concurrent callers. Failures

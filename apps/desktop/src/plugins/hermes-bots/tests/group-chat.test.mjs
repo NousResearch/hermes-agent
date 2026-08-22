@@ -169,7 +169,8 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
             stored: session.stored,
             title: session.title
           })
-          const reply = turnScript(session.profile, params.text, calls.length, session)
+          const scripted = turnScript(session.profile, params.text, calls.length, session)
+          const reply = scripted && typeof scripted.then === 'function' ? await scripted : scripted
           session.messages.push({ role: 'assistant', content: reply })
           return {}
         }
@@ -196,7 +197,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, currentGroupActivity, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -236,6 +237,106 @@ test('mention routing: only @-mentioned members respond; @everyone or none = all
     MEMBERS
   )
   assert.equal(everyone.length, 3)
+})
+
+test('caps are reported truthfully: chatty runs cap while all-pass runs settle', async () => {
+  const chatty = load(() => 'still working')
+  chatty.sendToGroupChat('Caps', [MEMBERS[0], MEMBERS[1]], 'go')
+  for (let i = 0; i < 200 && (chatty.$groupChats.get().Caps || {}).running; i++) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  assert.equal(chatty.currentGroupActivity('Caps').at(-1).kind, 'capped')
+  assert.ok(chatty.calls.length <= chatty.GROUP_CHAT_MAX_ROUNDS * 2)
+  assert.ok(chatty.calls.length > 0)
+
+  const quiet = load(() => '(pass)')
+  quiet.sendToGroupChat('Quiet', [MEMBERS[0]], 'done?')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(quiet.currentGroupActivity('Quiet').at(-1).kind, 'settled')
+})
+
+test('rename is rejected while a room drive owns a held submit', async () => {
+  let release
+  let started
+  const held = new Promise(resolve => { release = resolve })
+  const submitted = new Promise(resolve => { started = resolve })
+  const gc = load(async () => {
+    started()
+    await held
+    return '(pass)'
+  })
+
+  gc.sendToGroupChat('Core', [MEMBERS[0]], 'hold')
+  await submitted
+  assert.equal(await gc.renameGroupChat('Core', 'Renamed', [MEMBERS[0]]), null)
+  assert.ok(gc.$groupChats.get().Core)
+  assert.equal(gc.$groupChats.get().Renamed, undefined)
+  release()
+  await new Promise(resolve => setImmediate(resolve))
+})
+
+test('same-thread follow-up waits for the active submit and drains with the intervening reply in order', async () => {
+  let releaseFirst
+  let firstStarted
+  const started = new Promise(resolve => { firstStarted = resolve })
+  const held = new Promise(resolve => { releaseFirst = resolve })
+  let active = 0
+  let maxActive = 0
+  const gc = load(async (_profile, _prompt, call) => {
+    active += 1
+    maxActive = Math.max(maxActive, active)
+    if (call === 1) {
+      firstStarted()
+      await held
+      active -= 1
+      return 'first reply'
+    }
+    active -= 1
+    return '(pass)'
+  })
+
+  const thread = gc.sendToGroupChat('Core', [MEMBERS[0]], 'first')
+  await started
+  gc.sendToGroupChat('Core', [MEMBERS[0]], 'follow-up', thread)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(gc.calls.length, 1, 'a held member session is never submitted concurrently')
+
+  releaseFirst()
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(maxActive, 1)
+  assert.equal(gc.calls.length, 2)
+  assert.match(gc.calls[1].prompt, /You \(user\): follow-up[\s\S]*research \(you\): first reply/)
+})
+
+test('watermark freezes at the delivered entry identity while an independent append lands', async () => {
+  let release
+  let started
+  const held = new Promise(resolve => { release = resolve })
+  const submitted = new Promise(resolve => { started = resolve })
+  const gc = load(async (_profile, _prompt, call) => {
+    if (call === 1) {
+      started()
+      await held
+      return '(pass)'
+    }
+    return '(pass)'
+  })
+
+  const thread = gc.sendToGroupChat('Core', [MEMBERS[0]], 'delivered')
+  await submitted
+  gc.updateGroupChat('Core', room => {
+    room.log.push({ id: 'independent-entry', at: Date.now(), from: { kind: 'member', name: 'builder' }, text: 'unseen', thread })
+    return room
+  })
+  release()
+  await new Promise(resolve => setImmediate(resolve))
+
+  const room = gc.$groupChats.get().Core
+  assert.notEqual(room.watermarks[`${thread}::research`], 'independent-entry')
+  await gc.runGroupChatRounds('Core', [MEMBERS[0]], thread)
+  assert.match(gc.calls.at(-1).prompt, /builder: unseen/)
 })
 
 test('mention routing: display titles resolve to the member and @user never matches a bot', () => {

@@ -932,6 +932,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
+        self._bot_id: Optional[str] = None
         # Bot identity per workspace, used to ground the agent ("you are @X on
         # Slack") so it never mistakes a human's mention for a self-mention.
         self._bot_display_name: Optional[str] = None  # primary workspace bot name
@@ -955,6 +956,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}  # team_id → bot_user_id
+        self._team_bot_ids: Dict[str, str] = {}  # team_id → app bot_id
         # channel_id → team_id. Grows with every channel AND every DM the bot
         # sees (DM channel IDs are per-user), so it must be bounded on busy
         # multi-workspace installs. Eviction is safe: entries are re-learned
@@ -1941,11 +1943,13 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Reset multi-workspace state before re-populating it so a
             # reconnect that drops a workspace (or rotates the primary bot
-            # token) doesn't carry stale ``_bot_user_id`` / ``_team_clients``
-            # / ``_team_bot_user_ids`` entries from the prior session.
+            # token) doesn't carry stale bot identities or clients from the
+            # prior session.
             self._bot_user_id = None
+            self._bot_id = None
             self._team_clients = {}
             self._team_bot_user_ids = {}
+            self._team_bot_ids = {}
             self._bot_display_name = None
             self._team_bot_names = {}
 
@@ -1968,11 +1972,13 @@ class SlackAdapter(BasePlatformAdapter):
                 auth_response = await client.auth_test()
                 team_id = auth_response.get("team_id", "")
                 bot_user_id = auth_response.get("user_id", "")
+                bot_id = auth_response.get("bot_id", "")
                 bot_name = auth_response.get("user", "unknown")
                 team_name = auth_response.get("team", "unknown")
 
                 self._team_clients[team_id] = client
                 self._team_bot_user_ids[team_id] = bot_user_id
+                self._team_bot_ids[team_id] = bot_id
                 self._team_bot_names[team_id] = bot_name
 
                 # First token always wins as the primary bot user id; we
@@ -1980,6 +1986,7 @@ class SlackAdapter(BasePlatformAdapter):
                 # token's identity even on reconnect.
                 if self._bot_user_id is None:
                     self._bot_user_id = bot_user_id
+                    self._bot_id = bot_id
                 if self._bot_display_name is None:
                     self._bot_display_name = bot_name
 
@@ -2352,8 +2359,10 @@ class SlackAdapter(BasePlatformAdapter):
         self._app_token = None
         self._proxy_url = None
         self._bot_user_id = None
+        self._bot_id = None
         self._team_clients = {}
         self._team_bot_user_ids = {}
+        self._team_bot_ids = {}
         self._channel_team = {}
         self._dm_conversation_cache = {}
 
@@ -5849,11 +5858,12 @@ class SlackAdapter(BasePlatformAdapter):
             elif allow_bots == "mentions":
                 # Include Block-Kit-only mentions, not just the flat text (#52387)
                 text_check = _slack_mention_detection_text(event)
-                if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
+                team_id = str(event.get("team") or event.get("team_id") or "")
+                self_ids = self._slack_self_ids(team_id)
+                if self_ids and not self._slack_message_mentions_self(text_check, self_ids):
                     logger.debug(
                         "[Slack] Dropping bot message under allow_bots=mentions: "
-                        "no <@%s> mention in flat text or blocks",
-                        self._bot_user_id,
+                        "no self mention in flat text or blocks",
                     )
                     return
             # "all" falls through to process the message
@@ -6121,10 +6131,11 @@ class SlackAdapter(BasePlatformAdapter):
         #   3. The message is in a thread where the bot was previously @mentioned, OR
         #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        self_uids = self._slack_self_ids(team_id)
         # Detect mentions authored only inside Block Kit blocks too (#52387)
         routing_text = _slack_mention_detection_text(event) or original_text or ""
         is_mentioned = bool(
-            (bot_uid and f"<@{bot_uid}>" in routing_text)
+            self._slack_message_mentions_self(routing_text, self_uids)
             or self._slack_message_matches_mention_patterns(routing_text)
         )
         event_thread_ts = event.get("thread_ts")
@@ -6172,7 +6183,6 @@ class SlackAdapter(BasePlatformAdapter):
             # that person. Stay silent unless we are also mentioned — this
             # overrides free-response and mentioned-thread auto-follow so the
             # bot does not butt in on chatter aimed at someone else.
-            self_uids = {u for u in (bot_uid, self._bot_user_id) if u}
             if (
                 self._slack_ignore_other_user_mentions()
                 and not is_mentioned
@@ -8845,6 +8855,22 @@ class SlackAdapter(BasePlatformAdapter):
         if not match:
             return False
         return match.group(1) not in self_uids
+
+    def _slack_self_ids(self, team_id: str) -> set:
+        """Return this app's Slack user and bot IDs for one workspace."""
+        team_bot_user_ids = getattr(self, "_team_bot_user_ids", {})
+        team_bot_ids = getattr(self, "_team_bot_ids", {})
+        bot_user_id = (
+            team_bot_user_ids[team_id]
+            if team_id in team_bot_user_ids
+            else getattr(self, "_bot_user_id", None)
+        )
+        bot_id = (
+            team_bot_ids[team_id]
+            if team_id in team_bot_ids
+            else getattr(self, "_bot_id", None)
+        )
+        return {identity for identity in (bot_user_id, bot_id) if identity}
 
     def _slack_message_mentions_self(self, text: str, self_uids: set) -> bool:
         """Return True when ``text`` @-mentions this bot anywhere in the message.

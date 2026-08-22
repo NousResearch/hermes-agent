@@ -197,9 +197,62 @@ def get_vertex_config(
     return token, build_vertex_base_url(project_id, _resolve_region(region))
 
 
+def _adc_well_known_path() -> str:
+    """Path gcloud writes for `auth application-default login`."""
+    if os.name == "nt":
+        base = os.environ.get("APPDATA", "")
+        return os.path.join(base, "gcloud", "application_default_credentials.json")
+    return os.path.join(
+        os.path.expanduser("~"),
+        ".config",
+        "gcloud",
+        "application_default_credentials.json",
+    )
+
+
+def _on_gce() -> bool:
+    """True when this host looks like GCE/GKE, without touching the network.
+
+    On GCE the DMI product name is exactly "Google Compute Engine". Reading
+    it is a single small file read, so this keeps the no-network promise that
+    :func:`has_vertex_credentials` makes to startup paths — a metadata-server
+    ping would not.
+    """
+    try:
+        with open("/sys/class/dmi/id/product_name", "r", encoding="utf-8") as fh:
+            return "Google Compute Engine" in fh.read()
+    except Exception:
+        return False
+
+
+def has_adc_available() -> bool:
+    """True when Application Default Credentials are plausibly resolvable.
+
+    Deliberately a cheap heuristic rather than a real ADC resolution: the
+    caller is a startup/display path, and `google.auth.default()` both imports
+    google-auth and can hit the metadata server.
+
+    Two signals, either sufficient:
+
+    * the well-known ADC file that `gcloud auth application-default login`
+      writes, and
+    * running on GCE/GKE, where the metadata server *is* the credential and no
+      file exists at all.
+    """
+    if os.path.exists(_adc_well_known_path()):
+        return True
+    return _on_gce()
+
+
 def has_vertex_credentials() -> bool:
-    """Fast check (no network): a resolvable SA JSON path, or an explicit project ID (implies ADC)."""
-    return bool(_resolve_credentials_path(None) or _resolve_project_override())
+    """Fast check (no network): a resolvable SA JSON path, an explicit project ID (implies ADC), or
+    plausibly-available ADC itself.
+
+    The ADC branch is what makes GCE/GKE work: there the credential is the metadata server, so there is
+    no JSON file to find and no reason to restate a project ID. Without it ``resolve_provider_client(
+    "vertex")`` returns ``(None, None)`` and every auxiliary task is silently disabled while the main
+    conversation path, which resolves credentials properly, keeps working."""
+    return bool(_resolve_credentials_path(None) or _resolve_project_override() or has_adc_available())
 
 
 def has_explicit_vertex_config() -> bool:

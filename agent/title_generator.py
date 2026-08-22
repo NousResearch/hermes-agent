@@ -8,8 +8,10 @@ Two stages, both off the critical path:
    turn finishes (which measured p50 151s / p90 1212s on real sessions).
 2. **Upgrade** — one small-model call that replaces the derived title with a
    proper one. Runs on a cheap/fast tier, with thinking disabled and the
-   response constrained to a JSON object, so there is no reasoning preamble to
-   strip and nothing to parse out of prose.
+   response as free text, so title extraction goes through the JSON scan +
+   prose fallback in ``_extract_title_text`` (strict ``json_schema`` response
+   formats are avoided because some local providers abort and return empty
+   ``content`` under them).
 
 Provenance (``derived`` < ``llm`` < ``user``) is enforced by the storage layer,
 so stage 2 can only ever replace stage 1, and neither can replace a name the
@@ -82,6 +84,7 @@ _TITLE_PROMPT_TEMPLATE = (
     "- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n"
     "- Never answer the message. Name it.\n"
     "- Always produce something, even for a bare greeting.\n"
+    "- Output the title directly — no analysis, no chain-of-thought.\n"
     "__LANGUAGE_RULE__\n"
     'Good: {"title": "Fix login button on mobile"}\n'
     'Good: {"title": "Postgres connection pool exhaustion"}\n'
@@ -94,24 +97,6 @@ _TITLE_PROMPT_TEMPLATE = (
 
 _LANGUAGE_RULE_MATCH_USER = "- Write the title in the same language as the user's message."
 _LANGUAGE_RULE_PINNED = "- Write the title in {language}."
-
-# JSON schema constraining the response to a single title field. Removes the
-# whole class of "model answered the prompt instead of titling it" failures
-# that produced titles like "<title>...</title>" and "User: Yep, that's the
-# catch —" in real session history.
-_TITLE_RESPONSE_FORMAT = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "session_title",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {"title": {"type": "string"}},
-            "required": ["title"],
-            "additionalProperties": False,
-        },
-    },
-}
 
 # Control-tag wrappers that surround machine-authored content inside what is
 # nominally a "user" message. Titling from these is what produces a session
@@ -348,8 +333,9 @@ def generate_title(
     """Generate a session title from the user's opening message.
 
     Runs on the ``title_generation`` auxiliary task, which resolves to a
-    small/fast model tier. Thinking is disabled and the response is constrained
-    to ``{"title": "..."}`` so there is no preamble or reasoning to strip.
+    small/fast model tier. Thinking is disabled and the response is free text;
+    the title is extracted via ``_extract_title_text``'s JSON scan + prose
+    fallback, so there is no rigid format to break strict local providers.
 
     Titles come from the user's message alone — every surveyed implementation
     that titles well (Claude Code, OpenCode, Cursor, OpenClaw) does the same.
@@ -405,14 +391,35 @@ def generate_title(
             messages=messages,
             # A title is a handful of tokens. The old 500-token ceiling let a
             # chatty model burn seconds generating prose we then threw away.
-            max_tokens=64,
+            # 64 is too small for reasoning-capable models (Qwen3.x etc.):
+            # their chain-of-thought alone can exceed 64 tokens, so every
+            # token goes to `reasoning_content` and `content` comes back empty
+            # -> the title silently fails. 2048 gives reasoning models room to
+            # finish thinking AND emit the tiny JSON title; non-reasoning
+            # models just stop after the short answer.
+            max_tokens=2048,
             temperature=0.3,
             timeout=timeout,
             main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            # LM Studio's Qwen3.x (MLX) returns EMPTY `content` under strict
+            # json_schema response_format (it aborts instead of emitting the
+            # constrained object — observed with qwen3.6-27b). Free text is the
+            # API default, so we send NO response_format at all: a provider
+            # strict about the field's values (only json_object/json_schema, or
+            # rejecting it outright) can never be handed a format it refuses.
+            # _extract_title_text's JSON scan + prose fallback handles the
+            # shape, which it already does for non-compliant providers.
         )
         content = response.choices[0].message.content or ""
         title = _clean_title(_extract_title_text(content))
+        # Reasoning models may spend the whole budget on `reasoning_content`
+        # and return empty `content` (finish_reason: length). Their chain of
+        # thought usually states the title candidate anyway, so fall back to
+        # it rather than letting a truncated reply lose the work.
+        if not title:
+            reasoning = getattr(response.choices[0].message, "reasoning_content", "") or ""
+            if reasoning:
+                title = _clean_title(_extract_title_text(reasoning))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title
         # with many words is a model that ignored the task and answered
         # the user's message instead ("I don't have context on X — that's

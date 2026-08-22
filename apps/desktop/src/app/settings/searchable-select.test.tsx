@@ -88,6 +88,17 @@ describe('SearchableSelect', () => {
 
     expect(screen.getByRole('combobox').textContent).toContain('Search…')
   })
+
+  it('lets the option list grow wider than the trigger for long values', () => {
+    render(<SearchableSelect onChange={vi.fn()} options={['America/Argentina/Buenos_Aires']} value="" />)
+
+    fireEvent.click(screen.getByRole('combobox'))
+
+    const popover = screen.getByText('America/Argentina/Buenos_Aires').closest('[data-slot="popover-content"]')
+    expect(popover?.classList.contains('w-max')).toBe(true)
+    expect(popover?.classList.contains('min-w-[var(--radix-popover-trigger-width)]')).toBe(true)
+    expect(popover?.classList.contains('w-[var(--radix-popover-trigger-width)]')).toBe(false)
+  })
 })
 
 describe('ConfigField searchable routing', () => {

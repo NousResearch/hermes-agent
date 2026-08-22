@@ -10,7 +10,7 @@ const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf
 
 test('dialog offers a delivery target picker with history and bot-chat options', () => {
   assert.match(pluginSource, /Send results to/)
-  assert.match(pluginSource, /id: 'history', label: 'Run history only'/)
+  assert.match(pluginSource, /id: 'history', label: t\('cron\.runHistoryOnly'\)/)
   assert.match(pluginSource, /id: 'bot-chat'/)
 })
 

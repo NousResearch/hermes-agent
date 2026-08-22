@@ -63,7 +63,7 @@ test('blank bot search returns the existing roster reference', () => {
 })
 
 test('Bot pane renders the canonical search field and no-match state', () => {
-  assert.match(source, /jsx\(SearchField,\s*\{[\s\S]*?placeholder: 'Search bots…'/)
+  assert.match(source, /jsx\(SearchField,\s*\{[\s\S]*?placeholder: t\('pane\.searchBots'\)/)
   assert.match(source, /'aria-live': 'polite'/)
-  assert.match(source, /No bots match “\$\{query\.trim\(\)\}”/)
+  assert.match(source, /t\('thread\.noBotsMatch', query\.trim\(\)\)/)
 })

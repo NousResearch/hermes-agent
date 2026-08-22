@@ -3,12 +3,15 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
 
+import { t } from './_i18n.mjs'
+
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
 function loadCanonicalCreation({ openSession, request }) {
   const start = source.indexOf('const canonicalCreations = new Map()')
   const end = source.indexOf('function displayName(', start)
   const context = {
+    t,
     host: { openSession, request },
     window: { setTimeout: callback => callback() }
   }

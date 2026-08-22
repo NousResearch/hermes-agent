@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
 
+import { t } from './_i18n.mjs'
+
 // ── The canonical-chat REGISTRY contract ────────────────────────────────────
 //
 // A bot's forever-chat has exactly ONE identity: the session titled "Bot Chat"
@@ -31,6 +33,7 @@ function loadOpenPath({ openSession, request }) {
   const requests = []
   const opened = []
   const context = {
+    t,
     host: {
       openSession: async (id, options) => {
         opened.push({ id, options })

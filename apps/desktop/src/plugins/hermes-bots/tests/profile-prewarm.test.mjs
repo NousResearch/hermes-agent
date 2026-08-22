@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
 
+import { t } from './_i18n.mjs'
+
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
 function sourceBetween(start, end) {
@@ -38,6 +40,7 @@ function renderBotRow(input = 'alpha') {
   })
   const node = (type, props = {}) => ({ type, props })
   const context = {
+    t,
     BotFace: 'BotFace',
     ContextMenu: 'ContextMenu',
     ContextMenuContent: 'ContextMenuContent',
@@ -167,6 +170,7 @@ test('behavior: remote default does not open this-device chat when the source di
   })
   const node = (type, props = {}) => ({ type, props })
   const context = {
+    t,
     BotFace: 'BotFace',
     ContextMenu: 'ContextMenu',
     ContextMenuContent: 'ContextMenuContent',

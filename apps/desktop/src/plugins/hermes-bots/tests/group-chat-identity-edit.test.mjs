@@ -20,7 +20,7 @@ test('source contract: settings dialog edits name and picture after creation', (
   assert.match(pluginSource, /function renameGroupChat\(/)
   assert.match(pluginSource, /function setGroupChatImage\(/)
   // The room header exposes the entry point.
-  assert.match(pluginSource, /Group settings — rename \$\{group\} or set a room picture/)
+  assert.match(pluginSource, /t\('thread\.groupSettingsRenameOr', group\)/)
 })
 
 test('source contract: rename re-keys the room AND local memberships, keeps sessions', () => {

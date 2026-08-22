@@ -12,14 +12,14 @@ const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
 
 test('group room composers mount GroupMentionInput, not bare Input', () => {
   // Main composer (new thread) and thread reply box both use the wrapper.
-  const mainComposer = source.match(/jsx\(GroupMentionInput, \{\s*'aria-label': `Message \$\{group\}`/)
-  const replyComposer = source.match(/jsx\(GroupMentionInput, \{\s*'aria-label': 'Reply in thread'/)
+  const mainComposer = source.match(/jsx\(GroupMentionInput, \{\s*'aria-label': t\('pane\.message', group\)/)
+  const replyComposer = source.match(/jsx\(GroupMentionInput, \{\s*'aria-label': t\('a11y\.replyInThread'\)/)
   assert.ok(mainComposer, 'main group composer must render GroupMentionInput')
   assert.ok(replyComposer, 'thread reply box must render GroupMentionInput')
 
   // Neither composer renders a dead plain Input anymore.
-  assert.ok(!/jsx\(Input, \{\s*'aria-label': `Message \$\{group\}`/.test(source))
-  assert.ok(!/jsx\(Input, \{\s*'aria-label': 'Reply in thread'/.test(source))
+  assert.ok(!/jsx\(Input, \{\s*'aria-label': t\('pane\.message', group\)/.test(source))
+  assert.ok(!/jsx\(Input, \{\s*'aria-label': t\('a11y\.replyInThread'\)/.test(source))
 
   // Both receive the seated members for the popover scope (onSubmitDraft
   // rides along so Enter submits from the multi-line textarea, #89884).

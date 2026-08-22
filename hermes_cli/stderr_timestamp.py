@@ -44,6 +44,19 @@ def _copy_stderr_with_timestamps(stderr: BinaryIO, log_path: Path) -> None:
 def _command_exit_code(returncode: int) -> int:
     if returncode < 0:
         return 128 + abs(returncode)
+    # A fatal-config exit (78, EX_CONFIG — e.g. WhatsApp enabled but never
+    # paired) must not trigger launchd's unconditional KeepAlive restart.
+    # launchd has no RestartPreventExitStatus equivalent, so translate the
+    # "don't restart" signal into the one thing KeepAlive=true honors: exit 0
+    # (clean stop). This mirrors the s6 finish script's 78 -> 125 mapping
+    # (service_manager._render_finish_script) for the other supervisors.
+    try:
+        from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+        if returncode == GATEWAY_FATAL_CONFIG_EXIT_CODE:
+            return 0
+    except Exception:
+        pass
     return returncode
 
 

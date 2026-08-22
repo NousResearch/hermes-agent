@@ -3,7 +3,7 @@
 import re
 import sys
 
-from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
+from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV, GATEWAY_FATAL_CONFIG_EXIT_CODE
 from hermes_cli import stderr_timestamp
 
 _STALE_GATEWAY_ARGV = [
@@ -45,6 +45,29 @@ def test_main_timestamps_each_stderr_line(tmp_path):
     assert re.fullmatch(f"{timestamp} first failure", lines[0])
     assert re.fullmatch(f"{timestamp} second failure without newline", lines[1])
     assert lines[2] == "2026-07-15 12:34:56,789 already timestamped"
+
+
+def test_main_maps_fatal_config_exit_to_zero(tmp_path):
+    """Exit 78 (fatal config) must surface as a clean exit so launchd's
+    unconditional KeepAlive stops restarting the gateway."""
+    log_path = tmp_path / "gateway.error.log"
+    code = (
+        "import sys\n"
+        f"sys.exit({GATEWAY_FATAL_CONFIG_EXIT_CODE})\n"
+    )
+
+    rc = stderr_timestamp.main(
+        [
+            "--error-log",
+            str(log_path),
+            "--",
+            sys.executable,
+            "-c",
+            code,
+        ]
+    )
+
+    assert rc == 0
 
 
 def test_prepare_upgrades_stale_gateway_argv_under_launchd():

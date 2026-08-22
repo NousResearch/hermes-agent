@@ -6344,6 +6344,11 @@ def resolve_provider_client(
     # cannot accept one and the Portal 404s. Leave ``model`` unset and let the
     # Portal slot through; only an explicit caller model may override it.
     _nous_portal_vision = provider == "nous" and is_vision
+    # Capture the caller's original model before the universal fallback
+    # below fills it with _read_main_model_for_aux().  The explicit-custom
+    # endpoint branch must not send the *primary* provider's model to a
+    # *different* endpoint when the caller left the model unset (#78948).
+    _caller_model = (model or "").strip() or None
     if not model and provider != "auto" and not _nous_portal_vision:
         model = _get_aux_model_for_provider(provider) or _read_main_model_for_aux() or model
 
@@ -6560,8 +6565,21 @@ def resolve_provider_client(
                 custom_base = _main_base
                 custom_key = _main_key
         if custom_base and custom_key:
+            # Only borrow main_runtime's model when it targets the SAME
+            # endpoint as ``custom_base``; otherwise the model belongs to a
+            # different provider and sending it here 404s (#78948).  Use the
+            # caller's original model (``_caller_model``) rather than the
+            # universal-fallback value, which may be the primary provider's
+            # slug leaked from config via _read_main_model_for_aux().
+            _same_endpoint_model = None
+            if main_runtime:
+                _rt_base = str(main_runtime.get("base_url") or "").strip()
+                _cb_host = base_url_hostname(custom_base)
+                _rt_host = base_url_hostname(_rt_base)
+                if _cb_host and _rt_host and _cb_host == _rt_host:
+                    _same_endpoint_model = main_runtime.get("model")
             final_model = _normalize_resolved_model(
-                model or (main_runtime.get("model") if main_runtime else None) or "gpt-4o-mini",
+                _caller_model or _same_endpoint_model or "gpt-4o-mini",
                 provider,
             )
             extra = {}

@@ -78,11 +78,11 @@ def resolve_exec_command() -> str:
             # third-party import (#90292) — silently, since Terminal=false.
             # sys.executable is the interpreter actually running Hermes (the
             # venv one), so prefix it explicitly.
-            argv = [str(Path(sys.executable).resolve()), str(resolved), "desktop"]
+            argv = [str(Path(sys.executable)), str(resolved), "desktop"]
         else:
             argv = [str(resolved), "desktop"]
     else:
-        argv = [str(Path(sys.executable).resolve()), "-m", "hermes_cli.main", "desktop"]
+        argv = [str(Path(sys.executable)), "-m", "hermes_cli.main", "desktop"]
     return " ".join(_quote_exec_arg(a) for a in argv)
 
 

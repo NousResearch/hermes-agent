@@ -2788,10 +2788,25 @@ def _run_single_child(
             from agent.delegation_context import delegated_child_context
 
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+                _fork_history = getattr(child, "_fork_history", None)
+                _run_kwargs: Dict[str, Any] = {}
+                _run_goal = goal
+                if isinstance(_fork_history, list) and _fork_history:
+                    # Forked spawn (kimi-code#3007 port): seed the parent's
+                    # sanitized transcript through the same
+                    # conversation_history parameter the gateway uses for
+                    # session restore, and frame the kickoff goal with the
+                    # inheritance notice so the child reads the snapshot as
+                    # reference material, not its own past actions.
+                    from tools.delegation_fork import frame_forked_goal
+
+                    _run_kwargs["conversation_history"] = _fork_history
+                    _run_goal = frame_forked_goal(goal)
                 return child.run_conversation(
-                    user_message=goal,
+                    user_message=_run_goal,
                     task_id=child_task_id,
                     stream_callback=_relay_child_text,
+                    **_run_kwargs,
                 )
 
         _child_context = contextvars.copy_context()
@@ -3605,6 +3620,7 @@ def delegate_task(
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
+    fork: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -3780,6 +3796,28 @@ def delegate_task(
     results = []
 
     n_tasks = len(task_list)
+
+    # ── Fork snapshots (kimi-code#3007 port) ────────────────────────────
+    # Top-level fork applies to the single-goal form and acts as the batch
+    # default; per-task {"fork": true/false} overrides it. The parent
+    # transcript snapshot is built ONCE and shared read-only by every
+    # forked child (each child deep-copies at seed time via the snapshot
+    # builder, and run_conversation copies again into its message list).
+    fork_flags = [
+        is_truthy_value(t.get("fork"), default=False)
+        if t.get("fork") is not None
+        else (is_truthy_value(fork, default=False) if fork is not None else False)
+        for t in task_list
+    ]
+    fork_snapshot = None
+    if any(fork_flags):
+        from tools.delegation_fork import build_fork_snapshot
+
+        fork_snapshot = build_fork_snapshot(parent_agent, cfg=cfg)
+        if fork_snapshot is None:
+            # Degrade loudly-but-safely: children spawn with blank context.
+            fork_flags = [False] * n_tasks
+
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
@@ -3870,6 +3908,14 @@ def delegate_task(
                 child._delegate_output_schema = _task_schema
             except Exception:
                 logger.debug("Could not attach output schema to child %d", i)
+        # Forked spawn: attach the shared parent-transcript snapshot; the
+        # child seeds it via run_conversation(conversation_history=...) in
+        # _run_single_child. Absent on non-forked tasks.
+        if fork_snapshot is not None and i < len(fork_flags) and fork_flags[i]:
+            try:
+                setattr(child, "_fork_history", fork_snapshot)
+            except Exception:
+                logger.debug("Could not attach fork snapshot to child %d", i)
         # Tee the child's progress events into its live transcript log.
         # wrap_progress_callback preserves the inner callback contract
         # (including the _flush attribute) and never lets writer failures
@@ -4776,6 +4822,13 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "fork": {
+                            "type": "boolean",
+                            "description": (
+                                "Per-task fork override. See top-level 'fork' "
+                                "for semantics."
+                            ),
+                        },
                         "output_schema": {
                             "type": "object",
                             "description": (
@@ -4801,6 +4854,22 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "fork": {
+                "type": "boolean",
+                "description": (
+                    "Default false: subagents start with a BLANK context and "
+                    "know nothing of this conversation. Set true to fork "
+                    "instead: the child starts from a one-time snapshot of "
+                    "this conversation's history (framed as inherited "
+                    "reference material), so work that builds on what was "
+                    "already established here needs no re-briefing. Use for "
+                    "continuations of the current investigation; keep false "
+                    "for independent tasks — a fork re-sends the parent "
+                    "transcript on the child's first request and costs "
+                    "accordingly. Per-task 'fork' in the tasks array "
+                    "overrides this default."
+                ),
             },
             "output_schema": {
                 "type": "object",
@@ -4918,6 +4987,7 @@ registry.register(
         action=args.get("action"),
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),
+        fork=args.get("fork"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

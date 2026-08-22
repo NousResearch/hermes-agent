@@ -754,6 +754,14 @@ def lookup_models_dev_context(
     if override_ctx is not None:
         return override_ctx
 
+    # Probe-verified catalog correction — wins over the (under-reported)
+    # catalog value but yields to an explicit user override above. This is
+    # the shared correction that keeps compression context in sync with the
+    # capability/display paths (github-copilot Claude 4.x → 1M window).
+    probe = _resolve_probe_override(provider, model)
+    if probe is not None and "context_window" in probe:
+        return probe["context_window"]
+
     mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
     if not mdev_provider_id:
         return _default_override_context(provider)
@@ -854,6 +862,68 @@ class ModelCapabilities:
     context_window: int = 200000
     max_output_tokens: int = 8192
     model_family: str = ""
+
+
+# --------------------------------------------------------------------------- #
+# Probe-verified catalog corrections (in-tree, not user config)              #
+# --------------------------------------------------------------------------- #
+#
+# The models.dev community catalog under-reports several providers' real
+# paid-tier limits. Most visibly, github-copilot lists Claude 4.x at
+# 200K/64K, but Copilot's Anthropic-compatible ``/v1/messages`` path serves
+# the long-context tier (sent with ``X-GitHub-Api-Version: 2026-07-01``):
+# claude-opus-4.x resolves to a 1,000,000-token input window with 128,000
+# max output, and claude-sonnet-4.x to the same 1M window with Sonnet's
+# 64,000 max output. Both values are live-verifiable against the endpoint.
+#
+# This is a SMALL, well-sourced correction table, distinct from the user
+# ``model_overrides`` config below. It is the ONE helper the context
+# resolver AND the capability/display metadata paths consult, so the
+# correction is applied consistently everywhere (per the review's
+# "centralize + share" requirement). Precedence is: explicit user config
+# override > probe-verified correction > raw catalog value, so a user can
+# always override these too.
+#
+# Keys are models.dev provider ids. Each entry maps a model-id PREFIX
+# (matched case-insensitively, covering 4, 4.1, 4.5, ...) to a canonical
+# override patch (context_window / max_output_tokens). Scoped deliberately
+# to the unambiguous, live-verifiable github-copilot Claude under-report;
+# it does NOT touch openai-codex, whose 272K window is authoritatively
+# resolved by the Codex OAuth /models path.
+_PROBE_VERIFIED_OVERRIDES: Dict[str, Tuple[Tuple[str, Dict[str, int]], ...]] = {
+    "github-copilot": (
+        ("claude-opus-4", {"context_window": 1_000_000, "max_output_tokens": 128_000}),
+        ("claude-sonnet-4", {"context_window": 1_000_000, "max_output_tokens": 64_000}),
+    ),
+}
+
+
+def _resolve_probe_override(provider: str, model: str) -> Optional[Dict[str, int]]:
+    """Return the probe-verified correction for provider+model, or None.
+
+    Accepts either the Hermes provider id (``copilot``) or the models.dev
+    id (``github-copilot``); both resolve to the same table entry. Model
+    ids match by case-insensitive prefix so every 4.x point release is
+    covered by one row. Returns a copy of the canonical override patch
+    (``context_window`` / ``max_output_tokens``) so callers may mutate it
+    freely.
+
+    This is the single shared entry point used by
+    ``lookup_models_dev_context`` (context/compression), by
+    ``get_model_capabilities`` (raw limit.context/limit.output), and by
+    ``get_model_info`` (display metadata), so all three agree.
+    """
+    if not provider or not model:
+        return None
+    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider, provider)
+    table = _PROBE_VERIFIED_OVERRIDES.get(mdev_id)
+    if not table:
+        return None
+    model_lower = model.strip().lower()
+    for prefix, values in table:
+        if model_lower.startswith(prefix):
+            return dict(values)
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -1239,6 +1309,17 @@ def get_model_capabilities(
         max_output_tokens = 8192
         model_family = ""
 
+    # Probe-verified catalog correction — applied over the (under-reported)
+    # catalog values but before the user override below, so explicit user
+    # config still wins. Shared with lookup_models_dev_context and
+    # get_model_info so all three metadata paths agree.
+    probe = _resolve_probe_override(provider, model)
+    if probe is not None:
+        if "context_window" in probe:
+            context_window = probe["context_window"]
+        if "max_output_tokens" in probe:
+            max_output_tokens = probe["max_output_tokens"]
+
     # Apply override patches (each field is optional in the override dict).
     if override is not None:
         if "supports_tools" in override:
@@ -1498,16 +1579,21 @@ def get_model_info(
 
     def _from_override_alone() -> Optional[ModelInfo]:
         override = _override_for(provider_id, model_id, catalog_hit=False)
-        if override is None:
+        probe = _resolve_probe_override(provider_id, model_id)
+        if override is None and probe is None:
             return None
         # Seed the same safe defaults get_model_capabilities uses for
         # unknown models (200K context, tools on) so the two
-        # unknown-model paths agree; the override patches its fields on
-        # top.
+        # unknown-model paths agree; the probe correction and then the
+        # override patch their fields on top (user override wins).
         base = {
             "limit": {"context": 200000, "output": 8192},
             "tool_call": True,
         }
+        if probe is not None:
+            base = _merge_catalog_entry_with_override(base, probe)
+        if override is None:
+            return _parse_model_info(model_id, base, mdev_id)
         shaped = _merge_catalog_entry_with_override(base, override)
         return _parse_model_info(model_id, shaped, mdev_id)
 
@@ -1528,6 +1614,11 @@ def get_model_info(
         return _from_override_alone()
 
     def _with_override(mid: str, raw: Dict[str, Any]) -> ModelInfo:
+        # Probe-verified correction first (over the under-reported catalog
+        # value), then the user override on top so explicit config wins.
+        probe = _resolve_probe_override(provider_id, model_id)
+        if probe is not None:
+            raw = _merge_catalog_entry_with_override(raw, probe)
         override = _override_for(provider_id, model_id, catalog_hit=True)
         if override is not None:
             merged = _merge_catalog_entry_with_override(raw, override)

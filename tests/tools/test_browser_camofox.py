@@ -1,6 +1,8 @@
 """Tests for the Camofox browser backend."""
 
 import json
+
+import requests
 from unittest.mock import MagicMock, patch
 
 
@@ -112,6 +114,47 @@ class TestCamofoxNavigate:
         result = json.loads(camofox_navigate("https://example.com", task_id="t_err"))
         assert result["success"] is False
         assert "Cannot connect" in result["error"]
+
+    def test_stale_tab_410_recreates_tab(self, monkeypatch):
+        """HTTP 410 Gone after camofox-browser restart must recover like 404 (#80276)."""
+        import tools.browser_camofox as mod
+
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        with mod._sessions_lock:
+            mod._sessions["t_410"] = {
+                "user_id": "hermes_test",
+                "tab_id": "dead-tab",
+                "session_key": "task_t_410",
+                "managed": False,
+                "adopt_existing_tab": False,
+            }
+
+        gone = requests.HTTPError("410 Gone")
+        gone.response = MagicMock(status_code=410)
+        navigate_calls: list[str] = []
+
+        def _post_side_effect(path, body=None, **kwargs):
+            navigate_calls.append(path)
+            if path == "/tabs/dead-tab/navigate":
+                raise gone
+            return {"ok": True, "url": (body or {}).get("url", "")}
+
+        def _ensure_tab(task_id, url="about:blank"):
+            session = mod._get_session(task_id)
+            session["tab_id"] = "fresh-tab"
+            return session
+
+        with patch.object(mod, "_post", side_effect=_post_side_effect), \
+             patch.object(mod, "_get", return_value={"snapshot": "", "refsCount": 0}), \
+             patch.object(mod, "_ensure_tab", side_effect=_ensure_tab) as mock_ensure:
+            result = json.loads(camofox_navigate("https://example.com/next", task_id="t_410"))
+
+        assert result["success"] is True
+        assert "/tabs/dead-tab/navigate" in navigate_calls
+        mock_ensure.assert_called()
+        with mod._sessions_lock:
+            assert mod._sessions["t_410"]["tab_id"] == "fresh-tab"
+
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +378,156 @@ class TestCamofoxVisionConfig:
         assert result["analysis"] == "Default camofox screenshot analysis"
         assert mock_llm.call_args.kwargs["temperature"] == 0.1
         assert mock_llm.call_args.kwargs["timeout"] == 120.0
+
+
+# ---------------------------------------------------------------------------
+# Stale tab 404/410 cleanup — sibling ops clear tab_id so navigate recovers
+# (#54729 follow-up + #80276). No blind action replay.
+# ---------------------------------------------------------------------------
+
+
+def _mock_stale_response(status_code: int):
+    """Build a requests.Response that raises HTTPError for stale-tab codes."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = {}
+    resp.raise_for_status.side_effect = requests.HTTPError(response=resp)
+    return resp
+
+
+class TestStaleTabCleanup:
+    """404 GC and 410 post-restart must clear cached tab_id on sibling ops."""
+
+    def _setup_session(self, mock_post, monkeypatch, task_id):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(
+            json_data={"tabId": "stale-tab", "url": "https://x.com"}
+        )
+        camofox_navigate("https://x.com", task_id=task_id)
+
+    @patch("tools.browser_camofox.requests.get")
+    @patch("tools.browser_camofox.requests.post")
+    def test_snapshot_clears_tab_on_404(self, mock_post, mock_get, monkeypatch):
+        self._setup_session(mock_post, monkeypatch, "stale_snap")
+        mock_get.return_value = _mock_stale_response(404)
+        result = json.loads(camofox_snapshot(task_id="stale_snap"))
+        assert result["success"] is False
+        assert "browser_navigate" in result["error"]
+        from tools.browser_camofox import _get_session
+        assert _get_session("stale_snap")["tab_id"] is None
+
+    @patch("tools.browser_camofox.requests.get")
+    @patch("tools.browser_camofox.requests.post")
+    def test_snapshot_clears_tab_on_410(self, mock_post, mock_get, monkeypatch):
+        self._setup_session(mock_post, monkeypatch, "stale_snap_410")
+        mock_get.return_value = _mock_stale_response(410)
+        result = json.loads(camofox_snapshot(task_id="stale_snap_410"))
+        assert result["success"] is False
+        assert "browser_navigate" in result["error"]
+        from tools.browser_camofox import _get_session
+        assert _get_session("stale_snap_410")["tab_id"] is None
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_click_clears_tab_on_410(self, mock_post, monkeypatch):
+        self._setup_session(mock_post, monkeypatch, "stale_click")
+        mock_post.return_value = _mock_stale_response(410)
+        result = json.loads(camofox_click("e1", task_id="stale_click"))
+        assert result["success"] is False
+        assert "browser_navigate" in result["error"]
+        from tools.browser_camofox import _get_session
+        assert _get_session("stale_click")["tab_id"] is None
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_type_clears_tab_on_404(self, mock_post, monkeypatch):
+        self._setup_session(mock_post, monkeypatch, "stale_type")
+        mock_post.return_value = _mock_stale_response(404)
+        result = json.loads(camofox_type("e1", "hello", task_id="stale_type"))
+        assert result["success"] is False
+        assert "browser_navigate" in result["error"]
+        from tools.browser_camofox import _get_session
+        assert _get_session("stale_type")["tab_id"] is None
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_scroll_clears_tab_on_404(self, mock_post, monkeypatch):
+        self._setup_session(mock_post, monkeypatch, "stale_scroll")
+        mock_post.return_value = _mock_stale_response(404)
+        result = json.loads(camofox_scroll("down", task_id="stale_scroll"))
+        assert result["success"] is False
+        assert "browser_navigate" in result["error"]
+        from tools.browser_camofox import _get_session
+        assert _get_session("stale_scroll")["tab_id"] is None
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_back_clears_tab_on_404(self, mock_post, monkeypatch):
+        self._setup_session(mock_post, monkeypatch, "stale_back")
+        mock_post.return_value = _mock_stale_response(404)
+        result = json.loads(camofox_back(task_id="stale_back"))
+        assert result["success"] is False
+        assert "browser_navigate" in result["error"]
+        from tools.browser_camofox import _get_session
+        assert _get_session("stale_back")["tab_id"] is None
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_press_clears_tab_on_404(self, mock_post, monkeypatch):
+        self._setup_session(mock_post, monkeypatch, "stale_press")
+        mock_post.return_value = _mock_stale_response(404)
+        result = json.loads(camofox_press("Enter", task_id="stale_press"))
+        assert result["success"] is False
+        assert "browser_navigate" in result["error"]
+        from tools.browser_camofox import _get_session
+        assert _get_session("stale_press")["tab_id"] is None
+
+    @patch("tools.browser_camofox.requests.get")
+    @patch("tools.browser_camofox.requests.post")
+    def test_get_images_clears_tab_on_404(self, mock_post, mock_get, monkeypatch):
+        self._setup_session(mock_post, monkeypatch, "stale_img")
+        mock_get.return_value = _mock_stale_response(404)
+        result = json.loads(camofox_get_images(task_id="stale_img"))
+        assert result["success"] is False
+        assert "browser_navigate" in result["error"]
+        from tools.browser_camofox import _get_session
+        assert _get_session("stale_img")["tab_id"] is None
+
+    @patch("tools.browser_camofox._get_raw")
+    @patch("tools.browser_camofox.requests.post")
+    def test_vision_clears_tab_on_410(self, mock_post, mock_get_raw, monkeypatch):
+        self._setup_session(mock_post, monkeypatch, "stale_vis")
+        mock_get_raw.side_effect = requests.HTTPError(
+            response=MagicMock(status_code=410),
+        )
+        result = json.loads(camofox_vision("what?", task_id="stale_vis"))
+        assert result["success"] is False
+        assert "browser_navigate" in result["error"]
+        from tools.browser_camofox import _get_session
+        assert _get_session("stale_vis")["tab_id"] is None
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_non_stale_error_keeps_tab_id(self, mock_post, monkeypatch):
+        """A 500 must NOT clear tab_id — only 404/410 trigger cleanup."""
+        self._setup_session(mock_post, monkeypatch, "stale_500")
+        mock_post.return_value = _mock_stale_response(500)
+        result = json.loads(camofox_click("e1", task_id="stale_500"))
+        assert result["success"] is False
+        from tools.browser_camofox import _get_session
+        assert _get_session("stale_500")["tab_id"] == "stale-tab"
+
+    @patch("tools.browser_camofox.requests.get")
+    @patch("tools.browser_camofox.requests.post")
+    def test_navigate_recovers_after_sibling_clears_tab(self, mock_post, mock_get, monkeypatch):
+        """After click clears a stale tab, navigate creates a fresh one."""
+        self._setup_session(mock_post, monkeypatch, "stale_recover")
+        mock_post.return_value = _mock_stale_response(410)
+        camofox_click("e1", task_id="stale_recover")
+
+        mock_post.return_value = _mock_response(
+            json_data={"tabId": "fresh-tab", "url": "https://y.com"}
+        )
+        mock_get.return_value = _mock_response(json_data={"snapshot": "", "refsCount": 0})
+        result = json.loads(camofox_navigate("https://y.com", task_id="stale_recover"))
+        assert result["success"] is True
+        assert result["url"] == "https://y.com"
+        from tools.browser_camofox import _get_session
+        assert _get_session("stale_recover")["tab_id"] == "fresh-tab"
 
 
 # ---------------------------------------------------------------------------

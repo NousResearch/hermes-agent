@@ -142,6 +142,7 @@ export function resolveGatewayEventSessionId({
     return {
       drop: true,
       nextUnscopedStreamSessionId: null,
+      pinned: false,
       sessionId: null
     }
   }

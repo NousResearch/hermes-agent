@@ -29,6 +29,55 @@ def test_fal_provider_registers():
     assert DEFAULT_MODEL in {"pixverse-v6", "ltx-2.3"}
 
 
+def test_kling_v3_standard_and_pro_payload_shape():
+    """Kling 3.0 (v3 standard/pro): start_image_url on i2v, aspect_ratio
+    dropped on i2v (schema derives it from the image), no seed/resolution
+    keys, string duration 3-15, generate_audio + negative_prompt real."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+    for fid in ("kling-v3", "kling-v3-pro"):
+        meta = FAL_FAMILIES[fid]
+        assert meta.get("image_param_key") == "start_image_url"
+
+        # text-to-video route
+        p = _build_payload(
+            meta,
+            prompt="a mecha lands",
+            image_url=None,
+            duration=7,
+            aspect_ratio="16:9",
+            resolution="1080p",
+            negative_prompt="blurry",
+            audio=True,
+            seed=3,
+        )
+        assert p == {
+            "prompt": "a mecha lands",
+            "aspect_ratio": "16:9",
+            "duration": "7",
+            "generate_audio": True,
+            "negative_prompt": "blurry",
+        }, fid
+
+        # image-to-video route: start_image_url in, aspect_ratio dropped
+        p = _build_payload(
+            meta,
+            prompt="animate it",
+            image_url="https://example.com/i.png",
+            duration=20,  # clamps to 15
+            aspect_ratio="16:9",
+            resolution="720p",
+            negative_prompt=None,
+            audio=False,
+            seed=None,
+        )
+        assert p.get("start_image_url") == "https://example.com/i.png", fid
+        assert "image_url" not in p, fid
+        assert "aspect_ratio" not in p, fid
+        assert p["duration"] == "15", fid
+        assert p["generate_audio"] is False, fid
+
+
 def test_kling_4k_uses_start_image_url():
     """Kling v3 4K's image-to-video endpoint expects start_image_url,
     not image_url. The family must declare image_param_key='start_image_url'."""

@@ -76,6 +76,14 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
                                 resolutions=("480p", "720p", "1080p"), durations=(1, 15), audio_native=True),
     "gemini-omni-flash": _family("Gemini Omni Flash (via FAL)", "~60-120s", "premium", "Google. Image-to-video with audio, physics-grounded motion, 3-10s.",
                                  None, "google/gemini-omni-flash/image-to-video", duration_int=True, aspect_ratios=("16:9", "9:16"), durations=(3, 10), audio_native=True),
+    # Kling 3.0 core tiers: t2v declares aspect_ratio, i2v derives it from `start_image_url`; string duration enum "3".."15";
+    # generate_audio is a real toggle (default on, audio-on costs more); no resolution or seed keys in the v3 schemas.
+    "kling-v3": _family("Kling 3.0 (Standard)", "~60-180s", "premium", "Kuaishou frontier core model. Cinematic motion, native audio, 3-15s.",
+                        "fal-ai/kling-video/v3/standard/text-to-video", "fal-ai/kling-video/v3/standard/image-to-video", image_param_key="start_image_url",
+                        image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "9:16", "1:1"), durations=(3, 15), audio=True, negative=True),
+    "kling-v3-pro": _family("Kling 3.0 Pro", "~60-180s", "premium", "Kling 3.0 top quality tier. Cinematic motion, native audio, 3-15s.",
+                            "fal-ai/kling-video/v3/pro/text-to-video", "fal-ai/kling-video/v3/pro/image-to-video", image_param_key="start_image_url",
+                            image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "9:16", "1:1"), durations=(3, 15), audio=True, negative=True),
     "kling-v3-4k": _family("Kling v3 4K", "~120-300s", "premium", "4K output, native audio (Chinese/English), 3-15s.", "fal-ai/kling-video/v3/4k/text-to-video",
                            "fal-ai/kling-video/v3/4k/image-to-video", image_param_key="start_image_url", aspect_ratios=("16:9", "9:16", "1:1"),
                            durations=(3, 15), audio=True, negative=True, seed=True),
@@ -301,7 +309,7 @@ class FALVideoGenProvider(VideoGenProvider):
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {"name": "FAL", "badge": "paid", "env_vars": [{"key": "FAL_KEY", "prompt": "FAL.ai API key", "url": "https://fal.ai/dashboard/keys"}],
-                "tag": "LTX, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 4K, Happy Horse, Grok Imagine, "
+                "tag": "LTX, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K, Happy Horse, Grok Imagine, "
                        "Gemini Omni — text-to-video & image-to-video"}
 
     def capabilities(self) -> Dict[str, Any]:

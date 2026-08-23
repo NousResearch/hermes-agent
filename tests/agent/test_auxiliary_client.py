@@ -1071,7 +1071,10 @@ class TestOpenRouterPaidLaneGuard:
     def test_is_free_model(self):
         from agent.auxiliary_client import _is_free_model
         assert _is_free_model("nvidia/nemotron-3-ultra-550b-a55b:free")
+        # Stealth-preview SKUs are free-tier without a :free suffix (issue #91843).
+        assert _is_free_model("stealth/ox-alpha")
         assert not _is_free_model("google/gemini-3.6-flash")
+        assert not _is_free_model("my-stealth/model")
         assert not _is_free_model("")
         assert not _is_free_model(None)
 

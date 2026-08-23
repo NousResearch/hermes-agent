@@ -42,7 +42,7 @@ import threading
 import time
 import traceback
 from collections import OrderedDict
-from contextvars import copy_context
+from contextvars import Context, copy_context
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union, cast
@@ -2689,6 +2689,9 @@ from gateway.platforms.base import (
 )
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
+    DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
+    DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
+    DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
     _arm_loop_floor_timer,
     arm_shutdown_watchdog,
     loop_heartbeat_forever,
@@ -8339,7 +8342,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not adapter.fatal_error_retryable:
             return False
         platform_config = self.config.platforms.get(adapter.platform)
-        if not platform_config or adapter.platform in self._failed_platforms:
+        if not platform_config:
+            return False
+        if adapter.platform in self._failed_platforms:
+            # Nothing to enqueue -- but "already queued" is precisely the state
+            # in which the watcher has had time to die, and the enqueue branch
+            # below holds the ONLY call to _ensure_reconnect_watcher_running().
+            #
+            # _spawn_supervised auto-restarts the watcher after a crash (#71758),
+            # but only _MAX_SUPERVISED_RESTARTS times in rapid succession; past
+            # that it logs "giving up restarts" and the watcher stays dead
+            # forever. _ensure_reconnect_watcher_running is the documented
+            # backstop for exactly that budget exhaustion (#70344) -- and it was
+            # unreachable for a platform already in the queue, which is the only
+            # kind of platform the watcher can have been retrying long enough to
+            # exhaust it on.
+            #
+            # The result is a silent permanent outage: nothing retries, and the
+            # stranded check in _handle_adapter_fatal_error_detached deliberately
+            # treats a queued platform as safe, so the process never restarts
+            # either (#90386).
+            self._ensure_reconnect_watcher_running()
             return False
         self._failed_platforms[adapter.platform] = {
             "config": platform_config,
@@ -11572,101 +11595,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 start_new_session=True,
             )
 
-    def _launch_systemd_restart_shortcut(self) -> None:
-        """Best-effort helper to bypass systemd's automatic restart delay.
-
-        For planned in-chat restarts, the gateway exits cleanly so systemd does
-        not record a failure.  However, units with RestartSteps still count
-        automatic restarts and can delay repeated /restart tests.  A transient
-        user service survives our cgroup teardown and explicitly starts the
-        gateway as soon as this PID exits, while the unit keeps its normal
-        backoff for real crash loops.
-        """
-        if sys.platform != "linux" or not os.environ.get("INVOCATION_ID"):
-            return
-
-        try:
-            import shutil
-            import subprocess
-
-            systemd_run = shutil.which("systemd-run")
-            systemctl = shutil.which("systemctl")
-            if not systemd_run or not systemctl:
-                return
-
-            try:
-                from hermes_cli.gateway import get_service_name
-
-                service_name = get_service_name()
-            except Exception:
-                service_name = "hermes-gateway"
-
-            current_pid = os.getpid()
-
-            # Detect whether the gateway unit is registered as a system or
-            # user service.  Daemon-style deployments are typically system
-            # units (e.g. /etc/systemd/system/hermes-gateway.service), while
-            # `hermes setup` under a non-root account may register a user
-            # unit.  Hard-coding ``--user`` broke system-unit deployments:
-            # systemctl returned an empty MainPID, the PID-equality check
-            # below failed, and the planned-restart helper was never
-            # launched — leaving the gateway dead until a manual reboot.
-            def _query_pid(scope_flags):
-                try:
-                    out = subprocess.run(
-                        [systemctl, *scope_flags, "show", service_name,
-                         "--property=MainPID", "--value"],
-                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
-                    )
-                    return (out.stdout or "").strip()
-                except Exception:
-                    return ""
-
-            system_pid = _query_pid([])
-            user_pid = _query_pid(["--user"])
-            if str(current_pid) == system_pid:
-                scope_flags = []
-                systemctl_scope = "systemctl"
-            elif str(current_pid) == user_pid:
-                scope_flags = ["--user"]
-                systemctl_scope = "systemctl --user"
-            else:
-                # MainPID does not match in either scope — likely invoked
-                # outside of systemd or the unit was renamed.  Bail out
-                # rather than restart the wrong unit.
-                return
-
-            service_arg = shlex.quote(service_name)
-            shell_cmd = (
-                f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
-                f"{systemctl_scope} reset-failed {service_arg}; "
-                f"{systemctl_scope} restart {service_arg}"
-            )
-            unit_name = f"{service_name}-planned-restart-{current_pid}".replace(".", "-")
-            subprocess.Popen(
-                [
-                    systemd_run,
-                    *scope_flags,
-                    "--collect",
-                    "--unit",
-                    unit_name,
-                    "/bin/sh",
-                    "-lc",
-                    shell_cmd,
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            logger.info(
-                "Launched systemd planned-restart helper for %s (pid=%s, scope=%s)",
-                service_name,
-                current_pid,
-                "user" if scope_flags else "system",
-            )
-        except Exception as e:
-            logger.debug("Failed to launch systemd planned-restart helper: %s", e)
-
     def _wedged_agent_count(self) -> int:
         """Count running chat agents already past the inactivity timeout.
 
@@ -11995,42 +11923,123 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         startup-restore gate.  Logs a late failure that would otherwise be
         swallowed once the task is discarded from ``_background_tasks``.
         Cancellation is expected (shutdown) and is not an error."""
+        GatewayRunner._log_late_background_failure(
+            task,
+            "background startup auto-resume task failed after gate release",
+            level=logging.DEBUG,
+        )
+
+    @staticmethod
+    def _log_late_background_failure(
+        task: "asyncio.Task", message: str, *, level: int = logging.WARNING
+    ) -> None:
+        """Shared done-callback body for boot-path tasks that outlive the
+        startup-restore gate: surface a late failure that would otherwise be
+        swallowed once the task is discarded from ``_background_tasks``.
+        Cancellation is expected (shutdown) and is not an error."""
         if task.cancelled():
             return
         exc = task.exception()
         if exc is not None:
-            logger.debug(
-                "background startup auto-resume task failed after gate release",
+            logger.log(
+                level,
+                message,
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
 
-    async def _redeliver_pending_obligations(self) -> int:
-        """Redeliver final responses recorded in the delivery ledger by a
-        previous (now dead) gateway process.
+    async def _await_startup_boot_sends(
+        self,
+        *,
+        planned_restart_notification_pending: bool,
+    ) -> None:
+        """Run boot-path sends without letting them pin the inbound restore gate.
 
-        Runs at startup BEFORE ``_schedule_resume_pending_sessions``. A
+        ``_send_restart_notification`` and ``_redeliver_pending_obligations``
+        used to be awaited inline *before* ``_finish_startup_restore``
+        released the gate. A single Telegram flood-control sleep on either
+        send froze inbound on every platform for the full ``retry_after``
+        (#91969).
+
+        This uses the same bounded ``asyncio.wait`` the resume gate already
+        uses: on timeout we return and let the sends finish in the
+        background. Tasks are not cancelled.
+
+        The ledger claim + ``resume_pending`` clear happen INLINE here,
+        before the send task exists: they are pure DB work (no network,
+        bounded by claimed-row count), and deferring them into the send
+        task left a window where a hung restart notification ahead of the
+        redelivery step let the gate expire with zero rows claimed — the
+        resume scheduler then replayed turns whose answers were already in
+        the ledger, and the background task later redelivered them too
+        (duplicate delivery + re-paid turn).
+        """
+        claimed = await self._claim_pending_obligations()
+
+        async def _boot_sends() -> None:
+            await self._send_restart_notification()
+            if planned_restart_notification_pending:
+                try:
+                    await self._send_home_channel_startup_notifications(
+                        skip_targets=None,
+                    )
+                finally:
+                    _clear_planned_restart_notification()
+            await self._redeliver_claimed_obligations(claimed)
+
+        boot_task = asyncio.create_task(_boot_sends())
+        timeout = _startup_restore_drain_timeout_secs()
+        if timeout > 0:
+            _done, pending = await asyncio.wait({boot_task}, timeout=timeout)
+            if pending:
+                logger.warning(
+                    "Boot-path sends still running after %.0fs; releasing "
+                    "inbound gate so other platforms are not frozen. "
+                    "Restart notification / obligation redelivery continue "
+                    "in the background.",
+                    timeout,
+                )
+                boot_task.add_done_callback(self._log_background_boot_send_result)
+                tasks = getattr(self, "_background_tasks", None)
+                if tasks is None:
+                    self._background_tasks = set()
+                    tasks = self._background_tasks
+                tasks.add(boot_task)
+                boot_task.add_done_callback(tasks.discard)
+        else:
+            await boot_task
+
+    @staticmethod
+    def _log_background_boot_send_result(task: "asyncio.Task") -> None:
+        """Done-callback for boot-path sends that outlived the restore gate."""
+        GatewayRunner._log_late_background_failure(
+            task, "background boot-path send failed after gate release: see traceback"
+        )
+
+    async def _claim_pending_obligations(self) -> list:
+        """Claim recoverable delivery-ledger rows and clear their
+        ``resume_pending`` flags. Pure DB work — no network sends.
+
+        Runs INLINE at startup BEFORE ``_schedule_resume_pending_sessions``
+        and before the (bounded, abandonable) boot-send task exists. A
         session with a recoverable obligation already produced its answer —
-        the turn completed and only delivery is owed — so this method sends
-        the stored text and clears ``resume_pending`` for that session,
-        preventing the resume path from re-running (and re-paying for) a
-        turn whose output we hold.
+        the turn completed and only delivery is owed — so clearing
+        ``resume_pending`` here prevents the resume path from re-running
+        (and re-paying for) a turn whose output we hold, regardless of how
+        long the sends ahead of redelivery take (#91969).
 
         Crash-ambiguity contract (see gateway/delivery_ledger.py):
         rows that were mid-send or previously rejected carry a visible
         recovered-reply marker so a possible duplicate is labeled, never
-        silent. Returns the number of redeliveries attempted.
+        silent. Returns the claimed rows for redelivery.
         """
         try:
             from gateway.delivery_ledger import (
-                RECOVERED_MARKER,
                 ledger_enabled,
-                mark_delivered,
-                mark_failed,
                 sweep_recoverable,
             )
 
             if not await asyncio.to_thread(ledger_enabled):
-                return 0
+                return []
             # Only claim rows we can actually send this boot: self.adapters
             # holds a platform only after its connect() succeeded, and each
             # claim spends one of the row's three redelivery attempts.
@@ -12042,8 +12051,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except Exception:
             logger.debug("delivery ledger sweep failed", exc_info=True)
-            return 0
+            return []
         if not claimed:
+            return []
+
+        # Clear resume_pending for EVERY claimed row up front, before any
+        # send. Claiming already spent one of the row's redelivery attempts —
+        # the answer is in the ledger, so the resume path must never re-run
+        # these turns (#91969).
+        for row in claimed:
+            session_key = row.get("session_key") or ""
+            if not session_key:
+                continue
+            try:
+                await self.async_session_store.clear_resume_pending(session_key)
+            except Exception:
+                logger.debug(
+                    "clear_resume_pending failed for %s", session_key,
+                    exc_info=True,
+                )
+        return claimed
+
+    async def _redeliver_claimed_obligations(self, claimed: list) -> int:
+        """Redeliver final responses for rows already claimed (and
+        resume-cleared) by :meth:`_claim_pending_obligations`.
+
+        Network half of the split — runs inside the bounded boot-send task,
+        so a flood-limited send can be abandoned by the restore gate without
+        reopening the turn-replay window. Returns redeliveries attempted.
+        """
+        if not claimed:
+            return 0
+        try:
+            from gateway.delivery_ledger import (
+                RECOVERED_MARKER,
+                mark_delivered,
+                mark_failed,
+            )
+        except Exception:
+            logger.debug("delivery ledger import failed", exc_info=True)
             return 0
 
         redelivered = 0
@@ -12067,6 +12113,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             metadata = (
                 {"thread_id": row["thread_id"]} if row.get("thread_id") else None
             )
+
             try:
                 result = await adapter.send(
                     chat_id=row["chat_id"],
@@ -12097,19 +12144,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
             except Exception:
                 logger.debug("delivery ledger update failed", exc_info=True)
-
-            # The answer reached (or was owed to) this session — don't ALSO
-            # re-run the turn via the resume path.
-            session_key = row.get("session_key") or ""
-            if session_key:
-                try:
-                    await self.async_session_store.clear_resume_pending(session_key)
-                except Exception:
-                    logger.debug(
-                        "clear_resume_pending failed for %s", session_key,
-                        exc_info=True,
-                    )
         return redelivered
+
+    async def _redeliver_pending_obligations(self) -> int:
+        """Claim + redeliver in one call — composition of
+        :meth:`_claim_pending_obligations` and
+        :meth:`_redeliver_claimed_obligations`.
+
+        Kept as the stable public shape (tests and any external callers
+        drive this name); the startup path calls the two halves separately
+        so the DB half can run inline before the abandonable send task.
+        """
+        return await self._redeliver_claimed_obligations(
+            await self._claim_pending_obligations()
+        )
 
     def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
@@ -12304,7 +12352,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         watchdog = getattr(self, "_loop_liveness_watchdog", None)
         if watchdog is None or not watchdog.is_alive():
             try:
-                self._loop_liveness_watchdog = start_loop_liveness_watchdog(loop)
+                # getattr defaults cover the config=None / bare-object test
+                # path; config-loaded values are already validated+clamped
+                # by GatewayConfig.from_dict, so no re-clamping here.
+                interval = getattr(
+                    config,
+                    "loop_watchdog_probe_interval_s",
+                    DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
+                )
+                timeout = getattr(
+                    config,
+                    "loop_watchdog_probe_timeout_s",
+                    DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
+                )
+                strikes = getattr(
+                    config,
+                    "loop_watchdog_max_strikes",
+                    DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
+                )
+                self._loop_liveness_watchdog = start_loop_liveness_watchdog(
+                    loop,
+                    probe_interval=float(interval),
+                    probe_timeout=float(timeout),
+                    max_strikes=int(strikes),
+                )
             except Exception:
                 logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
 
@@ -13206,32 +13277,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # of a restart cycle (see _is_stale_restart_redelivery).
         if chat_restart_notification_pending:
             self._booted_from_restart = True
-        await self._send_restart_notification()
-
-        # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
-            try:
-                await self._send_home_channel_startup_notifications(
-                    skip_targets=None,
-                )
-            finally:
-                _clear_planned_restart_notification()
+        # Restart notification, home-channel startup notice, and obligation
+        # redelivery all call adapter.send(). Those sends must not pin the
+        # inbound restore gate — a Telegram flood-control sleep on this path
+        # froze every platform for the full penalty (#91969). Bound them the
+        # same way _finish_startup_restore bounds resume turns.
+        await self._await_startup_boot_sends(
+            planned_restart_notification_pending=planned_restart_notification_pending,
+        )
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
         # by the normal successful-turn path, so a failed auto-resume remains
         # visible for manual recovery on the next user message.
         #
-        # Delivery-obligation redelivery runs FIRST: a session whose final
-        # response was generated but never confirmed-delivered has its answer
-        # in the ledger — redelivering it (and clearing resume_pending for
-        # that session) is strictly cheaper and more correct than re-running
-        # the whole turn.
-        await self._redeliver_pending_obligations()
+        # Delivery-obligation redelivery already ran inside
+        # _await_startup_boot_sends (and clears resume_pending before send):
+        # a session whose final response was generated but never
+        # confirmed-delivered has its answer in the ledger — redelivering it
+        # is strictly cheaper and more correct than re-running the whole turn.
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
 
@@ -13303,11 +13367,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # live task even when _spawn_supervised's own backoff respawns it — so
         # _ensure_reconnect_watcher_running never mistakes a superseded handle
         # for a dead watcher and spawns a duplicate.
-        self._reconnect_watcher_task = self._spawn_supervised(
-            self._platform_reconnect_watcher,
-            "platform_reconnect_watcher",
-            on_spawn=lambda t: setattr(self, "_reconnect_watcher_task", t),
-        )
+        self._spawn_reconnect_watcher()
 
         # Start background handoff watcher — picks up CLI sessions marked
         # handoff_state='pending' in state.db and re-binds them to the
@@ -13372,7 +13432,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # handoff for the rest of the process life).
     _SUPERVISED_HEALTHY_SECS = 300
 
-    def _spawn_supervised(self, coro_factory, name, *, restart=True, _attempt=0, on_spawn=None):
+    @staticmethod
+    def _supervised_backoff(attempt: int) -> float:
+        """Delay before the supervisor's next respawn, in seconds.
+
+        Capped exponential. A method rather than an inline expression so the
+        schedule has one name, and so a test can collapse it -- the ordering
+        of crash / give-up / slow-tier is what the exhaustion tests assert,
+        and sleeping through the real curve to observe it would make them
+        take minutes.
+        """
+        return min(60, 2 ** min(attempt, 6))
+
+    def _spawn_supervised(
+        self, coro_factory, name, *, restart=True, _attempt=0, on_spawn=None,
+        on_give_up=None,
+    ):
         """Launch a long-lived background task with task-level supervision.
 
         Complements upstream's per-iteration inner-loop try/except (which only
@@ -13388,6 +13463,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``_SUPERVISED_HEALTHY_SECS`` — so a long-lived daemon that crashes
         occasionally over days is never permanently abandoned.
 
+        Each watcher starts in a fresh ``Context``. These are process-level
+        services, not continuations of whichever message turn happened to
+        spawn them; inheriting a delegated-child marker would make the Kanban
+        dispatcher reject its own writes when ``asyncio.to_thread`` copies the
+        watcher's context.
+
         ``on_spawn`` (optional) is invoked with the freshly-created task on
         every spawn, INCLUDING internal backoff respawns. Callers that also
         track the live handle elsewhere (e.g. ``self._reconnect_watcher_task``
@@ -13395,6 +13476,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         supervisor's own respawn creates a new task without updating that
         external handle, so ``_ensure_...`` later sees the stale/done handle
         and spawns a SECOND concurrent watcher (double reconnect attempts).
+
+        ``on_give_up`` (optional) is invoked with ``name`` when supervision is
+        abandoned — the restart budget is spent and this task will never be
+        respawned by the supervisor again. Supervision being finite is correct;
+        having no owner of the invariant afterwards is not. A task that still
+        has queued work depending on it needs somewhere to hand that fact to,
+        and before this hook existed the only thing standing between budget
+        exhaustion and a permanent silent outage was a *later, unrelated
+        event* happening to call ``_ensure_...`` (#90386). This is the
+        supervisor telling its caller "I am done; the invariant is yours now",
+        which is a thing only the supervisor knows.
         """
         if getattr(self, "_background_tasks", None) is None:
             self._background_tasks = set()
@@ -13403,9 +13495,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # uses it to distinguish a rapid crash-loop from a healthy-run-then-crash.
         _started = time.monotonic()
 
-        # Deliberately do NOT pass name= to create_task — some test doubles mock
-        # create_task with a signature that rejects the name kwarg.
-        task = asyncio.create_task(coro_factory())
+        # Deliberately do NOT pass kwargs to create_task — some test doubles
+        # mock it with a narrow signature. Calling it from a fresh Context has
+        # the same isolation semantics as create_task(..., context=Context())
+        # while preserving that compatibility.
+        task = Context().run(lambda: asyncio.create_task(coro_factory()))
         # Mark this as a PERMANENT supervised watcher, not transient background
         # WORK. The scale-to-zero idle check must ignore these: supervised
         # watchers (session-expiry, kanban, reconnect, the scale-to-zero watcher
@@ -13453,8 +13547,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         effective_attempt,
                         self._SUPERVISED_HEALTHY_SECS,
                     )
+                    if on_give_up is not None:
+                        try:
+                            on_give_up(name)
+                        except Exception:  # pragma: no cover - defensive
+                            logger.debug(
+                                "on_give_up callback for %s raised",
+                                name, exc_info=True,
+                            )
                     return
-                backoff = min(60, 2 ** min(effective_attempt, 6))
+                backoff = self._supervised_backoff(effective_attempt)
 
                 async def _respawn():
                     await asyncio.sleep(backoff)
@@ -13465,9 +13567,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             restart=restart,
                             _attempt=effective_attempt + 1,
                             on_spawn=on_spawn,
+                            # Must be threaded through the recursion for the
+                            # same reason on_spawn is: the give-up that
+                            # matters is the LAST respawn's, and a callback
+                            # dropped here would leave the exhaustion branch
+                            # with no owner at exactly the moment it needs one.
+                            on_give_up=on_give_up,
                         )
 
-                respawn_task = asyncio.create_task(_respawn())
+                # The done callback retains the context in which it was
+                # registered, so isolate the backoff task too; otherwise a
+                # restart could reintroduce the original caller's turn scope.
+                respawn_task = Context().run(lambda: asyncio.create_task(_respawn()))
                 self._background_tasks.add(respawn_task)
                 respawn_task.add_done_callback(self._background_tasks.discard)
 
@@ -14184,14 +14295,128 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # self state, so inheriting the mixin keeps every self._kanban_* call site
     # working unchanged while lifting ~1,000 LOC out of this file.
 
+    #: Interval of the slow respawn tier that takes over once the reconnect
+    #: watcher has exhausted its supervised restart budget. Long on purpose:
+    #: the budget is spent precisely when the watcher is crashing on contact,
+    #: so the useful cadence is "check back later", not "try again now". A
+    #: tight loop here would be worse than the outage it is healing.
+    _RECONNECT_WATCHER_SLOW_RETRY_SECS = 300
+
+    #: How many slow-tier respawns to attempt while work is still queued.
+    #: Bounded, not infinite: if half an hour of five-minute retries cannot
+    #: keep a watcher alive, the fault is not transient and a louder failure
+    #: is more useful than a quieter one that never stops.
+    _MAX_SLOW_WATCHER_RESPAWNS = 6
+
+    def _on_reconnect_watcher_gave_up(self, name: str = "") -> None:
+        """Own the reconnect invariant once supervision has abandoned it.
+
+        The invariant this closes: **while the gateway is running and
+        ``_failed_platforms`` is non-empty, either a reconnect watcher is live
+        or a bounded respawn is scheduled.**
+
+        Before this, the only thing that noticed a dead watcher was a *later
+        fatal error from some other platform* reaching
+        ``_queue_retryable_fatal_platform``. That is event-coupled recovery: it
+        needs an event that, by construction, may never come. #81036 moved
+        queue publication ahead of disconnect and drops the failed adapter from
+        the live map, so once the watcher's budget is spent there may be no
+        adapter left that can emit the event recovery was waiting on. The
+        platform stays queued, nothing retries it, and the stranded check in
+        ``_handle_adapter_fatal_error_detached`` treats a queued platform as
+        safe — so the process is never restarted either.
+
+        Deliberately NOT done here: requesting a supervisor/process restart
+        when the slow tier is also exhausted. That is a policy decision about
+        blast radius (a gateway serving healthy platforms would be taken down
+        to heal a sick one) and it belongs to a maintainer, not to this patch.
+        What happens instead is a single loud error naming the still-queued
+        platforms, which is the state an operator or an external supervisor can
+        act on.
+        """
+        if not getattr(self, "_running", False):
+            return
+        if not getattr(self, "_failed_platforms", None):
+            # No queued work depends on the watcher. Letting it stay dead is
+            # correct -- the enqueue path spawns a fresh one the moment a
+            # platform is queued again.
+            logger.warning(
+                "Reconnect watcher supervision exhausted with an empty retry "
+                "queue — leaving it down until a platform is queued."
+            )
+            return
+        self._schedule_slow_reconnect_watcher_respawn(attempt=0)
+
+    def _schedule_slow_reconnect_watcher_respawn(self, *, attempt: int) -> None:
+        """Bounded slow-tier respawn of the reconnect watcher."""
+        if attempt >= self._MAX_SLOW_WATCHER_RESPAWNS:
+            logger.error(
+                "Reconnect watcher could not be kept alive after %d slow "
+                "respawns; %d platform(s) remain queued and unattended: %s. "
+                "Manual intervention or a gateway restart is required.",
+                attempt,
+                len(self._failed_platforms),
+                ", ".join(str(p) for p in self._failed_platforms),
+            )
+            return
+
+        async def _slow_respawn() -> None:
+            await asyncio.sleep(self._RECONNECT_WATCHER_SLOW_RETRY_SECS)
+            if not getattr(self, "_running", False):
+                return
+            if not getattr(self, "_failed_platforms", None):
+                # The queue drained while we waited -- something else healed
+                # it. Nothing to own any more.
+                return
+            task = getattr(self, "_reconnect_watcher_task", None)
+            if task is not None and not task.done():
+                return  # a watcher came back on its own; stand down
+            logger.warning(
+                "Reconnect watcher still down with %d platform(s) queued — "
+                "slow respawn %d/%d",
+                len(self._failed_platforms),
+                attempt + 1,
+                self._MAX_SLOW_WATCHER_RESPAWNS,
+            )
+            self._spawn_reconnect_watcher(
+                on_give_up=lambda _name: self._schedule_slow_reconnect_watcher_respawn(
+                    attempt=attempt + 1
+                )
+            )
+
+        respawn_task = asyncio.create_task(_slow_respawn())
+        if getattr(self, "_background_tasks", None) is None:
+            self._background_tasks = set()
+        self._background_tasks.add(respawn_task)
+        respawn_task.add_done_callback(self._background_tasks.discard)
+
+    def _spawn_reconnect_watcher(self, *, on_give_up=None):
+        """Single place that knows how to launch the reconnect watcher.
+
+        Three call sites used to repeat this triple (factory, name, on_spawn),
+        and the ``on_spawn`` half of it is load-bearing: without it the
+        supervisor's own respawn leaves ``_reconnect_watcher_task`` pointing at
+        a dead handle and ``_ensure_...`` spawns a second concurrent watcher.
+        """
+        self._reconnect_watcher_task = self._spawn_supervised(
+            self._platform_reconnect_watcher,
+            "platform_reconnect_watcher",
+            on_spawn=lambda t: setattr(self, "_reconnect_watcher_task", t),
+            on_give_up=on_give_up or self._on_reconnect_watcher_gave_up,
+        )
+        return self._reconnect_watcher_task
+
     def _ensure_reconnect_watcher_running(self) -> None:
         """Ensure the platform reconnect watcher background task is alive.
 
         If the tracked reconnect watcher task has died (e.g. from exhausting
         its restart budget, or a terminal exception that _spawn_supervised
         could not recover), respawns it so platforms queued for reconnection
-        are not permanently stranded. Called after queueing a retryable fatal
-        error in _handle_adapter_fatal_error (#70344).
+        are not permanently stranded. Called from
+        _queue_retryable_fatal_platform on BOTH paths (#70344, #90386): after a
+        new enqueue, and after a re-fatal for a platform that is already queued
+        -- the latter being the only case in which the watcher can have been
+        retrying long enough to exhaust its supervised restart budget.
         """
         if not getattr(self, "_running", False):
             return
@@ -14202,11 +14427,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "Reconnect watcher task is dead (done=%s) — respawning",
             task.done() if task is not None else "N/A",
         )
-        self._reconnect_watcher_task = self._spawn_supervised(
-            self._platform_reconnect_watcher,
-            "platform_reconnect_watcher",
-            on_spawn=lambda t: setattr(self, "_reconnect_watcher_task", t),
-        )
+        self._spawn_reconnect_watcher()
 
     async def _platform_reconnect_watcher(self) -> None:
         """Background task that periodically retries connecting failed platforms.
@@ -15069,25 +15290,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("Failed to write planned restart notification marker: %s", e)
 
             if self._restart_requested and self._restart_via_service:
-                self._launch_systemd_restart_shortcut()
-                # Always exit with TEMPFAIL (75) on service-managed
-                # restarts.  The shortcut helper above is best-effort and
-                # commonly fails on real deployments: non-root gateway
-                # units hit Polkit denials when invoking ``systemd-run
-                # --system``, headless boxes have no user bus for
-                # ``--user``, and operator-managed unit files may use
-                # ``Restart=on-failure`` rather than ``Restart=always``.
-                # Exit 75 paired with ``RestartForceExitStatus=75`` makes
-                # systemd treat the planned restart as a controlled
-                # failure and revive the unit via ``Restart=on-failure``,
-                # regardless of whether the helper survived.  Without
-                # this, a clean exit (0) on Linux left the gateway dead
-                # until someone rebooted the host.  Only the planned code
-                # (75) is whitelisted via ``RestartForceExitStatus``; a
-                # genuine crash exits non-zero-but-not-75, so real crash
-                # loops are still governed by the unit's normal
-                # ``Restart=``/``RestartSec`` (and any StartLimit the
-                # operator sets) rather than force-restarted here.
+                # The service manager is the sole restart owner.  Exit 75
+                # paired with ``RestartForceExitStatus=75`` asks systemd to
+                # replace this process without a second helper racing the
+                # unit's stop/start job.  The generated launchd plist's
+                # unconditional ``KeepAlive`` likewise replaces the process
+                # after this planned exit.
                 self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
@@ -30670,6 +30878,26 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
 
+    # Control socket (#92091 step 1) — the gateway-owned identify/status
+    # surface. Started immediately after the PID-file claim: winning that
+    # O_EXCL race is the moment this process becomes the authoritative
+    # gateway for its HERMES_HOME, so from here on "does a socket answer?"
+    # is a truthful liveness/identity query for updater and fleet consumers.
+    # Strictly non-fatal: a bind failure only means consumers fall back to
+    # the process-scan/state-file layer, exactly as before this feature.
+    _control_server = None
+    try:
+        from gateway.control_socket import GatewayControlServer
+
+        _control_server = GatewayControlServer()
+        if not await _control_server.start():
+            _control_server = None
+        else:
+            atexit.register(_control_server.cleanup_files)
+    except Exception as _cs_exc:
+        logger.debug("Control socket startup failed (non-fatal): %s", _cs_exc)
+        _control_server = None
+
     # Lifecycle ledger (NS-608): report if the previous gateway life died
     # uncleanly (SIGKILL / OOM / VM death — no exit path ran), then claim
     # the sentinel for this life. Placed after the PID-file/lock claim so
@@ -30866,6 +31094,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Wait for shutdown
     await runner.wait_for_shutdown()
+
+    # Stop the control socket first: once shutdown begins this process is no
+    # longer a truthful "the gateway is serving here" answer, and a successor
+    # (--replace / supervisor respawn) must be able to bind. Early-exit paths
+    # above don't reach this; their process exit runs the atexit
+    # cleanup_files hook, and a successor clears any stale socket on bind.
+    if _control_server is not None:
+        try:
+            await _control_server.stop()
+        except Exception:
+            logger.debug("Control socket stop failed (non-fatal)", exc_info=True)
 
     try:
         from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive

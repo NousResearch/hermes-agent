@@ -1077,3 +1077,92 @@ async def test_startup_restore_gate_releases_when_resume_turn_outlives_timeout(
     await slow_task
 
 
+@pytest.mark.asyncio
+async def test_startup_restore_gate_releases_when_boot_path_send_hangs(
+    monkeypatch,
+):
+    """A hung restart notification / obligation redelivery must not freeze inbound.
+
+    Those sends used to run *before* ``_finish_startup_restore`` released the
+    gate. A Telegram flood-control sleep on either call queued inbound on
+    every platform for the full ``retry_after``.
+    """
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0.05")
+
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+    runner._background_tasks = set()
+
+    hung = asyncio.Event()
+
+    async def never_returns(*_args, **_kwargs):
+        await hung.wait()
+        return None
+
+    runner._send_restart_notification = never_returns
+    runner._claim_pending_obligations = AsyncMock(return_value=[])
+    runner._redeliver_claimed_obligations = AsyncMock(return_value=0)
+
+    seen: list[str] = []
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        seen.append(f"inbound:{event.text}")
+
+    adapter.handle_message = fake_handle_message
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="restore-chat"),
+    )
+    assert await runner._handle_message(inbound) is None
+    assert runner._startup_restore_queue == [inbound]
+
+    await asyncio.wait_for(
+        runner._await_startup_boot_sends(
+            planned_restart_notification_pending=False,
+        ),
+        timeout=5,
+    )
+    await asyncio.wait_for(runner._finish_startup_restore(), timeout=5)
+
+    assert seen == ["inbound:hello"], (
+        "startup-restore gate never released: queued inbound was not drained "
+        "while a boot-path send was still sleeping"
+    )
+    assert runner._startup_restore_queue == []
+    assert runner._startup_restore_in_progress is False
+    # The DB half (claim + resume clear) runs inline BEFORE the abandonable
+    # send task, so it must have completed even though the boot send hung;
+    # the network half never ran because the hung notification precedes it.
+    runner._claim_pending_obligations.assert_awaited_once()
+    runner._redeliver_claimed_obligations.assert_not_awaited()
+
+    hung.set()
+    leftover = [t for t in list(runner._background_tasks) if not t.done()]
+    if leftover:
+        await asyncio.wait(leftover)
+
+
+@pytest.mark.asyncio
+async def test_startup_boot_sends_still_run_when_they_finish_quickly(monkeypatch):
+    """The bound must not skip restart notification or redelivery on a fast path."""
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "2")
+
+    runner, _adapter = make_restart_runner()
+    runner._background_tasks = set()
+    runner._send_restart_notification = AsyncMock(return_value=None)
+    runner._claim_pending_obligations = AsyncMock(return_value=[])
+    runner._redeliver_claimed_obligations = AsyncMock(return_value=0)
+
+    await runner._await_startup_boot_sends(
+        planned_restart_notification_pending=False,
+    )
+
+    runner._send_restart_notification.assert_awaited_once()
+    runner._claim_pending_obligations.assert_awaited_once()
+    runner._redeliver_claimed_obligations.assert_awaited_once()
+
+

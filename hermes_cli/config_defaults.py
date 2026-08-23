@@ -2919,6 +2919,16 @@ DEFAULT_CONFIG = {
         # of leaving a wedged-but-alive zombie. Set to false to disable.
         "loop_watchdog": True,
 
+        # Loop-liveness watchdog tuning (defaults mirror
+        # gateway/shutdown_watchdog.py constants). probe_interval = seconds
+        # between liveness probes; probe_timeout = seconds a probe may go
+        # unprocessed before counting as a miss; max_strikes = consecutive
+        # misses before the watchdog hard-exits 75 for a service respawn
+        # (~90-120s of sustained loop block at the defaults).
+        "loop_watchdog_probe_interval_s": 30.0,
+        "loop_watchdog_probe_timeout_s": 10.0,
+        "loop_watchdog_max_strikes": 3,
+
         # Whether the gateway keeps writing the legacy sessions.json mirror of
         # its routing index. The primary copy lives in state.db (the
         # gateway_routing table). Default True for backward compatibility with
@@ -3253,13 +3263,37 @@ DEFAULT_CONFIG = {
         "non_interactive_local_changes": "stash",
         # When `hermes update` finds the source checkout parked on a feature
         # branch (left behind by tooling or a manual checkout), switch back
-        # to the update target automatically — but only when the branch is
-        # clean and every commit on it is already merged into the target.
-        # When it is not safe, the code update is SKIPPED with a loud
-        # warning instead of pretending success (2026-08-17 incident:
-        # "✓ Code updated!" printed while the checkout stayed days behind
-        # main on a stale branch). Set false to never auto-switch.
+        # to the update target automatically whenever the working tree is
+        # clean. Committed-but-unmerged work is safe — `git checkout` never
+        # discards commits; the branch keeps them and the update prints a
+        # loud notice naming the branch and count. This keeps non-
+        # interactive updates (desktop update button, gateway /update,
+        # cron) working: they have no way to resolve a skip. Only a DIRTY
+        # tree (uncommitted changes) blocks the switch — the code update is
+        # then SKIPPED with a loud warning instead of pretending success
+        # (2026-08-17 incident: "✓ Code updated!" printed while the
+        # checkout stayed days behind main on a stale branch). Set false to
+        # never auto-switch.
         "auto_switch_parked_branch": True,
+        # HOW a clean parked branch with unmerged commits is handled:
+        #   "switch" (default)  — switch to the update target; the commits
+        #                         stay on the branch (git checkout never
+        #                         discards committed work) and a loud notice
+        #                         names the branch + count. Deterministic —
+        #                         never conflicts — so desktop/gateway/cron
+        #                         updates always land on current code.
+        #   "update_in_place"   — for a deliberately maintained custom branch
+        #                         (local patches on top of main): merge
+        #                         origin/<target> INTO the branch instead.
+        #                         The checkout never moves and local commits
+        #                         survive; a conflict stops the update
+        #                         cleanly with nothing changed. A safety tag
+        #                         (pre-update-<stamp>) is left before the
+        #                         merge. `hermes update --switch-branch`
+        #                         overrides back to the switch path for one
+        #                         run (e.g. a deep feature branch that must
+        #                         not accumulate update merge commits).
+        "parked_branch_strategy": "switch",
         # Refresh an already-installed cua-driver during `hermes update`.
         # The refresh is best-effort and macOS-only. Turn this off if the
         # upstream installer is not appropriate for the machine, for example

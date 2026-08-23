@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -291,8 +292,6 @@ def ensure_windows_bin_launchers(
     if not sources:
         return []
     relocatable = _venv_is_relocatable(venv_dir)
-
-    import shutil
 
     restored: list[str] = []
     for target in targets:

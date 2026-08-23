@@ -1752,6 +1752,11 @@ def _(rid, params: dict) -> dict:
                             if params.get("continuity") is not None
                             else None
                         ),
+                        # Optional delivery target — notably 'bot-chat[:name]'
+                        # (canonical Bot Chat injection) from the Desktop Bot
+                        # Mode cronjob dialog. Omitted/empty keeps the
+                        # cronjob() default.
+                        deliver=(str(params.get("deliver") or "").strip() or None),
                     )
                 ),
             )

@@ -461,6 +461,40 @@ def _normalize_deliver_param(value: Any) -> Optional[str]:
     return text or None
 
 
+def _validate_bot_chat_deliver(deliver: Optional[str]) -> Optional[str]:
+    """Validate any ``bot-chat[:<profile>]`` deliver elements at create time.
+
+    Bot Chat delivery is machine-local: the named profile must exist on THIS
+    machine (the one whose scheduler will fire the job). Failing loudly here
+    beats a per-run ``last_delivery_error`` at 3am — especially for Desktop
+    clients whose merged multi-gateway rosters may show same-named profiles
+    from other machines. Returns an error string or None.
+    """
+    if not deliver:
+        return None
+    try:
+        from cron.scheduler import parse_bot_chat_deliver_token
+        from hermes_cli.profiles import normalize_profile_name, profile_exists
+    except Exception:
+        return None  # validation is best-effort; resolution re-checks at fire time
+    for part in str(deliver).split(","):
+        profile_arg = parse_bot_chat_deliver_token(part.strip())
+        if profile_arg is None or not profile_arg:
+            continue  # not a bot-chat token, or bare token (own profile)
+        try:
+            canon = normalize_profile_name(profile_arg)
+        except Exception:
+            return f"invalid bot-chat profile name '{profile_arg}'"
+        if not profile_exists(canon):
+            return (
+                f"bot-chat delivery profile '{profile_arg}' not found on this "
+                "gateway's machine. Bot Chat delivery is machine-local — use a "
+                "profile that exists here (hermes profile list), or omit the "
+                "name (deliver='bot-chat') for the job's own profile."
+            )
+    return None
+
+
 def _resolve_cron_context_deliver(deliver: Optional[str]) -> Optional[str]:
     """Resolve ``origin`` to a concrete target for cron-context creates.
 
@@ -1265,6 +1299,12 @@ def cronjob(
             if base_url_error:
                 return tool_error(base_url_error, success=False)
 
+            # bot-chat deliver targets are machine-local: named profiles must
+            # exist here, and a bad name should fail the CREATE, not the run.
+            bot_chat_error = _validate_bot_chat_deliver(_normalize_deliver_param(deliver))
+            if bot_chat_error:
+                return tool_error(bot_chat_error, success=False)
+
             # Validate context_from references existing jobs
             if context_from:
                 from cron.jobs import get_job as _get_job
@@ -1489,6 +1529,9 @@ def cronjob(
             if name is not None:
                 updates["name"] = name
             if deliver is not None:
+                bot_chat_error = _validate_bot_chat_deliver(_normalize_deliver_param(deliver))
+                if bot_chat_error:
+                    return tool_error(bot_chat_error, success=False)
                 updates["deliver"] = _resolve_cron_context_deliver(
                     _normalize_deliver_param(deliver)
                 )
@@ -1684,7 +1727,7 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
             },
             "deliver": {
                 "type": "string",
-                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time, so a job created before a channel was wired up will pick it up automatically once connected."
+                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), 'bot-chat' (inject the output into this profile's canonical Bot Chat as a real message — the bot reads it, acts on it, and responds in that chat; 'bot-chat:<profile>' targets another local profile's Bot Chat, costing that bot an agent turn per run), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all', 'bot-chat:research'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time (and never includes bot-chat targets), so a job created before a channel was wired up will pick it up automatically once connected."
             },
             "skills": {
                 "type": "array",

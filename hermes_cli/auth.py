@@ -743,8 +743,8 @@ ZAI_ENDPOINTS = [
     # (id, base_url, probe_models, label)
     ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
     ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
-    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
+    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.3", "glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
+    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.3", "glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
 ]
 
 
@@ -7693,16 +7693,22 @@ def _prompt_model_selection(
                     if sale is not None:
                         any_on_sale = True
                         pct, was_prompt_raw, was_out_raw = sale
-                        was_inp = (
-                            _format_price_per_mtok(was_prompt_raw)
-                            if was_prompt_raw != ""
-                            else "?"
-                        )
-                        was_out = (
-                            _format_price_per_mtok(was_out_raw)
-                            if was_out_raw != ""
-                            else "?"
-                        )
+                        # Natively-free models (no gateway original) carry
+                        # empty was_* raws — leave them empty so the row
+                        # shows bare "-100%" with no "was ?/?" suffix.
+                        if was_prompt_raw == "" and was_out_raw == "":
+                            was_inp = was_out = ""
+                        else:
+                            was_inp = (
+                                _format_price_per_mtok(was_prompt_raw)
+                                if was_prompt_raw != ""
+                                else "?"
+                            )
+                            was_out = (
+                                _format_price_per_mtok(was_out_raw)
+                                if was_out_raw != ""
+                                else "?"
+                            )
             else:
                 inp, out, cache = "", "", ""
             _price_cache[mid] = (inp, out, cache, pct, was_inp, was_out)
@@ -7739,7 +7745,8 @@ def _prompt_model_selection(
         segs = [*name_segs, (price_part, None)]
         if on_sale:
             segs.append((f"  -{pct}%", "yellow"))
-            segs.append((f"  was {was_inp}/{was_out}", "dim"))
+            if was_inp or was_out:
+                segs.append((f"  was {was_inp}/{was_out}", "dim"))
         if mid == current_model:
             segs.append(("  ← currently in use", None))
         return segs

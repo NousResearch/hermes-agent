@@ -12089,7 +12089,7 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     """
     import sqlite3
 
-    from hermes_state import SessionDB, is_malformed_db_error
+    from hermes_state import SessionDB, is_malformed_schema_error
 
     if not read_only:
         return SessionDB(db_path=db_path, read_only=False)
@@ -12126,7 +12126,7 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     except sqlite3.DatabaseError as exc:
         message = str(exc).lower()
         stale_schema = "no such table" in message or "no such column" in message
-        if not stale_schema and not is_malformed_db_error(exc):
+        if not stale_schema and not is_malformed_schema_error(exc):
             raise
         SessionDB(db_path=db_path, read_only=False).close()
         try:

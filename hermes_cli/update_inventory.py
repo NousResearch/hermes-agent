@@ -183,6 +183,47 @@ def collect_runtime_inventory() -> UpdatePlan:
         from gateway.status import _pid_exists, read_runtime_status
 
         for profile, home in profile_homes:
+            # Prefer the gateway-owned control socket (#92091): identity
+            # declared by the process itself, including its own supervisor
+            # provenance — no argv/PID inference. Scan fallback below.
+            identity = None
+            try:
+                from gateway.control_socket import identify_gateway
+
+                identity = identify_gateway(home)
+            except Exception:
+                identity = None
+            if identity:
+                try:
+                    sock_pid = int(identity.get("pid"))
+                except (TypeError, ValueError):
+                    sock_pid = None
+                if sock_pid is not None:
+                    if sock_pid in seen_pids:
+                        # One multiplex gateway can answer identify for
+                        # several profile homes — one runtime record per
+                        # process, not per home.
+                        continue
+                    seen_pids.add(sock_pid)
+                    declared = identity.get("supervisor")
+                    supervisor = (
+                        str(declared)
+                        if declared
+                        else _detect_supervisor_for_pid(sock_pid, service_pids)
+                    )
+                    sock_sha = identity.get("code_sha")
+                    plan.runtimes.append(
+                        RuntimeRecord(
+                            kind="gateway",
+                            profile=profile,
+                            pid=sock_pid,
+                            supervisor=supervisor,
+                            code_sha=str(sock_sha) if sock_sha else None,
+                            code_version=identity.get("code_version"),
+                            restart_via=_restart_mechanism(supervisor, profile),
+                        )
+                    )
+                    continue
             record = read_runtime_status(home / "gateway_state.json")
             pid: Optional[int] = None
             code_sha = code_version = None

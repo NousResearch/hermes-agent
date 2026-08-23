@@ -2977,50 +2977,75 @@ print(','.join(scripts))
     Write-Success "All dependencies installed"
 }
 
+function Install-HermesCommandLaunchers {
+    param(
+        [Parameter(Mandatory=$true)] [string]$Root,
+        [Parameter(Mandatory=$true)] [string]$Destination
+    )
+
+    # Expose ONLY the hermes launchers on PATH -- never the whole
+    # venv\Scripts directory, which contains python.exe / pip.exe and
+    # silently hijacks the `python` command in every terminal (#83797).
+    # Requiring hermes.exe before creating the destination keeps the PATH
+    # stage from reporting success with an unusable command (PR #92092).
+    $scriptsDir = Join-Path $Root "venv\Scripts"
+    $requiredSource = Join-Path $scriptsDir "hermes.exe"
+    if (-not (Test-Path -LiteralPath $requiredSource -PathType Leaf)) {
+        throw "Cannot set up the hermes command: required launcher not found: $requiredSource"
+    }
+
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+
+    # Launcher form depends on the venv (keep in lockstep with
+    # hermes_cli/_install_repair.py): a normal venv's exe trampoline
+    # embeds an absolute interpreter path and survives copying; a
+    # relocatable venv's trampoline (managed_uv rebuilds use
+    # --relocatable) resolves relative to its own location, and a copy
+    # dies with 'uv trampoline failed to canonicalize script path' --
+    # those get a .cmd delegator invoking the in-venv exe instead.
+    $pyvenvCfg = Join-Path $Root "venv\pyvenv.cfg"
+    $venvRelocatable = $false
+    if (Test-Path -LiteralPath $pyvenvCfg) {
+        $venvRelocatable = [bool](Select-String -Path $pyvenvCfg -Pattern '^\s*relocatable\s*=\s*true\s*$' -Quiet)
+    }
+    foreach ($launcher in @("hermes", "hermes-acp")) {
+        $src = Join-Path $scriptsDir "$launcher.exe"
+        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
+        if ($venvRelocatable) {
+            Remove-Item (Join-Path $Destination "$launcher.exe") -Force -ErrorAction SilentlyContinue
+            Set-Content -Path (Join-Path $Destination "$launcher.cmd") -Value "@echo off`r`n`"$src`" %*" -Encoding Ascii
+        } else {
+            Remove-Item (Join-Path $Destination "$launcher.cmd") -Force -ErrorAction SilentlyContinue
+            Copy-Item -Force -LiteralPath $src -Destination (Join-Path $Destination "$launcher.exe")
+        }
+    }
+
+    # Verify either staged form before the caller mutates PATH.
+    $requiredExe = Join-Path $Destination "hermes.exe"
+    $requiredCmd = Join-Path $Destination "hermes.cmd"
+    if (-not ((Test-Path -LiteralPath $requiredExe -PathType Leaf) -or
+              (Test-Path -LiteralPath $requiredCmd -PathType Leaf))) {
+        throw "Cannot set up the hermes command: launcher was not installed: $requiredExe"
+    }
+    return $Destination
+}
+
 function Set-PathVariable {
     Write-Info "Setting up hermes command..."
     
     if ($NoVenv) {
         $hermesBin = "$InstallDir"
     } else {
-        # Expose ONLY the hermes launchers on PATH -- never the whole
-        # venv\Scripts directory. venv\Scripts contains python.exe /
-        # pythonw.exe / pip.exe, and putting it on the user PATH silently
-        # hijacks the `python` command in every terminal on the machine
-        # (#83797). And never a directory inside the git checkout:
-        # `hermes update`'s autostash (git stash push --include-untracked)
-        # deletes untracked files from the working tree, which silently
-        # removed the launchers an earlier installer staged under
-        # hermes-agent\bin. $HermesHome\bin is the managed binary dir
-        # (shared with the managed uv), outside the checkout, where no git
-        # operation can ever touch it. (Launcher exes embed the venv
-        # interpreter path, so they work from any location and survive
-        # updates.)
+        # $HermesHome\bin is the managed binary dir (shared with the managed
+        # uv), OUTSIDE the git checkout: `hermes update`'s autostash
+        # (git stash push --include-untracked) deletes untracked files from
+        # the working tree, which silently removed the launchers an earlier
+        # installer staged under hermes-agent\bin. No git operation can ever
+        # touch this dir. Staging and verification live in
+        # Install-HermesCommandLaunchers, which throws BEFORE any PATH
+        # mutation when the launchers cannot be staged.
         $hermesBin = "$HermesHome\bin"
-        New-Item -ItemType Directory -Force -Path $hermesBin | Out-Null
-        # Launcher form depends on the venv (keep in lockstep with
-        # hermes_cli/_install_repair.py): a normal venv's exe trampoline
-        # embeds an absolute interpreter path and survives copying; a
-        # relocatable venv's trampoline (managed_uv rebuilds use
-        # --relocatable) resolves relative to its own location, and a copy
-        # dies with 'uv trampoline failed to canonicalize script path' --
-        # those get a .cmd delegator invoking the in-venv exe instead.
-        $pyvenvCfg = "$InstallDir\venv\pyvenv.cfg"
-        $venvRelocatable = $false
-        if (Test-Path $pyvenvCfg) {
-            $venvRelocatable = [bool](Select-String -Path $pyvenvCfg -Pattern '^\s*relocatable\s*=\s*true\s*$' -Quiet)
-        }
-        foreach ($launcher in @("hermes", "hermes-acp")) {
-            $src = "$InstallDir\venv\Scripts\$launcher.exe"
-            if (-not (Test-Path $src)) { continue }
-            if ($venvRelocatable) {
-                Remove-Item "$hermesBin\$launcher.exe" -Force -ErrorAction SilentlyContinue
-                Set-Content -Path "$hermesBin\$launcher.cmd" -Value "@echo off`r`n`"$src`" %*" -Encoding Ascii
-            } else {
-                Remove-Item "$hermesBin\$launcher.cmd" -Force -ErrorAction SilentlyContinue
-                Copy-Item -Force $src "$hermesBin\$launcher.exe"
-            }
-        }
+        Install-HermesCommandLaunchers -Root $InstallDir -Destination $hermesBin | Out-Null
     }
     
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")

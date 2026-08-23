@@ -232,6 +232,24 @@ class TestGatewayLifecyclePattern:
         text = 'echo "unbalanced\nhermes gateway restart'
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
+    @pytest.mark.parametrize("text", [
+        # #68289: execute_code payloads carry the argv as a Python list —
+        # brackets/commas separate the words the OS will exec.
+        'import subprocess\nsubprocess.run(["launchctl", "bootout", "gui/501/ai.hermes.gateway"])',
+        'subprocess.run(["hermes", "gateway", "restart"])',
+        'os.system("launchctl kickstart -k gui/501/ai.hermes.gateway")',
+    ])
+    def test_python_argv_list_forms_blocked(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        # Argv-punctuation stripping must not create prose false positives.
+        'print("checking gateway restart docs")',
+        'data = ["hermes", "notes"]  # unrelated list',
+    ])
+    def test_python_argv_stripping_stays_narrow(self, text):
+        assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
+
 
 class TestProfileFlagGatewayLifecycle:
     """#78028: `hermes -p <profile> gateway restart|stop` bypasses Branch A's
@@ -416,7 +434,10 @@ class TestGatewaySelfTargetingGuard:
         assert exc_info.value.code == 1
 
     def test_uninstall_refuses_inside_gateway(self, monkeypatch):
-        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        from tools import process_registry
+        monkeypatch.setattr(
+            process_registry, "_is_supervised_gateway_process", lambda: True
+        )
         from hermes_cli.gateway import gateway_command
 
         args = Namespace(gateway_command="uninstall", system=False)

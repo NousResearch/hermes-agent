@@ -115,6 +115,12 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 # across genuinely separate lines.
 _SHELL_LINE_CONTINUATION = re.compile(r"\\\r?\n[ \t]*")
 
+# Python argv-list punctuation (#68289): `subprocess.run(["launchctl",
+# "bootout", ...])` separates the words the OS will exec with brackets and
+# commas rather than spaces. Stripped before the token-join re-scan only —
+# never from the raw text, so prose stays governed by the primary pattern.
+_ARGV_LIST_PUNCTUATION = re.compile(r"[\[\],]+")
+
 
 # Branch A2 (#78028): the same foot-gun written with an explicit profile
 # selector — `hermes -p <profile> gateway restart|stop` / `--profile <name>`
@@ -252,10 +258,17 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # Token-aware second pass (#80269): re-run the pattern on shell-tokenized
     # segments where quotes/escapes are resolved, closing splice bypasses
     # like `kick"start"`. Runs after the profile-flag check so both passes
-    # apply independently.
+    # apply independently. Tokens are additionally re-joined with Python
+    # argv-list punctuation ([ ] ,) stripped (#68289): the same command
+    # reaches this guard as `subprocess.run(["launchctl", "bootout", ...])`
+    # from execute_code, where commas and brackets — not spaces — separate
+    # the argv words the OS will actually see.
     for segment in _iter_command_segments(normalized):
         joined = " ".join(segment)
         if joined and _GATEWAY_LIFECYCLE_PATTERN.search(joined):
+            return True
+        stripped = _ARGV_LIST_PUNCTUATION.sub(" ", joined)
+        if stripped != joined and _GATEWAY_LIFECYCLE_PATTERN.search(stripped):
             return True
     # Order-independent launchctl pass (#77083): a shell loop can build the
     # gateway label from a variable defined in an earlier `;`-separated

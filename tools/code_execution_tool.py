@@ -1286,6 +1286,23 @@ def execute_code(
             "terminal(command=...) instead."
         )
 
+    # Hard-block gateway-lifecycle commands, mirroring the terminal_tool
+    # guard (#68289): without this, execute_code is a straight bypass — the
+    # terminal() path refuses `launchctl bootout ai.hermes.gateway`, but the
+    # identical command inside `os.system(...)` / `subprocess.run([...])`
+    # here sailed through and SIGTERM'd the gateway mid-task. Gated on
+    # PID-file ownership, not the inherited env marker (#92560).
+    from tools.process_registry import _is_supervised_gateway_process
+    if _is_supervised_gateway_process():
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+        if contains_gateway_lifecycle_command(code):
+            return tool_error(
+                "Blocked: cannot restart or stop the gateway from inside the "
+                "gateway process. The gateway would kill this script before "
+                "it could complete (SIGTERM propagates to child processes). "
+                "Run the lifecycle command from a shell outside the gateway."
+            )
+
     # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config, _docker_has_host_access
     _env_config = _get_env_config()

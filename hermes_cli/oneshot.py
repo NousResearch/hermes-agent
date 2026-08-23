@@ -354,6 +354,27 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _archive_oneshot_session_if_requested(agent, session_db) -> bool:
+    """Soft-hide an automation-owned oneshot session from normal session lists.
+
+    The transcript remains durable and auditable; only callers that explicitly
+    set ``HERMES_ONESHOT_ARCHIVE_SESSION=1`` opt into the projection change.
+    """
+    requested = os.getenv("HERMES_ONESHOT_ARCHIVE_SESSION", "").strip().lower()
+    if requested not in {"1", "true", "yes", "on"}:
+        return False
+    session_id = str(getattr(agent, "session_id", "") or "").strip()
+    if not session_id or session_db is None:
+        return False
+    try:
+        return bool(session_db.set_session_archived(session_id, True))
+    except Exception:
+        logging.warning(
+            "oneshot session archival failed for %s", session_id, exc_info=True
+        )
+        return False
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -480,6 +501,7 @@ def _run_agent(
             requested_provider=runtime.get("requested_provider"),
             api_mode=runtime.get("api_mode"),
             model=effective_model,
+            session_id=os.getenv("HERMES_ONESHOT_SESSION_ID", "").strip(),
             enabled_toolsets=toolsets_list,
             quiet_mode=True,
             platform="cli",
@@ -538,6 +560,10 @@ def _run_agent(
                 agent.close()
             except Exception:
                 logging.debug("oneshot agent cleanup failed", exc_info=True)
+        # Automation callers may retain the transcript for audit while keeping
+        # it out of the normal Desktop Sessions projection.
+        if agent is not None and session_db is not None:
+            _archive_oneshot_session_if_requested(agent, session_db)
         # agent.close() calls session_db.end_session() but leaves the connection
         # open; close it here to checkpoint the WAL before os._exit skips
         # finalizers.

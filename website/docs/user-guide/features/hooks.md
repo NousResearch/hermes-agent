@@ -136,6 +136,7 @@ Waterfall semantics:
 
 - **Delegate** — `await next_fn()` runs the rest of the chain; `await next_fn(new_value=...)` also replaces the value.
 - **Short-circuit** — return without calling `next_fn`; the chain stops and your return value is the final result.
+- **One-shot** — `next_fn()` must be awaited and called **at most once** per handler. A sync handler must `return next_fn()` (the dispatcher awaits the returned coroutine). Calling it without awaiting — or dropping it from a sync handler's return — does NOT delegate: the handler is treated as a short-circuit and its return value becomes the result. A second call is ignored with a warning.
 - **Legacy compatibility** — existing two-argument handlers registered for the same event still run, in order, as observers: they cannot rewrite or short-circuit, their return values are ignored, and a throwing observer does not abort the chain.
 - **Fail-closed** — a throwing waterfall handler stops the chain (a policy handler that crashed did not delegate, so continuing would skip the remaining policy).
 

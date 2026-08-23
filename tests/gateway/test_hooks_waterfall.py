@@ -275,6 +275,67 @@ class TestEmitWaterfall:
         assert seen == ["command:reset"]
         assert result == "w"
 
+    @pytest.mark.asyncio
+    async def test_next_fn_called_twice_warns_and_skips_nothing(self, capsys):
+        """A handler that calls next_fn() more than once must not silently
+        skip or re-run downstream handlers.
+
+        Regression for the Enough1122 review on #85370: ``next_fn()`` is a
+        one-shot — the second call is a contract violation. The dispatcher
+        warns and returns the current value instead of advancing the shared
+        index again (which would walk past a downstream handler).
+        """
+        reg = HookRegistry()
+        seen = []
+
+        async def a(event_type, value, context, next_fn):
+            seen.append(("A", value))
+            first = await next_fn()  # real delegation — runs downstream
+            second = next_fn()       # contract violation — must be ignored
+            if asyncio.iscoroutine(second):
+                second = await second
+            return second
+
+        def b(event_type, value, context, next_fn):
+            seen.append(("B", value))
+            return next_fn()
+
+        reg._handlers["chain"] = [a, b]
+
+        result = await reg.emit_waterfall("chain", "v0", {})
+        captured = capsys.readouterr().out
+        assert "more than once" in captured
+        # B still ran exactly once with the original input — the second call
+        # did not advance past it, and no handler re-ran.
+        assert seen == [("A", "v0"), ("B", "v0")]
+        assert result == "v0"
+
+    @pytest.mark.asyncio
+    async def test_sync_handler_returning_next_fn_is_awaited(self):
+        """A sync handler that returns next_fn() (an un-awaited coroutine)
+        delegates correctly — the dispatcher awaits the returned coroutine.
+
+        Documented contract: sync handlers must ``return next_fn()``.
+        Without the await-on-return path, the un-awaited coroutine would be
+        mistaken for the handler's short-circuit result.
+        """
+        reg = HookRegistry()
+        seen = []
+
+        def a(event_type, value, context, next_fn):
+            seen.append(("A", value))
+            return next_fn(new_value="v1")  # returns coroutine, NOT awaited here
+
+        async def b(event_type, value, context, next_fn):
+            seen.append(("B", value))
+            return await next_fn()
+
+        reg._handlers["chain"] = [a, b]
+
+        result = await reg.emit_waterfall("chain", "v0", {})
+        assert seen == [("A", "v0"), ("B", "v1")]
+        assert result == "v1"
+
 
 class TestEmitWaterfallDiscovery:
     """Waterfall participants discovered from HOOK.yaml + handler.py files."""

@@ -159,6 +159,15 @@ class HookRegistry:
         - return without calling ``next_fn`` to **short-circuit** the chain
           — later handlers do not run and the current value is the result.
 
+        ``next_fn()`` is **one-shot**: delegate at most once per handler and
+        always **await** it. A sync handler must ``return next_fn()`` — the
+        dispatcher awaits the returned coroutine. Calling ``next_fn()``
+        without awaiting (or without returning it from a sync handler) does
+        NOT delegate: the handler is then treated as a short-circuit and its
+        return value becomes the result, while the un-awaited coroutine is
+        dropped. A second ``next_fn()`` call is ignored with a warning
+        instead of silently advancing past a downstream handler.
+
         This mirrors the Cordis waterfall dispatch used by DeepSeek Harness
         for ``tools/pre-execute`` / ``tools/execute`` / ``tools/post-execute``:
         cooperative listeners mutate a shared request or decision object and
@@ -232,9 +241,23 @@ class HookRegistry:
                     continue
 
                 delegated = False
+                next_called = False
 
                 async def _local_next(new_value: Any = _MISSING) -> Any:
-                    nonlocal delegated
+                    nonlocal delegated, next_called
+                    if next_called:
+                        # Contract violation: delegate at most once. A second
+                        # call would otherwise advance the shared index past
+                        # a downstream handler (silent skip) — warn and
+                        # return the current value instead.
+                        print(
+                            f"[hooks] Waterfall handler for '{event_type}' called "
+                            "next_fn() more than once — subsequent calls are "
+                            "ignored (delegate at most once).",
+                            flush=True,
+                        )
+                        return current
+                    next_called = True
                     delegated = True
                     return await _delegate(new_value)
 

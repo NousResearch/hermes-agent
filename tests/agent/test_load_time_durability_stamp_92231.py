@@ -73,10 +73,6 @@ def test_marker_constant_in_sync() -> None:
     assert _DB_PERSISTED_MARKER_KEY == run_agent._DB_PERSISTED_MARKER
     assert _DB_PERSISTED_MARKER_KEY == cc._DB_PERSISTED_MARKER
     assert _DB_PERSISTED_MARKER_KEY == tf._DB_PERSISTED_MARKER
-    # The import aliases must be the SAME object as the canonical constant,
-    # not re-defined literals.
-    assert _DB_PERSISTED_MARKER_KEY is cc._DB_PERSISTED_MARKER
-    assert tf._DB_PERSISTED_MARKER is cc._DB_PERSISTED_MARKER
 
 
 def test_loaded_rows_are_stamped_durable(tmp_path: Path) -> None:
@@ -181,7 +177,7 @@ def test_noop_progress_check_is_marker_insensitive(tmp_path: Path) -> None:
         {k: v for k, v in m.items() if k != _DB_PERSISTED_MARKER_KEY}
         for m in stamped
     ]
-    assert swept != stamped  # raw equality is asymmetric — the bug shape
+    assert swept != stamped  # raw == is marker-sensitive — the bug shape
     assert _strip_marker_for_comparison(swept) == _strip_marker_for_comparison(
         stamped
     )

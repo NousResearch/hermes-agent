@@ -52,6 +52,18 @@ def test_picker_synthesizes_900k_variants_for_verified_slugs():
     assert "gpt-5.3-codex-900k" not in model_ids
 
 
+def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
+    """Eligibility is an exact predicate, not a family-prefix match:
+    ``-pro`` slugs are not routable on Codex OAuth (backend 400s them) and
+    unknown future descendants were never probed — neither may gain a
+    synthetic ``-900k`` entry (#92797 review)."""
+    from hermes_cli.codex_models import _finalize_codex_models
+
+    out = _finalize_codex_models(["gpt-5.6-sol-pro", "gpt-5.6-nova"])
+    assert "gpt-5.6-sol-pro-900k" not in out
+    assert "gpt-5.6-nova-900k" not in out
+
+
 
 
 def test_setup_wizard_codex_import_resolves():

@@ -666,6 +666,64 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 272_000
 
+    # Table-driven eligibility contract (#92797 review): one predicate
+    # (is_codex_900k_base) drives picker synthesis, context resolution,
+    # validation, and wire stripping — this table pins all of them.
+    # (model_id, is_valid_variant, expected_ctx, expected_wire_model)
+    _900K_TABLE = [
+        ("gpt-5.6-sol-900k",              True,  900_000, "gpt-5.6-sol"),
+        ("gpt-5.6-terra-900k",            True,  900_000, "gpt-5.6-terra"),
+        ("gpt-5.6-luna-900k",             True,  900_000, "gpt-5.6-luna"),
+        ("gpt-5.4-900k",                  True,  900_000, "gpt-5.4"),
+        ("gpt-daybreak-blue-latest-900k", True,  900_000, "gpt-daybreak-blue-latest"),
+        # dated snapshot of a routable 5.6 base
+        ("gpt-5.6-sol-2026-07-09-900k",   True,  900_000, "gpt-5.6-sol-2026-07-09"),
+        # vendor-namespaced variant (display/aux callers) resolves too
+        ("openai/gpt-5.6-sol-900k",       True,  900_000, "openai/gpt-5.6-sol"),
+        # -pro slugs are not routable on Codex OAuth: never a valid variant,
+        # never stripped (fails honestly at the API instead)
+        ("gpt-5.6-sol-pro-900k",          False, 272_000, "gpt-5.6-sol-pro-900k"),
+        # genuine 272K enforcers get no variant
+        ("gpt-5.5-900k",                  False, 272_000, "gpt-5.5-900k"),
+        ("gpt-5.4-mini-900k",             False, 272_000, "gpt-5.4-mini-900k"),
+        # arbitrary future family descendants are not auto-eligible
+        ("gpt-5.6-nova-900k",             False, 272_000, "gpt-5.6-nova-900k"),
+    ]
+
+    @pytest.mark.parametrize("model_id,valid,expected_ctx,wire", _900K_TABLE)
+    def test_900k_eligibility_table(self, model_id, valid, expected_ctx, wire):
+        from agent.model_metadata import (
+            get_model_context_length,
+            is_codex_context_variant,
+            strip_codex_context_variant_suffix,
+        )
+
+        assert is_codex_context_variant(model_id) is valid
+        assert strip_codex_context_variant_suffix(model_id) == wire
+
+        bare = model_id.rsplit("/", 1)[-1]
+        catalog_slug = strip_codex_context_variant_suffix(bare)
+        if catalog_slug.endswith("-900k"):
+            # invalid alias — catalog advertises the underlying family slug
+            catalog_slug = catalog_slug[: -len("-900k")]
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{"slug": catalog_slug, "context_window": 272_000}]
+        }
+        import agent.model_metadata as mm
+        mm._codex_oauth_context_cache = {}
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.save_context_length"):
+            ctx = get_model_context_length(
+                model=model_id,
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx == expected_ctx
+
 
 
 

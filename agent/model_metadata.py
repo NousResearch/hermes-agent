@@ -2451,66 +2451,114 @@ _CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000
 # large window. Never sent on the wire.
 CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"
 
+# The ONLY base slugs eligible for a ``-900k`` variant: routable,
+# live-verified models. gpt-5.6 family-prefix matching is deliberately NOT
+# used here — it would synthesize dead variants for ``-pro`` slugs (the
+# Codex backend 400s them) and accept arbitrary future descendants that
+# were never probed. Dated snapshots of the routable 5.6 bases are allowed
+# via _CODEX_900K_SNAPSHOT_RE.
+_CODEX_900K_ELIGIBLE_BASES = frozenset({
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.4",                    # exact; gpt-5.4-mini enforces 272K
+    "gpt-daybreak-blue-latest",   # verified Sol alias
+})
+_CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
+_CODEX_900K_SNAPSHOT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _bare_codex_slug(model: Optional[str]) -> str:
+    """Lowercased slug with any ``vendor/`` namespace removed.
+
+    Display/auxiliary callers pass ids like ``openai/gpt-5.6-sol-900k``;
+    the main-agent path normalizes the namespace away earlier, but this
+    resolver must accept both shapes (#92797 review).
+    """
+    return (model or "").strip().lower().rsplit("/", 1)[-1]
+
+
+def is_codex_900k_base(model: Optional[str]) -> bool:
+    """True when *model* (a BASE slug, no suffix) may carry a ``-900k`` variant.
+
+    Single source of truth for the eligibility check — used by picker
+    synthesis, context resolution, `/model` validation, and wire stripping
+    so the four sites can never drift apart.
+    """
+    slug = _bare_codex_slug(model)
+    if not slug or slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
+        return False
+    if slug in _CODEX_900K_ELIGIBLE_BASES:
+        return True
+    # Dated snapshots of the routable 5.6 bases (gpt-5.6-sol-2026-07-09).
+    for base in _CODEX_900K_SNAPSHOT_BASES:
+        if slug.startswith(base + "-") and _CODEX_900K_SNAPSHOT_RE.match(
+            slug[len(base) + 1:]
+        ):
+            return True
+    return False
+
 
 def is_codex_context_variant(model: Optional[str]) -> bool:
-    """True when the model id carries the Hermes ``-900k`` opt-in suffix."""
-    return (model or "").strip().lower().endswith(CODEX_CONTEXT_VARIANT_SUFFIX)
+    """True when the model id is a VALID ``-900k`` opt-in variant.
+
+    Requires both the suffix and an eligible base — ``gpt-5.5-900k`` is not
+    a variant, it's an invalid alias.
+    """
+    slug = _bare_codex_slug(model)
+    if not slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
+        return False
+    return is_codex_900k_base(slug[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)])
 
 
 def strip_codex_context_variant_suffix(model: Optional[str]) -> str:
-    """Return the wire-safe slug with any ``-900k`` opt-in suffix removed.
+    """Return the wire-safe slug with a VALID ``-900k`` suffix removed.
 
     The suffix is a Hermes picker alias (``gpt-5.6-sol-900k``); the Codex
-    backend only knows the base slug. Case-insensitive; non-variant ids are
-    returned unchanged.
+    backend only knows the base slug. Stripping is conditional on base
+    eligibility: an ineligible alias like ``gpt-5.5-900k`` is returned
+    unchanged so it fails honestly at the API instead of silently running
+    as a different model. Case-insensitive; preserves any ``vendor/``
+    namespace prefix.
     """
     raw = (model or "").strip()
-    if raw.lower().endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
-        return raw[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
+    if not raw.lower().endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
+        return raw
+    base = raw[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
+    if is_codex_900k_base(base):
+        return base
     return raw
 
 
 def has_codex_context_variant(model_bare: str) -> bool:
-    """True when a Codex BASE slug has a live-verified ``-900k`` variant.
+    """True when a Codex BASE slug should get a synthetic ``-900k`` entry.
 
-    Used by the model pickers to decide which base slugs get a synthetic
-    ``<slug>-900k`` entry. Exact table first, then family prefixes —
-    mirrors ``_verified_codex_ctx_for_slug`` minus the suffix requirement.
+    Thin alias over :func:`is_codex_900k_base` kept for the picker call
+    sites' readability.
     """
-    slug = (model_bare or "").strip().lower()
-    if not slug or slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
-        return False
-    if slug in _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT:
-        return True
-    for key in _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES:
-        if slug == key or slug.startswith(key + "-") or slug.startswith(key + "."):
-            return True
-    return False
+    return is_codex_900k_base(model_bare)
 
 
 def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
     """Return the live-verified Codex cap for an OPTED-IN slug, or ``None``.
 
-    The large window is opt-in: only ``-900k``-suffixed picker variants
+    The large window is opt-in: only VALID ``-900k`` picker variants
     (e.g. ``gpt-5.6-sol-900k``) resolve to the verified cap. Base slugs
     keep the advertised 272K so the cheaper default limit applies unless
-    the user explicitly selects the large-context variant.
-
-    After stripping the suffix: exact slugs first, then family prefixes
-    (``<key>``, ``<key>-``, ``<key>.``) so dated snapshots of a verified
-    family inherit the bump.
+    the user explicitly selects the large-context variant; ineligible
+    aliases (``gpt-5.5-900k``) never resolve here.
     """
-    slug = (model_bare or "").strip().lower()
+    slug = _bare_codex_slug(model_bare)
     if not slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
         return None
-    slug = slug[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
-    if not slug:
+    base = slug[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
+    if not is_codex_900k_base(base):
         return None
-    exact = _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT.get(slug)
+    exact = _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT.get(base)
     if exact is not None:
         return exact
     for key, ctx in _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES.items():
-        if slug == key or slug.startswith(key + "-") or slug.startswith(key + "."):
+        if base == key or base.startswith(key + "-") or base.startswith(key + "."):
             return ctx
     return None
 
@@ -2660,8 +2708,11 @@ def _resolve_codex_oauth_context_length_with_source(
         return ctx, source
 
     # ``-900k`` variants are Hermes picker aliases — the Codex catalog only
-    # knows the base slug, so resolve against the stripped id.
-    lookup_bare = strip_codex_context_variant_suffix(model_bare)
+    # knows the base slug, so resolve against the stripped id. Also drop any
+    # ``vendor/`` namespace (``openai/gpt-5.6-sol-900k``): the main-agent
+    # path normalizes it away before reaching here, but display/auxiliary
+    # callers pass it through (#92797 review).
+    lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
 
     if access_token:
         live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)

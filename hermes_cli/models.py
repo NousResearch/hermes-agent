@@ -6558,6 +6558,45 @@ def validate_requested_model(
             catalog_models = provider_model_ids(normalized)
         except Exception:
             catalog_models = []
+        # Ineligible ``-900k`` aliases (e.g. `gpt-5.5-900k`) must be rejected
+        # BEFORE the hidden-slug soft-accept below: the suffix is a Hermes
+        # picker convention, so an unknown `*-900k` name can never be a real
+        # hidden provider slug — soft-accepting one silently runs at 272K on
+        # a different model than the user thinks (#92797 review).
+        if normalized == "openai-codex":
+            from agent.model_metadata import (
+                CODEX_CONTEXT_VARIANT_SUFFIX,
+                is_codex_context_variant,
+            )
+            _req_lower = requested_for_lookup.strip().lower()
+            if (
+                _req_lower.endswith(CODEX_CONTEXT_VARIANT_SUFFIX)
+                and requested_for_lookup not in set(catalog_models)
+            ):
+                if is_codex_context_variant(requested_for_lookup):
+                    # Valid variant that a stale catalog hasn't synthesized
+                    # yet. Accept it directly — falling through would let the
+                    # typo auto-corrector "fix" it to the base slug and
+                    # silently drop the large-context opt-in.
+                    return {
+                        "accepted": True,
+                        "persist": True,
+                        "recognized": True,
+                        "message": None,
+                    }
+                _base_guess = requested_for_lookup[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
+                return {
+                    "accepted": False,
+                    "persist": False,
+                    "recognized": False,
+                    "message": (
+                        f"`{requested}` is not a valid large-context variant — "
+                        f"`{_base_guess}` enforces the standard 272K window on "
+                        f"Codex, so no `-900k` option exists for it. Pick the "
+                        f"base model, or a verified variant from the `/model` "
+                        f"picker (e.g. `gpt-5.6-sol-900k`)."
+                    ),
+                }
         if catalog_models:
             if requested_for_lookup in set(catalog_models):
                 return {

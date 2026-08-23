@@ -1206,6 +1206,34 @@ def _session_has_active_delegations(sid: str, session: dict | None = None) -> bo
         return True
 
 
+# One pending WS-orphan reap Timer per live sid. Registered by
+# _schedule_ws_orphan_reap, popped when its _reap fires, and cancelled by
+# _cancel_ws_orphan_reap from every resume/reuse/transport-rebind path. Without
+# this cancellation the reap could fire against an already-reattached session,
+# broadcast session.reclaimed, and trigger the client's auto-re-resume — a
+# reap->broadcast->resume feedback storm. Guarded by _sessions_lock.
+_pending_ws_reaps: dict[str, threading.Timer] = {}
+
+
+def _cancel_ws_orphan_reap(sid: str) -> None:
+    """Cancel a pending WS-orphan reap for ``sid`` (client came back).
+
+    Called from every path that re-binds a live transport onto the session:
+    the session.resume fast-path reuse, _claim_or_reuse_live winners, and the
+    _live_session_payload transport rebind. Cancelling here (rather than
+    relying on the reap's own orphan re-check) removes the window where a
+    fired-but-not-yet-run Timer races the resume, and stops dead Timers from
+    accumulating for sessions that reconnect frequently.
+    """
+    with _sessions_lock:
+        timer = _pending_ws_reaps.pop(sid, None)
+    if timer is not None:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+
+
 def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
     """After a grace window, reap session ``sid`` iff it's still orphaned.
 
@@ -1231,6 +1259,11 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
         interrupt_session = None
         session = None
         with _session_resume_lock:
+            # This Timer is running: drop its registration so a concurrent
+            # _cancel_ws_orphan_reap doesn't cancel a dead Timer object while
+            # a rescheduled one (registered below) is the live owner.
+            with _sessions_lock:
+                _pending_ws_reaps.pop(sid, None)
             current = _sessions.get(sid)
             if current is None or not _ws_session_is_detached(current):
                 return
@@ -1298,6 +1331,14 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
         _reap,
     )
     timer.daemon = True
+    with _sessions_lock:
+        prior = _pending_ws_reaps.pop(sid, None)
+        _pending_ws_reaps[sid] = timer
+    if prior is not None:
+        try:
+            prior.cancel()
+        except Exception:
+            pass
     timer.start()
 
 
@@ -8883,11 +8924,74 @@ def _claim_or_reuse_live(
         if live is not None:
             if lease is not None:
                 lease.release()
+            # The winner is being reattached by this resume: any pending
+            # ws-orphan reap for it must not fire against the reclaimed
+            # client (storm killer — see _cancel_ws_orphan_reap).
+            _cancel_ws_orphan_reap(live[0])
             return live
         with _sessions_lock:
             _sessions[sid] = record
             _register_session_cwd(_sessions[sid])
+        # A fresh runtime was minted for this stored session id: the new sid
+        # has no pending reap, but a PRIOR runtime for the same stored id may
+        # still be sentinel-parked with a reap Timer armed. Cancel + finalize
+        # those quietly so the reap doesn't later broadcast session.reclaimed
+        # for a session the client just re-resumed (auto-re-resume storm).
+        _cancel_ws_orphan_reap(sid)
+        stale = _claim_parked_runtimes(session_key, keep_sid=sid)
+    # Slow finalization work stays OUTSIDE _session_resume_lock (see
+    # _pop_session_by_id) — the stale records are already claimed above.
+    _finalize_superseded_runtimes(stale)
     return None
+
+
+def _claim_parked_runtimes(
+    session_key: str, *, keep_sid: str
+) -> list[tuple[str, dict]]:
+    """Claim sentinel-parked stale runtimes of ``session_key`` for supersession.
+
+    When a resume mints a fresh runtime for stored session id ``session_key``,
+    any older runtime record for the same stored id that is still parked on
+    the detached-WS sentinel is superseded: its pending orphan-reap Timer is
+    cancelled and the record is atomically popped from ``_sessions`` here
+    (under the caller's _session_resume_lock), then finalized by
+    :func:`_finalize_superseded_runtimes` after the lock is released.
+    """
+    stale: list[tuple[str, dict]] = []
+    with _sessions_lock:
+        candidates = [
+            (old_sid, old)
+            for old_sid, old in list(_sessions.items())
+            if old_sid != keep_sid
+            and not old.get("_finalized")
+            and _session_lookup_key(old, fallback=old_sid) == session_key
+            and old.get("transport") is _detached_ws_transport
+        ]
+    for old_sid, _old in candidates:
+        _cancel_ws_orphan_reap(old_sid)
+        popped = _pop_session_by_id(old_sid)
+        if popped is not None:
+            stale.append((old_sid, popped))
+    return stale
+
+
+def _finalize_superseded_runtimes(stale: list[tuple[str, dict]]) -> None:
+    """Quietly finalize runtimes claimed by :func:`_claim_parked_runtimes`.
+
+    Ends them with end_reason ``superseded_by_resume`` — deliberately NOT in
+    _RECLAIM_END_REASONS, so no ``session.reclaimed`` broadcast fires (that
+    broadcast triggers client auto-re-resume and fed the
+    reap->broadcast->resume feedback loop). ``superseded_by_resume`` IS in
+    hermes_state_common._RECOVERABLE_END_REASONS so canonical Bot Chat
+    resurrection still applies to the stored session.
+    """
+    for old_sid, popped in stale:
+        try:
+            _teardown_popped_session(popped, end_reason="superseded_by_resume")
+        except Exception:
+            logger.exception(
+                "superseded runtime teardown failed sid=%s", old_sid
+            )
 
 
 def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
@@ -9183,6 +9287,10 @@ def _live_session_payload(
             # stranding it on the drop sentinel (#83716).
             viewers = session.setdefault("viewers", {})
             viewers[transport] = time.time()
+            if transport is not _detached_ws_transport:
+                # A live transport rebind means the client is back — any
+                # pending ws-orphan reap must not fire (storm killer).
+                _cancel_ws_orphan_reap(sid)
         if touch:
             session["last_active"] = time.time()
         in_memory_history = list(session.get("display_history_prefix") or []) + list(

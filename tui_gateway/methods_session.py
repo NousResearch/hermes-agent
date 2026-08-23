@@ -562,6 +562,12 @@ def _(rid, params: dict) -> dict:
                     return _err(rid, 4007, "session no longer live; retry resume")
                 if session.get("_client_gone_interrupt_requested"):
                     return _err(rid, 4009, "session disconnect interrupt settling")
+                # This resume reattaches the live record: cancel any pending
+                # ws-orphan reap timer armed while the client was detached
+                # (storm killer — _live_session_payload's rebind also cancels,
+                # but only when a transport is passed; cancel unconditionally
+                # here so the fast path can never race the reap Timer).
+                _cancel_ws_orphan_reap(sid)
                 return _ok(rid, _reuse_live_payload(sid, session))
 
         # Fast path: if the session is already live, reuse it under the lock.

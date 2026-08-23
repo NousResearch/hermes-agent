@@ -28,6 +28,79 @@ def inert_task_scheduler_probe():
     mp.undo()
 
 
+def _run_gateway_start_with_port_probe(
+    monkeypatch, capsys, occupied, host="127.0.0.1"
+):
+    import socket
+
+    api_config = SimpleNamespace(
+        enabled=True,
+        extra={"host": host, "port": 8642},
+    )
+    monkeypatch.setattr(
+        gateway,
+        "load_gateway_config",
+        lambda: SimpleNamespace(platforms={"api_server": api_config}),
+    )
+    probe_calls = []
+
+    def probe(address, timeout):
+        probe_calls.append((address, timeout))
+        if occupied:
+            return socket.socket()
+        raise OSError("refused")
+
+    monkeypatch.setattr(socket, "create_connection", probe)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "testprof"
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway_profile_lifecycle.profile_lifecycle", lambda verb, args: False
+    )
+    monkeypatch.setattr(gateway, "_guard_named_profile_under_multiplexer", lambda **kwargs: None)
+    monkeypatch.setattr(gateway, "_dispatch_via_service_manager_if_s6", lambda action: False)
+    monkeypatch.setattr(gateway, "_service_mgmt_blocked", lambda: False)
+    monkeypatch.setattr(gateway, "_service_backend", lambda: "systemd")
+    starts = []
+    monkeypatch.setattr(
+        gateway, "_service_call",
+        lambda backend, verb, system: starts.append((backend, verb, system)),
+    )
+
+    gateway._gateway_command_inner(
+        SimpleNamespace(gateway_command="start", system=False, all=False)
+    )
+    return capsys.readouterr().out, starts, probe_calls
+
+
+def test_gateway_start_warns_when_api_server_port_is_occupied(monkeypatch, capsys):
+    output, starts, _ = _run_gateway_start_with_port_probe(monkeypatch, capsys, True)
+
+    assert "testprof" in output
+    assert "127.0.0.1" in output
+    assert "8642" in output
+    assert "hermes --profile testprof gateway stop" in output
+    assert "hermes --profile testprof gateway restart" in output
+    assert starts == [("systemd", "start", False)]
+
+
+def test_gateway_start_does_not_warn_when_api_server_port_is_free(monkeypatch, capsys):
+    output, starts, _ = _run_gateway_start_with_port_probe(monkeypatch, capsys, False)
+
+    assert "port" not in output.lower()
+    assert starts == [("systemd", "start", False)]
+
+
+def test_gateway_start_skips_non_loopback_host_probe(monkeypatch, capsys):
+    output, starts, probe_calls = _run_gateway_start_with_port_probe(
+        monkeypatch, capsys, True, host="gateway.example.com"
+    )
+
+    assert probe_calls == []
+    assert "port" not in output.lower()
+    assert starts == [("systemd", "start", False)]
+
+
 
 
 def _run_native_windows_gateway_start_diag(

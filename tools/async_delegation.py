@@ -140,9 +140,11 @@ def _connect() -> sqlite3.Connection:
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_state import apply_wal_with_fallback
-
-    apply_wal_with_fallback(conn, db_label="state.db (async_delegation)")
+    # state.db's owning SessionDB connection establishes the configured journal
+    # mode. This secondary durability ledger must preserve that mode: applying
+    # WAL here on every short-lived connection requires an exclusive lock when
+    # the file is not already WAL and can collide with live transcript/FTS
+    # writers. The ledger works in either WAL or DELETE mode.
     conn.execute(
         """CREATE TABLE IF NOT EXISTS async_delegations (
             delegation_id TEXT PRIMARY KEY,

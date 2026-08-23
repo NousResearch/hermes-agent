@@ -8,6 +8,7 @@ formatting, capacity rejection, and crash handling.
 import json
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -63,6 +64,26 @@ def _drain_for(delegation_id, timeout=5.0):
             continue
         time.sleep(0.02)
     return None
+
+
+def test_schema_init_preserves_shared_state_db_journal_mode(tmp_path, monkeypatch):
+    """The delegation ledger is a guest in state.db, not its mode owner."""
+    import hermes_state
+
+    monkeypatch.setattr(hermes_state, "is_sqlite_wal_reset_vulnerable", lambda: False)
+    conn = sqlite3.connect(tmp_path / "state.db")
+    try:
+        assert conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+
+        ad._initialize_schema(conn)
+
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='async_delegations'"
+        ).fetchone() == ("async_delegations",)
+    finally:
+        conn.close()
 
 
 def test_active_for_session_counts_every_live_delegation_state():

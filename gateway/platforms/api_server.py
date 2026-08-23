@@ -66,6 +66,23 @@ from typing import Any, Dict, List, Optional
 # (no prefix / multiplexing off → handle as the default profile).
 _PROFILE_REJECTED = object()
 
+
+def _prefix_names_served_profile(profile: str) -> bool:
+    """True when a /p/<profile>/ prefix names the profile this gateway serves.
+
+    Single-profile (non-multiplex) gateways historically ignored the prefix
+    and answered every /p/<x>/ request from their own profile's config —
+    which silently served the gateway owner's toolsets/capabilities under
+    another profile's URL (#91583 defect 2). Only a self-referential prefix
+    may fall through; anything else must be rejected. Fail closed.
+    """
+    try:
+        from hermes_cli.profiles import profile_matches_home
+
+        return profile_matches_home(profile)
+    except Exception:
+        return False
+
 # Profile selected by the /p/<profile>/ URL prefix for the current request.
 # Set by the profile-prefix middleware; read by handlers / _run_agent.
 _api_request_profile: ContextVar[Optional[str]] = ContextVar(
@@ -2082,12 +2099,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Returns:
           - ``None`` when no profile prefix is present, or when multiplexing
-            is off and the prefix names this process's own profile (the
-            request is already scoped to the only agent served here).
+            is off and the prefix names this gateway's own profile (the
+            request is handled as the serving profile).
           - the profile name (str) when present, multiplexing is on, and the
             profile is one this gateway serves.
-          - ``_PROFILE_REJECTED`` when a prefix is present but names a profile
-            this process cannot serve (handler/middleware returns 404).
+          - ``_PROFILE_REJECTED`` when a prefix is present but the profile is
+            unknown/unconfigured, or names a profile this single-profile
+            gateway does not serve (handler/middleware returns 404).
         """
         profile = (request.match_info.get("profile") or "").strip()
         if not profile:
@@ -2095,25 +2113,19 @@ class APIServerAdapter(BasePlatformAdapter):
         runner = getattr(self, "gateway_runner", None)
         cfg = getattr(runner, "config", None)
         if not getattr(cfg, "multiplex_profiles", False):
-            # A prefix names a specific agent. With multiplexing off this
-            # process serves exactly one, so honor the prefix only when it
-            # names that one (peers address single-profile daemons this way
-            # without knowing the host's topology). Anything else must fail
-            # closed: answering as the local profile would deliver the
-            # request to a DIFFERENT agent than the one addressed — silent
-            # misdelivery, strictly worse than a 404. Observed live (Aug
-            # 2026): `hermes peer dm mini/researcher` answered by the mini's
-            # default agent, with no error anywhere.
-            try:
-                from hermes_cli.profiles import get_active_profile_name
-
-                own = get_active_profile_name()
-            except Exception:
-                return _PROFILE_REJECTED
-            if profile == own:
-                # Scoped to self: same handling as no prefix at all.
-                return None
-            return _PROFILE_REJECTED
+            # Prefix supplied but multiplexing is off. Only a self-referential
+            # prefix (naming the profile this gateway already serves) may fall
+            # through to the bare route. Silently ignoring ANY prefix served
+            # the gateway owner's config/toolsets/capabilities under another
+            # profile's URL — cross-profile capability leakage (#91583
+            # defect 2) and silently misdelivered peer DMs (observed live:
+            # `hermes peer dm mini/researcher` answered by the mini's default
+            # agent) — so anything else fails closed as unknown.
+            return (
+                None
+                if _prefix_names_served_profile(profile)
+                else _PROFILE_REJECTED
+            )
         try:
             from hermes_cli.profiles import profiles_to_serve
 

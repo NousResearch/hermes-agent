@@ -13,11 +13,9 @@
  *   everforest ← sainnhe.everforest
  *   solarized  ← ryanolsonx.solarized
  *
- * Re-convert from the upstream extension rather than hand-editing hexes; hand
- * edits drift from upstream silently and can't be re-derived.
- *
- * `nous-alt` is the hand-authored Nous from before that fork: glass-tinted
- * light and cream-on-navy dark. Not a marketplace theme, and not the default.
+ * Re-convert marketplace forks from the upstream extension rather than
+ * hand-editing hexes; hand edits drift from upstream silently and can't be
+ * re-derived. `nous-alt` is first-party — do not re-derive it from GitHub.
  */
 
 import type { DesktopTheme, DesktopThemeTypography } from './types'

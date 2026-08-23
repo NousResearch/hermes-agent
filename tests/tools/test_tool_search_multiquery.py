@@ -102,6 +102,7 @@ class TestStemming:
     def test_parallel_tokenize_search_and_dispatch_are_deterministic(self, issue_defs):
         from tools.tool_search import (
             ToolSearchConfig,
+            _stem,
             _tokenize,
             build_catalog,
             dispatch_tool_search,
@@ -133,9 +134,12 @@ class TestStemming:
                 entry.name for entry in search_catalog(catalog, text, limit=3)
             ]
 
+        _stem.cache_clear()
+        misses_before = _stem.cache_info().misses
         with ThreadPoolExecutor(max_workers=8) as pool:
             threaded = list(pool.map(tokenize_and_search, range(512)))
 
+        assert _stem.cache_info().misses > misses_before
         for text, tokens, names in threaded:
             assert (tokens, names) == expected[text]
 

@@ -15152,8 +15152,87 @@ def _profile_attr(info, name: str, default: Any = None) -> Any:
         return default
 
 
+_PROFILE_ROSTER_UI_META_MAX_BYTES = 64 * 1024
+_PROFILE_ROSTER_FIELDS_CACHE_MAX = 256
+_PROFILE_ROSTER_FIELDS_CACHE: Dict[str, tuple] = {}
+_PROFILE_ROSTER_FIELDS_CACHE_LOCK = threading.Lock()
+
+
+def _profile_roster_fingerprint(path: Path) -> Optional[Tuple[int, int, int, int]]:
+    try:
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    except OSError:
+        return None
+
+
+def _profile_roster_fields(profile_dir: Path) -> Dict[str, Any]:
+    """Return bounded Bot Mode presentation metadata for cross-source rosters."""
+    meta_path = profile_dir / "profile.yaml"
+    assets = profile_dir / "assets"
+    avatar_paths = tuple(assets / f"avatar.{ext}" for ext in ("png", "jpg", "webp"))
+    signature = tuple(
+        _profile_roster_fingerprint(path)
+        for path in (meta_path, *avatar_paths)
+    )
+    cache_key = str(profile_dir)
+
+    with _PROFILE_ROSTER_FIELDS_CACHE_LOCK:
+        cached = _PROFILE_ROSTER_FIELDS_CACHE.get(cache_key)
+        if cached is not None and cached[0] == signature:
+            return dict(cached[1])
+
+    fields: Dict[str, Any] = {"has_avatar": False}
+
+    try:
+        if signature[0] is not None:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+            ui_meta = raw.get("ui_meta") if isinstance(raw, dict) else None
+            bot_meta = ui_meta.get("hermes-bots") if isinstance(ui_meta, dict) else None
+            if isinstance(bot_meta, dict):
+                encoded = json.dumps(
+                    bot_meta,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                encoded_size = len(encoded.encode("utf-8"))
+                if encoded_size <= _PROFILE_ROSTER_UI_META_MAX_BYTES:
+                    fields["ui_meta"] = {"hermes-bots": json.loads(encoded)}
+                else:
+                    _log.warning(
+                        "Ignoring oversized hermes-bots ui_meta in %s (%d bytes; max %d)",
+                        meta_path,
+                        encoded_size,
+                        _PROFILE_ROSTER_UI_META_MAX_BYTES,
+                    )
+            elif bot_meta is not None:
+                _log.warning("Ignoring non-object hermes-bots ui_meta in %s", meta_path)
+    except (TypeError, ValueError) as exc:
+        _log.warning("Ignoring non-JSON hermes-bots ui_meta in %s: %s", meta_path, exc)
+    except Exception as exc:
+        _log.warning("Unable to read roster metadata from %s: %s", meta_path, exc)
+
+    fields["has_avatar"] = any(item is not None for item in signature[1:])
+
+    with _PROFILE_ROSTER_FIELDS_CACHE_LOCK:
+        if (
+            cache_key not in _PROFILE_ROSTER_FIELDS_CACHE
+            and len(_PROFILE_ROSTER_FIELDS_CACHE) >= _PROFILE_ROSTER_FIELDS_CACHE_MAX
+        ):
+            oldest = next(iter(_PROFILE_ROSTER_FIELDS_CACHE), None)
+            if oldest is not None:
+                _PROFILE_ROSTER_FIELDS_CACHE.pop(oldest, None)
+        _PROFILE_ROSTER_FIELDS_CACHE[cache_key] = (signature, dict(fields))
+
+    return fields
+
+
 def _profile_to_dict(info) -> Dict[str, Any]:
-    return {
+    row = {
         "name": _profile_attr(info, "name", ""),
         "path": str(_profile_attr(info, "path", "")),
         "is_default": bool(_profile_attr(info, "is_default", False)),
@@ -15170,6 +15249,12 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "distribution_source": _profile_attr(info, "distribution_source"),
         "has_alias": _profile_attr(info, "alias_path") is not None,
     }
+    row.update(
+        _profile_roster_fields(Path(row["path"]))
+        if row["path"]
+        else {"has_avatar": False}
+    )
+    return row
 
 
 def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
@@ -15194,6 +15279,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             "gateway_running": _safe(lambda: profiles_mod._check_gateway_running(default_home), False),
             "description": _safe(lambda: profiles_mod.read_profile_meta(default_home).get("description", ""), ""),
             "description_auto": _safe(lambda: profiles_mod.read_profile_meta(default_home).get("description_auto", False), False),
+            "display_name": _safe(lambda: profiles_mod.read_profile_meta(default_home).get("display_name", ""), ""),
             "distribution_name": None,
             "distribution_version": None,
             "distribution_source": None,
@@ -15230,11 +15316,15 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
                 ),
                 "description": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("description", ""), ""),
                 "description_auto": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("description_auto", False), False),
+                "display_name": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("display_name", ""), ""),
                 "distribution_name": None,
                 "distribution_version": None,
                 "distribution_source": None,
                 "has_alias": False,
             })
+
+    for row in profiles:
+        row.update(_profile_roster_fields(Path(row["path"])))
 
     return profiles
 

@@ -272,7 +272,8 @@ test('non-identity alias resolves the canonical chat by NAME on the backend prof
 
   const result = await runtime.context.__race.openBotCanonicalChat(workerBot)
 
-  assert.equal(result, 'worker-chat')
+  assert.equal(result.registryId, 'worker-chat')
+  assert.equal(result.openedId, 'worker-chat-tip')
   const lookup = requests.find(([method]) => method === 'session.list')
   assert.equal(lookup[1].profile, 'backend-worker', 'lookup uses the backend alias, not the logical name')
   assert.equal(lookup[1].title, 'Bot Chat')

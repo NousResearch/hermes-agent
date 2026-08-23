@@ -5278,11 +5278,17 @@ async function openBotCanonicalChat(owner) {
   const existing = await findExistingCanonicalChat(owner)
 
   if (existing?.id && typeof host.openSession === 'function') {
-    await openStoredBotChat(owner, existing.resolved_id || existing.id, existing)
-    return existing.id
+    const openedId = existing.resolved_id || existing.id
+    await openStoredBotChat(owner, openedId, existing)
+    // Both identities matter downstream: the durable registry row names the
+    // chat; the resolved lineage tip is what actually takes session focus.
+    // Callers matching focus against only the registry id mistook every
+    // compressed Bot Chat for a stale open (first click bounced to the home).
+    return { registryId: String(existing.id), openedId: String(openedId) }
   }
 
-  return createCanonicalChat(owner)
+  const created = await createCanonicalChat(owner)
+  return created ? { registryId: String(created), openedId: String(created) } : null
 }
 
 async function prepareBotSource(bot) {
@@ -5375,17 +5381,26 @@ async function openRosterBot(bot) {
   }
 
   try {
-    const registryId = await openBotCanonicalChat(bot)
+    const opened = await openBotCanonicalChat(bot)
 
     if (generation !== botOpenGeneration) {
       return false
     }
 
-    if (registryId) {
+    if (opened) {
       // This is not an identity preference: opening already completed through
       // the name registry. Keep only enough ephemeral state to release the
-      // home if another tab later claims the center.
-      $openBotChat.set({ key, openedRegistryId: String(registryId) })
+      // home if another tab later claims the center. Track BOTH identities —
+      // session focus reports the compression-lineage tip (openedId), not the
+      // durable registry row, and matching focus against the registry id
+      // alone released this claim on the first click of every compressed
+      // Bot Chat (home bounced over the chat; a second click stuck only
+      // because no new focus edge fired).
+      $openBotChat.set({
+        key,
+        openedRegistryId: opened.registryId,
+        openedSessionId: opened.openedId
+      })
       closeBotsHomeWorkspace()
       return true
     }
@@ -12644,7 +12659,12 @@ function releaseStaleOpenBotChat(focusedStoredId) {
   }
 
   const focused = focusedStoredId === null || focusedStoredId === undefined ? '' : String(focusedStoredId)
-  const stale = open.openedRegistryId ? focused !== open.openedRegistryId : Boolean(focused)
+  // The focused stored id is the compression-lineage TIP; the claim carries
+  // both the durable registry id and the tip it actually opened. Either
+  // match keeps the claim — comparing only the registry id released it on
+  // the very focus edge the open itself caused (first-click home bounce).
+  const owned = [open.openedSessionId, open.openedRegistryId].filter(Boolean)
+  const stale = owned.length ? !owned.includes(focused) : Boolean(focused)
 
   if (stale) {
     $openBotChat.set(null)

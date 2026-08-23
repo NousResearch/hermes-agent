@@ -437,24 +437,141 @@ def test_memory_prefetch_observer_is_async_and_preserves_operation_envelope(
         shutdown_plugin_observer_dispatcher()
 
 
-def test_memory_prefetch_result_does_not_silently_truncate_provider_input(
+def test_operation_observation_count_budget_keeps_ordered_prefix_and_context(
     monkeypatch, caplog
 ):
-    _disable_hook(monkeypatch)
-    raw = tuple(
-        _observation({"index": index}) for index in range(MAX_MEMORY_OBSERVATIONS + 1)
+    events = []
+    _capture_hook(monkeypatch, events)
+    first_count = MAX_MEMORY_OBSERVATIONS // 2 + 1
+    first = StructuredMemoryProvider(
+        name="builtin",
+        result=MemoryPrefetchResult(
+            context="first provider context",
+            observations=tuple(
+                _observation({"index": index}) for index in range(first_count)
+            ),
+        ),
     )
-    constructed = MemoryPrefetchResult(context="context", observations=raw)
-
-    assert len(constructed.observations) == MAX_MEMORY_OBSERVATIONS + 1
-
+    second = StructuredMemoryProvider(
+        name="external",
+        result=MemoryPrefetchResult(
+            context="second provider context",
+            observations=tuple(
+                _observation({"index": index})
+                for index in range(MAX_MEMORY_OBSERVATIONS)
+            ),
+        ),
+    )
     manager = MemoryManager()
-    manager.add_provider(StructuredMemoryProvider(name="builtin", result=constructed))
+    manager.add_provider(first)
+    manager.add_provider(second)
     with caplog.at_level("WARNING", logger="agent.memory_manager"):
         result = manager.prefetch_all_result("question")
 
+    expected = [("builtin", index) for index in range(first_count)] + [
+        ("external", index) for index in range(MAX_MEMORY_OBSERVATIONS - first_count)
+    ]
+    assert result.context == "first provider context\n\nsecond provider context"
+    assert [
+        (item.provider, item.payload["index"]) for item in result.observations
+    ] == expected
     assert len(result.observations) == MAX_MEMORY_OBSERVATIONS
-    assert "too many prefetch observations" in caplog.text
+    warnings = [
+        record
+        for record in caplog.records
+        if "observation count budget" in record.message
+    ]
+    assert len(warnings) == 1
+    assert "dropping remaining observations" in warnings[0].message
+    assert len(events) == 1
+    assert events[0]["observations"] is result.observations
+    assert isinstance(events[0]["observations"], tuple)
+
+
+def test_operation_observation_batch_budget_is_aggregate_across_providers(
+    monkeypatch, caplog
+):
+    import agent.memory_manager as memory_manager_module
+
+    events = []
+    _capture_hook(monkeypatch, events)
+    # Four bounded strings make each envelope large enough that one fits while
+    # two exceed this deliberately small operation-level budget.
+    large_payload = {"parts": ["x" * 3500] * 4}
+    monkeypatch.setattr(
+        memory_manager_module, "MAX_MEMORY_OBSERVATION_BATCH_BYTES", 20_000
+    )
+    manager = MemoryManager()
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="builtin",
+            result=MemoryPrefetchResult(
+                context="first provider context",
+                observations=(_observation(large_payload),),
+            ),
+        )
+    )
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="external",
+            result=MemoryPrefetchResult(
+                context="second provider context",
+                observations=(_observation(large_payload),),
+            ),
+        )
+    )
+
+    with caplog.at_level("WARNING", logger="agent.memory_manager"):
+        result = manager.prefetch_all_result("question")
+
+    assert result.context == "first provider context\n\nsecond provider context"
+    assert [item.provider for item in result.observations] == ["builtin"]
+    warnings = [
+        record
+        for record in caplog.records
+        if "aggregate observation batch budget" in record.message
+    ]
+    assert len(warnings) == 1
+    assert "dropping remaining observations" in warnings[0].message
+    assert len(events) == 1
+    assert events[0]["observations"] is result.observations
+    assert isinstance(events[0]["observations"], tuple)
+
+
+def test_malformed_observation_keeps_each_provider_context_and_result_tuple(
+    monkeypatch, caplog
+):
+    events = []
+    _capture_hook(monkeypatch, events)
+    manager = MemoryManager()
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="builtin",
+            result=MemoryPrefetchResult(
+                context="malformed provider context",
+                observations=(_observation(object()),),
+            ),
+        )
+    )
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="external",
+            result=MemoryPrefetchResult(
+                context="valid provider context",
+                observations=(_observation({"valid": True}),),
+            ),
+        )
+    )
+
+    with caplog.at_level("WARNING", logger="agent.memory_manager"):
+        result = manager.prefetch_all_result("question")
+
+    assert result.context == "malformed provider context\n\nvalid provider context"
+    assert [item.provider for item in result.observations] == ["external"]
+    assert "malformed prefetch observation" in caplog.text
+    assert len(events) == 1
+    assert events[0]["observations"] is result.observations
+    assert isinstance(events[0]["observations"], tuple)
 
 
 def test_concurrent_operations_keep_session_observations_bound(monkeypatch):

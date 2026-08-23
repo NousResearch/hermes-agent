@@ -8829,6 +8829,37 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         rowcount = self._execute_write(_do)
         return rowcount > 0
 
+    # Accidental end reasons that recovery treats as resumable (see
+    # find_latest_gateway_session_for_peer and promote_to_session_reset,
+    # whose SQL literals must stay in sync with this tuple, and
+    # docs/session-lifecycle.md "recoverable accidental reasons").
+    RECOVERABLE_END_REASONS = ("agent_close", "ws_orphan_reap")
+
+    def unarchive_recoverable_session(self, session_id: str) -> bool:
+        """Un-archive a session that was archived by a recoverable accident.
+
+        Registry-style lookups (Bot Mode's canonical "Bot Chat") use this to
+        resurrect a row the ws-orphan reaper (``ws_orphan_reap``) or older
+        agent cleanup (``agent_close``) archived: those ends are accidents,
+        not user intent, so the identity-scoped canonical chat must survive
+        them (#92687). Sessions archived with no end_reason or an explicit
+        boundary reason (user archived deliberately, ``session_reset``, …)
+        are left untouched — returns ``False`` for those, ``True`` only when
+        the row was archived for a recoverable reason and is now un-archived
+        (whole compression lineage, via :meth:`set_session_archived`).
+        """
+        if not session_id:
+            return False
+        try:
+            row = self.get_session(session_id)
+        except Exception:
+            return False
+        if not row or not row.get("archived"):
+            return False
+        if (row.get("end_reason") or "") not in self.RECOVERABLE_END_REASONS:
+            return False
+        return self.set_session_archived(session_id, False)
+
     def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
         """Pin or unpin a session (and its whole compression lineage).
 

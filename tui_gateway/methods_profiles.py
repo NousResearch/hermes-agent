@@ -99,7 +99,17 @@ def _(rid, params: dict) -> dict:
                 if (row.get("source") or "").strip().lower() in deny:
                     return None
                 if row.get("archived"):
-                    return None
+                    # An archived canonical row usually means the user
+                    # deliberately retired it — report absent. But the
+                    # ws-orphan reaper / older agent cleanup can archive it
+                    # by accident (end_reason ws_orphan_reap / agent_close):
+                    # the canonical chat is identity-scoped (the bot's
+                    # forever conversation), so an accidental archive is
+                    # user-visible amnesia. Resurrect those — un-archive and
+                    # keep resolving — reusing the same recoverable-reason
+                    # set as gateway stale-route recovery (#92687).
+                    if not db.unarchive_recoverable_session(session_id):
+                        return None
                 try:
                     tip = db.resolve_resume_session_id(session_id) or session_id
                 except Exception:

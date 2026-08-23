@@ -36,6 +36,7 @@ _STALE_PURGE_PROTECTED = frozenset(
         "hermes_cli",
         "hermes_cli.main",
         "hermes_cli.update_cmd",
+        "hermes_cli.update_receipt",
         "hermes_cli.hermes_logging",
     }
     # The updater's own split modules are executing too.

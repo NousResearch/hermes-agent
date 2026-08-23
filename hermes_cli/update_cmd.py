@@ -5754,6 +5754,20 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
                 exc,
             )
 
+    # Surface the outcome on the token (#91277 Phase 2 plan-vs-execution
+    # reconciliation): the git-based update path's fleet reconciliation
+    # cross-checks every planned runtime against restarted_services /
+    # relaunched_profiles / externally_supervised_profiles / killed_pids —
+    # bookkeeping this Windows-specific pause/resume never fed, so a
+    # correctly-paused-and-relaunched Windows gateway was reported
+    # "unaccounted" (loud warning + exit 1) even though the restart
+    # succeeded. The caller merges this into the shared
+    # relaunched_profiles list before reconciliation runs. A profile whose
+    # relaunch genuinely failed is deliberately left off this list — it
+    # must still surface as unaccounted so the user is told to restart it
+    # manually (Windows has no watcher to recover a failed relaunch).
+    token["relaunched_profiles"] = relaunched
+
     # Respawn unmapped gateways (no profile→PID-file mapping, e.g. a Scheduled
     # Task) by replaying the argv we snapshotted before force-killing them.
     unmapped_relaunched = 0
@@ -8612,6 +8626,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 pass
 
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+        if _windows_gateway_resume:
+            # Feed Windows's own pause/resume outcome into the same
+            # relaunched_profiles bookkeeping the systemd/launchd restart
+            # phase populates, so the #91277 Phase 2 reconciliation below
+            # does not report a correctly-relaunched Windows gateway as
+            # "unaccounted" (a runtime the plan saw but no bookkeeping
+            # mentions — the reconciliation's blind-spot tripwire). A
+            # profile whose relaunch genuinely failed is intentionally
+            # left out of the token's list, so it still surfaces there.
+            # Best-effort: the restart-phase try/except above may have
+            # raised before relaunched_profiles was initialized, so this
+            # must never itself abort the update.
+            try:
+                for _win_profile in _windows_gateway_resume.get("relaunched_profiles") or []:
+                    if _win_profile not in relaunched_profiles:
+                        relaunched_profiles.append(_win_profile)
+            except Exception as _win_reconcile_exc:
+                logger.debug(
+                    "Could not merge Windows relaunch outcome into fleet "
+                    "reconciliation bookkeeping: %s",
+                    _win_reconcile_exc,
+                )
 
         # Warn if legacy Hermes gateway unit files are still installed.
         # When both hermes.service (from a pre-rename install) and the

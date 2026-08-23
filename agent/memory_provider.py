@@ -8,6 +8,7 @@ prefetch / sync_turn per turn -> tool dispatch -> shutdown, plus optional ``on_*
 from __future__ import annotations
 
 import contextvars
+import json
 import logging
 import math
 import re
@@ -118,8 +119,9 @@ class MemoryPrefetchResult:
 
     Existing providers may continue returning ``str``. ``MemoryManager``
     converts that legacy return to this shape internally, preserving the
-    context bytes. The manager also replaces provider payloads with bounded,
-    recursively immutable values before returning this trusted result and
+    context bytes. The manager owns the observation trust boundary: it warns
+    and applies the operation-level bounds, then replaces provider payloads
+    with recursively immutable values before returning this trusted result and
     before exposing its observation tuple to the privacy-limited hook.
     """
 
@@ -127,10 +129,12 @@ class MemoryPrefetchResult:
     observations: tuple[MemoryObservation, ...] = ()
 
     def __post_init__(self) -> None:
-        # A provider may conveniently pass a list, but the operation result
-        # delivered to callers must never expose a mutable or unbounded
-        # observation list. Reject arbitrary iterables instead of consuming a
-        # potentially unbounded generator at the trust boundary.
+        # A provider may conveniently pass a list. Keep every supplied item
+        # here so constructing this public value never silently loses data;
+        # MemoryManager is the authoritative trust boundary that warns and
+        # truncates before an operation result or observer event is emitted.
+        # Reject arbitrary iterables instead of consuming a potentially
+        # unbounded generator at the trust boundary.
         raw_observations = self.observations
         if raw_observations is None:
             raw_observations = ()
@@ -139,7 +143,7 @@ class MemoryPrefetchResult:
         object.__setattr__(
             self,
             "observations",
-            tuple(raw_observations[:MAX_MEMORY_OBSERVATIONS]),
+            tuple(raw_observations),
         )
 
 
@@ -180,17 +184,20 @@ def _thaw_json_value(value: Any) -> Any:
     return value
 
 
-def _freeze_memory_observation_payload(payload: Any) -> Any:
-    """Validate, freeze, and size a provider observation payload."""
-    frozen = _freeze_json_value(payload)
-    import json
+def _freeze_memory_observation_payload(payload: Any) -> tuple[Any, int]:
+    """Validate, freeze, and size a provider observation payload.
 
+    ``MemoryManager`` uses this at the provider boundary. Providers should
+    return ordinary JSON values and must not use this to bypass manager
+    provenance checks.
+    """
+    frozen = _freeze_json_value(payload)
     encoded = json.dumps(
         _thaw_json_value(frozen), ensure_ascii=False, separators=(",", ":")
     ).encode("utf-8")
     if len(encoded) > MAX_MEMORY_OBSERVATION_BYTES:
         raise ValueError("observation payload is too large")
-    return frozen
+    return frozen, len(encoded)
 
 
 @dataclass(frozen=True)

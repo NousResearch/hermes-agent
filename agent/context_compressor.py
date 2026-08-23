@@ -1578,6 +1578,35 @@ def _tool_content_has_images(content: Any) -> bool:
     return _content_has_images(content)
 
 
+def _strip_images_from_tool_msg(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return a copy of a tool message with its image payloads replaced.
+
+    Handles the two image-bearing tool-result shapes:
+
+    * ``{_multimodal: True, ...}`` envelopes collapse to a short
+      ``"[screenshot removed] <text_summary>"`` string;
+    * OpenAI-style part lists have image parts swapped for text
+      placeholders via :func:`_strip_image_parts_from_parts`.
+
+    Returns ``None`` when the message carries no strippable image (the
+    caller should leave it untouched).  The returned copy has its stale
+    ``api_content`` sidecar dropped so replay cannot resend the
+    pre-rewrite bytes.  The input message is never mutated.
+    """
+    content = msg.get("content")
+    if isinstance(content, dict) and content.get("_multimodal"):
+        summary = content.get("text_summary") or "[screenshot removed to save context]"
+        new_msg = {**msg, "content": f"[screenshot removed] {str(summary)[:200]}"}
+        drop_stale_api_content(new_msg)
+        return new_msg
+    stripped = _strip_image_parts_from_parts(content)
+    if stripped is None:
+        return None
+    new_msg = {**msg, "content": stripped}
+    drop_stale_api_content(new_msg)
+    return new_msg
+
+
 def _retire_stale_tool_result_images(
     result: List[Dict[str, Any]],
     keep_newest: int = _MAX_KEEP_TOOL_IMAGES,
@@ -1598,24 +1627,14 @@ def _retire_stale_tool_result_images(
         msg = result[i]
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
-        content = msg.get("content")
-        if not _tool_content_has_images(content):
+        if not _tool_content_has_images(msg.get("content")):
             continue
         seen += 1
         if seen <= keep_newest:
             continue
-        if isinstance(content, dict) and content.get("_multimodal"):
-            summary = content.get("text_summary") or "[screenshot removed to save context]"
-            new_msg = {**msg, "content": f"[screenshot removed] {summary[:200]}"}
-            drop_stale_api_content(new_msg)
-            result[i] = new_msg
-            pruned += 1
+        new_msg = _strip_images_from_tool_msg(msg)
+        if new_msg is None:
             continue
-        stripped = _strip_image_parts_from_parts(content)
-        if stripped is None:
-            continue
-        new_msg = {**msg, "content": stripped}
-        drop_stale_api_content(new_msg)
         result[i] = new_msg
         pruned += 1
     return pruned
@@ -3761,16 +3780,15 @@ class ContextCompressor(ContextEngine):
             if msg.get("role") != "tool":
                 return False
             content = msg.get("content", "")
-            if isinstance(content, list):
-                stripped = _strip_image_parts_from_parts(content)
-                if stripped is not None:
-                    result[idx] = {**msg, "content": stripped}
-                    pruned += 1
-                    return True
-                return False
-            if isinstance(content, dict) and content.get("_multimodal"):
-                summary = content.get("text_summary") or "[screenshot removed to save context]"
-                result[idx] = {**msg, "content": f"[screenshot removed] {summary[:200]}"}
+            if isinstance(content, list) or (
+                isinstance(content, dict) and content.get("_multimodal")
+            ):
+                # Image-bearing shapes share one strip policy with pass 3.5
+                # (also drops the stale api_content sidecar on rewrite).
+                new_msg = _strip_images_from_tool_msg(msg)
+                if new_msg is None:
+                    return False
+                result[idx] = new_msg
                 pruned += 1
                 return True
             if not isinstance(content, str):

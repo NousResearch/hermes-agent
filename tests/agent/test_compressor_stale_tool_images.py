@@ -138,3 +138,74 @@ class TestRetireStaleToolImagesInProtectedTail:
         )
         assert _content_has_images(out[0]["content"])
         assert out[0]["content"][1]["image_url"]["url"].endswith("USERUPLOAD")
+
+
+class TestSharedImageStripHelper:
+    """One strip policy for pass 3.5 and the demote pass (#92783 follow-up)."""
+
+    def test_demote_pass_drops_stale_api_content_on_image_strip(self):
+        """Pass 2's image demotion must drop the api_content sidecar.
+
+        Before the shared _strip_images_from_tool_msg helper, only pass 3.5
+        dropped the sidecar; the demote branches left it behind, letting
+        replay restore pre-strip bytes.
+        """
+        from agent.context_compressor import _strip_images_from_tool_msg
+
+        msg = {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "api_content": "stale exact-wire copy with image bytes",
+            "content": [
+                {"type": "text", "text": "shot"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64," + "A" * 400},
+                },
+            ],
+        }
+        new_msg = _strip_images_from_tool_msg(msg)
+        assert new_msg is not None
+        assert "api_content" not in new_msg
+        # Input untouched (copy-on-write).
+        assert "api_content" in msg
+        assert _content_has_images(msg["content"])
+        assert not _content_has_images(new_msg["content"])
+
+    def test_envelope_collapses_to_summary_string(self):
+        from agent.context_compressor import _strip_images_from_tool_msg
+
+        msg = {
+            "role": "tool",
+            "tool_call_id": "c2",
+            "api_content": "stale",
+            "content": {
+                "_multimodal": True,
+                "content": [
+                    {"type": "text", "text": "s"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,XYZ"},
+                    },
+                ],
+                "text_summary": "native shot",
+            },
+        }
+        new_msg = _strip_images_from_tool_msg(msg)
+        assert new_msg is not None
+        assert isinstance(new_msg["content"], str)
+        assert "screenshot removed" in new_msg["content"]
+        assert "native shot" in new_msg["content"]
+        assert "api_content" not in new_msg
+
+    def test_imageless_content_returns_none(self):
+        from agent.context_compressor import _strip_images_from_tool_msg
+
+        msg = {"role": "tool", "tool_call_id": "c3", "content": "plain text"}
+        assert _strip_images_from_tool_msg(msg) is None
+        msg2 = {
+            "role": "tool",
+            "tool_call_id": "c4",
+            "content": [{"type": "text", "text": "no images here"}],
+        }
+        assert _strip_images_from_tool_msg(msg2) is None

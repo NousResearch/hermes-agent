@@ -208,6 +208,11 @@ the model id is sent to the backend, and pricing/usage accounting treats them
 as the base model. Slugs that genuinely enforce 272K (gpt-5.5, gpt-5.4-mini)
 have no `-900k` variant.
 
+Compaction thresholds follow the window: base slugs (272K) get the **85%
+autoraise** described above, while `-900k` variants keep your global
+`compression.threshold` (default 50%, ~450K) — the autoraise exists to stop
+wasting a small window, which a 900K window doesn't need.
+
 ### Codex app-server thread compaction
 
 Codex app-server sessions (`api_mode: codex_app_server` — the codex CLI/agent

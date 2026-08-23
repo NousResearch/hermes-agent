@@ -244,6 +244,10 @@ class SessionPortabilityMixin:
             victim_ids = [
                 row[0] for row in conn.execute(select_query, params).fetchall()
             ]
+            if not victim_ids:
+                # Common case for hot jobs under retention: zero write cost
+                # (Enough1122 review on #88331).
+                return 0
             for victim_id in victim_ids:
                 # Same cascade shape as delete_session: delegate children die
                 # with the parent, branches are orphaned, messages removed,

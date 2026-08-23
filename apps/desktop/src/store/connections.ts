@@ -158,6 +158,12 @@ export async function selectConnection(connectionId: string): Promise<void> {
     return
   }
 
+  // A user-initiated source switch collapses "All profiles" browse mode: the
+  // picker is a concrete-source action. The silent boot-time restore (below,
+  // from initializeConnectionsRegistry) is not — it must leave the persisted
+  // browse-mode preference alone so it survives restart (#93197).
+  const restoreOnBoot = pendingTarget === null && $activeConnectionId.get() === null
+
   const currentConnectionId = $activeConnectionId.get()
   const currentProfile = normalizeProfileKey($activeGatewayProfile.get())
   const targetProfile = normalizeProfileKey($lastProfileByConnection.get()[connectionId] ?? 'default')
@@ -207,7 +213,11 @@ export async function selectConnection(connectionId: string): Promise<void> {
     if (revision === switchRevision) {
       await rememberConnection(connectionId)
       wipeSessionListsForGatewaySwitch()
-      $showAllProfiles.set(false)
+
+      if (!restoreOnBoot) {
+        $showAllProfiles.set(false)
+      }
+
       $newChatProfile.set(targetProfile)
       requestFreshSession()
       await refreshActiveProfile()

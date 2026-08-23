@@ -253,4 +253,27 @@ describe('selectConnection', () => {
     expect($pendingConnectionId.get()).toBeNull()
     expect(setLastUsed).not.toHaveBeenCalled()
   })
+
+  it('boot-time restore leaves "All profiles" browse mode on (#93197)', async () => {
+    // Fresh boot: nothing active yet, registry restores last-used. The
+    // persisted showAllProfiles=true must survive the silent restore.
+    list.mockResolvedValueOnce({ ...registry, lastUsed: 'homelab', launchMode: 'last-used' })
+    $showAllProfiles.set(true)
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
+    expect($showAllProfiles.get()).toBe(true)
+  })
+
+  it('a user-initiated source switch still collapses "All profiles"', async () => {
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local' })
+    $showAllProfiles.set(true)
+
+    await selectConnection('homelab')
+
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
+    expect($showAllProfiles.get()).toBe(false)
+  })
 })

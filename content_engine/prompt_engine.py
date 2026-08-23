@@ -54,6 +54,12 @@ BRAND_STYLE_MAP = {
         "model":  "seedream45",
         "ref":    "dev-tool launch, system architecture, performance metrics, command-line announcements, build-in-public",
     },
+    "sahilblog": {
+        "scene":  "editorial-poster",   # comparison + screen-print poster feel
+        "data":   "science-paper",      # infographic + scientific style
+        "model":  "seedream45",
+        "ref":    "builder's desk evidence, printed circuit traces and prose fragments, off-white paper, one deep teal accent",
+    },
     "sahil_linkedin": {
         "scene":  "business-compare",   # comparison + elegant
         "data":   "ink-notes-framework",# framework + ink-notes + mono-ink
@@ -61,7 +67,7 @@ BRAND_STYLE_MAP = {
         "ref":    "HBR-style restrained editorial, monochrome with one indigo accent",
     },
 }
-_DEFAULT = BRAND_STYLE_MAP["sahil_twitter"]
+_DEFAULT = BRAND_STYLE_MAP.get("sahilblog", BRAND_STYLE_MAP["sahil_twitter"])
 _DATA_TYPES = {"infographic", "comparison", "framework", "flowchart", "timeline"}
 _TEXTLESS_TYPES = {"scene", "hero"}
 _ASPECT = {"instagram": "portrait_4_5", "tiktok": "portrait_9_16", "linkedin": "landscape"}
@@ -139,6 +145,35 @@ def _structured_block(draft: dict, ctype: str) -> str:
     return "\n".join(parts)
 
 
+_MJ_REGISTRY_CACHE = None
+
+
+def _mj_style_for(draft: dict) -> str:
+    """Pick a Midjourney style-card treatment for this image from the 9.5k registry.
+
+    Deterministic per (slug, id): same image regenerates the same style, but
+    hero/section images within one article get different treatments. Returns
+    an empty string when the registry is unavailable.
+    """
+    global _MJ_REGISTRY_CACHE
+    try:
+        if _MJ_REGISTRY_CACHE is None:
+            import json as _json
+            from pathlib import Path as _P
+            _reg_path = _P(__file__).parent / "style_registry" / "registry-full.json"
+            _MJ_REGISTRY_CACHE = _json.loads(_reg_path.read_text())["styles"]
+        reg = _MJ_REGISTRY_CACHE
+        seed_src = f"{draft.get('slug','')}:{draft.get('id','')}"
+        key = sum(ord(c) for c in seed_src)
+        keys = list(reg.keys())
+        card = reg[keys[key % len(keys)]]
+        bits = [card.get("style_label", ""), card.get("medium", ""),
+                card.get("palette_mood", ""), ", ".join(card.get("best_for", [])[:2])]
+        return " · ".join(b for b in bits if b)[:300]
+    except Exception:
+        return ""
+
+
 def _scene_block(draft: dict, ctype: str, brand_ref: str) -> str:
     subject = (draft.get("visual_description") or draft.get("title")
                or draft.get("topic") or "").strip()
@@ -152,7 +187,7 @@ def _scene_block(draft: dict, ctype: str, brand_ref: str) -> str:
 
 
 def _prompt_parts(ctype: str, preset: dict, content_block: str,
-                  brand_ref: str) -> list:
+                  brand_ref: str, draft: dict | None = None) -> list:
     """Assemble the prompt section list."""
     parts = [f"TYPE: {ctype.upper()} illustration."]
     style = preset.get("style", "")
@@ -164,6 +199,11 @@ def _prompt_parts(ctype: str, preset: dict, content_block: str,
         if pb:
             parts.append(f"PALETTE:\n{pb}")
     parts.append(content_block)
+    mj = _mj_style_for(draft)
+    if mj:
+        parts.append(f"TREATMENT VARIATION: {mj}. "
+                     "Apply this as the visual rendering treatment only - keep the "
+                     "structured layout and content above intact.")
     if ctype in _TEXTLESS_TYPES:
         parts.append("TEXT RULE: No text in the image. No labels, no captions, no watermarks, no titles. Pure visual scene only.")
     else:
@@ -177,8 +217,13 @@ def build_image_prompt(draft: dict) -> Tuple[str, str, str, list]:
     brand = (draft.get("brand") or "").lower()
     spec = BRAND_STYLE_MAP.get(brand, _DEFAULT)
     ctype = content_type_for(draft)
-    preset_name = spec["data"] if ctype in _DATA_TYPES else spec["scene"]
+    # Position-level overrides win: the illustrator rotates presets/palettes
+    # per image so hero and section images never share one treatment.
+    preset_name = draft.get("_preset_override") or (
+        spec["data"] if ctype in _DATA_TYPES else spec["scene"])
     preset = bl.preset_for(preset_name)
+    if draft.get("_palette_override"):
+        preset["palette"] = draft["_palette_override"]
     preset.setdefault("type", ctype)
     aspect = _aspect(draft.get("platform"))
 
@@ -187,7 +232,7 @@ def build_image_prompt(draft: dict) -> Tuple[str, str, str, list]:
     else:
         content_block = _scene_block(draft, ctype, spec["ref"])
 
-    parts = _prompt_parts(ctype, preset, content_block, spec["ref"])
+    parts = _prompt_parts(ctype, preset, content_block, spec["ref"], draft)
     expected = _expected_strings(draft, ctype)
     if expected:
         # Only the title is enforced via OCR; body labels are aspirational

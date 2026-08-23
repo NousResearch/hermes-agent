@@ -51,6 +51,21 @@ BLOG_GROUP = "SAHILSBLOG"
 X_GROUP = "X/TWITTER"
 LINKEDIN_GROUP = "LINKEDIN"
 IDEAS_GROUP = "IDEAS"
+LANE_GROUPS = {
+    "ai": "AI_DECODING",
+    "pm": "PM_INSIGHT",
+    "builder": "BUILDERS_LOG",
+}
+LANE_ORDER = [LANE_GROUPS["ai"], LANE_GROUPS["pm"], LANE_GROUPS["builder"]]
+
+
+def _lane_group(stream: str) -> str:
+    """Map a raw stream/tier value to its review-bundle lane group."""
+    s = str(stream or "").strip().lower()
+    for key, label in LANE_GROUPS.items():
+        if key in s:
+            return label
+    return LANE_GROUPS["ai"]
 
 
 # ── Design: the approved validation-*.html palette + minimal layout CSS ──────
@@ -264,6 +279,29 @@ def _pending_tracker_entries() -> list[dict]:
     return out
 
 
+def _split_lanes(blog: list[dict], ideas: list[dict]) -> list[tuple[str, list[dict]]]:
+    """Group blog posts and idea cards into the three editorial lanes.
+
+    Returns an ordered list of (group_label, items) covering every lane that
+    has at least one item, in canonical lane order. Blog items land in their
+    own lane group; idea items are grouped under a shared IDEAS-per-lane
+    label so approvals stay distinguishable from full posts.
+    """
+    lanes: dict[str, list[dict]] = {g: [] for g in LANE_ORDER}
+    for it in blog:
+        lanes.setdefault(it.get("group", LANE_GROUPS["ai"]), []).append(it)
+    for it in ideas:
+        lanes.setdefault(_lane_group(it.get("stream", "ai")) + " · IDEAS", []).append(it)
+    ordered: list[tuple[str, list[dict]]] = []
+    for g in LANE_ORDER:
+        if lanes.get(g):
+            ordered.append((g, lanes[g]))
+        ideag = g + " · IDEAS"
+        if lanes.get(ideag):
+            ordered.append((ideag, lanes[ideag]))
+    return ordered
+
+
 def _blog_items(max_width: int = 800, quality: int = 80) -> list[dict]:
     """Render a pane per pending blog post from pending_approvals.jsonl.
 
@@ -349,7 +387,7 @@ def _render_blog_pane(entry: dict, max_width: int = 800, quality: int = 80) -> d
         f"{grid}"
         f'<div class="body">{body_html}</div>'
     )
-    return {"slug": slug, "title": title, "pane": pane, "group": BLOG_GROUP}
+    return {"slug": slug, "title": title, "pane": pane, "group": _lane_group(stream), "stream": str(stream)}
 
 
 def _pending_article_items(max_width: int = 800, quality: int = 80) -> tuple[dict[str, list[dict]], list[str]]:
@@ -411,17 +449,23 @@ def _render_article_pane(record: dict, bundle: Path, group: str, max_width: int 
 def _summary_pane(sections: list[tuple[str, list[dict]]], indexed: list[tuple[int, dict]]) -> str:
     today = date.today().strftime("%d/%m/%Y")
     counts = {label: len(items) for label, items in sections}
-    nblog = counts.get(BLOG_GROUP, 0)
+    nblog = sum(v for k, v in counts.items() if k in LANE_ORDER)
     nx = counts.get(X_GROUP, 0)
     nlinkedin = counts.get(LINKEDIN_GROUP, 0)
-    nideas = counts.get(IDEAS_GROUP, 0)
+    nideas = sum(v for k, v in counts.items() if isinstance(k, str) and k.endswith("IDEAS"))
     # X/Twitter and LinkedIn are owned by their dedicated managers and are
     # deliberately excluded from this blog-only review surface.
     total = nblog + nideas
 
     rows = []
     for idx, it in indexed:
-        group = {BLOG_GROUP: "Blog", X_GROUP: "X/Twitter", LINKEDIN_GROUP: "LinkedIn", IDEAS_GROUP: "Idea"}[it["group"]]
+        gl = it["group"]
+        if gl in (X_GROUP, LINKEDIN_GROUP):
+            gl_label = {"X": "X/Twitter", "LINKEDIN": "LinkedIn"}[gl]
+        elif gl == IDEAS_GROUP or gl.endswith("IDEAS"):
+            gl_label = "Idea"
+        else:
+            gl_label = "Blog · " + gl
         slug = it.get("slug") or it.get("id", "")
         action_cell = (
             f"<code>!approve-idea {_esc(slug)}</code><br><code>!reject-idea {_esc(slug)}</code>"
@@ -432,7 +476,7 @@ def _summary_pane(sections: list[tuple[str, list[dict]]], indexed: list[tuple[in
             f"<tr><td class='num'>{idx}</td>"
             f"<td><a class='rowtitle' onclick='show({idx})'>{_esc(it['title'])}</a>"
             f"<br><span class='slug'>{_esc(slug)}</span></td>"
-            f"<td><span class='pill'>{_esc(group)}</span></td>"
+            f"<td><span class='pill'>{_esc(gl_label)}</span></td>"
             f"<td>{action_cell}</td></tr>"
         )
     table = (
@@ -548,8 +592,10 @@ def build() -> list[str]:
         x, linkedin = article_groups[X_GROUP], article_groups[LINKEDIN_GROUP]
         ideas = ideas0  # idea cards are lightweight text; no compression dependency
         last_blog, last_x, last_linkedin, last_ideas = blog, x, linkedin, ideas
+        lane_items = _split_lanes(blog, ideas)
         combined = render(
-            [(IDEAS_GROUP, ideas), (BLOG_GROUP, blog), (X_GROUP, x), (LINKEDIN_GROUP, linkedin)],
+            [(g, items) for g, items in lane_items] +
+            [(X_GROUP, x), (LINKEDIN_GROUP, linkedin)],
             "Pending Review",
         )
         if len(combined.encode("utf-8")) <= SIZE_CAP:
@@ -558,8 +604,9 @@ def build() -> list[str]:
     # Even the most aggressive level overflows — split per platform, then chunk
     # any platform still too big so no single file exceeds the cap.
     outputs = []
-    groups = [(IDEAS_GROUP, "ideas", last_ideas), (BLOG_GROUP, "blog", last_blog),
-              (X_GROUP, "x", last_x), (LINKEDIN_GROUP, "linkedin", last_linkedin)]
+    groups = [(g, g.lower().replace("_", "-").replace(" · ", "-"), items)
+              for g, items in _split_lanes(last_blog, last_ideas)]
+    groups += [(X_GROUP, "x", last_x), (LINKEDIN_GROUP, "linkedin", last_linkedin)]
     for group, slug, items in groups:
         if not items:
             continue

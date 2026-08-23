@@ -201,7 +201,7 @@ def idea_cards(max_items: Optional[int] = None) -> list[dict]:
             f'<div class="actions"><code>!approve-idea {_esc(r["id"])}</code>'
             f'<code>!reject-idea {_esc(r["id"])}</code></div>'
         )
-        cards.append({"id": r["id"], "title": r["title"], "pane": pane, "group": "IDEAS"})
+        cards.append({"id": r["id"], "title": r["title"], "pane": pane, "group": "IDEAS", "stream": r.get("stream", "ai")})
     return cards
 
 

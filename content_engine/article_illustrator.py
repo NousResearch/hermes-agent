@@ -245,23 +245,56 @@ def budget_can_spend(cost: float) -> bool:
     return budget.can_spend(cost)
 
 
+# Per-position preset rotation so hero + sections never share one treatment.
+_POSITION_PRESETS = ["science-paper", "architecture", "ink-notes-flow", "data-report"]
+_POSITION_PALETTES = [None, None, "mono-ink", None]
+
+
+def _section_subject(entry: dict, base_draft: dict) -> str:
+    """Derive a concrete visual subject from the section's actual content.
+
+    Uses up to ~400 chars of the section body (falling back to the heading)
+    so the image model renders the section's specific argument instead of an
+    abstract machine archetype.
+    """
+    body = (entry.get("body_md") or "").strip()
+    if not body:
+        body = str(base_draft.get("body_text") or "")
+    # strip markdown noise for a cleaner subject line
+    body = re.sub(r"[#*`>\[\]]", "", body)
+    body = re.sub(r"\s+", " ", body).strip()
+    if len(body) > 400:
+        body = body[:400].rsplit(" ", 1)[0]
+    if len(body) < 40:
+        return entry["heading"]
+    return f"{entry['heading']} — specifically: {body}"
+
+
 def _entry_to_draft(entry: dict, base_draft: dict, is_hero: bool) -> dict:
     """Compose a self-contained draft dict from an outline entry.
 
     Inherits the article-level brand + platform + context but uses the
-    entry's heading / preset as the title and visual subject.
+    entry's heading as the title and a CONTENT-DERIVED visual subject.
+    The preset rotates per position so consecutive images differ in both
+    composition and treatment (fixes the funnel-machine convergence).
     """
+    idx = int(entry.get("index", 0))
+    pos = max(0, idx - 1)  # 0-based position within the article
+    preset_name = entry["preset"] if is_hero else _POSITION_PRESETS[pos % len(_POSITION_PRESETS)]
+    palette = None if is_hero else _POSITION_PALETTES[pos % len(_POSITION_PALETTES)]
+    subject = entry["heading"] if is_hero else _section_subject(entry, base_draft)
     return {
         **base_draft,
         "id": f"art-{entry['index']:02d}",
         "content_type": "hero" if is_hero else "infographic",
-        "pillar": entry["preset"],
+        "pillar": preset_name,
+        "_preset_override": preset_name,
+        "_palette_override": palette,
         "topic": entry["heading"],
         "title": entry["heading"],
-        "body_text": (f"{entry['preset']} illustration for an article section. "
-                      f"Section heading: {entry['heading']}. "
-                      "Visualise the underlying concept."),
-        "visual_description": entry["heading"],
+        "body_text": (f"{preset_name} illustration for an article section. "
+                      f"Visualise this specific argument: {subject[:300]}"),
+        "visual_description": subject,
     }
 
 

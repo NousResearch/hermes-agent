@@ -295,6 +295,86 @@ def test_prompt_enable_tool_gateway_never_offers_explicit_backend(monkeypatch):
     assert "image" in blob  # other unconfigured tools still offered
 
 
+def test_gateway_direct_credentials_honor_env_configured_local_backends(monkeypatch):
+    """SEARXNG_URL / CAMOFOX_URL are env-configured keyless local backends
+    with no stored selection — they must still count as direct credentials
+    so the tool is offered unchecked, never pre-checked (#92647)."""
+    monkeypatch.setattr(
+        ns,
+        "get_env_value",
+        lambda name: "http://localhost:9377" if name in ("SEARXNG_URL", "CAMOFOX_URL") else "",
+    )
+    monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: None)
+
+    direct = ns._get_gateway_direct_credentials()
+
+    assert direct["web"] is True
+    assert direct["browser"] is True
+    assert direct["image_gen"] is False
+
+
+def test_prompt_enable_tool_gateway_persists_decline(monkeypatch):
+    """Submitting the checklist with a tool left unchecked records it in
+    tool_gateway_declined_tools and never pre-checks it again (#92647:
+    acceptance was sticky, refusal was not)."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "stt": False, "browser": False},
+    )
+    saved = []
+    captured = _capture_checklist(monkeypatch, selected_idx=[])
+    monkeypatch.setattr(
+        "hermes_cli.config.save_config", lambda cfg: saved.append(dict(cfg)), raising=False
+    )
+
+    config = {"model": {"provider": "nous"}}
+    assert ns.prompt_enable_tool_gateway(config) == set()
+
+    # First offer: everything pre-checked, decline recorded and saved.
+    assert captured["pre_selected"] == list(range(len(captured["items"])))
+    declined = config.get("tool_gateway_declined_tools")
+    assert isinstance(declined, list) and "web" in declined and "browser" in declined
+    assert saved, "decline must be persisted via save_config"
+
+    # Second offer with the recorded declines: nothing is pre-checked.
+    captured2 = _capture_checklist(monkeypatch, selected_idx=[])
+    monkeypatch.setattr(
+        "hermes_cli.config.save_config", lambda cfg: saved.append(dict(cfg)), raising=False
+    )
+    ns.prompt_enable_tool_gateway(config)
+    assert captured2["pre_selected"] == []
+
+
+def test_prompt_enable_tool_gateway_choosing_declined_tool_clears_decline(monkeypatch):
+    """Opting in to a previously-declined tool removes it from the decline
+    list, so state tracks the user's latest explicit choice."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "stt": False, "browser": False},
+    )
+    captured = _capture_checklist(monkeypatch, selected_idx=[0])
+
+    config = {
+        "model": {"provider": "nous"},
+        "tool_gateway_declined_tools": ["browser", "web"],
+    }
+    ns.prompt_enable_tool_gateway(config)
+
+    # The first offered key was chosen; it must leave the decline list.
+    chosen_key = None
+    for key, label in ns._GATEWAY_TOOL_LABELS.items():
+        if captured["items"][0].startswith(label):
+            chosen_key = key
+            break
+    assert chosen_key is not None
+    assert chosen_key not in config["tool_gateway_declined_tools"]
+
+
 def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
     """apply_nous_managed_defaults must store the managed 'nous' selection
     when a Nous subscriber selects video_gen without a direct FAL_KEY."""

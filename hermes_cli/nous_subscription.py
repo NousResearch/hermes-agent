@@ -1000,6 +1000,11 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
             or get_env_value("PARALLEL_API_KEY")
             or get_env_value("TAVILY_API_KEY")
             or get_env_value("EXA_API_KEY")
+            # Env-configured keyless local backend: a reachable self-hosted
+            # SearXNG is a working web setup even with no stored selection
+            # (the autodetect cascade in tools/web_tools.py picks it up), so
+            # it must not be classified "unconfigured" and pre-checked (#92647).
+            or get_env_value("SEARXNG_URL")
         ),
         "image_gen": fal_direct,
         "video_gen": fal_direct,
@@ -1019,17 +1024,22 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
         "browser": bool(
             get_env_value("BROWSER_USE_API_KEY")
             or (get_env_value("BROWSERBASE_API_KEY") and get_env_value("BROWSERBASE_PROJECT_ID"))
+            # Env-configured keyless local backend: CAMOFOX_URL activates the
+            # Camofox browser via never-configured autodetect (see
+            # _resolve_browser_state above), so it counts as configured even
+            # with no stored cloud_provider selection (#92647).
+            or get_env_value("CAMOFOX_URL")
         ),
     }
 
 
 _GATEWAY_DIRECT_LABELS = {
-    "web": "Firecrawl/Exa/Parallel/Tavily key",
+    "web": "Firecrawl/Exa/Parallel/Tavily key or SearXNG",
     "image_gen": "FAL key",
     "video_gen": "FAL key",
     "tts": "OpenAI/ElevenLabs key",
     "stt": "OpenAI/Groq/Mistral key",
-    "browser": "Browser Use/Browserbase key",
+    "browser": "Browser Use/Browserbase key or Camofox",
 }
 
 _ALL_GATEWAY_KEYS = ("web", "image_gen", "video_gen", "tts", "stt", "browser")
@@ -1251,13 +1261,26 @@ def prompt_enable_tool_gateway(
     # Per-tool checklist: unconfigured tools first (pre-checked for new users),
     # then tools where the user already has their own key (left unchecked so we
     # don't override their own setup unless they ask).
+    #
+    # Decline persistence (#92647): tools the user has previously seen offered
+    # and left unchecked are recorded in ``tool_gateway_declined_tools`` and
+    # are never pre-checked again — the offer downgrades to opt-in-only.
+    # Acceptance used to be sticky while refusal was not, so the identical
+    # pre-checked checklist re-fired on every Nous model swap.
+    declined_raw = config.get("tool_gateway_declined_tools")
+    declined: set[str] = (
+        {str(k) for k in declined_raw} if isinstance(declined_raw, list) else set()
+    )
+
     offer_keys: list[str] = list(unconfigured) + list(has_direct)
     labels: list[str] = [_GATEWAY_TOOL_LABELS[k] for k in unconfigured]
     labels += [
         f"{_GATEWAY_TOOL_LABELS[k]} — keep using your {_GATEWAY_DIRECT_LABELS[k]}"
         for k in has_direct
     ]
-    pre_selected = list(range(len(unconfigured)))
+    pre_selected = [
+        i for i, k in enumerate(unconfigured) if k not in declined
+    ]
 
     if pool_only:
         title = "Your free Nous tool pool — pick the tools to enable:"
@@ -1273,11 +1296,28 @@ def prompt_enable_tool_gateway(
         return set()
 
     chosen_keys = [offer_keys[i] for i in chosen_idx if 0 <= i < len(offer_keys)]
+
+    # Persist per-tool declines: every unconfigured tool that was offered and
+    # NOT chosen was actively left (or unchecked) by the user — remember that
+    # so the next Nous model swap doesn't pre-check it again. Cancel paths
+    # (Ctrl-C/ESC above) return before this and record nothing. Choosing a
+    # previously-declined tool clears its decline.
+    newly_declined = [k for k in unconfigured if k not in chosen_keys and k not in declined]
+    undeclined = declined & set(chosen_keys)
+    if newly_declined or undeclined:
+        config["tool_gateway_declined_tools"] = sorted(
+            (declined | set(newly_declined)) - set(chosen_keys)
+        )
+
     if not chosen_keys:
+        if newly_declined:
+            from hermes_cli.config import save_config
+
+            save_config(config)
         return set()
 
     changed = apply_gateway_defaults(config, chosen_keys)
-    if changed:
+    if changed or newly_declined:
         from hermes_cli.config import save_config
 
         save_config(config)

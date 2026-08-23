@@ -7556,9 +7556,16 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
   const unread = Boolean(unreadByName[botSelectionKey(bot)])
   // Needs-attention badge (#93091 item 3): background failures record under
   // the selection key (group turns) or the route key (relay deliveries) —
-  // check both. Hidden bots keep their entry; hiding is display-only.
+  // check both. Local/unannotated rows carry no connectionId, so their relay
+  // failures live under `<activeConnectionId>::<name>` — resolve that shape
+  // too or active-gateway bots never badge. Hidden bots keep their entry;
+  // hiding is display-only.
   const attentionByKey = useValue($botAttention)
-  const attention = attentionByKey[botSelectionKey(bot)] || attentionByKey[botRosterKey(bot)] || null
+  const attention =
+    attentionByKey[botSelectionKey(bot)] ||
+    attentionByKey[botRosterKey(bot)] ||
+    attentionByKey[`${bot?.connectionId || activeConnectionId}::${bot?.name || 'default'}`] ||
+    null
   // WHO sent the last message (bot-to-bot DM vs human) — the full stored
   // history lives in the canonical chat, not inline.
   // Preview identity must match click identity (#88200): when the backend

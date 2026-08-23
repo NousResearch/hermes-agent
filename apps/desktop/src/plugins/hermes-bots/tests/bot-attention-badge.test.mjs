@@ -138,8 +138,11 @@ test('hooks: relay delivery and group member turns note/clear attention', () => 
 test('render: roster row shows an amber warning glyph with a per-class hint', () => {
   assert.match(pluginSource, /BOT_ATTENTION_HINTS\[attention\.reason\]/)
   assert.match(pluginSource, /name: 'warning'/)
-  // Lookup covers both key shapes so relay- and group-recorded state render.
-  assert.match(pluginSource, /attentionByKey\[botSelectionKey\(bot\)\] \|\| attentionByKey\[botRosterKey\(bot\)\]/)
+  // Lookup covers all three key shapes so relay- and group-recorded state
+  // renders, including local/unannotated rows keyed by the ACTIVE connection.
+  assert.match(pluginSource, /attentionByKey\[botSelectionKey\(bot\)\] \|\|/)
+  assert.match(pluginSource, /attentionByKey\[botRosterKey\(bot\)\] \|\|/)
+  assert.match(pluginSource, /attentionByKey\[`\$\{bot\?\.connectionId \|\| activeConnectionId\}::\$\{bot\?\.name \|\| 'default'\}`\]/)
   // Hint copy for every class.
   assert.match(pluginSource, /Sign in again for this profile/)
   assert.match(pluginSource, /Quota or balance exhausted/)

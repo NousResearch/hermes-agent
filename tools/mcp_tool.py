@@ -1073,6 +1073,90 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     return resolved_command, resolved_env
 
 
+def _npx_cached_bin(args: list) -> Optional[tuple]:
+    """Resolve ``npx -y <pkg>`` to the already-installed binary, or None.
+
+    ``npx`` resolves the package and then FORKS: it stays resident as the
+    parent of the real server for the whole process lifetime, doing no work.
+    Measured on a 4-agent host, that is ~48 MB of private memory per MCP
+    server — and it buys nothing here, because Hermes already supervises the
+    child itself (the shared death supervisor), so npx's supervision is a
+    second parent nobody reads.
+
+    When the package is already in npx's cache we can spawn its binary
+    directly and drop the middle process. A cache miss returns None and the
+    caller falls back to ``npx`` unchanged, so the first run still installs
+    and nothing regresses on a cold machine.
+
+    Deliberately conservative — returns None for anything unusual:
+    a version-pinned spec (``pkg@1.2.3``), extra npx flags, a package whose
+    manifest declares no single obvious bin, or any unreadable cache entry.
+
+    Returns ``(binary_path, remaining_args)`` or None.
+    """
+    if not isinstance(args, list) or not args:
+        return None
+
+    rest = list(args)
+    while rest and rest[0] in ("-y", "--yes"):
+        rest.pop(0)
+    if not rest:
+        return None
+
+    spec = str(rest[0])
+    # A version pin means the user asked for a specific build; npx owns that
+    # resolution and the cache key may not match. Scoped names keep their
+    # leading '@', so only an '@' AFTER the scope is a version separator.
+    if "@" in (spec[1:] if spec.startswith("@") else spec):
+        return None
+    if not spec or spec.startswith("-"):
+        return None
+
+    cache_root = os.environ.get("npm_config_cache") or os.path.join(
+        os.path.expanduser("~"), ".npm"
+    )
+    npx_root = os.path.join(cache_root, "_npx")
+    if not os.path.isdir(npx_root):
+        return None
+
+    try:
+        entries = os.listdir(npx_root)
+    except OSError:
+        return None
+
+    for entry in entries:
+        manifest = os.path.join(npx_root, entry, "package.json")
+        try:
+            with open(manifest, "r", encoding="utf-8") as fh:
+                deps = (json.load(fh) or {}).get("dependencies") or {}
+        except (OSError, ValueError, TypeError):
+            continue
+        if spec not in deps:
+            continue
+
+        pkg_json = os.path.join(npx_root, entry, "node_modules", spec, "package.json")
+        try:
+            with open(pkg_json, "r", encoding="utf-8") as fh:
+                bin_field = (json.load(fh) or {}).get("bin")
+        except (OSError, ValueError, TypeError):
+            continue
+
+        if isinstance(bin_field, str):
+            names = [os.path.basename(spec)]
+        elif isinstance(bin_field, dict) and len(bin_field) == 1:
+            names = list(bin_field.keys())
+        else:
+            # Zero or several bins: which one npx would pick is not ours to
+            # guess. Let npx decide.
+            continue
+
+        candidate = os.path.join(npx_root, entry, "node_modules", ".bin", names[0])
+        if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            return candidate, rest[1:]
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Shared parent-death supervisor
 # ---------------------------------------------------------------------------
@@ -3431,6 +3515,25 @@ class MCPServerTask:
             raise ValueError(
                 f"MCP server '{self.name}': {malware_error}"
             )
+
+        # npx resolves the package and then FORKS, staying resident as the
+        # real server's parent for nothing (~48 MB per MCP server, measured).
+        # Hermes already supervises the child (shared death supervisor), so
+        # when the package is cached we spawn its binary directly and drop
+        # that middle process.
+        # Deliberately AFTER the OSV preflight: the check keys off the command
+        # basename being `npx`, so swapping first would silently turn the
+        # malware gate into a no-op. Cache miss leaves npx untouched.
+        if os.path.basename(command).lower().startswith("npx"):
+            cached = _npx_cached_bin(args)
+            if cached:
+                direct_command, direct_args = cached
+                logger.debug(
+                    "MCP server '%s': using cached npx binary %s (skipping the "
+                    "resident `npm exec` parent)",
+                    self.name, direct_command,
+                )
+                command, args = direct_command, direct_args
 
         server_params = StdioServerParameters(
             command=command,

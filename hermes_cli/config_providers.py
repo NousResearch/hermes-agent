@@ -117,6 +117,10 @@ _KNOWN_PROVIDER_KEYS = {
     "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env", "key_cmd",
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
+    # Output cap consumed by _lift_max_output_tokens() / resolve_runtime_provider()
+    # onto AIAgent.max_tokens (per-provider variant of the documented global
+    # model.max_tokens).
+    "max_tokens", "max_output_tokens",
     "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify"}
 
 
@@ -257,6 +261,22 @@ def _normalize_custom_provider_entry(
     ):
         if ok(entry.get(field)):
             normalized[field] = entry[field]
+
+    # Per-provider output cap → _lift_max_output_tokens() / resolve_runtime_provider()
+    # map this onto AIAgent.max_tokens when the global model.max_tokens isn't set
+    # (gateway/run.py). Present-but-invalid values warn instead of dropping silently.
+    for _mot_key in ("max_output_tokens", "max_tokens"):
+        if _mot_key not in entry:
+            continue
+        _mot = entry.get(_mot_key)
+        if isinstance(_mot, int) and _mot > 0:
+            normalized["max_output_tokens"] = _mot
+            break
+        _warn_once_per_provider(
+            provider_key, f"bad-cap:{_mot_key}",
+            "providers.%s: %s value %r ignored (must be a positive integer)",
+            provider_key or "?", _mot_key, _mot)
+
     if isinstance(entry.get("extra_body"), dict):
         normalized["extra_body"] = dict(entry["extra_body"])
 

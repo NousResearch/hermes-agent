@@ -19,9 +19,12 @@ import re
 import shutil
 import sys
 import copy
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 
+from hermes_cli.curses_ui import MenuNavigationEvent, MenuNavigationStart
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from hermes_constants import get_optional_skills_dir
@@ -222,6 +225,84 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
         sys.exit(1)
 
 
+class _SetupControlFlow(BaseException):
+    """Bypass provider error handlers that intentionally catch ``Exception``.
+
+    Provider setup contains broad compatibility boundaries around network,
+    plugin, and credential integrations. Navigation must cross those layers
+    unchanged so the outer setup state machine can replay the prior prompt.
+    """
+
+
+class _SetupCancelled(_SetupControlFlow):
+    """Internal control flow for cancelling the interactive setup wizard."""
+
+
+class _SetupGoBack(_SetupControlFlow):
+    """Internal control flow for returning to an earlier setup choice."""
+
+    def __init__(self, prompt_index: int):
+        super().__init__(prompt_index)
+        self.prompt_index = prompt_index
+
+
+class _SetupNavigationState:
+    """Per-invocation navigation state for the synchronous setup wizard."""
+
+    def __init__(self, *, section_index: int = -1, prompt_index: int = 0):
+        self.section_index = section_index
+        self.prompt_index = prompt_index
+        self.active_prompt_index = -1
+        self.resolved_choices: list[object] = []
+        self.replay_choices: list[object] = []
+
+
+_SETUP_NAVIGATION: ContextVar[_SetupNavigationState | None] = ContextVar(
+    "hermes_setup_navigation", default=None
+)
+
+
+def _handle_setup_menu_navigation(
+    event: MenuNavigationEvent,
+    value: object = None,
+) -> MenuNavigationStart | None:
+    """Translate shared curses menu events into setup control flow."""
+    state = _SETUP_NAVIGATION.get()
+    if state is None:
+        return None
+    if event is MenuNavigationEvent.BEGIN:
+        if state.section_index < 0:
+            state.active_prompt_index = -1
+            return MenuNavigationStart()
+        state.active_prompt_index = state.prompt_index
+        state.prompt_index += 1
+        allow_back = state.section_index > 0 or state.active_prompt_index > 0
+        if state.active_prompt_index < len(state.replay_choices):
+            return MenuNavigationStart(
+                allow_back=allow_back,
+                replay_value=copy.deepcopy(
+                    state.replay_choices[state.active_prompt_index]
+                ),
+            )
+        return MenuNavigationStart(allow_back=allow_back)
+    if event is MenuNavigationEvent.RESOLVE:
+        prompt_index = state.active_prompt_index
+        if prompt_index < 0:
+            return None
+        resolved = copy.deepcopy(value)
+        if prompt_index < len(state.resolved_choices):
+            state.resolved_choices[prompt_index] = resolved
+            del state.resolved_choices[prompt_index + 1 :]
+        else:
+            state.resolved_choices.append(resolved)
+        return None
+    if event is MenuNavigationEvent.CANCEL:
+        raise _SetupCancelled()
+    if event is MenuNavigationEvent.BACK:
+        raise _SetupGoBack(state.active_prompt_index)
+    return None
+
+
 _BRACKETED_PASTE_PATTERN = re.compile(r"\x1b\[\s*200~|\x1b\[\s*201~")
 
 
@@ -235,14 +316,22 @@ def _sanitize_pasted_input(value: str) -> str:
 def _curses_prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
     """Single-select menu using curses. Delegates to curses_radiolist."""
     from hermes_cli.curses_ui import curses_radiolist
-    return curses_radiolist(question, choices, selected=default, cancel_returns=-1, description=description)
+    return curses_radiolist(
+        question,
+        choices,
+        selected=default,
+        cancel_returns=-1,
+        description=description,
+    )
 
 
 
 def prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
     """Prompt for a choice from a list with arrow key navigation.
 
-    Escape keeps the current default (skips the question).
+    Escape cancels an active setup wizard. Outside setup it keeps the current
+    default. The curses component owns its own numbered fallback, so a cancel
+    result must never be mistaken for a request to open another prompt.
     Ctrl+C exits the wizard.
     """
     idx = _curses_prompt_choice(question, choices, default, description=description)
@@ -254,32 +343,7 @@ def prompt_choice(question: str, choices: list, default: int = 0, description: s
         print()
         return idx
 
-    print(color(question, Colors.YELLOW))
-    for i, choice in enumerate(choices):
-        marker = "●" if i == default else "○"
-        if i == default:
-            print(color(f"  {marker} {choice}", Colors.GREEN))
-        else:
-            print(f"  {marker} {choice}")
-
-    print_info(f"  Enter for default ({default + 1})  Ctrl+C to exit")
-
-    while True:
-        try:
-            value = input(
-                color(f"  Select [1-{len(choices)}] ({default + 1}): ", Colors.DIM)
-            )
-            if not value:
-                return default
-            idx = int(value) - 1
-            if 0 <= idx < len(choices):
-                return idx
-            print_error(f"Please enter a number between 1 and {len(choices)}")
-        except ValueError:
-            print_error("Please enter a number")
-        except (KeyboardInterrupt, EOFError):
-            print()
-            sys.exit(1)
+    return default
 
 
 def is_noninteractive() -> bool:
@@ -310,6 +374,17 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
     """
     if is_noninteractive():
         return default
+
+    # Setup owns a scoped curses navigation handler. Route binary selections
+    # through the same menu surface so ESC and left-arrow work consistently,
+    # while preserving the traditional line prompt for every other caller.
+    if _SETUP_NAVIGATION.get() is not None:
+        default_index = 0 if default else 1
+        return _curses_prompt_choice(
+            question,
+            ["Yes", "No"],
+            default_index,
+        ) == 0
 
     default_str = "Y/n" if default else "y/N"
 
@@ -2843,7 +2918,122 @@ def _run_portal_one_shot(config: dict) -> None:
     print_info("  Run `hermes` to start chatting.")
 
 
+@contextmanager
+def _setup_navigation_scope():
+    """Install and reliably restore the setup menu navigation context."""
+    from hermes_cli.curses_ui import (
+        reset_menu_navigation_handler,
+        set_menu_navigation_handler,
+    )
+
+    token = _SETUP_NAVIGATION.set(_SetupNavigationState())
+    menu_token = set_menu_navigation_handler(_handle_setup_menu_navigation)
+    try:
+        yield
+    finally:
+        reset_menu_navigation_handler(menu_token)
+        _SETUP_NAVIGATION.reset(token)
+
+
 def run_setup_wizard(args):
+    """Run setup with navigation control scoped to this invocation."""
+    with _setup_navigation_scope():
+        try:
+            return _run_setup_wizard_impl(args)
+        except _SetupCancelled:
+            print()
+            print_info("Setup cancelled. Remaining sections were not changed.")
+            return None
+
+
+def _run_setup_steps(
+    steps: list[tuple[str, Callable[[], None]]],
+) -> None:
+    """Run setup sections with left-arrow navigation between choices.
+
+    Left arrow at a section's first choice returns to the previous section.
+    From a later, nested choice it replays earlier selections invisibly and
+    reopens only the immediately preceding prompt.
+    """
+    state = _SETUP_NAVIGATION.get()
+    section_index = 0
+    answers_by_section: dict[int, list[object]] = {}
+    replay_by_section: dict[int, list[object]] = {}
+    try:
+        while section_index < len(steps):
+            label, action = steps[section_index]
+            if state is not None:
+                state.section_index = section_index
+                state.prompt_index = 0
+                state.active_prompt_index = -1
+                state.resolved_choices = []
+                state.replay_choices = copy.deepcopy(
+                    replay_by_section.pop(section_index, [])
+                )
+            try:
+                action()
+            except _SetupGoBack as navigation:
+                if state is not None:
+                    answers_by_section[section_index] = copy.deepcopy(
+                        state.resolved_choices
+                    )
+                if navigation.prompt_index > 0:
+                    previous_index = section_index
+                    target_prompt = navigation.prompt_index - 1
+                    replay_by_section[previous_index] = copy.deepcopy(
+                        answers_by_section.get(previous_index, [])[:target_prompt]
+                    )
+                else:
+                    previous_index = max(0, section_index - 1)
+                    previous_answers = answers_by_section.get(previous_index, [])
+                    target_prompt = max(0, len(previous_answers) - 1)
+                    replay_by_section[previous_index] = copy.deepcopy(
+                        previous_answers[:target_prompt]
+                    )
+                previous_label = steps[previous_index][0]
+                print()
+                if previous_index == section_index:
+                    print_info(f"Returning to the previous choice in {label}...")
+                else:
+                    print_info(f"Returning to {previous_label}...")
+                section_index = previous_index
+                continue
+            if state is not None:
+                answers_by_section[section_index] = copy.deepcopy(
+                    state.resolved_choices
+                )
+            section_index += 1
+    finally:
+        if state is not None:
+            state.section_index = -1
+            state.prompt_index = 0
+            state.active_prompt_index = -1
+            state.resolved_choices = []
+            state.replay_choices = []
+
+
+def run_setup_action_with_navigation(
+    label: str,
+    action: Callable[[], None],
+    *,
+    cancelled_message: str = "Setup cancelled.",
+) -> None:
+    """Run a setup-style menu flow with Escape and nested Left navigation.
+
+    Shared commands such as ``hermes model`` use the same provider/model
+    pickers as the setup wizard, but run outside ``run_setup_wizard``.  This
+    installs the setup navigation context for that standalone command and
+    reuses the same prompt replay state machine.
+    """
+    with _setup_navigation_scope():
+        try:
+            _run_setup_steps([(label, action)])
+        except _SetupCancelled:
+            print()
+            print_info(cancelled_message)
+
+
+def _run_setup_wizard_impl(args):
     """Run the interactive setup wizard.
 
     Supports full, quick, and section-specific setup:
@@ -2923,7 +3113,9 @@ def run_setup_wizard(args):
                         Colors.MAGENTA,
                     )
                 )
-                func(config)
+                _run_setup_steps(
+                    [(label, lambda setup_func=func: setup_func(config))]
+                )
                 save_config(config)
                 print()
                 print_success(f"{label} configuration complete!")
@@ -2987,7 +3179,9 @@ def run_setup_wizard(args):
         # missing items" flow (useful after a partial OpenClaw migration
         # or when a required API key got cleared).
         if quick_requested:
-            _run_quick_setup(config, hermes_home)
+            _run_setup_steps(
+                [("Quick Setup", lambda: _run_quick_setup(config, hermes_home))]
+            )
             return
 
         print()
@@ -3027,10 +3221,28 @@ def run_setup_wizard(args):
         )
 
         if setup_mode == 0:
-            _run_first_time_quick_setup(config, hermes_home, is_existing)
+            _run_setup_steps(
+                [
+                    (
+                        "Quick Setup",
+                        lambda: _run_first_time_quick_setup(
+                            config, hermes_home, is_existing
+                        ),
+                    )
+                ]
+            )
             return
         if setup_mode == 2:
-            _run_blank_slate_setup(config, hermes_home, is_existing)
+            _run_setup_steps(
+                [
+                    (
+                        "Blank Slate",
+                        lambda: _run_blank_slate_setup(
+                            config, hermes_home, is_existing
+                        ),
+                    )
+                ]
+            )
             return
 
     # ── Full Setup — run all sections ──
@@ -3048,32 +3260,55 @@ def run_setup_wizard(args):
         print_info("Each section below will show what was imported — press Enter to keep,")
         print_info("or choose to reconfigure if needed.")
 
-    # Section 1: Model & Provider
-    if not (migration_ran and _skip_configured_section(config, "model", "Model & Provider")):
-        setup_model_provider(config)
-
-    # Section 2: Terminal Backend
-    if not (migration_ran and _skip_configured_section(config, "terminal", "Terminal Backend")):
-        setup_terminal_backend(config)
-
     # Section 3: Agent Settings — no longer prompted. First installs get the
     # recommended defaults silently; existing installs keep whatever they have.
     # Tune later with `hermes setup agent`.
     if not is_existing:
         _apply_default_agent_settings(config)
 
-    # Section 4: Messaging Platforms
-    if not (migration_ran and _skip_configured_section(config, "gateway", "Messaging Platforms")):
-        setup_gateway(config)
-    else:
-        # Section skipped (migrated config) — still make sure the gateway
-        # service exists so cron jobs and migrated platforms actually run.
+    def _model_step() -> None:
+        if not (
+            migration_ran
+            and _skip_configured_section(config, "model", "Model & Provider")
+        ):
+            setup_model_provider(config)
+
+    def _terminal_step() -> None:
+        if not (
+            migration_ran
+            and _skip_configured_section(config, "terminal", "Terminal Backend")
+        ):
+            setup_terminal_backend(config)
+
+    def _gateway_step() -> None:
+        if not (
+            migration_ran
+            and _skip_configured_section(config, "gateway", "Messaging Platforms")
+        ):
+            setup_gateway(config)
+            return
+
+        # A migrated gateway section can be skipped, but its service still
+        # needs to exist so imported platforms and cron jobs become active.
         from hermes_cli.gateway import ensure_gateway_service
+
         ensure_gateway_service(context="setup")
 
-    # Section 5: Tools
-    if not (migration_ran and _skip_configured_section(config, "tools", "Tools")):
-        setup_tools(config, first_install=not is_existing)
+    def _tools_step() -> None:
+        if not (
+            migration_ran
+            and _skip_configured_section(config, "tools", "Tools")
+        ):
+            setup_tools(config, first_install=not is_existing)
+
+    _run_setup_steps(
+        [
+            ("Model & Provider", _model_step),
+            ("Terminal Backend", _terminal_step),
+            ("Messaging Platforms", _gateway_step),
+            ("Tools", _tools_step),
+        ]
+    )
 
     # Save and show summary
     save_config(config)

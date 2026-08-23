@@ -5,14 +5,123 @@ Provides a curses multi-select with keyboard navigation, plus a
 text-based numbered fallback for terminals without curses support.
 """
 import sys
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence, Set, Tuple, Union
+from enum import Enum
+from typing import Callable, List, Optional, Protocol, Sequence, Set, Tuple, Union
 
 from hermes_cli.colors import Colors, color
 
 # Rich radiolist rows: (text, style). style is None | "yellow" | "dim".
 # Plain ``str`` items remain fully supported.
 RadioItem = Union[str, Sequence[Tuple[str, Optional[str]]]]
+
+
+_NO_REPLAY = object()
+
+
+@dataclass(frozen=True)
+class MenuNavigationStart:
+    """Navigation instructions returned when a scoped menu begins."""
+
+    allow_back: bool = False
+    replay_value: object = _NO_REPLAY
+
+    @property
+    def should_replay(self) -> bool:
+        return self.replay_value is not _NO_REPLAY
+
+
+class MenuNavigationEvent(str, Enum):
+    BEGIN = "begin"
+    RESOLVE = "resolve"
+    CANCEL = "cancel"
+    BACK = "back"
+
+
+class MenuNavigationHandler(Protocol):
+    """Typed contract between shared menus and a scoped flow controller."""
+
+    def __call__(
+        self,
+        event: MenuNavigationEvent,
+        value: object = None,
+    ) -> MenuNavigationStart | None: ...
+
+
+_MENU_NAVIGATION_HANDLER: ContextVar[MenuNavigationHandler | None] = ContextVar(
+    "hermes_menu_navigation_handler", default=None
+)
+_NUMBERED_BACK_ENABLED: ContextVar[bool] = ContextVar(
+    "hermes_numbered_back_enabled", default=False
+)
+
+
+def set_menu_navigation_handler(
+    handler: MenuNavigationHandler,
+) -> Token[MenuNavigationHandler | None]:
+    """Scope setup-style cancel/back behavior to the current CLI invocation."""
+    return _MENU_NAVIGATION_HANDLER.set(handler)
+
+
+def reset_menu_navigation_handler(token: Token[MenuNavigationHandler | None]) -> None:
+    """Restore the menu navigation handler active before ``token``."""
+    _MENU_NAVIGATION_HANDLER.reset(token)
+
+
+def _cancel_scoped_navigation() -> None:
+    """Notify an active menu flow that a text fallback was interrupted."""
+    handler = _MENU_NAVIGATION_HANDLER.get()
+    if handler is not None:
+        handler(MenuNavigationEvent.CANCEL)
+
+
+def _back_scoped_navigation() -> None:
+    """Notify an active menu flow that its text fallback requested back."""
+    handler = _MENU_NAVIGATION_HANDLER.get()
+    if handler is not None:
+        handler(MenuNavigationEvent.BACK)
+
+
+class _NumberedNavigation(Enum):
+    CANCEL = "cancel"
+    BACK = "back"
+
+
+def _read_numbered_input(prompt_text: str) -> str | _NumberedNavigation:
+    """Read a numbered fallback choice with setup navigation key bindings.
+
+    Ordinary numbered menus retain their historical ``input()`` behavior.
+    During setup/model flows, prompt_toolkit supplies portable Escape, Ctrl+C,
+    and Left bindings on POSIX and native Windows when curses is unavailable.
+    """
+    if _MENU_NAVIGATION_HANDLER.get() is None:
+        return input(prompt_text)
+
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.formatted_text import ANSI
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
+
+    # Setup can be invoked without importing the classic CLI, which normally
+    # installs Ghostty/Kitty CSI-u aliases at process startup.
+    from hermes_cli.pt_input_extras import install_modify_other_keys_aliases
+
+    install_modify_other_keys_aliases()
+    bindings = KeyBindings()
+
+    @bindings.add(Keys.Escape)
+    @bindings.add(Keys.ControlC)
+    def _cancel(event) -> None:
+        event.app.exit(result=_NumberedNavigation.CANCEL)
+
+    if _NUMBERED_BACK_ENABLED.get():
+
+        @bindings.add(Keys.Left)
+        def _back(event) -> None:
+            event.app.exit(result=_NumberedNavigation.BACK)
+
+    return PromptSession().prompt(ANSI(prompt_text), key_bindings=bindings)
 
 
 def radio_item_plain(item: RadioItem) -> str:
@@ -362,9 +471,11 @@ def flush_stdin() -> None:
 # every menu's key-handling branch identical and free of raw escape-byte logic.
 NAV_UP = "up"
 NAV_DOWN = "down"
+NAV_BACK = "back"
 NAV_SELECT = "select"
 NAV_TOGGLE = "toggle"
 NAV_CANCEL = "cancel"
+NAV_INTERRUPT = "interrupt"
 NAV_NONE = "none"
 
 
@@ -387,6 +498,76 @@ def read_menu_key(stdscr) -> str:
     return _decode_menu_key(stdscr, stdscr.getch())
 
 
+@dataclass(frozen=True)
+class _EnhancedKey:
+    codepoint: int
+    modifier: int = 1
+    event_type: int = 1
+
+
+def _parse_int(value: str, default: int = 0) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _parse_csi_u_key(raw: str) -> _EnhancedKey | None:
+    """Parse a Kitty/CSI-u key, preserving its press/repeat/release type."""
+    parts = raw.split(";")
+    codepoint = _parse_int(parts[0].split(":", 1)[0]) if parts else 0
+    if not codepoint:
+        return None
+
+    modifier = 1
+    event_type = 1
+    if len(parts) > 1:
+        modifier_parts = parts[1].split(":")
+        modifier = _parse_int(modifier_parts[0], 1)
+        if len(modifier_parts) > 1:
+            event_type = _parse_int(modifier_parts[1], 1)
+    return _EnhancedKey(codepoint, modifier, event_type)
+
+
+def _parse_csi_numbers(raw: str) -> list[int]:
+    """Parse semicolon-delimited CSI numbers for modifyOtherKeys."""
+    return [_parse_int(part.split(":", 1)[0]) for part in raw.split(";")]
+
+
+def _enhanced_key_action(codepoint: int, modifier: int = 1) -> str:
+    """Map CSI-u/modifyOtherKeys codepoints to setup menu actions."""
+    if codepoint in (10, 13):
+        return NAV_SELECT
+    if codepoint == 27:
+        return NAV_CANCEL
+    if codepoint == 32:
+        return NAV_TOGGLE
+
+    # CSI-u encodes Ctrl+C as codepoint `c` plus the Ctrl modifier. Lock-state
+    # bits may be added to the modifier, so inspect the Ctrl bit rather than
+    # matching only the canonical value 5.
+    has_ctrl = bool((max(1, modifier) - 1) & 4)
+    if codepoint == 3 or (codepoint in (ord("c"), ord("C")) and has_ctrl):
+        return NAV_INTERRUPT
+    return NAV_NONE
+
+
+def _read_csi_tail(stdscr) -> tuple[str, int | None]:
+    """Read CSI/SS3 parameter bytes through the final byte."""
+    raw: list[str] = []
+    for _ in range(32):
+        value = stdscr.getch()
+        if value == -1:
+            return "".join(raw), None
+        if 0x40 <= value <= 0x7E:
+            return "".join(raw), value
+        if 0x20 <= value <= 0x3F:
+            raw.append(chr(value))
+            continue
+        return "".join(raw), None
+    return "".join(raw), None
+
+
 def _decode_menu_key(stdscr, key: int) -> str:
     """Normalize an already-read keypress to a menu action.
 
@@ -399,6 +580,10 @@ def _decode_menu_key(stdscr, key: int) -> str:
         return NAV_UP
     if key in (curses.KEY_DOWN, ord("j")):
         return NAV_DOWN
+    if key == curses.KEY_LEFT:
+        return NAV_BACK
+    if key == 3:  # Ctrl+C in curses raw/cbreak mode.
+        return NAV_INTERRUPT
     if key in (curses.KEY_ENTER, 10, 13):
         return NAV_SELECT
     if key == ord(" "):
@@ -413,26 +598,34 @@ def _decode_menu_key(stdscr, key: int) -> str:
         try:
             stdscr.timeout(60)
             nxt = stdscr.getch()
+            if nxt == -1:
+                return NAV_CANCEL  # genuine lone ESC
+
+            if nxt in (ord("["), ord("O")):  # CSI / SS3 introducer
+                raw_params, final = _read_csi_tail(stdscr)
+                if final in (ord("A"), ord("k")):
+                    return NAV_UP
+                if final in (ord("B"), ord("j")):
+                    return NAV_DOWN
+                if final == ord("D"):
+                    return NAV_BACK
+                if final == ord("u"):
+                    enhanced = _parse_csi_u_key(raw_params)
+                    if enhanced is not None:
+                        if enhanced.event_type == 3:  # key release
+                            return NAV_NONE
+                        return _enhanced_key_action(
+                            enhanced.codepoint, enhanced.modifier
+                        )
+                if final == ord("~"):
+                    params = _parse_csi_numbers(raw_params)
+                    if len(params) >= 3 and params[0] == 27:
+                        return _enhanced_key_action(params[2], params[1])
+                return NAV_NONE
+            # ESC followed by some other byte we don't handle — swallow it.
+            return NAV_NONE
         finally:
             stdscr.timeout(-1)  # restore blocking mode
-
-        if nxt == -1:
-            return NAV_CANCEL  # genuine lone ESC
-
-        if nxt in (ord("["), ord("O")):  # CSI / SS3 introducer
-            final = stdscr.getch()
-            if final in (ord("A"), ord("k")):
-                return NAV_UP
-            if final in (ord("B"), ord("j")):
-                return NAV_DOWN
-            # Consume the tail of any other CSI sequence (e.g. ``[3~`` Delete,
-            # ``[H`` Home) up to its terminator so stray bytes don't leak into
-            # the next input() and corrupt it.
-            while 0x20 <= final <= 0x3F:  # CSI parameter/intermediate bytes
-                final = stdscr.getch()
-            return NAV_NONE
-        # ESC followed by some other byte we don't handle — swallow it.
-        return NAV_NONE
 
     return NAV_NONE
 
@@ -477,7 +670,7 @@ def _run_curses_menu(
             Draw one item row. ``idx`` is always the ORIGINAL item index, so
             per-menu rendering is unchanged whether or not a filter is active.
         on_action(action, cursor) -> value
-            Reducer for SELECT/TOGGLE/CANCEL. Return ``_KEEP`` to continue the
+            Reducer for SELECT/TOGGLE/CANCEL/BACK. Return ``_KEEP`` to continue the
             loop; return anything else to resolve the menu with that value.
             (UP/DOWN cursor movement is handled by the driver itself.)
         reserve_bottom: number of bottom screen rows kept clear of items
@@ -494,6 +687,25 @@ def _run_curses_menu(
         search_labels: per-item text used for filtering (required when
             ``searchable`` is true; length must equal ``item_count``).
     """
+    navigation_handler = _MENU_NAVIGATION_HANDLER.get()
+    navigation_start = (
+        navigation_handler(MenuNavigationEvent.BEGIN)
+        if navigation_handler is not None
+        else None
+    )
+    if navigation_start is not None and not isinstance(
+        navigation_start, MenuNavigationStart
+    ):
+        raise TypeError("menu navigation 'begin' must return MenuNavigationStart")
+    context_back = bool(navigation_start and navigation_start.allow_back)
+    if navigation_start is not None and navigation_start.should_replay:
+        if navigation_handler is not None:
+            navigation_handler(
+                MenuNavigationEvent.RESOLVE, navigation_start.replay_value
+            )
+        return navigation_start.replay_value
+    effective_allow_back = context_back
+
     # Non-TTY (piped/redirected stdin): curses and input() both hang or spin,
     # so return the cancel value directly — matching the pre-refactor guard in
     # each menu (the numbered fallback is only for curses errors on a real TTY).
@@ -502,8 +714,22 @@ def _run_curses_menu(
 
     use_search = searchable and search_labels is not None and len(search_labels) == item_count
 
+    def _run_fallback():
+        back_token = _NUMBERED_BACK_ENABLED.set(effective_allow_back)
+        try:
+            result = fallback()
+        finally:
+            _NUMBERED_BACK_ENABLED.reset(back_token)
+        if navigation_handler is not None:
+            navigation_handler(MenuNavigationEvent.RESOLVE, result)
+        return result
+
     try:
         import curses
+    except ImportError:
+        return _run_fallback()
+
+    try:
         result_holder = [_KEEP]
 
         def _draw(stdscr):
@@ -537,12 +763,13 @@ def _run_curses_menu(
                 )
                 cursor, cursor_pos = _reconcile_cursor(filtered, cursor)
 
-                # draw_header accepts an optional `search` kwarg when the menu
-                # wants to render the live filter; tolerate headers that don't.
-                try:
-                    items_start = draw_header(stdscr, max_y, max_x, search=search)
-                except TypeError:
-                    items_start = draw_header(stdscr, max_y, max_x)
+                items_start = draw_header(
+                    stdscr,
+                    max_y,
+                    max_x,
+                    search=search,
+                    back_enabled=effective_allow_back,
+                )
 
                 visible_rows = max(1, max_y - items_start - reserve_bottom)
                 scroll_offset = _scroll_for_cursor(
@@ -572,7 +799,20 @@ def _run_curses_menu(
                 if use_search:
                     key = stdscr.getch()
 
-                    if search.active:
+                    if search.active and key == 27:
+                        # Ghostty/Kitty enhanced keys also begin with ESC.
+                        # Decode the full sequence before treating a genuine
+                        # Escape as "stop search"; otherwise Enter/Left/Ctrl+C
+                        # lose their tail while the search prompt is active.
+                        action = _decode_menu_key(stdscr, key)
+                        if action == NAV_CANCEL:
+                            search.active = False
+                            search.query = ""
+                            scroll_offset = 0
+                            continue
+                        if action == NAV_NONE:
+                            continue
+                    elif search.active:
                         # Active search consumes query-editing keys; nav keys
                         # fall through to be decoded below.
                         handled, confirm, changed = _handle_active_search_key(
@@ -587,6 +827,10 @@ def _run_curses_menu(
                             if filtered:
                                 outcome = on_action(NAV_SELECT, cursor)
                                 if outcome is not _KEEP:
+                                    if navigation_handler is not None:
+                                        navigation_handler(
+                                            MenuNavigationEvent.RESOLVE, outcome
+                                        )
                                     result_holder[0] = outcome
                                     return
                             continue
@@ -605,11 +849,25 @@ def _run_curses_menu(
                     cursor = _move_filtered_cursor(filtered, cursor, cursor_pos, -1)
                 elif action == NAV_DOWN:
                     cursor = _move_filtered_cursor(filtered, cursor, cursor_pos, 1)
-                elif action in (NAV_SELECT, NAV_TOGGLE, NAV_CANCEL):
+                elif action in (
+                    NAV_SELECT,
+                    NAV_TOGGLE,
+                    NAV_CANCEL,
+                    NAV_INTERRUPT,
+                ) or (
+                    action == NAV_BACK and effective_allow_back
+                ):
                     if action == NAV_SELECT and use_search and not filtered:
                         continue
+                    if navigation_handler is not None:
+                        if action in (NAV_CANCEL, NAV_INTERRUPT):
+                            navigation_handler(MenuNavigationEvent.CANCEL)
+                        elif action == NAV_BACK and context_back:
+                            navigation_handler(MenuNavigationEvent.BACK)
                     outcome = on_action(action, cursor)
                     if outcome is not _KEEP:
+                        if navigation_handler is not None:
+                            navigation_handler(MenuNavigationEvent.RESOLVE, outcome)
                         result_holder[0] = outcome
                         return
 
@@ -618,9 +876,11 @@ def _run_curses_menu(
         return result_holder[0] if result_holder[0] is not _KEEP else cancel_value
 
     except KeyboardInterrupt:
+        if navigation_handler is not None:
+            navigation_handler(MenuNavigationEvent.CANCEL)
         return cancel_value
-    except Exception:
-        return fallback()
+    except curses.error:
+        return _run_fallback()
 
 
 def curses_checklist(
@@ -647,18 +907,17 @@ def curses_checklist(
 
     chosen = set(selected)
 
-    def _draw_header(stdscr, max_y, max_x):
+    def _draw_header(stdscr, max_y, max_x, search=None, back_enabled=False):
         import curses
         try:
             hattr = curses.A_BOLD
             if curses.has_colors():
                 hattr |= curses.color_pair(2)
             stdscr.addnstr(0, 0, title, max_x - 1, hattr)
-            stdscr.addnstr(
-                1, 0,
-                "  ↑↓ navigate  SPACE toggle  ENTER confirm  ESC cancel",
-                max_x - 1, curses.A_DIM,
-            )
+            hint = "  ↑↓ navigate  SPACE toggle  ENTER confirm  ESC cancel"
+            if back_enabled:
+                hint += "  ← previous"
+            stdscr.addnstr(1, 0, hint, max_x - 1, curses.A_DIM)
         except curses.error:
             pass
         return 3
@@ -753,7 +1012,7 @@ def curses_radiolist(
 
     plain_labels = [radio_item_plain(item) for item in items]
 
-    def _draw_header(stdscr, max_y, max_x, search=None):
+    def _draw_header(stdscr, max_y, max_x, search=None, back_enabled=False):
         import curses
         row = 0
         try:
@@ -776,6 +1035,8 @@ def curses_radiolist(
                 hint = "  \u2191\u2193 navigate  ENTER/SPACE select  / search  ESC cancel"
             else:
                 hint = "  \u2191\u2193 navigate  ENTER/SPACE select  ESC cancel"
+            if back_enabled:
+                hint += "  \u2190 previous"
             stdscr.addnstr(row, 0, hint, max_x - 1, curses.A_DIM)
             row += 1
         except curses.error:
@@ -852,14 +1113,26 @@ def _radio_numbered_fallback(
         print(f"  {marker} {i + 1:>2}. {format_radio_item_ansi(label)}")
     print()
     try:
-        val = input(color(f"  Choice [default {selected + 1}]: ", Colors.DIM)).strip()
+        val = _read_numbered_input(
+            color(f"  Choice [default {selected + 1}]: ", Colors.DIM)
+        )
+        if val is _NumberedNavigation.BACK:
+            _back_scoped_navigation()
+            return cancel_returns
+        if val is _NumberedNavigation.CANCEL:
+            _cancel_scoped_navigation()
+            return cancel_returns
+        val = val.strip()
         if not val:
             return selected
         idx = int(val) - 1
         if 0 <= idx < len(items):
             return idx
         return selected
-    except (ValueError, KeyboardInterrupt, EOFError):
+    except ValueError:
+        return cancel_returns
+    except (KeyboardInterrupt, EOFError):
+        _cancel_scoped_navigation()
         return cancel_returns
 
 
@@ -881,7 +1154,7 @@ def curses_single_select(
     all_items = list(items) + [cancel_label]
     cancel_idx = len(items)
 
-    def _draw_header(stdscr, max_y, max_x, search=None):
+    def _draw_header(stdscr, max_y, max_x, search=None, back_enabled=False):
         import curses
         try:
             hattr = curses.A_BOLD
@@ -894,6 +1167,8 @@ def curses_single_select(
                 hint = "  ↑↓ navigate  ENTER confirm  / search  ESC/q cancel"
             else:
                 hint = "  ↑↓ navigate  ENTER confirm  ESC/q cancel"
+            if back_enabled:
+                hint += "  ← previous"
             stdscr.addnstr(1, 0, hint, max_x - 1, curses.A_DIM)
         except curses.error:
             pass
@@ -918,7 +1193,7 @@ def curses_single_select(
             # Selecting the synthetic cancel row resolves to None, mirroring
             # the old post-loop ``>= cancel_idx`` guard.
             return None if cursor >= cancel_idx else cursor
-        if action == NAV_CANCEL:
+        if action in (NAV_CANCEL, NAV_INTERRUPT):
             return None
         return _KEEP  # NAV_TOGGLE — no-op for this menu
 
@@ -947,7 +1222,14 @@ def _numbered_single_fallback(
         print(f"  {i}. {label}")
     print()
     try:
-        val = input(f"  Choice [1-{len(items)}]: ").strip()
+        val = _read_numbered_input(f"  Choice [1-{len(items)}]: ")
+        if val is _NumberedNavigation.BACK:
+            _back_scoped_navigation()
+            return None
+        if val is _NumberedNavigation.CANCEL:
+            _cancel_scoped_navigation()
+            return None
+        val = val.strip()
         if not val:
             return None
         idx = int(val) - 1
@@ -955,8 +1237,10 @@ def _numbered_single_fallback(
             return idx
         if idx == cancel_idx:
             return None
-    except (ValueError, KeyboardInterrupt, EOFError):
+    except ValueError:
         pass
+    except (KeyboardInterrupt, EOFError):
+        _cancel_scoped_navigation()
     return None
 
 
@@ -982,13 +1266,25 @@ def _numbered_fallback(
                 print(color(f"\n  {status_text}", Colors.DIM))
         print()
         try:
-            val = input(color("  Toggle # (or Enter to confirm): ", Colors.DIM)).strip()
+            val = _read_numbered_input(
+                color("  Toggle # (or Enter to confirm): ", Colors.DIM)
+            )
+            if val is _NumberedNavigation.BACK:
+                _back_scoped_navigation()
+                return cancel_returns
+            if val is _NumberedNavigation.CANCEL:
+                _cancel_scoped_navigation()
+                return cancel_returns
+            val = val.strip()
             if not val:
                 break
             idx = int(val) - 1
             if 0 <= idx < len(items):
                 chosen.symmetric_difference_update({idx})
-        except (ValueError, KeyboardInterrupt, EOFError):
+        except ValueError:
+            return cancel_returns
+        except (KeyboardInterrupt, EOFError):
+            _cancel_scoped_navigation()
             return cancel_returns
         print()
 

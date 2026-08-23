@@ -3579,7 +3579,13 @@ def cmd_model(args):
             print("  Cleared model picker cache.")
         except Exception:
             pass
-    select_provider_and_model(args=args)
+    from hermes_cli.setup import run_setup_action_with_navigation
+
+    run_setup_action_with_navigation(
+        "Model & Provider",
+        lambda: select_provider_and_model(args=args),
+        cancelled_message="No change.",
+    )
 
 
 def _is_profile_api_key_provider(provider_id: str) -> bool:

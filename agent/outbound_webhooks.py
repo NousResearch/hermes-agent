@@ -237,6 +237,29 @@ def flush(timeout: float = 5.0) -> bool:
         return _delivery_queue.unfinished_tasks == 0
 
 
+def re_register_config_hooks() -> None:
+    """Re-register outbound webhooks from config after a plugin force-reload.
+
+    Mirrors ``agent.shell_hooks.re_register_config_hooks``: config-owned
+    outbound-webhook callbacks live in the same ``_hooks`` dict that
+    ``PluginManager.discover_and_load(force=True)`` clears via ``unload()``,
+    so without this the force-reloaded profile's outbound webhooks go
+    silently inert (#92682 review). Only the current home's idempotence
+    keys are cleared so a force-reload in one profile cannot invalidate
+    another profile's still-live registration.
+    """
+    from hermes_cli.config import load_config
+    from hermes_constants import get_hermes_home
+
+    home_key = str(get_hermes_home().expanduser().resolve())
+    with _registered_lock:
+        _registered.difference_update(
+            {key for key in _registered if key[0] == home_key}
+        )
+
+    register_from_config(load_config())
+
+
 def reset_for_tests() -> None:
     """Clear the idempotence set and drain the queue.  Test-only helper."""
     with _registered_lock:

@@ -354,11 +354,20 @@ def re_register_config_hooks() -> None:
     are wired again (#60036 / PR #60267; tracking #64178 — salvaged from
     PR #64188).
 
+    Only the idempotence keys for the *current* Hermes home are cleared —
+    ``discover_and_load(force=True)`` only unloads the manager scoped to
+    that one home, so clearing every home's keys would make a force-reload
+    in profile A drop profile B's still-live registration from the ledger
+    and duplicate it on B's next registration call (#92682 review).
+
     Commands already allowlisted stay allowlisted, so this never re-prompts
     at a TTY for hooks the user previously approved.
     """
+    home_key = str(get_hermes_home().expanduser().resolve())
     with _registered_lock:
-        _registered.clear()
+        _registered.difference_update(
+            {key for key in _registered if key[0] == home_key}
+        )
     from hermes_cli.config import load_config
 
     register_from_config(load_config())

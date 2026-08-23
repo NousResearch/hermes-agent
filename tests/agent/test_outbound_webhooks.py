@@ -345,6 +345,46 @@ class TestRegistration:
         assert len(http_server.captured) == 1
 
 
+class TestForceReloadHomeScoping:
+    """Force-reloading one profile's plugin manager must restore that
+    profile's own outbound webhook and leave it firing exactly once —
+    the mirror of the shell-hook force-reload symmetry fix (#92682
+    review: outbound webhooks were the "same symptom class... after a
+    supported lifecycle transition instead of initial startup").
+    """
+
+    def test_force_reload_restores_webhook_and_fires_once(
+        self, monkeypatch, http_server,
+    ):
+        from hermes_cli import plugins
+
+        cfg = _cfg({"url": _url(http_server), "events": ["on_session_end"]})
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+
+        monkeypatch.setenv("HERMES_HOME", "/tmp/profile-b-webhook")
+        mgr_b = plugins.PluginManager()
+        plugins._plugin_manager = mgr_b
+        outbound_webhooks.register_from_config(cfg)
+        assert len(mgr_b._hooks.get("on_session_end", [])) == 1
+
+        # Force-reload: unload() wipes _hooks (config-owned webhook
+        # callbacks included, same as the ledger-driven plugin sweep), so
+        # without the fix the idempotence key alone would survive and a
+        # later register_from_config() call would see it and skip
+        # re-wiring — leaving the webhook silently inert.
+        mgr_b.unload()
+        assert mgr_b._hooks.get("on_session_end", []) == []
+
+        outbound_webhooks.re_register_config_hooks()
+        assert len(mgr_b._hooks.get("on_session_end", [])) == 1
+
+        plugins.get_plugin_manager().invoke_hook(
+            "on_session_end", session_id="s1",
+        )
+        assert outbound_webhooks.flush()
+        assert len(http_server.captured) == 1
+
+
 # ── E2E delivery against a real HTTP server ──────────────────────────────
 
 

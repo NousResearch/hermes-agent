@@ -77,6 +77,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     escape_like as _escape_like,
     DEFERRED_INDEX_SQL,
     FTS_CJK_STALE_KEY,
+    FTS_REBUILD_DEFERRAL_KEY,
     FTS_SQL,
     FTS_STALE_KEY,
     FTS_STORAGE_VERSION,
@@ -3767,6 +3768,7 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
     - ``fts_rebuild_pending`` — True when the deferred v23 backfill has not
       finished (high_water present and progress < high_water)
     - ``fts_rebuild_high_water`` / ``fts_rebuild_progress`` — raw ints
+    - ``fts_rebuild_deferral`` — durable blocked-repair diagnostic, when present
     """
     stats: Dict[str, Any] = {
         "page_count": None,
@@ -3782,6 +3784,7 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
         "fts_rebuild_pending": None,
         "fts_rebuild_high_water": None,
         "fts_rebuild_progress": None,
+        "fts_rebuild_deferral": None,
     }
 
     # WAL sidecar size needs no connection at all.
@@ -3872,6 +3875,17 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
             stats["fts_rebuild_pending"] = False
         else:
             stats["fts_rebuild_pending"] = (progress or 0) < high_water
+        try:
+            row = conn.execute(
+                "SELECT value FROM state_meta WHERE key = ? LIMIT 1",
+                (FTS_REBUILD_DEFERRAL_KEY,),
+            ).fetchone()
+            if row:
+                parsed = json.loads(row[0])
+                if isinstance(parsed, dict):
+                    stats["fts_rebuild_deferral"] = parsed
+        except Exception:
+            pass
     finally:
         try:
             conn.close()
@@ -3913,6 +3927,23 @@ def count_db_holders(db_path: Path) -> Optional[int]:
         return holders
     except Exception:
         return None
+
+
+def _is_inactive_orphan_desktop_holder(
+    *,
+    ppid: int,
+    age_seconds: float,
+    min_age_seconds: float,
+    ephemeral_backend: bool,
+    connection_statuses: List[str],
+) -> bool:
+    """Pure safety predicate for the narrow Desktop holder reap."""
+    return (
+        ppid in (0, 1)
+        and age_seconds >= min_age_seconds
+        and ephemeral_backend
+        and "ESTABLISHED" not in connection_statuses
+    )
 
 
 def _read_proc_cmdline(pid: int) -> Optional[str]:
@@ -5135,6 +5166,69 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             return holders or [(-1, f"open-file scan failed: {exc}")]
         return holders
+
+    def _reap_inactive_orphan_desktop_holders(
+        self, holders: List[Tuple[int, str]], *, min_age_seconds: float
+    ) -> List[int]:
+        """Terminate old PPID-1 Desktop ephemeral backends with no client.
+
+        Inspection fails closed: anything whose parent, age, argv, or network
+        connections cannot be proved safe remains a repair-blocking holder.
+        """
+        if not sys.platform.startswith("linux") or psutil is None:
+            return []
+        try:
+            from hermes_cli.dashboard_procs import _is_ephemeral_port_zero_backend
+        except Exception:
+            return []
+
+        now = time.time()
+        candidates = []
+        for pid, _path in holders:
+            if pid <= 0:
+                continue
+            try:
+                process = psutil.Process(pid)
+                statuses = [
+                    conn.status for conn in process.net_connections(kind="inet")
+                ]
+                if not _is_inactive_orphan_desktop_holder(
+                    ppid=process.ppid(),
+                    age_seconds=now - process.create_time(),
+                    min_age_seconds=min_age_seconds,
+                    ephemeral_backend=_is_ephemeral_port_zero_backend(process.cmdline()),
+                    connection_statuses=statuses,
+                ):
+                    continue
+            except Exception:
+                continue
+            candidates.append(process)
+
+        signalled: List[int] = []
+        for process in candidates:
+            try:
+                process.terminate()
+                signalled.append(process.pid)
+            except (psutil.Error, OSError):
+                continue
+        if not signalled:
+            return []
+
+        try:
+            _gone, alive = psutil.wait_procs(candidates, timeout=1.5)
+        except Exception:
+            alive = []
+        for process in alive:
+            try:
+                process.kill()
+            except (psutil.Error, OSError):
+                continue
+        if alive:
+            try:
+                psutil.wait_procs(alive, timeout=1.5)
+            except Exception:
+                pass
+        return signalled
 
     def _try_runtime_fts_rebuild(self, exc: sqlite3.DatabaseError) -> bool:
         """One-shot in-place FTS rebuild after a corrupt-index write failure.

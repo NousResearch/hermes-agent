@@ -13,6 +13,7 @@ sync triggers, and retries the canonical write. Search degrades to ``LIKE``
 until a later open atomically rebuilds the index and restores the triggers.
 """
 
+import json
 import os
 import sqlite3
 from types import SimpleNamespace
@@ -20,13 +21,16 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_state
+import hermes_state_schema
 from hermes_state import (
+    FTS_REBUILD_DEFERRAL_KEY,
     FTS_STALE_KEY,
     LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL,
     SCHEMA_SQL,
     SessionDB,
     _FTS_TRIGGERS,
+    _is_inactive_orphan_desktop_holder,
 )
 
 
@@ -87,6 +91,29 @@ def _base_fts_triggers(db_path):
 
 
 class TestRuntimeFtsRebuild:
+    def test_inactive_orphan_reap_predicate_preserves_live_or_ambiguous_holders(self):
+        common = {
+            "ppid": 1,
+            "age_seconds": 120.0,
+            "min_age_seconds": 60.0,
+            "ephemeral_backend": True,
+            "connection_statuses": [],
+        }
+        assert _is_inactive_orphan_desktop_holder(**common)
+        assert not _is_inactive_orphan_desktop_holder(**{**common, "ppid": 42})
+        assert not _is_inactive_orphan_desktop_holder(
+            **{**common, "age_seconds": 10.0}
+        )
+        assert not _is_inactive_orphan_desktop_holder(
+            **{**common, "ephemeral_backend": False}
+        )
+        assert not _is_inactive_orphan_desktop_holder(
+            **{
+                **common,
+                "connection_statuses": ["ESTABLISHED"],
+            }
+        )
+
     def test_foreign_holder_detection_includes_deleted_wal(
         self, db, tmp_path, monkeypatch
     ):
@@ -516,6 +543,59 @@ class TestRuntimeFtsRebuild:
             assert _base_fts_triggers(db_path) == set()
             reopened.append_message("s1", "user", "after deferred recovery")
             assert _message_contents(db_path)[-1] == "after deferred recovery"
+        finally:
+            reopened.close()
+
+    def test_repeated_deferrals_reap_inactive_orphan_then_rebuild(
+        self, db, tmp_path, monkeypatch
+    ):
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path = tmp_path / "state.db"
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "seed")
+        _corrupt_fts(db_path)
+        monkeypatch.setattr(
+            db,
+            "rebuild_fts",
+            lambda: (_ for _ in ()).throw(sqlite3.DatabaseError("still corrupt")),
+        )
+        db.append_message("s1", "user", "before restart")
+        db.close()
+
+        raw = sqlite3.connect(str(db_path))
+        raw.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (
+                FTS_REBUILD_DEFERRAL_KEY,
+                json.dumps({"first_seen": 1.0, "last_seen": 30.0, "attempts": 2}),
+            ),
+        )
+        raw.commit()
+        raw.close()
+
+        holder_scans = iter(([(4242, str(db_path) + "-wal")], []))
+        reaped = []
+        monkeypatch.setattr(
+            SessionDB,
+            "_foreign_state_db_holders",
+            lambda self: next(holder_scans),
+        )
+        monkeypatch.setattr(
+            SessionDB,
+            "_reap_inactive_orphan_desktop_holders",
+            lambda self, holders, *, min_age_seconds: reaped.extend(holders) or [4242],
+        )
+        monkeypatch.setattr(hermes_state_schema.time, "time", lambda: 120.0)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reaped == [(4242, str(db_path) + "-wal")]
+            assert reopened._fts_stale is False
+            assert _meta_value(db_path, FTS_STALE_KEY) is None
+            assert _meta_value(db_path, FTS_REBUILD_DEFERRAL_KEY) is None
+            assert reopened.search_messages("before restart")
         finally:
             reopened.close()
 

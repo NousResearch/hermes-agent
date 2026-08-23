@@ -733,6 +733,9 @@ FTS_CJK_STALE_KEY = "fts_cjk_stale"
 # them would preserve an unknown index gap.
 FTS_STALE_KEY = "fts_stale"
 
+# Durable diagnostic for stale FTS recovery blocked across process restarts.
+FTS_REBUILD_DEFERRAL_KEY = "fts_rebuild_deferral"
+
 
 # ── Legacy (v22 / inline-content) FTS DDL ──────────────────────────────
 # Used ONLY to keep an existing pre-v23 install's search working and its

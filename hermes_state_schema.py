@@ -11,12 +11,14 @@ module-level constants live in hermes_state_common.
 import logging
 import json
 import sqlite3
+import time
 from typing import Dict, Optional, Sequence
 
 from hermes_constants import get_hermes_home
 from hermes_state_common import (
     DEFERRED_INDEX_SQL,
     FTS_CJK_STALE_KEY,
+    FTS_REBUILD_DEFERRAL_KEY,
     FTS_STALE_KEY,
     FTS_SQL,
     FTS_STORAGE_VERSION,
@@ -34,6 +36,9 @@ from hermes_state_common import (
 # Moved methods logged under the "hermes_state" logger before the split;
 # keep that logger identity so log filtering/capture behavior is unchanged.
 logger = logging.getLogger("hermes_state")
+
+_FTS_HOLDER_ESCALATE_ATTEMPTS = 3
+_FTS_HOLDER_ESCALATE_SECONDS = 60.0
 
 # Cache for schema_read_probe_statements() — parsing SCHEMA_SQL spins up an
 # in-memory SQLite database, so derive the statements once per process.
@@ -397,13 +402,78 @@ class SessionSchemaMixin:
         """Atomically rebuild stale base/trigram indexes and resume syncing."""
         foreign_holders = self._foreign_state_db_holders()
         if foreign_holders:
-            logger.warning(
-                "Deferred stale state.db FTS rebuild while foreign processes "
-                "hold the database or WAL sidecars (%s); canonical writes and "
-                "LIKE search remain available.",
-                foreign_holders,
+            now = time.time()
+            record = None
+            try:
+                row = cursor.execute(
+                    "SELECT value FROM state_meta WHERE key = ? LIMIT 1",
+                    (FTS_REBUILD_DEFERRAL_KEY,),
+                ).fetchone()
+                if row:
+                    raw = row["value"] if isinstance(row, sqlite3.Row) else row[0]
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        record = parsed
+            except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+                record = None
+
+            try:
+                first_seen = float((record or {}).get("first_seen", now))
+                attempts = int((record or {}).get("attempts", 0)) + 1
+            except (TypeError, ValueError):
+                first_seen = now
+                attempts = 1
+            if first_seen > now or first_seen < 0:
+                first_seen = now
+            holder_pids = sorted({pid for pid, _path in foreign_holders if pid > 0})
+            diagnostic = {
+                "first_seen": first_seen,
+                "last_seen": now,
+                "attempts": attempts,
+                "holder_pids": holder_pids,
+            }
+            cursor.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (FTS_REBUILD_DEFERRAL_KEY, json.dumps(diagnostic, sort_keys=True)),
             )
-            return False
+
+            escalated = (
+                attempts >= _FTS_HOLDER_ESCALATE_ATTEMPTS
+                and now - first_seen >= _FTS_HOLDER_ESCALATE_SECONDS
+            )
+            if escalated:
+                reaped = self._reap_inactive_orphan_desktop_holders(
+                    foreign_holders,
+                    min_age_seconds=_FTS_HOLDER_ESCALATE_SECONDS,
+                )
+                if reaped:
+                    logger.error(
+                        "Reaped inactive orphan Desktop backend(s) %s after %d "
+                        "state.db FTS rebuild deferrals; checking holders again.",
+                        reaped,
+                        attempts,
+                    )
+                    foreign_holders = self._foreign_state_db_holders()
+                if foreign_holders:
+                    logger.error(
+                        "state.db FTS repair remains blocked after %d deferrals "
+                        "by holder(s) %s. Stop the listed processes, then run "
+                        "`hermes sessions optimize-storage` with the gateway stopped. "
+                        "`hermes doctor` reports this degraded state.",
+                        attempts,
+                        foreign_holders,
+                    )
+
+            if foreign_holders:
+                logger.warning(
+                    "Deferred stale state.db FTS rebuild while foreign processes "
+                    "hold the database or WAL sidecars (%s); canonical writes and "
+                    "LIKE search remain available (deferral %d).",
+                    foreign_holders,
+                    attempts,
+                )
+                return False
         # Full structural rebuild: admit through the single cross-process
         # authority (fail closed). Losing the race means another process is
         # already performing this exact recovery; the stale breadcrumb stays
@@ -483,7 +553,8 @@ class SessionSchemaMixin:
             "BEGIN IMMEDIATE;"
             + drop_sql
             + rebuild_sql
-            + f"DELETE FROM state_meta WHERE key = '{FTS_STALE_KEY}';"
+            + "DELETE FROM state_meta WHERE key IN "
+            + f"('{FTS_STALE_KEY}', '{FTS_REBUILD_DEFERRAL_KEY}');"
             + "COMMIT;"
         )
         try:

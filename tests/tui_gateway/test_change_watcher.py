@@ -24,6 +24,7 @@ def watcher_home(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_change_sigs", {})
     monkeypatch.setattr(server, "_change_checked_at", {})
     monkeypatch.setattr(server, "_change_broadcast_at", {})
+    monkeypatch.setattr(server, "_bot_relay_outbox_seen", 0)
 
     events = []
     monkeypatch.setattr(
@@ -175,6 +176,46 @@ def test_renderable_pet_broadcasts_meta_payload(watcher_home, monkeypatch):
     assert payload["enabled"] is True
     assert payload["slug"] == "boba"
     assert payload["spritesheetRevision"]
+
+
+def test_enqueued_envelope_broadcasts_outbox_pending(watcher_home):
+    """A cross-connection envelope written by the agent process must reach the
+    Desktop's push-triggered drain on its own signal (#93091) — the drain poll
+    is the backstop, not the transport."""
+    home, events = watcher_home
+    outbox = home / "bot_relay" / "outbox"
+    outbox.mkdir(parents=True)
+    server._broadcast_watched_changes(now=0.0)
+
+    (outbox / ("a" * 32 + ".json")).write_text('{"id": "' + "a" * 32 + '"}')
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("bot_relay.outbox.pending", {}) in events
+
+
+def test_drained_outbox_does_not_rebroadcast_pending(watcher_home):
+    """Signature is monotone: a drain empties outbox/ (rename → claimed/), and
+    that emptying must NOT look like a change — only new envelopes fire."""
+    home, events = watcher_home
+    outbox = home / "bot_relay" / "outbox"
+    outbox.mkdir(parents=True)
+    envelope = outbox / ("b" * 32 + ".json")
+    envelope.write_text("{}")
+    server._broadcast_watched_changes(now=0.0)
+
+    envelope.unlink()  # the Desktop drained it
+    server._broadcast_watched_changes(now=10.0)
+    server._broadcast_watched_changes(now=20.0)
+
+    assert not [e for e in events if e[0] == "bot_relay.outbox.pending"]
+
+
+def test_no_outbox_dir_never_fires_pending(watcher_home):
+    home, events = watcher_home
+    server._broadcast_watched_changes(now=0.0)
+    server._broadcast_watched_changes(now=10.0)
+
+    assert not [e for e in events if e[0] == "bot_relay.outbox.pending"]
 
 
 def test_broken_probe_never_kills_the_pass(watcher_home, monkeypatch):

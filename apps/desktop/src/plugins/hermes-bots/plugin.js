@@ -1376,11 +1376,18 @@ function handleSessionsGatewayTransition() {
 // relay degrades to whatever subset of connections supports it.
 const RELAY_ROSTER_INTERVAL_MS = 60_000
 const RELAY_DRAIN_INTERVAL_MS = 4_000
+// Push path (#93091): the gateway broadcasts `bot_relay.outbox.pending` when
+// an envelope lands on disk; a burst of signals inside this window collapses
+// to ONE drain. The interval poll above stays as the backstop for older
+// backends (and connections whose events don't reach the tap).
+const RELAY_PUSH_DEBOUNCE_MS = 250
 let relayDisposed = false
 let relayRosterTimer = null
 let relayDrainTimer = null
 let relayRosterBusy = false
 let relayDrainBusy = false
+let relayPushUnsub = null
+let relayPushDebounceTimer = null
 
 /** One representative route per reachable connection id. */
 async function relayConnections() {
@@ -1578,6 +1585,23 @@ async function drainRelayOutboxes() {
   }
 }
 
+/** Push-notified drain (#93091): collapse a burst of pending signals into
+ *  one drain call ~RELAY_PUSH_DEBOUNCE_MS after the first signal. */
+function scheduleRelayPushDrain() {
+  if (relayDisposed || typeof setTimeout !== 'function') {
+    return
+  }
+
+  if (relayPushDebounceTimer !== null) {
+    return
+  }
+
+  relayPushDebounceTimer = setTimeout(() => {
+    relayPushDebounceTimer = null
+    void drainRelayOutboxes()
+  }, RELAY_PUSH_DEBOUNCE_MS)
+}
+
 function startBotRelay() {
   relayDisposed = false
 
@@ -1595,6 +1619,14 @@ function startBotRelay() {
   if (relayDrainTimer === null) {
     relayDrainTimer = setInterval(() => void drainRelayOutboxes(), RELAY_DRAIN_INTERVAL_MS)
   }
+
+  // Push path: the gateway change watcher broadcasts when an envelope hits
+  // the outbox; drain immediately (debounced) instead of waiting the poll
+  // out. Feature-detected — older shells have no host.onEvent — and the 4s
+  // poll above stays untouched as the backstop either way.
+  if (relayPushUnsub === null && typeof host.onEvent === 'function') {
+    relayPushUnsub = host.onEvent('bot_relay.outbox.pending', () => scheduleRelayPushDrain())
+  }
 }
 
 function stopBotRelay() {
@@ -1608,6 +1640,20 @@ function stopBotRelay() {
   if (relayDrainTimer !== null) {
     clearInterval(relayDrainTimer)
     relayDrainTimer = null
+  }
+
+  if (relayPushDebounceTimer !== null) {
+    clearTimeout(relayPushDebounceTimer)
+    relayPushDebounceTimer = null
+  }
+
+  if (relayPushUnsub !== null) {
+    try {
+      relayPushUnsub()
+    } catch {
+      // Disposer from an older shell shape — never break teardown.
+    }
+    relayPushUnsub = null
   }
 }
 

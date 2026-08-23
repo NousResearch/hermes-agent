@@ -2430,30 +2430,6 @@ class GoalManager:
                 metadata=turn_metadata,
             )
 
-        # Quality gates run BEFORE the LLM judge: a failing gate is
-        # deterministic evidence the goal is not done, so the judge call is
-        # skipped entirely and the gate's output drives the next turn. Gate
-        # continuations respect the same turn budget as judge continuations.
-        gate_decision = self._check_gates()
-        if gate_decision is not None:
-            if gate_decision.get("should_continue") and state.turns_used >= state.max_turns:
-                state.status = "paused"
-                state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
-                save_goal(self.session_id, state)
-                return {
-                    "status": "paused",
-                    "should_continue": False,
-                    "continuation_prompt": None,
-                    "verdict": "gate_failed",
-                    "reason": gate_decision.get("reason", ""),
-                    "message": (
-                        f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used "
-                        f"(a quality gate is still failing). "
-                        "Use /goal resume to keep going, or /goal clear to stop."
-                    ),
-                }
-            return gate_decision
-
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal,
             last_response,

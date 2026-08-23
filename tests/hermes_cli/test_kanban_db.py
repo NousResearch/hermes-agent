@@ -903,6 +903,55 @@ def test_request_review_rollback_discards_staged_copies(kanban_home):
         assert [a.filename for a in kb.list_attachments(conn, t)] == ["evidence.json"]
         assert sorted(p.name for p in attachment_dir.iterdir()) == ["evidence.json"]
 
+def test_undeclared_scratch_content_warns_and_events(kanban_home):
+    """#93164: files not declared in kanban_complete(artifacts) used to be
+    destroyed silently. Non-trivial leftovers now leave a task event."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="render chart")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        undeclared = ws / "deliverable.txt"
+        undeclared.write_bytes(b"x" * 4096)  # >1KB: non-trivial
+
+        assert kb.complete_task(conn, t, result="ok")
+
+        events = [
+            e for e in kb.list_events(conn, t)
+            if e.kind == "workspace_discarded_content"
+        ]
+
+    assert not ws.exists(), "scratch workspace is still cleaned up"
+    assert len(events) == 1
+    payload = events[0].payload
+    assert payload["file_count"] == 1
+    assert payload["total_bytes"] == 4096
+    assert payload["sample"][0]["file"] == "deliverable.txt"
+
+
+
+def test_small_scratch_leftovers_stay_silent(kanban_home):
+    """Empty scaffolding / sub-1KB bookkeeping files don't flag every
+    completion — only non-trivial content emits the discarded event."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="quick note")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        (ws / "scaffold.tmp").write_bytes(b"x" * 10)  # <1KB: trivial
+
+        assert kb.complete_task(conn, t, result="ok")
+
+        events = [
+            e for e in kb.list_events(conn, t)
+            if e.kind == "workspace_discarded_content"
+        ]
+
+    assert not ws.exists(), "scratch workspace is still cleaned up"
+    assert events == []
+
+
+
 
 # ---------------------------------------------------------------------------
 # Deferred scratch cleanup for parent/child handoff (#33774)

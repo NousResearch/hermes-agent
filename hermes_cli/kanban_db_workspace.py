@@ -212,6 +212,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             # source tree; without this, completion would rmtree the user's data.
             # See #28818.
             if _is_managed_scratch_path(wp):
+                _warn_and_event_discarded_scratch_content(conn, task_id, wp)
                 release_lsp_clients(str(wp))
                 shutil.rmtree(wp, ignore_errors=True)
                 _kb._log.debug("Removed scratch workspace: %s", wp)
@@ -228,6 +229,52 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         # After cleaning up this task's workspace, check if any parent tasks now have all children done —
         # their deferred cleanup can proceed (#33774).
         _try_cleanup_parent_workspaces(conn, task_id)
+    except Exception:
+        pass  # best-effort — never block completion
+
+
+def _warn_and_event_discarded_scratch_content(
+    conn: sqlite3.Connection, task_id: str, wp: Path
+) -> None:
+    """Surface non-trivial files a worker left in a scratch workspace (#93164).
+
+    Declared artifacts are copied to the board's attachment store before
+    cleanup (#63619); anything else in the dir was destroyed with no trace
+    anywhere. Keep the loss visible instead: a WARNING naming a bounded
+    sample plus a ``workspace_discarded_content`` task event, so the board
+    retains what was destroyed. Leftovers under 1KB stay silent — empty
+    scaffolding and ephemeral bookkeeping files would otherwise flag every
+    completion. Best-effort, same contract as the cleanup around it.
+    """
+    try:
+        files = [
+            (f.relative_to(wp).as_posix(), f.stat().st_size)
+            for f in wp.rglob("*")
+            if f.is_file()
+        ]
+    except OSError:
+        return
+    if not files:
+        return
+    total = sum(size for _, size in files)
+    if total < 1024:
+        return
+    sample = sorted(files, key=lambda item: -item[1])[:10]
+    payload = {
+        "path": str(wp),
+        "total_bytes": total,
+        "file_count": len(files),
+        "sample": [{"file": name, "bytes": size} for name, size in sample],
+    }
+    _kb._log.warning(
+        "Task %s: scratch workspace %s still held %d file(s), %d bytes of "
+        "undeclared content (not listed in kanban_complete artifacts); "
+        "removing anyway. Largest: %s",
+        task_id, wp, len(files), total,
+        ", ".join(f"{name} ({size}B)" for name, size in sample[:5]),
+    )
+    try:
+        _kb._append_event(conn, task_id, "workspace_discarded_content", payload)
     except Exception:
         pass  # best-effort — never block completion
 

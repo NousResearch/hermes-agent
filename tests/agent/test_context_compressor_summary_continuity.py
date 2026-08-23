@@ -442,10 +442,12 @@ def test_empty_post_handoff_window_noops_without_summary_call():
     # genuinely present in the returned (unchanged) transcript.
     assert compressor._previous_summary == old_summary
     assert compressor.compression_count == 0
-    # Mirrors the sibling no-compressible-window guard (#40803): the shape
-    # cannot shrink, so it counts as an ineffective strike (routed through
-    # the durable write-through helper) to arm the anti-thrash breaker.
-    assert compressor._ineffective_compression_count == 1
+    # Mirrors the sibling no-compressible-window guard, but as a structural
+    # no-op (#93022): the window holds nothing eligible to compress, so the
+    # compressor defers retries transiently instead of arming the permanent
+    # anti-thrash breaker.
+    assert compressor._ineffective_compression_count == 0
+    assert compressor._structural_no_op_backoff_until > 0.0
     assert compressor._last_compression_savings_pct == 0.0
     assert compressor._last_summary_dropped_count == 0
     assert compressor._last_summary_fallback_used is False

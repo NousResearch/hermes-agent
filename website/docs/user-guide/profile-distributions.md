@@ -624,10 +624,17 @@ When you don't need versioning, skip the repo. `/export` packs a profile into a 
 In the CLI, TUI, or desktop chat:
 
 ```
-/export                          # the active profile → <name>.tar.gz
+/export                          # the active profile → managed profile-exports/<name>-<timestamp>.tar.gz
 /export research-bot             # a named profile
 /export research-bot -o ~/Desktop/research-bot.tar.gz
 ```
+
+Without `-o`, the CLI and TUI place the archive in Hermes's managed
+`profile-exports/` directory under the default Hermes home, not in the current
+working directory. This keeps routine exports out of source checkouts and
+prevents a generated profile snapshot from being mistaken for a repository
+source file. An explicit `-o` path is still honored when you intentionally
+choose where to save the archive.
 
 Or from a shell, same machinery:
 

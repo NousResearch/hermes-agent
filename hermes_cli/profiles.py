@@ -2115,6 +2115,63 @@ def get_active_profile_name() -> str:
 # Export / Import
 # ---------------------------------------------------------------------------
 
+def _profile_export_directory() -> Path:
+    """Choose an export directory that cannot become source-tree input."""
+    export_dir = _get_default_hermes_home() / "profile-exports"
+    try:
+        cwd = Path.cwd().resolve()
+    except OSError:
+        return export_dir
+
+    checkout_root = next(
+        (
+            candidate
+            for candidate in (cwd, *cwd.parents)
+            if (candidate / ".git").exists()
+        ),
+        None,
+    )
+    if checkout_root is None:
+        return export_dir
+
+    try:
+        export_dir.resolve().relative_to(checkout_root.resolve())
+    except ValueError:
+        return export_dir
+
+    # A custom deployment may point HERMES_HOME at its source checkout.  Do
+    # not put the automatic archive under that tree; use a sibling store and
+    # fall back to the OS temp directory only for the unusual case where the
+    # user's home itself is the checkout.
+    candidates = [
+        Path.home() / ".hermes-profile-exports",
+    ]
+    import tempfile
+
+    candidates.append(Path(tempfile.gettempdir()) / "hermes-profile-exports")
+    for candidate in candidates:
+        try:
+            candidate.resolve().relative_to(checkout_root.resolve())
+        except ValueError:
+            return candidate
+    return export_dir
+
+
+def get_profile_export_path(name: str, *, timestamp: Optional[str] = None) -> Path:
+    """Return a managed destination for an export with no explicit output.
+
+    Keep automatic exports outside the current working directory and outside
+    every named profile.  The CLI is commonly run from a source checkout; its
+    old ``<name>.tar.gz`` default therefore made a profile snapshot look like
+    a repository artifact and allowed it to be committed accidentally.
+    """
+    canon = normalize_profile_name(name)
+    validate_profile_name(canon)
+    export_dir = _profile_export_directory()
+    export_dir.mkdir(parents=True, exist_ok=True)
+    stamp = timestamp or time.strftime("%Y%m%d-%H%M%S")
+    return export_dir / f"{canon}-{stamp}.tar.gz"
+
 def _default_export_ignore(root_dir: Path):
     """Return an *ignore* callable for :func:`shutil.copytree`.
 

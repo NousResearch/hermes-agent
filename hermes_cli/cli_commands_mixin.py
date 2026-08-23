@@ -460,7 +460,11 @@ class CLICommandsMixin:
             /export <profile>             — export a named profile
             /export [profile] -o <path>   — choose the output path
         """
-        from hermes_cli.profiles import export_profile, get_active_profile_name
+        from hermes_cli.profiles import (
+            export_profile,
+            get_active_profile_name,
+            get_profile_export_path,
+        )
 
         parts = command.split()[1:]
         output = None
@@ -474,7 +478,7 @@ class CLICommandsMixin:
 
         name = parts[0] if parts else (get_active_profile_name() or "default")
         if not output:
-            output = f"{name}.tar.gz"
+            output = str(get_profile_export_path(name))
 
         try:
             result = export_profile(name, output)

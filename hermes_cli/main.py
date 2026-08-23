@@ -11476,10 +11476,10 @@ def cmd_profile(args):
             sys.exit(1)
 
     elif action == "export":
-        from hermes_cli.profiles import export_profile
+        from hermes_cli.profiles import export_profile, get_profile_export_path
 
         name = args.profile_name
-        output = args.output or f"{name}.tar.gz"
+        output = args.output or str(get_profile_export_path(name))
         try:
             result_path = export_profile(name, output)
             print(f"✓ Exported '{name}' to {result_path}")

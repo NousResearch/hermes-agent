@@ -3642,8 +3642,8 @@ export const de = defineLocale({
       'Webhooks sind eine eigene Gateway-Plattform. Aktiviere sie hier, um eingehende HTTP-Events anzunehmen; Chat-Kanäle brauchst du nur, wenn ein Abo an Telegram, Discord, Slack oder einen anderen Kanal ausliefert.'
   },
   zones: {
-    showHeader: 'Header anzeigen',
-    hideHeader: 'Header ausblenden',
+    showTabStrip: 'Tabs anzeigen',
+    hideTabStrip: 'Tabs ausblenden',
     minimize: 'Minimieren',
     restore: 'Wiederherstellen',
     closeRunningTitle: 'Laufenden Tab schließen?',

@@ -59,8 +59,15 @@ NON_RESPONSE_COMMANDS = CALLBACK_COMMANDS | {APP_CMD_EVENT_CALLBACK}
 MAX_MESSAGE_LENGTH = 4000
 CONNECT_TIMEOUT_SECONDS = 20.0
 REQUEST_TIMEOUT_SECONDS = 15.0
+SEND_FRAME_TIMEOUT_SECONDS = 3.0
 HEARTBEAT_INTERVAL_SECONDS = 30.0
+HEARTBEAT_MAX_CONSECUTIVE_FAILURES = 3
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+
+# WeCom errcode: aibot websocket not subscribed (subscription-level failure,
+# NOT a plain send error — the WS may still be OPEN while the subscription is
+# dead). Must trigger reconnect + retry, otherwise replies are silently lost.
+WECOM_ERR_NOT_SUBSCRIBED = "846609"
 
 DEDUP_MAX_SIZE = 1000
 
@@ -221,6 +228,26 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             await self._http_client.aclose()
             self._http_client = None
 
+    async def _invalidate_connection(self) -> None:
+        """Force-close a connection whose subscription the server invalidated.
+
+        Unlike disconnect(), this keeps the adapter running: _listen_loop
+        observes the closure and reconnects + resubscribes automatically.
+        Pending response futures are failed so no caller hangs on them.
+        """
+        self._fail_pending_responses(RuntimeError("WeCom subscription invalidated"))
+        try:
+            if self._ws and not self._ws.closed:
+                await self._ws.close(code=1012, message=b"subscription invalid")
+        except Exception as exc:
+            logger.warning("[%s] Invalidate-connection close failed: %s", self.name, exc)
+        # Give _listen_loop a moment to observe the closure and reconnect,
+        # then wait until the socket is usable again (bounded).
+        deadline = asyncio.get_running_loop().time() + CONNECT_TIMEOUT_SECONDS
+        while asyncio.get_running_loop().time() < deadline:
+            if self._ws and not self._ws.closed:
+                return
+            await asyncio.sleep(0.5)
     async def _open_connection(self) -> None:
         await self._cleanup_ws()
         # certifi's CA bundle so aiohttp trusts the same roots as urllib/requests (macOS stale OpenSSL path).
@@ -308,14 +335,44 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             logger.info("[%s] Inbound TEXT frame dropped (unparseable/non-dict) len=%d", self.name, data_len)
 
     async def _heartbeat_loop(self) -> None:
+        """Send lightweight application-level pings.
+
+        A heartbeat proves the connection is still healthy. Consecutive
+        failures mean the WS is wedged (locally OPEN but functionally dead),
+        so force-close it to let _listen_loop reconnect - do NOT stay silent.
+        """
+        consecutive_failures = 0
         try:
             while self._running:
                 await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+                if not self._ws or self._ws.closed:
+                    consecutive_failures = 0
+                    continue
                 try:
                     if self._ws and not self._ws.closed:
                         await self._send_json({"cmd": APP_CMD_PING, "headers": {"req_id": self._new_req_id("ping")}, "body": {}})
+                        consecutive_failures = 0
                 except Exception as exc:
-                    logger.debug("[%s] Heartbeat send failed: %s", self.name, exc)
+                    consecutive_failures += 1
+                    logger.warning(
+                        "[%s] Heartbeat send failed (%d/%d): %s",
+                        self.name,
+                        consecutive_failures,
+                        HEARTBEAT_MAX_CONSECUTIVE_FAILURES,
+                        exc,
+                    )
+                    if consecutive_failures >= HEARTBEAT_MAX_CONSECUTIVE_FAILURES:
+                        logger.warning(
+                            "[%s] Heartbeat failed %d times consecutively; force-closing wedged websocket to trigger reconnect",
+                            self.name,
+                            consecutive_failures,
+                        )
+                        try:
+                            if self._ws and not self._ws.closed:
+                                await self._ws.close(code=1011, message=b"heartbeat timeout")
+                        except Exception as close_exc:
+                            logger.warning("[%s] Force-close after heartbeat failures failed: %s", self.name, close_exc)
+                        break  # let _listen_loop observe the closure and reconnect
         except asyncio.CancelledError:
             pass
 
@@ -360,8 +417,13 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             raise RuntimeError("WeCom websocket is not connected")
 
     async def _send_json(self, payload: Dict[str, Any]) -> None:
+        """Send a raw JSON frame over the active websocket.
+
+        Wrapped in a timeout: a wedged WS write must not hang the caller
+        forever (REQUEST_TIMEOUT_SECONDS only covers the response wait).
+        """
         self._require_ws()
-        await self._ws.send_json(payload)
+        await asyncio.wait_for(self._ws.send_json(payload), timeout=SEND_FRAME_TIMEOUT_SECONDS)
 
     async def _request(self, cmd: str, req_id: str, body: Dict[str, Any], timeout: float) -> Dict[str, Any]:
         future = self._pending_responses[req_id] = asyncio.get_running_loop().create_future()
@@ -601,12 +663,18 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
 
     async def _send_inner(self, chat_id: str, content: str, reply_to: Optional[str] = None, *, force_proactive: bool = False) -> SendResult:
         """Send under the per-chat queue; force_proactive skips passive reply except in groups."""
+        reply_req_id: Optional[str] = None
         try:
             reply_req_id = None if force_proactive and chat_id not in self._group_chat_ids else self._cached_reply_req_id(chat_id, reply_to)
             if reply_req_id:
                 try:
                     response = await self._send_reply_markdown(reply_req_id, content)
                 except (asyncio.TimeoutError, RuntimeError) as passive_err:
+                    if str(STREAM_NOT_SUBSCRIBED_ERRCODE) in str(passive_err):
+                        # Subscription-level failure: a proactive send cannot
+                        # recover it either. Let the outer handler force a
+                        # reconnect + resubscribe and retry once.
+                        raise
                     # req_id may be stale after a reconnect — proactive send needs none.
                     logger.warning("[%s] Passive reply failed (%s), falling back to proactive send", self.name, passive_err)
                     response = await self._send_proactive_markdown(chat_id, content)
@@ -618,10 +686,58 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:
-            logger.error("[%s] Send failed: %s", self.name, exc)
-            return self._send_failure(str(exc), str(STREAM_NOT_SUBSCRIBED_ERRCODE) in str(exc))
+            # The reply-markdown path raises RuntimeError (via
+            # _raise_for_wecom_error) instead of returning a response, so
+            # errcode 846609 can arrive here. Treat it exactly like the
+            # response-path case below: subscription died while the WS is
+            # still locally open - force reconnect + resubscribe, retry once.
+            if str(STREAM_NOT_SUBSCRIBED_ERRCODE) in str(exc):
+                logger.warning(
+                    "[%s] Send raised errcode %s (subscription dead while WS open); forcing reconnect and retrying once",
+                    self.name,
+                    STREAM_NOT_SUBSCRIBED_ERRCODE,
+                )
+                await self._invalidate_connection()
+                try:
+                    response = (
+                        await self._send_reply_markdown(reply_req_id, content)
+                        if reply_req_id
+                        else await self._send_proactive_markdown(chat_id, content)
+                    )
+                except Exception as retry_exc:
+                    logger.error("[%s] Post-reconnect send retry failed: %s", self.name, retry_exc)
+                    return self._send_failure(str(exc), True)
+            else:
+                logger.error("[%s] Send failed: %s", self.name, exc)
+                return self._send_failure(str(exc), False)
         if error := self._response_error(response):
-            return self._send_failure(error, response.get("errcode", 0) == STREAM_NOT_SUBSCRIBED_ERRCODE)
+            if str(STREAM_NOT_SUBSCRIBED_ERRCODE) in error:
+                # Subscription-level failure: the server has invalidated this
+                # connection's subscription while the WS may still be locally
+                # OPEN. Treating it as a plain send error silently drops the
+                # message. Force-close the wedged socket so _listen_loop
+                # reconnects + resubscribes, then retry once on the fresh
+                # connection.
+                logger.warning(
+                    "[%s] Send hit errcode %s (subscription dead while WS open); forcing reconnect and retrying once",
+                    self.name,
+                    STREAM_NOT_SUBSCRIBED_ERRCODE,
+                )
+                await self._invalidate_connection()
+                try:
+                    response = (
+                        await self._send_reply_markdown(reply_req_id, content)
+                        if reply_req_id
+                        else await self._send_proactive_markdown(chat_id, content)
+                    )
+                except Exception as retry_exc:
+                    logger.error("[%s] Post-reconnect send retry failed: %s", self.name, retry_exc)
+                    return self._send_failure(error, True)
+                error = self._response_error(response)
+                if error:
+                    return self._send_failure(error, True)
+            else:
+                return self._send_failure(error, False)
         return SendResult(success=True, message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12], raw_response=response)
 
     def _send_failure(self, error: str, subscription_lost: bool) -> SendResult:

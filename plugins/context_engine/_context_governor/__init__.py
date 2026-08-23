@@ -33,6 +33,14 @@ from plugins.context_engine._context_governor.key_state import (
 
 logger = logging.getLogger(__name__)
 
+# The provenance manifest is authenticated receipt metadata, not prompt-visible
+# context. Keep it bounded, but large enough for a real first compaction of a
+# 900K–1M-token session: the historical 128 KiB default rejected a receipt
+# before the configured LLM checkpoint could ever run, and the 1 MiB successor
+# still failed on observed ~1.1 MiB manifests. Exact source references are never
+# dropped to fit this bound; the governor remains fail-closed above it.
+DEFAULT_MAX_PROVENANCE_BYTES = 16 * 1024 * 1024
+
 
 @dataclass(frozen=True)
 class _SummaryLLMRoute:
@@ -230,9 +238,11 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
             "max_lineage_generation": 32,
             # Receipt provenance is durable store metadata; render-prompt-v2
             # separately bounds the prompt-visible projection to four refs.
-            # One MiB admits tool-heavy recursive suffixes without letting the
-            # manifest grow unbounded across the 32-generation ceiling.
-            "max_provenance_bytes": 1_048_576,
+            # Sixteen MiB admits a real 900K–1M-token initial transcript and
+            # observed tool-heavy recursive suffixes without making the
+            # manifest unbounded across the 32-generation ceiling. Explicit
+            # config values still override this default.
+            "max_provenance_bytes": DEFAULT_MAX_PROVENANCE_BYTES,
             "min_net_savings_tokens": 128,
         }
         # Override from config if available

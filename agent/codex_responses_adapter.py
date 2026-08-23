@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from agent.message_sanitization import deterministic_call_id
-from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, select_default_agent_identity
 
 logger = logging.getLogger(__name__)
 
@@ -1015,7 +1015,7 @@ def _preflight_codex_api_kwargs(
         instructions = ""
     if not isinstance(instructions, str):
         instructions = str(instructions)
-    instructions = instructions.strip() or DEFAULT_AGENT_IDENTITY
+    instructions = instructions.strip() or select_default_agent_identity(DEFAULT_AGENT_IDENTITY)
     if sanitize_harmony_tokens:
         instructions = _neutralize_harmony_tokens(instructions)
 

@@ -1,0 +1,189 @@
+{
+  "registry_id": "ares.semantic_role_contracts",
+  "schema_version": "1.0.0",
+  "conformance_scope": "artifact_validator_only",
+  "authority_note": "This registry documents contracts and deterministic conformance checks. It does not enforce runtime behavior or hard authority gates.",
+  "required_role_ids": [
+    "role.ares_supervisor",
+    "role.explorer",
+    "role.public_evidence_editor",
+    "role.data_evidence",
+    "role.ml_evaluation",
+    "role.statistician",
+    "role.cognitive_scientist",
+    "role.psychometrician",
+    "role.inbox_manager",
+    "role.durable_profile_history"
+  ],
+  "evidence_states": [
+    "unknown",
+    "observed",
+    "verified",
+    "derived",
+    "reconciled",
+    "blocked",
+    "redacted",
+    "superseded"
+  ],
+  "roles": [
+    {
+      "role_id": "role.ares_supervisor",
+      "name": "Ares supervisor",
+      "kind": "supervisor",
+      "authority": {
+        "owns": ["cross_role_coordination", "final_scope_decisions", "conflict_escalation"],
+        "can_promote": ["role_contract_conformance"],
+        "forbidden_promotions": ["unverified_claims", "missing_evidence", "runtime_authority"]
+      },
+      "required_artifacts": [
+        {"artifact_id": "supervisor_disposition", "required_fields": ["decision_id", "scope", "rationale", "linked_fiv_ids"]}
+      ]
+    },
+    {
+      "role_id": "role.explorer",
+      "name": "Explorer",
+      "kind": "research",
+      "authority": {
+        "owns": ["hypothesis_generation", "alternative_generation", "dissent_capture"],
+        "can_promote": ["candidate_hypothesis"],
+        "forbidden_promotions": ["verified_claim", "publication_readiness", "final_authority"]
+      },
+      "dissent_policy": {
+        "preservation": "preserved_artifact",
+        "summarization_may_not_replace_artifact": true,
+        "required_disposition": "reconciliation_disposition"
+      },
+      "required_artifacts": [
+        {
+          "artifact_id": "explorer_dissent",
+          "required_fields": ["alternatives", "evidence", "falsifier", "kill_criterion", "reconciliation_disposition"]
+        }
+      ]
+    },
+    {
+      "role_id": "role.public_evidence_editor",
+      "name": "Public Evidence Editor",
+      "kind": "editor",
+      "authority": {
+        "owns": ["claim_ledger", "evidence_gap_tracking", "publication_readiness"],
+        "can_promote": ["publication_ready_when_unblocked"],
+        "forbidden_promotions": ["unsupported_claim", "blocked_publication", "source_authority"]
+      },
+      "required_artifacts": [
+        {"artifact_id": "claim_ledger", "required_fields": ["claim_id", "claim_text", "evidence_ids", "evidence_state", "blocking_gaps", "provenance"]}
+      ],
+      "publication_policy": {
+        "readiness_requires_no_blocking_evidence_gaps": true,
+        "allowed_readiness": ["draft", "blocked", "public_ready"]
+      }
+    },
+    {
+      "role_id": "role.data_evidence",
+      "name": "Data/Evidence lane",
+      "kind": "lane",
+      "mapped_profile": "longmemeval-bench",
+      "authority": {
+        "owns": ["dataset_lineage", "evidence_normalization", "artifact_validation"],
+        "can_promote": ["observed_evidence", "verified_evidence", "derived_projection"],
+        "forbidden_promotions": ["publication_readiness", "unverified_claim", "final_role_authority", "source_truth", "runtime_enforcement"]
+      },
+      "forbidden_promotions": ["publication_readiness", "unverified_claim", "final_role_authority", "source_truth", "runtime_enforcement"],
+      "required_artifacts": [
+        {"artifact_id": "evidence_lineage_record", "required_fields": ["source_id", "field_owner", "schema_version", "observed_at", "evidence_state", "transform", "rebuild_path"]}
+      ]
+    },
+    {
+      "role_id": "role.ml_evaluation",
+      "name": "ML Evaluation",
+      "kind": "specialist",
+      "authority": {
+        "owns": ["benchmark_protocol", "metric_definition", "evaluation_results"],
+        "can_promote": ["verified_metric_result"],
+        "forbidden_promotions": ["causal_claim", "human_trait_claim", "publication_readiness"]
+      },
+      "required_artifacts": [
+        {"artifact_id": "evaluation_record", "required_fields": ["benchmark_id", "model_id", "protocol_version", "metrics", "seed", "limitations"]}
+      ]
+    },
+    {
+      "role_id": "role.statistician",
+      "name": "Statistician",
+      "kind": "specialist",
+      "authority": {
+        "owns": ["statistical_modeling", "uncertainty_quantification", "assumption_checks"],
+        "can_promote": ["verified_statistical_result"],
+        "forbidden_promotions": ["causal_claim_without_design", "psychological_construct", "publication_readiness"]
+      },
+      "required_artifacts": [
+        {"artifact_id": "statistical_analysis_record", "required_fields": ["estimand", "model", "assumptions", "uncertainty", "sensitivity", "data_lineage"]}
+      ]
+    },
+    {
+      "role_id": "role.cognitive_scientist",
+      "name": "Cognitive Scientist",
+      "kind": "specialist",
+      "authority": {
+        "owns": ["cognitive_theory_mapping", "mechanism_hypotheses", "construct_boundaries"],
+        "can_promote": ["theory_consistent_interpretation"],
+        "forbidden_promotions": ["clinical_diagnosis", "human_trait_claim", "publication_readiness"]
+      },
+      "required_artifacts": [
+        {"artifact_id": "cognitive_interpretation", "required_fields": ["construct", "mechanism", "evidence_ids", "alternative_explanations", "limits"]}
+      ]
+    },
+    {
+      "role_id": "role.psychometrician",
+      "name": "Psychometrician",
+      "kind": "specialist",
+      "authority": {
+        "owns": ["measurement_model", "reliability", "validity", "measurement_invariance"],
+        "can_promote": ["measurement_result"],
+        "forbidden_promotions": ["latent_trait_as_fact", "clinical_diagnosis", "publication_readiness"]
+      },
+      "required_artifacts": [
+        {"artifact_id": "measurement_record", "required_fields": ["construct_definition", "instrument", "reliability", "validity_evidence", "invariance_scope", "limitations"]}
+      ]
+    },
+    {
+      "role_id": "role.inbox_manager",
+      "name": "Inbox Manager",
+      "kind": "operations",
+      "authority": {
+        "owns": ["message_triage", "follow_up_tracking", "communication_drafts"],
+        "can_promote": ["action_item_record"],
+        "forbidden_promotions": ["evidence_truth", "publication_readiness", "role_authority"]
+      },
+      "required_artifacts": [
+        {"artifact_id": "inbox_action_record", "required_fields": ["message_id", "sender", "received_at", "priority", "owner", "next_action", "status"]}
+      ]
+    },
+    {
+      "role_id": "role.durable_profile_history",
+      "name": "Durable profile/history owner",
+      "kind": "ownership",
+      "authority": {
+        "owns": ["durable_user_profile", "historical_session_record", "lineage_and_supersession"],
+        "can_promote": ["durable_profile_fact_when_provenanced"],
+        "forbidden_promotions": ["unproven_user_fact", "destructive_history_rewrite", "runtime_role_authority"]
+      },
+      "required_artifacts": [
+        {"artifact_id": "durable_history_record", "required_fields": ["record_id", "subject", "value", "provenance", "recorded_at", "validity", "supersedes"]}
+      ]
+    }
+  ],
+  "fiv_contract": {
+    "chain": ["finding", "implementation", "verification"],
+    "required_link_fields": ["finding_id", "implementation_id", "verification_id"],
+    "nodes": [
+      {"id": "find.role-contracts", "kind": "finding", "evidence_state": "verified"},
+      {"id": "impl.role-contracts-validator", "kind": "implementation", "evidence_state": "derived"},
+      {"id": "verify.role-contracts-tests", "kind": "verification", "evidence_state": "verified"}
+    ]
+  },
+  "fiv_examples": [
+    {"finding_id": "find.role-contracts", "implementation_id": "impl.role-contracts-validator", "verification_id": "verify.role-contracts-tests"}
+  ],
+  "publication_decision_examples": [
+    {"decision_id": "pub.role-contracts", "readiness": "blocked", "blocking_evidence_gaps": ["runtime_enforcement_not_in_scope"]}
+  ]
+}

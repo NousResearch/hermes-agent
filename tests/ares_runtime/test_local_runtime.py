@@ -9,7 +9,7 @@ import tomllib
 import pytest
 
 from ares_runtime import local_runtime
-from ares_runtime.local_runtime import AresLocalPaths, AresLocalRuntime, AresLocalRuntimeError, _parser
+from ares_runtime.local_runtime import AresLocalPaths, AresLocalRuntime, AresLocalRuntimeError, _parser, main
 
 
 def _runtime(tmp_path: Path) -> AresLocalRuntime:
@@ -374,6 +374,61 @@ def test_chat_command_leaves_hermes_options_for_the_runtime() -> None:
 
     assert args.command == "chat"
     assert passthrough == ["--oneshot", "Reply with exactly ARES_RUNTIME_OK"]
+
+
+def test_role_gate_command_preserves_allowed_exit_and_consumer_note(tmp_path: Path, capsys) -> None:
+    request = tmp_path / "allowed.json"
+    request.write_text(
+        json.dumps(
+            {
+                "role": "role.public_evidence_editor",
+                "action": "publication_ready",
+                "payload": {"claim_blockers": [], "evidence_blockers": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["role-gate", "--request", str(request)])
+
+    assert exc_info.value.code == 0
+    output = capsys.readouterr().out
+    assert '"allowed": true' in output
+    assert "not connected to every Ares runtime or publication path" in output
+
+
+def test_role_gate_command_preserves_rejected_exit(tmp_path: Path, capsys) -> None:
+    request = tmp_path / "rejected.json"
+    request.write_text(
+        json.dumps(
+            {
+                "role": "role.public_evidence_editor",
+                "action": "publication_ready",
+                "payload": {"claim_blockers": ["missing source"], "evidence_blockers": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["role-gate", "--request", str(request)])
+
+    assert exc_info.value.code == 1
+    assert '"allowed": false' in capsys.readouterr().out
+
+
+def test_role_gate_command_preserves_malformed_exit(tmp_path: Path, capsys) -> None:
+    request = tmp_path / "malformed.json"
+    request.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["role-gate", "--request", str(request)])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert '"code": "invalid_request"' in captured.out
+    assert "role-gate consumer limitation" in captured.err
 
 
 def test_doctor_uses_the_strict_context_governor_probe() -> None:

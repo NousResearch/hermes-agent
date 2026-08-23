@@ -1169,7 +1169,7 @@ def create_profile(
     # Seed a default SOUL.md so the user has a file to customize immediately.
     # Skipped when the profile already has one (from --clone / --clone-all).
     soul_path = profile_dir / "SOUL.md"
-    if not soul_path.exists():
+    if not soul_path.exists() and os.environ.get("ARES_MANAGED_RUNTIME") != "1":
         try:
             from hermes_cli.default_soul import DEFAULT_SOUL_MD
             soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")

@@ -847,6 +847,8 @@ def _ensure_default_soul_md(home: Path) -> None:
     docker images, which shadowed the runtime default) get upgraded in place to
     DEFAULT_SOUL_MD. A SOUL.md the user actually customized is never touched.
     """
+    if os.environ.get("ARES_MANAGED_RUNTIME") == "1":
+        return
     soul_path = home / "SOUL.md"
     if soul_path.exists():
         try:

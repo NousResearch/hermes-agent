@@ -28,6 +28,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import type { SessionProfileRoute } from '@/store/session-request-router'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
@@ -1303,10 +1304,41 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   ])
 }
 
-export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
+export async function resolveStoredSession(
+  storedSessionId: string,
+  ownerRoute?: SessionProfileRoute
+): Promise<SessionInfo | undefined> {
   const cached = [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].find(session =>
     sessionMatchesStoredId(session, storedSessionId)
   )
+
+  if (ownerRoute) {
+    const scope = {
+      connectionId: ownerRoute.connectionId,
+      profile: ownerRoute.targetProfile || ownerRoute.profile
+    }
+
+    const cachedOwnerMatches = cached &&
+      cached.connection_id === ownerRoute.connectionId &&
+      (!cached.profile || normalizeProfileKey(cached.profile) === normalizeProfileKey(ownerRoute.profile))
+
+    if (cached && cachedOwnerMatches) {
+      return cached
+    }
+
+    try {
+      const session = await getSession(storedSessionId, scope)
+      session.profile = normalizeProfileKey(ownerRoute.profile)
+      session.connection_id = ownerRoute.connectionId
+      upsertResolvedSession(session, storedSessionId)
+
+      return session
+    } catch {
+      // An explicit owner is fail-closed. Probing the ambient or another
+      // profile would turn a stale route into a cross-connection open.
+      return undefined
+    }
+  }
 
   // A row with no owning profile can't route a resume when more than one
   // profile exists — a resume without a profile lands on whichever gateway is

@@ -50,6 +50,7 @@ import {
   $profiles,
   ensureGatewayAgent,
   ensureGatewayProfile,
+  newSessionInAgent,
   newSessionInProfile,
   normalizeProfileKey,
   refreshProfiles,
@@ -66,9 +67,12 @@ import {
   $messages,
   $selectedStoredSessionId,
   $sessions,
+  getSessionOwnerHints,
   rememberedSessionProfile,
   requestSessionResume,
-  setResumeExhaustedSessionId
+  sessionMatchesStoredId,
+  setResumeExhaustedSessionId,
+  setSessionOwnerHint
 } from '@/store/session'
 import {
   $focusedRuntimeId,
@@ -109,20 +113,70 @@ const $focusedAwaitingResponse = focusedTurnFlag(
   PRIMARY_SESSION_VIEW.$awaitingResponse
 )
 
+export interface PluginFocusedSessionOwner {
+  connectionId: string
+  profile: string
+}
+
 /**
- * Owner profile of the FOCUSED chat. The gateway-routing atom
+ * Connection-qualified owner of the FOCUSED chat. The gateway-routing atom
  * (`$activeGatewayProfile`) answers "which backend is the live socket homed
  * on" — but tab/tile focus moves without swapping the socket, and a cold
  * start can restore a route into a session the booting gateway doesn't own.
- * Any per-bot readout (roster highlight, a bot-scoped panel) must follow the
- * chat the user is LOOKING AT, so this resolves the focused stored session to
- * the owner stamped on its session row (the cross-profile aggregator tags
- * every row) and only falls back to the gateway profile for a draft or an
- * uncached id — the same ladder the remembered-navigation key and the HUD use.
+ * Any per-bot readout must follow the chat the user is LOOKING AT, so this
+ * resolves the focused stored session to a unique immutable owner hint or a
+ * unique connection-qualified aggregated row. Ambiguous or unresolved focused
+ * ids fail closed with null; only a draft/no focused id uses the active gateway
+ * owner. `focusedSessionProfile` remains the profile-only compatibility ladder.
  */
+const $focusedSessionOwner = computed(
+  [$focusedStoredSessionId, $sessions, $activeGatewayProfile, $connection],
+  (focused, sessions, activeProfile, connection): PluginFocusedSessionOwner | null => {
+    const activeConnectionId = String(
+      connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
+    ).trim()
+
+    const fallback = {
+      connectionId: activeConnectionId,
+      profile: normalizeProfileKey(activeProfile)
+    }
+
+    if (!focused) {
+      return fallback
+    }
+
+    const hints = getSessionOwnerHints(focused)
+
+    if (hints.length === 1) {
+      return {
+        connectionId: hints[0].connectionId,
+        profile: normalizeProfileKey(hints[0].profile)
+      }
+    }
+
+    if (hints.length > 1) {
+      return null
+    }
+
+    const owners = new Map<string, PluginFocusedSessionOwner>()
+
+    for (const row of sessions.filter(session => sessionMatchesStoredId(session, focused))) {
+      const connectionId = String(row.connection_id || '').trim()
+      const profile = normalizeProfileKey(row.profile)
+
+      if (connectionId) {
+        owners.set(`${connectionId}::${profile}`, { connectionId, profile })
+      }
+    }
+
+    return owners.size === 1 ? [...owners.values()][0] : null
+  }
+)
+
 const $focusedSessionProfile = computed(
-  [$focusedStoredSessionId, $sessions, $activeGatewayProfile],
-  (focused, sessions, activeProfile) => normalizeProfileKey(rememberedSessionProfile(sessions, focused, activeProfile))
+  [$focusedSessionOwner, $focusedStoredSessionId, $sessions, $activeGatewayProfile],
+  (owner, focused, sessions, activeProfile) => owner?.profile ||
+    rememberedSessionProfile(sessions, focused, activeProfile)
 )
 
 export interface PluginProfileRoute {
@@ -167,6 +221,10 @@ async function requestPluginProfile<T>(
   params: Record<string, unknown>
 ): Promise<T> {
   if (typeof route !== 'string') {
+    if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim()) {
+      throw new Error('Profile route must include connectionId, profile, and targetProfile')
+    }
+
     return requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
   }
 
@@ -221,13 +279,14 @@ const $activeConnectionId = computed($connection, connection => {
 const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
 let openSessionGeneration = 0
 
-interface PluginOpenSessionOptions {
+export interface PluginOpenSessionOptions {
   awaitHydration?: boolean
   expectHistory?: boolean
   hydrationTimeoutMs?: number
   intent?: OpenSessionIntent
   keepAllProfilesScope?: boolean
   profile?: null | string
+  route?: PluginProfileRoute
   /** A cold profile backend can lose the hydration-timeout race once and still
    *  be fine on a second try. When set, a hydration timeout is retried
    *  internally before it reaches the caller or arms the core stranded-session
@@ -237,6 +296,7 @@ interface PluginOpenSessionOptions {
 }
 
 function waitForFocusedSessionHydration({
+  connectionId,
   expectHistory,
   generation,
   profile,
@@ -244,6 +304,7 @@ function waitForFocusedSessionHydration({
   storedSessionId,
   timeoutMs
 }: {
+  connectionId?: string
   expectHistory: boolean
   generation: number
   profile: string
@@ -286,6 +347,7 @@ function waitForFocusedSessionHydration({
       }
 
       const profileMatches = !requireActiveProfile || normalizeProfileKey($activeGatewayProfile.get()) === profile
+      const connectionMatches = !connectionId || $activeConnectionId.get() === connectionId
       const sessionMatches = $selectedStoredSessionId.get() === storedSessionId
       const runtimeReady = Boolean($activeSessionId.get())
       const historyPainted = Boolean($messages.get().length)
@@ -304,12 +366,13 @@ function waitForFocusedSessionHydration({
       // surface is real rather than a stuck loader.
       const hydrated = expectHistory ? historyPainted : runtimeReady
 
-      if (profileMatches && sessionMatches && hydrated) {
+      if (profileMatches && connectionMatches && sessionMatches && hydrated) {
         finish()
       }
     }
 
     unbinds.push($activeGatewayProfile.listen(check))
+    unbinds.push($activeConnectionId.listen(check))
     unbinds.push($selectedStoredSessionId.listen(check))
     unbinds.push($activeSessionId.listen(check))
     unbinds.push($messages.listen(check))
@@ -403,10 +466,12 @@ export const host = {
      *  primary. Prefer this over `activeSessionId` for any readout that
      *  should follow the user between tiles (context, tokens, cost). */
     focusedSessionId: readonlyAtom<null | string>($focusedRuntimeId),
+    /** Connection-qualified owner of the focused chat. Prefer this for any
+     *  readout or mutation where separate sources can share a profile name. */
+    focusedSessionOwner: readonlyAtom<PluginFocusedSessionOwner | null>($focusedSessionOwner),
     /** Owner profile of the focused chat (session-row stamp, falling back to
-     *  the gateway profile for drafts/uncached ids). Prefer this over
-     *  `profile` for any readout keyed to the bot/profile the user is looking
-     *  at — tab focus moves without swapping the gateway socket. */
+     *  the gateway profile for drafts/uncached ids). Compatibility projection
+     *  of `focusedSessionOwner`; use the complete owner for source routing. */
     focusedSessionProfile: readonlyAtom<string>($focusedSessionProfile),
     /** Stored (durable) id of the focused session — for navigation and
      *  session-list matching, where runtime ids don't survive reloads. */
@@ -470,27 +535,52 @@ export const host = {
    *  entirely. When the deleted profile was the live gateway's, the app is
    *  re-homed to the default profile — same semantics as the core dialog.
    *  Rejects with the backend's error when the delete fails. */
-  deleteProfile: async (profile: string): Promise<void> => {
-    const name = (profile ?? '').trim()
+  deleteProfile: async (profile: string | PluginProfileRoute): Promise<void> => {
+    const route =
+      typeof profile === 'string'
+        ? null
+        : {
+            ...profile,
+            connectionId: String(profile.connectionId || '').trim(),
+            profile: String(profile.profile || '').trim(),
+            targetProfile: String(profile.targetProfile || '').trim()
+          }
+
+    const name = typeof profile === 'string' ? profile.trim() : route?.profile || ''
+
+    if (route && (!route.connectionId || !route.profile || !route.targetProfile)) {
+      throw new Error('deleteProfile: route requires connectionId, profile, and targetProfile')
+    }
+
+    const targetProfile = route?.targetProfile || name
 
     if (!name) {
       throw new Error('deleteProfile: profile name required')
     }
 
-    if (normalizeProfileKey(name) === 'default') {
+    if (normalizeProfileKey(targetProfile) === 'default') {
       throw new Error('The default profile cannot be deleted.')
     }
 
     // Capture before the delete; re-home after so our write is the last one
     // (mirrors DeleteProfileDialog — a refreshActiveProfile racing the dying
     // backend can't clobber the pill back to the deleted profile).
-    const wasActive = normalizeProfileKey(name) === normalizeProfileKey($activeGatewayProfile.get())
+    const wasActive = route
+      ? route.connectionId === ($activeConnectionId.get() || '') &&
+        normalizeProfileKey(route.profile) === normalizeProfileKey($activeGatewayProfile.get())
+      : normalizeProfileKey(name) === normalizeProfileKey($activeGatewayProfile.get())
 
     // A hover-warmed Bot Mode row owns a retained renderer socket. Retire it
     // before Electron stops the profile backend so the socket closure cannot
     // schedule a reconnect that resurrects the deleted profile.
-    retireLocalProfileGateways(name)
-    await deleteProfile(name)
+    if (!route || route.mode === 'local') {
+      retireLocalProfileGateways(targetProfile)
+    }
+
+    await deleteProfile(
+      targetProfile,
+      route ? { connectionId: route.connectionId, profile: route.profile } : undefined
+    )
 
     // The profile rail paints from the shared $profiles cache; without a
     // refresh the deleted profile's badge survives and clicking it starts a
@@ -568,7 +658,8 @@ export const host = {
    *  also scope chrome onto that profile and collapse the sidebar. */
   openSession: async (storedSessionId: string, options: PluginOpenSessionOptions = {}): Promise<void> => {
     const generation = ++openSessionGeneration
-    const profile = (options.profile ?? '').trim()
+    const ownerRoute = options.route ? { ...options.route } : null
+    const profile = (ownerRoute?.profile ?? options.profile ?? '').trim()
     const targetProfile = normalizeProfileKey(profile || $activeGatewayProfile.get())
     const expectHistory = options.expectHistory ?? false
 
@@ -590,6 +681,10 @@ export const host = {
     // is a gateway problem, a slow transcript is a backend-warmup one.
     let wakePhase: 'activation' | 'hydration' = 'activation'
 
+    if (ownerRoute) {
+      setSessionOwnerHint(storedSessionId, ownerRoute)
+    }
+
     // Bounded to 2 attempts (never more): a cold profile backend can lose the
     // hydration-timeout race once and still be fine moments later, but this is
     // a caller-opt-in retry of the SAME wait, not a backoff loop.
@@ -600,11 +695,13 @@ export const host = {
       // budget's. A workspace switch moves $activeGatewayProfile / chrome REST;
       // a plain navigation only opens the bot's gateway so session.resume can
       // hydrate, leaving chrome on the launch backend.
-      const dial = plan.switchWorkspace
-        ? () => ensureGatewayProfile(plan.switchWorkspace as string)
-        : plan.dialWithoutSwitching
-          ? () => openGatewayForProfile(plan.dialWithoutSwitching as string)
-          : null
+      const dial = ownerRoute
+        ? () => openGatewayForAgent(ownerRoute.connectionId, ownerRoute.profile)
+        : plan.switchWorkspace
+          ? () => ensureGatewayProfile(plan.switchWorkspace as string)
+          : plan.dialWithoutSwitching
+            ? () => openGatewayForProfile(plan.dialWithoutSwitching as string)
+            : null
 
       if (dial) {
         // Bounded only on the hydration contract, which is where a budget and a
@@ -615,7 +712,9 @@ export const host = {
         profileActiveAt = Date.now()
       }
 
-      if (plan.showAllProfiles !== null) {
+      if (ownerRoute) {
+        setShowAllProfiles(true)
+      } else if (plan.showAllProfiles !== null) {
         setShowAllProfiles(plan.showAllProfiles)
       }
 
@@ -666,17 +765,18 @@ export const host = {
             (!expectHistory || $messages.get().length > 0)
 
           if (options.awaitHydration && !surfaceHealthy) {
-            requestSessionResume(storedSessionId)
+            requestSessionResume(storedSessionId, ownerRoute || undefined)
           }
 
           if (options.awaitHydration) {
             await waitForFocusedSessionHydration({
+              connectionId: ownerRoute?.connectionId,
               expectHistory,
               generation,
               profile: targetProfile,
               // A background dial never moves $activeGatewayProfile, so gating
               // hydration on it would wait for something that is not coming.
-              requireActiveProfile: plan.requireActiveProfileForHydration,
+              requireActiveProfile: ownerRoute ? false : plan.requireActiveProfileForHydration,
               storedSessionId,
               timeoutMs: hydrationTimeoutMs
             })
@@ -794,8 +894,13 @@ export const host = {
   /** Start a fresh chat draft, optionally pointed at another profile (its
    *  backend spins up in the background — same door the sidebar's per-profile
    *  "+" uses). */
-  newChat: (profile?: null | string): void => {
-    newSessionInProfile((profile ?? '').trim() || $activeGatewayProfile.get())
+  newChat: (profile?: null | string | PluginProfileRoute): void => {
+    if (profile && typeof profile !== 'string') {
+      newSessionInAgent({ ...profile })
+    } else {
+      newSessionInProfile((profile ?? '').trim() || $activeGatewayProfile.get())
+    }
+
     window.location.hash = '#/'
   },
 

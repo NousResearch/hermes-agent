@@ -10,6 +10,7 @@ import { persistBoolean, persistString, storedBoolean, storedString } from '@/li
 import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import type { SessionProfileRoute } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
 type Updater<T> = T | ((current: T) => T)
@@ -599,11 +600,73 @@ export const $awaitingResponse = atom(false)
 // Null whenever the active route has a healthy (or in-flight) resume.
 export const $resumeFailedSessionId = atom<string | null>(null)
 export interface SessionResumeRequest {
+  ownerRoute?: SessionProfileRoute
   sequence: number
   sessionId: string
 }
 let sessionResumeRequestSequence = 0
 export const $sessionResumeRequest = atom<SessionResumeRequest | null>(null)
+const SESSION_OWNER_HINT_LIMIT = 256
+const sessionOwnerHints = new Map<string, { id: string; route: SessionProfileRoute }>()
+
+function sessionOwnerHintKey(sessionId: string, route: Pick<SessionProfileRoute, 'connectionId' | 'profile'>): string {
+  return JSON.stringify([route.connectionId.trim(), route.profile.trim() || 'default', sessionId])
+}
+
+export function setSessionOwnerHint(sessionId: string, route: SessionProfileRoute): void {
+  const id = sessionId.trim()
+
+  const normalized = {
+    ...route,
+    connectionId: route.connectionId.trim(),
+    profile: route.profile.trim() || 'default',
+    ...(route.targetProfile ? { targetProfile: route.targetProfile.trim() || 'default' } : {})
+  }
+
+  if (!id || !normalized.connectionId) {
+    return
+  }
+
+  const key = sessionOwnerHintKey(id, normalized)
+  sessionOwnerHints.delete(key)
+  sessionOwnerHints.set(key, { id, route: normalized })
+
+  while (sessionOwnerHints.size > SESSION_OWNER_HINT_LIMIT) {
+    const oldest = sessionOwnerHints.keys().next().value
+
+    if (oldest === undefined) {
+      break
+    }
+
+    sessionOwnerHints.delete(oldest)
+  }
+}
+
+export function getSessionOwnerHints(sessionId: string): SessionProfileRoute[] {
+  const id = sessionId.trim()
+
+  return [...sessionOwnerHints.values()]
+    .filter(entry => entry.id === id)
+    .map(entry => ({ ...entry.route }))
+}
+
+export function getSessionOwnerHint(
+  sessionId: string,
+  scope?: Pick<SessionProfileRoute, 'connectionId' | 'profile'>
+): SessionProfileRoute | undefined {
+  const id = sessionId.trim()
+
+  if (scope) {
+    const entry = sessionOwnerHints.get(sessionOwnerHintKey(id, scope))
+
+    return entry ? { ...entry.route } : undefined
+  }
+
+  const matches = [...sessionOwnerHints.values()].filter(entry => entry.id === id)
+
+  return matches.length === 1 ? { ...matches[0].route } : undefined
+}
+
 // Stored-session id whose resume has EXHAUSTED its bounded auto-retries (the
 // terminal-failure latch above kept failing through all MAX_RESUME_RETRIES
 // attempts). Distinct from $resumeFailedSessionId, which is armed *during* the
@@ -778,14 +841,22 @@ export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($message
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 
-export const requestSessionResume = (sessionId: string) => {
+export const requestSessionResume = (sessionId: string, ownerRoute?: SessionProfileRoute) => {
   const id = sessionId.trim()
 
   if (!id) {
     return
   }
 
-  $sessionResumeRequest.set({ sequence: ++sessionResumeRequestSequence, sessionId: id })
+  if (ownerRoute) {
+    setSessionOwnerHint(id, ownerRoute)
+  }
+
+  $sessionResumeRequest.set({
+    ...(ownerRoute ? { ownerRoute: { ...ownerRoute } } : {}),
+    sequence: ++sessionResumeRequestSequence,
+    sessionId: id
+  })
 }
 
 export const setResumeExhaustedSessionId = (next: Updater<string | null>) => updateAtom($resumeExhaustedSessionId, next)

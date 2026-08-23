@@ -32,6 +32,7 @@ vi.mock('@/store/session', async () => {
     rememberedSessionProfile: (_sessions: unknown, _sessionId: null | string, activeProfile: null | string) =>
       (activeProfile ?? '').trim() || 'default',
     requestSessionResume: vi.fn(),
+    setSessionOwnerHint: vi.fn(),
     setResumeExhaustedSessionId: vi.fn()
   }
 })
@@ -66,6 +67,7 @@ vi.mock('@/store/profile', async () => {
     $profiles: profiles,
     ensureGatewayAgent: vi.fn(),
     ensureGatewayProfile: vi.fn(),
+    newSessionInAgent: vi.fn(),
     newSessionInProfile: vi.fn(),
     normalizeProfileKey: (value: null | string | undefined) => (value ?? '').trim() || 'default',
     refreshProfiles: vi.fn(async () => profiles.get()),
@@ -103,8 +105,13 @@ const { host } = await import('./index')
 const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile } = await import('@/hermes')
 
-const { openGatewayForProfile, requestGatewayForAgent, requestGatewayForProfile, retireLocalProfileGateways } =
-  await import('@/store/gateway')
+const {
+  openGatewayForAgent,
+  openGatewayForProfile,
+  requestGatewayForAgent,
+  requestGatewayForProfile,
+  retireLocalProfileGateways
+} = await import('@/store/gateway')
 
 const {
   $activeGatewayProfile,
@@ -117,8 +124,14 @@ const {
 
 const { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } = await import('@/store/session-states')
 
-const { $activeSessionId, $messages, $selectedStoredSessionId, requestSessionResume, setResumeExhaustedSessionId } =
-  await import('@/store/session')
+const {
+  $activeSessionId,
+  $messages,
+  $selectedStoredSessionId,
+  requestSessionResume,
+  setSessionOwnerHint,
+  setResumeExhaustedSessionId
+} = await import('@/store/session')
 
 const setMockAtom = <T>(store: unknown, value: T) => (store as { set(next: T): void }).set(value)
 
@@ -234,6 +247,91 @@ describe('connection-aware plugin host APIs', () => {
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
   })
 
+  it('fails closed when a descriptor omits connection or target profile identity', async () => {
+    await expect(
+      host.requestProfile(
+        { connectionId: '', mode: 'remote', profile: 'worker', targetProfile: 'worker' },
+        'profiles.configure',
+        {}
+      )
+    ).rejects.toThrow(/connectionId, profile, and targetProfile/)
+    await expect(
+      host.requestProfile(
+        { connectionId: 'source-a', mode: 'remote', profile: 'worker', targetProfile: '' },
+        'profiles.configure',
+        {}
+      )
+    ).rejects.toThrow(/connectionId, profile, and targetProfile/)
+
+    expect(requestGatewayForAgent).not.toHaveBeenCalled()
+    expect(requestGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('deletes a remote profile through its captured connection without retiring local pools', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'worker',
+      targetProfile: 'backend-worker'
+    }
+
+    vi.mocked(deleteProfile).mockResolvedValueOnce({ ok: true, path: '/profiles/backend-worker' })
+
+    await host.deleteProfile(route)
+
+    expect(deleteProfile).toHaveBeenCalledWith('backend-worker', {
+      connectionId: 'source-a',
+      profile: 'worker'
+    })
+    expect(retireLocalProfileGateways).not.toHaveBeenCalled()
+  })
+
+  it('rejects a remote deletion route without a connection id', async () => {
+    await expect(
+      host.deleteProfile({
+        connectionId: '',
+        mode: 'remote',
+        profile: 'worker',
+        targetProfile: 'backend-worker'
+      })
+    ).rejects.toThrow(/connectionId, profile, and targetProfile/)
+
+    expect(deleteProfile).not.toHaveBeenCalled()
+    expect(retireLocalProfileGateways).not.toHaveBeenCalled()
+  })
+
+  it('rejects an alias to backend default before the transport helper runs', async () => {
+    await expect(
+      host.deleteProfile({
+        connectionId: 'source-a',
+        mode: 'remote',
+        profile: 'worker',
+        targetProfile: 'default'
+      })
+    ).rejects.toThrow(/default profile cannot be deleted/i)
+
+    expect(deleteProfile).not.toHaveBeenCalled()
+  })
+
+  it('retires and deletes a local alias by its backend target profile', async () => {
+    const route = {
+      connectionId: 'source-local',
+      mode: 'local' as const,
+      profile: 'worker',
+      targetProfile: 'backend-worker'
+    }
+
+    vi.mocked(deleteProfile).mockResolvedValueOnce({ ok: true, path: '/profiles/backend-worker' })
+
+    await host.deleteProfile(route)
+
+    expect(retireLocalProfileGateways).toHaveBeenCalledWith('backend-worker')
+    expect(deleteProfile).toHaveBeenCalledWith('backend-worker', {
+      connectionId: 'source-local',
+      profile: 'worker'
+    })
+  })
+
   it('keeps the profile-only request overload as a legacy fallback', async () => {
     const result = await host.requestProfile('legacy-worker', 'profiles.list', { include_sessions: true })
 
@@ -297,6 +395,24 @@ describe('connection-aware plugin host APIs', () => {
 })
 
 describe('profile-aware plugin session opens', () => {
+  it('captures the full owner route before opening a remote session', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'default',
+      targetProfile: 'backend-default'
+    }
+
+    await host.openSession('remote-chat', { route })
+
+    expect(openGatewayForAgent).toHaveBeenCalledWith('source-a', 'default')
+    expect(ensureGatewayProfile).not.toHaveBeenCalled()
+    expect(setShowAllProfiles).toHaveBeenCalledWith(true)
+    expect($activeGatewayProfile.get()).toBe('remote-worker')
+    expect(setSessionOwnerHint).toHaveBeenCalledWith('remote-chat', route)
+    expect(openSessionCore).toHaveBeenCalledWith('remote-chat', expect.any(Function), 'in-place')
+  })
+
   it('waits until the target Bot Chat runtime and history are on main before resolving', async () => {
     vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
 
@@ -368,7 +484,7 @@ describe('profile-aware plugin session opens', () => {
 
     // The old pre-open "already selected" precondition skipped this request,
     // stranding the pane blank until timeout. It must fire now.
-    expect(requestSessionResume).toHaveBeenCalledWith('cold-bot-chat')
+    expect(requestSessionResume).toHaveBeenCalledWith('cold-bot-chat', undefined)
 
     setMockAtom($selectedStoredSessionId, 'cold-bot-chat')
     setMockAtom($activeSessionId, 'runtime-cold')
@@ -392,7 +508,7 @@ describe('profile-aware plugin session opens', () => {
     })
 
     await Promise.resolve()
-    expect(requestSessionResume).toHaveBeenCalledWith('bot-chat')
+    expect(requestSessionResume).toHaveBeenCalledWith('bot-chat', undefined)
 
     setMockAtom($activeSessionId, 'runtime-refreshed')
     setMockAtom($messages, [{ id: 'history-restored', parts: [], role: 'assistant' }] as never)

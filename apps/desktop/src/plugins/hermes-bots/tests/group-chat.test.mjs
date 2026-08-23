@@ -1148,7 +1148,7 @@ test('closing an older selected group does not clear the newer selection', () =>
 })
 
 test('source contract: active group styling suppresses bot styling', () => {
-  assert.match(pluginSource, /const isActive = !activeGroup && !bot\.remoteSource && bot\.name === focusedProfile/)
+  assert.match(pluginSource, /const isActive = !activeGroup && isActiveRosterBot\(bot, focusedOwner\)/)
   assert.match(pluginSource, /active && 'bg-\(--ui-row-active-background\)'/)
   assert.match(pluginSource, /active: groupChatName === row\.name/)
 })

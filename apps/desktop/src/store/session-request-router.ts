@@ -1,4 +1,18 @@
-import { activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gateway'
+import {
+  activeGatewayConnectionId,
+  activeGatewayProfileKey,
+  requestGatewayForAgent,
+  requestGatewayForProfile
+} from '@/store/gateway'
+
+export interface SessionProfileRoute {
+  connectionId: string
+  mode?: 'local' | 'remote'
+  profile: string
+  targetProfile?: string
+}
+
+export type SessionOwnerScope = undefined | null | string | SessionProfileRoute
 
 // ── Session-scoped RPC routing (the #89206 class) ───────────────────────────
 // A session-scoped RPC (session.resume / session.activate / session.usage)
@@ -15,6 +29,17 @@ import { activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gatew
 
 const normKey = (profile: null | string | undefined): string => (profile ?? '').trim() || 'default'
 
+const isRoute = (owner: SessionOwnerScope): owner is SessionProfileRoute =>
+  Boolean(owner && typeof owner === 'object' && 'connectionId' in owner)
+
+function routeParams(route: SessionProfileRoute, params: Record<string, unknown>): Record<string, unknown> {
+  if (!route.targetProfile || !Object.prototype.hasOwnProperty.call(params, 'profile')) {
+    return params
+  }
+
+  return { ...params, profile: route.targetProfile }
+}
+
 /**
  * True when a session-scoped RPC must be pinned to `ownerProfile`'s own
  * socket because the active gateway currently serves a different profile.
@@ -22,9 +47,17 @@ const normKey = (profile: null | string | undefined): string => (profile ?? '').
  * (the pre-multi-profile behavior) rather than guessing.
  */
 export function sessionRpcNeedsProfileRoute(
-  ownerProfile: null | string | undefined,
-  activeProfile: string = activeGatewayProfileKey()
+  ownerProfile: SessionOwnerScope | undefined,
+  activeProfile: string = activeGatewayProfileKey(),
+  activeConnectionId: null | string = activeGatewayConnectionId()
 ): boolean {
+  if (isRoute(ownerProfile)) {
+    // A descriptor is an immutable ownership claim. Even an explicitly local
+    // route must not collapse to the ambient request: another connection can
+    // expose the same profile name, and activation is UI state only.
+    return Boolean(ownerProfile.connectionId.trim())
+  }
+
   if (ownerProfile == null || !String(ownerProfile).trim()) {
     return false
   }
@@ -39,7 +72,7 @@ export function sessionRpcNeedsProfileRoute(
  * The route is decided at CALL time, not at swap time.
  */
 export function requestForSessionProfile<T>(
-  ownerProfile: null | string | undefined,
+  ownerProfile: SessionOwnerScope | undefined,
   ambientRequest: <R>(
     method: string,
     params?: Record<string, unknown>,
@@ -51,6 +84,27 @@ export function requestForSessionProfile<T>(
   timeoutMs?: number,
   signal?: AbortSignal
 ): Promise<T> {
+  if (isRoute(ownerProfile)) {
+    const connectionId = ownerProfile.connectionId.trim()
+
+    if (!connectionId) {
+      return Promise.reject(new Error('Session owner route is missing connectionId'))
+    }
+
+    const routedParams = routeParams(ownerProfile, params)
+
+    return timeoutMs === undefined && signal === undefined
+      ? requestGatewayForAgent<T>(connectionId, normKey(ownerProfile.profile), method, routedParams)
+      : requestGatewayForAgent<T>(
+          connectionId,
+          normKey(ownerProfile.profile),
+          method,
+          routedParams,
+          timeoutMs,
+          signal
+        )
+  }
+
   if (!sessionRpcNeedsProfileRoute(ownerProfile)) {
     // Forward the extra args only when the caller actually supplied them. The
     // ambient dispatcher is a plain gateway request whose arity callers assert

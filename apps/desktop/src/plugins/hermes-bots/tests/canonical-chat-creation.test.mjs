@@ -10,6 +10,11 @@ function loadCanonicalCreation({ openSession, request }) {
   const end = source.indexOf('function displayName(', start)
   const context = {
     host: { openSession, request },
+    backendTargetProfile: (route, name) => route?.targetProfile || name,
+    botOwner: name => (typeof name === 'string'
+      ? { bot: { name }, key: name, name, route: null }
+      : { bot: name, key: name?.name, name: name?.name, route: name?.route || null }),
+    requestForBot: (_bot, method, params) => context.host.request(method, params),
     window: { setTimeout: callback => callback() }
   }
   const section = source

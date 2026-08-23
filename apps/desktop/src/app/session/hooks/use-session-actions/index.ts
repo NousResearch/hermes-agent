@@ -13,7 +13,7 @@ import { setSessionYolo } from '@/lib/yolo-session'
 import { normalizeChoices, setClarifyRequest } from '@/store/clarify'
 import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
-import { openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
+import { openGatewayForAgent, openGatewayForProfile, requestGatewayForAgent } from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
@@ -21,6 +21,7 @@ import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
   $newChatProfile,
+  $newChatRoute,
   $showAllProfiles,
   ensureGatewayAgent,
   ensureGatewayProfile,
@@ -45,6 +46,7 @@ import {
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
+  getSessionOwnerHint,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
   sessionPinId,
@@ -70,7 +72,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
-import { requestForSessionProfile } from '@/store/session-request-router'
+import { requestForSessionProfile, type SessionOwnerScope, type SessionProfileRoute } from '@/store/session-request-router'
 import {
   $sessionTiles,
   closeSessionTile,
@@ -191,7 +193,10 @@ function reconcileAuthoritativeMessages(
 // A no-op for single-profile/local-pooled users (a backend resolves its own launch
 // profile to None). The sticky UI model/effort/fast ride as per-session overrides,
 // never the profile default (that lives in Settings → Model).
-async function desktopSessionCreateParams(cwd: string): Promise<Record<string, unknown>> {
+async function desktopSessionCreateParams(
+  cwd: string,
+  capturedRoute = $newChatRoute.get()
+): Promise<Record<string, unknown>> {
   // Treat Send as the linearization point for the visible selector state. The
   // profile handshake below can yield long enough for background config/model
   // refreshes to finish; reading atoms afterward would silently create the
@@ -203,14 +208,19 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
     provider: $currentProvider.get().trim()
   }
 
-  const profile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
-  await ensureGatewayProfile(profile)
+  const profile = capturedRoute?.profile || $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
+
+  if (capturedRoute) {
+    await ensureGatewayAgent(capturedRoute.connectionId, profile)
+  } else {
+    await ensureGatewayProfile(profile)
+  }
 
   return {
     cols: 96,
     source: 'desktop',
     ...(cwd && { cwd }),
-    ...(profile ? { profile } : {}),
+    ...(profile ? { profile: capturedRoute?.targetProfile || profile } : {}),
     ...(selection.model
       ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
       : {}),
@@ -461,8 +471,18 @@ export function useSessionActions({
               ? workspaceTarget.trim()
               : $currentCwd.get().trim() || resolveNewSessionCwd()
 
-        const params = await desktopSessionCreateParams(cwd)
-        const created = await requestGateway<SessionCreateResponse>('session.create', params)
+        const capturedRoute = $newChatRoute.get()
+        const params = await desktopSessionCreateParams(cwd, capturedRoute)
+
+        const created = capturedRoute
+          ? await requestGatewayForAgent<SessionCreateResponse>(
+              capturedRoute.connectionId,
+              capturedRoute.profile,
+              'session.create',
+              params
+            )
+          : await requestGateway<SessionCreateResponse>('session.create', params)
+
         const stored = created.stored_session_id ?? null
 
         // Only a genuine move to a DIFFERENT chat mid-create should orphan the
@@ -577,8 +597,18 @@ export function useSessionActions({
         // Fresh tile → the caller's workspace when one was named (the sidebar
         // "+" on a project/worktree lane), else the resolved new-session cwd
         // (project scope → configured default).
-        const params = await desktopSessionCreateParams((options?.cwd || resolveNewSessionCwd()).trim())
-        const created = await requestGateway<SessionCreateResponse>('session.create', params)
+        const capturedRoute = $newChatRoute.get()
+        const params = await desktopSessionCreateParams((options?.cwd || resolveNewSessionCwd()).trim(), capturedRoute)
+
+        const created = capturedRoute
+          ? await requestGatewayForAgent<SessionCreateResponse>(
+              capturedRoute.connectionId,
+              capturedRoute.profile,
+              'session.create',
+              params
+            )
+          : await requestGateway<SessionCreateResponse>('session.create', params)
+
         const stored = created.stored_session_id
 
         if (!stored) {
@@ -642,7 +672,7 @@ export function useSessionActions({
   }, [navigate, selectedStoredSessionId])
 
   const resumeSession = useCallback(
-    async (storedSessionId: string, replaceRoute = false) => {
+    async (storedSessionId: string, replaceRoute = false, capturedOwner?: SessionProfileRoute) => {
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
@@ -733,7 +763,8 @@ export function useSessionActions({
       // gateway call (no-op when it's already on that profile / single-profile).
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const storedForProfile = await resolveStoredSession(storedSessionId)
+      const ownerRoute = capturedOwner || getSessionOwnerHint(storedSessionId)
+      const storedForProfile = await resolveStoredSession(storedSessionId, ownerRoute)
       const sessionProfile = storedForProfile?.profile
 
       if (resumeRequestRef.current !== requestId) {
@@ -743,16 +774,30 @@ export function useSessionActions({
       // A row spliced from a CONNECTED registry gateway (#88880) carries its
       // owning connection — activate THAT gateway, not a same-named local
       // profile. Rows without the tag keep the legacy profile path.
+      const sessionOwner: SessionOwnerScope = ownerRoute ||
+        (storedForProfile?.connection_id
+          ? {
+              connectionId: storedForProfile.connection_id,
+              profile: sessionProfile || 'default'
+            }
+          : sessionProfile)
+
       // All-profiles / plugin navigation must not steal chrome API-home:
       // dial the owning backend without moving $activeGatewayProfile.
       if ($showAllProfiles.get()) {
-        if (storedForProfile?.connection_id) {
-          await openGatewayForAgent(storedForProfile.connection_id, sessionProfile || 'default')
+        if (ownerRoute?.connectionId || storedForProfile?.connection_id) {
+          await openGatewayForAgent(
+            ownerRoute?.connectionId || storedForProfile?.connection_id || null,
+            ownerRoute?.profile || sessionProfile || 'default'
+          )
         } else if (sessionProfile) {
           await openGatewayForProfile(normalizeProfileKey(sessionProfile))
         }
-      } else if (storedForProfile?.connection_id) {
-        await ensureGatewayAgent(storedForProfile.connection_id, sessionProfile || 'default')
+      } else if (ownerRoute?.connectionId || storedForProfile?.connection_id) {
+        await ensureGatewayAgent(
+          ownerRoute?.connectionId || storedForProfile?.connection_id || null,
+          ownerRoute?.profile || sessionProfile || 'default'
+        )
       } else {
         await ensureGatewayProfile(sessionProfile)
       }
@@ -770,7 +815,14 @@ export function useSessionActions({
       // own backend is healthy one port over (#89206: local pool AND SSH).
       // requestForSessionProfile re-resolves the route at each call.
       const requestForSession = <T>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
-        requestForSessionProfile<T>(sessionProfile, requestGateway, method, params)
+        requestForSessionProfile<T>(sessionOwner, requestGateway, method, params)
+
+      const sessionRestScope = ownerRoute
+        ? {
+            connectionId: ownerRoute.connectionId,
+            profile: ownerRoute.targetProfile || ownerRoute.profile
+          }
+        : sessionProfile
 
       // Re-check after the profile-resolve / gateway-swap awaits above: the
       // cache may have changed, and takeWarmCache re-validates belongs-to and
@@ -819,7 +871,7 @@ export function useSessionActions({
           // prefetch. Watch mirrors stay live-only by design.
           const persistedTranscriptPromise = isWatchWindow()
             ? null
-            : getLatestSessionMessages(storedSessionId, sessionProfile).catch(() => null)
+            : getLatestSessionMessages(storedSessionId, sessionRestScope).catch(() => null)
 
           setFreshDraftReady(false)
           clearNotifications()
@@ -1112,7 +1164,7 @@ export function useSessionActions({
         // max(prefetch, resume) instead of their sum. The prefetch paints the
         // transcript as soon as it lands; the RPC binds the runtime id.
         // Watch windows skip the prefetch — lazy resume attaches the live mirror.
-        const prefetchPromise = watchWindow ? null : getLatestSessionMessages(storedSessionId, sessionProfile)
+        const prefetchPromise = watchWindow ? null : getLatestSessionMessages(storedSessionId, sessionRestScope)
 
         let resumeRuntimeBaselineMessages: ChatMessage[] = []
 
@@ -1371,7 +1423,7 @@ export function useSessionActions({
         let fallbackError: unknown = null
 
         try {
-          const fallback = await getLatestSessionMessages(storedSessionId, sessionProfile)
+          const fallback = await getLatestSessionMessages(storedSessionId, sessionRestScope)
 
           if (!isCurrentResume()) {
             return
@@ -1737,6 +1789,14 @@ export function useSessionActions({
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
+
+      const removedOwner: SessionOwnerScope = removed?.connection_id
+        ? {
+            connectionId: removed.connection_id,
+            profile: removed.profile || 'default'
+          }
+        : removed?.profile
+
       const previousArchived = $archivedSessions.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
@@ -1761,10 +1821,15 @@ export function useSessionActions({
 
       try {
         if (closingRuntimeId) {
-          await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
+          await requestForSessionProfile(
+            removedOwner,
+            requestGateway,
+            'session.close',
+            { session_id: closingRuntimeId }
+          ).catch(() => undefined)
         }
 
-        await deleteSession(storedSessionId, removed?.profile)
+        await deleteSession(storedSessionId, removedOwner)
         // A deleted session's cached tail must not resurrect on a recycled id.
         dropTranscriptTail(storedSessionId)
         // Only after the RPC lands — the optimistic eviction above can roll

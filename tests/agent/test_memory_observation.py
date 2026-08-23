@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -65,27 +66,20 @@ def _observation(payload=None, *, provider=""):
 
 def _capture_hook(monkeypatch, events):
     """Install a deterministic in-process memory observer for manager tests."""
-    import hermes_cli.lifecycle as lifecycle
+    import agent.plugin_stream_hooks as dispatcher
 
-    monkeypatch.setattr(lifecycle, "has_hook", lambda name: name == "memory_prefetch")
-
-    def invoke_hook(name, **kwargs):
+    def enqueue_hook(name, **kwargs):
         assert name == "memory_prefetch"
         events.append(kwargs)
-        return ["ignored transform"]
+        return True
 
-    monkeypatch.setattr(lifecycle, "invoke_hook", invoke_hook)
+    monkeypatch.setattr(dispatcher, "enqueue_plugin_observer_hook", enqueue_hook)
 
 
 def _disable_hook(monkeypatch):
-    import hermes_cli.lifecycle as lifecycle
+    from hermes_cli import plugins
 
-    monkeypatch.setattr(lifecycle, "has_hook", lambda name: False)
-    monkeypatch.setattr(
-        lifecycle,
-        "invoke_hook",
-        lambda *args, **kwargs: pytest.fail("observer must not fire"),
-    )
+    monkeypatch.setattr(plugins, "iter_hook_callbacks", lambda _name: ())
 
 
 def test_memory_prefetch_is_registered_as_an_observer_hook():
@@ -340,7 +334,9 @@ def test_no_event_for_string_only_prefetch(monkeypatch):
 def test_hook_callback_errors_are_isolated(monkeypatch):
     """The real plugin registry continues after one observer raises."""
     from hermes_cli import plugins
+    from agent.plugin_stream_hooks import shutdown_plugin_observer_dispatcher
 
+    shutdown_plugin_observer_dispatcher()
     plugin_manager = plugins.PluginManager()
     plugin_manager._discovered = True
     seen = []
@@ -363,27 +359,118 @@ def test_hook_callback_errors_are_isolated(monkeypatch):
     )
     manager.add_provider(StructuredMemoryProvider(name="builtin", result=expected))
 
-    result = manager.prefetch_all_result("question", session_id="session")
+    try:
+        result = manager.prefetch_all_result("question", session_id="session")
 
-    assert result.context == "context"
-    assert seen == [result.observations]
+        deadline = time.monotonic() + 1.0
+        while not seen and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert result.context == "context"
+        assert seen == [result.observations]
+    finally:
+        shutdown_plugin_observer_dispatcher()
+
+
+def test_memory_prefetch_observer_is_async_and_preserves_operation_envelope(
+    monkeypatch,
+):
+    from hermes_cli import plugins
+    from agent.plugin_stream_hooks import shutdown_plugin_observer_dispatcher
+
+    shutdown_plugin_observer_dispatcher()
+    started = threading.Event()
+    release = threading.Event()
+    events = []
+
+    def consumer(**kwargs):
+        started.set()
+        release.wait(timeout=1.0)
+        events.append(kwargs)
+
+    monkeypatch.setattr(
+        plugins,
+        "iter_hook_callbacks",
+        lambda name: (consumer,) if name == "memory_prefetch" else (),
+    )
+    manager = MemoryManager()
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="builtin",
+            result=MemoryPrefetchResult(
+                context="résumé context",
+                observations=(_observation(),),
+            ),
+        )
+    )
+
+    try:
+        started_at = time.monotonic()
+        result = manager.prefetch_all_result(
+            "question",
+            session_id="session-a",
+            task_id="task-a",
+            turn_id="turn-a",
+        )
+        elapsed = time.monotonic() - started_at
+
+        assert elapsed < 0.1
+        assert started.wait(timeout=1.0)
+        release.set()
+        deadline = time.monotonic() + 1.0
+        while not events and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert len(events) == 1
+        event = events[0]
+        assert event["observations"] is result.observations
+        assert event["session_id"] == "session-a"
+        assert event["task_id"] == "task-a"
+        assert event["turn_id"] == "turn-a"
+        assert event["query"] == "question"
+        assert event["context_byte_length"] == len(result.context.encode("utf-8"))
+        assert event["telemetry_schema_version"]
+        with pytest.raises(TypeError):
+            result.observations[0].payload["changed"] = True  # type: ignore[index]
+    finally:
+        release.set()
+        shutdown_plugin_observer_dispatcher()
+
+
+def test_memory_prefetch_result_does_not_silently_truncate_provider_input(
+    monkeypatch, caplog
+):
+    _disable_hook(monkeypatch)
+    raw = tuple(
+        _observation({"index": index}) for index in range(MAX_MEMORY_OBSERVATIONS + 1)
+    )
+    constructed = MemoryPrefetchResult(context="context", observations=raw)
+
+    assert len(constructed.observations) == MAX_MEMORY_OBSERVATIONS + 1
+
+    manager = MemoryManager()
+    manager.add_provider(StructuredMemoryProvider(name="builtin", result=constructed))
+    with caplog.at_level("WARNING", logger="agent.memory_manager"):
+        result = manager.prefetch_all_result("question")
+
+    assert len(result.observations) == MAX_MEMORY_OBSERVATIONS
+    assert "too many prefetch observations" in caplog.text
 
 
 def test_concurrent_operations_keep_session_observations_bound(monkeypatch):
     events = []
     event_lock = threading.Lock()
-    import hermes_cli.lifecycle as lifecycle
-
-    monkeypatch.setattr(lifecycle, "has_hook", lambda name: name == "memory_prefetch")
+    import agent.plugin_stream_hooks as dispatcher
 
     def capture_thread_safe(name, **kwargs):
+        assert name == "memory_prefetch"
         with event_lock:
             events.append(kwargs)
         return []
 
     # The deterministic test observer serializes capture so assertions do not
     # depend on callback timing.
-    monkeypatch.setattr(lifecycle, "invoke_hook", capture_thread_safe)
+    monkeypatch.setattr(dispatcher, "enqueue_plugin_observer_hook", capture_thread_safe)
     manager = MemoryManager()
     manager.add_provider(SessionStructuredProvider(threading.Barrier(2)))
 
@@ -417,16 +504,15 @@ def test_concurrent_operations_keep_session_observations_bound(monkeypatch):
 def test_concurrent_same_session_turns_keep_explicit_ids_bound(monkeypatch):
     events = []
     event_lock = threading.Lock()
-    import hermes_cli.lifecycle as lifecycle
-
-    monkeypatch.setattr(lifecycle, "has_hook", lambda name: name == "memory_prefetch")
+    import agent.plugin_stream_hooks as dispatcher
 
     def capture_thread_safe(name, **kwargs):
+        assert name == "memory_prefetch"
         with event_lock:
             events.append(kwargs)
         return []
 
-    monkeypatch.setattr(lifecycle, "invoke_hook", capture_thread_safe)
+    monkeypatch.setattr(dispatcher, "enqueue_plugin_observer_hook", capture_thread_safe)
     manager = MemoryManager()
     manager.add_provider(SessionStructuredProvider(threading.Barrier(2)))
 

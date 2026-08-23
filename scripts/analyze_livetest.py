@@ -43,7 +43,7 @@ def fmt_bridge_seq(calls):
             if isinstance(qs, list):
                 q = "; ".join(str(x) for x in qs)
             else:  # legacy single-query transcripts
-                q = str(args.get("query", "?"))
+                q = str(args["query"] if "query" in args else "?")
             parts.append(f"search('{q[:30]}')")
         elif c["name"] == "tool_describe":
             args = c.get("args") or {}

@@ -76,6 +76,26 @@ import { ChatView } from '.'
 
 const NO_MESSAGES: ChatMessage[] = []
 
+export function sessionTileResumeFailure(
+  message: string,
+  durableSessionFound: boolean | undefined,
+  tileStillUnbound: boolean
+): string | undefined {
+  if (!tileStillUnbound) {
+    return undefined
+  }
+
+  if (!/session not found|\b404\b/i.test(message)) {
+    return message
+  }
+
+  if (durableSessionFound) {
+    return 'Session is still available — retry resuming it.'
+  }
+
+  return 'Session unavailable — you can retry resuming it.'
+}
+
 /** The tile's SessionView: the same atom shape the primary chat renders
  *  from, computed from this session's slice of `$sessionStates`. */
 function buildTileView(storedSessionId: string): SessionView {
@@ -264,6 +284,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
   const delegateRevision = useStore($sessionTileDelegateRevision)
   const resumingRef = useRef(false)
   const view = useMemo(() => buildTileView(storedSessionId), [storedSessionId])
+
   const storedSessionStillExists = useCallback(
     () => $sessions.get().some(s => sessionMatchesStoredId(s, storedSessionId)),
     [storedSessionId]
@@ -342,6 +363,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
 
         if (!/session not found|\b404\b/i.test(message)) {
           patchSessionTile(storedSessionId, { error: message })
+
           return
         }
 
@@ -350,10 +372,12 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
         // before releasing this resume attempt, then fail safe: a tile may be
         // retried by the user, but must never be deleted on an inconclusive
         // reconnect-time lookup.
-        await resolveStoredSession(storedSessionId, ownerRoute).catch(() => undefined)
+        const durableSession = await resolveStoredSession(storedSessionId, ownerRoute).catch(() => undefined)
         const current = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
-        if (current && !current.runtimeId) {
-          patchSessionTile(storedSessionId, { error: message })
+        const error = sessionTileResumeFailure(message, Boolean(durableSession), Boolean(current && !current.runtimeId))
+
+        if (error) {
+          patchSessionTile(storedSessionId, { error })
         }
       })
       .finally(() => {

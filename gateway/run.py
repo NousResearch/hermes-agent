@@ -7146,6 +7146,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._session_db_pinned: Any = _SESSION_DB_UNPINNED
         self._session_db_handles: Dict[Path, Any] = {}
         self._session_db_handles_lock = threading.Lock()
+        from gateway.session_db_recovery import RecoverableHandleCache
+
+        self._session_db_handle_cache = RecoverableHandleCache(
+            handles=self._session_db_handles,
+            lock=self._session_db_handles_lock,
+        )
         try:
             self._open_session_db_for_active_scope(raise_on_error=True)
         except Exception as e:
@@ -7271,29 +7277,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         search on a multiplexed gateway read the *serving profile's* store
         rather than the root one.
 
-        One ``AsyncSessionDB`` is cached per resolved path under a lock, so
+        One ``AsyncSessionDB`` is cached per resolved path, so
         the wrapper identity is stable per profile (callers compare and stash
-        it) and two profiles never share a handle.  A construction failure is
-        cached as ``None`` for that path so a broken store degrades once, not
-        per command; ``raise_on_error=True`` (construction-time priming)
-        propagates the failure instead so ``__init__`` can record
-        ``_session_db_init_error`` for the #88235 broadcast.
+        it) and two profiles never share a handle. A construction failure
+        enters bounded backoff; one caller retries after the deadline while
+        concurrent callers continue to see the unavailable fallback.
+        ``raise_on_error=True`` (construction-time priming) propagates the
+        failure after recording that recoverable state so ``__init__`` can
+        record ``_session_db_init_error`` for the #88235 broadcast.
         """
         from hermes_state import AsyncSessionDB, SessionDB, _default_db_path
+        from gateway.session_db_recovery import RecoverableHandleCache
 
         path = Path(_default_db_path())
-        with self._session_db_handles_lock:
-            if path in self._session_db_handles:
-                return self._session_db_handles[path]
-            db = None
+        cache = getattr(self, "_session_db_handle_cache", None)
+        if cache is None:
+            # Compatibility for lightweight test runners built with
+            # object.__new__ rather than GatewayRunner.__init__.
+            cache = RecoverableHandleCache(
+                handles=self._session_db_handles,
+                lock=self._session_db_handles_lock,
+            )
+            self._session_db_handle_cache = cache
+
+        def _open():
             try:
-                db = AsyncSessionDB(SessionDB())
-            except Exception as e:
-                if raise_on_error:
-                    raise
-                logger.warning("SQLite session store not available: %s", e)
-            self._session_db_handles[path] = db
-            return db
+                return AsyncSessionDB(SessionDB())
+            except Exception as exc:
+                logger.warning("SQLite session store not available: %s", exc)
+                raise
+
+        def _recovered() -> None:
+            self._session_db_init_error = None
+            logger.info("SQLite session store recovered")
+
+        return cache.get(
+            path,
+            _open,
+            raise_on_error=raise_on_error,
+            on_recovered=_recovered,
+        )
 
     @property
     def _session_db(self) -> Any:
@@ -7320,17 +7343,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``SessionStore.close_all_db_handles``.  Handles are drained under the
         lock and closed outside it; a pinned handle is the pinner's to close.
         """
-        with self._session_db_handles_lock:
-            handles = [db for db in self._session_db_handles.values() if db is not None]
-            self._session_db_handles.clear()
-        for db in handles:
+        def _close(db) -> None:
             inner = getattr(db, "_db", db)
             if inner is None or not hasattr(inner, "close"):
-                continue
+                return
             try:
                 inner.close()
             except Exception as exc:
                 logger.debug("SessionDB close error during handle sweep: %s", exc)
+
+        self._session_db_handle_cache.close_all(_close)
 
     def _wire_teams_pipeline_runtime(self) -> None:
         """Bind the Teams meeting pipeline runtime to Graph webhook ingress.
@@ -24564,7 +24586,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "2. Salvage with: sqlite3 ~/.hermes/state.db \".recover\" "
                 "(then replace state.db)\n"
                 "3. Restore from a backup in ~/.hermes/backups/\n"
-                f"Error: {error}"
+                "Run `hermes doctor` for sanitized diagnostics."
             )
         else:
             message = (

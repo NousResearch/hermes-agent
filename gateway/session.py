@@ -1315,6 +1315,12 @@ class SessionStore:
         self._db_pinned = _DB_UNPINNED
         self._db_handles: Dict[Path, Any] = {}
         self._db_handles_lock = threading.Lock()
+        from gateway.session_db_recovery import RecoverableHandleCache
+
+        self._db_handle_cache = RecoverableHandleCache(
+            handles=self._db_handles,
+            lock=self._db_handles_lock,
+        )
         self._open_session_db_for_active_scope()
 
     def _open_session_db_for_active_scope(self):
@@ -1329,23 +1335,16 @@ class SessionStore:
 
         Handles are cached per resolved path, so a hot inbound path opens
         SQLite once per profile rather than once per message, and two
-        profiles never share a handle.  Construction is done under the lock
-        so a concurrent first message on the same profile cannot open (and
-        then leak) a second handle for the same path.
-
-        A construction failure is cached as ``None`` for that path, matching
-        the previous behavior where a failed startup left ``_db`` None for
-        the life of the store and callers fell back to JSONL.
+        profiles never share a handle. Failed opens enter a bounded backoff;
+        once it expires, one caller reopens while concurrent callers keep
+        using the JSONL fallback.
         """
         from hermes_state import SessionDB, _default_db_path
 
         path = Path(_default_db_path())
-        with self._db_handles_lock:
-            if path in self._db_handles:
-                return self._db_handles[path]
-            db = None
+        def _open():
             try:
-                db = SessionDB()
+                return SessionDB()
             except RuntimeError as e:
                 if "live-system guard" in str(e):
                     # Test-isolation guard fired: a pytest-context process
@@ -1355,10 +1354,18 @@ class SessionStore:
                     # guard must fire again on the next attempt.
                     raise
                 print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+                raise
             except Exception as e:
                 print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
-            self._db_handles[path] = db
-            return db
+                raise
+
+        return self._db_handle_cache.get(
+            path,
+            _open,
+            non_cacheable=lambda exc: (
+                isinstance(exc, RuntimeError) and "live-system guard" in str(exc)
+            ),
+        )
 
     @property
     def _db(self):
@@ -1399,14 +1406,13 @@ class SessionStore:
         handle (``store._db = fake``) is deliberately not closed here — the
         pinner owns its lifecycle.
         """
-        with self._db_handles_lock:
-            handles = [db for db in self._db_handles.values() if db is not None]
-            self._db_handles.clear()
-        for db in handles:
+        def _close(db) -> None:
             try:
                 db.close()
             except Exception as exc:
                 logger.debug("SessionDB close error during handle sweep: %s", exc)
+
+        self._db_handle_cache.close_all(_close)
 
     def _has_active_processes_safe(self, session_key: str, *, context: str) -> bool:
         """Return whether a session has active work, failing closed on registry errors."""

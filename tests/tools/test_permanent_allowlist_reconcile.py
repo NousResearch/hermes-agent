@@ -14,6 +14,8 @@ Reconciling at write time fixes both. The file is re-read and the result is
 what is on disk now, plus what this process approved since its own baseline.
 """
 
+import logging
+
 import pytest
 
 import tools.approval as approval
@@ -135,7 +137,7 @@ def test_empty_start_and_first_approval(fake_config):
     assert fake_config["command_allowlist"] == ["ls *"]
 
 
-def test_save_failure_is_logged_not_raised(fake_config, monkeypatch):
+def test_save_failure_is_logged_not_raised(fake_config, monkeypatch, caplog):
     """The existing contract: a config write failure must not break approval."""
     _start_process_with(fake_config, ["ls *"])
 
@@ -144,5 +146,21 @@ def test_save_failure_is_logged_not_raised(fake_config, monkeypatch):
 
     monkeypatch.setattr("hermes_cli.config.load_config", _boom, raising=False)
     approval.approve_permanent("docker *")
-    approval.save_permanent_allowlist(approval._permanent_approved)   # must not raise
+    with caplog.at_level(logging.WARNING, logger=approval.logger.name):
+        approval.save_permanent_allowlist(approval._permanent_approved)   # must not raise
+    assert "Could not save allowlist" in caplog.text
     assert "docker *" in approval._permanent_approved
+
+
+def test_a_caller_that_passes_a_smaller_set_does_not_remove(fake_config):
+    """Documented consequence of reconciling: ``patterns`` may only add.
+
+    A future `allowlist remove` built on this function would silently no-op.
+    The docstring says so; this pins it so the next reader finds out here
+    rather than in production.
+    """
+    _start_process_with(fake_config, ["ls *", "docker *"])
+
+    approval.save_permanent_allowlist({"ls *"})          # tries to drop docker *
+
+    assert "docker *" in fake_config["command_allowlist"]

@@ -413,6 +413,10 @@ def save_permanent_allowlist(patterns: set):
     plus ``what this process approved since its own baseline``; revoked entries are
     also dropped from the governing permanent set so ``is_approved()`` stops
     honouring them. Nothing re-reads the file on the approval hot path.
+
+    ``patterns`` may only ADD: an entry left out of it is not removed, because the
+    on-disk list wins for anything this process did not approve itself. Remove
+    entries by editing ``command_allowlist`` in config.yaml.
     """
     try:
         from hermes_cli.config import load_config, save_config

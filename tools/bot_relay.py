@@ -24,8 +24,10 @@ How the relay works (three files under ``<root>/bot_relay/``):
 
 The gateway never holds another connection's credentials; the Desktop owns
 every socket and does all cross-connection I/O. Everything here is plain
-file plumbing on the gateway's own HERMES root — no network, never raises
-out of the public helpers.
+file plumbing on the gateway's own HERMES root — no network. The public
+helpers never raise, with one deliberate exception: ``enqueue_envelope``
+raises ``EnvelopeRefusedError`` when the target is definitively offline, so
+the sender fails fast instead of queueing a DM nobody will drain (#93091).
 """
 
 from __future__ import annotations
@@ -57,6 +59,30 @@ REPLY_WAIT_SECONDS = 900
 # Envelopes and replies older than this are stale artifacts (Desktop was
 # closed, connection died) and are swept opportunistically.
 STALE_AFTER_SECONDS = 6 * 3600
+
+# Fallback envelope TTL when config is unreachable — mirrors the
+# ``bot_mode.envelope_ttl_seconds`` default in hermes_cli/config_defaults.py.
+# Envelopes older than the TTL are refused at drain time with a
+# 'queued_expired' error reply instead of being delivered late.
+DEFAULT_ENVELOPE_TTL_SECONDS = 900
+
+# A roster older than this proves nothing about who is offline: the Desktop
+# pushes roster.sync on connection-state changes, so only a recently-written
+# roster is treated as an authoritative view for the fail-fast check.
+ROSTER_FRESH_SECONDS = 600
+
+
+class EnvelopeRefusedError(RuntimeError):
+    """``enqueue_envelope`` refused to queue — nothing was written to disk.
+
+    ``reason`` is a stable machine code; ``str(exc)`` is the human text.
+    'runtime_offline' matches the #93091 item-1 failure-reason enum (plain
+    literal here so the branches merge cleanly).
+    """
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
 
 _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
@@ -102,6 +128,11 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
         "title": str(row.get("title") or "").strip()[:120],
         "description": " ".join(str(row.get("description") or "").split())[:160],
     }
+    # Optional explicit liveness flag (additive — the Desktop may push it).
+    # Preserved only when it is a real bool so absent stays distinguishable
+    # from false: absent == liveness unknown == fail-open on enqueue.
+    if isinstance(row.get("online"), bool):
+        out["online"] = row["online"]
     return out
 
 
@@ -203,6 +234,66 @@ def remote_target_forms(roster: list[dict]) -> list[str]:
 # ── outbox / replies ─────────────────────────────────────────────────────────
 
 
+def _envelope_ttl_seconds() -> int:
+    """Configured drain TTL (``bot_mode.envelope_ttl_seconds``), lazily read.
+
+    tools/ must not pull heavy CLI config at import time, so the read happens
+    per-drain and falls back to ``DEFAULT_ENVELOPE_TTL_SECONDS`` when config
+    is unavailable (tests, stripped installs). ``0`` (or negative) disables
+    drain-time expiry.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        val = (cfg.get("bot_mode") or {}).get("envelope_ttl_seconds")
+        if val is not None:
+            return int(val)
+    except Exception:
+        logger.debug("bot_relay TTL config read failed", exc_info=True)
+    return DEFAULT_ENVELOPE_TTL_SECONDS
+
+
+def _target_liveness(root: Path | str, target: dict) -> Optional[bool]:
+    """Tri-state liveness for ``target``: True / False / None (unknown).
+
+    Roster rows carry no heartbeat today, so 'definitively offline' is keyed
+    off the two signals roster.json actually gives us:
+
+    - an explicit ``online: false`` on the target's row (additive field,
+      honored when the Desktop starts pushing it);
+    - the target's (connection_id, profile) being ABSENT from a *fresh*
+      roster — the Desktop re-pushes the whole roster on connection-state
+      changes, so a recently-synced roster that dropped the target means its
+      connection is gone.
+
+    A missing, unreadable, or stale (older than ``ROSTER_FRESH_SECONDS``)
+    roster proves nothing → None, and callers fail open. Never raises.
+    """
+    try:
+        roster_path = relay_root(root) / ROSTER_FILE
+        try:
+            age = time.time() - roster_path.stat().st_mtime
+        except OSError:
+            return None  # no roster ever synced — unknown
+        if age > ROSTER_FRESH_SECONDS:
+            return None  # stale view — unknown
+        roster = read_remote_roster(root)
+        if not roster:
+            return None  # empty/corrupt roster — treat as unknown, fail open
+        key = (str(target.get("connection_id") or ""), str(target.get("profile") or ""))
+        for row in roster:
+            if (row["connection_id"], row["profile"]) == key:
+                online = row.get("online")
+                if online is False:
+                    return False
+                return True if online is True else None
+        return False  # fresh roster no longer lists the target — offline
+    except Exception:
+        logger.debug("bot_relay liveness check failed", exc_info=True)
+        return None
+
+
 def enqueue_envelope(
     root: Path | str,
     *,
@@ -211,7 +302,23 @@ def enqueue_envelope(
     sender_profile: str,
     sender_handle: str,
 ) -> dict:
-    """Queue a cross-connection DM for the Desktop relay. Returns envelope."""
+    """Queue a cross-connection DM for the Desktop relay. Returns envelope.
+
+    Raises ``EnvelopeRefusedError`` (reason ``'runtime_offline'``) instead of
+    writing the outbox file when the target is definitively offline per
+    ``_target_liveness``. Unknown liveness enqueues as before (fail-open).
+    """
+    if _target_liveness(root, target) is False:
+        label = (
+            f"@{target.get('handle') or target.get('profile') or '?'} on "
+            f"{target.get('connection_label') or target.get('connection_id') or '?'}"
+        )
+        # 'runtime_offline' matches the #93091 item-1 reason enum.
+        raise EnvelopeRefusedError(
+            "runtime_offline",
+            f"{label} is offline right now — the message was NOT queued. "
+            "Try again once that machine reconnects to the Desktop.",
+        )
     base = _ensure_dirs(root)
     envelope = {
         "id": uuid.uuid4().hex,
@@ -233,12 +340,50 @@ def enqueue_envelope(
 
 def claim_pending_envelopes(root: Path | str) -> list[dict]:
     """Drain the outbox (rename → claimed/, so a second drain can't double-
-    deliver). Sweeps stale claimed/reply artifacts opportunistically."""
+    deliver). Sweeps stale claimed/reply artifacts opportunistically.
+
+    Envelopes older than ``bot_mode.envelope_ttl_seconds`` are NOT delivered:
+    each gets an error reply (reason ``'queued_expired'``) so the sender's
+    waiter resolves, and its outbox file is removed (#93091 item 2).
+    """
     base = _ensure_dirs(root)
     _sweep_stale(base)
+    ttl = _envelope_ttl_seconds()
+    now = time.time()
     out: list[dict] = []
     outbox = base / OUTBOX_DIR
     for path in sorted(outbox.glob("*.json")):
+        if ttl > 0:
+            expired = False
+            try:
+                env = json.loads(path.read_text(encoding="utf-8"))
+                created = float(env.get("created_at") or path.stat().st_mtime)
+                if now - created > ttl:
+                    expired = True
+                    handle = str(env.get("target_handle") or "?")
+                    conn = str(env.get("target_connection") or "?")
+                    # 'queued_expired' matches the #93091 item-1 reason enum.
+                    write_reply(
+                        root,
+                        str(env.get("id") or ""),
+                        error=(
+                            f"queued message to @{handle} on {conn} expired after "
+                            f"{ttl}s waiting for the Desktop to drain it — it was "
+                            "NOT delivered. Resend once the Desktop reconnects."
+                        ),
+                        reason="queued_expired",
+                    )
+            except (OSError, ValueError):
+                # Unreadable envelope or invalid id: if it already counted as
+                # expired, still remove it below; otherwise let the normal
+                # claim attempt below deal with it.
+                pass
+            if expired:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                continue
         claimed = base / CLAIMED_DIR / path.name
         try:
             os.replace(path, claimed)  # atomic claim
@@ -253,9 +398,10 @@ def write_reply(
 ) -> Path:
     """Persist the relayed reply (or delivery error) for the waiter.
 
-    ``reason`` is an optional typed failure code (see
-    ``tools.bot_failure_reasons``); when omitted and ``error`` is non-empty
-    it is classified from the error text.
+``reason`` is an optional typed failure code (see
+    ``tools.bot_failure_reasons``, e.g. 'queued_expired'); when omitted and
+    ``error`` is non-empty it is classified from the error text. The waiter
+    only surfaces the human ``error``.
     """
     base = _ensure_dirs(root)
     safe = str(envelope_id or "").strip()

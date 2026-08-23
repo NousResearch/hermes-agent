@@ -24,6 +24,11 @@ def _make_agent(**overrides):
         platform="",
         pass_session_id=False,
         session_id="",
+        # build_system_prompt drains pending truncation warnings and
+        # forwards each to this; a warning left in the ContextVar by an
+        # earlier test file (they share one thread's context under plain
+        # pytest) must not make this stub AttributeError.
+        _emit_status=lambda *_args, **_kwargs: None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)

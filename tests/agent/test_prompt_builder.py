@@ -38,6 +38,18 @@ from agent.prompt_builder import (
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 
 
+@pytest.fixture(autouse=True)
+def _drain_truncation_warnings():
+    """Leave no truncation warnings in the shared thread context.
+
+    Truncation warnings ride a ContextVar; under plain ``pytest`` (no
+    per-file subprocess isolation) anything this file records leaks into
+    later files' contexts and breaks their assertions/ordering.
+    """
+    yield
+    drain_truncation_warnings()
+
+
 # =========================================================================
 # Guidance constants
 # =========================================================================

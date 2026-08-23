@@ -152,6 +152,7 @@ import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
+import { findStoredIdForRuntimeId, resolveRoutingSessionId } from './wiring-routing'
 
 // Overlay views the controller mounts over the shell — lazy, load on demand.
 // The workspace-route full-page views (skills/messaging/artifacts) are the
@@ -316,10 +317,36 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // too. Fall back to the list-derived profile only when no tile route exists.
   const requestGateway = useCallback(
     <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
-      const paramsSessionId = typeof params?.session_id === 'string' ? params.session_id.trim() : ''
-      const targetStoredSessionId = paramsSessionId ? storedSessionIdForRuntimeId(paramsSessionId) : null
+      // Route each RPC by the session IT targets, not by whatever tile is
+      // focused. `requestGateway` is one shared closure used for every session
+      // RPC in the window; keying the owner off $focusedStoredSessionId sent a
+      // NON-focused tile's RPC (any bot chat while another pane is active) to
+      // the focused tile's backend. That is the Bot Mode bug: a bot's
+      // prompt.submit carried its own session_id but ran on the default backend
+      // (served via ?profile= from the default's state.db), or 4001'd when the
+      // default backend didn't hold the runtime session.
+      //
+      // params.session_id is a RUNTIME id, while tiles and session rows key on
+      // the STORED id, so translate first (state cache, then a reverse scan of
+      // the stored->runtime map, then the persisted tile map — the same ladder
+      // use-session-tile-delegate uses, plus the tile rung that survives a
+      // reload when the state cache is cold). A miss on ALL rungs means the id
+      // is already a stored id (several RPCs pass stored ids directly), so use
+      // it as-is. Only an RPC with no session_id at all (ambient/config calls)
+      // keeps the focused-tile route.
+      const paramSessionId =
+        typeof params?.session_id === 'string' && params.session_id ? params.session_id : undefined
 
-      const routingSessionId = targetStoredSessionId ?? $focusedStoredSessionId.get() ?? selectedStoredSessionIdRef.current
+      const routingSessionId = resolveRoutingSessionId({
+        focusedStoredSessionId: $focusedStoredSessionId.get(),
+        paramSessionId,
+        selectedStoredSessionId: selectedStoredSessionIdRef.current,
+        storedIdForRuntime: runtimeId =>
+          sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ??
+          findStoredIdForRuntimeId(runtimeIdByStoredSessionIdRef.current, runtimeId) ??
+          storedSessionIdForRuntimeId(runtimeId) ??
+          undefined
+      })
 
       const owner =
         (routingSessionId ? sessionTileOwnerRoute(routingSessionId) : undefined) ??
@@ -327,7 +354,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       return requestForSessionProfile<T>(owner, ambientRequestGateway, method, params ?? {}, timeoutMs, signal)
     },
-    [ambientRequestGateway]
+    [ambientRequestGateway, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef]
   )
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =

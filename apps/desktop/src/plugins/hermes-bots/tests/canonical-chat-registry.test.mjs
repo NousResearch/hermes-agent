@@ -80,8 +80,12 @@ test('open resolves the profile\u2019s "Bot Chat" row by exact title and opens i
   assert.equal(runtime.opened.length, 1)
   assert.equal(runtime.opened[0].id, 'forever-chat')
   assert.equal(runtime.opened[0].options.profile, 'ops')
-  assert.equal(runtime.opened[0].options.keepAllProfilesScope, false,
-    'opening a bot moves the workspace onto that bot')
+  assert.equal(runtime.opened[0].options.keepAllProfilesScope, true,
+    'opening a bot leaves the Sessions workspace on its current gateway')
+  assert.equal(runtime.opened[0].options.intent, 'tab')
+  assert.equal(runtime.opened[0].options.workspaceMode, 'bots')
+  assert.equal(runtime.opened[0].options.workspaceOwnerKey, 'bot:ops')
+  assert.equal(runtime.opened[0].options.tabTitle, 'Bot Chat')
 
   const list = runtime.requests.find(r => r.method === 'session.list')
   assert.equal(list?.params?.title, 'Bot Chat', 'lookup is by exact title')

@@ -99,7 +99,7 @@ describe('openSession', () => {
   it('in-place focuses an existing tile and does not navigate', () => {
     focusOpenSession.mockReturnValue('tile')
     openSession('s1', navigate)
-    expect(focusOpenSession).toHaveBeenCalledWith('s1')
+    expect(focusOpenSession).toHaveBeenCalledWith('s1', { workspaceMode: 'sessions' })
     expect(navigate).not.toHaveBeenCalled()
     expect(openSessionTile).not.toHaveBeenCalled()
   })
@@ -134,7 +134,7 @@ describe('openSession', () => {
   it('tab focuses an existing open session instead of stacking another', () => {
     focusOpenSession.mockReturnValue('tile')
     openSession('s1', navigate, 'tab')
-    expect(focusOpenSession).toHaveBeenCalledWith('s1')
+    expect(focusOpenSession).toHaveBeenCalledWith('s1', { workspaceMode: 'sessions' })
     expect(openSessionTile).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
   })
@@ -153,6 +153,7 @@ describe('openSession', () => {
     openSession('s1', navigate, 'tab', scope)
 
     expect(setSessionTileWorkspaceScope).toHaveBeenCalledWith('s1', scope)
+    expect(focusOpenSession).toHaveBeenCalledWith('s1', scope)
     expect(openSessionTile).toHaveBeenCalledWith('s1', 'center', undefined, undefined, scope)
   })
 

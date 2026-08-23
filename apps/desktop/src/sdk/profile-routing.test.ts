@@ -43,6 +43,7 @@ vi.mock('@/store/session-states', async () => {
     $focusedRuntimeId: atom(null),
     $focusedSessionState: atom(null),
     $focusedStoredSessionId: atom(null),
+    $sessionTiles: atom([]),
     $sessionStates: atom({})
   }
 })
@@ -122,7 +123,8 @@ const {
   setShowAllProfiles
 } = await import('@/store/profile')
 
-const { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } = await import('@/store/session-states')
+const { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId, $sessionStates, $sessionTiles } =
+  await import('@/store/session-states')
 const { setWorkspaceScope } = await import('@/components/pane-shell/workspace-scope')
 
 const {
@@ -153,6 +155,8 @@ afterEach(() => {
   setMockAtom($focusedRuntimeId, null)
   setMockAtom($focusedStoredSessionId, null)
   setMockAtom($focusedSessionState, null)
+  setMockAtom($sessionStates, {})
+  setMockAtom($sessionTiles, [])
   setMockAtom($activeSessionId, null)
   setMockAtom($selectedStoredSessionId, null)
   setMockAtom($messages, [])
@@ -430,6 +434,7 @@ describe('profile-aware plugin session opens', () => {
     })
 
     expect(openSessionCore).toHaveBeenCalledWith('bot-chat', expect.any(Function), 'in-place', {
+      ownerRoute: route,
       workspaceMode: 'bots',
       workspaceOwnerKey: 'source-a::default'
     })
@@ -464,6 +469,44 @@ describe('profile-aware plugin session opens', () => {
     await opening
     expect($activeGatewayProfile.get()).toBe('remote-worker')
     expect($selectedStoredSessionId.get()).toBeNull()
+  })
+
+  it('finishes a restored Bot wake from its hydrated tile before the first pointer focus', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'default',
+      targetProfile: 'backend-default'
+    }
+
+    const opening = host.openSession('restored-bot-chat', {
+      awaitHydration: true,
+      expectHistory: true,
+      hydrationTimeoutMs: 1_000,
+      intent: 'tab',
+      route,
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'bot:source-a::default'
+    })
+
+    await Promise.resolve()
+    setMockAtom($sessionTiles, [
+      {
+        runtimeId: 'runtime-restored',
+        storedSessionId: 'restored-bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:source-a::default'
+      }
+    ])
+    setMockAtom($sessionStates, {
+      'runtime-restored': {
+        messages: [{ id: 'restored-history', parts: [], role: 'assistant' }],
+        storedSessionId: 'restored-bot-chat'
+      }
+    } as never)
+
+    await opening
+    expect($focusedStoredSessionId.get()).toBeNull()
   })
 
   it('strands a late Bot wake when the user returns to Sessions', async () => {

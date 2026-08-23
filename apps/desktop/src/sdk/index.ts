@@ -86,7 +86,8 @@ import {
   $focusedRuntimeId,
   $focusedSessionState,
   $focusedStoredSessionId,
-  $sessionStates
+  $sessionStates,
+  $sessionTiles
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { UsageStats } from '@/types/hermes'
@@ -141,7 +142,6 @@ const $focusedSessionOwner = computed(
   [$focusedStoredSessionId, $sessions, $activeGatewayProfile, $connection],
   (focused, sessions, activeProfile, connection): PluginFocusedSessionOwner | null => {
     const activeConnectionId = String(connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')).trim()
-
     const fallback = {
       connectionId: activeConnectionId,
       profile: normalizeProfileKey(activeProfile)
@@ -326,6 +326,7 @@ export interface PluginOpenSessionOptions {
    *  overlay ($resumeExhaustedSessionId) — a caller-side retry can't do this
    *  itself because only this SDK layer sees $resumeExhaustedSessionId. */
   retryHydrationTimeoutOnce?: boolean
+  tabTitle?: string
 }
 
 export interface PluginNewChatOptions {
@@ -386,18 +387,23 @@ function waitForFocusedSessionHydration({
 
       const profileMatches = !requireActiveProfile || normalizeProfileKey($activeGatewayProfile.get()) === profile
       const mainMatches = $selectedStoredSessionId.get() === storedSessionId
-      const tileMatches = $focusedStoredSessionId.get() === storedSessionId
+      const storedTile = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)
+      const tileMatches = $focusedStoredSessionId.get() === storedSessionId || Boolean(storedTile)
+      const focusedTileMatches = $focusedStoredSessionId.get() === storedSessionId
+      const tileRuntimeId = focusedTileMatches ? $focusedRuntimeId.get() : (storedTile?.runtimeId ?? null)
 
-      const runtimeReady = mainMatches
-        ? Boolean($activeSessionId.get())
-        : tileMatches
-          ? Boolean($focusedRuntimeId.get())
-          : false
+      const tileState = focusedTileMatches
+        ? $focusedSessionState.get()
+        : tileRuntimeId
+          ? $sessionStates.get()[tileRuntimeId]
+          : undefined
+
+      const runtimeReady = mainMatches ? Boolean($activeSessionId.get()) : tileMatches ? Boolean(tileRuntimeId) : false
 
       const historyPainted = mainMatches
         ? Boolean($messages.get().length)
         : tileMatches
-          ? Boolean($focusedSessionState.get()?.messages.length)
+          ? Boolean(tileState?.messages.length)
           : false
 
       // Paint-first hydration: for a history-bearing chat, the wake is DONE
@@ -427,6 +433,8 @@ function waitForFocusedSessionHydration({
     unbinds.push($focusedStoredSessionId.listen(check))
     unbinds.push($focusedRuntimeId.listen(check))
     unbinds.push($focusedSessionState.listen(check))
+    unbinds.push($sessionTiles.listen(check))
+    unbinds.push($sessionStates.listen(check))
     unbinds.push($workspaceMode.listen(check))
     unbinds.push($workspaceOwnerKey.listen(check))
 
@@ -816,8 +824,10 @@ export const host = {
 
           if (options.workspaceMode === 'bots') {
             openSession(storedSessionId, navigate, intent, {
+              ownerRoute: ownerRoute ?? undefined,
               workspaceMode: 'bots',
-              workspaceOwnerKey: options.workspaceOwnerKey
+              workspaceOwnerKey: options.workspaceOwnerKey,
+              ...(options.tabTitle ? { workspaceTabTitle: options.tabTitle } : {})
             })
           } else {
             openSession(storedSessionId, navigate, intent)

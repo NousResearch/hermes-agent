@@ -5058,7 +5058,8 @@ async function openStoredBotChat(owner, storedId, summary) {
     throw new Error('This Hermes Desktop version cannot open stored sessions')
   }
 
-  const { name, route } = botOwner(owner)
+  const { bot, name, route } = botOwner(owner)
+  const ownerKey = botWorkspaceOwnerKey(bot)
 
   const hasAuthoritativeCount =
     typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)
@@ -5073,23 +5074,14 @@ async function openStoredBotChat(owner, storedId, summary) {
   await host.openSession(storedId, {
     ...(route ? { route } : {}),
     profile: name,
-    intent: 'main',
+    intent: 'tab',
     awaitHydration: true,
     expectHistory,
-    // Move the WORKSPACE onto this bot, not just the transcript.
-    //
-    // With the default (true) the bot's chat opened against its own backend
-    // while `$activeGatewayProfile` stayed on whatever profile was active
-    // before — so "New session" from inside any bot was created on that other
-    // backend. Measured: four consecutive new chats started from different
-    // bots all landed in the `ops` profile's state.db. Clicking a bot is a
-    // workspace switch in this product (one bot = one workspace), so the
-    // chrome has to follow. EXCEPT across connections: a remote bot's chat
-    // opens on its own source while Desktop's chrome/API home stays put —
-    // re-homing the window onto another machine for one chat is the bug
-    // #90006 exists to remove.
-    keepAllProfilesScope: route ? true : false,
-    retryHydrationTimeoutOnce: true
+    keepAllProfilesScope: true,
+    workspaceMode: 'bots',
+    workspaceOwnerKey: ownerKey,
+    retryHydrationTimeoutOnce: true,
+    tabTitle: CANONICAL_CHAT_TITLE
   })
 
   return storedId
@@ -13110,9 +13102,15 @@ function BotsPane() {
     return () => cancelAnimationFrame(frame)
   }, [hiddenExpanded, hasRosterConstraint])
 
-  if (live) {
+  useEffect(() => {
+    if (!live) {
+      return
+    }
+
     // Offline-owner ghosts belong only to this render. Shared roster state
-    // feeds merge caching, group membership, creation, and durable sync.
+    // feeds merge caching, group membership, creation, and durable sync. These
+    // writes must settle after render: BotsHomeView subscribes to the same
+    // atoms, so publishing here used to update it while BotsPane was rendering.
     $lastRoster.set(roster.filter(row => !row?.ghost))
     if (Array.isArray(data?.sources)) {
       $lastSources.set(data.sources)
@@ -13121,7 +13119,10 @@ function BotsPane() {
     pullServerAvatars(activeSourceRoster)
     trackInboundActivity(roster)
     backfillMessagingProtocol(activeSourceRoster)
-  }
+    // React Query owns the stable server snapshot; derived arrays intentionally
+    // follow that snapshot rather than retriggering on their own atom writes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data])
 
   // The roster has ANSWERED once data or a terminal error exists — that, not
   // row count, is what lets the home stop showing its loading state (an empty
@@ -13137,6 +13138,11 @@ function BotsPane() {
 
     if (selectionHydrated) {
       reconcileRosterSelection(roster, sourceSnapshot, allMeta)
+      const selected = selectedRosterBot(roster, $selectedRosterKey.get())
+
+      if ($botsPaneVisible.get() && !$groupChatWorkspace.get() && selected) {
+        setBotsWorkspaceOwner(botWorkspaceOwnerKey(selected), selected)
+      }
     }
   }, [data, error, selectionHydrated, roster, sourceSnapshot, allMeta])
 

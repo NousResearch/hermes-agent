@@ -47,14 +47,17 @@ import {
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
+import { requestForSessionProfile } from '@/store/session-request-router'
 import {
   $sessionStates,
+  $sessionTileDelegateRevision,
   $sessionTiles,
   closeSessionTile,
   discardSessionTile,
   patchSessionTile,
   type SessionTile,
-  sessionTileDelegate
+  sessionTileDelegate,
+  sessionTileOwnerRoute
 } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -135,7 +138,15 @@ function TileChat({
 }) {
   const { gateway, requestGateway } = useGatewayRequest()
   const queryClient = useQueryClient()
-  const { selectModel } = useModelControls({ queryClient, requestGateway })
+  const ownerRoute = sessionTileOwnerRoute(storedSessionId)
+
+  const requestTileGateway = useCallback(
+    <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal): Promise<T> =>
+      requestForSessionProfile<T>(ownerRoute, requestGateway, method, params, timeoutMs, signal),
+    [ownerRoute, requestGateway]
+  )
+
+  const { selectModel } = useModelControls({ queryClient, requestGateway: requestTileGateway })
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const cwd = useStore(view.$cwd)
   const gatewayOpen = useStore($gatewayState) === 'open'
@@ -160,7 +171,7 @@ function TileChat({
   const composer = useComposerActions({
     activeSessionId: runtimeId,
     currentCwd: cwd,
-    requestGateway,
+    requestGateway: requestTileGateway,
     scope: {
       add: attachments.add,
       remove: attachments.remove,
@@ -201,11 +212,11 @@ function TileChat({
         <ModelMenuPanel
           gateway={gateway || undefined}
           onSelectModel={selectModel}
-          profile={activeGatewayProfile}
-          requestGateway={requestGateway}
+          profile={ownerRoute?.profile || activeGatewayProfile}
+          requestGateway={requestTileGateway}
         />
       ) : null,
-    [activeGatewayProfile, gateway, gatewayOpen, requestGateway, selectModel]
+    [activeGatewayProfile, gateway, gatewayOpen, ownerRoute?.profile, requestTileGateway, selectModel]
   )
 
   return (
@@ -247,6 +258,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
   const tile = tiles.find(t => t.storedSessionId === storedSessionId)
   const runtimeId = tile?.runtimeId ?? null
   const gatewayOpen = useStore($gatewayState) === 'open'
+  const delegateRevision = useStore($sessionTileDelegateRevision)
   const resumingRef = useRef(false)
   const view = useMemo(() => buildTileView(storedSessionId), [storedSessionId])
 
@@ -333,7 +345,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
       .finally(() => {
         resumingRef.current = false
       })
-  }, [gatewayOpen, runtimeId, storedSessionId, tile?.error])
+  }, [delegateRevision, gatewayOpen, runtimeId, storedSessionId, tile?.error])
 
   // The gateway (re)opening invalidates any latched error — it likely came
   // from a not-yet-open gateway or the previous connection. Clearing it
@@ -401,15 +413,17 @@ export function tileStoredRow(storedSessionId: string): SessionInfo | undefined 
  *  skipping the re-register that hands the tab back to this string. */
 function tileTitle(storedSessionId: string): string {
   const stored = tileStoredRow(storedSessionId)
+  const explicit = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.workspaceTabTitle
 
-  return stored ? sessionTitle(stored) : NEW_SESSION_TITLE
+  return stored ? sessionTitle(stored) : explicit || NEW_SESSION_TITLE
 }
 
 /** The `@session` link payload for a tile tab drag — id + owning profile + title.
  *  Resolved at drag time, so an unsent tab drags under its draft name. */
 function tileDragPayload(storedSessionId: string): SessionDragPayload {
   const stored = tileStoredRow(storedSessionId)
-  const title = stored ? sessionTitle(stored) : draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
+  const explicit = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.workspaceTabTitle
+  const title = stored ? sessionTitle(stored) : explicit || draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
 
   return { id: storedSessionId, profile: stored?.profile ?? '', title }
 }
@@ -617,7 +631,11 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   ),
   // Until the first turn lists a row there is no title to register, so the tab
   // takes its name from the composer instead — live, without re-registering.
-  tabTitle: storedSessionId => (tileStoredRow(storedSessionId) ? null : <SessionDraftTitle scope={storedSessionId} />),
+  tabTitle: storedSessionId =>
+    tileStoredRow(storedSessionId) ||
+    $sessionTiles.get().some(tile => tile.storedSessionId === storedSessionId && tile.workspaceTabTitle) ? null : (
+      <SessionDraftTitle scope={storedSessionId} />
+    ),
   render: storedSessionId => <SessionTilePane storedSessionId={storedSessionId} />,
   tabWrap: (storedSessionId, tab) => (
     <SessionTabMenu

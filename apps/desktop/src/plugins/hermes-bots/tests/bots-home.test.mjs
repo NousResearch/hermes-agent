@@ -454,6 +454,7 @@ test('opening a remote bot selects and opens its exact owner chat', async () => 
   assert.equal(t.sessionOpens.length, 1)
   assert.equal(t.sessionOpens[0].options.workspaceMode, 'bots')
   assert.equal(t.sessionOpens[0].options.workspaceOwnerKey, 'bot:work-vps::researcher')
+  assert.equal(t.sessionOpens[0].options.tabTitle, 'Bot Chat')
   assert.equal(t.sessionOpens[0].options.keepAllProfilesScope, true)
   assert.equal(t.sessionOpens[0].options.route.connectionId, 'work-vps')
   assert.ok(t.requests.every(request => request.route?.connectionId === 'work-vps'))
@@ -940,7 +941,7 @@ test('roster hydration and selection reconciliation run after render', () => {
 
   assert.match(
     pane,
-    /useEffect\(\(\) => \{[\s\S]{0,500}?\$rosterHydrated\.set\(true\)[\s\S]{0,300}?reconcileRosterSelection\(roster, sourceSnapshot, allMeta\)[\s\S]{0,220}?\}, \[data, error, selectionHydrated, roster, sourceSnapshot, allMeta\]\)/,
+    /useEffect\(\(\) => \{[\s\S]{0,500}?\$rosterHydrated\.set\(true\)[\s\S]{0,300}?reconcileRosterSelection\(roster, sourceSnapshot, allMeta\)[\s\S]{0,700}?\}, \[data, error, selectionHydrated, roster, sourceSnapshot, allMeta\]\)/,
     'persisted roster ownership must reconcile from an effect, never from a replayable render'
   )
   assert.equal(

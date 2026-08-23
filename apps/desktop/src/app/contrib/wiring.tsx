@@ -890,7 +890,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       void openNewSessionTile('center', {
         listed: false,
         route: workspaceNewSessionTarget.route,
-        workspaceScope: { workspaceMode: 'bots', workspaceOwnerKey }
+        workspaceScope: {
+          ownerRoute: workspaceNewSessionTarget.route,
+          workspaceMode: 'bots',
+          workspaceOwnerKey
+        }
       })
 
       return

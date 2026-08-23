@@ -21,6 +21,7 @@ import {
   resetTileRuntimeBindings,
   selectionHomesToWorkspace,
   type SessionTileDelegate,
+  sessionTileOwnerRoute,
   setSessionTileDelegate,
   setSessionTileWorkspaceScope
 } from '@/store/session-states'
@@ -457,5 +458,41 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     expect(states.$sessionTiles.get().some(t => t.storedSessionId === 'closed')).toBe(true)
     expect(findGroupOfPane(tree.$layoutTree.get()!, tilePane('closed'))?.active).toBe(tilePane('closed'))
     expect(tree.$activeTreeGroup.get()).toBe('grp-main')
+  })
+})
+
+describe('sessionTileOwnerRoute', () => {
+  afterEach(() => {
+    $sessionTiles.set([])
+  })
+
+  it('returns the exact owning route a bot chat tile was opened with', () => {
+    // This is what lets a bot chat RPC reach the bot's OWN local gateway even
+    // while chrome stays on the launch profile: the tile carries the route, so
+    // the request router never has to guess from the (hidden, unlisted) row.
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'local', mode: 'local', profile: 'developer' },
+        storedSessionId: 'bot-chat-developer'
+      }
+    ])
+
+    expect(sessionTileOwnerRoute('bot-chat-developer')).toEqual({
+      connectionId: 'local',
+      mode: 'local',
+      profile: 'developer'
+    })
+  })
+
+  it('returns undefined for a tile with no owner route (plain session)', () => {
+    $sessionTiles.set([{ storedSessionId: 'plain' }])
+
+    expect(sessionTileOwnerRoute('plain')).toBeUndefined()
+  })
+
+  it('returns undefined when the session has no tile', () => {
+    $sessionTiles.set([])
+
+    expect(sessionTileOwnerRoute('missing')).toBeUndefined()
   })
 })

@@ -717,9 +717,29 @@ export const host = {
    *  also scope chrome onto that profile and collapse the sidebar. */
   openSession: async (storedSessionId: string, options: PluginOpenSessionOptions = {}): Promise<void> => {
     const generation = ++openSessionGeneration
-    const ownerRoute = options.route ? { ...options.route } : null
-    const profile = (ownerRoute?.profile ?? options.profile ?? '').trim()
+    const explicitRoute = options.route ? { ...options.route } : null
+    const profile = (explicitRoute?.profile ?? options.profile ?? '').trim()
     const targetProfile = normalizeProfileKey(profile || $activeGatewayProfile.get())
+
+    // A local bot open passes only `profile` (no cross-connection route), but
+    // its RPCs STILL have to reach that profile's own local gateway while chrome
+    // stays on the launch profile. Synthesize a local owner route from the
+    // profile so the persisted tile carries it — the session-request router
+    // reads the tile route to dispatch on the owning backend, and the canonical
+    // Bot Chat is hidden (never in $sessions), so this is the only owner record
+    // it can consult. Without it, submit falls back to the active profile and
+    // 4001s / hangs against a backend that never owned the session.
+    //
+    // This is ROUTING metadata only (tile ownerRoute + owner hint); the dial
+    // path below still keys off the explicit cross-connection route, so a plain
+    // local open dials exactly as before (openGatewayForProfile), never the
+    // registry-secondary path.
+    const localConnectionId = activeGatewayConnectionId()
+    const ownerRoute =
+      explicitRoute ??
+      (options.workspaceMode === 'bots' && profile && localConnectionId
+        ? { connectionId: localConnectionId, mode: 'local' as const, profile: targetProfile }
+        : null)
     const expectHistory = options.expectHistory ?? false
 
     if (options.workspaceMode === 'bots') {
@@ -779,8 +799,13 @@ export const host = {
       // budget's. A workspace switch moves $activeGatewayProfile / chrome REST;
       // a plain navigation only opens the bot's gateway so session.resume can
       // hydrate, leaving chrome on the launch backend.
-      const dial = ownerRoute
-        ? () => openGatewayForAgent(ownerRoute.connectionId, ownerRoute.profile)
+      // Dial keys off the EXPLICIT cross-connection route only: a synthesized
+      // local ownerRoute is routing metadata for the tile/hint, and a local
+      // profile must dial through openGatewayForProfile (its established path),
+      // not the registry-secondary path openGatewayForAgent takes for a 'local'
+      // connection id. Behavior for a plain local open is unchanged.
+      const dial = explicitRoute
+        ? () => openGatewayForAgent(explicitRoute.connectionId, explicitRoute.profile)
         : plan.switchWorkspace
           ? () => ensureGatewayProfile(plan.switchWorkspace as string)
           : plan.dialWithoutSwitching
@@ -800,7 +825,10 @@ export const host = {
         throw new Error('Session open was superseded by a newer selection.')
       }
 
-      if (ownerRoute) {
+      // Only a cross-connection (explicit route) open forces the all-profiles
+      // view; a local bot open keeps the planner's decision, unchanged from
+      // before the synthesized-route addition.
+      if (explicitRoute) {
         setShowAllProfiles(true)
       } else if (plan.showAllProfiles !== null) {
         setShowAllProfiles(plan.showAllProfiles)
@@ -892,7 +920,10 @@ export const host = {
             throw error
           }
 
-          if (ownerRoute && !(await pluginRouteStillRegistered(ownerRoute))) {
+          // The registry check applies only to a real cross-connection route
+          // (explicit): a synthesized local route is never in getProfileRoutes,
+          // so checking it would spuriously abort a local bot's hydration retry.
+          if (explicitRoute && !(await pluginRouteStillRegistered(explicitRoute))) {
             throw new Error(`The ${targetProfile} gateway is no longer available.`)
           }
 

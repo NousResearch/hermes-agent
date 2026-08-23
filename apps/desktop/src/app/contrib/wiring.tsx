@@ -79,6 +79,7 @@ import {
   setMessages
 } from '@/store/session'
 import { requestForSessionProfile } from '@/store/session-request-router'
+import { $focusedStoredSessionId, sessionTileOwnerRoute } from '@/store/session-states'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isHudWindow } from '@/store/windows'
@@ -294,13 +295,24 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   // When chrome stays on the launch backend (Bot Mode / all-profiles
   // navigation), session-owned RPCs still have to hit the session's backend.
+  //
+  // A bot chat is a persisted TILE that already records the EXACT owning route
+  // (connectionId + profile) it was opened with — the same authoritative owner
+  // Sessions mode reads off the session row. Prefer it, keyed on the FOCUSED
+  // stored id: a tile is never $selectedStoredSessionId (that stays the primary
+  // pane), so routing off `selected` would send the bot's RPC to the primary's
+  // profile. The canonical Bot Chat is also hidden, so it never appears in
+  // $sessions and rememberedSessionProfile's row lookup misses and falls back to
+  // the ACTIVE profile — the Bot Mode "session not found" / hang. The tile route
+  // is per-session, survives relaunch, and needs no list membership, so it fixes
+  // an already-open chat too. Fall back to the list-derived profile (keyed on
+  // the same focused id) only when no tile route exists.
   const requestGateway = useCallback(
     <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
-      const owner = rememberedSessionProfile(
-        $sessions.get(),
-        selectedStoredSessionIdRef.current,
-        $activeGatewayProfile.get()
-      )
+      const routingSessionId = $focusedStoredSessionId.get() ?? selectedStoredSessionIdRef.current
+      const owner =
+        (routingSessionId ? sessionTileOwnerRoute(routingSessionId) : undefined) ??
+        rememberedSessionProfile($sessions.get(), routingSessionId, $activeGatewayProfile.get())
 
       return requestForSessionProfile<T>(owner, ambientRequestGateway, method, params ?? {}, timeoutMs, signal)
     },

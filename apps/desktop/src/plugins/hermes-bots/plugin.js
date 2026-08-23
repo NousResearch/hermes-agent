@@ -14091,6 +14091,58 @@ export default {
             })
           : null
 
+      // Proactive reclaim refresh: when the gateway reaps the runtime behind
+      // the OPEN bot chat (idle TTL, LRU cap, WS-orphan reap — the mass-reap
+      // shape hits every background bot at once), re-resume the canonical
+      // chat immediately instead of letting the user's next send eat the
+      // stale-id error + recovery retry. Matched on the STORED id (the
+      // claim's ids are stored ids; the payload carries both). Best-effort:
+      // a failed re-resume (backend still down) leaves the lazy recovery on
+      // next send as the backstop. Feature-detected — older shells have no
+      // host.onEvent.
+      const stopReclaimSync =
+        typeof host.onEvent === 'function'
+          ? host.onEvent('session.reclaimed', event => {
+              const payload = event?.payload || {}
+              const stored = String(payload.stored_session_id || '')
+              const claim = $openBotChat.get()
+
+              if (!stored || !claim) {
+                return
+              }
+
+              const owned = [claim.openedSessionId, claim.openedRegistryId].filter(Boolean)
+
+              if (!owned.includes(stored)) {
+                return
+              }
+
+              const bot = selectedRosterBot($lastRoster.get(), $selectedRosterKey.get())
+
+              if (!bot) {
+                return
+              }
+
+              const generation = botOpenGeneration
+              void openBotCanonicalChat(bot)
+                .then(opened => {
+                  // A user action while the re-resume ran owns the center now.
+                  if (!opened || generation !== botOpenGeneration) {
+                    return
+                  }
+
+                  $openBotChat.set({
+                    key: claim.key,
+                    openedRegistryId: opened.registryId,
+                    openedSessionId: opened.openedId
+                  })
+                })
+                .catch(() => {
+                  /* backend still down — next send recovers via the ladder */
+                })
+            })
+          : null
+
       $botsPaneVisible.set(Boolean($sidebarVisible.get()))
       $botChatFocused.set(sessionOwnsWorkspace())
       $botsHomeFronted.set(Boolean(homeVisibleStore.get()))
@@ -14109,6 +14161,7 @@ export default {
           stopGroupSync()
           stopHomeVisibleSync()
           stopFocusSync?.()
+          stopReclaimSync?.()
           $botsHomeFronted.set(false)
           closeBotsHomeWorkspace()
         })

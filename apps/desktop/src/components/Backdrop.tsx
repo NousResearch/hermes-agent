@@ -32,7 +32,8 @@ export function wallpaperOverlayStyle(preferences: WallpaperPreferences): CSSPro
     preferences.overlayShape,
     preferences.overlayX,
     preferences.overlayWidth,
-    preferences.overlayHeight
+    preferences.overlayHeight,
+    preferences.overlayFeather
   )
 
   return {

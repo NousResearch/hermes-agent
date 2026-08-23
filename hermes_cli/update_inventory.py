@@ -95,11 +95,30 @@ def _detect_supervisor_for_pid(pid: int, service_pids: set) -> str:
 
 
 def _restart_mechanism(supervisor: str, profile: str) -> str:
+    """Machine-readable restart mechanism id for a runtime.
+
+    THE policy table (#91277 Phase 2): restart execution consumes these ids
+    via :func:`match_runtime_outcomes` / the update's restart phase, and the
+    receipt records per-runtime outcomes against them. Display strings are
+    derived by :func:`describe_restart_mechanism` — never the other way
+    around.
+    """
     if supervisor == "systemd":
-        return "systemctl restart (drain-first SIGUSR1 when supported)"
+        return "systemd"
     if supervisor == "launchd":
-        return "launchctl kickstart -k (drain-first, per-label domain)"
+        return "launchd"
     if supervisor == "desktop":
+        return "desktop"
+    return "manual"
+
+
+def describe_restart_mechanism(mechanism: str, profile: str) -> str:
+    """Human-readable description of a restart mechanism id."""
+    if mechanism == "systemd":
+        return "systemctl restart (drain-first SIGUSR1 when supported)"
+    if mechanism == "launchd":
+        return "launchctl kickstart -k (drain-first, per-label domain)"
+    if mechanism == "desktop":
         return "Desktop app respawns its serve backend"
     if profile != "default":
         return f"hermes -p {profile} gateway restart"
@@ -301,7 +320,101 @@ def print_update_plan(plan: UpdatePlan) -> None:
             f"    • {runtime.kind} [{runtime.profile}] pid {runtime.pid}"
             f" — {runtime.supervisor}{sha}"
         )
-        print(f"      restart: {runtime.restart_via}")
+        print(
+            "      restart: "
+            f"{describe_restart_mechanism(runtime.restart_via, runtime.profile)}"
+        )
+
+
+def match_runtime_outcomes(
+    plan: "UpdatePlan",
+    *,
+    restarted_services: list,
+    relaunched_profiles: list,
+    externally_supervised_profiles: list,
+    killed_pids: set,
+    failed_units: list,
+) -> list[dict[str, Any]]:
+    """Reconcile the plan's runtimes against what the restart phase DID.
+
+    #91277 Phase 2 (restart via declared mechanism): the platform restart
+    branches each re-discover their own targets, so a runtime the plan saw
+    can be missed entirely with no signal. This cross-checks every planned
+    runtime against the phase's bookkeeping and returns one outcome row per
+    runtime::
+
+        {"kind", "profile", "pid", "mechanism", "outcome"}
+
+    outcome: ``restarted`` (service restarted / profile relaunched /
+    handed to external supervisor), ``stopped`` (pid killed, watcher or
+    operator relaunches), ``failed`` (in the phase's failed/stale list) or
+    ``unaccounted`` — the plan saw it and NO bookkeeping mentions it: the
+    blind-spot tripwire (same philosophy as the fleet matrix's DOWN row).
+    Never raises; on any probe error returns what it has.
+    """
+    outcomes: list[dict[str, Any]] = []
+    try:
+        failed_set = {str(u) for u in (failed_units or [])}
+        restarted_set = {str(s) for s in (restarted_services or [])}
+        relaunched = set(relaunched_profiles or [])
+        external = set(externally_supervised_profiles or [])
+        killed = {int(p) for p in (killed_pids or set())}
+
+        for runtime in plan.runtimes:
+            r = runtime if isinstance(runtime, RuntimeRecord) else None
+            if r is None:
+                continue
+            outcome = "unaccounted"
+            if r.profile in relaunched or r.profile in external:
+                outcome = "restarted"
+            elif r.pid is not None and r.pid in killed:
+                outcome = "stopped"
+            elif any(
+                r.profile in unit or (r.profile == "default" and "hermes-gateway" in unit)
+                for unit in failed_set
+            ):
+                outcome = "failed"
+            elif any(
+                r.profile in svc or (r.profile == "default" and "hermes-gateway" in svc)
+                for svc in restarted_set
+            ):
+                outcome = "restarted"
+            outcomes.append(
+                {
+                    "kind": r.kind,
+                    "profile": r.profile,
+                    "pid": r.pid,
+                    "mechanism": r.restart_via,
+                    "outcome": outcome,
+                }
+            )
+    except Exception as exc:
+        logger.debug("Runtime-outcome reconciliation failed: %s", exc)
+    return outcomes
+
+
+def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
+    """Print a loud warning for runtimes the restart phase never touched.
+
+    Returns True when at least one planned runtime is unaccounted — the
+    caller escalates exactly like a STALE/DOWN fleet row (exit 1): a runtime
+    the plan promised to restart, silently missed, is the class this phase
+    exists to kill.
+    """
+    missed = [o for o in outcomes if o.get("outcome") == "unaccounted"]
+    if not missed:
+        return False
+    print()
+    print("  ⚠ Planned runtimes the restart phase never touched:")
+    for o in missed:
+        print(
+            f"    ✗ {o['kind']} [{o['profile']}] pid {o['pid']}"
+            f" — planned mechanism: {o['mechanism']}"
+        )
+    print("    Restart them manually, then verify:")
+    print("      hermes gateway restart                # active profile")
+    print("      hermes -p <profile> gateway restart   # named profile")
+    return True
 
 
 def record_plan_in_receipt(plan: UpdatePlan) -> None:

@@ -5744,6 +5744,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # running Hermes runtime, its supervisor, and its running code version —
     # into the receipt, so a post-mortem can compare what the update SAW
     # against what it did. Read-only; a probe failure records nothing.
+    # ``_pre_update_plan`` is read again AFTER the restart phase to reconcile
+    # every planned runtime against the phase's bookkeeping (restart via
+    # declared mechanism — the plan is the worklist, not just a printout).
+    _pre_update_plan = None
     try:
         from hermes_cli.update_inventory import (
             collect_runtime_inventory,
@@ -8234,6 +8238,40 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 gateway_fleet_restart_incomplete = True
         except Exception as _fleet_exc:
             logger.debug("Fleet version verification failed: %s", _fleet_exc)
+
+        # Plan-vs-execution reconciliation (#91277 Phase 2, restart via
+        # declared mechanism): every runtime the PLAN saw must be accounted
+        # for by the restart phase's bookkeeping. An unaccounted runtime is
+        # the silent-miss class (a platform branch re-discovered its own
+        # targets and skipped one the inventory knew about) — escalate it
+        # exactly like a STALE/DOWN fleet row.
+        _runtime_outcomes: list = []
+        try:
+            if _pre_update_plan is not None and _pre_update_plan.runtimes:
+                from hermes_cli.update_inventory import (
+                    match_runtime_outcomes,
+                    report_unaccounted_runtimes,
+                )
+
+                _runtime_outcomes = match_runtime_outcomes(
+                    _pre_update_plan,
+                    restarted_services=restarted_services,
+                    relaunched_profiles=relaunched_profiles,
+                    externally_supervised_profiles=externally_supervised_profiles,
+                    killed_pids=killed_pids,
+                    failed_units=failed_or_stale_units,
+                )
+                if report_unaccounted_runtimes(_runtime_outcomes):
+                    gateway_fleet_restart_incomplete = True
+                try:
+                    import hermes_cli.update_receipt as _ur
+
+                    if _ur._current is not None:
+                        _ur._current.data["runtime_outcomes"] = _runtime_outcomes
+                except Exception:
+                    pass
+        except Exception as _outcome_exc:
+            logger.debug("Runtime-outcome reconciliation failed: %s", _outcome_exc)
 
         try:
             from hermes_cli.update_receipt import finalize_update_receipt

@@ -279,15 +279,18 @@ def _is_interpreter_shutdown_error(exc: Exception) -> bool:
     During teardown, ``concurrent.futures`` refuses new work with
     ``RuntimeError: cannot schedule new futures after interpreter shutdown``
     (or the shorter ``... after shutdown`` variant from a plain
-    ThreadPoolExecutor).  Both are documented in #58720.  The common
-    prefix catches both; the module-global ``is_finalizing`` flag can
-    lag the error by a hair, so matching the error text is the safe
-    fallback for that race.
+    ThreadPoolExecutor).  Both are documented in #58720.
+
+    Delegates to the shared predicate in ``tools.interpreter_shutdown``
+    (same home as cron delivery and concurrent tool submission) so the
+    shutdown-race bug class has one text-matching site. Keeps the
+    RuntimeError type gate from the original (#93269): unlike the raw
+    predicate, a ValueError carrying similar text must not match here.
     """
     if isinstance(exc, RuntimeError):
-        msg = str(exc).lower()
-        if "cannot schedule new futures" in msg:
-            return True
+        from tools.interpreter_shutdown import interpreter_shutting_down
+
+        return interpreter_shutting_down(exc)
     return False
 
 
@@ -8409,34 +8412,6 @@ def run_conversation(
             _hit_api = bool(tb_module_names & _API_CALL_MODULES)
 
             _is_local_processing_error = _hit_local and not _hit_api
-
-            # Interpreter finalization: the process is exiting (TUI quit,
-            # SIGTERM, one-shot CLI done) while a background turn — most
-            # commonly the post-turn review fork's daemon thread — is still
-            # mid-request. Every further API attempt raises "cannot schedule
-            # new futures after interpreter shutdown", so retrying is futile
-            # and the un-gated ❌ prints spam the user's shell AFTER the TUI
-            # already exited (call #4, #5, #6...). Same shutdown-race class
-            # as cron delivery (#55924/#58720) and concurrent tool submission;
-            # shared predicate in tools/interpreter_shutdown.py. Log one
-            # warning, no traceback, no synthetic history append (nothing can
-            # persist it anymore), and leave the loop immediately.
-            from tools.interpreter_shutdown import interpreter_shutting_down
-
-            if interpreter_shutting_down(e):
-                logger.warning(
-                    "Interpreter is shutting down — abandoning turn after "
-                    "API call #%d (%s)",
-                    api_call_count,
-                    e,
-                )
-                _turn_exit_reason = "interpreter_shutdown"
-                failed = True
-                final_response = (
-                    "Turn abandoned: the process was shutting down before "
-                    "the model call could complete."
-                )
-                break
 
             if _is_local_processing_error:
                 error_msg = (

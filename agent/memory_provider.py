@@ -140,10 +140,16 @@ class MemoryPrefetchResult:
             raw_observations = ()
         if not isinstance(raw_observations, (list, tuple)):
             raise TypeError("observations must be a list or tuple")
+        # Preserve tuple instances (including tuple subclasses) so the
+        # manager can enforce its operation budget while traversing them. A
+        # list is copied in full here intentionally: construction of this
+        # public value must not silently truncate provider data.
         object.__setattr__(
             self,
             "observations",
-            tuple(raw_observations),
+            raw_observations
+            if isinstance(raw_observations, tuple)
+            else tuple(raw_observations),
         )
 
 

@@ -635,7 +635,11 @@ working directory. This keeps routine exports out of source checkouts and
 prevents a generated profile snapshot from being mistaken for a repository
 source file. If the Hermes home itself lives inside a Git checkout (some
 Docker/custom deployments), the archive goes to `~/.hermes-profile-exports/`
-instead — never into the checkout. An explicit `-o` path is still honored
+or, failing that, a per-user directory under the OS temp dir — never into
+the checkout. If no safe automatic location exists at all (every candidate
+is inside a Git checkout), the export refuses with "No safe automatic
+export destination" and you must pass `-o` with a path outside the
+checkout. An explicit `-o` path is still honored
 when you intentionally choose where to save the archive.
 
 Or from a shell, same machinery:

@@ -212,3 +212,17 @@ def test_every_candidate_inside_a_checkout_fails_closed(
 
     with pytest.raises(ValueError, match="No safe automatic export destination"):
         profiles.get_profile_export_path("default")
+
+
+def test_export_dir_symlink_is_rejected(tmp_path, monkeypatch, profiles):
+    """A pre-created symlink at the managed export path (predictable-path
+    attack on shared hosts) must be refused, not silently followed."""
+    default_home = tmp_path / ".hermes"
+    default_home.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (default_home / "profile-exports").symlink_to(elsewhere)
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+
+    with pytest.raises(ValueError, match="symlink"):
+        profiles.get_profile_export_path("default")

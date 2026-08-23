@@ -2128,7 +2128,8 @@ def _inside_git_checkout(path: Path) -> bool:
     """
     try:
         resolved = path.resolve()
-    except OSError:
+    except (OSError, RuntimeError):
+        # RuntimeError: symlink loops on Python <= 3.12; fail closed either way.
         return True
     return any(
         (candidate / ".git").exists() for candidate in (resolved, *resolved.parents)
@@ -2147,9 +2148,12 @@ def _profile_export_directory() -> Path:
     # not put the automatic archive under that tree; use a sibling store and
     # fall back to the OS temp directory only for the unusual case where the
     # user's home itself is a checkout (e.g. a dotfiles repo).
+    # Per-uid temp name: a fixed /tmp/hermes-profile-exports is a predictable
+    # shared path another local user could pre-create (or symlink) before us.
+    uid_suffix = f"-{os.getuid()}" if hasattr(os, "getuid") else ""
     candidates = (
         Path.home() / ".hermes-profile-exports",
-        Path(tempfile.gettempdir()) / "hermes-profile-exports",
+        Path(tempfile.gettempdir()) / f"hermes-profile-exports{uid_suffix}",
     )
     for candidate in candidates:
         if not _inside_git_checkout(candidate):
@@ -2159,8 +2163,8 @@ def _profile_export_directory() -> Path:
     # would not stop a scripted export from recreating it.
     raise ValueError(
         "No safe automatic export destination: every candidate directory is "
-        "inside a Git checkout. Pass an explicit output path outside the "
-        "checkout (e.g. -o /path/outside/repo/profile.tar.gz)."
+        "inside a Git checkout. Provide an explicit output path outside the "
+        "checkout (CLI: -o /path/outside/repo/profile.tar.gz)."
     )
 
 
@@ -2176,6 +2180,20 @@ def get_profile_export_path(name: str, *, timestamp: Optional[str] = None) -> Pa
     validate_profile_name(canon)
     export_dir = _profile_export_directory()
     export_dir.mkdir(parents=True, exist_ok=True)
+    # exist_ok=True would silently accept a directory (or symlink) another
+    # local user pre-created at a predictable path; refuse to write a
+    # secret-bearing archive anywhere we don't own.
+    if export_dir.is_symlink():
+        raise ValueError(
+            f"Export directory {export_dir} is a symlink; refusing to write "
+            "a profile archive through it. Provide an explicit output path."
+        )
+    if hasattr(os, "getuid") and export_dir.stat().st_uid != os.getuid():
+        raise ValueError(
+            f"Export directory {export_dir} is owned by another user; "
+            "refusing to write a profile archive there. Provide an explicit "
+            "output path."
+        )
     stamp = timestamp or time.strftime("%Y%m%d-%H%M%S")
     return export_dir / f"{canon}-{stamp}.tar.gz"
 

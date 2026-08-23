@@ -165,6 +165,43 @@ describe('desktop filesystem facade', () => {
     })
   })
 
+  it('pins remote filesystem requests to the active registry connection', async () => {
+    $connection.set({ connectionId: 'mr-small', mode: 'remote', profile: 'default' } as never)
+    setApiRequestConnection('mr-small')
+
+    await readDesktopDir('/home/doug/default-profile-workspace')
+    await readDesktopFileText('/home/doug/default-profile-workspace/IDEA.md')
+    await readDesktopFileDataUrl('/home/doug/default-profile-workspace/IDEA.md')
+    await desktopGitRoot('/home/doug/default-profile-workspace')
+    await desktopDefaultCwd()
+    await desktopFileDiff('/home/doug/default-profile-workspace', 'IDEA.md')
+
+    expect(api).toHaveBeenCalledTimes(6)
+
+    for (const [request] of api.mock.calls) {
+      expect(request).toMatchObject({ connectionId: 'mr-small', profile: 'default' })
+    }
+  })
+
+  it('separates filesystem cache keys for registered connections sharing a profile', () => {
+    $connection.set({
+      baseUrl: 'https://gateway.example',
+      connectionId: 'mr-small',
+      mode: 'remote',
+      profile: 'default'
+    } as never)
+    const mrSmallKey = desktopFsCacheKey()
+
+    $connection.set({
+      baseUrl: 'https://gateway.example',
+      connectionId: 'other-default',
+      mode: 'remote',
+      profile: 'default'
+    } as never)
+
+    expect(desktopFsCacheKey()).not.toBe(mrSmallKey)
+  })
+
   it('keys SSH filesystem caches by stable host identity instead of the forwarded port', () => {
     $connection.set({
       mode: 'remote',

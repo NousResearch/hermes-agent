@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useCallback, useEffect, useMemo } from 'react'
 
+import { desktopFsCacheKey } from '@/lib/desktop-fs'
 import { $connection } from '@/store/session'
 import { $workspaceChangeTick, consumeWorkspaceChange } from '@/store/workspace-events'
 
@@ -86,6 +87,10 @@ function errorChild(parentId: string, error: string | undefined): TreeNode {
     name: `Unable to read (${error || 'read-error'})`,
     placeholder: 'error'
   }
+}
+
+function readError(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : 'read-error'
 }
 
 export interface UseProjectTreeResult {
@@ -209,20 +214,27 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
   })
 
   let resolvedCwd = cwd
-  let { entries, error } = await readProjectDir(cwd, cwd)
+  let entries: ProjectTreeEntry[] = []
+  let error: string | undefined
 
-  if (error) {
-    const fallback = await fallbackRootFor(cwd)
+  try {
+    ;({ entries, error } = await readProjectDir(cwd, cwd))
 
-    if (fallback) {
-      const retry = await readProjectDir(fallback, fallback)
+    if (error) {
+      const fallback = await fallbackRootFor(cwd)
 
-      if (!retry.error) {
-        resolvedCwd = fallback
-        entries = retry.entries
-        error = undefined
+      if (fallback) {
+        const retry = await readProjectDir(fallback, fallback)
+
+        if (!retry.error) {
+          resolvedCwd = fallback
+          entries = retry.entries
+          error = undefined
+        }
       }
     }
+  } catch (cause) {
+    error = readError(cause)
   }
 
   setProjectTree(latest => {
@@ -339,7 +351,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
   const state = useStore($projectTree)
   const connection = useStore($connection)
   const workspaceTick = useStore($workspaceChangeTick)
-  const connectionKey = `${connection?.mode || 'local'}:${connection?.profile || ''}:${connection?.baseUrl || ''}`
+  const connectionKey = desktopFsCacheKey(connection)
 
   const refreshRoot = useCallback(() => loadRoot(cwd, { force: true }), [cwd])
 
@@ -395,9 +407,16 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       })
 
       const rootPath = $projectTree.get().resolvedCwd || cwd
-      const { entries, error } = await readProjectDir(id, rootPath)
+      let entries: ProjectTreeEntry[] = []
+      let error: string | undefined
 
-      inflight.delete(id)
+      try {
+        ;({ entries, error } = await readProjectDir(id, rootPath))
+      } catch (cause) {
+        error = readError(cause)
+      } finally {
+        inflight.delete(id)
+      }
 
       setProjectTree(current => {
         if (current.cwd !== cwd) {

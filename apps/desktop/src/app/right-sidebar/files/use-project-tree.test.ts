@@ -68,6 +68,25 @@ describe('useProjectTree', () => {
     expect(result.current.data).toEqual([])
   })
 
+  it('clears root loading and recovers when a root read rejects', async () => {
+    readDir.mockRejectedValueOnce(new Error('remote request aborted'))
+    readDir.mockResolvedValueOnce(ok([{ name: 'IDEA.md', path: '/remote/IDEA.md', isDirectory: false }]))
+
+    const { result } = renderHook(() => useProjectTree('/remote'))
+
+    await waitFor(() => {
+      expect(result.current.rootError).toBe('remote request aborted')
+      expect(result.current.rootLoading).toBe(false)
+    })
+
+    await act(async () => {
+      await result.current.refreshRoot()
+    })
+
+    expect(result.current.rootError).toBeNull()
+    expect(result.current.data.map(node => node.name)).toEqual(['IDEA.md'])
+  })
+
   it('lazy-loads children on loadChildren and replaces the placeholder', async () => {
     readDir.mockResolvedValueOnce(ok([{ name: 'src', path: '/p/src', isDirectory: true }]))
     readDir.mockResolvedValueOnce(
@@ -168,6 +187,29 @@ describe('useProjectTree', () => {
     ])
   })
 
+  it('clears child loading and allows retry when a child read rejects', async () => {
+    readDir.mockResolvedValueOnce(ok([{ name: 'src', path: '/p/src', isDirectory: true }]))
+    readDir.mockRejectedValueOnce(new Error('child request aborted'))
+    readDir.mockResolvedValueOnce(ok([{ name: 'index.ts', path: '/p/src/index.ts', isDirectory: false }]))
+
+    const { result } = renderHook(() => useProjectTree('/p'))
+
+    await waitFor(() => expect(result.current.data.length).toBe(1))
+
+    await act(async () => {
+      await result.current.loadChildren('/p/src')
+    })
+
+    expect(result.current.data[0]).toMatchObject({ error: 'child request aborted', loading: false })
+
+    await act(async () => {
+      await result.current.loadChildren('/p/src')
+    })
+
+    expect(result.current.data[0]).toMatchObject({ error: undefined, loading: false })
+    expect(result.current.data[0].children?.map(node => node.name)).toEqual(['index.ts'])
+  })
+
   it('dedupes concurrent loadChildren calls for the same id', async () => {
     readDir.mockResolvedValueOnce(ok([{ name: 'src', path: '/p/src', isDirectory: true }]))
 
@@ -209,6 +251,35 @@ describe('useProjectTree', () => {
 
     expect(result.current.rootError).toBeNull()
     expect(result.current.data.map(n => n.name)).toEqual(['README.md'])
+  })
+
+  it('reloads the same path when the active registered connection changes', async () => {
+    let resolveFirst: ((result: HermesReadDirResult) => void) | undefined
+    readDir.mockImplementationOnce(
+      () =>
+        new Promise<HermesReadDirResult>(resolve => {
+          resolveFirst = resolve
+        })
+    )
+    readDir.mockResolvedValueOnce(ok([{ name: 'from-b', path: '/shared/from-b', isDirectory: false }]))
+    $connection.set({ baseUrl: 'https://gateway.example', connectionId: 'connection-a', mode: 'local', profile: 'default' } as never)
+
+    const { result } = renderHook(() => useProjectTree('/shared'))
+
+    await waitFor(() => expect(readDir).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      $connection.set({
+        baseUrl: 'https://gateway.example',
+        connectionId: 'connection-b',
+        mode: 'local',
+        profile: 'default'
+      } as never)
+      resolveFirst?.(ok([{ name: 'from-a', path: '/shared/from-a', isDirectory: false }]))
+    })
+
+    await waitFor(() => expect(result.current.data.map(node => node.name)).toEqual(['from-b']))
+    expect(readDir).toHaveBeenCalledTimes(2)
   })
 
   it('reloads when cwd changes', async () => {

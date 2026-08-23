@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesReadDirResult } from '@/global'
 import { $connection } from '@/store/session'
+import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 import { clearProjectDirCache, readProjectDir } from './ipc'
 import { resetProjectTreeState, useProjectTree } from './use-project-tree'
@@ -66,6 +67,36 @@ describe('useProjectTree', () => {
 
     await waitFor(() => expect(result.current.rootError).toBe('EACCES'))
     expect(result.current.data).toEqual([])
+  })
+
+  it('does not fall back after a failed root read from a superseded connection', async () => {
+    let resolveRootFromA: ((result: HermesReadDirResult) => void) | undefined
+    const sanitizeWorkspaceCwd = vi.fn(async () => ({ cwd: '/fallback', sanitized: true }))
+    readDir.mockImplementationOnce(
+      () =>
+        new Promise<HermesReadDirResult>(resolve => {
+          resolveRootFromA = resolve
+        })
+    )
+    readDir.mockResolvedValueOnce(ok([{ name: 'from-b', path: '/shared/from-b', isDirectory: false }]))
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { readDir, sanitizeWorkspaceCwd }
+    $connection.set({ baseUrl: 'local-a', connectionId: 'connection-a', mode: 'local', profile: 'default' } as never)
+
+    const { result } = renderHook(() => useProjectTree('/shared'))
+
+    await waitFor(() => expect(readDir).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      $connection.set({ baseUrl: 'local-b', connectionId: 'connection-b', mode: 'local', profile: 'default' } as never)
+    })
+    await waitFor(() => expect(readDir).toHaveBeenCalledTimes(2))
+
+    await act(async () => {
+      resolveRootFromA?.({ entries: [], error: 'ENOENT' })
+    })
+
+    await waitFor(() => expect(result.current.data.map(node => node.name)).toEqual(['from-b']))
+    expect(sanitizeWorkspaceCwd).not.toHaveBeenCalled()
   })
 
   it('clears root loading and recovers when a root read rejects', async () => {
@@ -253,7 +284,83 @@ describe('useProjectTree', () => {
     expect(result.current.data.map(n => n.name)).toEqual(['README.md'])
   })
 
-  it('reloads the same path when the active registered connection changes', async () => {
+  it('discards a stale live refresh after the active registered connection changes', async () => {
+    let resolveRefreshFromA: ((result: HermesReadDirResult) => void) | undefined
+    readDir.mockResolvedValueOnce(ok([{ name: 'from-a', path: '/shared/from-a', isDirectory: false }]))
+    readDir.mockImplementationOnce(
+      () =>
+        new Promise<HermesReadDirResult>(resolve => {
+          resolveRefreshFromA = resolve
+        })
+    )
+    readDir.mockResolvedValueOnce(ok([{ name: 'from-b', path: '/shared/from-b', isDirectory: false }]))
+    $connection.set({ baseUrl: 'https://gateway.example', connectionId: 'connection-a', mode: 'local', profile: 'default' } as never)
+
+    const { result } = renderHook(() => useProjectTree('/shared'))
+
+    await waitFor(() => expect(result.current.data.map(node => node.name)).toEqual(['from-a']))
+
+    act(() => {
+      notifyWorkspaceChanged()
+    })
+    await waitFor(() => expect(readDir).toHaveBeenCalledTimes(2))
+
+    act(() => {
+      $connection.set({
+        baseUrl: 'https://gateway.example',
+        connectionId: 'connection-b',
+        mode: 'local',
+        profile: 'default'
+      } as never)
+    })
+    await waitFor(() => expect(result.current.data.map(node => node.name)).toEqual(['from-b']))
+
+    await act(async () => {
+      resolveRefreshFromA?.(ok([{ name: 'stale-a', path: '/shared/stale-a', isDirectory: false }]))
+    })
+
+    expect(result.current.data.map(node => node.name)).toEqual(['from-b'])
+  })
+
+  it('discards a stale child read after the active registered connection changes', async () => {
+    let resolveChildFromA: ((result: HermesReadDirResult) => void) | undefined
+    readDir.mockResolvedValueOnce(ok([{ name: 'src', path: '/shared/src', isDirectory: true }]))
+    readDir.mockImplementationOnce(
+      () =>
+        new Promise<HermesReadDirResult>(resolve => {
+          resolveChildFromA = resolve
+        })
+    )
+    readDir.mockResolvedValueOnce(ok([{ name: 'src', path: '/shared/src', isDirectory: true }]))
+    $connection.set({ baseUrl: 'https://gateway.example', connectionId: 'connection-a', mode: 'local', profile: 'default' } as never)
+
+    const { result } = renderHook(() => useProjectTree('/shared'))
+
+    await waitFor(() => expect(result.current.data[0]?.name).toBe('src'))
+
+    act(() => {
+      void result.current.loadChildren('/shared/src')
+    })
+    await waitFor(() => expect(readDir).toHaveBeenCalledTimes(2))
+
+    act(() => {
+      $connection.set({
+        baseUrl: 'https://gateway.example',
+        connectionId: 'connection-b',
+        mode: 'local',
+        profile: 'default'
+      } as never)
+    })
+    await waitFor(() => expect(result.current.data[0]?.name).toBe('src'))
+
+    await act(async () => {
+      resolveChildFromA?.(ok([{ name: 'from-a', path: '/shared/src/from-a', isDirectory: false }]))
+    })
+
+    expect(result.current.data[0]).not.toMatchObject({ children: [{ name: 'from-a' }] })
+  })
+
+  it('discards a stale root read after the active registered connection changes', async () => {
     let resolveFirst: ((result: HermesReadDirResult) => void) | undefined
     readDir.mockImplementationOnce(
       () =>

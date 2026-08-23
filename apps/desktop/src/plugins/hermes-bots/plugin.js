@@ -1651,6 +1651,9 @@ function startBotRelay() {
 
 function stopBotRelay() {
   relayDisposed = true
+  // A rerun remembered mid-drain must not leak into the next start —
+  // it would fire one stale drain after restart.
+  relayDrainRerun = false
 
   if (relayRosterTimer !== null) {
     clearInterval(relayRosterTimer)

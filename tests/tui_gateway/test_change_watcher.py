@@ -221,6 +221,8 @@ def test_new_envelope_after_drain_fires_pending_again(watcher_home):
     first.write_text("{}")
     server._broadcast_watched_changes(now=0.0)
     first.write_text("{}")  # make the first sighting a change, not a seed
+    bump_ns = first.stat().st_mtime_ns + 1_000_000
+    os.utime(first, ns=(bump_ns, bump_ns))  # strictly newer, FS-independent
     server._broadcast_watched_changes(now=10.0)
 
     first.unlink()  # the Desktop drained it
@@ -228,8 +230,8 @@ def test_new_envelope_after_drain_fires_pending_again(watcher_home):
 
     second = outbox / ("d" * 32 + ".json")
     second.write_text("{}")
-    now_ns = time.time_ns()
-    os.utime(second, ns=(now_ns, now_ns))  # strictly newer than the watermark
+    newer_ns = bump_ns + 1_000_000  # strictly beyond the watermark
+    os.utime(second, ns=(newer_ns, newer_ns))
     server._broadcast_watched_changes(now=30.0)
 
     assert [e for e in events if e[0] == "bot_relay.outbox.pending"] == [

@@ -278,7 +278,16 @@ def _recover_diverged_update(
         f"onto {remote_ref}..."
     )
     result = subprocess.run(
-        git_cmd + ["rebase", "--rebase-merges", "--onto", remote_ref, fork_point],
+        git_cmd
+        + [
+            "-c",
+            "rebase.updateRefs=false",
+            "rebase",
+            "--rebase-merges",
+            "--onto",
+            remote_ref,
+            fork_point,
+        ],
         cwd=cwd,
         **_GIT_TEXT_KW,
     )

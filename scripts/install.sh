@@ -1597,7 +1597,7 @@ recover_diverged_update() {
     done
 
     log_info "Preserving $local_commits locally carried commit(s) and merge topology onto $remote_ref..."
-    if git rebase --rebase-merges --onto "$remote_ref" "$fork_point"; then
+    if git -c rebase.updateRefs=false rebase --rebase-merges --onto "$remote_ref" "$fork_point"; then
         return 0
     fi
 

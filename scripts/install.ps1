@@ -2190,7 +2190,7 @@ function Recover-DivergedUpdate {
     }
 
     Write-Info "Preserving $localCommitCount locally carried commit(s) and merge topology onto $RemoteRef..."
-    git -c windows.appendAtomically=false rebase --rebase-merges --onto $RemoteRef $forkPoint
+    git -c windows.appendAtomically=false -c rebase.updateRefs=false rebase --rebase-merges --onto $RemoteRef $forkPoint
     if ($LASTEXITCODE -eq 0) { return }
 
     Write-Err "Rebase conflicted; aborting so the original checkout is restored."

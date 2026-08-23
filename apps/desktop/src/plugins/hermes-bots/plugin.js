@@ -6554,6 +6554,17 @@ function appendGroupChatEntry(group, from, text, thread, images) {
     entry.images = images
   }
 
+  // #93127 insurance: a residual double-append path (stale loop + fresh
+  // loop both committing the same member reply) lands back-to-back and
+  // byte-identical. Drop the echo instead of flooding the room. User
+  // entries and non-adjacent repeats are never touched.
+  const priorLog = ($groupChats.get()[group] || {}).log || []
+  const lastEntry = priorLog[priorLog.length - 1]
+
+  if (isDuplicateGroupAppend(lastEntry, from, entry.text, entry.thread)) {
+    return lastEntry
+  }
+
   updateGroupChat(group, room => {
     room.log.push(entry)
     return room
@@ -7042,6 +7053,50 @@ async function harvestStrandedGroupReply(group, member) {
   }
 }
 
+// --- room-turn decision helpers (#93127) — pure, vm-sliced by tests ---
+
+/** #93127: whether a finished member turn may still commit (append its reply
+ *  and advance its watermark). A turn dispatched under an older epoch was
+ *  superseded mid-flight by a newer user send — its late result must be
+ *  dropped, because the new send's own loop re-drives this member with the
+ *  full delta and committing both is exactly the double-delivery bug. */
+function shouldCommitMemberTurn(epochAtDispatch, currentEpoch) {
+  return epochAtDispatch === currentEpoch
+}
+
+/** #93127 insurance: byte-identical member echo detection. TRUE only when
+ *  the immediately-preceding log entry has the same author (kind + name +
+ *  source), same thread, and identical text, within a short recency window —
+ *  a residual double-append fires back-to-back; two legitimately identical
+ *  replies hours apart (or with anything in between) are never dropped. */
+const GROUP_DUPLICATE_APPEND_WINDOW_MS = 10 * 60 * 1000
+
+function isDuplicateGroupAppend(lastEntry, from, text, thread, now = Date.now()) {
+  if (!lastEntry || !from || from.kind !== 'member' || lastEntry.from?.kind !== 'member') {
+    return false
+  }
+
+  if (String(lastEntry.from?.name || '') !== String(from.name || '')) {
+    return false
+  }
+
+  if (String(lastEntry.from?.source || '') !== String(from.source || '')) {
+    return false
+  }
+
+  if (String(lastEntry.thread || 'legacy') !== String(thread || 'legacy')) {
+    return false
+  }
+
+  if (now - (lastEntry.at || 0) > GROUP_DUPLICATE_APPEND_WINDOW_MS) {
+    return false
+  }
+
+  return String(lastEntry.text || '') === String(text || '').trim()
+}
+
+// --- end room-turn decision helpers ---
+
 /** Drive one bounded round-robin turn for ONE THREAD. Serial — one member at
  *  a time. A newer user send bumps the room epoch; this loop notices at the
  *  next member boundary, bails, and the newest send's own loop takes over.
@@ -7141,6 +7196,18 @@ async function runGroupChatRounds(group, members, thread) {
           recordGroupActivity(group, { kind: 'failed', member: member.name, thread })
           noteBotAttention(groupMemberKey(member), error?.message || error)
           reply = null // a failed turn is a pass, never a room error
+        }
+
+        // #93127: the turn may have finished AFTER a newer user send bumped
+        // the room epoch. That newer send's loop re-drives this member with
+        // the full delta, so committing this stale result (watermark advance
+        // + append) would double-deliver the same reply. Drop it here —
+        // BEFORE the watermark advance and BEFORE the append.
+        const epochNow = ($groupChats.get()[group] || {}).epoch || 0
+
+        if (!shouldCommitMemberTurn(startEpoch, epochNow)) {
+          recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })
+          return
         }
 
         // The member has now seen everything up to the pre-reply log length.

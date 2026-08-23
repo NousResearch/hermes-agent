@@ -911,6 +911,101 @@ def test_speculative_agent_build_failure_is_silent(monkeypatch):
         server._sessions.pop(sid, None)
 
 
+def test_prompt_after_speculative_failure_surfaces_recorded_error(monkeypatch):
+    """Chain pin: a speculative pre-warm failed silently while the user was
+    browsing; when they later submit a real prompt, that prompt must surface
+    the RECORDED ``agent_error`` as a visible terminal turn error — never a
+    silent inactivity drop. This is the continuation-path contract the
+    speculative suppression relies on."""
+    import threading
+    import uuid
+
+    sid = f"test-sid-{uuid.uuid4().hex[:8]}"
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("Unknown provider 'custom:gemma-imatrix'")
+
+    # ── Phase 1: the browse-only pre-warm fails silently. ──
+    emitted = []
+    ready = threading.Event()
+    monkeypatch.setattr(server, "_make_agent", _boom)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_SlashWorker", lambda *args: None)
+    monkeypatch.setattr(server, "_attach_worker", lambda *args: None)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+    monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: emitted.append(a))
+    monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_clear_session_context", lambda *a, **k: None)
+
+    session = _session(agent=None, agent_ready=ready)
+    session["agent"] = None
+    session["profile_home"] = None
+    session["session_key"] = f"test-key-{uuid.uuid4().hex[:8]}"
+    server._sessions[sid] = session
+    try:
+        server._start_agent_build(sid, session, speculative=True)
+        assert ready.wait(timeout=15), "agent_ready never set after speculative build"
+        assert not [e for e in emitted if e and e[0] == "error"]
+        recorded = session["agent_error"]
+
+        # ── Phase 2: a real prompt arrives. The build seam stays REAL so the
+        # early-return on the finished (failed) build is exercised too. ──
+        threads = []
+        calls = {"run_prompt": 0}
+
+        class _FakeThread:
+            def __init__(self, target=None, daemon=None):
+                self.target = target
+                threads.append(self)
+
+            def start(self):
+                return None
+
+            def is_alive(self):
+                return True
+
+        monkeypatch.setattr(server.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
+        monkeypatch.setattr(
+            server,
+            "_run_prompt_submit",
+            lambda *args, **kwargs: calls.__setitem__(
+                "run_prompt", calls["run_prompt"] + 1
+            ),
+        )
+
+        submit = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": sid, "text": "continue this"},
+            }
+        )
+        assert submit.get("result"), f"got error: {submit.get('error')}"
+
+        threads[0].target()
+
+        assert calls["run_prompt"] == 0
+        assert session["running"] is False
+        failure_frames = [
+            e
+            for e in emitted
+            if e
+            and e[0] in ("error", "message.complete")
+            and e[1] == sid
+            and "Unknown provider 'custom:gemma-imatrix'" in str(e[2])
+        ]
+        assert len(failure_frames) == 1, (
+            f"recorded agent_error must reach the client exactly once, got: {emitted}"
+        )
+        assert recorded == session.get("agent_error")
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_non_speculative_agent_build_failure_emits_error(monkeypatch):
     """A build triggered by real intent to run (e.g. prompt.submit) that fails
     must still surface the ``error`` event — only the speculative pre-warm is

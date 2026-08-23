@@ -58,8 +58,8 @@ mcp_servers:
     command: "npx"             # (required) executable to run
     args: ["-y", "pkg-name"]   # (optional) command arguments, default: []
     env:                       # (optional) environment variables for the subprocess
-      SOME_API_KEY: "value"
-    timeout: 120               # (optional) per-tool-call timeout in seconds, default: 120
+      SOME_API_KEY: "${SOME_API_KEY}"
+    timeout: 300               # (optional) per-tool-call timeout in seconds, default: 300
     connect_timeout: 60        # (optional) initial connection timeout in seconds, default: 60
 ```
 
@@ -70,8 +70,8 @@ mcp_servers:
   server_name:
     url: "https://my-server.example.com/mcp"   # (required) server URL
     headers:                                     # (optional) HTTP headers
-      Authorization: "Bearer sk-..."
-    timeout: 180               # (optional) per-tool-call timeout in seconds, default: 120
+      Authorization: "Bearer ${MCP_SERVER_API_KEY}"
+    timeout: 180               # (optional) per-tool-call timeout in seconds, default: 300
     connect_timeout: 60        # (optional) initial connection timeout in seconds, default: 60
 ```
 
@@ -84,7 +84,7 @@ mcp_servers:
 | `env`             | dict   | `{}`    | Extra environment variables for the subprocess    |
 | `url`             | string | --      | Server URL (HTTP transport, required)             |
 | `headers`         | dict   | `{}`    | HTTP headers sent with every request              |
-| `timeout`         | int    | `120`   | Per-tool-call timeout in seconds                  |
+| `timeout`         | int    | `300`   | Per-tool-call timeout in seconds                  |
 | `connect_timeout` | int    | `60`    | Timeout for initial connection and discovery      |
 
 Note: A server config must have either `command` (stdio) or `url` (HTTP), not both.
@@ -130,6 +130,16 @@ After discovery, MCP tools are automatically injected into all `hermes-*` platfo
 
 `discover_mcp_tools()` is idempotent -- calling it multiple times only connects to servers that aren't already connected. Failed servers are retried on subsequent calls.
 
+### Reloading configuration
+
+Hermes watches MCP configuration by default. When
+`mcp.auto_reload_on_config_change` is `true`, a saved configuration change reconnects
+the affected servers and rebuilds the MCP tool surface. When that setting is `false`,
+run `/reload-mcp` to apply the change.
+
+Reloading changes the tool schema and invalidates the provider prompt cache for the
+active session. The next turn sends the full input prefix again.
+
 ## Transport Types
 
 ### Stdio Transport
@@ -154,7 +164,7 @@ mcp_servers:
   remote_api:
     url: "https://mcp.example.com/mcp"
     headers:
-      Authorization: "Bearer sk-..."
+      Authorization: "Bearer ${MCP_SERVER_API_KEY}"
 ```
 
 If HTTP support is not available in your installed `mcp` version, the server will fail with an ImportError and other servers will continue normally.
@@ -168,7 +178,9 @@ For stdio servers, Hermes does NOT pass your full shell environment to MCP subpr
 - `PATH`, `HOME`, `USER`, `LANG`, `LC_ALL`, `TERM`, `SHELL`, `TMPDIR`
 - Any `XDG_*` variables
 
-All other environment variables (API keys, tokens, secrets) are excluded unless you explicitly add them via the `env` config key. This prevents accidental credential leakage to untrusted MCP servers.
+All other environment variables, including API keys and tokens, are excluded unless you
+explicitly add them through the `env` key. Put secret values in `~/.hermes/.env`, then
+reference the environment variable from `config.yaml`:
 
 ```yaml
 mcp_servers:
@@ -176,8 +188,7 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      # Only this token is passed to the subprocess
-      GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
 ```
 
 ### Credential Stripping in Error Messages
@@ -263,7 +274,7 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxxxxxxxxxxxxxxxxxxx"
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
     timeout: 60
 ```
 
@@ -276,7 +287,7 @@ mcp_servers:
   company_api:
     url: "https://mcp.mycompany.com/v1/mcp"
     headers:
-      Authorization: "Bearer sk-xxxxxxxxxxxxxxxxxxxx"
+      Authorization: "Bearer ${COMPANY_MCP_API_KEY}"
       X-Team-Id: "engineering"
     timeout: 180
     connect_timeout: 30
@@ -298,12 +309,12 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxxxxxxxxxxxxxxxxxxx"
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
 
   company_api:
     url: "https://mcp.internal.company.com/mcp"
     headers:
-      Authorization: "Bearer sk-xxxxxxxxxxxxxxxxxxxx"
+      Authorization: "Bearer ${COMPANY_MCP_API_KEY}"
     timeout: 300
 ```
 
@@ -341,4 +352,4 @@ Disable sampling for untrusted servers with `sampling: { enabled: false }`.
 - Tool results are returned as JSON with either `{"result": "..."}` or `{"error": "..."}`
 - The native MCP client is independent of `mcporter` -- you can use both simultaneously
 - Server connections are persistent and shared across all conversations in the same agent process
-- Adding or removing servers requires restarting the agent (no hot-reload currently)
+- Configuration changes reload automatically by default. Use `/reload-mcp` when automatic reload is disabled.

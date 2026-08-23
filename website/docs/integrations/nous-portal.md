@@ -213,24 +213,23 @@ model:
   base_url: https://inference-api.nousresearch.com/v1
 ```
 
-The Tool Gateway settings live under their respective tool sections:
+The Tool Gateway settings live under their respective tool sections — each category has a single selection key, and picking **Nous Subscription** in `hermes tools` (or `hermes setup --portal`) writes the value `nous`:
 
 ```yaml
 web:
-  backend: firecrawl
-  use_gateway: true   # web search/extract routes through Tool Gateway
+  backend: nous          # web search/extract routes through Tool Gateway
 
 image_gen:
-  use_gateway: true
+  provider: nous
 
 tts:
-  provider: openai
-  use_gateway: true
+  provider: nous
 
 browser:
-  cloud_provider: browser-use
-  use_gateway: true
+  cloud_provider: nous
 ```
+
+The runtime always follows the stored selection — direct API keys left in `.env` are ignored while a category is set to `nous`, and picking a direct provider (e.g. `image_gen.provider: fal`) without its key produces a clear error rather than silently rerouting through the gateway. (Older configs used a legacy `use_gateway: true` flag; it is read as equivalent to `nous` but is no longer written.)
 
 The OAuth refresh token is stored separately at `~/.hermes/auth.json` (not in `config.yaml` — credentials and configuration are kept separate by design).
 

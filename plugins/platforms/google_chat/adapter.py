@@ -2510,6 +2510,15 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     return str(value)
         if reply_to and "/threads/" in reply_to and "/messages/" not in reply_to:
             return reply_to
+        # Cron deliveries (job_id present in metadata) must post as a new
+        # top-level message unless an explicit thread was requested above. The
+        # _last_inbound_thread fallback below exists for interactive DMs, where
+        # Google Chat spawns a fresh thread per top-level user message and the
+        # adapter drops thread_id to keep the session key stable. Replaying
+        # that fallback for a cron output would reply inside a stale inbound
+        # thread instead of starting a new one, burying the delivery.
+        if metadata and metadata.get("job_id"):
+            return None
         if chat_id:
             cached = self._last_inbound_thread.get(chat_id)
             if cached:

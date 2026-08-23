@@ -47,6 +47,12 @@ Wire protocol
     # Inject context for pre_llm_call:
     {"context": "Today is Friday"}
 
+    # Modify tool input for pre_tool_call (Hermes-canonical):
+    {"action": "modify", "args": {"new_string": "fixed content"}}
+
+    # Modify tool input for pre_tool_call (Claude-Code-style):
+    {"decision": "modify", "tool_input": {"new_string": "fixed content"}}
+
     # Silent no-op:
     <empty or any non-matching JSON object>
 
@@ -145,7 +151,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
-from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+from hermes_cli._subprocess_compat import IS_WINDOWS, kill_process_tree, windows_hide_flags
 
 try:
     import fcntl  # POSIX only; Windows falls back to best-effort without flock.
@@ -332,6 +338,27 @@ def iter_configured_hooks(cfg: Optional[Dict[str, Any]]) -> List[ShellHookSpec]:
     return _parse_hooks_block(cfg.get("hooks"))
 
 
+def re_register_config_hooks() -> None:
+    """Re-register shell hooks from config after a plugin force-reload.
+
+    ``PluginManager.discover_and_load(force=True)`` unloads via the ownership
+    ledger and clears the manager's ``_hooks`` dict, which silently drops
+    shell hooks that were registered from ``config.yaml`` at startup (they
+    are config-owned, not plugin-owned, so the ledger cannot restore them).
+    Clear the idempotence set and re-run ``register_from_config()`` so hooks
+    are wired again (#60036 / PR #60267; tracking #64178 — salvaged from
+    PR #64188).
+
+    Commands already allowlisted stay allowlisted, so this never re-prompts
+    at a TTY for hooks the user previously approved.
+    """
+    with _registered_lock:
+        _registered.clear()
+    from hermes_cli.config import load_config
+
+    register_from_config(load_config())
+
+
 def reset_for_tests() -> None:
     """Clear the idempotence set.  Test-only helper."""
     with _registered_lock:
@@ -348,7 +375,7 @@ def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
     Malformed entries warn-and-skip — we never raise from config parsing
     because a broken hook must not crash the agent.
     """
-    from hermes_cli.plugins import VALID_HOOKS
+    from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
 
     if not isinstance(hooks_cfg, dict):
         return []
@@ -361,6 +388,17 @@ def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
         # functionality (e.g. output-spill budgets, outbound webhooks —
         # the latter parsed by agent/outbound_webhooks.py).
         if event_name in ("output_spill", "outbound"):
+            continue
+        if event_name in SHELL_UNSUPPORTED_HOOKS:
+            # Registering would "succeed" while the hook's return value is
+            # silently dropped (_parse_response has no channel for these
+            # events' directives) — refuse loudly instead.
+            logger.warning(
+                "hook event %r is Python-plugin-only: shell hooks cannot "
+                "return its directive, so this registration is refused "
+                "rather than silently ignored",
+                event_name,
+            )
             continue
         if event_name not in VALID_HOOKS:
             suggestion = difflib.get_close_matches(
@@ -511,7 +549,10 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         "error": None,
     }
     try:
-        argv = shlex.split(os.path.expanduser(spec.command))
+        # Windows-safe: plain shlex.split eats backslashes in paths (#78293).
+        from hermes_cli._subprocess_compat import split_command_line
+
+        argv = split_command_line(os.path.expanduser(spec.command))
     except ValueError as exc:
         result["error"] = f"command {spec.command!r} cannot be parsed: {exc}"
         return result
@@ -520,21 +561,26 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         return result
 
     t0 = time.monotonic()
-    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
+    # Spawn the hook in its own process group on POSIX (``process_group=0``,
+    # Python ≥3.11) so a timed-out hook's descendants can be reaped with the
+    # hook itself. Windows keeps the hidden-window flags; tree cleanup there
+    # goes through ``taskkill /T`` in ``kill_process_tree``. Hooks that
+    # complete in time keep their descendants — an intentionally detached
+    # helper (``some-daemon &``) survives a successful run. Ported from
+    # openai/codex#37527 ("Terminate timed-out hook process trees").
+    _popen_kwargs: Dict[str, Any] = (
+        {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
+    )
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             argv,
-            input=stdin_json,
-            capture_output=True,
-            timeout=spec.timeout,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True, encoding='utf-8', errors='replace',
             shell=False,
             **_popen_kwargs,
         )
-    except subprocess.TimeoutExpired:
-        result["timed_out"] = True
-        result["elapsed_seconds"] = round(time.monotonic() - t0, 3)
-        return result
     except FileNotFoundError:
         result["error"] = "command not found"
         return result
@@ -545,9 +591,32 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         result["error"] = str(exc)
         return result
 
+    try:
+        stdout, stderr = proc.communicate(input=stdin_json, timeout=spec.timeout)
+    except subprocess.TimeoutExpired:
+        # Take down the whole process tree, not just the direct child —
+        # otherwise a hook that forked helpers leaves them running (and,
+        # holding the pipe write ends, they'd stall the drain below).
+        kill_process_tree(proc)
+        try:
+            proc.communicate(timeout=1)
+        except Exception:
+            pass
+        result["timed_out"] = True
+        result["elapsed_seconds"] = round(time.monotonic() - t0, 3)
+        return result
+    except Exception as exc:  # pragma: no cover — defensive
+        kill_process_tree(proc)
+        try:
+            proc.communicate(timeout=1)
+        except Exception:
+            pass
+        result["error"] = str(exc)
+        return result
+
     result["returncode"] = proc.returncode
-    result["stdout"] = proc.stdout or ""
-    result["stderr"] = proc.stderr or ""
+    result["stdout"] = stdout or ""
+    result["stderr"] = stderr or ""
     result["elapsed_seconds"] = round(time.monotonic() - t0, 3)
     return result
 
@@ -711,6 +780,12 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     skipping the translation silently breaks every ``pre_tool_call``
     block directive.
 
+    For ``pre_tool_call`` the ``modify`` action (canonical: ``{"action":
+    "modify", "args": {...}}``, Claude-Code-style: ``{"decision":
+    "modify", "tool_input": {...}}``) is translated to
+    ``{"action": "modify", "args": {...}}`` so callers can merge the
+    returned fields into the tool's ``args`` before dispatch.
+
     For ``pre_llm_call``, ``{"context": "..."}`` is passed through
     unchanged to match the existing plugin-hook contract.
 
@@ -737,6 +812,15 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
             return {"action": "block", "message": _block_message(data.get("message"), data.get("reason"))}
         if data.get("decision") == "block":
             return {"action": "block", "message": _block_message(data.get("reason"), data.get("message"))}
+        # "modify" action — transform tool_input before dispatch
+        if data.get("action") == "modify":
+            new_args = data.get("args")
+            if isinstance(new_args, dict):
+                return {"action": "modify", "args": new_args}
+        if data.get("decision") == "modify":
+            new_args = data.get("tool_input")
+            if isinstance(new_args, dict):
+                return {"action": "modify", "args": new_args}
         return None
 
     if event == "pre_verify":
@@ -950,7 +1034,9 @@ def _command_script_path(command: str) -> str:
     common bare-path form.
     """
     try:
-        parts = shlex.split(command)
+        from hermes_cli._subprocess_compat import split_command_line
+
+        parts = split_command_line(command)
     except ValueError:
         return command
     if not parts:
@@ -1037,7 +1123,9 @@ def script_is_executable(command: str) -> bool:
     if not os.path.isfile(expanded):
         return False
     try:
-        argv = shlex.split(command)
+        from hermes_cli._subprocess_compat import split_command_line
+
+        argv = split_command_line(command)
     except ValueError:
         return False
     is_bare_invocation = bool(argv) and argv[0] == path

@@ -162,6 +162,44 @@ class TestUsageAccountSection:
         assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result
 
+    @pytest.mark.asyncio
+    async def test_usage_command_prefers_dominant_persisted_route(self, monkeypatch):
+        runner = _make_runner(SK)
+        runner._session_db = AsyncSessionDB(MagicMock())
+        runner._session_db._db.get_session.return_value = {
+            "billing_provider": "nous",
+            "billing_base_url": "https://inference-api.nousresearch.com/v1/",
+        }
+        runner._session_db._db.get_dominant_session_model_route.return_value = {
+            "model": "z-ai/glm-5.2",
+            "billing_provider": "nvidia",
+            "billing_base_url": "https://integrate.api.nvidia.com/v1/",
+        }
+        session_entry = MagicMock(session_id="sess-1")
+        runner.session_store.get_or_create_session.return_value = session_entry
+
+        calls = []
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+        monkeypatch.setattr(
+            "gateway.slash_commands.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "gateway.slash_commands.render_account_usage_lines",
+            lambda snapshot, markdown=False: ["account limits"],
+        )
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
+
+        await runner._handle_usage_command(MagicMock())
+
+        account_call = next(c for c in calls if c["args"] == ("nvidia",))
+        assert account_call["kwargs"]["base_url"] == "https://integrate.api.nvidia.com/v1/"
+
 
 class TestUsageReset:
     """`/usage reset [--force]` — banked Codex reset redemption via the gateway."""

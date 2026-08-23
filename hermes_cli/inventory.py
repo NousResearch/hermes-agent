@@ -34,7 +34,7 @@ Substrate facts (verified May 2026):
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Optional
+from typing import Any, Optional
 
 
 # ─── Public types ───────────────────────────────────────────────────────
@@ -272,6 +272,7 @@ def build_models_payload(
         _apply_capabilities(rows)
     if featured:
         _apply_featured(rows)
+    _apply_custom_aliases(rows)
 
     return {
         "providers": rows,
@@ -401,14 +402,54 @@ def format_aux_picker_entries(
     return entries
 
 
+def _reasoning_catalog_reader(slug: str):
+    """Per-model reasoning-capability reader for aggregators that publish one.
+
+    Cache-only — building the picker payload must never block on HTTP. A cold
+    cache warms in the background so the next open is accurate; until then the
+    model reports no restriction and the UI offers the full scale.
+    """
+    try:
+        from hermes_cli.models import (
+            nous_model_reasoning_capabilities,
+            openrouter_model_reasoning_capabilities,
+            warm_nous_reasoning_caps_async,
+            warm_openrouter_reasoning_caps_async,
+        )
+    except Exception:
+        return None
+
+    if slug == "nous":
+        warm_nous_reasoning_caps_async()
+        return nous_model_reasoning_capabilities
+    if slug == "openrouter":
+        warm_openrouter_reasoning_caps_async()
+        return openrouter_model_reasoning_capabilities
+    return None
+
+
 def _apply_capabilities(rows: list[dict]) -> None:
-    """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
+    """Attach a ``{model: {fast, reasoning, ...}}`` map to each provider row.
 
     `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
     enforces). `reasoning` comes from the models.dev catalog when known and
     defaults to True otherwise — the effort dial is broadly accepted and a
     no-op on models that ignore it, whereas hiding it from a capable-but-
     uncatalogued model is the worse failure.
+
+    Aggregators that publish per-model reasoning detail add
+    `can_disable_reasoning`, False on reasoning-mandatory routes whose upstream
+    answers a disable with HTTP 400. Omitted when the catalog doesn't say,
+    which the UI reads as "no restriction known". Such a catalog also overrides
+    `reasoning` itself when it reports a route that takes no reasoning
+    parameter — a definitive negative from the provider actually serving the
+    model outranks the models.dev inference.
+
+    The catalog's `supported_efforts` list is deliberately NOT forwarded: it
+    under-reports. The Portal accepts and honors levels a route doesn't
+    advertise (``z-ai/glm-5.3`` publishes ``max, high, low`` yet serves
+    ``minimal`` at its lowest thinking), so filtering the picker by that list
+    would hide levels that demonstrably work.
     """
     from hermes_cli.models import model_supports_fast_mode
 
@@ -419,7 +460,8 @@ def _apply_capabilities(rows: list[dict]) -> None:
 
     for row in rows:
         slug = row.get("slug") or ""
-        caps: dict[str, dict[str, bool]] = {}
+        caps: dict[str, dict[str, Any]] = {}
+        read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
 
         for model in row.get("models") or []:
             reasoning = True
@@ -431,10 +473,25 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 except Exception:
                     reasoning = True
 
-            caps[model] = {
+            entry: dict[str, Any] = {
                 "fast": bool(model_supports_fast_mode(model)),
                 "reasoning": reasoning,
             }
+
+            if reasoning and read_reasoning_catalog is not None:
+                try:
+                    detail = read_reasoning_catalog(model)
+                except Exception:
+                    detail = None
+                if detail and not detail.get("supports_reasoning"):
+                    # For a route it serves, the aggregator's own catalog beats
+                    # models.dev: no reasoning parameter means no reasoning
+                    # controls, so there is no disable to describe either.
+                    entry["reasoning"] = False
+                elif detail:
+                    entry["can_disable_reasoning"] = not detail.get("mandatory")
+
+            caps[model] = entry
 
         row["capabilities"] = caps
 
@@ -503,6 +560,32 @@ def _apply_featured(rows: list[dict]) -> None:
         # Preserve the row's model order for stable rendering.
         order = {m: i for i, m in enumerate(models)}
         row["featured_models"] = sorted(featured, key=lambda m: order[m])
+
+
+def _apply_custom_aliases(rows: list[dict]) -> None:
+    """Attach the accepted identity set to each user-defined provider row.
+
+    A session's ``model.options`` reports the canonical ``custom:<key>``
+    identity (via ``canonical_custom_identity``), while catalog rows carry
+    the bare config key as ``slug``. GUI pickers compare the two to decide
+    which row is active; exact equality never matches for custom providers
+    (#87035). Exposing ``aliases`` — every current and legacy spelling from
+    :func:`hermes_cli.providers.custom_provider_aliases` — lets the frontend
+    do a membership check instead.
+    """
+    from hermes_cli.providers import custom_provider_aliases
+
+    for row in rows:
+        if not row.get("is_user_defined"):
+            continue
+        try:
+            row["aliases"] = sorted(
+                custom_provider_aliases(
+                    str(row.get("name", "")), str(row.get("slug", ""))
+                )
+            )
+        except Exception:
+            continue
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────
@@ -578,6 +661,53 @@ def _append_unconfigured_rows(
     return extras
 
 
+def _anthropic_oauth_credentials_present() -> bool:
+    """True when the user explicitly authenticated Anthropic via OAuth.
+
+    Two deliberate flows leave no trace in active_provider /
+    model.provider / API-key env vars: Hermes' own Anthropic device flow
+    (token in auth.json) and a Claude Code login (~/.claude/.credentials.json).
+    ``list_authenticated_providers`` already accepts both readers as real
+    credentials when discovering rows; this mirrors that acceptance so the
+    desktop explicit-only filter does not silently drop a provider the user
+    deliberately signed into. Unlike ambient CLI tokens (gh -> copilot),
+    an OAuth access token only exists after an interactive login.
+    """
+    try:
+        from agent.anthropic_adapter import (
+            read_claude_code_credentials,
+            read_hermes_oauth_credentials,
+        )
+
+        hermes_creds = read_hermes_oauth_credentials() or {}
+        if hermes_creds.get("accessToken"):
+            return True
+        cc_creds = read_claude_code_credentials() or {}
+        if cc_creds.get("accessToken"):
+            return True
+    except Exception:
+        return False
+    # Pool-only OAuth entries (auth.json credential_pool.anthropic) are the
+    # canonical location for wired tokens and equally deliberate — the
+    # discovery side accepts them via pool.has_credentials(), so the filter
+    # must too or those rows are built and then silently dropped. Read-only
+    # dict access (no load_pool) so a picker open never mutates auth.json.
+    try:
+        from agent.credential_pool import AUTH_TYPE_OAUTH
+        from hermes_cli.auth import read_credential_pool
+
+        for entry in read_credential_pool("anthropic"):
+            if (
+                isinstance(entry, dict)
+                and entry.get("auth_type") == AUTH_TYPE_OAUTH
+                and str(entry.get("access_token") or "").strip()
+            ):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
     """Keep only rows backed by explicit user configuration.
 
@@ -608,9 +738,33 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             if _raw_config_has_enabled_moa_preset():
                 kept.append(row)
             continue
+        if _provider_is_keyless(slug):
+            # Keyless providers (opencode-free) require no configuration at
+            # all — there is nothing to "explicitly configure", and hiding
+            # them would defeat their purpose (zero-setup discoverability).
+            kept.append(row)
+            continue
+        if slug == "anthropic" and _anthropic_oauth_credentials_present():
+            # Anthropic OAuth logins (Hermes device flow / Claude Code) are
+            # deliberate sign-ins that leave no trace in active_provider,
+            # model.provider, or API-key env vars. The strict gate below
+            # would drop the row even though list_authenticated_providers
+            # just accepted those same credentials when building it.
+            kept.append(row)
+            continue
         if is_provider_explicitly_configured(slug):
             kept.append(row)
     return kept
+
+
+def _provider_is_keyless(slug: str) -> bool:
+    """True when the provider's Hermes overlay declares it keyless."""
+    try:
+        from hermes_cli.providers import HERMES_OVERLAYS
+        overlay = HERMES_OVERLAYS.get(slug)
+        return bool(overlay is not None and getattr(overlay, "keyless", False))
+    except Exception:
+        return False
 
 
 def _raw_config_has_enabled_moa_preset() -> bool:
@@ -783,8 +937,9 @@ def _apply_pricing(
             # Sale chrome is Nous Portal-only. Other providers (OpenRouter,
             # Novita, …) never get discount_percent / was_* even if a nested
             # pricing.original somehow appeared in their catalog. Free / $0
-            # models never get sale chrome either — even if original leaked.
-            if slug == "nous" and not is_free:
+            # models get flat -100% chrome (was_* only when the gateway
+            # served an original).
+            if slug == "nous":
                 sale = compute_sale_discount(
                     inp_raw, out_raw, p.get("original")
                 )

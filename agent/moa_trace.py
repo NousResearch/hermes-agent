@@ -94,6 +94,21 @@ def _slot_trace(acct: Any, label: str) -> dict[str, Any]:
     }
 
 
+def slot_metrics(acct: Any, label: str, output: Any = None) -> dict[str, Any]:
+    """Render one reference's accounting for observability hooks.
+
+    Same fields as ``_slot_trace`` minus ``input_messages``, which is the bulk
+    of a trace record and would cross the plugin-hook boundary for every
+    advisor on every turn. ``output`` comes from the caller because the
+    privacy-redacted advisor text lives alongside the accounting, not on it.
+    """
+    trace = _slot_trace(acct, label)
+    trace.pop("input_messages", None)
+    if output is not None:
+        trace["output"] = output
+    return trace
+
+
 def save_moa_turn(
     *,
     session_id: Optional[str],

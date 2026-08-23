@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getStatus } from '@/hermes'
 
+import { deferred } from '../../../test/deferred'
+
 import { useStatusSnapshot } from './use-status-snapshot'
 
 vi.mock('@/hermes', () => ({
@@ -10,18 +12,6 @@ vi.mock('@/hermes', () => ({
 }))
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
-
-function deferred<T>() {
-  let resolve: (value: T) => void = () => undefined
-  let reject: (reason?: unknown) => void = () => undefined
-
-  const promise = new Promise<T>((nextResolve, nextReject) => {
-    resolve = nextResolve
-    reject = nextReject
-  })
-
-  return { promise, reject, resolve }
-}
 
 async function flushAsync() {
   await act(async () => {
@@ -31,6 +21,7 @@ async function flushAsync() {
 
 beforeEach(() => {
   vi.useFakeTimers()
+  vi.spyOn(document, 'hasFocus').mockReturnValue(true)
   vi.mocked(getStatus)
     .mockReset()
     .mockResolvedValue({} as never)
@@ -38,10 +29,34 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   vi.useRealTimers()
 })
 
 describe('useStatusSnapshot', () => {
+  it('pauses status RPCs while visible but unfocused, then catches up on focus', async () => {
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+    const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+
+    renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+
+    expect(getStatus).not.toHaveBeenCalled()
+    expect(requestGateway).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(getStatus).not.toHaveBeenCalled()
+
+    vi.mocked(document.hasFocus).mockReturnValue(true)
+    window.dispatchEvent(new Event('focus'))
+    await flushAsync()
+
+    expect(getStatus).toHaveBeenCalledOnce()
+    expect(requestGateway).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps the last authoritative readiness through a transient RPC failure', async () => {
     let refresh = 0
 
@@ -128,6 +143,47 @@ describe('useStatusSnapshot', () => {
 
     expect(getStatus).toHaveBeenCalledTimes(2)
     expect(result.current.inferenceStatus).toBeNull()
+  })
+
+  it('refreshes readiness by source and ignores the previous backend response', async () => {
+    const workRuntime = deferred<unknown>()
+    const workSetup = deferred<unknown>()
+    const homeRuntime = deferred<unknown>()
+    const homeSetup = deferred<unknown>()
+    let source = 'work'
+
+    const requestGateway = vi.fn((method: string) => {
+      if (source === 'work') {
+        return method === 'setup.runtime_check' ? workRuntime.promise : workSetup.promise
+      }
+
+      return method === 'setup.runtime_check' ? homeRuntime.promise : homeSetup.promise
+    }) as unknown as GatewayRequester
+
+    const { rerender, result } = renderHook(({ scope }) => useStatusSnapshot('open', requestGateway, scope), {
+      initialProps: { scope: 'work\0default' }
+    })
+
+    await flushAsync()
+    source = 'home'
+    rerender({ scope: 'home\0default' })
+    await flushAsync()
+
+    expect(result.current.inferenceStatus).toBeNull()
+
+    await act(async () => {
+      homeRuntime.resolve({ ok: true })
+      homeSetup.resolve({ provider_configured: true })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.inferenceStatus).toMatchObject({ ready: true, source: 'runtime_check' })
+
+    await act(async () => {
+      workRuntime.resolve({ error: 'stale backend', ok: false })
+      workSetup.resolve({ provider_configured: false })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.inferenceStatus).toMatchObject({ ready: true, source: 'runtime_check' })
   })
 
   it('waits for a slow refresh to settle before scheduling another one', async () => {

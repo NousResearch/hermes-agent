@@ -77,6 +77,31 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
     return agent
 
 
+AZURE_FOUNDRY_BASE_URL = (
+    "https://placeholder.services.ai.azure.com/api/projects/placeholder/openai/v1"
+)
+
+
+def _build_azure_foundry_agent(monkeypatch, *, model="gpt-5.4"):
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model=model,
+        provider="azure-foundry",
+        api_mode="codex_responses",
+        base_url=AZURE_FOUNDRY_BASE_URL,
+        api_key="foundry-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    return agent
+
+
 def _codex_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -325,6 +350,110 @@ def test_build_api_kwargs_mantle_sets_extended_prompt_cache_retention(monkeypatc
     assert kwargs["prompt_cache_retention"] == "24h"
 
 
+def _azure_reasoning_item():
+    return {"type": "reasoning", "encrypted_content": "sealed", "summary": []}
+
+
+def _azure_post_tool_messages():
+    return [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Create a marker"},
+        {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [_azure_reasoning_item()],
+            "tool_calls": [
+                {
+                    "id": "call_marker",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_marker", "content": "marker written"},
+    ]
+
+
+def test_build_api_kwargs_azure_foundry_post_tool_suppresses_reasoning(monkeypatch):
+    """Live agent path reaches Azure Foundry detection and scopes suppression.
+
+    Exercises ``chat_completion_helpers.build_api_kwargs`` end-to-end rather
+    than the transport in isolation: the agent must forward ``provider`` and
+    ``base_url`` into ``build_kwargs`` for the Foundry detection to fire at
+    all. On the post-tool follow-up shape the encrypted reasoning item is
+    dropped while function_call / function_call_output continuity is kept.
+    """
+    agent = _build_azure_foundry_agent(monkeypatch)
+    assert agent._codex_reasoning_replay_enabled is True
+
+    kwargs = agent._build_api_kwargs(_azure_post_tool_messages())
+
+    item_types = [item.get("type") for item in kwargs["input"] if isinstance(item, dict)]
+    assert "reasoning" not in item_types
+    assert "function_call" in item_types
+    assert "function_call_output" in item_types
+    assert kwargs.get("include") == []
+
+
+def test_build_api_kwargs_azure_foundry_non_tool_preserves_reasoning(monkeypatch):
+    """Ordinary (non-tool) Azure Foundry continuity is unchanged via the live path.
+
+    Without the post-tool follow-up shape there is no evidence Foundry rejects
+    the payload, so the encrypted reasoning item must still be replayed even
+    though the agent forwards the Foundry identity fields.
+    """
+    agent = _build_azure_foundry_agent(monkeypatch)
+
+    messages = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Explain recursion"},
+        {
+            "role": "assistant",
+            "content": "Recursion is when a function calls itself.",
+            "codex_reasoning_items": [_azure_reasoning_item()],
+        },
+        {"role": "user", "content": "Give an example"},
+    ]
+
+    kwargs = agent._build_api_kwargs(messages)
+
+    item_types = [item.get("type") for item in kwargs["input"] if isinstance(item, dict)]
+    assert "reasoning" in item_types
+    assert "function_call" not in item_types
+    assert "function_call_output" not in item_types
+    assert kwargs.get("include") == ["reasoning.encrypted_content"]
+
+
+def test_build_api_kwargs_azure_foundry_user_turn_after_tool_call_keeps_reasoning(
+    monkeypatch,
+):
+    """Suppression does not stick once the tool call is answered.
+
+    Regression guard for the sticky-history shape: after the assistant has
+    replied to the tool result, a plain user follow-up is a payload Foundry
+    accepts, so reasoning replay must come back on rather than stay off for
+    the remainder of the conversation.
+    """
+    agent = _build_azure_foundry_agent(monkeypatch)
+
+    messages = _azure_post_tool_messages() + [
+        {
+            "role": "assistant",
+            "content": "Marker created.",
+            "codex_reasoning_items": [_azure_reasoning_item()],
+        },
+        {"role": "user", "content": "Now explain recursion"},
+    ]
+
+    kwargs = agent._build_api_kwargs(messages)
+
+    item_types = [item.get("type") for item in kwargs["input"] if isinstance(item, dict)]
+    assert "reasoning" in item_types
+    assert "function_call" in item_types
+    assert "function_call_output" in item_types
+    assert kwargs.get("include") == ["reasoning.encrypted_content"]
+
+
 
 
 
@@ -406,6 +535,227 @@ def _build_xai_agent_with_slash_enum_tool(monkeypatch):
 
 
 
+
+
+def test_run_codex_stream_strips_relay_added_retention_at_consumer_wire(
+    monkeypatch,
+    caplog,
+):
+    """A Relay-added unsupported field cannot reach consumer ChatGPT Codex."""
+    from agent import relay_llm
+
+    agent = _build_agent(monkeypatch)
+    captured = {}
+
+    def _fake_create(**kwargs):
+        captured.update(kwargs)
+        return _FakeCreateStream([
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            )
+        ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+    original = _codex_request_kwargs()
+    relay_request_body = relay_llm._relay_request_body(
+        original,
+        {"api_mode": "codex_responses"},
+    )
+    relayed = relay_llm._provider_request(
+        original,
+        SimpleNamespace(
+            content={
+                **relay_request_body,
+                "prompt_cache_retention": "24h",
+            },
+            headers={},
+        ),
+        relay_request_body=relay_request_body,
+        codec_baseline_body=dict(relay_request_body),
+        metadata={"api_mode": "codex_responses"},
+    )
+    assert relayed["prompt_cache_retention"] == "24h"
+
+    with caplog.at_level("WARNING", logger="agent.codex_runtime"):
+        agent._run_codex_stream(relayed)
+
+    assert "prompt_cache_retention" not in captured
+    assert any(
+        "Dropped unsupported prompt_cache_retention at consumer Codex wire boundary"
+        in record.message
+        for record in caplog.records
+    )
+
+
+def test_run_codex_stream_strips_nested_request_override_retention(
+    monkeypatch,
+    caplog,
+):
+    """Configured extra_body retention cannot cross the final wire boundary."""
+    from agent.transports.codex import ResponsesApiTransport
+
+    agent = _build_agent(monkeypatch)
+    captured = {}
+
+    def _fake_create(**kwargs):
+        captured.update(kwargs)
+        return _FakeCreateStream([
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            )
+        ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+    request = ResponsesApiTransport().build_kwargs(
+        model="gpt-5.6-sol",
+        messages=[
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ],
+        tools=[],
+        is_codex_backend=True,
+        base_url="https://chatgpt.com/backend-api/codex",
+        request_overrides={
+            "extra_body": {"prompt_cache_retention": "24h"},
+        },
+    )
+    assert request["extra_body"] == {"prompt_cache_retention": "24h"}
+
+    with caplog.at_level("WARNING", logger="agent.codex_runtime"):
+        agent._run_codex_stream(request)
+
+    assert "extra_body" not in captured
+    assert request["extra_body"] == {"prompt_cache_retention": "24h"}
+    assert any(
+        "Dropped unsupported prompt_cache_retention at consumer Codex wire boundary"
+        in record.message
+        for record in caplog.records
+    )
+
+
+def test_consumer_codex_wire_guard_strips_nested_extra_body_retention(caplog):
+    """The SDK merges ``extra_body`` into the JSON body, so a nested
+    ``extra_body.prompt_cache_retention`` reaches the endpoint exactly like the
+    top-level field — the guard must strip both shapes (#89897)."""
+    from agent.codex_runtime import _sanitize_consumer_codex_request
+
+    agent = SimpleNamespace(_is_codex_backend=lambda: True, model="gpt-5.6-sol")
+    extra_body = {"prompt_cache_retention": "24h", "unrelated": "keep"}
+    request = {
+        "model": "gpt-5.6-sol",
+        "prompt_cache_key": "cache-key-sentinel",
+        "extra_body": extra_body,
+    }
+
+    with caplog.at_level("WARNING", logger="agent.codex_runtime"):
+        sanitized = _sanitize_consumer_codex_request(agent, request)
+
+    assert "prompt_cache_retention" not in sanitized.get("extra_body", {})
+    # Unrelated extra_body entries survive; the caller's mapping is untouched.
+    assert sanitized["extra_body"]["unrelated"] == "keep"
+    assert extra_body["prompt_cache_retention"] == "24h"
+    assert sanitized["prompt_cache_key"] == "cache-key-sentinel"
+    assert any(
+        "Dropped unsupported prompt_cache_retention" in record.message
+        for record in caplog.records
+    )
+
+
+def test_consumer_codex_wire_guard_drops_emptied_extra_body():
+    """When retention was extra_body's only entry, the emptied mapping is
+    removed rather than sent as ``extra_body={}``."""
+    from agent.codex_runtime import _sanitize_consumer_codex_request
+
+    agent = SimpleNamespace(_is_codex_backend=lambda: True, model="gpt-5.6-sol")
+    request = {
+        "model": "gpt-5.6-sol",
+        "extra_body": {"prompt_cache_retention": "24h"},
+    }
+
+    sanitized = _sanitize_consumer_codex_request(agent, request)
+
+    assert "extra_body" not in sanitized
+
+
+def test_consumer_codex_wire_guard_preserves_nested_retention_on_compatible_endpoint():
+    """Compatible endpoints keep a nested extra_body retention untouched."""
+    from agent.codex_runtime import _sanitize_consumer_codex_request
+
+    agent = SimpleNamespace(_is_codex_backend=lambda: False)
+    request = {
+        "model": "openai.gpt-5.5",
+        "extra_body": {"prompt_cache_retention": "24h"},
+    }
+
+    sanitized = _sanitize_consumer_codex_request(agent, request)
+
+    assert sanitized["extra_body"]["prompt_cache_retention"] == "24h"
+
+
+@pytest.mark.parametrize(
+    "base_url,model,expect_dropped",
+    [
+        # Consumer ChatGPT Codex: the endpoint rejects retention outright.
+        ("https://chatgpt.com/backend-api/codex", "gpt-5.6-sol", True),
+        ("https://chatgpt.com/backend-api/codex", "gpt-5-codex", True),
+        # Hosts that support 24h retention must keep it (#70083, #88601).
+        ("https://api.meta.ai/v1", "gpt-5.6-sol", False),
+        ("https://bedrock-mantle.us-east-1.api.aws/v1", "openai.gpt-5.5", False),
+        # Non-Codex OpenAI and a same-host/different-path backend are both
+        # outside the consumer-Codex contract the guard enforces.
+        ("https://api.openai.com/v1", "gpt-5.6-sol", False),
+        ("https://chatgpt.com/backend-api/other", "gpt-5.6-sol", False),
+    ],
+)
+def test_wire_guard_scopes_retention_drop_by_real_endpoint(
+    monkeypatch,
+    base_url,
+    model,
+    expect_dropped,
+):
+    """The drop is scoped by the real endpoint, not by a stubbed predicate.
+
+    The sibling test above pins the helper's contract against an explicit
+    boolean. This one drives ``_is_codex_backend()`` off a real ``AIAgent``
+    built on each base URL, so a change to the hostname/path predicate that
+    widened the drop onto retention-supporting hosts would fail here.
+    """
+    from agent.codex_runtime import _sanitize_consumer_codex_request
+
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model=model,
+        api_mode="codex_responses",
+        base_url=base_url,
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    request = {
+        "model": model,
+        "prompt_cache_key": "cache-key-sentinel",
+        "prompt_cache_retention": "24h",
+        "input": [{"role": "user", "content": "hi"}],
+    }
+    sanitized = _sanitize_consumer_codex_request(agent, request)
+
+    assert ("prompt_cache_retention" not in sanitized) is expect_dropped
+    # Cache-key routing is independent of retention: the guard must never
+    # disturb the prompt-cache key, on any endpoint.
+    assert sanitized["prompt_cache_key"] == "cache-key-sentinel"
+    assert request["prompt_cache_retention"] == "24h"
+    # The caller mutates the result (stream_kwargs["stream"] = True), so the
+    # guard must return a fresh mapping on EVERY path, including no-drop ones.
+    assert sanitized is not request
 
 
 def test_run_codex_stream_returns_collected_items_when_stream_ends_without_terminal(monkeypatch):

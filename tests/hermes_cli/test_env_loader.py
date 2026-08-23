@@ -6,6 +6,31 @@ import sys
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
+def test_recovered_update_retry_skips_external_secret_sources(tmp_path, monkeypatch):
+    """The post-recovery updater must not remap native vault dependencies."""
+    import hermes_cli.env_loader as env_loader
+    from hermes_cli import _early_recovery
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("UPDATE_RETRY_DOTENV=loaded\n", encoding="utf-8")
+    monkeypatch.delenv("UPDATE_RETRY_DOTENV", raising=False)
+    monkeypatch.setattr(_early_recovery, "_UPDATE_RETRY_RECOVERED", True)
+    external_calls = []
+    monkeypatch.setattr(
+        env_loader,
+        "_apply_external_secret_sources",
+        lambda path: external_calls.append(path),
+    )
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.environ["UPDATE_RETRY_DOTENV"] == "loaded"
+    assert external_calls == []
+
+
 def test_utf8_bom_does_not_mangle_first_key(tmp_path, monkeypatch):
     """A leading UTF-8 BOM must not prefix the first key name in os.environ.
 

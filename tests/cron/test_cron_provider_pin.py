@@ -27,7 +27,7 @@ import pytest
 # Ensure project root is importable.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from cron.scheduler import run_job
+from cron.scheduler import _summarize_cron_failure_for_delivery, run_job
 
 
 def _base_job(**overrides):
@@ -90,8 +90,9 @@ class TestProviderDriftGuard:
     def test_b_unpinned_snapshot_differs_fails_closed(self, tmp_path):
         """(b) Unpinned job whose snapshot != current provider → fail closed.
 
-        The paid call must NOT be made (AIAgent never constructed) and the
-        delivered error must name both providers and tell the user to pin.
+        The paid call must NOT be made (AIAgent never constructed), the raw
+        error must name both providers, and the delivered summary must tell the
+        user to pin.
         """
         job = _base_job(provider_snapshot="openrouter")
         success, output, final_response, error, agent_constructed = \
@@ -107,8 +108,14 @@ class TestProviderDriftGuard:
         assert "openrouter" in blob
         assert "nous" in blob
         assert "spend" in blob
-        assert "cronjob action=update" in blob
+        assert "hermes cron edit pin-test --provider <provider> --model <model>" in blob
+        assert "cronjob action=update" not in blob
         assert "44585" in blob
+
+        delivered = _summarize_cron_failure_for_delivery(job, error).lower()
+        assert "host running hermes" in delivered
+        assert "hermes cron edit pin-test --provider <provider> --model <model>" in delivered
+        assert "cronjob action=update" not in delivered
 
     def test_c_no_snapshot_runs_backcompat(self, tmp_path):
         """(c) Pre-existing job with NO provider_snapshot → runs (back-compat).
@@ -135,6 +142,18 @@ class TestProviderDriftGuard:
         assert success is True
         assert error is None
         assert agent_constructed is True
+
+    def test_missing_model_guides_to_user_owned_cli(self, tmp_path, monkeypatch):
+        """A missing-model failure cannot advertise agent-owned pinning."""
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+        success, _output, _final_response, error, agent_constructed = \
+            _run_with_current_provider(_base_job(), "openrouter", tmp_path)
+
+        assert success is False
+        assert agent_constructed is False
+        assert error is not None
+        assert "hermes cron edit pin-test --model <name>" in error
+        assert "cronjob action=update" not in error
 
     def test_d_explicitly_pinned_runs_regardless_of_drift(self, tmp_path):
         """(d) Explicitly-pinned job (job["provider"] set) → runs regardless.
@@ -282,6 +301,29 @@ class TestModelDriftGuard:
         assert "llama-3.3-70b-instruct:free" in blob
         assert "44585" in blob
 
+
+    def test_finite_oneshot_model_drift_explains_that_recreation_is_required(self, tmp_path):
+        """A spent one-shot cannot be repaired in place after the guard fires."""
+        job = _base_job(
+            provider_snapshot="openrouter",
+            model_snapshot="old-model",
+            schedule={"kind": "once", "run_at": "2030-01-01T00:00:00Z"},
+            repeat={"times": 1, "completed": 1},
+        )
+        success, _output, _final_response, error, agent_constructed = \
+            _run_with_current_provider_and_model(
+                job, "openrouter", "new-model", tmp_path
+            )
+
+        assert success is False
+        assert agent_constructed is False
+        assert error is not None
+        assert "create a new one-shot job" in error.lower()
+        assert "cronjob action=update" not in error.lower()
+
+        delivered = _summarize_cron_failure_for_delivery(job, error).lower()
+        assert "create a new one-shot job" in delivered
+        assert "cronjob action=update" not in delivered
 
     def test_no_model_snapshot_backcompat(self, tmp_path):
         # Pre-existing job without model_snapshot → no model-drift skip.

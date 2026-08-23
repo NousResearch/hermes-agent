@@ -20,6 +20,7 @@ import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
@@ -382,7 +383,7 @@ export function ProvidersSettings({
   // Hermes never deletes creds another tool owns behind a silent API call.
   // Instead we run the documented removal command in the embedded terminal so
   // the user sees exactly what executes, then return them to chat to watch it.
-  function handleTerminalDisconnect(provider: OAuthProvider) {
+  async function handleTerminalDisconnect(provider: OAuthProvider) {
     const command = provider.disconnect_command
 
     if (!command) {
@@ -391,7 +392,13 @@ export function ProvidersSettings({
 
     const name = providerTitle(provider)
 
-    if (!window.confirm(t.settings.providers.removeTerminalConfirm(name, command))) {
+    const ok = await confirm({
+      confirmLabel: t.settings.providers.disconnect,
+      destructive: true,
+      title: t.settings.providers.removeTerminalConfirm(name, command)
+    })
+
+    if (!ok) {
       return
     }
 
@@ -408,7 +415,13 @@ export function ProvidersSettings({
   async function handleDisconnect(provider: OAuthProvider) {
     const name = providerTitle(provider)
 
-    if (!window.confirm(t.settings.providers.removeConfirm(name))) {
+    const ok = await confirm({
+      confirmLabel: t.settings.providers.disconnect,
+      destructive: true,
+      title: t.settings.providers.removeConfirm(name)
+    })
+
+    if (!ok) {
       return
     }
 
@@ -499,7 +512,7 @@ export function ProvidersSettings({
       <OAuthPicker
         disconnecting={disconnecting}
         onDisconnect={provider => void handleDisconnect(provider)}
-        onTerminalDisconnect={handleTerminalDisconnect}
+        onTerminalDisconnect={provider => void handleTerminalDisconnect(provider)}
         onWantApiKey={() => onViewChange('keys')}
         providers={oauthProviders}
       />

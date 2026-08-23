@@ -158,6 +158,54 @@ class TestWslCwdTranslation:
 # ---------------------------------------------------------------------------
 
 
+class TestSymlinkAliasNormalization:
+    """Ported from PrimeIntellect-ai/prime-agent#628 — symlink aliases of the
+    same directory (macOS ``/var`` vs ``/private/var``, ``/tmp`` vs
+    ``/private/tmp``) must compare equal, or ACP history filters silently drop
+    a workspace's own sessions."""
+
+    def test_symlink_alias_compares_equal(self, tmp_path):
+        real = tmp_path / "real"
+        real.mkdir()
+        alias = tmp_path / "alias"
+        alias.symlink_to(real)
+        assert acp_session._normalize_cwd_for_compare(
+            str(alias)
+        ) == acp_session._normalize_cwd_for_compare(str(real))
+
+    def test_distinct_dirs_still_compare_different(self, tmp_path):
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        assert acp_session._normalize_cwd_for_compare(
+            str(a)
+        ) != acp_session._normalize_cwd_for_compare(str(b))
+
+    def test_missing_path_keeps_lexical_normalization(self):
+        # realpath(strict=False) is lexical for nonexistent paths, so cwds
+        # that don't exist on this host (e.g. WSL-translated drives) behave
+        # exactly as the old normpath comparison did.
+        assert acp_session._normalize_cwd_for_compare(
+            "/nonexistent-hermes-test/x/../y"
+        ) == "/nonexistent-hermes-test/y"
+
+    def test_list_sessions_matches_symlink_alias_cwd(self, manager, tmp_path):
+        real = tmp_path / "proj"
+        real.mkdir()
+        alias = tmp_path / "link"
+        alias.symlink_to(real)
+        state = manager.create_session(cwd=str(real))
+        state.history.append({"role": "user", "content": "hello"})
+        listed = manager.list_sessions(cwd=str(alias))
+        assert [s["session_id"] for s in listed] == [state.session_id]
+
+
+# ---------------------------------------------------------------------------
+# list / cleanup
+# ---------------------------------------------------------------------------
+
+
 class TestListAndCleanup:
     def test_list_sessions_empty(self, manager):
         assert manager.list_sessions() == []
@@ -278,6 +326,9 @@ class TestPersistence:
         assert restored is not None
         msg = restored.history[0]
         assert isinstance(msg.pop("timestamp", None), (int, float))
+        # Load-time durability stamp (#92231): rows materialized from the DB
+        # are marked persisted so a later flush can't re-append them.
+        assert msg.pop("_db_persisted", None) is True
         assert restored.history == [{
             "role": "assistant",
             "content": "hello",

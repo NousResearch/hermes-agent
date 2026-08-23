@@ -118,7 +118,12 @@ def _table_summary(summary: str, *, limit: int = 76) -> str:
 
 def _split_line(line: str) -> list[str]:
     try:
-        return shlex.split(line, comments=False, posix=True)
+        # Windows-safe splitter: plain shlex posix=True eats backslashes, so
+        # `sessions export C:\Users\me\out.jsonl` silently became a mangled
+        # relative filename in the cwd (#83934).
+        from hermes_cli._subprocess_compat import split_command_line
+
+        return split_command_line(line)
     except ValueError as exc:
         raise ConsoleCommandError(f"Could not parse command: {exc}") from exc
 
@@ -562,6 +567,7 @@ class HermesConsoleEngine:
 
     def _register_defaults(self) -> None:
         self.register(("status",), "status", "Show Hermes component status.", _status)
+        self.register(("version",), "version", "Show Hermes version information.", _version)
         self.register(("doctor",), "doctor", "Run diagnostics without auto-fix.", _doctor)
         self.register(("logs",), "logs [name] [-n N]", "Show recent Hermes logs.", _logs)
         self.register(("sessions", "list"), "sessions list [--limit N]", "List recent sessions.", _sessions_list)
@@ -608,13 +614,6 @@ class HermesConsoleEngine:
         """Register non-admin CLI commands that are safe for Hermes Console."""
 
         extracted = {
-            "version": (
-                "hermes_cli.subcommands.version",
-                "build_version_parser",
-                "cmd_version",
-                [()],
-                set(),
-            ),
             "dump": (
                 "hermes_cli.subcommands.dump",
                 "build_dump_parser",
@@ -1249,7 +1248,10 @@ def _apply_confirmed_defaults(args: argparse.Namespace) -> None:
             setattr(args, attr, True)
     if getattr(args, "_console_command", None) == "import":
         setattr(args, "force", True)
-    if getattr(args, "checkpoints_command", None) in {"clear", "clear-legacy"}:
+    # Every checkpoints subcommand the console registers as mutating gates its
+    # own confirmation on --force, so all three belong here. `prune` reaches
+    # _confirm() for its orphan preview, and the console never redirects stdin.
+    if getattr(args, "checkpoints_command", None) in {"prune", "clear", "clear-legacy"}:
         setattr(args, "force", True)
     if getattr(args, "plugins_action", None) == "install":
         if not getattr(args, "enable", False) and not getattr(args, "no_enable", False):
@@ -1270,6 +1272,13 @@ def _apply_confirmed_defaults(args: argparse.Namespace) -> None:
         setattr(args, "yes", True)
     if getattr(args, "memory_command", None) == "reset":
         setattr(args, "yes", True)
+
+
+def _version(_engine: HermesConsoleEngine, args: list[str]) -> str:
+    _expect_no_args(args, "version")
+    from hermes_cli._startup_fast import print_fast_version_info
+
+    return _capture_output(lambda: print_fast_version_info(check_updates=True))
 
 
 def _status(_engine: HermesConsoleEngine, args: list[str]) -> str:

@@ -22,10 +22,12 @@ import { useI18n } from '@/i18n'
 import { desktopGit } from '@/lib/desktop-git'
 import { cn } from '@/lib/utils'
 import {
+  $sidebarCardRows,
   $sidebarFiltersActive,
   $sidebarGrouping,
   $sidebarOrdering,
   $sidebarPrFilter,
+  $sidebarProfileFilter,
   $sidebarProjectFilter,
   $sidebarRowMeta,
   $sidebarShowArchived,
@@ -33,6 +35,7 @@ import {
   $sidebarViewCustomized,
   $sidebarWorkspaceNodeOpen,
   resetSidebarView,
+  setSidebarCardRows,
   setSidebarGrouping,
   setSidebarOrdering,
   setSidebarShowArchived,
@@ -41,10 +44,19 @@ import {
   type SidebarOrdering,
   type SidebarRowMeta,
   toggleSidebarPrFilter,
+  toggleSidebarProfileFilter,
   toggleSidebarProjectFilter,
   toggleSidebarRowMeta,
   toggleSidebarStatusFilter
 } from '@/store/layout'
+import {
+  $profiles,
+  $showAllProfiles,
+  normalizeProfileKey,
+  requestProfileCreate,
+  toggleShowAllProfiles
+} from '@/store/profile'
+import { runImportProfileFlow } from '@/store/profile-share'
 import { $projectTree } from '@/store/projects'
 import type { PullRequestBucket } from '@/store/pull-requests'
 import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
@@ -62,7 +74,8 @@ interface Option<T extends string = string> {
 const GROUPINGS: Option<SidebarGrouping>[] = [
   { icon: 'clock', id: 'date', label: 'Updated' },
   { icon: 'root-folder', id: 'project', label: 'Project' },
-  { icon: 'pulse', id: 'status', label: 'Status' }
+  { icon: 'pulse', id: 'status', label: 'Status' },
+  { icon: 'account', id: 'profile', label: 'Profile' }
 ]
 
 const ORDERINGS: Option<SidebarOrdering>[] = [
@@ -76,6 +89,7 @@ const ORDERINGS: Option<SidebarOrdering>[] = [
 
 const ROW_META: Option<SidebarRowMeta>[] = [
   { icon: 'clock', id: 'updated', label: 'Updated' },
+  { icon: 'comment', id: 'preview', label: 'Preview' },
   { icon: 'symbol-numeric', id: 'tokens', label: 'Tokens' },
   { icon: 'credit-card', id: 'cost', label: 'Cost' },
   { icon: 'git-pull-request', id: 'pr', label: 'PR' },
@@ -139,8 +153,13 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const grouping = useStore($sidebarGrouping)
   const ordering = useStore($sidebarOrdering)
   const rowMeta = useStore($sidebarRowMeta)
+  const cardRows = useStore($sidebarCardRows)
   const statusFilter = useStore($sidebarStatusFilter)
   const projectFilter = useStore($sidebarProjectFilter)
+  const profileFilter = useStore($sidebarProfileFilter)
+  const showAllProfiles = useStore($showAllProfiles)
+  const profileNames = useStore($profiles).map(profile => normalizeProfileKey(profile.name))
+  const narrowsByProfile = showAllProfiles && profileNames.length > 1
   const prFilter = useStore($sidebarPrFilter)
   const showArchived = useStore($sidebarShowArchived)
   const filtersActive = useStore($sidebarFiltersActive)
@@ -173,6 +192,11 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const rowMetaOptions = ROW_META.filter(option => {
     if (option.id === 'cost') {
       return hasCost || rowMeta.includes('cost')
+    }
+
+    // Preview is a card line; the one-line row has nowhere to put it.
+    if (option.id === 'preview') {
+      return cardRows
     }
 
     return option.id !== 'pr' || prAvailable
@@ -248,6 +272,14 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
               ))}
             </DropdownMenuSubContent>
           </DropdownMenuSub>
+
+          {/* A render variant, not a grouping: three-line cards (project · age /
+              title / model · size) compose with whichever grouping is active. */}
+          <OptionCheckbox
+            checked={cardRows}
+            onCheck={() => setSidebarCardRows(!cardRows)}
+            option={{ icon: 'inbox', id: 'card-rows', label: 'Inbox style' }}
+          />
         </DropdownMenuGroup>
 
         <DropdownMenuSeparator />
@@ -287,6 +319,32 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
             </DropdownMenuSub>
           )}
 
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>Profile</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="max-h-80 overflow-y-auto">
+              {/* Scoped to one profile the rail is already the filter, so the
+                  per-profile boxes only appear where they can narrow something.
+                  The actions below stand on their own. */}
+              {narrowsByProfile && (
+                <>
+                  {profileNames.map(name => (
+                    <OptionCheckbox
+                      checked={profileFilter.includes(name)}
+                      key={name}
+                      onCheck={() => toggleSidebarProfileFilter(name)}
+                      option={{ icon: 'account', id: name, label: name }}
+                    />
+                  ))}
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              <DropdownMenuItem onSelect={requestProfileCreate}>{t.profiles.newProfile}</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void runImportProfileFlow()}>
+                {t.profiles.importProfile}
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+
           {projects.length > 1 && (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>Project</DropdownMenuSubTrigger>
@@ -306,6 +364,19 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
                 ))}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+          )}
+
+          {/* Off by default: one profile's sessions are what the rail selected.
+              Nothing to widen to until a second profile exists — but stay
+              visible while it's on, or deleting your way back down to one
+              profile would strand the sidebar in a mode nothing can leave (the
+              rail hides its switcher at one profile too). */}
+          {(profileNames.length > 1 || showAllProfiles) && (
+            <OptionCheckbox
+              checked={showAllProfiles}
+              onCheck={toggleShowAllProfiles}
+              option={{ id: 'all-profiles', label: t.profiles.allProfiles }}
+            />
           )}
 
           <OptionCheckbox

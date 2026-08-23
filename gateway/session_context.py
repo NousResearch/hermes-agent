@@ -78,7 +78,15 @@ _SESSION_CHAT_TYPE: ContextVar = ContextVar("HERMES_SESSION_CHAT_TYPE", default=
 _SESSION_CHAT_NAME: ContextVar = ContextVar("HERMES_SESSION_CHAT_NAME", default=_UNSET)
 _SESSION_THREAD_ID: ContextVar = ContextVar("HERMES_SESSION_THREAD_ID", default=_UNSET)
 _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNSET)
+_SESSION_USER_ID_ALT: ContextVar = ContextVar("HERMES_SESSION_USER_ID_ALT", default=_UNSET)
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
+# Platform-neutral scope discriminator (Discord guild / Slack workspace /
+# Matrix server) of the originating chat. Captured at session-bind time so
+# async producers (delegate_task background=True, terminal watchers) can
+# persist a completion's full routing origin — on a relay-fronted deployment
+# the connector's fail-closed egress guard needs scope_id (or a user binding)
+# to resolve the tenant for a scoped reply after a restart.
+_SESSION_SCOPE_ID: ContextVar = ContextVar("HERMES_SESSION_SCOPE_ID", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
 _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
 # In-process UI session/window id for multi-session desktop/TUI hosts. This is
@@ -94,6 +102,12 @@ _SESSION_UI_SESSION_ID: ContextVar = ContextVar("HERMES_UI_SESSION_ID", default=
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
+_BROWSER_CONTROL_PRINCIPAL: ContextVar = ContextVar(
+    "HERMES_BROWSER_CONTROL_PRINCIPAL", default=_UNSET
+)
+_BROWSER_CONTROL_TRANSPORT_FAMILY: ContextVar = ContextVar(
+    "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY", default=_UNSET
+)
 
 # Per-session cron marker. Unlike the process-global legacy env var, this is
 # scoped to one cron job / inbound session. _UNSET preserves the legacy env
@@ -135,12 +149,16 @@ _VAR_MAP = {
     "HERMES_SESSION_CHAT_NAME": _SESSION_CHAT_NAME,
     "HERMES_SESSION_THREAD_ID": _SESSION_THREAD_ID,
     "HERMES_SESSION_USER_ID": _SESSION_USER_ID,
+    "HERMES_SESSION_USER_ID_ALT": _SESSION_USER_ID_ALT,
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
+    "HERMES_SESSION_SCOPE_ID": _SESSION_SCOPE_ID,
     "HERMES_SESSION_KEY": _SESSION_KEY,
     "HERMES_SESSION_ID": _SESSION_ID,
     "HERMES_UI_SESSION_ID": _SESSION_UI_SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
     "HERMES_SESSION_PROFILE": _SESSION_PROFILE,
+    "HERMES_BROWSER_CONTROL_PRINCIPAL": _BROWSER_CONTROL_PRINCIPAL,
+    "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY": _BROWSER_CONTROL_TRANSPORT_FAMILY,
     "HERMES_CRON_SESSION": _CRON_SESSION,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
@@ -211,11 +229,15 @@ def set_session_vars(
     chat_name: str = "",
     thread_id: str = "",
     user_id: str = "",
+    user_id_alt: str = "",
     user_name: str = "",
+    scope_id: str = "",
     session_key: str = "",
     session_id: str = "",
     message_id: str = "",
     profile: str = "",
+    browser_control_principal: str = "",
+    browser_control_transport_family: str = "",
     cwd: str = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
@@ -253,12 +275,16 @@ def set_session_vars(
         _SESSION_CHAT_NAME.set(chat_name),
         _SESSION_THREAD_ID.set(thread_id),
         _SESSION_USER_ID.set(user_id),
+        _SESSION_USER_ID_ALT.set(user_id_alt),
         _SESSION_USER_NAME.set(user_name),
+        _SESSION_SCOPE_ID.set(scope_id),
         _SESSION_KEY.set(session_key),
         _SESSION_ID.set(session_id),
         _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
+        _BROWSER_CONTROL_PRINCIPAL.set(browser_control_principal),
+        _BROWSER_CONTROL_TRANSPORT_FAMILY.set(browser_control_transport_family),
         _CRON_SESSION.set(cron_session),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
     ]
@@ -290,12 +316,16 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_CHAT_NAME,
         _SESSION_THREAD_ID,
         _SESSION_USER_ID,
+        _SESSION_USER_ID_ALT,
         _SESSION_USER_NAME,
+        _SESSION_SCOPE_ID,
         _SESSION_KEY,
         _SESSION_ID,
         _SESSION_UI_SESSION_ID,
         _SESSION_MESSAGE_ID,
         _SESSION_PROFILE,
+        _BROWSER_CONTROL_PRINCIPAL,
+        _BROWSER_CONTROL_TRANSPORT_FAMILY,
         _CRON_SESSION,
     ):
         var.set("")

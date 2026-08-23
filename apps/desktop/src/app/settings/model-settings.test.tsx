@@ -28,10 +28,12 @@ const startManualProviderOAuth = vi.fn()
 let profileSwitchHandler: (() => void) | null = null
 
 vi.mock('@/hermes', () => ({
-  getGlobalModelInfo: () => getGlobalModelInfo(),
-  getGlobalModelOptions: () => getGlobalModelOptions(),
-  getAuxiliaryModels: () => getAuxiliaryModels(),
-  getMoaModels: () => getMoaModels(),
+  getGlobalModelInfo: (profile?: null | string) => getGlobalModelInfo(profile),
+  getGlobalModelOptions: (opts?: unknown, profile?: null | string) => getGlobalModelOptions(opts, profile),
+  getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
+  getApiRequestProfile: () => 'default',
+  getMoaModels: (profile?: null | string) => getMoaModels(profile),
+  profileScopeKey: (scope?: null | string) => (scope ?? '').trim() || 'default',
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
@@ -71,7 +73,7 @@ beforeEach(() => {
     tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
   })
   getMoaModels.mockResolvedValue(null)
-  setModelAssignment.mockResolvedValue({ provider: 'nous', model: 'hermes-4', gateway_tools: [] })
+  setModelAssignment.mockResolvedValue({ ok: true, provider: 'nous', model: 'hermes-4', gateway_tools: [] })
   getRecommendedDefaultModel.mockResolvedValue({ provider: 'nous', model: 'hermes-4', free_tier: null })
   setEnvVar.mockResolvedValue({ ok: true })
   getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'medium', service_tier: 'normal' } })
@@ -84,7 +86,7 @@ afterEach(() => {
   profileSwitchHandler = null
 })
 
-async function renderModelSettings() {
+async function renderModelSettings(scopeProfile?: string) {
   const { ModelSettings } = await import('./model-settings')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
@@ -93,11 +95,35 @@ async function renderModelSettings() {
     // needs a router context in tests (the app provides HashRouter at root).
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ModelSettings />
+        <ModelSettings scopeProfile={scopeProfile} />
       </QueryClientProvider>
     </MemoryRouter>
   )
 }
+
+describe('ModelSettings profile scope', () => {
+  // #90549: the API helpers treat `null` as "deliberately target the
+  // primary/default profile". A page following the active profile must pass
+  // `undefined`, or every read repaints the primary's model and the user's
+  // change looks reverted.
+  it('follows the active profile (undefined, never null) when unscoped', async () => {
+    await renderModelSettings()
+
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalledWith(undefined))
+    expect(getGlobalModelOptions).toHaveBeenCalledWith(undefined, undefined)
+    expect(getAuxiliaryModels).toHaveBeenCalledWith(undefined)
+    expect(getMoaModels).toHaveBeenCalledWith(undefined)
+  })
+
+  it('reads through the explicit scope override when one is set', async () => {
+    await renderModelSettings('research')
+
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalledWith('research'))
+    expect(getGlobalModelOptions).toHaveBeenCalledWith(undefined, 'research')
+    expect(getAuxiliaryModels).toHaveBeenCalledWith('research')
+    expect(getMoaModels).toHaveBeenCalledWith('research')
+  })
+})
 
 describe('ModelSettings', () => {
   it('loads the current main model and lists configured providers only', async () => {
@@ -232,6 +258,7 @@ describe('ModelSettings', () => {
       ]
     })
     setModelAssignment.mockResolvedValueOnce({
+      ok: true,
       provider: 'local-ollama',
       model: 'qwen3:latest',
       gateway_tools: []
@@ -353,6 +380,7 @@ describe('ModelSettings', () => {
 
   it('warns when a main switch leaves auxiliary tasks pinned to another provider', async () => {
     setModelAssignment.mockResolvedValueOnce({
+      ok: true,
       provider: 'openrouter',
       model: 'anthropic/claude-opus-4.7',
       gateway_tools: [],

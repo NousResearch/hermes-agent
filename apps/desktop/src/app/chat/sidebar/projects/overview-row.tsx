@@ -2,16 +2,14 @@ import type * as React from 'react'
 import { useRef } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
-import { DisclosureCaret } from '@/components/ui/disclosure-caret'
-import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import {
   SIDEBAR_LEAD_ICON_SIZE,
+  SidebarGroupRow,
   SidebarRowBody,
-  SidebarRowCluster,
   SidebarRowGrab,
   SidebarRowLabel,
   SidebarRowLead,
@@ -113,18 +111,31 @@ export function ProjectOverviewRow({
   )
 
   const shell = (
-    <SidebarRowShell
+    <SidebarGroupRow
       actions={
         <>
-          {/* Home has no folder to start a chat in — the sidebar's own "New
-              session" is that button — and no record to rename or delete. */}
-          {onNewSession && !project.isNoProject && (
+          {/* Home is a bucket, not a record, so there's nothing to rename or
+              delete — but it still starts sessions: a null path is the "no
+              folder" chat. New session sits outermost: it's the one you reach
+              for. */}
+          {!project.isNoProject && <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />}
+          {onNewSession && (
             <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
           )}
-          {!project.isNoProject && <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />}
         </>
       }
-      className={cn('group/workspace', dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
+      className={cn(dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
+      data-glass-opaque={dragging ? '' : undefined}
+      label={
+        <SidebarRowLink
+          aria-label={s.projects.enter(project.label)}
+          labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
+          onClick={() => onEnter?.(project.id)}
+        >
+          {project.label}
+        </SidebarRowLink>
+      }
+      lead={lead}
       // The label is grab surface too, not just the lead's grabber — same
       // listeners, minus the controls that keep their own gestures. A project
       // row has no rival drag (its title navigates on CLICK), so the sortable
@@ -138,40 +149,21 @@ export function ProjectOverviewRow({
         dragHandleProps?.onPointerDown?.(event)
       }}
       ref={rowRef}
-    >
-      <SidebarRowCluster className="min-w-0 flex-1">
-        {lead}
-        <SidebarRowLink
-          aria-label={s.projects.enter(project.label)}
-          labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
-          onClick={() => onEnter?.(project.id)}
-        >
-          {project.label}
-        </SidebarRowLink>
-        {preview.length > 0 ? (
-          <Tip label={s.projects.toggle(project.label, !open)}>
-            <button
-              aria-label={s.projects.toggle(project.label, !open)}
-              className="flex flex-1 items-center self-stretch bg-transparent p-0"
-              data-row-actions
-              onClick={toggleOpen}
-              type="button"
-            >
-              <DisclosureCaret
-                className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
-                open={open}
-              />
-            </button>
-          </Tip>
-        ) : (
-          <span className="flex-1" />
-        )}
-      </SidebarRowCluster>
-    </SidebarRowShell>
+      toggle={
+        preview.length > 0
+          ? { ariaLabel: s.projects.toggle(project.label, !open), onToggle: toggleOpen, open }
+          : undefined
+      }
+      totals={{ costUsd: project.totalCostUsd ?? 0, tokens: project.totalTokens ?? 0 }}
+    />
   )
 
   return (
-    <div className={cn(dragging && 'relative z-10')} ref={ref} style={style}>
+    // Tag each project sibling with its id so a custom skin can target one
+    // project in the overview — the parallel to the entered-project wrapper's
+    // `data-sessions-project` (index.tsx), which only fires once you've drilled
+    // in. Here it's present on every row of the list.
+    <div className={cn(dragging && 'relative z-10')} data-sessions-project={project.id} ref={ref} style={style}>
       {/* Home has no per-project actions, so it gets no right-click menu. */}
       {project.isNoProject ? (
         shell

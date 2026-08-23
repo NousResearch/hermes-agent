@@ -7,6 +7,7 @@ import threading
 import time
 import types
 from unittest.mock import MagicMock, patch
+from pathlib import Path
 
 import pytest
 
@@ -174,6 +175,85 @@ def test_write_json(capture):
     assert json.loads(buf.getvalue()) == {"test": True}
 
 
+def test_live_session_payload_replays_pending_approval(server, monkeypatch):
+    """A reattached client receives the approval that was emitted while detached."""
+    from tools import approval
+
+    session = {
+        "agent": types.SimpleNamespace(),
+        "cols": 80,
+        "created_at": 1.0,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": True,
+        "session_key": "stored-session",
+    }
+    first = {
+        "choices": ["once", "deny"],
+        "command": "rm -rf /tmp/example",
+        "description": "recursive delete",
+    }
+    second = {"command": "rm -rf /tmp/later", "description": "later"}
+    saved_queue = approval._gateway_queues.pop("stored-session", None)
+    approval._gateway_queues["stored-session"] = [
+        approval._ApprovalEntry(first),
+        approval._ApprovalEntry(second),
+    ]
+    monkeypatch.setattr(server, "_approval_request_payload", lambda data: dict(data or {}))
+
+    try:
+        payload = server._live_session_payload("runtime-session", session)
+    finally:
+        approval._gateway_queues.pop("stored-session", None)
+        if saved_queue is not None:
+            approval._gateway_queues["stored-session"] = saved_queue
+
+    assert payload["pending_approval"] is not first
+    replayed = payload["pending_approval"]
+    # request_id is injected by _ApprovalEntry so reconnecting clients can
+    # correlate their approval.respond with the exact queued request.
+    assert replayed.pop("request_id")
+    assert replayed == first
+
+
+def test_live_session_payload_replays_pending_clarify(server):
+    """A reattached client also receives a clarify question emitted while detached."""
+    session = {
+        "agent": types.SimpleNamespace(),
+        "cols": 80,
+        "created_at": 1.0,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": True,
+        "session_key": "stored-session",
+    }
+    clarify_payload = {
+        "choices": ["staging", "production"],
+        "question": "Which deployment target?",
+        "request_id": "rid-clarify",
+    }
+    with server._prompt_lock:
+        server._pending["rid-clarify"] = ("runtime-session", threading.Event())
+        server._pending_prompt_payloads["rid-clarify"] = (
+            "clarify.request",
+            dict(clarify_payload),
+        )
+
+    try:
+        payload = server._live_session_payload("runtime-session", session)
+        other = server._live_session_payload("other-session", session)
+    finally:
+        with server._prompt_lock:
+            server._pending.pop("rid-clarify", None)
+            server._pending_prompt_payloads.pop("rid-clarify", None)
+
+    assert payload["pending_clarify"] == clarify_payload
+    # Snapshot, not a live reference into the registry.
+    assert payload["pending_clarify"] is not clarify_payload
+    # Scoped to the owning runtime session only.
+    assert "pending_clarify" not in other
+
+
 def test_disable_flush_env_var_actually_wires_to_module_constant(monkeypatch):
     """End-to-end: setting `HERMES_TUI_GATEWAY_NO_FLUSH=1` and importing
     `tui_gateway.transport` fresh actually flips `_DISABLE_FLUSH` true.
@@ -272,6 +352,270 @@ def test_late_prompt_response_is_idempotent(server, method, value_key):
     )
 
     assert response["result"] == {"status": "expired"}
+
+
+# ── clarify batch (multi-question) bridge ────────────────────────────
+
+
+def _drain_batch_block(server, qids, timeout=5, payload=None):
+    """Run a batch _block on a worker thread and return (thread, result box,
+    emitted request payload). The caller resolves questions via
+    handle_request and then joins."""
+    box = {}
+
+    def run():
+        box["answer"] = server._block(
+            "clarify.request",
+            "s1",
+            dict(payload or {"questions": [{"qid": q, "question": q} for q in qids]}),
+            timeout=timeout,
+            batch_qids=list(qids),
+        )
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    # Wait for the request to be registered so respond calls can find it.
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        with server._prompt_lock:
+            if server._batch_clarify:
+                rid = next(iter(server._batch_clarify))
+                return thread, box, rid
+        time.sleep(0.01)
+    raise AssertionError("batch clarify request never registered")
+
+
+def test_clarify_batch_resolves_when_all_questions_locked(capture):
+    server, buf = capture
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
+
+    first = server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q1", "answer": "beta"},
+    })
+    assert first["result"]["status"] == "ok"
+    assert first["result"]["remaining"] == ["q0"]
+    assert thread.is_alive()  # one question left — still blocking
+
+    second = server.handle_request({
+        "id": "a2", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "alpha"},
+    })
+    assert second["result"]["status"] == "ok"
+    assert second["result"]["remaining"] == []
+
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert json.loads(box["answer"]) == {"answers": {"q0": "alpha", "q1": "beta"}}
+
+
+def test_clarify_batch_answer_update_overwrites_before_completion(server):
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
+
+    server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "first"},
+    })
+    server.handle_request({
+        "id": "a2", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "changed"},
+    })
+    server.handle_request({
+        "id": "a3", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q1", "answer": "done"},
+    })
+
+    thread.join(timeout=5)
+    assert json.loads(box["answer"])["answers"]["q0"] == "changed"
+
+
+def test_clarify_batch_empty_answer_is_a_locked_skip(server):
+    """Skipping one question locks an empty answer — it counts toward
+    completion instead of leaving the batch waiting."""
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
+
+    server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": ""},
+    })
+    server.handle_request({
+        "id": "a2", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q1", "answer": "kept"},
+    })
+
+    thread.join(timeout=5)
+    assert json.loads(box["answer"]) == {"answers": {"q0": "", "q1": "kept"}}
+
+
+def test_clarify_batch_unknown_question_id_rejected(server):
+    thread, box, rid = _drain_batch_block(server, ["q0"])
+
+    response = server.handle_request({
+        "id": "bad", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q9", "answer": "x"},
+    })
+    assert response["error"]["code"] == 4002
+
+    server.handle_request({
+        "id": "ok", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "fine"},
+    })
+    thread.join(timeout=5)
+
+
+def test_clarify_batch_timeout_keeps_locked_answers(capture):
+    """Locked answers survive the deadline: the tool sees the partials plus
+    timed_out instead of an empty string."""
+    server, buf = capture
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"], timeout=1)
+
+    server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "kept"},
+    })
+
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    result = json.loads(box["answer"])
+    assert result == {"answers": {"q0": "kept"}, "timed_out": True}
+    # The expire notification still fires for the un-finished batch.
+    messages = [json.loads(line) for line in buf.getvalue().splitlines()]
+    assert any(m["params"]["type"] == "clarify.expire" for m in messages)
+
+
+def test_clarify_batch_cancel_all_returns_empty(server):
+    """A respond without question_id cancels the whole batch (Esc path)."""
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"])
+
+    server.handle_request({
+        "id": "cancel", "method": "clarify.respond",
+        "params": {"request_id": rid, "answer": ""},
+    })
+
+    thread.join(timeout=5)
+    assert box["answer"] == ""
+
+
+def test_clarify_batch_late_question_respond_is_idempotent(server):
+    response = server.handle_request({
+        "id": "late", "method": "clarify.respond",
+        "params": {"request_id": "gone", "question_id": "q0", "answer": "x"},
+    })
+    assert response["result"] == {"status": "expired"}
+
+
+def test_clarify_batch_state_cleared_after_resolution(server):
+    thread, box, rid = _drain_batch_block(server, ["q0"])
+    server.handle_request({
+        "id": "a", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "x"},
+    })
+    thread.join(timeout=5)
+    with server._prompt_lock:
+        assert rid not in server._batch_clarify
+        assert rid not in server._pending
+
+
+def test_clarify_block_helper_builds_batch_payload(capture):
+    """_clarify_block forwards only wire fields (qid/question/choices/
+    multi_select) — the tool-side normalized entries carry extra keys the
+    renderer must not see."""
+    server, buf = capture
+    normalized = [
+        {
+            "qid": "q0", "id": "approach", "question": "Which?",
+            "choices": ["a (Recommended)", "b"], "choices_offered": ["a", "b"],
+            "multi_select": False,
+        },
+    ]
+
+    box = {}
+
+    def run():
+        box["answer"] = server._clarify_block("s1", "", None, questions=normalized)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 2
+    rid = None
+    while time.monotonic() < deadline and rid is None:
+        with server._prompt_lock:
+            rid = next(iter(server._batch_clarify), None)
+        time.sleep(0.01)
+    assert rid
+
+    server.handle_request({
+        "id": "a", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "a"},
+    })
+    thread.join(timeout=5)
+
+    messages = [json.loads(line) for line in buf.getvalue().splitlines()]
+    request = messages[0]["params"]
+    assert request["type"] == "clarify.request"
+    sent = request["payload"]["questions"][0]
+    assert set(sent) == {"qid", "question", "choices", "multi_select"}
+    assert "id" not in sent and "choices_offered" not in sent
+
+
+def test_approval_pending_replays_unresolved_requests(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
+    pending = [{"request_id": "req-1", "command": "danger"}]
+    monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: pending if key == "agent-1" else [])
+
+    response = server.handle_request(
+        {"id": "r1", "method": "approval.pending", "params": {"session_id": "ui-1"}}
+    )
+
+    assert response["result"] == {"approvals": pending}
+
+
+def test_approval_received_acknowledges_exact_request(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
+    calls = []
+    monkeypatch.setattr(
+        approval,
+        "ack_gateway_approval",
+        lambda key, request_id: calls.append((key, request_id)) or True,
+    )
+
+    response = server.handle_request(
+        {
+            "id": "r2",
+            "method": "approval.received",
+            "params": {"session_id": "ui-1", "request_id": "req-1"},
+        }
+    )
+
+    assert response["result"] == {"acknowledged": True}
+    assert calls == [("agent-1", "req-1")]
+
+
+def test_approval_response_correlates_request_id(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
+    calls = []
+    monkeypatch.setattr(
+        approval,
+        "resolve_gateway_approval",
+        lambda key, choice, **kwargs: calls.append((key, choice, kwargs)) or 1,
+    )
+
+    response = server.handle_request(
+        {
+            "id": "r3",
+            "method": "approval.respond",
+            "params": {"session_id": "ui-1", "request_id": "req-1", "choice": "once"},
+        }
+    )
+
+    assert response["result"] == {"resolved": 1}
+    assert calls == [("agent-1", "once", {"resolve_all": False, "request_id": "req-1"})]
 
 
 def test_clear_pending(server):
@@ -423,6 +767,62 @@ def test_session_resume_guard_failure_fails_open(server, monkeypatch):
     assert err.get("code") != 4130
     assert "resume safety check failed" not in str(err.get("message", ""))
     assert reopened == ["transient-guard-session"]
+
+
+def test_session_resume_active_turn_payload_matches_desktop_fixture(server, monkeypatch):
+    """A live resume serializes the exact timer payload consumed by Desktop."""
+    fixture = json.loads(
+        (Path(__file__).parents[1] / "fixtures" / "session-resume-active-turn.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    class _DB:
+        def get_session(self, session_id):
+            return {"id": session_id}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, session_id):
+            return session_id
+
+    active_turn = {
+        "assistant": "partial answer",
+        "started_at": fixture["turn_started_at"],
+        "streaming": True,
+        "user": "current prompt",
+    }
+    server._sessions[fixture["session_id"]] = {
+        "agent": types.SimpleNamespace(session_id=fixture["session_key"]),
+        "created_at": fixture["started_at"],
+        "history": [{"content": "earlier prompt", "role": "user"}],
+        "history_lock": threading.Lock(),
+        "inflight_turn": active_turn,
+        "running": True,
+        "session_key": fixture["session_key"],
+    }
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_session_info", lambda _agent: fixture["info"])
+
+    # JSON round-trip the real RPC envelope: the desktop fixture must stay
+    # faithful to what the gateway actually serializes, not a copied shape.
+    response = json.loads(
+        json.dumps(
+            server.handle_request(
+                {
+                    "id": "resume-running",
+                    "method": "session.resume",
+                    "params": {"session_id": fixture["session_key"]},
+                }
+            )
+        )
+    )
+    result = response["result"]
+
+    assert result["running"] is True
+    assert result["turn_started_at"] == active_turn["started_at"]
+    assert result == fixture
 
 
 def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
@@ -589,6 +989,59 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
+    """slash.exec must resolve get_skill_commands() against the session's own
+    profile_home rather than the gateway process's ambient HERMES_HOME
+    (#88023). A Desktop session that switches profiles mid-session shares
+    the same gateway process, so a skill declared only under the new
+    profile's skills.external_dirs must still be recognized here — else the
+    command falls through to the slash-worker dead path instead of routing
+    to command.dispatch.
+    """
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir = tmp_path / "no-local-skills"
+    empty_local_dir.mkdir()
+
+    profile_b = tmp_path / "profile_b"
+    external_b = tmp_path / "external_b"
+    profile_b.mkdir()
+    skill_dir = external_b / "b-only"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: b-only\ndescription: Only in profile b.\n---\n\n# b-only\n\nDo the thing.\n"
+    )
+    (profile_b / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {external_b}\n"
+    )
+
+    sid = "test-session-profile-b"
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "profile_home": str(profile_b),
+    }
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_platform", None),
+        patch.object(sc_mod, "_skill_commands_home", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "b-only", "session_id": sid},
+        })
+
+    # The gateway's own HERMES_HOME (the test-isolation tempdir, no
+    # skills.external_dirs) has no "b-only" skill — the only way this
+    # resolves is by scoping the lookup to the session's profile_home.
+    assert "error" in resp
+    assert resp["error"]["code"] == 4018
+    assert "skill command" in resp["error"]["message"]
+
+
 def test_command_dispatch_queue_sends_message(server):
     """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
     sid = "test-session"
@@ -656,6 +1109,28 @@ def test_completion_handlers_are_pool_routed(completion_method, server):
     skill-scan blocked prompt.submit and froze the TUI for the 120s RPC timeout.
     """
     assert completion_method in server._LONG_HANDLERS
+
+
+@pytest.mark.parametrize(
+    "voice_or_wake_method",
+    ["voice.toggle", "voice.record", "voice.tts", "wake.start", "wake.status"],
+)
+def test_voice_and_wake_handlers_are_pool_routed(voice_or_wake_method, server):
+    """Voice and wake RPCs must run on the pool, never the WS reader thread.
+
+    Regression: voice.toggle (status) triggers check_voice_requirements() →
+    STT provider auto-detect → a SYNCHRONOUS faster-whisper lazy install (uv/pip
+    subprocess, up to a 300s timeout). Inline on the WS reader loop it blocked
+    prompt.submit / session.list frames queued behind it — the desktop showed
+    sent messages that never reached the agent. Same bug class as #21123 /
+    #50005: anything that can stall for seconds must stay off the reader thread.
+
+    wake.start and wake.status share the same STT lazy-install path via
+    check_wake_word_requirements() → _stt_ready() → _get_provider(), and
+    wake.start additionally calls lazy_deps.ensure() for wake-word engine deps.
+    The desktop polls wake.status on every gateway-ready.
+    """
+    assert voice_or_wake_method in server._LONG_HANDLERS
 
 
 def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
@@ -739,4 +1214,3 @@ def test_unregister_live_transport_stops_delivery(capture):
     assert a.frames == []
     # No live transports left → fell back to stdio.
     assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
-

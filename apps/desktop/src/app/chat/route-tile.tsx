@@ -9,7 +9,7 @@
 
 import { lazy, type ReactNode, Suspense } from 'react'
 
-import { ContribBoundary } from '@/contrib/react/boundary'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { $routeTiles, closeRouteTile, type RouteTile } from '@/store/route-tiles'
 
@@ -57,13 +57,19 @@ function RouteTilePane({ path }: { path: string }) {
   if (builtin) {
     return (
       <ContribBoundary id={path}>
-        <Suspense fallback={null}>{builtin.render()}</Suspense>
+        <Suspense fallback={null}>
+          <ContribRender render={builtin.render} />
+        </Suspense>
       </ContribBoundary>
     )
   }
 
   if (contrib) {
-    return <ContribBoundary id={path}>{contrib.render()}</ContribBoundary>
+    return (
+      <ContribBoundary id={path}>
+        <ContribRender render={contrib.render} />
+      </ContribBoundary>
+    )
   }
 
   return (
@@ -80,6 +86,7 @@ function RouteTilePane({ path }: { path: string }) {
 /** Keep pane contributions mirroring `$routeTiles`. Call once from the root. */
 export const watchRouteTiles = paneMirror<RouteTile>({
   source: $routeTiles,
+  workspaceMode: 'sessions',
   key: t => t.path,
   prefix: 'route-tile',
   dir: t => t.dir,

@@ -107,6 +107,22 @@ async def _read_error_text_limited(
     return str(text)[:limit]
 
 
+def _slack_response_payload(response: Any) -> Dict[str, Any]:
+    """Return a Slack Web API response as a plain dict.
+
+    ``slack_sdk`` returns ``SlackResponse``/``AsyncSlackResponse``, which is
+    mapping-like but is **not** a ``dict``, while tests inject plain dicts.
+    Callers must normalize here instead of gating on ``isinstance(resp, dict)``
+    — such a gate is always False at runtime and silently degrades results
+    (user/channel names collapsing to raw IDs, sends reported as failures).
+    An unrecognized shape yields ``{}`` so callers keep their fallbacks.
+    """
+    if isinstance(response, dict):
+        return response
+    data = getattr(response, "data", None)
+    return data if isinstance(data, dict) else {}
+
+
 _SLACK_SPECIAL_MENTION_RE = re.compile(
     r"<!(?:everyone|channel|here)(?:\|[^>\n]*)?>", re.IGNORECASE
 )
@@ -292,6 +308,18 @@ def slack_deps_present() -> bool:
     and runs from ``create_adapter()`` when this returns False (#79812).
     """
     return SLACK_AVAILABLE
+
+
+@dataclass
+class _NativeTaskCardStream:
+    """Serialized state for one workspace-scoped Slack progress stream."""
+
+    team_id: str
+    channel: str
+    thread_ts: str
+    stream_ts: str = ""
+    stopped: bool = False
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 def check_slack_requirements() -> bool:
@@ -1017,6 +1045,12 @@ class SlackAdapter(BasePlatformAdapter):
         # eviction (key[2] is the thread ts).
         self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         self._ACTIVE_STATUS_THREADS_MAX = 1000
+        # Native progress streams share Slack's workspace/thread isolation.
+        # Each stream owns a lock so concurrent start/append/stop calls cannot
+        # race into duplicate streams or append after finalization.
+        self._native_task_card_streams: Dict[
+            Tuple[str, str, str], _NativeTaskCardStream
+        ] = {}
         # Best-effort guard so automatic Slack AI thread titles are set once
         # per visible DM thread instead of on every reply.
         self._titled_assistant_threads: set = set()
@@ -1028,6 +1062,17 @@ class SlackAdapter(BasePlatformAdapter):
         # commands that arrived without a workspace id.
         # Each value: {"response_url": str, "ts": float}
         self._slash_command_contexts: Dict[Tuple[str, ...], Dict[str, Any]] = {}
+        # Native streaming (chat.startStream/appendStream/stopStream) state.
+        # One active stream per chat, keyed by chat_id. Each value:
+        # {"ts": str, "draft_id": int, "sent": str, "started": float}
+        # ``sent`` is the raw (pre-mrkdwn) text streamed so far — deltas are
+        # computed against it because the streaming API is append-only.
+        self._active_streams: Dict[str, Dict[str, Any]] = {}
+        # Set after the first startStream failure that indicates the Slack
+        # app lacks the streaming feature (Agents & AI Apps not enabled /
+        # missing scope). Future runs then skip straight to edit-based
+        # streaming without an error round-trip per response.
+        self._native_stream_unsupported = False
         # Socket Mode resilience: track runtime connection state so we can
         # self-heal when Slack silently drops the websocket.
         self._app_token: Optional[str] = None
@@ -1638,10 +1683,11 @@ class SlackAdapter(BasePlatformAdapter):
                     user=user_id,
                     text=chunk,
                 )
-                if not (isinstance(result, dict) and result.get("ok")):
+                payload = _slack_response_payload(result)
+                if not payload.get("ok"):
                     err = (
-                        result.get("error", "unknown_error")
-                        if isinstance(result, dict)
+                        payload.get("error", "unknown_error")
+                        if payload
                         else "unexpected_response"
                     )
                     return SendResult(
@@ -2256,11 +2302,7 @@ class SlackAdapter(BasePlatformAdapter):
                 channel=parent_chat_id,
                 text=seed_text,
             )
-            ts = (
-                result.get("ts")
-                if isinstance(result, dict)
-                else getattr(result, "get", lambda _k, _d=None: None)("ts")
-            )
+            ts = _slack_response_payload(result).get("ts")
             if ts:
                 return str(ts)
         except Exception as exc:
@@ -2275,6 +2317,12 @@ class SlackAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Slack."""
         self._running = False
+
+        # Seal any dangling native streams so chats aren't left with a
+        # live-typing indicator across a restart.
+        for chat_id, stream in list(self._active_streams.items()):
+            await self._seal_stream(chat_id, stream)
+        self._active_streams.clear()
 
         watchdog_task = self._socket_watchdog_task
         self._socket_watchdog_task = None
@@ -2291,6 +2339,12 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.debug(
                     "[Slack] Watchdog task raised during disconnect", exc_info=True
                 )
+
+        # Finalize native streams while workspace clients are still live. The
+        # gateway normally stops each turn's stream first; this is the shutdown
+        # safety net for cancellation/reconnect races.
+        for key, stream in list(self._native_task_card_streams.items()):
+            await self._stop_native_task_card_stream(key, stream)
 
         await self._stop_socket_mode_handler()
         await self._close_workspace_clients()
@@ -2346,6 +2400,20 @@ class SlackAdapter(BasePlatformAdapter):
     def _workspace_message_marker(team_id: str, message_id: str) -> Any:
         """Return an in-memory routing marker without changing legacy no-team tests."""
         return (str(team_id), str(message_id)) if team_id else str(message_id)
+
+    def scope_id_for_chat(self, chat_id: str) -> Optional[str]:
+        """Return the workspace (team) id that owns ``chat_id``.
+
+        Reads the channel → workspace map maintained by
+        ``_remember_channel_team``. Returns ``None`` for unknown channels and
+        for channels claimed by more than one workspace (which that map drops),
+        so callers get no scope rather than a wrong one.
+        """
+        if not chat_id:
+            return None
+        channel_team = getattr(self, "_channel_team", None) or {}
+        team_id = channel_team.get(str(chat_id))
+        return str(team_id) if team_id else None
 
     def _get_client(self, chat_id: str, team_id: Optional[str] = None) -> Any:
         """Return the workspace-specific WebClient for a channel."""
@@ -2447,6 +2515,183 @@ class SlackAdapter(BasePlatformAdapter):
         ignored = self._slack_ignored_channels()
         return "*" in ignored or parent_channel_id in ignored
 
+    @staticmethod
+    def _truthy_config(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def native_task_cards_enabled(self) -> bool:
+        """Return whether Slack-native tool progress is explicitly enabled."""
+        extra = self.config.extra if isinstance(self.config.extra, dict) else {}
+        direct = extra.get("native_task_cards", extra.get("nativeTaskCards"))
+        if direct is not None:
+            return self._truthy_config(direct)
+
+        streaming = extra.get("streaming")
+        if isinstance(streaming, dict):
+            progress = streaming.get("progress")
+            if isinstance(progress, dict):
+                nested = progress.get(
+                    "native_task_cards", progress.get("nativeTaskCards")
+                )
+                if nested is not None:
+                    return self._truthy_config(nested)
+        return False
+
+    def _native_task_card_key(
+        self,
+        chat_id: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[Tuple[str, str, str]]:
+        thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        if not thread_ts:
+            return None
+        return self._workspace_thread_key(
+            self._metadata_team_id(metadata), chat_id, str(thread_ts)
+        )
+
+    async def send_native_task_card_progress(
+        self,
+        chat_id: str,
+        tasks: List[Dict[str, str]],
+        *,
+        title: str = "Hermes is working",
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        fallback_text: Optional[str] = None,
+    ) -> SendResult:
+        """Start or update a Slack-native plan/task progress stream."""
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+        if not tasks:
+            return SendResult(success=False, error="No tasks")
+
+        key = self._native_task_card_key(chat_id, reply_to, metadata)
+        if key is None:
+            return SendResult(success=False, error="No Slack thread target")
+
+        stream = self._native_task_card_streams.get(key)
+        if stream is None or stream.stopped:
+            stream = _NativeTaskCardStream(
+                team_id=key[0],
+                channel=chat_id,
+                thread_ts=key[2],
+            )
+            # There is no await between lookup and assignment, so competing
+            # coroutines on this event loop will observe this same lock.
+            self._native_task_card_streams[key] = stream
+
+        async with stream.lock:
+            if stream.stopped:
+                return SendResult(success=False, error="Progress stream already stopped")
+            try:
+                client = self._get_client(chat_id, team_id=stream.team_id)
+                if not stream.stream_ts:
+                    start_payload: Dict[str, Any] = {
+                        "channel": chat_id,
+                        "thread_ts": stream.thread_ts,
+                        "task_display_mode": "plan",
+                    }
+                    md = metadata or {}
+                    recipient_team_id = (
+                        md.get("recipient_team_id")
+                        or md.get("team_id")
+                        or md.get("slack_team_id")
+                    )
+                    recipient_user_id = md.get("recipient_user_id") or md.get("user_id")
+                    if recipient_team_id:
+                        start_payload["recipient_team_id"] = recipient_team_id
+                    if recipient_user_id:
+                        start_payload["recipient_user_id"] = recipient_user_id
+
+                    result = await client.api_call(
+                        "chat.startStream", json=start_payload
+                    )
+                    if hasattr(result, "get"):
+                        stream.stream_ts = str(
+                            result.get("ts") or result.get("message_ts") or ""
+                        )
+                    if not stream.stream_ts:
+                        raise RuntimeError("Slack startStream returned no stream timestamp")
+
+                chunks: List[Dict[str, Any]] = [
+                    {"type": "plan_update", "title": str(title)[:256]}
+                ]
+                for task in tasks:
+                    status = str(task.get("status") or "in_progress")
+                    if status not in {"in_progress", "complete", "error"}:
+                        status = "in_progress"
+                    task_id = str(task.get("id") or task.get("task_id") or "task")
+                    chunks.append(
+                        {
+                            "type": "task_update",
+                            "id": task_id,
+                            "title": str(task.get("title") or task_id)[:256],
+                            "status": status,
+                        }
+                    )
+
+                append_payload: Dict[str, Any] = {
+                    "channel": chat_id,
+                    "ts": stream.stream_ts,
+                    "chunks": chunks,
+                }
+                if fallback_text:
+                    append_payload["markdown_text"] = fallback_text
+                await client.api_call("chat.appendStream", json=append_payload)
+                return SendResult(success=True, message_id=stream.stream_ts)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error(
+                    "[Slack] Native task-card progress error: %s",
+                    exc,
+                    exc_info=True,
+                )
+                return SendResult(success=False, error=str(exc), retryable=True)
+
+    async def _stop_native_task_card_stream(
+        self,
+        key: Tuple[str, str, str],
+        stream: _NativeTaskCardStream,
+    ) -> None:
+        async with stream.lock:
+            if stream.stopped:
+                return
+            stream.stopped = True
+            try:
+                if self._app and stream.stream_ts:
+                    await self._get_client(
+                        stream.channel, team_id=stream.team_id
+                    ).api_call(
+                        "chat.stopStream",
+                        json={"channel": stream.channel, "ts": stream.stream_ts},
+                    )
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.debug(
+                    "[Slack] Native task-card stopStream failed: %s", exc
+                )
+            finally:
+                if self._native_task_card_streams.get(key) is stream:
+                    self._native_task_card_streams.pop(key, None)
+
+    async def stop_native_task_card_progress(
+        self,
+        chat_id: str,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Finalize an active Slack-native progress stream exactly once."""
+        key = self._native_task_card_key(chat_id, reply_to, metadata)
+        if key is None:
+            return
+        stream = self._native_task_card_streams.get(key)
+        if stream is not None:
+            await self._stop_native_task_card_stream(key, stream)
+
     async def send(
         self,
         chat_id: str,
@@ -2518,6 +2763,14 @@ class SlackAdapter(BasePlatformAdapter):
                     fallback_result.error,
                 )
                 return fallback_result
+
+            # Native streaming finalization: when this chat has an active
+            # chat.startStream stream and this send carries its final
+            # content, seal the stream instead of posting a duplicate
+            # message (the streamed message IS the final message).
+            stream_result = await self._try_finalize_stream(chat_id, content)
+            if stream_result is not None:
+                return stream_result
 
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
@@ -2856,6 +3109,248 @@ class SlackAdapter(BasePlatformAdapter):
                 e,
             )
             return False
+
+    # ── Native streaming (chat.startStream / appendStream / stopStream) ──
+    #
+    # Slack's Agents & AI Apps feature ships a native streaming surface: the
+    # bot starts a stream (which renders a live "typing into the message"
+    # bubble), appends markdown deltas, and stops the stream to finalize.
+    # Unlike Telegram drafts (ephemeral, replaced by a real sendMessage at the
+    # end), a Slack stream IS the final message — so ``send()`` intercepts the
+    # turn-final delivery for a chat with an active stream and seals it via
+    # chat.stopStream instead of posting a duplicate.
+    #
+    # Availability: requires the Slack app to have the AI features enabled.
+    # When chat.startStream fails with a permission/feature error we cache
+    # ``_native_stream_unsupported`` and all future runs fall back to the
+    # edit-based path (the stream consumer handles the per-run fallback on
+    # the first send_draft failure automatically).
+
+    # Trailing cursor glyph appended by the stream consumer to in-progress
+    # frames (streaming.cursor, default " ▉"). Stripped before computing
+    # append deltas because the streaming API is append-only.
+    _STREAM_CURSOR_GLYPHS = ("\u2589", "▍", "▌", "…")
+
+    def supports_draft_streaming(
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Slack native streaming works in DMs, threads, and channels."""
+        if self._native_stream_unsupported:
+            return False
+        return self._app is not None
+
+    def _strip_stream_cursor(self, text: str) -> str:
+        """Strip the consumer's trailing cursor glyph from a frame."""
+        stripped = text.rstrip()
+        for glyph in self._STREAM_CURSOR_GLYPHS:
+            if stripped.endswith(glyph):
+                return stripped[: -len(glyph)].rstrip()
+        return text
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Stream a frame via Slack's native streaming APIs.
+
+        First frame for a (chat, draft_id) starts the stream; subsequent
+        frames append the delta.  ``content`` is the full accumulated text
+        so far (append-only invariant holds because the stream consumer
+        accumulates monotonically within one text segment).
+        """
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+        if self._native_stream_unsupported:
+            return SendResult(success=False, error="native streaming unsupported")
+
+        text = self._strip_stream_cursor(content)
+        client = self._get_client(chat_id)
+        stream = self._active_streams.get(chat_id)
+
+        try:
+            if stream is not None and stream.get("draft_id") != draft_id:
+                # New segment started while a prior stream is open — seal the
+                # old one so it doesn't hang with a live-typing indicator.
+                await self._seal_stream(chat_id, stream)
+                stream = None
+
+            if stream is None:
+                thread_ts = self._resolve_thread_ts(None, metadata)
+                if not thread_ts:
+                    # Streamed messages must anchor to a thread_ts. The
+                    # gateway sets metadata.thread_id even for top-level
+                    # messages (the message's own ts), so this is rare.
+                    return SendResult(
+                        success=False, error="no thread_ts for native stream"
+                    )
+                start_kwargs: Dict[str, Any] = {
+                    "channel": chat_id,
+                    "thread_ts": thread_ts,
+                }
+                # Channels require the recipient team/user pair; harmless
+                # extras for DMs, so include them whenever known.
+                md = metadata or {}
+                user_id = md.get("user_id") or md.get("sender_id")
+                team_id = self._channel_team.get(chat_id)
+                if user_id:
+                    start_kwargs["recipient_user_id"] = str(user_id)
+                if team_id:
+                    start_kwargs["recipient_team_id"] = str(team_id)
+                if text:
+                    start_kwargs["markdown_text"] = text
+                response = await client.chat_startStream(**start_kwargs)
+                ts = response.get("ts") if response else None
+                if not ts:
+                    raise RuntimeError("chat.startStream returned no ts")
+                self._active_streams[chat_id] = {
+                    "ts": str(ts),
+                    "draft_id": draft_id,
+                    "sent": text,
+                    "started": time.time(),
+                }
+                self._bot_message_ts.add(str(ts))
+                return SendResult(success=True, message_id=str(ts))
+
+            # Append path: compute the delta against what we already sent.
+            sent = stream.get("sent", "")
+            if text == sent:
+                return SendResult(success=True, message_id=stream["ts"])
+            if not text.startswith(sent):
+                # Accumulated text was rewritten (shouldn't happen within a
+                # segment). Fail the frame so the consumer falls back to the
+                # edit path; seal the stream first so it doesn't dangle.
+                await self._seal_stream(chat_id, stream)
+                self._active_streams.pop(chat_id, None)
+                return SendResult(
+                    success=False, error="stream prefix mismatch"
+                )
+            delta = text[len(sent):]
+            await client.chat_appendStream(
+                channel=chat_id,
+                ts=stream["ts"],
+                markdown_text=delta,
+            )
+            stream["sent"] = text
+            return SendResult(success=True, message_id=stream["ts"])
+
+        except Exception as e:  # pragma: no cover - network/API errors
+            self._active_streams.pop(chat_id, None)
+            err = str(e)
+            # Feature-gate errors: cache unsupported so future runs skip the
+            # native attempt entirely instead of erroring once per response.
+            if any(
+                marker in err
+                for marker in (
+                    "not_allowed",
+                    "missing_scope",
+                    "feature_not_enabled",
+                    "invalid_method",
+                    "unknown_method",
+                    "method_deprecated",
+                    "not_authed",
+                    "streaming_not_allowed",
+                )
+            ):
+                self._native_stream_unsupported = True
+                logger.warning(
+                    "[Slack] Native streaming unavailable (%s). Falling back "
+                    "to edit-based streaming. To enable native streaming, "
+                    "turn on the Agents & AI Apps feature for this Slack app "
+                    "(and ensure the assistant:write scope).",
+                    err,
+                )
+            else:
+                logger.debug("[Slack] Native stream frame failed: %s", err)
+            return SendResult(success=False, error=err)
+
+    async def _seal_stream(
+        self,
+        chat_id: str,
+        stream: Dict[str, Any],
+        final_text: Optional[str] = None,
+        blocks: Optional[list] = None,
+    ) -> bool:
+        """Best-effort chat.stopStream for an open stream.
+
+        ``final_text`` is the complete final content; only the unsent delta
+        is passed to stopStream (append-only API). Returns True on success.
+        """
+        try:
+            kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "ts": stream["ts"],
+            }
+            if final_text is not None:
+                sent = stream.get("sent", "")
+                if final_text.startswith(sent) and len(final_text) > len(sent):
+                    kwargs["markdown_text"] = final_text[len(sent):]
+            if blocks:
+                kwargs["blocks"] = blocks
+            await self._get_client(chat_id).chat_stopStream(**kwargs)
+            return True
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug(
+                "[Slack] chat.stopStream failed for %s/%s: %s",
+                chat_id, stream.get("ts"), e,
+            )
+            return False
+
+    async def _try_finalize_stream(
+        self,
+        chat_id: str,
+        content: str,
+    ) -> Optional[SendResult]:
+        """Finalize an active native stream with the turn-final content.
+
+        Called from ``send()``.  Returns a SendResult when the final content
+        belongs to the active stream (the stream is sealed and the streamed
+        message IS the final message — no new post needed).  Returns None
+        when the content is unrelated (e.g. interim commentary), leaving the
+        stream open and letting ``send()`` proceed normally.
+        """
+        stream = self._active_streams.get(chat_id)
+        if stream is None:
+            return None
+        sent = stream.get("sent", "")
+        text = self._strip_stream_cursor(content)
+        # Only treat this send as the stream's finalization when it extends
+        # (or equals) what was streamed. Unrelated sends (e.g. interim
+        # commentary) pass through. An empty ``sent`` prefix would match
+        # everything, so require substance before claiming the send.
+        if not sent or not text.startswith(sent):
+            return None
+        self._active_streams.pop(chat_id, None)
+        ts = stream["ts"]
+        ok = await self._seal_stream(chat_id, stream, final_text=text)
+        if not ok:
+            # Could not stop the stream — post normally so the user still
+            # gets the final answer; the dangling stream times out on
+            # Slack's side.
+            return None
+        # Final Block Kit pass: streamed messages render markdown natively,
+        # but the rich block layout (if any) is applied via chat_update on
+        # the sealed message, mirroring the finalize path in edit_message.
+        blocks = self._maybe_blocks(text)
+        if blocks:
+            try:
+                await self._get_client(chat_id).chat_update(
+                    channel=chat_id,
+                    ts=ts,
+                    text=self.format_message(text),
+                    blocks=blocks,
+                )
+            except Exception as e:
+                logger.debug(
+                    "[Slack] Post-stream Block Kit update failed "
+                    "(markdown fallback stands): %s", e,
+                )
+        await self.stop_typing(chat_id)
+        return SendResult(success=True, message_id=ts)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Show a typing/status indicator using assistant.threads.setStatus.
@@ -3812,11 +4307,12 @@ class SlackAdapter(BasePlatformAdapter):
                 else self._app.client
             )
             result = await client.users_info(user=user_id)
-            if not isinstance(result, dict):
+            payload = _slack_response_payload(result)
+            if not payload:
                 self._user_is_bot_cache[cache_key] = False
                 self._user_name_cache[cache_key] = user_id
                 return user_id
-            user = result.get("user", {})
+            user = payload.get("user", {})
             profile = user.get("profile", {}) if isinstance(user, dict) else {}
             self._user_is_bot_cache[cache_key] = bool(
                 user.get("is_bot")
@@ -3865,10 +4361,11 @@ class SlackAdapter(BasePlatformAdapter):
             resp = await self._get_client(
                 channel_id, team_id=team_id or None
             ).conversations_info(channel=channel_id)
-            if not isinstance(resp, dict) or not resp.get("ok"):
+            payload = _slack_response_payload(resp)
+            if not payload.get("ok"):
                 name = channel_id
             else:
-                ch = resp.get("channel") or {}
+                ch = payload.get("channel") or {}
                 if ch.get("is_im"):
                     peer_user = ch.get("user", "")
                     name = (
@@ -3992,11 +4489,12 @@ class SlackAdapter(BasePlatformAdapter):
                 else self._app.client
             )
             result = await client.users_info(user=user_id)
-            if not isinstance(result, dict):
+            payload = _slack_response_payload(result)
+            if not payload:
                 self._user_is_bot_cache[cache_key] = False
                 self._user_name_cache.setdefault(cache_key, user_id)
                 return False
-            user = result.get("user", {})
+            user = payload.get("user", {})
             profile = user.get("profile", {}) if isinstance(user, dict) else {}
             is_bot = bool(
                 user.get("is_bot")
@@ -7865,6 +8363,7 @@ class SlackAdapter(BasePlatformAdapter):
                 source,
                 group_sessions_per_user=gspu,
                 thread_sessions_per_user=tspu,
+                profile=self._session_key_profile(source),
             )
         except Exception:
             return None
@@ -8581,12 +9080,13 @@ async def _standalone_upload_file(
     if thread_id:
         kwargs["thread_ts"] = thread_id
     result = await client.files_upload_v2(**kwargs)
-    if isinstance(result, dict) and result.get("ok") is False:
-        return {"error": f"Slack API error: {result.get('error', 'unknown')}"}
+    payload = _slack_response_payload(result)
+    if payload.get("ok") is False:
+        return {"error": f"Slack API error: {payload.get('error', 'unknown')}"}
     # files_upload_v2 responses vary by sdk version; prefer file timestamp when present.
     message_id = None
-    if isinstance(result, dict):
-        file_obj = result.get("file") or {}
+    if payload:
+        file_obj = payload.get("file") or {}
         shares = file_obj.get("shares") or {}
         for share_bucket in shares.values():
             if isinstance(share_bucket, dict):
@@ -8596,7 +9096,7 @@ async def _standalone_upload_file(
                         break
             if message_id:
                 break
-        message_id = message_id or file_obj.get("timestamp") or result.get("ts")
+        message_id = message_id or file_obj.get("timestamp") or payload.get("ts")
     return {"success": True, "message_id": message_id, "raw": result}
 
 
@@ -8728,14 +9228,14 @@ async def _standalone_send(
             if thread_id:
                 post_kwargs["thread_ts"] = thread_id
             try:
-                post_resp = await client.chat_postMessage(**post_kwargs)
-                if isinstance(post_resp, dict) and not post_resp.get("ok", True):
-                    return {
-                        "error": f"Slack API error: {post_resp.get('error', 'unknown')}"
-                    }
-                last_message_id = (
-                    post_resp.get("ts") if isinstance(post_resp, dict) else None
+                post_payload = _slack_response_payload(
+                    await client.chat_postMessage(**post_kwargs)
                 )
+                if not post_payload.get("ok", True):
+                    return {
+                        "error": f"Slack API error: {post_payload.get('error', 'unknown')}"
+                    }
+                last_message_id = post_payload.get("ts")
             except Exception as e:
                 return {"error": f"Slack send failed: {e}"}
 
@@ -8756,8 +9256,10 @@ async def _standalone_send(
                         }
                         if thread_id:
                             fallback_kwargs["thread_ts"] = thread_id
-                        fb = await client.chat_postMessage(**fallback_kwargs)
-                        if isinstance(fb, dict) and fb.get("ok", True):
+                        fb = _slack_response_payload(
+                            await client.chat_postMessage(**fallback_kwargs)
+                        )
+                        if fb.get("ok", True):
                             last_message_id = fb.get("ts") or last_message_id
                             caption_pending = False
                     except Exception:

@@ -1414,7 +1414,7 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     """
     from tools.transcription_tools import MAX_FILE_SIZE, transcribe_audio
 
-    result = transcribe_audio(wav_path, model=model)
+    result = transcribe_audio(wav_path, model=model, source="voice_mode")
 
     # Only chunk when the provider itself reports "File too large" —
     # local providers (faster-whisper, whisper.cpp, etc.) have no upload
@@ -1473,7 +1473,7 @@ def _transcribe_wav_in_chunks(
 
         logger.info("Transcribing oversized WAV in %d chunks: %s", len(chunk_paths), wav_path)
         for index, chunk_path in enumerate(chunk_paths, start=1):
-            result = transcribe_audio(chunk_path, model=model)
+            result = transcribe_audio(chunk_path, model=model, source="voice_mode")
             if not result.get("success"):
                 error = result.get("error", "Unknown transcription error")
                 return {

@@ -25,6 +25,8 @@ import {
 
 /** Background-running dot aria-label (from i18n en.ts). */
 const BG_DOT_LABEL = 'Background task running'
+/** Foreground turn-running dot aria-label. */
+const SESSION_RUNNING_DOT_LABEL = 'Session running'
 /** Finished-unread dot aria-label. */
 const UNREAD_DOT_LABEL = 'Finished — unread'
 
@@ -219,12 +221,20 @@ test.describe('sidebar states — cross-session dot transition', () => {
       )
       .toBeGreaterThan(0)
 
-    // Wait for the final answer (turn completes, but bg process still running).
+    // The final answer text streams before message.complete, so text visibility
+    // alone is not a completion barrier. Wait for the foreground-running state
+    // to clear before asserting the background-process state.
     await page.waitForFunction(
       (text) => (document.body.textContent ?? '').includes(text),
       SIDEBAR_CROSS_TEXTS.finalText,
       { timeout: 90_000 },
     )
+    await expect
+      .poll(
+        () => page.locator(`[aria-label="${SESSION_RUNNING_DOT_LABEL}"]`).count(),
+        { timeout: 30_000, message: 'session running dot should disappear after turn completes' },
+      )
+      .toBe(0)
 
     // The background dot must still be visible: the turn is done but the
     // process is held open by the sentinel, so this is a stable state rather

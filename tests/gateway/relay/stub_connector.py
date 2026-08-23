@@ -51,6 +51,9 @@ class StubConnector:
         # mimics a resolved capability egress; set success=False to simulate an
         # absent/expired capability or a tenant mismatch on the connector side.
         self.next_follow_up_result: Dict[str, Any] = {"success": True, "message_id": "f1"}
+        # Canned result for the next draft frame (NS-658 live cards). The
+        # sealing frame (final=true) echoes message_id = the stream ts.
+        self.next_draft_result: Dict[str, Any] = {"success": True}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self.connected = True
@@ -85,6 +88,8 @@ class StubConnector:
         self.sent_platforms.append(platform)
         if action.get("op") == "send":
             return dict(self.next_send_result)
+        if action.get("op") == "draft":
+            return dict(self.next_draft_result)
         if action.get("op") == "send_media":
             return dict(self.next_media_result)
         if action.get("op") == "prompt":

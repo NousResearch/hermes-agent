@@ -27,6 +27,65 @@ from agent.stream_single_writer import claim_stream_writer, stream_writer_is_cur
 logger = logging.getLogger(__name__)
 
 
+def _codex_request_failure_details(error: BaseException) -> tuple[int | None, str]:
+    """Return the serialized request size and exception class chain.
+
+    OpenAI connection exceptions retain the final ``httpx.Request``. Reading
+    its already-buffered content gives us the exact byte count handed to the
+    transport without logging any request content. The class-only chain keeps
+    the underlying transport failure visible without exposing URLs or payloads
+    from exception messages.
+    """
+    request_body_bytes: int | None = None
+    exception_classes: list[str] = []
+    current: BaseException | None = error
+    seen: set[int] = set()
+
+    while current is not None and id(current) not in seen and len(seen) < 8:
+        seen.add(id(current))
+        exception_classes.append(type(current).__name__)
+
+        if request_body_bytes is None:
+            try:
+                request = getattr(current, "request", None)
+            except Exception:
+                request = None
+            if request is not None:
+                try:
+                    content = request.content
+                except Exception:
+                    content = None
+                if isinstance(content, str):
+                    request_body_bytes = len(content.encode("utf-8"))
+                elif isinstance(content, (bytes, bytearray, memoryview)):
+                    request_body_bytes = len(content)
+
+        cause = current.__cause__
+        if cause is None and not current.__suppress_context__:
+            cause = current.__context__
+        current = cause
+
+    return request_body_bytes, " <- ".join(exception_classes)
+
+
+def _log_codex_request_failure(
+    agent: Any,
+    error: BaseException,
+    *,
+    stream_opened: bool,
+) -> None:
+    request_body_bytes, exception_chain = _codex_request_failure_details(error)
+    logger.warning(
+        "Codex Responses request failed: "
+        "serialized_request_body_bytes=%s stream_opened=%s "
+        "exception_chain=%s model=%s",
+        request_body_bytes if request_body_bytes is not None else "unknown",
+        str(stream_opened).lower(),
+        exception_chain,
+        getattr(agent, "model", "unknown"),
+    )
+
+
 def _coerce_usage_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -765,7 +824,10 @@ def run_codex_app_server_turn(
     # standard {role, content, tool_calls, tool_call_id} entries, which
     # is exactly what curator.py / sessions DB expect.
     if turn.projected_messages:
-        messages.extend(turn.projected_messages)
+        from agent.message_metadata import append_message
+
+        for projected_message in turn.projected_messages:
+            append_message(messages, projected_message)
 
         # Persist the newly-projected assistant/tool messages ourselves.
         # This path is an early return that bypasses conversation_loop, whose
@@ -1243,6 +1305,62 @@ def _consume_codex_event_stream(
     return final
 
 
+def _sanitize_consumer_codex_request(
+    agent: Any,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    """Drop fields the ChatGPT OAuth Codex endpoint does not accept.
+
+    This guard intentionally lives at the final wire boundary, after Relay or
+    other request middleware has had a chance to transform the request. The
+    normal transport builder already omits ``prompt_cache_retention`` for this
+    endpoint, but a late mutation must not be allowed to turn a valid tool
+    follow-up into a non-retryable HTTP 400.
+
+    Explicit ``request_overrides`` are subject to the same endpoint contract:
+    unsupported retention is dropped with a warning instead of being sent and
+    rejected by the provider. The check covers both the top-level kwarg and a
+    nested ``extra_body`` entry — the OpenAI SDK merges ``extra_body`` into
+    the outgoing JSON body, so either shape reaches the endpoint.
+    """
+    sanitized = dict(request)
+    # Resolved defensively on purpose: run_codex_stream is also driven with
+    # lightweight stand-in agents that carry only the attributes a given path
+    # needs (see tests/agent/test_codex_request_transport_diagnostics.py), so a
+    # bare agent._is_codex_backend() here would raise AttributeError on them.
+    backend_predicate = getattr(agent, "_is_codex_backend", None)
+    is_consumer_codex = (
+        bool(backend_predicate()) if callable(backend_predicate) else False
+    )
+    if not is_consumer_codex:
+        return sanitized
+    dropped_from: list[str] = []
+    if "prompt_cache_retention" in sanitized:
+        sanitized.pop("prompt_cache_retention")
+        dropped_from.append("top-level")
+    # The OpenAI SDK merges ``extra_body`` into the outgoing JSON body, so a
+    # nested ``extra_body.prompt_cache_retention`` reaches the endpoint just
+    # like the top-level field would. Copy before editing — the caller's
+    # mapping must not be mutated — and drop the mapping when it empties.
+    extra_body = sanitized.get("extra_body")
+    if isinstance(extra_body, dict) and "prompt_cache_retention" in extra_body:
+        extra_body = dict(extra_body)
+        extra_body.pop("prompt_cache_retention")
+        if extra_body:
+            sanitized["extra_body"] = extra_body
+        else:
+            sanitized.pop("extra_body")
+        dropped_from.append("extra_body")
+    if dropped_from:
+        logger.warning(
+            "Dropped unsupported prompt_cache_retention at consumer Codex "
+            "wire boundary (model=%s, via %s).",
+            sanitized.get("model", getattr(agent, "model", "unknown")),
+            ", ".join(dropped_from),
+        )
+    return sanitized
+
+
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """Execute one streaming Responses API request and return the final response.
 
@@ -1253,6 +1371,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     the terminal event's ``output`` field.
     """
     import httpx as _httpx
+    from openai import APIConnectionError as _APIConnectionError
 
     from agent import relay_llm
 
@@ -1284,7 +1403,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         writer_token = {"value": None}
 
         def _open_codex_stream(next_api_kwargs: dict[str, Any]):
-            stream_kwargs = dict(next_api_kwargs)
+            stream_kwargs = _sanitize_consumer_codex_request(
+                agent,
+                next_api_kwargs,
+            )
             stream_kwargs["stream"] = True
             return active_client.responses.create(**stream_kwargs)
 
@@ -1356,6 +1478,18 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     exc,
                 )
                 continue
+            _log_codex_request_failure(
+                agent,
+                exc,
+                stream_opened=writer_token["value"] is not None,
+            )
+            raise
+        except _APIConnectionError as exc:
+            _log_codex_request_failure(
+                agent,
+                exc,
+                stream_opened=writer_token["value"] is not None,
+            )
             raise
 
         def _interrupt_or_superseded() -> bool:
@@ -1389,10 +1523,22 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                         agent._client_log_context(), exc,
                     )
                     continue
+                _log_codex_request_failure(
+                    agent,
+                    exc,
+                    stream_opened=writer_token["value"] is not None,
+                )
                 raise
             except RuntimeError:
                 if event_stream.final_response is not None:
                     return event_stream.final_response
+                raise
+            except _APIConnectionError as exc:
+                _log_codex_request_failure(
+                    agent,
+                    exc,
+                    stream_opened=writer_token["value"] is not None,
+                )
                 raise
 
             # A terminal response has already been assembled at this point
@@ -1405,7 +1551,25 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 try:
                     for _ignored in event_stream:
                         pass
-                except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
+                except (
+                    _httpx.RemoteProtocolError,
+                    _httpx.ReadTimeout,
+                    _httpx.ConnectError,
+                    ConnectionError,
+                ) as exc:
+                    logger.warning(
+                        "Codex Responses stream transport finalization failed "
+                        "after a terminal response was already received; "
+                        "returning the completed response instead of "
+                        "retrying. %s error=%s",
+                        agent._client_log_context(), exc,
+                    )
+                except _APIConnectionError as exc:
+                    _log_codex_request_failure(
+                        agent,
+                        exc,
+                        stream_opened=writer_token["value"] is not None,
+                    )
                     logger.warning(
                         "Codex Responses stream transport finalization failed "
                         "after a terminal response was already received; "

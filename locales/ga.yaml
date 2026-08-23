@@ -146,7 +146,7 @@ gateway:
     no_goal_set:           "Níl aon sprioc socraithe."
     paused:                "⏸ Sprioc curtha ar sos: {goal}"
     no_resume:             "Níl aon sprioc le hatosú."
-    resumed:               "▶ Sprioc atosaithe: {goal}\nSeol teachtaireacht ar bith chun leanúint, nó fan — déanfaidh mé an chéad chéim eile sa chéad seal eile."
+    resumed:               "▶ Sprioc atosaithe: {goal}\nAg leanúint ar aghaidh anois — déanfaidh mé an chéad chéim eile láithreach."
     invalid:               "Sprioc neamhbhailí: {error}"
     set:                   "⊙ Sprioc socraithe (buiséad {budget} seal): {goal}\nLeanfaidh mé ag obair go dtí go bhfuil an sprioc críochnaithe, go gcuirfidh tú ar sos / go nglanfaidh tú í, nó go n-úsáidfear an buiséad.\nSmacht: /goal status · /goal pause · /goal resume · /goal clear"
 
@@ -173,6 +173,8 @@ gateway:
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "Result: {summary}"
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "Níl aon phearsantachtaí cumraithe in `{path}/config.yaml`"
@@ -281,6 +283,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "Níor aimsíodh aon seicphointe do {cwd}"
     invalid_number:        "Uimhir seicphointe neamhbhailí. Úsáid 1-{max}."
     restored:              "✅ Aischurtha go seicphointe {hash}: {reason}\nSábháladh roghchóip réamh-rollback go huathoibríoch."
+    kept_user_edits:       "↷ Coinníodh do chuid athruithe láimhe: {files}\nÚsáid /rollback <N> --all chun iad sin a aischur freisin."
     restore_failed:        "❌ {error}"
 
   diff:

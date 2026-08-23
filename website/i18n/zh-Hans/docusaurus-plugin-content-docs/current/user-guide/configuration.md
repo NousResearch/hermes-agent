@@ -598,6 +598,7 @@ compression:
   enabled: true                                     # 开启/关闭压缩
   threshold: 0.50                                   # 在上下文限制的此百分比时压缩
   target_ratio: 0.20                                # 保留为最近尾部的阈值分数
+  tail_mode: legacy                                 # 尾部保留策略："legacy"（0.20×窗口的逐字尾部）或 "lean"（截取 2.5% 窗口、10K-25K 上下限的精简尾部，摘要中附带分块摘录、锚点索引与 session_search 恢复指引 — 压缩后保留 token 约减少 3 倍）
   protect_last_n: 20                                # 保持未压缩的最少最近消息数
   hygiene_hard_message_limit: 5000                  # Gateway 安全阀 —— 见下文
   context_timeout_seconds: 120                      # Agent 侧 compress_context 无进展超时（秒）—— 见下文
@@ -1002,7 +1003,7 @@ AUXILIARY_VISION_MODEL=openai/gpt-4o
 | `"auto"` | 最佳可用（默认）。Vision 尝试 OpenRouter → Nous → Codex。 | — |
 | `"openrouter"` | 强制 OpenRouter —— 路由到任何模型（Gemini、GPT-4o、Claude 等） | `OPENROUTER_API_KEY` |
 | `"nous"` | 强制 Nous Portal | `hermes auth` |
-| `"codex"` | 强制 Codex OAuth（ChatGPT 账户）。支持视觉（gpt-5.3-codex）。 | `hermes model` → Codex |
+| `"codex"` | 强制 Codex OAuth（ChatGPT 账户）。支持视觉（gpt-5.3-codex）。 | `hermes model` → ChatGPT or Codex Subscription |
 | `"minimax-oauth"` | 强制 MiniMax OAuth（浏览器登录，无需 API 密钥）。辅助任务使用 MiniMax-M2.7-highspeed。 | `hermes model` → MiniMax (OAuth) |
 | `"xai-oauth"` | 强制 xAI Grok OAuth（SuperGrok 或 X Premium+ 订阅者的浏览器登录，无需 API 密钥）。相同的 OAuth token 涵盖聊天、TTS、图像、视频和转录。 | `hermes model` → xAI Grok OAuth (SuperGrok / Premium+) |
 | `"main"` | 使用您的活跃自定义/主端点。可以来自 `OPENAI_BASE_URL` + `OPENAI_API_KEY` 或通过 `hermes model` / `config.yaml` 保存的自定义端点。适用于 OpenAI、本地模型或任何 OpenAI 兼容 API。**仅限辅助任务 —— 对 `model.provider` 无效。** | 自定义端点凭据 + 基础 URL |

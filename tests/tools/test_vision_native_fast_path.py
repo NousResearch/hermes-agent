@@ -108,12 +108,10 @@ class TestVisionAnalyzeNative:
         """Regression for the wedged-session incident (May 2026).
 
         A vision tool-result image is baked into conversation history and
-        re-sent on every subsequent turn.  Anthropic rejects any single
-        base64 image over 5 MB with a 400, and immutable history means the
-        bad bytes can't be cleared by retrying — the session is permanently
-        wedged.  The native fast path must proactively resize down to the
-        embed cap (well under 5 MB) BEFORE embedding, not just at the 20 MB
-        hard ceiling.  Skips if Pillow isn't available (resize is a no-op).
+        re-sent on every subsequent turn.  The native fast path must
+        proactively resize down to the history-reuse embed cap BEFORE
+        embedding, not just at the 20 MB hard ceiling.  Skips if Pillow
+        isn't available (resize is a no-op).
         """
         pytest = __import__("pytest")
         try:
@@ -138,9 +136,17 @@ class TestVisionAnalyzeNative:
             if p.get("type") == "image_url"
         )
         assert len(url) <= _EMBED_TARGET_BYTES, (
-            f"embedded image {len(url) / 1024 / 1024:.1f} MB exceeds embed cap "
-            f"{_EMBED_TARGET_BYTES / 1024 / 1024:.0f} MB — would wedge sessions on Anthropic"
+            f"embedded image {len(url) / 1024:.0f} KB exceeds embed cap "
+            f"{_EMBED_TARGET_BYTES / 1024:.0f} KB — would bloat every later turn"
         )
+
+    def test_embed_caps_are_sized_for_history_reuse(self):
+        """Native embeds ride every later turn, so caps must stay well below
+        the Anthropic 5 MB / 8000px reject limits (#92699)."""
+        from tools.vision_tools import _EMBED_MAX_DIMENSION, _EMBED_TARGET_BYTES
+
+        assert _EMBED_TARGET_BYTES <= 512 * 1024
+        assert _EMBED_MAX_DIMENSION <= 2048
 
 
 # ─── _handle_vision_analyze fast-path gating ─────────────────────────────────

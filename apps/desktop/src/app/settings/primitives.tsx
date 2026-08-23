@@ -111,6 +111,8 @@ export function ListRow({
   hint,
   action,
   below,
+  'data-tour': dataTour,
+  id,
   wide = false,
   className
 }: {
@@ -119,6 +121,9 @@ export function ListRow({
   hint?: ReactNode
   action?: ReactNode
   below?: ReactNode
+  /** Durable handle for tours (see lib/tour) — usually the field's schema key. */
+  'data-tour'?: string
+  id?: string
   wide?: boolean
   className?: string
 }) {
@@ -126,7 +131,7 @@ export function ListRow({
     // Container-queried, not viewport-queried: the label/control split keys on
     // the row's own pane width, so a narrow detail column (messaging, split
     // views) stacks instead of squishing the label against minmax(15rem,…).
-    <div className={cn('@container', className)}>
+    <div className={cn('@container', className)} data-tour={dataTour} id={id}>
       <div
         className={cn(
           'grid gap-3 py-3',

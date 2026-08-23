@@ -1,21 +1,14 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { stubResizeObserver } from '@/test/jsdom'
 import type { ConfigFieldSchema } from '@/types/hermes'
 
 import { ConfigField } from './config-field'
 import { rankSearchOption, SearchableSelect } from './searchable-select'
 
-// Radix Popover + cmdk call scrollIntoView / pointer-capture / ResizeObserver
-// APIs jsdom lacks.
-class TestResizeObserver {
-  disconnect() {}
-  observe() {}
-  unobserve() {}
-}
-
 beforeAll(() => {
-  vi.stubGlobal('ResizeObserver', TestResizeObserver)
+  stubResizeObserver()
   Element.prototype.scrollIntoView = vi.fn()
   Element.prototype.hasPointerCapture = vi.fn(() => false)
   Element.prototype.releasePointerCapture = vi.fn()

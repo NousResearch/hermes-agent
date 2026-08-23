@@ -1,6 +1,7 @@
 import type { ITheme, Terminal } from '@xterm/xterm'
 import type { CSSProperties } from 'react'
 
+import { isMacPlatform } from '@/lib/platform'
 import type { DesktopTerminalPalette } from '@/themes/types'
 
 // VS Code's default integrated-terminal palette (terminalColorRegistry.ts) — a
@@ -97,7 +98,7 @@ export function resolveSurfaceColor(fallback: string): string {
   return resolved && resolved !== 'rgba(0, 0, 0, 0)' ? resolved : fallback
 }
 
-export const isMacPlatform = () => navigator.platform.toLowerCase().includes('mac')
+export { isMacPlatform }
 
 export function isAddSelectionShortcut(event: KeyboardEvent) {
   const mod = isMacPlatform() ? event.metaKey : event.ctrlKey

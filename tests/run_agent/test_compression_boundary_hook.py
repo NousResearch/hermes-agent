@@ -243,9 +243,11 @@ class TestCompressionBoundaryHook:
 
             original_sid = agent.session_id
 
-            # Must not raise
+            # Must not raise. Input must be large enough that the fake
+            # compressor's one-message summary is a genuine shrink — the
+            # no-growth commit guard refuses to rotate on transcript growth.
             compressed, _prompt = agent._compress_context(
-                [{"role": "user", "content": "m"}], "sys", approx_tokens=100
+                [{"role": "user", "content": "m" * 400}], "sys", approx_tokens=100
             )
             assert compressed
             assert agent.session_id != original_sid

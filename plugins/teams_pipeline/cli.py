@@ -47,6 +47,11 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     fetch_p = subs.add_parser("fetch", aliases=["test"], help="Dry-run meeting artifact resolution")
     fetch_p.add_argument("--meeting-id", default="")
     fetch_p.add_argument("--join-web-url", default="")
+    fetch_p.add_argument(
+        "--organizer-user-id",
+        default="",
+        help="Microsoft Entra user ID for organizer-scoped online meeting lookup",
+    )
     fetch_p.add_argument("--tenant-id", default="")
     fetch_p.add_argument("--call-record-id", default="")
 
@@ -306,6 +311,7 @@ def _cmd_run(args) -> None:
 def _cmd_fetch(args) -> None:
     meeting_id = str(getattr(args, "meeting_id", "") or "").strip() or None
     join_web_url = str(getattr(args, "join_web_url", "") or "").strip() or None
+    organizer_user_id = str(getattr(args, "organizer_user_id", "") or "").strip() or None
     tenant_id = str(getattr(args, "tenant_id", "") or "").strip() or None
     call_record_id = str(getattr(args, "call_record_id", "") or "").strip() or None
     if not meeting_id and not join_web_url:
@@ -319,6 +325,7 @@ def _cmd_fetch(args) -> None:
             meeting_id=meeting_id,
             join_web_url=join_web_url,
             tenant_id=tenant_id,
+            organizer_user_id=organizer_user_id,
         )
     )
     transcript_artifact, transcript_text = _run_async(fetch_preferred_transcript_text(client, meeting_ref))

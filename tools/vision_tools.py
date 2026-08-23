@@ -625,25 +625,22 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
 # provider accepts the image and we reject outright.
 _MAX_BASE64_BYTES = 20 * 1024 * 1024
 
-# Proactive embed cap (4 MB).  This is the size we resize an image DOWN to
-# before embedding it into conversation history, regardless of the 20 MB hard
-# ceiling.  Anthropic's per-image base64 limit is 5 MB; once an oversized image
-# is baked into history (e.g. a vision tool-result), it is re-sent on every
-# subsequent turn and permanently wedges the session with a 400 that retries
-# can't clear (the bad bytes are immutable history).  Capping at embed time —
-# with headroom under 5 MB — is the only durable fix.  Matches the post-failure
-# shrink target in agent.conversation_compression so behaviour is consistent
-# whether we resize proactively or reactively.
-_EMBED_TARGET_BYTES = 4 * 1024 * 1024
+# Proactive embed cap for conversation-history reuse.  Native vision_analyze
+# bakes the data-URL into the tool result, which is re-sent on every later
+# turn.  The 20 MB hard ceiling / Anthropic 5 MB reject-cap still apply as
+# safety nets; those are one-shot viewing limits, not history-reuse sizes.
+# A 4 MB / 7900px embed was observed at ~400K chars and ~100–260K billed
+# tokens per image (#92699), so we size for model reading instead: 256 KB
+# keeps a 1568px screenshot cheap enough to ride the session (PNGs that
+# exceed it are downscaled further by the byte-budget ladder), well under
+# every provider's per-image limit.
+_EMBED_TARGET_BYTES = 256 * 1024
 
-# Proactive embed dimension cap (px, longest side).  Anthropic enforces an
-# 8000px per-side ceiling INDEPENDENTLY of the 5 MB byte cap — a tall full-page
-# screenshot can be well under 5 MB yet far over 8000px (e.g. 1200×12000 at
-# 0.06 MB), so the byte-only embed check above lets it slip into immutable
-# history un-resized and the session bricks on a non-retryable 400.  We cap at
-# 7900 (headroom under 8000) so the proactive resize shrinks tall small-byte
-# images before they are embedded.
-_EMBED_MAX_DIMENSION = 7900
+# Proactive embed dimension cap (px, longest side).  Anthropic still rejects
+# above 8000px independently of the byte cap, but its tokenizer downsamples
+# to a 1568px long edge — pixels past that cost wire bytes and never extra
+# model fidelity.  Cap at 1568 so history embeds match what the model sees.
+_EMBED_MAX_DIMENSION = 1568
 
 # Target size when auto-resizing on API failure (5 MB).  After a provider
 # rejects an image, we downscale to this target and retry once.
@@ -681,6 +678,7 @@ def _image_exceeds_dimension(image_path: Path, max_dimension: int) -> bool:
 def _crop_image_region(
     image_path: Path,
     region: Any,
+    offset_out: Optional[dict] = None,
 ) -> tuple[Optional[Path], Optional[str], Optional[str]]:
     """Crop ``image_path`` to ``region`` = [x1, y1, x2, y2] (original-image pixels).
 
@@ -731,6 +729,11 @@ def _crop_image_region(
                     f"[0, 0, {width}, {height}]."
                 )
             cropped = img.crop((cx1, cy1, cx2, cy2))
+            if offset_out is not None:
+                offset_out["x"] = cx1
+                offset_out["y"] = cy1
+                offset_out["width"] = cx2 - cx1
+                offset_out["height"] = cy2 - cy1
             out_path = image_path.with_name(
                 f"{image_path.stem}_region_{uuid.uuid4().hex[:8]}.png"
             )
@@ -742,9 +745,56 @@ def _crop_image_region(
         return None, None, f"Failed to crop region: {exc}"
 
 
+def _build_scale_note(
+    scale_info: Optional[dict],
+    crop_offset: Optional[dict],
+) -> Optional[str]:
+    """Build a coordinate-mapping disclosure note for the analysis result.
+
+    ``scale_info`` (from :func:`_resize_image_for_vision`) carries the
+    original and downscaled pixel dimensions when a downscale actually
+    happened. ``crop_offset`` (from :func:`_crop_image_region`) carries the
+    clamped crop origin when a region zoom was applied. Returns ``None`` when
+    neither applies — no note, no noise.
+    """
+    parts = []
+    if scale_info:
+        ow, oh = scale_info["orig_width"], scale_info["orig_height"]
+        nw, nh = scale_info["new_width"], scale_info["new_height"]
+        fx = ow / nw if nw else 1.0
+        fy = oh / nh if nh else 1.0
+        if f"{fx:.2f}" == f"{fy:.2f}":
+            factor_clause = (
+                f"multiply any coordinates you report by {fx:.2f} "
+                f"to map back to the original image."
+            )
+        else:
+            factor_clause = (
+                f"multiply any x coordinates you report by {fx:.2f} and "
+                f"any y coordinates by {fy:.2f} to map back to the "
+                f"original image."
+            )
+        parts.append(
+            f"Image downscaled from {ow}x{oh} to {nw}x{nh} for vision; "
+            f"{factor_clause}"
+        )
+    if crop_offset:
+        parts.append(
+            f"Analysis was performed on a cropped region of the original "
+            f"image starting at offset ({crop_offset['x']}, "
+            f"{crop_offset['y']}); coordinates are relative to that crop "
+            f"origin — add the offset to map back to the full image."
+        )
+    if not parts:
+        return None
+    return " ".join(parts)
+
+
 def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                               max_base64_bytes: int = _RESIZE_TARGET_BYTES,
-                              max_dimension: Optional[int] = None) -> str:
+                              max_dimension: Optional[int] = None,
+                              scale_out: Optional[dict] = None,
+                              force_jpeg: bool = False) -> str:
     """Convert an image to a base64 data URL, auto-resizing if too large.
 
     Tries Pillow first to progressively downscale oversized images.  If Pillow
@@ -756,6 +806,13 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
             count are forcibly downscaled even if they're under the byte
             budget.  Anthropic enforces an 8000 px per-side cap independently
             of the 5 MB byte cap.
+        force_jpeg: Re-encode as JPEG even for PNG input when a resize is
+            needed.  PNG has no quality ladder — its only shrink lever is
+            halving dimensions, which destroys text legibility on dense
+            screenshots.  History-reuse embeds (#92699) opt in so a text-heavy
+            screenshot keeps its readable resolution and shrinks via JPEG
+            quality instead.  Images already under both caps are returned
+            unchanged (still PNG).
 
     Returns the base64 data URL string.
     """
@@ -813,8 +870,14 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                 max_base64_bytes / (1024 * 1024), max_dimension)
 
     mime = mime_type or _determine_mime_type(image_path)
-    # Choose output format: JPEG for photos (smaller), PNG for transparency
-    pil_format = "PNG" if mime == "image/png" else "JPEG"
+    # Choose output format: JPEG for photos (smaller), PNG for transparency.
+    # force_jpeg overrides for history-reuse embeds: a resize-needing PNG
+    # screenshot re-encodes as JPEG so the quality ladder can shrink bytes
+    # without halving resolution (text legibility, #92699).
+    if force_jpeg:
+        pil_format = "JPEG"
+    else:
+        pil_format = "PNG" if mime == "image/png" else "JPEG"
     out_mime = "image/png" if pil_format == "PNG" else "image/jpeg"
 
     try:
@@ -824,8 +887,10 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
         if data_url is None:
             data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         return data_url  # fall through to size-check in caller
-    # Convert RGBA to RGB for JPEG output
-    if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
+    # JPEG cannot encode alpha or palette/grayscale-alpha modes; normalize
+    # anything that isn't already plain RGB/grayscale.  force_jpeg newly
+    # routes PNG inputs here, so exotic modes (LA/PA) must not crash save().
+    if pil_format == "JPEG" and img.mode not in {"RGB", "L"}:
         img = img.convert("RGB")
 
     # Strategy: halve dimensions until both base64 fits AND pixel dimensions
@@ -833,8 +898,17 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     # For JPEG, also try reducing quality at each size step.
     # For PNG, quality is irrelevant — only dimension reduction helps.
     quality_steps = (85, 70, 50) if pil_format == "JPEG" else (None,)
+    orig_dims = (img.width, img.height)
     prev_dims = (img.width, img.height)
     candidate = None  # will be set on first loop iteration
+
+    def _record_scale(w: int, h: int) -> None:
+        """Publish the downscale into ``scale_out`` when dims changed."""
+        if scale_out is not None and (w, h) != orig_dims:
+            scale_out["orig_width"] = orig_dims[0]
+            scale_out["orig_height"] = orig_dims[1]
+            scale_out["new_width"] = w
+            scale_out["new_height"] = h
 
     def _dims_ok(w: int, h: int) -> bool:
         """True if both pixel dimensions are within the limit."""
@@ -876,6 +950,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                 logger.info("Auto-resized image fits: %.1f MB (quality=%s, %dx%d)",
                             len(candidate) / (1024 * 1024), q,
                             img.width, img.height)
+                _record_scale(img.width, img.height)
                 return candidate
 
     # If we still can't get it small enough, return the best attempt
@@ -883,6 +958,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     if candidate is not None:
         logger.warning("Auto-resize could not fit image under %.1f MB (best: %.1f MB)",
                        max_base64_bytes / (1024 * 1024), len(candidate) / (1024 * 1024))
+        _record_scale(img.width, img.height)
         return candidate
 
     # Shouldn't reach here, but fall back to full encode
@@ -1008,6 +1084,7 @@ def _build_native_vision_tool_result(
     question: str,
     image_data_url: str,
     image_size_bytes: int,
+    scale_note: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the multimodal tool-result envelope returned by the fast path.
 
@@ -1036,6 +1113,8 @@ def _build_native_vision_tool_result(
     )
     if isinstance(question, str) and question.strip():
         text_part += f"\n\nQuestion: {question.strip()}"
+    if scale_note:
+        text_part += f"\n\nNote: {scale_note}"
 
     summary = (
         f"Image attached natively for the main model "
@@ -1149,9 +1228,12 @@ async def _vision_analyze_native(
 
         # Optional region zoom: crop BEFORE the downscale/embed-cap pipeline
         # so the cropped area gets the full resolution budget.
+        _crop_offset: dict = {}
+        _scale_info: dict = {}
         if region is not None:
             cropped_path, cropped_mime, crop_err = await asyncio.to_thread(
                 _crop_image_region, temp_image_path, region,
+                offset_out=_crop_offset,
             )
             if crop_err or cropped_path is None:
                 return tool_error(crop_err or "Region crop failed.", success=False)
@@ -1171,13 +1253,12 @@ async def _vision_analyze_native(
         )
 
         # Proactive embed cap: this image gets baked into conversation
-        # history and re-sent on every subsequent turn.  Anthropic rejects
-        # any single base64 image over 5 MB OR over 8000px per side with a
-        # 400, and because history is immutable, an oversized embed
-        # permanently wedges the session — retries can't clear bytes (or
-        # pixels) that are already in the request.  Resize DOWN to the embed
-        # target (4 MB / 7900px, headroom under both ceilings) whenever the
-        # payload exceeds either limit, not just at the 20 MB hard ceiling.
+        # history and re-sent on every subsequent turn.  Resize DOWN to the
+        # history-reuse target whenever the payload exceeds either the byte
+        # or long-edge cap, not just at the 20 MB hard ceiling.  Anthropic
+        # still rejects >5 MB / >8000px with a non-retryable 400, but those
+        # are one-shot viewing limits — history embeds are sized smaller so
+        # repeated vision_analyze turns don't blow the context (#92699).
         _over_bytes = len(image_data_url) > _EMBED_TARGET_BYTES
         _over_dims = await _run_encode_on_cpu_executor(
             _image_exceeds_dimension, temp_image_path, _EMBED_MAX_DIMENSION,
@@ -1188,6 +1269,8 @@ async def _vision_analyze_native(
                 temp_image_path, mime_type=detected_mime_type,
                 max_base64_bytes=_EMBED_TARGET_BYTES,
                 max_dimension=_EMBED_MAX_DIMENSION,
+                scale_out=_scale_info,
+                force_jpeg=True,
             )
             # If even resizing can't get under the absolute hard ceiling,
             # there's nothing more we can do — reject rather than embed a
@@ -1208,6 +1291,9 @@ async def _vision_analyze_native(
             question=question,
             image_data_url=image_data_url,
             image_size_bytes=image_size_bytes,
+            scale_note=_build_scale_note(
+                _scale_info or None, _crop_offset or None,
+            ),
         )
 
     except Exception as exc:
@@ -1336,9 +1422,12 @@ async def vision_analyze_tool(
 
         # Optional region zoom: crop BEFORE the encode/downscale pipeline so
         # the cropped area gets the full resolution budget.
+        _crop_offset: dict = {}
+        _scale_info: dict = {}
         if region is not None:
             cropped_path, cropped_mime, crop_err = await asyncio.to_thread(
                 _crop_image_region, temp_image_path, region,
+                offset_out=_crop_offset,
             )
             if crop_err or cropped_path is None:
                 raise ValueError(crop_err or "Region crop failed.")
@@ -1366,7 +1455,8 @@ async def vision_analyze_tool(
             # Try to resize down to 5 MB before giving up.
             image_data_url = await _run_encode_on_cpu_executor(
                 _resize_image_for_vision,
-                temp_image_path, mime_type=detected_mime_type)
+                temp_image_path, mime_type=detected_mime_type,
+                scale_out=_scale_info)
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 raise ValueError(
                     f"Image too large for vision API: base64 payload is "
@@ -1424,7 +1514,6 @@ async def vision_analyze_tool(
             "task": "vision",
             "messages": messages,
             "temperature": vision_temperature,
-            "max_tokens": 2000,
             "timeout": vision_timeout,
         }
         if model:
@@ -1444,7 +1533,8 @@ async def vision_analyze_tool(
                 )
                 image_data_url = await _run_encode_on_cpu_executor(
                     _resize_image_for_vision,
-                    temp_image_path, mime_type=detected_mime_type)
+                    temp_image_path, mime_type=detected_mime_type,
+                    scale_out=_scale_info)
                 messages[0]["content"][1]["image_url"]["url"] = image_data_url
                 response = await async_call_llm(**call_kwargs)
             else:
@@ -1464,10 +1554,16 @@ async def vision_analyze_tool(
         logger.info("Image analysis completed (%s characters)", analysis_length)
         
         # Prepare successful response
+        analysis = analysis or "There was a problem with the request and the image could not be analyzed."
+        scale_note = _build_scale_note(
+            _scale_info or None, _crop_offset or None,
+        )
         result = {
             "success": True,
-            "analysis": analysis or "There was a problem with the request and the image could not be analyzed."
+            "analysis": f"[{scale_note}] {analysis}" if scale_note else analysis,
         }
+        if scale_note:
+            result["scale_note"] = scale_note
         
         debug_call_data["success"] = True
         debug_call_data["analysis_length"] = analysis_length
@@ -1550,17 +1646,21 @@ def check_vision_requirements() -> bool:
     when the auto chain would have served the request (issue #31179).
     """
     try:
-        from agent.auxiliary_client import resolve_vision_provider_client
+        from agent.auxiliary_client import aux_probe_mode, resolve_vision_provider_client
     except ImportError:
         return False
     try:
-        _provider, client, _model = resolve_vision_provider_client()
-        if client is not None:
-            return True
-        # Same fallback to "auto" that call_llm performs when the configured
-        # provider can't be resolved.
-        _provider, client, _model = resolve_vision_provider_client(provider="auto")
-        return client is not None
+        # Probe mode answers "is a vision client resolvable?" without paying
+        # for real SDK client construction (openai import + httpx/SSL setup)
+        # on the tool-gating path — resolution policy is identical.
+        with aux_probe_mode():
+            _provider, client, _model = resolve_vision_provider_client()
+            if client is not None:
+                return True
+            # Same fallback to "auto" that call_llm performs when the configured
+            # provider can't be resolved.
+            _provider, client, _model = resolve_vision_provider_client(provider="auto")
+            return client is not None
     except Exception:
         return False
 
@@ -1985,7 +2085,6 @@ async def video_analyze_tool(
             "task": "vision",
             "messages": messages,
             "temperature": vision_temperature,
-            "max_tokens": 4000,
             "timeout": vision_timeout,
         }
         if model:

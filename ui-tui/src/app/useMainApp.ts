@@ -35,7 +35,13 @@ import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../l
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
-import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
+import {
+  buildToolTrailLine,
+  formatAbandonedClarify,
+  formatAbandonedClarifyBatch,
+  sameToolTrailGroup,
+  toolTrailLabel
+} from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
@@ -353,6 +359,10 @@ export function useMainApp(gw: GatewayClient) {
   const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
   const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
   const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
+
+  const historyThinkingExpanded =
+    thinkingDetailsVisible && (ui.detailsModeCommandOverride || ui.sections.thinking === 'expanded')
+
   const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
@@ -390,6 +400,7 @@ export function useMainApp(gw: GatewayClient) {
           }),
           virtualRows[index]!.msg
         ),
+        thinkingExpanded: historyThinkingExpanded,
         thinkingVisible: thinkingDetailsVisible,
         toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
@@ -399,6 +410,7 @@ export function useMainApp(gw: GatewayClient) {
       cols,
       detailsVisible,
       firstUserIdx,
+      historyThinkingExpanded,
       thinkingDetailsVisible,
       toolsDetailsVisible,
       ui.compact,
@@ -699,10 +711,66 @@ export function useMainApp(gw: GatewayClient) {
           // survives on screen as standard output, matching the timeout path.
           appendMessage({
             role: 'system',
-            text: formatAbandonedClarify(clarify.question, clarify.choices, 'cancelled')
+            text: clarify.questions?.length
+              ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, 'cancelled')
+              : formatAbandonedClarify(clarify.question, clarify.choices, 'cancelled')
           })
         }
 
+        patchOverlayState({ clarify: null })
+      })
+    },
+    [appendMessage, overlay.clarify, rpc]
+  )
+
+  // Lock one answer of a batch clarify (clarify.respond + question_id). The
+  // overlay stays up until the server reports no remaining questions — the
+  // final lock resolves the tool and the turn continues.
+  const answerClarifyQuestion = useCallback(
+    (qid: string, answer: string) => {
+      const clarify = overlay.clarify
+
+      if (!clarify?.questions?.length) {
+        return
+      }
+
+      rpc<ClarifyRespondResponse & { remaining?: string[] }>('clarify.respond', {
+        answer,
+        question_id: qid,
+        request_id: clarify.requestId
+      }).then(r => {
+        if (!r) {
+          return
+        }
+
+        const answers = { ...(clarify.answers ?? {}), [qid]: answer }
+
+        if ((r.remaining ?? []).length > 0) {
+          patchOverlayState({ clarify: { ...clarify, answers } })
+
+          return
+        }
+
+        // Batch complete: persist the whole Q&A set as one user-visible
+        // block (mirrors the single-question trail + answer lines).
+        const label = toolTrailLabel('clarify')
+
+        turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
+        patchTurnState({ turnTrail: turnController.turnTools })
+        turnController.persistedToolLabels.add(label)
+        appendMessage({
+          kind: 'trail',
+          role: 'system',
+          text: '',
+          tools: [buildToolTrailLine('clarify', `${clarify.questions!.length} questions`)]
+        })
+        appendMessage({
+          role: 'user',
+          text: clarify
+            .questions!.map(q => `${q.question} → ${answers[q.qid]?.trim() ? answers[q.qid] : '(skipped)'}`)
+            .join('\n')
+        })
+        patchUiState({ status: 'running…' })
         patchOverlayState({ clarify: null })
       })
     },
@@ -1085,6 +1153,7 @@ export function useMainApp(gw: GatewayClient) {
       closeLiveSession,
       answerApproval,
       answerClarify,
+      answerClarifyQuestion,
       answerSecret,
       answerSudo,
       clearSelection,
@@ -1107,6 +1176,7 @@ export function useMainApp(gw: GatewayClient) {
     [
       answerApproval,
       answerClarify,
+      answerClarifyQuestion,
       answerSecret,
       answerSudo,
       clearSelection,

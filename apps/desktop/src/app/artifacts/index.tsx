@@ -2,6 +2,7 @@ import type * as React from 'react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { TitlebarIcon } from '@/app/shell/titlebar-icon'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -28,7 +29,7 @@ import {
   urlSlugTitleLabel,
   useLinkTitle
 } from '@/lib/external-link'
-import { FileImage, FileText, FolderOpen, Link2, Loader2, RefreshCw } from '@/lib/icons'
+import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
 import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
@@ -329,7 +330,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
             size="icon-titlebar"
             variant="ghost"
           >
-            {refreshing ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            {refreshing ? <TitlebarIcon name="loading" spinning /> : <TitlebarIcon name="refresh" />}
           </Button>
         </Tip>
       }
@@ -473,7 +474,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
     let active = true
 
     setSrc('')
-    void artifactImageSrc(artifact.value, artifact.href)
+    void artifactImageSrc(artifact.value)
       .then(nextSrc => {
         if (active) {
           setSrc(nextSrc)
@@ -491,7 +492,10 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
   }, [artifact.href, artifact.id, artifact.value, onImageError])
 
   return (
-    <article className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
+    <article
+      className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)"
+      data-tour="artifact-card"
+    >
       <div
         className={cn(
           'relative flex h-40 w-full items-center justify-center overflow-hidden border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-1.5',

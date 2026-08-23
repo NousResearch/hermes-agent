@@ -341,6 +341,9 @@ class TestResolveApiKeyProviderCredentials:
 
 
     def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch):
+        from hermes_cli.copilot_auth import _invalidate_gh_cli_token_cache
+
+        _invalidate_gh_cli_token_cache()
         monkeypatch.setattr("hermes_cli.copilot_auth.shutil.which", lambda command: None)
         monkeypatch.setattr(
             "hermes_cli.copilot_auth.os.path.isfile",

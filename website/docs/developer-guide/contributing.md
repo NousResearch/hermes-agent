@@ -159,23 +159,7 @@ When contributing code, keep these rules in mind:
 
 Key patterns:
 
-### 1. `termios` and `fcntl` are Unix-only
-
-Always catch both `ImportError` and `NotImplementedError`:
-
-```python
-try:
-    from simple_term_menu import TerminalMenu
-    menu = TerminalMenu(options)
-    idx = menu.show()
-except (ImportError, NotImplementedError):
-    # Fallback: numbered menu
-    for i, opt in enumerate(options):
-        print(f"  {i+1}. {opt}")
-    idx = int(input("Choice: ")) - 1
-```
-
-### 2. File encoding
+### 1. File encoding
 
 Some environments may save `.env` files in non-UTF-8 encodings:
 
@@ -186,7 +170,7 @@ except UnicodeDecodeError:
     load_dotenv(env_path, encoding="latin-1")
 ```
 
-### 3. Process management
+### 2. Process management
 
 `os.setsid()`, `os.killpg()`, and signal handling differ across platforms:
 
@@ -196,7 +180,7 @@ if platform.system() != "Windows":
     kwargs["preexec_fn"] = os.setsid
 ```
 
-### 4. Path separators
+### 3. Path separators
 
 Use `pathlib.Path` instead of string concatenation with `/`.
 
@@ -303,7 +287,7 @@ When you ask Hermes to review a PR in a repository that has `.agents/checks/`, t
 ## Reporting Issues
 
 - Use [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
-- Include: OS, Python version, Hermes version (`hermes version`), full error traceback
+- Include: OS, Python version, Hermes version (`hermes --version`), full error traceback
 - Include steps to reproduce
 - Check existing issues before creating duplicates
 - For security vulnerabilities, please report privately

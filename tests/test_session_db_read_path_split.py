@@ -1,11 +1,12 @@
-"""Tests for the SessionDB read-path split (per-thread read-only connections).
+"""Tests for the SessionDB read-path split (pooled read-only connections).
 
 The gateway shares ONE SessionDB across every agent, so recall/browse reads
 used to queue behind writer flushes on self._lock — a measured production
 convoy (a 0.2s FTS query stretched to 112s while 6-8 concurrent turns
 flushed tool results). These tests pin the new contract: reads run on a
-per-thread read-only connection under WAL, never touch self._lock, and fall
-back to the legacy locked path when WAL or the read connection is missing.
+read-only connection borrowed from a bounded pool under WAL, never touch
+self._lock, and fall back to the legacy locked path when WAL or the read
+connection is missing.
 """
 
 import threading
@@ -39,8 +40,19 @@ def test_read_conn_is_per_thread(db):
     assert conns[1] is not conns[2]
 
 
-def test_read_conn_reused_within_thread(db):
-    assert db._get_read_conn() is db._get_read_conn()
+@pytest.mark.requires_wal
+def test_read_conn_reused_via_pool(db):
+    """Reuse is now the pool's job, not a per-thread memo.
+
+    The old contract (``_get_read_conn()`` returns the same object twice on one
+    thread) was the leak: that memo pinned one unclosable connection per
+    (SessionDB x thread) forever. ``_get_read_conn`` now always opens a fresh
+    connection and reuse happens via checkout/return, so assert on that.
+    """
+    with db._read_ctx() as first:
+        assert first is not None
+    with db._read_ctx() as second:
+        assert second is first, "sequential readers must reuse the pooled conn"
 
 
 @pytest.mark.requires_wal

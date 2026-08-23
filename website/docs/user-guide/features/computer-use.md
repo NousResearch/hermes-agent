@@ -18,7 +18,8 @@ about.
 
 ## How it works
 
-The `computer_use` toolset speaks MCP over stdio to
+The built-in `computer_use` toolset is the recommended Hermes integration. It
+speaks MCP over stdio to
 [`cua-driver`](https://github.com/trycua/cua), an open-source background
 computer-use driver. Each platform uses the appropriate accessibility +
 input stack under the hood:
@@ -40,10 +41,18 @@ no-foreground invariant, click-dispatch internals — see
 
 ## Enabling
 
-Pick whichever path is most convenient — both run the same upstream
-installer:
+**Fresh installs already have the driver.** The Hermes installer
+(`install.sh` / `install.ps1`) pre-installs `cua-driver` (best-effort;
+pass `--skip-computer-use` / `-SkipComputerUse` to opt out), so enabling
+Computer Use is just a config flip:
 
-**Option 1: dedicated CLI command (most direct).**
+- **`hermes tools`** → pick `🖱️  Computer Use` — installs the driver
+  automatically if it's still missing.
+- **Dashboard / desktop app** → toggle the Computer Use toolset — if the
+  driver is missing, the toggle kicks off the install in the background
+  automatically (watch progress in the toolset panel).
+
+**Manual fallback (older installs, skipped installer step):**
 
 ```
 hermes computer-use install
@@ -53,17 +62,29 @@ This fetches and runs the upstream cua-driver installer — `install.sh`
 on macOS/Linux, `install.ps1` on Windows. Use `hermes computer-use
 status` to verify the install.
 
-**Option 2: enable the toolset interactively.**
+Already have cua-driver? Hermes reuses it when it supports the 0.20 runtime
+contract. During setup, toolset enablement, `hermes update`, and the first
+`computer_use` call of a session, Hermes checks the local version and
+manifest. It repairs an old or incomplete standard installation through
+the upstream installer (at most once per session at runtime). A binary
+selected with `HERMES_CUA_DRIVER_CMD` stays
+under your control, so Hermes reports the incompatibility and leaves it
+unchanged.
 
-1. Run `hermes tools`, pick `🖱️  Computer Use (macOS/Windows/Linux)`.
-2. The setup runs the upstream installer (same as Option 1).
+If you install Cua Driver first, `cua-driver skills install` installs Cua's
+skill pack under `~/.cua-driver/skills/cua-driver`. Hermes autodetection is a
+planned cua-driver follow-up, so currently point Hermes at that directory or
+symlink it into your skill space. You can also register raw Cua MCP tools as a
+custom MCP server, but that is an alternative for users who need the low-level
+interface. The built-in toolset provides Hermes actions, configuration,
+approvals, and diagnostics.
 
 After installing, regardless of which path you took, grant the
 platform-appropriate prereqs:
 
 | Platform | Prereqs |
 |---|---|
-| **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording** → allow your terminal (or Hermes app). `hermes computer-use doctor` will tell you which permission is missing. |
+| **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording**. Grant the identity named by `hermes computer-use doctor`. Standard mode uses CuaDriver.app; bounded and unrestricted modes use the Hermes host identity. |
 | **Windows** | None at install time. If you're driving over SSH (not RDP / console), you need the autostart pattern — see [cua.ai/docs/how-to-guides/driver/windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh) for the Session 0 ↔ Session 1+ proxy. |
 | **Linux** | A reachable display server: `DISPLAY` set for X11, or `XDG_SESSION_TYPE=wayland`. Wayland sessions need an XWayland bridge for capture. AT-SPI must be on (default on GNOME/KDE/Xfce). |
 
@@ -77,23 +98,70 @@ or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
 
 ## Permission modes and logged-in browser profiles
 
-Hermes maps its existing approval UX onto cua-driver 0.10's immutable daemon
-modes. There is no second permission toggle to keep in sync:
+Hermes maps its existing approval UX onto cua-driver's immutable runtime
+modes. Permission mode, capability manifest approval, and the existing-profile
+grant are launch settings. They cannot change after the runtime starts:
 
 | Hermes session | cua-driver mode | Human intervention | `existing_profile` |
 |---|---|---|---|
-| Manual or smart approvals (default) | `standard` | Normal Hermes approvals; Cua stops at its protected boundary | Refuses unless a certified protected host is available; Hermes does not claim one today |
-| `--yolo`, `/yolo`, or `approvals.mode: off` | private `unrestricted` daemon | One explicit Hermes risk acceptance; no runtime Cua prompts | Allowed within Cua's built-in, managed, and user policy ceilings |
+| Manual or smart approvals (default) | `standard` | Normal Hermes approvals; Cua stops at its protected boundary | Refuses unless `computer_use.grant_existing_profile: true` (one-time config opt-in) |
+| `computer_use.permission_mode: bounded` + reviewed manifest | private `bounded` daemon | You review and approve the capability manifest once, at launch | Allowed only within the manifest's declared profiles/origins/tools; everything else fails closed |
+| `--yolo`, `/yolo`, or `approvals.mode: off` | private `unrestricted` daemon | One explicit Hermes risk acceptance; no runtime Cua prompts | Refuses unless `computer_use.grant_existing_profile: true`; YOLO does not substitute for this grant |
 
-The unrestricted daemon is private to that Hermes session. Turning `/yolo`
-off, resetting/closing the session, cancellation cleanup, or process exit ends
-the Cua session and stops that daemon. It never changes the machine-wide
-daemon's mode or grants another Hermes conversation the same authority.
+### Attaching to your signed-in browser
 
-`smart` approval remains `standard`: an LLM classification is not protected
-human consent. Cua's `bounded` manifest mode is also not inferred from smart
-approval or a normal tool confirmation; it needs a separately trusted host
-that reviews and launches the exact manifest.
+The agent can drive a Chrome/Edge window you already have open — including a
+signed-in profile — **without restarting the browser, copying the profile, or
+touching your tabs**. Because DevTools access exposes that profile's live
+pages, cookies, and storage, cua-driver requires an explicit human grant that
+ordinary tool approval cannot substitute for. You opt in once, in config.yaml:
+
+```yaml
+computer_use:
+  grant_existing_profile: true
+```
+
+Hermes then launches the cua-driver runtime with the trusted-launcher grant
+(`--grant existing-profile`), and
+`cua_browser_prepare` with an existing profile succeeds against the exact
+`(pid, window_id)` the agent proves. Leave it `false` (the default) and
+existing-profile attachment fails closed; driver-owned isolated profiles work
+either way and are what the agent prefers.
+
+### Bounded mode for repeatable automation
+
+For recurring browser automation (cron jobs, scheduled research against an
+authenticated app), `bounded` mode uses a capability manifest you review once:
+
+```yaml
+# config.yaml
+computer_use:
+  permission_mode: bounded
+  capability_manifest: ~/.hermes/cua-manifest.yaml
+```
+
+The manifest names the apps, browser profile kinds, allowed origins, and
+typed tools the session may use (see the
+[cua-driver permission modes reference](https://cua.ai/docs/reference/cua-driver/permission-modes)
+for the format). Hermes launches a private runtime with
+`--capability-manifest ... --approve-capability-manifest`; anything outside
+the manifest fails closed inside cua-driver. A missing or unreadable manifest
+fails loudly at session start rather than silently downgrading. Session YOLO
+still overrides bounded for that one session.
+
+Each MCP transport owns a private lifecycle session inside its runtime. A
+public session name is only a label for cursor identity and session-scoped
+state. It does not select, share, or keep a runtime alive. Turning `/yolo` off,
+resetting or closing the Hermes session, cancellation cleanup, or process exit
+closes that transport session. Hermes also stops private runtimes that it
+launched for bounded, unrestricted, or existing-profile access. One Hermes
+conversation cannot change another runtime's mode or grants. On macOS, a
+standard runtime with an existing-profile grant uses a fresh CuaDriver.app
+daemon on a private socket. Bounded and unrestricted modes use a private
+embedded service under the Hermes host identity.
+
+`smart` approval remains `standard`: an LLM classification cannot stand in for
+a reviewed manifest or a launch-time grant.
 
 <div class="alert alert--warning">
 
@@ -111,8 +179,8 @@ fastest way to find out *why* an action isn't working.
 
 ```
 $ hermes computer-use doctor
-⚠️  cua-driver 0.5.8 on darwin — degraded
-  ✅ binary_version: cua-driver 0.5.8
+⚠️  cua-driver VERSION on darwin: degraded
+  ✅ binary_version: cua-driver VERSION
   ✅ platform_supported: macOS 26.4.1 (arm64)
   ✅ session_active: MCP session is active.
   ❌ bundle_identity: Process has no CFBundleIdentifier.
@@ -143,11 +211,11 @@ each with the right diagnostic hint when it can't reach.
 
 When the agent acts, you'll see a **tinted overlay cursor** glide
 across the screen to where each click / type / scroll lands. The real
-OS cursor never moves — the overlay is a visual cue that says "the
-agent is acting here." Each Hermes run declares its own cua-driver
-**session id** (something like `hermes-3a7b9c14d2e8`); the cursor's
-identity is keyed to that session, so concurrent runs / subagents each
-get their own cursor without stepping on each other.
+OS cursor never moves. The overlay shows where the agent is acting. Each
+Hermes run declares a public cua-driver **session name** (something like
+`hermes-3a7b9c14d2e8`). The name labels cursor identity and related state, so
+concurrent runs and subagents get distinct cursors. The MCP transport owns the
+private lifecycle session inside the runtime; the public name does not.
 
 Tune the cursor with `cua-driver`'s CLI flags or the runtime
 `set_agent_cursor_style` MCP tool — see
@@ -158,19 +226,21 @@ halo).
 
 ## Going deeper — the cua-driver skill pack
 
-Hermes intentionally keeps its skill (`skills/autonomous-ai-agents/computer-use/SKILL.md`)
-focused on the Hermes-side `computer_use` action vocabulary — the
-single source of truth the agent loads. For the deeper material —
-platform-specific deep dives, recording semantics, browser page
-interaction — point your agent harness at the cua-driver skill pack
-the cua-driver team ships and maintains directly:
+Hermes keeps its wrapper skill (`skills/autonomous-ai-agents/computer-use/SKILL.md`)
+focused on the Hermes-side `computer_use` workflow and action vocabulary. For
+platform details, recording semantics, browser page interaction, and other
+deep Cua behavior, install the skill pack that the cua-driver team ships and
+maintains directly:
 
 ```
 cua-driver skills install
 ```
 
-This symlinks the pack into your agent harness' skill directory. After
-running it, an agent gets access to:
+The command installs the pack under `~/.cua-driver/skills/cua-driver`. Hermes
+autodetection is a planned cua-driver follow-up, so currently point Hermes at
+that directory or symlink it into your skill space. The wrapper remains the
+workflow layer and points to Cua's installed skill for driver behavior. The
+pack contains:
 
 | File | Topic |
 |---|---|
@@ -213,6 +283,23 @@ the model substitutes the platform's idiomatic shortcut and app name):
 
 During all of this, your cursor stays wherever you left it and the email
 app never comes to front.
+
+## Receiving the actual screenshot
+
+Screenshots taken during computer control are normally internal — they exist
+so the model can see the screen, and the agent replies in text. But every
+image capture also saves a bounded, shareable copy under Hermes' image cache
+and reports its path, so on attachment-capable surfaces (Telegram, Discord,
+Desktop, and other gateway platforms) you can simply ask:
+
+> *"Send me a screenshot of my screen."*
+
+and the agent delivers the real image as a native attachment, not just a
+description. On the CLI there is no attachment channel, so the agent gives
+you the saved file's path instead.
+
+Only the 20 most recent capture files are kept, and screenshots are never
+sent automatically — only when you ask for one.
 
 ## Provider compatibility
 
@@ -316,6 +403,16 @@ without TCC / Session 0 / X11 setup), the `browser` toolset uses a
 real headless Chromium and is the right answer for web-only tasks.
 
 ## Configuration
+
+Permission mode and manifest (see
+[Permission modes](#permission-modes-and-logged-in-browser-profiles) above):
+
+```yaml
+computer_use:
+  permission_mode: standard        # standard (default) | bounded
+  capability_manifest: ""          # capability manifest path, required for bounded
+  grant_existing_profile: false    # opt-in: attach in standard or unrestricted mode
+```
 
 Override the driver binary path (tests / CI / local builds):
 
@@ -481,9 +578,9 @@ autostart pattern — see
   (macOS no-foreground contract, Windows UIA + Session 0, Linux AT-SPI
   + X11/Wayland, recording, browser pages), run
   `cua-driver skills install` and read `MACOS.md` / `WINDOWS.md` /
-  `LINUX.md` / `RECORDING.md` / `WEB_APPS.md`. Once `cua-driver skills
-  install` autodetects Hermes (planned follow-up), this happens
-  automatically on install.
+  `LINUX.md` / `RECORDING.md` / `WEB_APPS.md`. Hermes autodetection is a
+  planned follow-up; currently point Hermes at the installed pack directory
+  or symlink it into your skill space.
 - **cua.ai/docs** — the cua-driver project's documentation:
   - [What is computer use?](https://cua.ai/docs/explanation/what-is-computer-use) — concept intro
   - [The no-foreground contract](https://cua.ai/docs/explanation/the-no-foreground-contract) — *why* background mode matters

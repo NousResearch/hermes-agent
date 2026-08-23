@@ -26,6 +26,7 @@ import {
   terminalSelectionLabel,
   terminalTheme
 } from './selection'
+import { registerTerminalContextMenu } from './terminal-context-menu'
 import { prepareTerminalFontFamily } from './terminal-font'
 import { closeTerminal, updateTerminalRestoreCwd, updateTerminalReviveBuffer } from './terminals'
 import { useTerminalFontController } from './use-terminal-font'
@@ -792,6 +793,21 @@ export function useTerminalSession({
     })
 
     cleanup.push(() => selectionDisposable.dispose())
+
+    // The app context menu resolves right-clicks on this host through the
+    // registered handle: xterm's selection is not a DOM selection, so the
+    // DOM resolver would see nothing here.
+    cleanup.push(
+      registerTerminalContextMenu(host, {
+        getSelection: () => term.getSelection(),
+        paste: text => {
+          hasSessionActivityRef.current = true
+          term.focus()
+          term.paste(text)
+        },
+        selectAll: () => term.selectAll()
+      })
+    )
 
     // Copy/paste chords. Returning false stops xterm from also sending the key
     // to the PTY; every path that doesn't copy or paste returns true, so plain

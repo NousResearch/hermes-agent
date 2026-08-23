@@ -183,6 +183,50 @@ class TestRejectionMatcher:
         ):
             assert not is_native_compaction_rejection(err)
 
+    def test_field_echo_without_rejection_language_does_not_match(self):
+        # A transient failure body that merely echoes the request (and so
+        # contains the field name) must not downgrade the session (#82777).
+        assert not is_native_compaction_rejection(
+            "upstream timeout while processing request with "
+            "context_management=[{...}]"
+        )
+        assert not is_native_compaction_rejection(
+            "connection reset; last request included compact_threshold=200000"
+        )
+
+    def test_non_400_status_does_not_match(self):
+        msg = "Unknown parameter: 'context_management'"
+        assert not is_native_compaction_rejection(msg, 500)
+        assert not is_native_compaction_rejection(msg, 503)
+        assert not is_native_compaction_rejection(msg, 429)
+
+    def test_400_status_with_rejection_language_matches(self):
+        msg = "Unknown parameter: 'context_management'"
+        assert is_native_compaction_rejection(msg, 400)
+
+    def test_unknown_status_preserves_message_only_matching(self):
+        # Transports that surface only a string keep working.
+        assert is_native_compaction_rejection(
+            "Error code: 400 - Unknown parameter: 'context_management'", None
+        )
+        assert is_native_compaction_rejection(
+            "unsupported field compact_threshold", "not-a-number"
+        )
+
+
+class TestConfigCoercion:
+    def test_false_like_strings_stay_disabled(self, monkeypatch):
+        from utils import is_truthy_value
+
+        for raw in ("false", "off", "no", "0", "", "FALSE", " Off "):
+            assert not is_truthy_value(raw, False), raw
+
+    def test_true_like_strings_enable(self):
+        from utils import is_truthy_value
+
+        for raw in ("true", "1", "yes", "on", "TRUE"):
+            assert is_truthy_value(raw, False), raw
+
 
 class TestWirePlumbing:
     """context_management flows through build_kwargs and both preflights."""
@@ -305,6 +349,7 @@ class TestResponseCapture:
                 {"role": "user", "content": "next"},
             ],
             current_issuer_kind="codex_backend",
+            native_compaction_eligible=True,
         )
         replayed = [item for item in items if item.get("type") == "compaction"]
         assert len(replayed) == 1
@@ -331,6 +376,7 @@ class TestResponseCapture:
                 {"role": "user", "content": "next"},
             ],
             current_issuer_kind="xai_responses",
+            native_compaction_eligible=True,
         )
         assert all(item.get("type") != "compaction" for item in items)
 
@@ -405,3 +451,261 @@ class TestAgentInitConfig:
         agent.codex_responses_native_compaction = True
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert "context_management" not in kwargs
+
+
+class TestPrunePreCheckpointItems:
+    """Wire restructure around a replayed checkpoint (live-verified Aug 2026:
+    the server renders nothing placed before a compaction input item)."""
+
+    def _items(self):
+        return [
+            {"role": "user", "content": "goal: build the runner"},
+            {"role": "assistant", "content": "ack"},
+            {"role": "user", "content": "constraint: no sleep-polling"},
+            {"type": "function_call", "call_id": "c1", "name": "t", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": "out"},
+            {"type": "compaction", "encrypted_content": "blobA"},
+            {"role": "assistant", "content": "post-cp answer"},
+            {"role": "user", "content": "next ask"},
+        ]
+
+    def test_no_checkpoint_is_identity(self):
+        from agent.native_compaction import prune_pre_checkpoint_items
+
+        items = [i for i in self._items() if i.get("type") != "compaction"]
+        assert prune_pre_checkpoint_items(list(items)) == items
+
+    def test_checkpoint_leads_and_pre_history_dropped(self):
+        from agent.native_compaction import prune_pre_checkpoint_items
+
+        out = prune_pre_checkpoint_items(self._items())
+        assert out[0] == {"type": "compaction", "encrypted_content": "blobA"}
+        # Pre-checkpoint assistant + tool traffic is gone (server never saw it
+        # anyway); post-checkpoint tail is intact and ordered.
+        assert {"role": "assistant", "content": "ack"} not in out
+        assert all(i.get("call_id") != "c1" for i in out if isinstance(i, dict))
+        assert out[-2:] == self._items()[-2:]
+
+    def test_pre_checkpoint_user_messages_retained_in_order(self):
+        from agent.native_compaction import prune_pre_checkpoint_items
+
+        out = prune_pre_checkpoint_items(self._items())
+        users = [i["content"] for i in out if i.get("role") == "user"]
+        assert users == [
+            "goal: build the runner",
+            "constraint: no sleep-polling",
+            "next ask",
+        ]
+        # Retained users sit between the checkpoint and the post tail.
+        assert out.index({"role": "user", "content": "goal: build the runner"}) == 1
+
+    def test_newest_checkpoint_run_wins(self):
+        from agent.native_compaction import prune_pre_checkpoint_items
+
+        items = [
+            {"type": "compaction", "encrypted_content": "old"},
+            {"role": "user", "content": "mid ask"},
+            {"type": "compaction", "encrypted_content": "newA"},
+            {"type": "compaction", "encrypted_content": "newB"},
+            {"role": "user", "content": "tail ask"},
+        ]
+        out = prune_pre_checkpoint_items(items)
+        blobs = [i["encrypted_content"] for i in out if i.get("type") == "compaction"]
+        assert blobs == ["newA", "newB"]
+        assert [i["content"] for i in out if i.get("role") == "user"] == [
+            "mid ask",
+            "tail ask",
+        ]
+
+    def test_retention_budget_newest_first_with_truncation(self):
+        from agent.native_compaction import prune_pre_checkpoint_items
+
+        old = {"role": "user", "content": "x" * 4000}   # ~1000 tokens
+        newer = {"role": "user", "content": "y" * 2000}  # ~500 tokens
+        items = [old, newer, {"type": "compaction", "encrypted_content": "b"}]
+        out = prune_pre_checkpoint_items(items, retained_user_token_budget=600)
+        users = [i["content"] for i in out if i.get("role") == "user"]
+        # Newest kept whole; boundary (older) head-truncated to remaining budget.
+        assert users[-1] == "y" * 2000
+        assert users[0] == "x" * 400  # (600-500)*4 chars
+        assert out[0]["type"] == "compaction"
+
+    def test_zero_budget_keeps_only_post_tail(self):
+        from agent.native_compaction import prune_pre_checkpoint_items
+
+        out = prune_pre_checkpoint_items(self._items(), retained_user_token_budget=0)
+        users = [i["content"] for i in out if i.get("role") == "user"]
+        assert users == ["next ask"]
+
+    def test_adapter_applies_prune_end_to_end(self):
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+        msgs = [
+            {"role": "user", "content": "the goal"},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "codex_reasoning_items": [
+                    {"type": "compaction", "encrypted_content": "blob"}
+                ],
+            },
+            {"role": "user", "content": "follow-up"},
+        ]
+        items = _chat_messages_to_responses_input(msgs, native_compaction_eligible=True)
+        assert items[0] == {"type": "compaction", "encrypted_content": "blob"}
+        users = [i["content"] for i in items if i.get("role") == "user"]
+        assert users == ["the goal", "follow-up"]
+        # The checkpoint's own turn content is emitted AFTER the checkpoint
+        # in wire order (sidecar items lead the assistant branch), so it
+        # survives in the post tail — call pairing for that turn is intact.
+        assert {"role": "assistant", "content": "ok"} in items
+        assert items.index({"role": "assistant", "content": "ok"}) > 0
+
+    def test_adapter_without_checkpoint_unchanged_shape(self):
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "again"},
+        ]
+        items = _chat_messages_to_responses_input(msgs)
+        assert [i.get("role") for i in items] == ["user", "assistant", "user"]
+
+
+class TestCheckpointGatedOnCurrentEligibility:
+    """A captured checkpoint must not outlive the native gate.
+
+    The checkpoint is persisted in the ``codex_reasoning_items`` sidecar, so
+    it survives a mid-session model swap, ``compression.enabled: false``, the
+    rejection kill switch and a resumed session. Every one of those closes the
+    gate; if the wire kept being restructured around the stale checkpoint,
+    pre-checkpoint history would be deleted from requests that were never
+    natively compacted — on a model that cannot even decrypt the blob.
+    """
+
+    def _history(self):
+        return [
+            {"role": "user", "content": "goal: ship the migration"},
+            {"role": "assistant", "content": "on it"},
+            {"role": "user", "content": "detail A"},
+            {
+                "role": "assistant",
+                "content": "checkpointed turn",
+                "codex_reasoning_items": [
+                    {
+                        "type": "compaction",
+                        "encrypted_content": "blob",
+                        "_issuer_kind": "codex_backend",
+                    }
+                ],
+            },
+            {"role": "user", "content": "next ask"},
+        ]
+
+    def test_ineligible_request_keeps_pre_feature_wire(self):
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+        history = self._history()
+        items = _chat_messages_to_responses_input(
+            history,
+            current_issuer_kind="codex_backend",
+            native_compaction_eligible=False,
+        )
+        pre_feature = _chat_messages_to_responses_input(
+            [
+                {k: v for k, v in msg.items() if k != "codex_reasoning_items"}
+                for msg in history
+            ],
+        )
+        assert items == pre_feature
+        # Specifically: no checkpoint on the wire, no deleted history.
+        assert all(i.get("type") != "compaction" for i in items)
+        assert {"role": "assistant", "content": "on it"} in items
+
+    def test_eligible_request_still_restructures(self):
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+        items = _chat_messages_to_responses_input(
+            self._history(),
+            current_issuer_kind="codex_backend",
+            native_compaction_eligible=True,
+        )
+        assert items[0]["type"] == "compaction"
+        assert {"role": "assistant", "content": "on it"} not in items
+
+    def test_converter_defaults_to_ineligible(self):
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+        items = _chat_messages_to_responses_input(self._history())
+        assert all(i.get("type") != "compaction" for i in items)
+        assert {"role": "assistant", "content": "on it"} in items
+
+    def test_build_kwargs_without_field_does_not_prune(self):
+        """Model swapped out of the gpt-5.6 family / kill switch fired:
+        the gate returns None, so the wire must be the pre-feature one."""
+        from agent.transports.codex import ResponsesApiTransport
+
+        kwargs = ResponsesApiTransport().build_kwargs(
+            model="gpt-5.2",
+            messages=self._history(),
+            context_management=None,
+        )
+        assert "context_management" not in kwargs
+        assert all(i.get("type") != "compaction" for i in kwargs["input"])
+        assert {"role": "assistant", "content": "on it"} in kwargs["input"]
+
+    def test_build_kwargs_with_field_prunes(self):
+        from agent.transports.codex import ResponsesApiTransport
+
+        kwargs = ResponsesApiTransport().build_kwargs(
+            model="gpt-5.6",
+            messages=self._history(),
+            is_codex_backend=True,
+            context_management=[{"type": "compaction", "compact_threshold": 4000}],
+        )
+        assert kwargs["input"][0]["type"] == "compaction"
+        assert {"role": "assistant", "content": "on it"} not in kwargs["input"]
+
+    def test_convert_messages_defaults_to_ineligible(self):
+        from agent.transports.codex import ResponsesApiTransport
+
+        items = ResponsesApiTransport().convert_messages(
+            self._history(), is_codex_backend=True
+        )
+        assert all(i.get("type") != "compaction" for i in items)
+        assert {"role": "assistant", "content": "on it"} in items
+
+    def test_auxiliary_responses_adapter_never_prunes(self, monkeypatch):
+        """Auxiliary calls (compression, flush_memories, MoA) replay real
+        session history but never send ``context_management`` — so a
+        checkpoint in that history must not restructure their request."""
+        import agent.codex_responses_adapter as adapter
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        seen = {}
+        real = adapter._chat_messages_to_responses_input
+
+        def _spy(messages, **kw):
+            seen.update(kw)
+            return real(messages, **kw)
+
+        monkeypatch.setattr(adapter, "_chat_messages_to_responses_input", _spy)
+
+        class _Responses:
+            def create(self, **kwargs):
+                seen["input"] = kwargs.get("input")
+                raise RuntimeError("stop before network")
+
+        class _Client:
+            base_url = "https://chatgpt.com/backend-api/codex"
+            responses = _Responses()
+
+        with pytest.raises(RuntimeError, match="stop before network"):
+            _CodexCompletionsAdapter(_Client(), "gpt-5.2").create(
+                messages=self._history()
+            )
+
+        assert seen.get("native_compaction_eligible") is False
+        assert all(i.get("type") != "compaction" for i in seen["input"])
+        assert {"role": "assistant", "content": "on it"} in seen["input"]

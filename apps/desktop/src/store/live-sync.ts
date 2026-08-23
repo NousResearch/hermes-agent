@@ -3,11 +3,11 @@ import { atom } from 'nanostores'
 // Event-driven "backend data changed" signals — the workspace-events twin for
 // gateway-side state. The change watcher in tui_gateway broadcasts
 // `pet.changed` / `cron.changed` / `sessions.changed` when its on-disk
-// signatures move (see server._broadcast_watched_changes), gateway-event.ts
-// routes them here, and the surfaces that used to poll (cron sidebar/page,
-// messaging lists, pet sprite, live session statuses) subscribe to these ticks
-// and refresh — so they move exactly when the backend acts and stay idle
-// otherwise.
+// signatures move (see server._broadcast_watched_changes), the gateway-event
+// lifecycle handler routes them here, and the surfaces that used to poll (cron
+// sidebar/page, messaging lists, pet sprite, live session statuses) subscribe
+// to these ticks and refresh — so they move exactly when the backend acts and
+// stay idle otherwise.
 //
 // `$changeEventsAvailable` is the compat gate: gateway.ready advertises
 // `change_events: true` on backends that broadcast. Consumers keep their old

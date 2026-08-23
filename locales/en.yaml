@@ -157,7 +157,7 @@ gateway:
     no_goal_set:           "No goal set."
     paused:                "⏸ Goal paused: {goal}"
     no_resume:             "No goal to resume."
-    resumed:               "▶ Goal resumed: {goal}\nSend any message to continue, or wait — I'll take the next step on the next turn."
+    resumed:               "▶ Goal resumed: {goal}\nContinuing now — I'll take the next step right away."
     invalid:               "Invalid goal: {error}"
     set:                   "⊙ Goal set ({budget}-turn budget): {goal}\nI'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
 
@@ -184,6 +184,8 @@ gateway:
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "Result: {summary}"
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "No personalities configured in `{path}/config.yaml`"
@@ -289,6 +291,7 @@ gateway:
     none_found:            "No checkpoints found for {cwd}"
     invalid_number:        "Invalid checkpoint number. Use 1-{max}."
     restored:              "✅ Restored to checkpoint {hash}: {reason}\nA pre-rollback snapshot was saved automatically."
+    kept_user_edits:       "↷ Kept your hand-edits: {files}\nUse /rollback <N> --all to restore those too."
     restore_failed:        "❌ {error}"
 
   diff:

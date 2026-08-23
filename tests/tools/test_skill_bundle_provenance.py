@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import sys
 import threading
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -163,6 +164,69 @@ def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path)
     assert entry["scan_provenance"]["source_url"] == url
     assert entry["scan_provenance"]["fresh"] is True
     assert "Scan provenance: fresh" in sink.getvalue()
+
+
+def _make_skills_redirect(link: Path, target: Path) -> bool:
+    """Make *link* a directory redirect (Windows junction or POSIX symlink)
+    pointing at *target*. Junctions need no admin rights, unlike symlinks."""
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                check=True,
+                capture_output=True,
+            )
+            return True
+        except (subprocess.CalledProcessError, OSError):
+            return False
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return True
+    except OSError:
+        return False
+
+
+def test_install_with_junctioned_skills_dir(served_repo, monkeypatch, tmp_path):
+    """#86971: install must not mix resolved and unresolved paths when the
+    skills directory is a junction/symlink redirect.
+
+    install_dir is resolved by _resolve_lock_install_path (following the
+    redirect), so relative_to() must receive the resolved skills root or it
+    raises ValueError after the files have already been moved, leaving a lock
+    entry without a content_hash (which then poisons 'hermes skills check').
+    """
+    from hermes_cli.skills_hub import do_install
+    import tools.skills_hub as hub
+
+    _repo, url = served_repo
+    home = tmp_path / "home"
+    home.mkdir()
+    real_skills = tmp_path / "real-skills"
+    real_skills.mkdir()
+    skills_link = home / "skills"
+    if not _make_skills_redirect(skills_link, real_skills):
+        pytest.skip("Cannot create a junction/symlink in this environment")
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+    monkeypatch.setattr(hub, "create_source_router", lambda auth=None: [UrlSource()])
+
+    sink = StringIO()
+    do_install(url, console=Console(file=sink, force_terminal=False), skip_confirm=True)
+
+    # Files landed in the real target, reached through the junction.
+    installed = real_skills / "demo-bundle"
+    assert (installed / "SKILL.md").is_file()
+    assert (installed / "references" / "guide.md").read_text() == "safe guide\n"
+    # Lock entry got a valid relative install_path AND the content hash — the
+    # record_install call the pre-fix ValueError used to skip.
+    entry = json.loads((home / "skills" / ".hub" / "lock.json").read_text())["installed"]["demo-bundle"]
+    assert entry["install_path"] == "demo-bundle"
+    assert entry["content_hash"].startswith("sha256:")
+    # The post-install "Installed:" line (relative_to on the display path)
+    # renders instead of raising.
+    assert "Installed:" in sink.getvalue()
 
 
 def test_bundled_optional_source_still_includes_support_files(tmp_path, monkeypatch):

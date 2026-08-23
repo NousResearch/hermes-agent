@@ -331,6 +331,45 @@ complete quarantined bundle and records the source URL, exact content hash,
 scanner version, findings, timestamp, and fresh-or-cached status in
 `skills/.hub/lock.json`.
 
+### Advisory SkillEvaluator scan
+
+In addition to the built-in security scanner (which enforces the install
+policy above), Hermes can run [NVIDIA SkillEvaluator](https://github.com/NVIDIA/SkillEvaluator)
+Tier 1 checks on every hub install as a second opinion. Tier 1 is
+deterministic and keyless — PII detection (leaked emails, personal paths,
+connection strings), unicode-smuggling detection, script lint, license
+compliance, and a static security scan via
+[NVIDIA SkillSpector](https://github.com/NVIDIA/SkillSpector).
+
+The scan is **advisory only**: findings are printed with file and line
+before the install confirmation, and the install continues. Findings that
+look like real credentials (private keys, cloud access keys, tokens,
+credentialed connection strings) are highlighted in red so you can review
+the flagged lines before deciding. PII-class findings are informational —
+the upstream scanner has known false-positive classes (e.g.
+`git@github.com` SSH syntax, documentation example emails), so they never
+block anything.
+
+To enable it, install the optional scanner binaries (the second one powers
+the `security` check; without it that check simply reports "not run"):
+
+```bash
+uv tool install --python 3.13 \
+  "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.1.0"
+uv tool install "git+https://github.com/NVIDIA/SkillSpector.git@v2.9.5"
+```
+
+Without the binary on PATH the scan is silently skipped. To turn it off
+entirely:
+
+```yaml
+skills:
+  tier1_advisory: false
+```
+
+The dashboard's Browse-hub scan button returns the same advisory data in
+its response (`tier1` field) alongside the built-in scanner's verdict.
+
 ## External Skill Directories
 
 If you maintain skills outside of Hermes — for example, a shared `~/.agents/skills/` directory used by multiple AI tools — you can tell Hermes to scan those directories too.
@@ -372,6 +411,49 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 ```
 
 All four skills appear in your skill index. If you create a new skill called `my-custom-workflow` locally, it shadows the external version.
+
+## Project-Local Skills
+
+Repos can carry their own skills, active only for sessions started inside that project — the same pattern other agent harnesses use for repo-local configuration. When you launch Hermes inside a git checkout, it looks for skills in:
+
+```text
+<project-root>/.hermes/skills/    # Hermes-native location
+<project-root>/.agents/skills/    # cross-tool convention (shared with other agent CLIs)
+```
+
+The project root is the nearest ancestor directory containing `.git` (worktrees and submodules count).
+
+### Trusting a project
+
+Skills are procedure documents the agent follows, so Hermes does **not** auto-load them from arbitrary cloned repos. The first time you run Hermes in a repo with project skills, the banner shows a notice:
+
+```text
+◆ 3 project skill(s) found in /home/you/myproject but not loaded — run `hermes skills trust` to enable them.
+```
+
+Trust the repo once (from inside it, or by passing the path):
+
+```bash
+hermes skills trust             # trust the current repo
+hermes skills trust ~/myproject # or explicitly
+hermes skills untrust           # revoke
+```
+
+Trusted roots are stored in `skills.trusted_project_dirs` in `~/.hermes/config.yaml`. Set `skills.project_discovery: false` to turn the feature off entirely (no scanning, no notices).
+
+### Precedence
+
+Project skills are the **highest-precedence tier**: `project → local (~/.hermes/skills/) → external_dirs`. A project skill named `deploy` overrides a same-named profile or bundled skill for sessions inside that repo — that's the point: vendored repo skills win on their home turf, without touching your global profile. Project skills are tagged `[project]` in the agent's skill index so provenance stays visible.
+
+Like external dirs, project skill directories are treated as repo-owned: autonomous skill maintenance (the curator) never modifies them, and new agent-created skills always go to `~/.hermes/skills/`.
+
+### Scan-time quarantine
+
+Trust is a repo-level decision, but a repo's skill content changes with every `git pull`. To close that gap, every project skill is scanned with the same security scanner used for Skills Hub installs before it enters the index. A skill whose scan verdict is **dangerous** (prompt-injection directives, credential-exfiltration commands, hidden-text tricks) is quarantined: it does not appear in the skill index, `skills_list`, slash commands, and refuses to load by name with an explanatory error. Scans are content-hash cached under `~/.hermes/cache/project_skill_scans/` (never inside your repo) and re-run automatically when the skill's content changes.
+
+### Non-interactive surfaces (cron, API, ACP)
+
+Cron jobs and other non-interactive surfaces inherit your interactive trust decision — they never prompt and never auto-trust. The project root resolves from the surface's working directory (a cron job's `workdir`, via the same mechanism the terminal tool uses). A cron job whose `workdir` is inside a repo you previously trusted loads that repo's project skills; a job in an untrusted or undecided repo loads none.
 
 ## Skill Bundles
 
@@ -470,10 +552,12 @@ below lets you require human review before those changes land.
 
 ### When the Agent Creates Skills
 
-- After completing a complex task (5+ tool calls) successfully
+The system prompt asks the agent to record a non-trivial workflow with `skill_manage` for
+future reuse. In practice that covers:
+
+- When it worked out a multi-step workflow worth repeating
 - When it hit errors or dead ends and found the working path
 - When the user corrected its approach
-- When it discovered a non-trivial workflow
 
 ### Actions
 
@@ -754,9 +838,12 @@ The hub now tracks enough provenance to re-check upstream copies of installed sk
 hermes skills check          # Report which installed hub skills changed upstream
 hermes skills update         # Reinstall only the skills with updates available
 hermes skills update react   # Update one specific installed hub skill
+hermes skills update react --force   # Overwrite a skill you've edited locally
 ```
 
 This uses the stored source identifier plus the current upstream bundle content hash to detect drift.
+
+Skills you have edited locally (the on-disk content no longer matches the hash recorded at install time) are **skipped** by `hermes skills update` so your changes are never silently overwritten. Pass `--force` to replace them with the upstream version anyway.
 
 :::tip GitHub rate limits
 Skills hub operations use the GitHub API, which has a rate limit of 60 requests/hour for unauthenticated users. If you see rate-limit errors during install or search, set `GITHUB_TOKEN` in your `.env` file to increase the limit to 5,000 requests/hour. The error message includes an actionable hint when this happens.

@@ -39,8 +39,24 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
+    def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
+        """``-900k`` large-context picker variants are Hermes-side aliases —
+        the Codex backend only knows the base slug, so build_kwargs must
+        strip the suffix from the wire model id."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol-900k", messages=messages, tools=[],
+            params={"is_codex_backend": True},
+        )
+        assert kw["model"] == "gpt-5.6-sol"
 
-
+    def test_base_slug_model_id_unchanged_on_wire(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol", messages=messages, tools=[],
+            params={"is_codex_backend": True},
+        )
+        assert kw["model"] == "gpt-5.6-sol"
 
 
 
@@ -249,6 +265,320 @@ class TestCodexBuildKwargs:
         eb = kw.get("extra_body", {})
         assert eb.get("prompt_cache_key") == "caller-override"
         assert eb.get("other_field") == 42
+
+    # ── Azure Foundry post-tool reasoning suppression ──────────────────
+    #
+    # Foundry's Responses surface accepts the initial function-call request
+    # and ordinary multi-turn continuity, but rejects the post-tool follow-up
+    # payload when a replayed encrypted ``reasoning`` item sits alongside
+    # ``function_call`` / ``function_call_output`` (HTTP 400 invalid_payload).
+    # Suppression is scoped to that follow-up turn only.
+
+    @staticmethod
+    def _reasoning_item():
+        return {"type": "reasoning", "encrypted_content": "sealed", "summary": []}
+
+    @classmethod
+    def _post_tool_messages(cls):
+        """user → assistant(tool_calls + reasoning) → tool result."""
+        return [
+            {"role": "user", "content": "Create a marker"},
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_reasoning_items": [cls._reasoning_item()],
+                "tool_calls": [
+                    {
+                        "id": "call_marker",
+                        "type": "function",
+                        "function": {"name": "write_marker", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_marker",
+                "content": "marker written",
+            },
+        ]
+
+    AZURE_FOUNDRY_BASE_URL = (
+        "https://placeholder.services.ai.azure.com/"
+        "api/projects/placeholder/openai/v1"
+    )
+
+    def test_post_tool_replay_preserves_reasoning_for_default_responses(self, transport):
+        """Non-Azure Responses endpoints keep post-tool reasoning replay."""
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=self._post_tool_messages(),
+            tools=[],
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" in item_types
+        assert "function_call" in item_types
+        assert "function_call_output" in item_types
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    def test_azure_foundry_post_tool_replay_suppresses_reasoning_items(self, transport):
+        """The rejected payload shape drops reasoning, keeps tool continuity."""
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=self._post_tool_messages(),
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" not in item_types
+        assert "function_call" in item_types
+        assert "function_call_output" in item_types
+        assert kw.get("include") == []
+
+    def test_azure_foundry_detected_by_host_without_provider(self, transport):
+        """Foundry detection works on the endpoint host alone."""
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=self._post_tool_messages(),
+            tools=[],
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" not in item_types
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://proxy.example.com/.services.ai.azure.com/openai/v1",
+            "https://openrouter.ai/api/v1?upstream=.services.ai.azure.com",
+            "https://services.ai.azure.com.evil.example/v1",
+        ],
+    )
+    def test_non_foundry_host_lookalikes_keep_reasoning(self, transport, base_url):
+        """A Foundry domain in a path/query/suffix is not a Foundry endpoint.
+
+        Guards against the substring-match false positive: these URLs all
+        contain the Foundry domain but are served by someone else, and
+        suppressing their reasoning replay would silently degrade
+        cross-turn coherence on an unrelated provider.
+        """
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=self._post_tool_messages(),
+            tools=[],
+            base_url=base_url,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" in item_types
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    def test_azure_foundry_non_tool_follow_up_preserves_reasoning_items(self, transport):
+        """Ordinary (non-tool) Azure Foundry continuity is unchanged.
+
+        A plain assistant reasoning turn followed by another user message has
+        no tool continuity, so the encrypted reasoning item must still be
+        replayed — Foundry only rejects the post-tool payload.
+        """
+        messages = [
+            {"role": "user", "content": "Explain recursion"},
+            {
+                "role": "assistant",
+                "content": "Recursion is when a function calls itself.",
+                "codex_reasoning_items": [self._reasoning_item()],
+            },
+            {"role": "user", "content": "Give an example"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" in item_types
+        assert "function_call" not in item_types
+        assert "function_call_output" not in item_types
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    def test_azure_foundry_user_turn_after_completed_tool_call_keeps_reasoning(
+        self, transport
+    ):
+        """Suppression must not stick for the rest of the conversation.
+
+        The tool call completed and the assistant already answered; this turn
+        is a plain user follow-up whose payload ends on a user message, which
+        Foundry accepts. A predicate that scanned the whole history for any
+        tool call plus any tool result would suppress reasoning here — and on
+        every later turn — which is the all-turns behavior this scoping
+        exists to avoid.
+        """
+        messages = self._post_tool_messages() + [
+            {
+                "role": "assistant",
+                "content": "Marker created.",
+                "codex_reasoning_items": [self._reasoning_item()],
+            },
+            {"role": "user", "content": "Now explain recursion"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" in item_types
+        assert "function_call" in item_types
+        assert "function_call_output" in item_types
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    def test_azure_foundry_parallel_tool_results_suppress_reasoning(self, transport):
+        """A trailing run of parallel tool results is still the rejected shape."""
+        messages = [
+            {"role": "user", "content": "Read both files"},
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_reasoning_items": [self._reasoning_item()],
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_a", "content": "a"},
+            {"role": "tool", "tool_call_id": "call_b", "content": "b"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" not in item_types
+        assert item_types.count("function_call_output") == 2
+
+    def test_azure_foundry_respects_caller_replay_disabled(self, transport):
+        """An explicit replay_encrypted_reasoning=False is not re-enabled."""
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=self._post_tool_messages(),
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=False,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" not in item_types
+        assert kw.get("include") == []
+
+    @pytest.mark.parametrize(
+        "tool_call,tool_call_id",
+        [
+            # Responses histories carry the function call id in call_id while
+            # ``id`` holds the response item id. Resumed legacy sessions and
+            # host-fed histories still use this shape.
+            ({"id": "fc_item_a", "call_id": "call_a"}, "call_a"),
+            # Plain chat-completions shape: id IS the call id.
+            ({"id": "call_a"}, "call_a"),
+            # Bare fc_ id with no call_id — the converter derives call_<rest>.
+            ({"id": "fc_a"}, "call_a"),
+            # Composite stored id, on either side of the pairing.
+            ({"id": "call_a|fc_a"}, "call_a"),
+            ({"id": "call_a"}, "call_a|fc_a"),
+            # call_id present, no id at all.
+            ({"call_id": "call_a"}, "call_a"),
+        ],
+    )
+    def test_azure_foundry_suppresses_across_tool_call_id_shapes(
+        self, transport, tool_call, tool_call_id
+    ):
+        """Every id shape the converter can pair must be detected.
+
+        The converter resolves a function call's identity as
+        ``call_id`` -> embedded ``id`` -> derived from an ``fc_`` item id, and
+        splits composite ``"call_x|fc_y"`` ids. A predicate that matched only
+        ``tool_calls[*].id`` would miss the id=fc_ / call_id=call_ shape: the
+        converter still emits paired function_call / function_call_output, so
+        the exact payload Foundry rejects would ship with the reasoning item
+        intact.
+        """
+        messages = [
+            {"role": "user", "content": "Create a marker"},
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_reasoning_items": [self._reasoning_item()],
+                "tool_calls": [
+                    {**tool_call, "type": "function",
+                     "function": {"name": "write_marker", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": tool_call_id, "content": "marker written"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        # The converter paired them, so this is the rejected shape.
+        assert "function_call" in item_types
+        assert "function_call_output" in item_types
+        assert "reasoning" not in item_types
+        assert kw.get("include") == []
+
+    def test_azure_foundry_unpaired_tool_result_keeps_reasoning(self, transport):
+        """A tool result that pairs with nothing is not the rejected shape."""
+        messages = [
+            {"role": "user", "content": "Create a marker"},
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_reasoning_items": [self._reasoning_item()],
+                "tool_calls": [
+                    {
+                        "id": "fc_item_x",
+                        "call_id": "call_x",
+                        "type": "function",
+                        "function": {"name": "write_marker", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_unrelated", "content": "?"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" in item_types
+        assert kw.get("include") == ["reasoning.encrypted_content"]
 
     def test_xai_top_level_override_also_governs_extra_body(self, transport):
         """A caller's top-level request_overrides={"prompt_cache_key": ...}
@@ -491,6 +821,122 @@ class TestCodexBuildKwargs:
             assert "reasoning" not in kw, f"{model} must not receive reasoning"
 
 
+class TestOpencodeReservedToolAliases:
+    """OpenCode /v1/responses reserves web_search / search_files as function
+    names (HTTP 400 "custom function name 'X' is reserved", #85589). The
+    transport aliases them on the wire and maps them back on dispatch."""
+
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    _TOOLS = [
+        {"type": "function", "function": {
+            "name": "search_files", "description": "Search files.",
+            "parameters": {"type": "object",
+                           "properties": {"pattern": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "web_search", "description": "Search the web.",
+            "parameters": {"type": "object",
+                           "properties": {"query": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "read_file", "description": "Read a file.",
+            "parameters": {"type": "object",
+                           "properties": {"path": {"type": "string"}}}}},
+    ]
+
+    def _names(self, kw):
+        return [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
+
+    def test_builtin_opencode_go_aliases_reserved_names(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="opencode-go",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_web_search" in names
+        assert "search_files" not in names
+        assert "web_search" not in names
+        assert "read_file" in names  # non-reserved untouched
+
+    def test_custom_opencode_family_provider_aliases_reserved_names(self, transport):
+        """Custom opencode-go-* providers get the same aliasing (#85589)."""
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="opencode-go-bridge",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "search_files" not in names
+
+    def test_opencode_host_match_without_family_provider(self, transport):
+        """An arbitrary custom provider pointing at opencode.ai still aliases."""
+        kw = transport.build_kwargs(
+            model="gpt-5.6-luna",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="my-oc-proxy",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_web_search" in names
+
+    def test_non_opencode_backend_keeps_original_names(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="openai-codex",
+            base_url="https://api.openai.com/v1",
+        )
+        names = self._names(kw)
+        assert "search_files" in names
+        assert "web_search" in names
+        assert "hermes_search_files" not in names
+
+    def test_normalize_maps_reserved_aliases_back(self, transport, monkeypatch):
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1", call_id="call_1", response_item_id="fc_1",
+                    function=SimpleNamespace(
+                        name="hermes_search_files",
+                        arguments='{"pattern":"README"}',
+                    ),
+                ),
+                SimpleNamespace(
+                    id="call_2", call_id="call_2", response_item_id="fc_2",
+                    function=SimpleNamespace(
+                        name="hermes_web_search",
+                        arguments='{"query":"hermes"}',
+                    ),
+                ),
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+        )
+        normalized = transport.normalize_response(response)
+        names = [tc.name for tc in normalized.tool_calls]
+        assert names == ["search_files", "web_search"]
+
+
 class TestXaiWebSearchBackendPreference:
     """``_xai_prefers_native_web_search`` must honor web backend config."""
 
@@ -689,6 +1135,62 @@ class TestCodexTransportTimeout:
 
 
 
+class TestCodexTransportXaiReasoningEffort:
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    def test_grok_46_preserves_xhigh(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "xhigh"},
+        )
+
+        assert kw["reasoning"]["effort"] == "xhigh"
+
+    @pytest.mark.parametrize("effort", ["max", "ultra"])
+    def test_grok_46_clamps_hermes_aliases_to_model_ceiling(self, transport, effort):
+        """Hermes ladder aliases mean "this model's ceiling" — on grok-4.6
+        that is xhigh, not one rung below it (#87279)."""
+        kw = transport.build_kwargs(
+            model="x-ai/grok-4.6-latest",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": effort},
+        )
+
+        assert kw["reasoning"]["effort"] == "xhigh"
+
+    @pytest.mark.parametrize("effort", ["max", "ultra"])
+    def test_older_grok_clamps_aliases_to_high(self, transport, effort):
+        """Older Grok tops out at high; above-ceiling aliases land there."""
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": effort},
+        )
+
+        assert kw["reasoning"]["effort"] == "high"
+
+    def test_older_grok_clamps_xhigh_to_high(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "xhigh"},
+        )
+
+        assert kw["reasoning"]["effort"] == "high"
+
+
 class TestCodexTransportXaiServiceTierStrip:
     """xAI Responses API rejects ``service_tier`` (#28490).
 
@@ -720,6 +1222,28 @@ class TestCodexTransportXaiServiceTierStrip:
             f"service_tier must be stripped on xAI requests, "
             f"got {kw.get('service_tier')!r}"
         )
+
+    def test_grok_46_preserves_priority_service_tier(self, transport):
+        kw = transport.build_kwargs(
+            model="x-ai/grok-4.6-latest",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            request_overrides={"service_tier": "priority"},
+        )
+
+        assert kw.get("service_tier") == "priority"
+
+    def test_grok_46_strips_non_priority_service_tier(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            request_overrides={"service_tier": "unsupported"},
+        )
+
+        assert "service_tier" not in kw
 
     def test_non_xai_codex_preserves_service_tier(self, transport):
         """The strip is xAI-only — native Codex DOES accept

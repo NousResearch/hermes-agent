@@ -8,7 +8,6 @@ blocks completion, and never upgrades targeted checks into "repo green".
 from __future__ import annotations
 
 import json
-import re
 import shlex
 import sqlite3
 import tempfile
@@ -29,7 +28,12 @@ _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
-_SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
+
+
+@dataclass(frozen=True)
+class _ShellSegment:
+    tokens: list[str]
+    following_operator: str | None = None
 
 
 @dataclass(frozen=True)
@@ -150,18 +154,102 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _split_segment_tokens(command: str, *, posix: bool = True) -> list[list[str]]:
-    segments: list[list[str]] = []
-    for segment in _SHELL_SPLIT_RE.split(command.strip()):
-        if not segment:
+def _split_shell_segments(command: str, *, posix: bool = True) -> list[_ShellSegment]:
+    """Tokenize top-level shell commands while preserving their control operators."""
+    raw_segments: list[tuple[str, str | None]] = []
+    start = 0
+    quote: str | None = None
+    escaped = False
+    index = 0
+
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            escaped = False
+            index += 1
             continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+
+        operator = None
+        if command.startswith(("&&", "||", "|&"), index):
+            operator = command[index:index + 2]
+        elif char == "\n":
+            operator = ";"
+        elif char in ";|":
+            operator = char
+        elif (
+            char == "&"
+            and (index == 0 or command[index - 1] not in "<>")
+            and not command.startswith(("&>", "&>>"), index)
+        ):
+            operator = char
+
+        if operator is None:
+            index += 1
+            continue
+
+        raw = command[start:index].strip()
+        if not raw:
+            return []
+        raw_segments.append((raw, operator))
+        index += 1 if char == "\n" else len(operator)
+        start = index
+
+    if quote or escaped:
+        return []
+    trailing = command[start:].strip()
+    if trailing:
+        raw_segments.append((trailing, None))
+    elif raw_segments and raw_segments[-1][1] not in {";"}:
+        return []
+
+    segments: list[_ShellSegment] = []
+    for raw, operator in raw_segments:
         try:
-            tokens = shlex.split(segment, posix=posix)
+            tokens = shlex.split(raw, posix=posix)
         except ValueError:
-            continue
-        if tokens:
-            segments.append(tokens)
+            return []
+        if not tokens:
+            return []
+        segments.append(_ShellSegment(tokens=tokens, following_operator=operator))
     return segments
+
+
+def _exit_status_is_attributable(
+    segments: list[_ShellSegment], match_index: int, exit_code: int
+) -> bool:
+    """Whether the shell's status proves the matched segment's own status."""
+    if not segments or not 0 <= match_index < len(segments):
+        return False
+    if any(segment.following_operator == "&" for segment in segments):
+        return False
+
+    sequence_start = 0
+    for index, segment in enumerate(segments[:-1]):
+        if segment.following_operator == ";":
+            sequence_start = index + 1
+    if match_index < sequence_start:
+        return False
+
+    sequence = segments[sequence_start:]
+    operators = [segment.following_operator for segment in sequence[:-1]]
+    if any(operator in {"|", "|&", "||"} for operator in operators):
+        return False
+    if len(sequence) == 1:
+        return True
+    return int(exit_code) == 0 and all(operator == "&&" for operator in operators)
 
 
 def _clean_token(token: str) -> str:
@@ -223,18 +311,25 @@ def _equivalent_needles(needle: list[str]) -> list[list[str]]:
     return candidates
 
 
-def _find_canonical_match(command: str, canonical_commands: list[str]) -> Optional[tuple[str, list[str]]]:
+def _find_canonical_match(
+    command: str,
+    canonical_commands: list[str],
+    exit_code: int,
+) -> Optional[tuple[str, list[str]]]:
     """Return ``(canonical, trailing_args)`` for the first detected command."""
 
-    segments = _split_segment_tokens(command)
+    segments = _split_shell_segments(command)
     for canonical in canonical_commands:
         needle = _canonical_tokens(canonical)
         if not needle:
             continue
-        for tokens in segments:
-            candidate_tokens = _strip_command_prefix(tokens)
+        for index, segment in enumerate(segments):
+            candidate_tokens = _strip_command_prefix(segment.tokens)
             for candidate in _equivalent_needles(needle):
-                if candidate_tokens[:len(candidate)] == candidate:
+                if (
+                    candidate_tokens[:len(candidate)] == candidate
+                    and _exit_status_is_attributable(segments, index, exit_code)
+                ):
                     return canonical, candidate_tokens[len(candidate):]
     return None
 
@@ -325,13 +420,20 @@ def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[
     return None
 
 
-def _find_ad_hoc_match(command: str, root: str | Path | None) -> Optional[list[str]]:
+def _find_ad_hoc_match(
+    command: str,
+    root: str | Path | None,
+    exit_code: int = 0,
+) -> Optional[list[str]]:
     # Try both posix=True (default) and posix=False (Windows backslash paths)
     # so ad-hoc verification scripts with backslash paths are matched on Windows.
     for posix in (True, False):
-        for tokens in _split_segment_tokens(command, posix=posix):
-            trailing_args = _ad_hoc_script_args(tokens, root)
-            if trailing_args is not None:
+        segments = _split_shell_segments(command, posix=posix)
+        for index, segment in enumerate(segments):
+            trailing_args = _ad_hoc_script_args(segment.tokens, root)
+            if trailing_args is not None and _exit_status_is_attributable(
+                segments, index, exit_code
+            ):
                 return trailing_args
     return None
 
@@ -433,10 +535,10 @@ def classify_verification_command(
         return None
 
     verify_commands = list(facts.get("verifyCommands") or [])
-    match = _find_canonical_match(command, verify_commands)
+    match = _find_canonical_match(command, verify_commands, int(exit_code))
     is_ad_hoc = False
     if match is None and not verify_commands:
-        ad_hoc_args = _find_ad_hoc_match(command, facts.get("root"))
+        ad_hoc_args = _find_ad_hoc_match(command, facts.get("root"), int(exit_code))
         if ad_hoc_args is not None:
             match = ("ad-hoc verification script", ad_hoc_args)
             is_ad_hoc = True

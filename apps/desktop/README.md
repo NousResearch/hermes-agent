@@ -147,6 +147,32 @@ In remote mode the gateway host is the execution boundary: agent tools,
 terminal commands, and file operations run against the remote Hermes host, not
 the computer displaying the Desktop UI.
 
+Remote gateways that sit behind an access proxy may require extra headers on
+every HTTP and WebSocket request. Configure them per connection in Settings →
+Connections (Extra gateway headers), or add a `headers` object to Desktop's
+Electron `userData/connection.json` remote block:
+
+```json
+{
+  "mode": "remote",
+  "remote": {
+    "url": "https://hermes.example.com",
+    "authMode": "token",
+    "token": { "encoding": "safeStorage", "value": "..." },
+    "headers": {
+      "CF-Access-Client-Id": { "encoding": "safeStorage", "value": "..." },
+      "CF-Access-Client-Secret": { "encoding": "safeStorage", "value": "..." }
+    }
+  }
+}
+```
+
+Per-profile remote entries under `profiles[name].headers` use the same shape.
+Desktop applies these headers only to matching remote gateway requests, treats
+`https` and `wss` as the same gateway origin for WebSocket upgrades, and drops
+transport- or Hermes-managed header names such as `Authorization`, `Cookie`,
+`Host`, `Origin`, `Referer`, and `X-Hermes-Session-Token`.
+
 Projects are the workspace abstraction. A project may own multiple folders,
 repositories, worktrees, and sessions; a bare new chat remains detached unless
 the user enters a project or configures a default project directory. Use the
@@ -156,7 +182,9 @@ Changing profiles or connection modes is a soft workspace switch, not another
 cold boot. The shell and current management overlay remain mounted while
 gateway-bound nanostores are wiped, query-backed data is invalidated, and the
 new connection repopulates skeletons. This prevents rows or transcripts from
-the previous gateway bleeding into the next one.
+the previous gateway bleeding into the next one. Switching changes only the
+foreground view and request route: it does not cancel turns or stop a backend,
+and retained background sockets continue receiving events from running jobs.
 
 ### Verification
 

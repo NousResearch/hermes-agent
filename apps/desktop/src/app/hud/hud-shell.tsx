@@ -2,22 +2,18 @@ import { useStore } from '@nanostores/react'
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
-import { Tip } from '@/components/ui/tooltip'
-import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
-import { closeHud } from '@/store/hud'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $busy, $messages } from '@/store/session'
 
 import { RICH_INPUT_SLOT } from '../chat/composer/rich-editor'
 import { WiredPane } from '../contrib/wiring'
-import { titlebarButtonClass } from '../shell/titlebar'
 
 import { useHudClickThrough } from './click-through'
 import { useHudGlass } from './glass'
 import { useHudGoto, useReportHudSession } from './handoff'
+import { hudTranscriptHeight } from './layout'
+import { useHudResizeHandle } from './resize-handle'
 import { useHudThreadFocus } from './thread-focus'
 
 /** How long the transcript lingers at its glanceable opacity — after a turn
@@ -46,15 +42,6 @@ const HUD_COLLAPSE_MS = Math.round(HUD_FADE_MS * 0.66)
  *  somewhere to land. Folded into the measured height rather than added in CSS,
  *  so an empty transcript measures a true zero instead of a 12px strip. */
 const HUD_SHEET_OVERHANG_PX = 12
-
-/** Ceiling on the transcript band, which still auto-sizes up from 0. It reads
- *  over another app, so it is a glance rather than a panel: whichever of these
- *  is smaller wins, so a tall HUD doesn't turn the band into a second window
- *  and a short one doesn't get swallowed by it. */
-const HUD_BAND_MAX_PX = 152
-const HUD_BAND_MAX_FRACTION = 0.42
-
-const hudBandMaxPx = () => Math.min(window.innerHeight * HUD_BAND_MAX_FRACTION, HUD_BAND_MAX_PX)
 
 /** Composer on top, transcript always hanging below it — Spotlight's shape,
  *  rather than flipping to follow the screen edge the HUD is parked against. */
@@ -177,7 +164,6 @@ function useHudHeld(): boolean {
  * `useRecentActivity`).
  */
 export function HudShell() {
-  const { t } = useI18n()
   const [recent, holdBand] = useRecentActivity()
   const held = useHudHeld()
 
@@ -301,7 +287,14 @@ export function HudShell() {
 
       const contentSpan = text < 1 ? 0 : text + HUD_SHEET_OVERHANG_PX
 
-      const visible = Math.min(hudBandMaxPx(), Math.max(0, Math.round(contentSpan)))
+      // Once the HUD has a transcript, a resize must buy readable scrollback.
+      // The old glance-band ceiling froze this at 152px and turned every extra
+      // pixel of native window height into empty transparent chrome.
+      const visible = hudTranscriptHeight({
+        barHeight: root.querySelector<HTMLElement>('[data-slot="composer-dock"]')?.getBoundingClientRect().height ?? 0,
+        contentHeight: contentSpan,
+        viewportHeight: window.innerHeight
+      })
 
       root.style.setProperty('--hud-band-height', `${visible}px`)
 
@@ -322,12 +315,16 @@ export function HudShell() {
     }
 
     // The viewport mounts async (lazy chat surface); poll briefly until it
-    // exists, then let the ResizeObserver own it.
+    // exists, then let the ResizeObserver own it. Window resize is separate:
+    // the transcript's rows may not change size, but the available scrollback
+    // must, so observing the rows alone cannot update the band.
     measure()
     const probe = setInterval(measure, 500)
+    window.addEventListener('resize', measure)
 
     return () => {
       clearInterval(probe)
+      window.removeEventListener('resize', measure)
       ro.disconnect()
     }
   }, [])
@@ -335,6 +332,12 @@ export function HudShell() {
   useHudGlass(rootRef, recent || held, filled)
   useHudClickThrough(rootRef)
   useHudThreadFocus(rootRef)
+
+  // Corner resize handle. The window is created non-resizable so dragging can
+  // never be misread as a resize gesture (the Windows transparent-frameless
+  // growth bug); the handle is the one sanctioned way to change size, driving
+  // the same flip-resizable-for-the-call pattern the pet overlay uses.
+  const { resizing: hudResizing, onPointerDown: onHudResizePointerDown } = useHudResizeHandle()
 
   // Force the HOST layers transparent. index.html's pre-paint script writes an
   // opaque themed background onto <html> as an INLINE style (the anti-white-
@@ -378,21 +381,19 @@ export function HudShell() {
 
       <WiredPane part="chatRoutes" />
 
-      {/* The way back — without it the only exits are ⌘⇧H and ⌘W, both
-          invisible. Placed and revealed entirely from styles.css. */}
-      <Tip label={t.titlebar.exitHud}>
-        <Button
-          aria-label={t.titlebar.exitHud}
-          className={`${titlebarButtonClass} absolute z-20`}
-          data-hud-exit=""
-          onClick={closeHud}
-          size="icon-titlebar"
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name="screen-normal" />
-        </Button>
-      </Tip>
+      {/* The resize handle: bottom-right corner, the one sanctioned way to
+          change the HUD's size. Invisible chrome — a hot corner, not a
+          button — so it never reads as part of the surface. `data-hud-grabbing`
+          is the same flag the composer drag raises: a gesture in progress owns
+          the window, so click-through can't hand the mouse away mid-resize
+          when the growing edge outruns the cursor. */}
+      <div
+        aria-hidden
+        className="absolute bottom-0 right-0 z-20"
+        data-hud-grabbing={hudResizing ? '' : undefined}
+        data-hud-resize=""
+        onPointerDown={onHudResizePointerDown}
+      />
     </div>
   )
 }

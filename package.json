@@ -11,7 +11,7 @@
     "tests-js"
   ],
   "scripts": {
-    "postinstall": "echo '\u2705 Browser tools ready. Run: python run_agent.py --help'",
+    "postinstall": "echo '\u2705 Node dependencies installed. Run: python run_agent.py --help'",
     "install:root": "npm install --workspaces=false",
     "install:web": "npm install --workspace web",
     "install:tui": "npm install --workspace ui-tui",
@@ -34,10 +34,6 @@
     "url": "https://github.com/NousResearch/Hermes-Agent/issues"
   },
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
-  "dependencies": {
-    "@streamdown/math": "1.0.2",
-    "agent-browser": "0.26.0"
-  },
   "devDependencies": {
     "@eslint/js": "9.39.5",
     "typescript-eslint": "8.64.0",
@@ -59,7 +55,8 @@
     "js-yaml@^4": "4.3.1",
     "undici@^6": "6.28.0",
     "undici@^7": "7.29.0",
-    "postcss": "8.5.23"
+    "postcss": "8.5.23",
+    "tar": "7.5.22"
   },
   "engines": {
     "node": ">=22.22.0",
@@ -70,7 +67,6 @@
     "esbuild@0.28.1": true,
     "node-pty@1.1.0": true,
     "electron-winstaller@5.4.0": true,
-    "agent-browser@0.26.0": true,
     "electron@40.10.2": true,
     "fsevents@2.3.2": true,
     "fsevents@2.3.3": true,

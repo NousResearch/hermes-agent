@@ -43,10 +43,21 @@ _trigger_cron_job_sync = late("_trigger_cron_job_sync")
 _delete_cron_job_sync = late("_delete_cron_job_sync")
 _find_cron_job_profile = late("_find_cron_job_profile")
 _fire_cron_job_for_profile = late("_fire_cron_job_for_profile")
+_forward_cron_fire_to_gateway = late("_forward_cron_fire_to_gateway")
+_gateway_intentionally_stopped = late("_gateway_intentionally_stopped")
+_notify_cron_provider_for_profile = late("_notify_cron_provider_for_profile")
 _call_cron_for_profile = late("_call_cron_for_profile")
 _raise_if_cron_registration_error = late("_raise_if_cron_registration_error")
 load_config = late("load_config")
 cfg_get = late("cfg_get")
+
+# Retry-After hint (seconds) stamped on retryable cron-fire 503s. Sized to
+# clear the common transient windows — a scale-to-zero wake or an s6 gateway
+# restart completes well within a minute — so a scheduler that honors it
+# spaces its next attempt PAST the outage window instead of burning its whole
+# retry budget inside it (OOF-266). Honored by QStash once NAS propagates it;
+# harmless (ignored) until then.
+_CRON_FIRE_RETRY_AFTER_SECONDS = 60
 
 
 @router.get("/api/cron/jobs")
@@ -124,22 +135,28 @@ async def delete_cron_job(job_id: str, profile: Optional[str] = None):
 
 @router.post("/api/cron/fire")
 async def cron_fire_webhook(request: Request):
-    """Chronos managed-cron fire webhook (NAS -> agent).
+    """Chronos managed-cron fire webhook (NAS -> agent) — gateway forwarder.
 
     Authenticated by a short-lived NAS-minted JWT (verified by the pluggable
     Chronos fire-verifier), NOT the dashboard session cookie — so this path is
     in ``PUBLIC_API_PATHS`` to bypass the dashboard auth gate, and the JWT is
-    the real gate. This is the inbound half of scale-to-zero managed cron: NAS
-    POSTs here at fire time, the agent verifies, claims the job (store CAS, so
-    at-most-once across replicas / on a NAS retry), runs it, and re-arms the
-    next one-shot.
+    the real gate.
 
-    Lives on the dashboard app (not the api_server adapter) because the
-    dashboard is the agent's always-reachable public HTTP surface on hosted
-    deployments; the gateway may be idle/scaled down.
+    The dashboard is only the PUBLIC DOOR here (on hosted deployments the Fly
+    proxy exposes exactly one port, the dashboard's). Cron execution belongs
+    to the GATEWAY process, which owns the live platform adapters — required
+    for relay-fronted logical platforms (their only sender is the live relay
+    adapter) and E2EE rooms, neither of which the dashboard's standalone send
+    path can serve. So after verifying the JWT this handler FORWARDS the fire
+    to the gateway api_server's own ``/api/cron/fire`` on loopback and passes
+    the gateway's response through (the gateway re-verifies the JWT — defense
+    in depth, no new trust link).
 
-    Returns 202 immediately and runs the job in the background so a long agent
-    turn never trips NAS's HTTP timeout.
+    Gateway unreachable (scale-to-zero wake still booting, restart window,
+    api_server disabled) → 503, so NAS retries per the Chronos contract
+    (non-2xx = retryable). The store CAS claim de-dupes the eventual double
+    fire. Deliberately NO local-execution fallback: delivering from the wrong
+    process is worse than a delayed retry.
     """
     from plugins.cron_providers.chronos.verify import get_fire_verifier
 
@@ -173,12 +190,83 @@ async def cron_fire_webhook(request: Request):
         # does not retry a fire that is intentionally absent.
         return JSONResponse({"status": "gone", "job_id": job_id}, status_code=200)
 
-    # Run in the background; the store CAS claim inside fire_due de-dupes a
-    # NAS/scheduler retry that arrives while this is in flight.
-    asyncio.create_task(
-        asyncio.to_thread(_fire_cron_job_for_profile, profile, job_id)
+    forwarded = await _forward_cron_fire_to_gateway(profile, job_id, auth)
+    if forwarded is None:
+        # Durably stamp the miss on the job record (last_fire_error) so the
+        # user and their agent can see "scheduled fire could not reach the
+        # runner" in `cronjob list` / the dashboard — without this, a dead
+        # 8642 hop is invisible outside gui.log (no execution row is ever
+        # created because the claim never happens). Best-effort: visibility
+        # must never break the retry contract below.
+        try:
+            await _run_cron_dashboard_io(
+                _call_cron_for_profile,
+                profile,
+                "note_fire_forward_failure",
+                job_id,
+                "scheduled fire could not be forwarded to the gateway "
+                "api_server (127.0.0.1 loopback unreachable); the gateway "
+                "process may be down or its api_server adapter not bound "
+                "(missing API_SERVER_KEY)",
+            )
+        except Exception:
+            _log.debug("could not stamp last_fire_error for %s", job_id, exc_info=True)
+        # Gateway unreachable. Split by OPERATOR INTENT (OOF-266):
+        #
+        # - Deliberately stopped gateway (durable desired_state == "stopped",
+        #   written only by the s6 lifecycle commands): retrying can never
+        #   succeed until a human starts the gateway again, so the retry
+        #   budget is pure waste and the resulting 503→502 storms page the
+        #   NAS on-call for a non-incident. Drop with 200 + a structured log
+        #   line, mirroring NAS's own instance_stopped drop in the relay.
+        #   The fire is NOT lost silently: the log names job and profile,
+        #   and the gateway's Chronos provider reconciles + re-arms every
+        #   job on its next startup (plugins/cron_providers/chronos
+        #   start() -> reconcile()), so fires resume when the operator
+        #   starts the gateway.
+        #
+        # - Transient window (scale-to-zero wake, restart, crash loop —
+        #   desired_state is "running" or unknown): keep the retryable 503,
+        #   but stamp Retry-After so a scheduler that honors it spaces its
+        #   next attempt past the wake/restart window instead of exhausting
+        #   the whole retry budget inside it.
+        if await _run_cron_dashboard_io(_gateway_intentionally_stopped, profile):
+            _log.info(
+                "cron fire dropped: gateway for profile %r is deliberately "
+                "stopped (desired_state=stopped); job %s will resume via "
+                "Chronos reconcile on next gateway start",
+                profile, job_id,
+            )
+            return JSONResponse(
+                {
+                    "status": "gateway_stopped",
+                    "detail": "gateway deliberately stopped; fire dropped, "
+                              "jobs re-arm on next gateway start",
+                    "job_id": job_id,
+                    "profile": profile,
+                },
+                status_code=200,
+            )
+        return JSONResponse(
+            {
+                "error": "gateway unreachable; retry",
+                "job_id": job_id,
+                "profile": profile,
+            },
+            status_code=503,
+            headers={"Retry-After": str(_CRON_FIRE_RETRY_AFTER_SECONDS)},
+        )
+    status_code, gateway_body = forwarded
+    if isinstance(gateway_body, dict):
+        gateway_body.setdefault("job_id", job_id)
+    headers = (
+        # The gateway's own 503s (draining, admission failure) are equally
+        # transient — give the scheduler the same spacing hint.
+        {"Retry-After": str(_CRON_FIRE_RETRY_AFTER_SECONDS)}
+        if status_code == 503
+        else None
     )
-    return JSONResponse({"status": "accepted", "job_id": job_id}, status_code=202)
+    return JSONResponse(gateway_body, status_code=status_code, headers=headers)
 
 
 @router.get("/api/cron/blueprints")
@@ -236,7 +324,13 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
         # like the sibling cron endpoints (partial avoids **spec keys ever
         # colliding with the wrapper's own parameters).
         _create = functools.partial(_call_cron_for_profile, profile, "create_job", **spec)
-        return await _run_cron_dashboard_io(_create)
+        created = await _run_cron_dashboard_io(_create)
+        # Same contract as the other dashboard mutations: reconcile the
+        # profile-scoped provider (best-effort; fail-closed for external
+        # providers on a multi-profile dashboard). Off the event loop —
+        # a Chronos reconcile does file I/O plus NAS network calls.
+        await _run_cron_dashboard_io(_notify_cron_provider_for_profile, profile)
+        return created
     except HTTPException:
         raise
     except Exception as e:

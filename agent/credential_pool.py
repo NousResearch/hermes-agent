@@ -136,6 +136,14 @@ EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS = 60   # 1 minute
 # the classifier), so the value is duplicated here rather than referenced.
 FAILURE_REASON_BILLING = "billing"
 
+# Billing verdict that rests on an ambiguous body (#82154): Anthropic's
+# "out of extra usage" 400 is returned both for genuine overage depletion and
+# for a server-side content-filter rejection of the request. The latter leaves
+# the credential perfectly healthy, so an unverified billing exhaustion gets
+# the short transient cooldown instead of the one-hour billing bench — a
+# genuine depletion simply re-latches on the next attempt.
+FAILURE_REASON_BILLING_UNVERIFIED = "billing_unverified"
+
 # Throttle window for the "no available entries" INFO line. Credential
 # selection runs on a hot path (every model call, plus auxiliary tasks like
 # compression/moa/titles), so when a pool is empty or fully exhausted the
@@ -332,6 +340,15 @@ def _exhausted_ttl(
     if error_code == 401:
         return EXHAUSTED_TTL_401_SECONDS
     base = EXHAUSTED_TTL_429_SECONDS if error_code == 429 else EXHAUSTED_TTL_DEFAULT_SECONDS
+    # Unverified billing (#82154): the same 400 body can be a content-filter
+    # rejection of the request itself, in which case the credential is healthy
+    # and an hour-long bench just blocks it (and, for a sole credential,
+    # replays the stored error for the full hour — making a real fix look like
+    # it did not work). Short cooldown regardless of pool size; a genuine
+    # depletion re-latches on the next attempt. A true 402 stays a full bench
+    # even if something mislabeled it unverified.
+    if failure_reason == FAILURE_REASON_BILLING_UNVERIFIED and error_code != 402:
+        return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
     # Sole credential: shorten only TRANSIENT throttles (429 rate-limit, 403
     # edge-throttle, 5xx server, or unknown). Billing exhaustion — whether
     # classified as such or self-evident from a 402 — is a genuine depletion

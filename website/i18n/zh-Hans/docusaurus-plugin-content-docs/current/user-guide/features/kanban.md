@@ -14,7 +14,7 @@ Hermes Kanban 是一个持久化任务看板，在所有 Hermes 配置文件之�
 
 看板有两个入口，均由同一个 `~/.hermes/kanban.db` 支撑：
 
-- **Agent 通过专用 `kanban_*` 工具集驱动看板** —— `kanban_show`、`kanban_list`、`kanban_complete`、`kanban_block`、`kanban_heartbeat`、`kanban_comment`、`kanban_create`、`kanban_link`、`kanban_unblock`。调度器在 schema 中已内置这些工具来启动每个 worker；编排器（orchestrator）配置文件也可以通过 `kanban` 工具集显式启用。模型通过直接调用工具来读取和路由任务，*而不是*通过 shell 执行 `hermes kanban`。详见下方[Worker 如何与看板交互](#how-workers-interact-with-the-board)。
+- **Agent 通过专用 `kanban_*` 工具集驱动看板** —— `kanban_show`、`kanban_list`、`kanban_complete`、`kanban_block`、`kanban_request_review`、`kanban_request_changes`、`kanban_heartbeat`、`kanban_comment`、`kanban_create`、`kanban_link`、`kanban_unblock`。调度器在 schema 中已内置这些工具来启动每个 worker；编排器（orchestrator）配置文件也可以通过 `kanban` 工具集显式启用。模型通过直接调用工具来读取和路由任务，*而不是*通过 shell 执行 `hermes kanban`。详见下方[Worker 如何与看板交互](#how-workers-interact-with-the-board)。
 - **你（以及脚本和 cron）通过 CLI 上的 `hermes kanban …`、斜杠命令 `/kanban …` 或仪表盘驱动看板。** 这些界面面向人类和自动化场景——即没有工具调用模型的场合。
 
 两个界面都通过同一个 `kanban_db` 层路由，因此读取视图一致，写入不会产生偏差。本页其余部分展示 CLI 示例，因为它们便于复制粘贴，但每个 CLI 动词都有模型使用的等效工具调用。
@@ -55,7 +55,7 @@ Hermes Kanban 是一个持久化任务看板，在所有 Hermes 配置文件之�
 ## 核心概念
 
 - **Board（看板）** —— 一个独立的任务队列，拥有自己的 SQLite DB、工作区目录和调度器循环。单次安装可以有多个看板（例如每个项目、仓库或领域一个）；详见下方[看板（多项目）](#boards-multi-project)。单项目用户保持使用 `default` 看板，在本文档章节之外不会看到"board"这个词。
-- **Task（任务）** —— 包含标题、可选正文、一个受让人（配置文件名称）、状态（`triage | todo | ready | running | blocked | done | archived`）、可选租户命名空间、可选幂等键（用于重试自动化的去重）的一行记录。
+- **Task（任务）** —— 包含标题、可选正文、一个受让人（配置文件名称）、状态（`triage | todo | ready | running | blocked | review | done | archived`）、可选租户命名空间、可选幂等键（用于重试自动化的去重）的一行记录。
 - **Link（链接）** —— `task_links` 行，记录父 → 子依赖关系。当所有父任务变为 `done` 时，调度器将 `todo → ready`。
 - **Comment（评论）** —— agent 间协议。Agent 和人类追加评论；当 worker 被（重新）启动时，它将完整的评论线程作为上下文的一部分读取。
 - **Workspace（工作区）** —— worker 操作的目录。三种类型：
@@ -161,6 +161,8 @@ hermes kanban stats
 kanban:
   dispatch_in_gateway: true        # 默认
   dispatch_interval_seconds: 60    # 默认
+  review_dispatch: true            # 默认：使用内置 sdlc-review skill 自动启动 reviewer。
+                                   # 纯人工审查看板可设为 false。
 ```
 
 通过 `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0` 在运行时覆盖配置标志以进行调试。标准 gateway 监督适用：直接运行 `hermes gateway start`，或将 gateway 配置为 systemd 用户单元（参见 gateway 文档）。没有运行中的 gateway，`ready` 任务会保持原状，直到 gateway 启动 —— `hermes kanban create` 在创建时会对此发出警告。
@@ -198,12 +200,14 @@ hermes kanban block    t_abc "need input" --ids t_def t_hij
 | `kanban_show` | 读取当前任务（标题、正文、先前尝试、父级交接、评论、完整预格式化的 `worker_context`）。默认使用环境变量中的任务 id。 | — |
 | `kanban_list` | 列出带有 `assignee`、`status`、`tenant`、归档可见性和限制过滤器的任务摘要。供编排器发现看板工作使用。 | — |
 | `kanban_complete` | 以 `summary` + `metadata` 结构化交接完成任务。 | `summary` / `result` 至少一个 |
+| `kanban_request_review` | 启动同卡审查，携带 `summary`、可选 `metadata` 和 reviewer profile；任务移入 `review`，且不计入 block 循环。 | `summary` |
+| `kanban_request_changes` | reviewer 在活动审查 run 中要求修改：关闭审查 run，重新检查父依赖，并把任务交还原 implementer。 | `reason` |
 | `kanban_block` | 以 `reason` 上报需要人工输入。 | `reason` |
 | `kanban_heartbeat` | 在长时间操作期间发出存活信号。纯副作用。 | — |
 | `kanban_comment` | 向任务线程追加持久化备注。 | `task_id`、`body` |
 | `kanban_create` | （编排器）将任务扇出为带有 `assignee`、可选 `parents`、`skills` 等的子任务。 | `title`、`assignee` |
 | `kanban_link` | （编排器）事后添加 `parent_id → child_id` 依赖边。 | `parent_id`、`child_id` |
-| `kanban_unblock` | （编排器）将被阻塞的任务移回 `ready`。 | `task_id` |
+| `kanban_unblock` | （编排器）将阻塞任务恢复到来源阶段（`review` 或 `ready`）；父任务仍开放时进入 `todo`。 | `task_id` |
 
 典型的 worker 轮次如下所示：
 
@@ -328,6 +332,26 @@ hermes kanban create "audit auth flow" \
 
 调度器为列出的每个 skill 发出一个 `--skills <name>` 标志，因此 worker 在自动注入的 kanban 指引之上加载了所有这些 skill。skill 名称必须与受让人配置文件上实际安装的 skill 匹配（运行 `hermes skills list` 查看可用内容）；没有运行时安装。
 
+### 成本策略：前沿模型编排，低价模型执行
+
+Kanban 的按 profile 配置让规划者/执行者的成本分层水到渠成。将项目分解为范围清晰的卡片需要前沿模型级别的判断力；而执行一张已经带有明确目标、上下文和交接证据的卡片通常不需要——并且绝大多数 token 消耗发生在 worker 身上，因此成本真正落在 worker 模型上。让编排器/调度器 profile 运行前沿模型，让 worker profile 指向低价模型。每个 profile 在 `~/.hermes/profiles/<name>/` 下有自己的 `config.yaml`，调度器在生成 `hermes -p <assignee>` 时注入 profile 范围的 `HERMES_HOME`，因此每个 worker 读取自己 profile 的模型设置：
+
+```yaml
+# ~/.hermes/config.yaml（编排器 / 调度器 profile）
+model:
+  default: "your-frontier-model"
+
+# ~/.hermes/profiles/coder/config.yaml（worker profile）
+model:
+  default: "your-inexpensive-model"
+
+# ~/.hermes/profiles/researcher/config.yaml（另一个 worker profile）
+model:
+  default: "your-inexpensive-model"
+```
+
+对于偶尔出现的质量敏感型卡片，可以只为该任务固定更强的模型（按任务模型覆盖）：创建时用 `--model`/`--provider`，之后用 `hermes kanban set-model <task-id> <model> --provider <name>`（`set-model ... none` 清除覆盖），或使用仪表盘的按任务模型下拉框——无需修改 profile 配置。未设置覆盖时，worker 使用其 profile 配置的模型。
+
 ### 编排器的行为方式
 
 **行为良好的编排器不会自己做工作。** 它将用户的目标分解为任务，链接它们，将每个任务分配给你设置的配置文件之一，然后退后。编排器指引 —— 反诱惑规则、Step-0 配置文件发现提示（调度器在未知受让人名称上静默失败，因此编排器必须将每张卡片落地到你机器上实际存在的配置文件），以及以 `kanban_create` / `kanban_link` / `kanban_comment` 为核心的分解手册 —— 会自动注入到 worker 的系统 prompt 中；无需安装任何东西。
@@ -352,6 +376,8 @@ kanban_complete(
 ```
 
 编排器指引随 worker 的系统 prompt 自动提供 —— 无需按配置文件安装或同步任何东西。
+
+**先决策，再扇出。** 设计决策属于编排器，而不是 worker。如果两张并行卡片都需要选择同一件事 —— 命名方案、schema、文件格式、API 形态 —— 编排器应当一次性做出决定，并把该决定写入**两张**卡片的正文。Worker 看不到兄弟卡片，因此每张子卡片的正文必须携带它所依赖的全部决策。示例：对于并行卡片"构建导出器"和"构建导入器"，不要让每个 worker 各自发明文件格式 —— 应预先选定一种（比如带 `version` 字段的换行分隔 JSON）并写入两张卡片的正文，否则两半工作永远无法互通。
 
 为获得最佳效果，将其与工具集限制为看板操作（`kanban`、`gateway`、`memory`）的配置文件配对，这样编排器即使尝试也无法执行实现任务。
 
@@ -395,6 +421,8 @@ hermes dashboard        # 导航栏中出现 "Kanban" 标签页，位于 "Skills
 
 **手动** —— `kanban.auto_decompose: false`。分诊任务保持在分诊中，直到你操作。点击卡片上的 **⚗ Decompose** 按钮，运行 `hermes kanban decompose <id>`（或 `--all`），或从聊天中使用 `/kanban decompose <id>`。这与看板的预分解器行为一致，适合需要完全控制运行时机的场景。
 
+**重要边界：** 手动模式只会关闭内置的 Triage 分解器。它不会阻止配置文件调用 `kanban_create`，也不会关闭创建者会话的唤醒。启用 `kanban.auto_subscribe_on_create: true` 时，任务的终止事件会通过合成状态消息恢复原始 agent，使其读取交接并判断是否确实需要新的后续工作。希望任务完成保持被动时，请设置 `auto_subscribe_on_create: false`。溯源时，内置分解器创建的子任务标记为 `created_by=auto-decomposer`；由恢复后的配置文件创建的任务则记录该配置文件名。
+
 从 kanban 页面顶部的 **Orchestration: Auto/Manual** 切换按钮（翠绿色 = 自动，静音灰色 = 手动）在两种模式之间切换，或直接编辑 `config.yaml`。两种模式都与 `hermes kanban specify` 共存 —— 当你不想扇出时，它仍然可用作单任务规格重写。
 
 分解器的路由决策依赖于配置文件描述，这是一个每配置文件的标签原语，通过 `hermes profile create --description "..."`、`hermes profile describe <name> --text "..."`、`hermes profile describe <name> --auto`（LLM 从配置文件安装的 skill + 模型自动生成），或仪表盘展开的 **Orchestration settings** 面板中的每配置文件编辑器来设置。没有描述的配置文件仍然出现在名册中 —— 它们可以按名称路由，只是精度较低。分解器**绝不**会将子任务落地为 `assignee=None`：当 LLM 选择未知配置文件时，子任务路由到 `kanban.default_assignee`（如果未设置，则路由到活动默认配置文件）。
@@ -403,11 +431,11 @@ hermes dashboard        # 导航栏中出现 "Kanban" 标签页，位于 "Skills
 
 | 键 | 默认值 | 用途 |
 |---|---|---|
-| `auto_decompose` | `true` | 调度器每 tick 自动运行分解器。 |
+| `auto_decompose` | `true` | 调度器每 tick 为 Triage 任务运行内置分解器；它不会限制配置文件驱动的 `kanban_create` 或创建者唤醒回合。 |
 | `auto_decompose_per_tick` | `3` | 每个调度器 tick 的分解上限。超出部分推迟到下一个 tick。 |
 | `orchestrator_profile` | `""` | 拥有分解权的配置文件。空 = 回退到活动默认配置文件。 |
 | `default_assignee` | `""` | LLM 选择未知配置文件时子任务的落地位置。空 = 回退到活动默认配置文件。 |
-| `auto_subscribe_on_create` | `true` | 当 worker 在具有持久投递通道的会话（消息网关或 TUI）内调用 `kanban_create` 时，原始会话会自动订阅新任务的完成/阻塞事件。调度器仍负责驱动投递 —— 此设置只决定调用者的聊天/密钥是否出现在通知订阅表中。设为 `false` 则要求对每个任务显式调用 `kanban_notify-subscribe`。 |
+| `auto_subscribe_on_create` | `true` | 当 `kanban_create` 在持久 gateway/TUI 会话中运行时，终止事件会通过合成状态回合恢复原始 agent。设为 `false` 可让完成保持被动，或要求显式调用 `kanban_notify-subscribe`。此设置独立于 `auto_decompose`。 |
 
 以及两个辅助 LLM 槽：
 
@@ -537,6 +565,10 @@ hermes kanban block <id> "<reason>" [--ids <id>...]
 hermes kanban unblock <id>...
 hermes kanban archive <id>...
 
+hermes kanban request-review <id> [--summary "..."] [--metadata JSON] [--reviewer PROFILE]
+hermes kanban request-changes <id> "<所需修改>"                       # reviewer -> implementer
+hermes kanban reopen-review  <id>... [--reason "..."]                 # 请求修改：'review' -> ready/todo
+
 hermes kanban tail <id>                                # 跟踪单个任务的事件流
 hermes kanban watch [--assignee P] [--tenant T]        # 将所有事件实时流式传输到终端
         [--kinds completed,blocked,…] [--interval SECS]
@@ -634,6 +666,54 @@ Gateway 平台有实际的消息长度限制。如果 `/kanban list`、`/kanban 
 | **P9 分诊规格器** | 粗略想法 → `triage` → `hermes kanban specify` 扩展正文 → `todo` | "将这个一行描述变成规格化任务" |
 
 每种模式的详细示例，请参阅 `docs/hermes-kanban-v1-spec.pdf`。
+
+## 向后续卡片传递上下文（父任务链接）
+
+父任务链接不只是调度门槛——它是从**已完成**卡片向新卡片传递上下文的通道。当你用 `--parent <已完成卡片id>` 创建卡片时，会发生两件事：
+
+1. **立即可调度。** `create_task` 根据父任务状态设置新卡片的状态：所有父任务均为 `done` 的子任务直接以 `ready` 状态创建——无需等待，无需手动提升。（父任务尚未完成的子任务停在 `todo`，直到最后一个父任务完成后由 `recompute_ready` 提升。）
+2. **父任务的交接内容随之而来。** 为子任务组装的 worker 上下文（`build_worker_context`，即 `kanban_show()` 返回的内容）包含 `## Parent task results` 部分，逐字呈现每个父任务的完成 `summary` 和 `metadata`：
+
+```
+## Parent task results
+### t_77c26979 (completed just now)
+Added exponential backoff with jitter to the retry helper.
+_metadata_: `{"changed_files": ["hermes_cli/retry.py", "tests/test_retry.py"], "decisions": ["capped backoff at 60s", "jitter = full"]}`
+```
+
+这就是为什么对已完成卡片的后续工作应当**创建新的子卡片，而不是重开已完成的卡片**。已完成的卡片是不可变的历史——它的上下文通过父任务链接向前流动。同卡片返工（失败卡片上的重试循环）是另一种机制：*同一张*卡片的先前尝试会作为"prior attempts"出现在该卡片自己的上下文中。
+
+单靠 worktree 或分支无法替代这一点：仓库状态告诉后续 worker 代码*是什么样*，但不告诉它*为什么*——决策、运行过的测试、改动的文件都在父任务的结构化交接中，而不在 git 里。父任务完成时尚不存在的证据（例如后来才失败的 CI 日志）应写入新卡片的**正文**。
+
+```bash
+# 实现卡片 t_impl 已完成。两小时后 CI 失败。
+hermes kanban create "Fix CI failure from t_impl: test_retry flakes on 3.11" \
+    --assignee coder \
+    --parent t_impl \
+    --body "$(cat <<'EOF'
+CI run #4812 failed after t_impl merged.
+Log excerpt: FAILED tests/test_retry.py::test_backoff_jitter - TimeoutError
+Acceptance: tests/test_retry.py green on 3.11 and 3.12 in CI.
+Use a fresh worktree/branch; do not force-push the original branch.
+EOF
+)"
+```
+
+修复 worker 启动时，原卡片的 summary 和 metadata（改动的文件、决策）已在其上下文中，再加上你写入正文的新证据。
+
+### 调解冲突的 worker 分支
+
+在工程流水线（使用 worktree 的 P1/P2）中，两个 worker 的分支合并时可能发生冲突。不要让任一 worker 自行裁决 —— 发生冲突的 agent 缺乏对方的上下文，往往会覆盖对方的改动或放弃自己的改动。正确做法是：创建一张调解卡片，指派给**第三个中立配置文件**，并把**两张**冲突卡片都链接为其父任务：父任务链接会把双方的完成摘要带入调解者的上下文，使其同时获得双方的 diff *和*双方的意图。内置的 [`merge-reconciler` 技能](https://github.com/NousResearch/hermes-agent/blob/main/skills/autonomous-ai-agents/merge-reconciler/SKILL.md) 为该 worker 提供完整流程：对每个冲突块分类、公正地解决、验证，并在交回摘要中说明每一项决定。
+
+### 并行战役中的碰撞热点（Collision hotspots）
+
+在大规模并行战役中，某些文件会成为碰撞磁石：许多 worker 各自往同一个文件里添加一点内容，没有人负责保持它精简，它于是成为持续合并冲突的发生地。缓解方式是一种注释约定，而非新原语。当 worker 发现自己的 diff 在某个文件上不断与兄弟分支冲突，或它触碰的某个文件反复出现在其他卡片最近的评论中时，不应默默继续叠加改动，而应在自己的卡片上留下带有可识别前缀的评论：
+
+```
+hotspot: hermes_cli/kanban_db.py — 本轮对 dispatch 循环的第三次冲突性编辑
+```
+
+并在完成时的 `metadata` 中重复该标记。编排者（或查看看板的人类）如果看到**两条或更多 `hotspot:` 评论指向同一路径**，应在继续排入任何触碰该文件的工作**之前**，为该文件创建一张专门的重构/分解卡片 —— 拆分磁石文件比调解它未来引发的每一次冲突更便宜。对于*已经*发生的冲突，请使用上文的调解卡片模式配合 `merge-reconciler` 技能；hotspot 标记是上游修复，能避免调解者变成一条常设车道。
 
 ## 多租户使用
 

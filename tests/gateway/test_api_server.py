@@ -2592,6 +2592,27 @@ class TestModelRoutesAgentCreation:
         assert captured["api_key"] == "sk-session"
 
 
+class TestStoredSessionModelFilter:
+    """A session row that persisted the advertised virtual model must read as
+    "no stored model" — replaying "hermes-agent" upstream 400s. Found live
+    (Aug 2026): the first cross-gateway `hermes peer dm` against a fresh
+    api_server failed every turn with "hermes-agent is not a valid model ID".
+    """
+
+    def test_virtual_model_is_filtered(self):
+        adapter = _make_routing_adapter({})
+        assert adapter._stored_session_model({"model": adapter._model_name}) is None
+
+    def test_real_model_passes_through(self):
+        adapter = _make_routing_adapter({})
+        assert adapter._stored_session_model({"model": "google/gemini-3.7-flash"}) == "google/gemini-3.7-flash"
+
+    def test_missing_or_bad_shapes(self):
+        adapter = _make_routing_adapter({})
+        assert adapter._stored_session_model({}) is None
+        assert adapter._stored_session_model(None) is None
+
+
 # ---------------------------------------------------------------------------
 # Event-loop offloading for synchronous SessionDB calls (P1)
 # ---------------------------------------------------------------------------
@@ -2623,6 +2644,93 @@ class TestSessionDbOffEventLoop:
         # The blocking DB call must NOT execute on the event-loop thread.
         assert captured["thread"] is not None
         assert captured["thread"] != threading.current_thread()
+
+    @pytest.mark.asyncio
+    async def test_create_session_without_model_does_not_persist_virtual_alias(self, auth_adapter):
+        """A session created with no ``model`` field must not persist the
+        virtual model alias (self._model_name, e.g. "hermes-agent") as if it
+        were a real provider model id.
+
+        Regression: _handle_create_session previously did
+        ``model = body.get("model") or self._model_name``, so an omitted
+        model fell back to the virtual alias and that string got stored on
+        the session row. _handle_session_chat later reads it back as a raw
+        session_model override (since it's not a model_routes alias) and
+        sends it to the provider literally — Bedrock/OpenAI then reject
+        "hermes-agent" as an invalid model identifier on every turn.
+        """
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] != auth_adapter._model_name
+            assert data["session"]["model"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_explicit_virtual_alias_does_not_persist_it(self, auth_adapter):
+        """Sending ``model: "hermes-agent"`` explicitly (the virtual alias
+        itself, e.g. a client that just echoes /v1/models' advertised id)
+        must be treated the same as omitting model entirely."""
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={"model": auth_adapter._model_name},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_real_model_persists_it(self, auth_adapter):
+        """Regression guard: a genuine model id must still be stored as before."""
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={"model": "openai/gpt-5"},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] == "openai/gpt-5"
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_provider_prefixed_virtual_alias_does_not_persist_it(self, auth_adapter):
+        """A provider-prefixed echo of the virtual alias (e.g. a client that
+        threads /v1/models' advertised id through a provider:: prefix) must
+        also be treated as "no model", not stored as a raw override.
+
+        Regression: _handle_create_session used to re-derive its own `model`
+        straight from the raw request body, bypassing the provider-prefix
+        split that _session_runtime_request_from_body performs — so
+        "openrouter::hermes-agent" never matched self._model_name and leaked
+        through as a literal session override.
+        """
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={"model": f"openrouter::{auth_adapter._model_name}"},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -2866,3 +2974,97 @@ class TestCreateAgentModelRecovery:
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
 
+    # ── Recovery-net alias guards (PR for #79101) ──────────────────────
+
+    def test_create_agent_does_not_cache_virtual_alias(self, monkeypatch):
+        """Write-side guard: the advertised virtual model (``hermes-agent``)
+        must never enter ``_last_resolved_model``, even when a prior turn
+        (or the session-row bug) dispatched it."""
+        captured = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.append(dict(kwargs))
+
+        _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        virtual = adapter._model_name
+        # Make _resolve_gateway_model return the virtual alias — the
+        # condition the session-row bug can produce after a prior turn.
+        monkeypatch.setattr(
+            "gateway.run._resolve_gateway_model", lambda: virtual,
+        )
+
+        adapter._create_agent(session_id="s1", gateway_session_key="ch")
+        assert captured[0]["model"] == virtual
+        # Cache must reject the alias.
+        assert adapter._last_resolved_model.get("ch") != virtual
+        assert adapter._last_resolved_model.get("*") != virtual
+
+    def test_create_agent_rejects_virtual_alias_from_cache(self, monkeypatch):
+        """Read-side gate: an empty-model dispatch with the alias in
+        ``_last_resolved_model`` must NOT recover it — the recovery net
+        must never serve the advertised virtual model."""
+        captured = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.append(dict(kwargs))
+
+        _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        # Seed the cache with the alias (simulate a prior poisoned turn).
+        adapter._last_resolved_model["ch"] = adapter._model_name
+        adapter._last_resolved_model["*"] = adapter._model_name
+
+        # Trigger an empty resolution.
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": None, "base_url": None, "api_mode": None},
+        )
+        adapter._create_agent(session_id="s1", gateway_session_key="ch")
+
+        # The alias must not be dispatched.
+        assert captured[0]["model"] != adapter._model_name
+
+    def test_create_agent_recovery_still_works_for_legitimate_model(
+        self, monkeypatch,
+    ):
+        """Non-regression: a real dispatched model still enters the cache
+        and recovers on a subsequent empty-resolution turn — the alias
+        guard must not break legitimate recovery."""
+        captured = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.append(dict(kwargs))
+
+        _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        # Turn 1: legitimate model — must enter the cache.
+        monkeypatch.setattr(
+            "gateway.run._resolve_gateway_model",
+            lambda: "anthropic/claude-opus-4.6",
+        )
+        adapter._create_agent(session_id="s1", gateway_session_key="ch")
+        assert captured[0]["model"] == "anthropic/claude-opus-4.6"
+        assert adapter._last_resolved_model["ch"] == "anthropic/claude-opus-4.6"
+
+        # Turn 2: empty resolution — must recover the legitimate model.
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": None, "base_url": None, "api_mode": None},
+        )
+        adapter._create_agent(session_id="s2", gateway_session_key="ch")
+        assert captured[1]["model"] == "anthropic/claude-opus-4.6"

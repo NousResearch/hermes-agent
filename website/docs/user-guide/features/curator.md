@@ -112,6 +112,10 @@ hermes curator restore <skill>  # move an archived skill back to active
 hermes curator list-archived    # list skills currently in ~/.hermes/skills/.archive/
 hermes curator archive <skill>  # manually archive a single skill now
 hermes curator prune [--days N] # bulk-archive agent-created skills idle >= N days (default 90)
+hermes curator ledger           # list the per-mutation audit ledger (all actors)
+hermes curator ledger --skill <name> --limit 50  # filter/paginate ledger entries
+hermes curator rollback <entry-id>  # undo a single mutation from the ledger
+hermes curator purge [--days N] [--dry-run]  # delete archived skills older than the TTL (explicit only)
 ```
 
 ## Backups and rollback
@@ -142,6 +146,45 @@ Set `curator.backup.enabled: false` to disable automatic snapshotting. The manua
 `hermes curator status` also lists the five least-recently-used skills — a quick way to see what's likely to become stale next.
 
 The same subcommands are available as the `/curator` slash command inside a running session (CLI or gateway platforms).
+
+## Audit ledger and single-edit rollback
+
+Whole-run snapshots answer "undo everything the last curator pass did" — but sometimes you want to know *who changed what* and undo exactly one mutation. Every skill mutation — curator auto-transitions, agent `skill_manage` calls, and your own CLI archive/restore/purge — appends one entry to the append-only JSONL ledger at `~/.hermes/skills/.curator_ledger.jsonl`:
+
+- **actor** — `curator` (background review fork / auto-transitions), `agent` (foreground agent tool calls), or `user` (CLI commands)
+- **action** — `create`, `edit`, `patch`, `delete`, `write_file`, `remove_file`, `archive`, `restore`, `purge`, `rollback`
+- **evidence** — delete intent (`absorbed_into` for consolidations, empty for prunes, and whether the recoverable-archive path handled it), triggering session id when available
+- **before/after** — per-file `{path, sha256}` manifests. File contents are stored content-addressed (deduped by hash) under `~/.hermes/.curator_backups/blobs/`, so a hundred entries touching the same unchanged file cost one blob.
+
+```bash
+hermes curator ledger                  # newest 20 entries
+hermes curator ledger --skill my-skill --limit 50
+hermes curator rollback <entry-id>     # restore that one mutation's before-state
+```
+
+Single-entry rollback restores exactly the files that mutation touched (and removes files it created) from the blob store — nothing else in the skills tree moves. Like whole-tree rollback, it takes a safety ledger entry of the current state first and **fails closed**: if the safety capture can't be written, nothing is changed. Because foreground deletes are ledgered too, `hermes curator rollback <entry-id>` can resurrect a hard-deleted skill.
+
+The ledger is telemetry, never a gate — if writing an entry fails, the mutation still goes through. Disable it with:
+
+```yaml
+skills:
+  ledger: false
+```
+
+## Archive TTL purge
+
+Archived skills are kept forever by default. If you want `~/.hermes/skills/.archive/` bounded, set a TTL and purge explicitly — purging never runs automatically, and every purged skill is captured into the ledger (with blobs) first, so even a purge leaves an auditable, recoverable trail:
+
+```yaml
+curator:
+  archive_ttl_days: 180   # 0 (default) = never purge
+```
+
+```bash
+hermes curator purge --dry-run   # preview what would be deleted
+hermes curator purge             # delete archives older than the TTL (with confirmation)
+hermes curator purge --days 90   # one-off TTL override
+```
 
 ## What "agent-created" means
 

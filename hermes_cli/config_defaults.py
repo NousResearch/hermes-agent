@@ -1135,6 +1135,10 @@ DEFAULT_CONFIG = {
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+            # Guarded fast lane: only honored with a concrete provider/model
+            # and an explicit ``reasoning_effort: none`` certification.
+            # Zero preserves the historic uncapped compression request.
+            "max_output_tokens": 0,
         },
         # Note: session_search no longer uses an auxiliary LLM (PR #27590 —
         # single-shape tool returns DB content directly). The old

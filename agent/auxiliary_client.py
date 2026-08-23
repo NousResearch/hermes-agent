@@ -8359,6 +8359,41 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     return task_config
 
 
+class CompressionFastLane(NamedTuple):
+    """Explicit, non-reasoning compression route safe for a bounded summary."""
+
+    certified_non_reasoning: bool
+    max_tokens: Optional[int]
+    reasoning_config: Optional[Dict[str, Any]]
+
+
+def resolve_compression_fast_lane() -> CompressionFastLane:
+    """Resolve the opt-in compression-only fast lane without changing defaults.
+
+    A cap is safe only when the operator has selected a concrete auxiliary
+    provider/model and explicitly certified the route as non-reasoning.  Auto
+    and inherited routes deliberately retain the historic uncapped request.
+    """
+    config = _get_auxiliary_task_config("compression")
+    provider = str(config.get("provider") or "").strip().lower()
+    model = str(config.get("model") or "").strip()
+    effort = str(config.get("reasoning_effort") or "").strip().lower()
+    explicit_route = provider not in {"", "auto"} and model.lower() not in {"", "auto"}
+    certified = explicit_route and effort == "none"
+    if not certified:
+        return CompressionFastLane(False, None, None)
+    raw_cap = config.get("max_output_tokens")
+    try:
+        cap = 0 if isinstance(raw_cap, bool) else int(raw_cap)
+    except (TypeError, ValueError):
+        cap = 0
+    return CompressionFastLane(
+        True,
+        cap if cap > 0 else None,
+        {"enabled": False, "effort": "none"},
+    )
+
+
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
     """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
     if not task:
@@ -8413,6 +8448,18 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     result = dict(raw) if isinstance(raw, dict) else {}
     if "reasoning" not in result:
         effort = task_config.get("reasoning_effort")
+        if task == "compression" and str(effort or "").strip().lower() == "none":
+            # Do not let an inherited/main route silently inherit an explicit
+            # ``none`` intended for a configured fast summarizer.  The main
+            # chat model and its reasoning policy remain untouched.
+            fast_lane = resolve_compression_fast_lane()
+            if fast_lane.reasoning_config is not None:
+                result["reasoning"] = fast_lane.reasoning_config
+                return result
+            # Other explicit compression reasoning policies retain their
+            # established behavior. This guard is narrowly about a claimed
+            # fast non-reasoning route.
+            return result
         if effort is not None and effort != "":
             if task in ("moa_reference", "moa_aggregator"):
                 logger.warning(
@@ -9380,38 +9427,61 @@ def call_llm(
     stream: bool = False,
     stream_options: dict = None,
     route_info: Optional[Dict[str, str]] = None,
+    latency_info: Optional[Dict[str, int]] = None,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
+    queue_started_at = time.monotonic()
     semaphore = _acquire_sync_aux_semaphore(task)
     if semaphore is not None:
         semaphore.acquire()
-    try:
-        response = _call_llm_impl(
-            task=task,
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
-            main_runtime=main_runtime,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            tools=tools,
-            timeout=timeout,
-            extra_body=extra_body,
-            reasoning_config=reasoning_config,
-            extra_headers=extra_headers,
-            api_mode=api_mode,
-            stream=stream,
-            stream_options=stream_options,
-            route_info=route_info,
+    request_started_at = time.monotonic()
+    if latency_info is not None:
+        latency_info["queue_wait_ms"] = max(
+            0, int((request_started_at - queue_started_at) * 1000)
         )
+
+    prior_progress_hook = getattr(_aux_progress, "hook", None)
+
+    def _timed_progress() -> None:
+        if latency_info is not None and "time_to_first_progress_ms" not in latency_info:
+            latency_info["time_to_first_progress_ms"] = max(
+                0, int((time.monotonic() - request_started_at) * 1000)
+            )
+        if callable(prior_progress_hook):
+            prior_progress_hook()
+
+    try:
+        with aux_progress_hook(_timed_progress if latency_info is not None else prior_progress_hook):
+            response = _call_llm_impl(
+                task=task,
+                provider=provider,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                main_runtime=main_runtime,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                timeout=timeout,
+                extra_body=extra_body,
+                reasoning_config=reasoning_config,
+                extra_headers=extra_headers,
+                api_mode=api_mode,
+                stream=stream,
+                stream_options=stream_options,
+                route_info=route_info,
+            )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
             semaphore = None
             return _release_sync_semaphore_after_stream(response, stream_semaphore)
         return response
     finally:
+        if latency_info is not None:
+            latency_info["summary_generation_ms"] = max(
+                0, int((time.monotonic() - request_started_at) * 1000)
+            )
         if semaphore is not None:
             semaphore.release()
 
@@ -9583,6 +9653,12 @@ def _call_llm_impl(
                 f"Run: hermes setup")
 
     effective_timeout = _effective_aux_timeout(task, timeout)
+    fast_compression_lane = resolve_compression_fast_lane() if task == "compression" else None
+    force_fast_compression_cap = bool(
+        fast_compression_lane is not None
+        and fast_compression_lane.max_tokens is not None
+        and max_tokens == fast_compression_lane.max_tokens
+    )
     request_provider = effective_provider or resolved_provider
     _set_relay_auxiliary_route(
         request_provider,
@@ -9609,6 +9685,12 @@ def _call_llm_impl(
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
         base_url=_base_info or resolved_base_url, task=task)
+    if force_fast_compression_cap:
+        # Normal auxiliary calls intentionally omit a cap on most
+        # OpenAI-compatible/local providers.  This is the narrow exception:
+        # the configured compression route is concrete and certified
+        # non-reasoning, so a bounded summary request is intentional.
+        kwargs.update(auxiliary_max_tokens_param(max_tokens, model=final_model))
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
 

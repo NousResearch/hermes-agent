@@ -55,4 +55,17 @@ describe('useMessageStream compaction lifecycle', () => {
 
     expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
   })
+
+  it('reconciles a reconnecting compaction only from trusted terminal server state', () => {
+    mountStream()
+    emit('status.update', { kind: 'compacting' })
+
+    // A running heartbeat is not terminal evidence and must not hide real work.
+    emit('session.info', { running: true })
+    expect($compactingSessions.get()).toEqual({ [SID]: true })
+
+    // A server-reported terminal turn is trusted reconnect evidence.
+    emit('session.info', { running: false })
+    expect($compactingSessions.get()).toEqual({})
+  })
 })

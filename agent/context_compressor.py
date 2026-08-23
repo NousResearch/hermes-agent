@@ -33,6 +33,7 @@ from agent.auxiliary_client import (
     _is_connection_error,
     aux_interrupt_protection,
     call_llm,
+    resolve_compression_fast_lane,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -2251,6 +2252,11 @@ class ContextCompressor(ContextEngine):
             "chunk_count": 0,
             "total_duration_ms": None,
             "aux_call_duration_ms": None,
+            "queue_wait_ms": None,
+            "prompt_build_ms": None,
+            "time_to_first_progress_ms": None,
+            "summary_generation_ms": None,
+            "commit_ms": None,
             "fallback_used": False,
             "commit_status": "unknown",
             "split_status": "unknown",
@@ -2283,6 +2289,7 @@ class ContextCompressor(ContextEngine):
         aux_provider: str | None = None,
         aux_model: str | None = None,
         effective_aux_context: int | None = None,
+        phase_timings: Dict[str, Any] | None = None,
     ) -> None:
         telemetry = getattr(self, "_active_compression_telemetry", None)
         if not isinstance(telemetry, dict):
@@ -2306,6 +2313,19 @@ class ContextCompressor(ContextEngine):
             )
         previous = telemetry.get("aux_call_duration_ms") or 0
         telemetry["aux_call_duration_ms"] = previous + max(0, int(duration_ms))
+        for key in (
+            "queue_wait_ms",
+            "prompt_build_ms",
+            "time_to_first_progress_ms",
+            "summary_generation_ms",
+            "commit_ms",
+        ):
+            if isinstance(phase_timings, dict) and key in phase_timings:
+                value = _safe_int(phase_timings[key])
+                if key in {"queue_wait_ms", "summary_generation_ms"} and value is not None:
+                    telemetry[key] = (telemetry.get(key) or 0) + value
+                else:
+                    telemetry[key] = value
 
     def _emit_init_summary_once(self) -> None:
         """Emit the informative startup line once, on first resolution.
@@ -4770,7 +4790,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         the middle turns without a summary rather than inject a useless
         placeholder.
         """
-        now = time.monotonic()
+        prompt_started_at = time.monotonic()
+        now = prompt_started_at
         if now < self._summary_failure_cooldown_until:
             logger.debug(
                 "Skipping context summary during cooldown (%.0fs remaining)",
@@ -5055,6 +5076,7 @@ FOCUS TOPIC: "{focus_topic}"
 This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
 
         try:
+            fast_lane = resolve_compression_fast_lane()
             call_kwargs = {
                 "task": "compression",
                 "main_runtime": {
@@ -5076,6 +5098,8 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # fall back to the model's native output ceiling.
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
+            if fast_lane.max_tokens is not None:
+                call_kwargs["max_tokens"] = fast_lane.max_tokens
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
             _aux_provider = ""
@@ -5110,6 +5134,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             # marker, losing the real handoff (#23975). Re-entrant: a main-model
             # retry (_generate_summary recursion) re-enters harmlessly.
             _aux_call_start = time.monotonic()
+            _latency_info: Dict[str, int] = {
+                "prompt_build_ms": max(0, int((_aux_call_start - prompt_started_at) * 1000))
+            }
+            call_kwargs["latency_info"] = _latency_info
             try:
                 with aux_interrupt_protection():
                     response = call_llm(**call_kwargs)
@@ -5124,6 +5152,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                     aux_provider=_aux_provider,
                     aux_model=_aux_model,
                     effective_aux_context=_aux_context,
+                    phase_timings=_latency_info,
                 )
             # ``_validate_llm_response`` only guarantees ``choices[0].message``
             # exists, not that it's an object with ``.content``. Some

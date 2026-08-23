@@ -1,6 +1,7 @@
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
+import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { followActiveSessionCwd } from '@/store/projects'
 import {
@@ -140,6 +141,14 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     const modelChanged = typeof payload?.model === 'string'
     const providerChanged = typeof payload?.provider === 'string'
     const runningChanged = typeof payload?.running === 'boolean'
+
+    // Reconnect can miss the structured `compacted` edge. A gateway-authored
+    // running=false is a terminal fact; a running heartbeat is intentionally
+    // not used as a timeout-like guess, so genuine compaction stays visible.
+    if (sessionId && payload?.running === false) {
+      reconcileSessionCompacting(sessionId, 'terminal')
+    }
+
     // The backend stamps model/provider (as strings) on EVERY session.info,
     // so the presence flags above are true on every heartbeat/turn edge —
     // fine for the cheap atom writes below (nanostores skips identical

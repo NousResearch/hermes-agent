@@ -1393,6 +1393,7 @@ def _emit_compression_attempt_telemetry(
     commit_status: str,
     split_status: str,
     failure_class: str | None = None,
+    commit_started_at: float | None = None,
 ) -> None:
     """Emit one content-free JSON log line for a compression attempt."""
     try:
@@ -1406,6 +1407,10 @@ def _emit_compression_attempt_telemetry(
         payload["total_duration_ms"] = int((time.monotonic() - started_at) * 1000)
         payload["commit_status"] = commit_status
         payload["split_status"] = split_status
+        if commit_started_at is not None:
+            commit_ms = max(0, int((time.monotonic() - commit_started_at) * 1000))
+            telemetry["commit_ms"] = commit_ms
+            payload["commit_ms"] = commit_ms
         if failure_class:
             payload["failure_class"] = failure_class
         payload.setdefault("chunking", False)
@@ -3742,6 +3747,7 @@ def compress_context(
             agent._cached_system_prompt = new_system_prompt
 
         _session_commit_succeeded = False
+        _commit_started_at = time.monotonic()
         split_status = "not_applicable"
         if agent._session_db:
             split_status = "pending"
@@ -4483,6 +4489,7 @@ def compress_context(
                 if split_status in {"failed_not_indexed", "aborted"}
                 else None
             ),
+            commit_started_at=_commit_started_at,
         )
         return compressed, new_system_prompt
     finally:

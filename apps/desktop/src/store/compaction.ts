@@ -35,3 +35,13 @@ export function setSessionCompacting(sessionId: string | null | undefined, activ
   delete next[key]
   $compactingSessions.set(next)
 }
+
+/** Clear compaction only when the gateway proves the turn resumed or ended. */
+export function reconcileSessionCompacting(
+  sessionId: string | null | undefined,
+  evidence: 'resumed' | 'terminal'
+): void {
+  if (evidence === 'resumed' || evidence === 'terminal') {
+    setSessionCompacting(sessionId, false)
+  }
+}

@@ -4120,6 +4120,18 @@ function useRoster() {
       // Chat is resolved server-side by NAME (the "Bot Chat" registry row),
       // so the roster never sends session pointers.
       const route = await activeBotRoute()
+      // Refresh the alias identity index alongside the roster: alias routes
+      // (Desktop profile → remote backend root) are what let a backend row
+      // keep its configured friendly identity after activation (#89131).
+      // Best-effort and feature-detected — a failed read keeps the last
+      // good index rather than dropping identities mid-session.
+      if (typeof host.profileRoutes === 'function') {
+        try {
+          indexAliasRoutes(await host.profileRoutes())
+        } catch {
+          /* keep the previous alias index */
+        }
+      }
       const activeBot = route
         ? { name: route.profile, sourceScoped: true, route }
         : { name: String(host.state.profile?.get?.() || 'default').trim() || 'default' }
@@ -4414,11 +4426,19 @@ function mentionNameForms(value) {
  *  (server-synced via ui_meta, locally stored, or persisted on a durable
  *  group descriptor) and the core profile display_name — in displayName's
  *  precedence order. Remote rows never borrow local meta (two `default`s
- *  must not share a title). */
+ *  must not share a title) — EXCEPT the connection-exact alias identity
+ *  (#89131): a backend row claimed by a configured alias route carries the
+ *  alias's friendly names, so @moxie keeps resolving after handoff. */
 function botFriendlyNames(bot) {
-  const localTitle = !bot?.remoteSource && typeof $botMeta !== 'undefined' ? $botMeta.get()?.[bot?.name]?.title : null
+  const metaByName = typeof $botMeta !== 'undefined' ? $botMeta.get() : null
+  const localTitle = !bot?.remoteSource ? metaByName?.[bot?.name]?.title : null
+  const alias = aliasIdentityFor(bot)
+  const aliasTitle = alias
+    ? alias.metaKeys.map(key => metaByName?.[key]?.title).find(title => typeof title === 'string' && title.trim()) ||
+      alias.name
+    : null
 
-  return [bot?.ui_meta?.['hermes-bots']?.title, localTitle, bot?.title, bot?.display_name]
+  return [bot?.ui_meta?.['hermes-bots']?.title, localTitle, aliasTitle, bot?.title, bot?.display_name]
 }
 
 /** The tag autocomplete inserts for a bot: the renamed (friendly) slug when
@@ -4723,18 +4743,125 @@ function groupSessionOwner(member) {
   }
 }
 
+// ── alias identity for connection rows (#89131) ─────────────────────────────
+// A Desktop per-profile alias (profile `moxie` with a Cloud/URL/SSH override)
+// routes to a remote backend's root profile: its route reads
+// { connectionId: C, profile: 'moxie', targetProfile: 'default' }. Once that
+// backend answers the roster itself, the row's identity is (C, 'default') —
+// a DIFFERENT key than the alias meta (C::moxie / 'moxie') — so the friendly
+// name fell off after source/session activation: the row regressed to the
+// raw Cloud hostname, or to generic 'Hermes' in Cloud-only mode.
+//
+// aliasRouteIndex bridges the backend row identity back to its configured
+// alias. It is keyed by (connectionId, targetProfile), so two same-named
+// `default` rows on different connections can never share a title, and it
+// fails closed when two aliases claim the same backend row (mirroring the
+// fail-closed route resolution). This is the one sanctioned exception to
+// "remote rows never borrow local meta": the alias IS the local identity of
+// exactly this connection row, proven by the configured route — never by a
+// bare name match.
+let aliasRouteIndex = new Map()
+
+/** Rebuild the alias index from the credential-free route inventory. Only
+ *  genuine aliases (route.profile !== route.targetProfile) participate. */
+function indexAliasRoutes(routes) {
+  const next = new Map()
+
+  for (const route of Array.isArray(routes) ? routes : []) {
+    const connectionId = String(route?.connectionId || '').trim()
+    const profile = String(route?.profile || '').trim()
+    const target = String(route?.targetProfile || '').trim()
+
+    if (!connectionId || !profile || !target || profile === target) {
+      continue
+    }
+
+    const key = `${connectionId}::${target}`
+
+    // Two aliases pointing at the same backend row are ambiguous — neither
+    // may claim the identity.
+    next.set(key, next.has(key) ? null : {
+      name: profile,
+      // Alias meta can live under the source-qualified v2 key or the bare
+      // v1 name key (aliases predate the v2 migration on mixed setups).
+      metaKeys: [`${connectionId}::${profile}`, profile]
+    })
+  }
+
+  aliasRouteIndex = next
+}
+
+/** The configured alias identity claiming this roster row, or null. Matches
+ *  strictly by (connectionId, backend target profile); the alias row itself
+ *  keeps resolving its own meta directly. */
+function aliasIdentityFor(bot) {
+  if (!aliasRouteIndex.size) {
+    return null
+  }
+
+  const connectionId = String(
+    bot?.connectionId ||
+      bot?.route?.connectionId ||
+      // Unannotated rich rows (no host.agents on this build) still belong to
+      // the ACTIVE gateway — Cloud-only mode must resolve the alias too.
+      (!bot?.remoteSource && !bot?.sourceScoped ? host.state.connectionId?.get?.() || '' : '')
+  ).trim()
+
+  if (!connectionId) {
+    return null
+  }
+
+  const target = String(bot?.targetProfile || bot?.route?.targetProfile || bot?.name || '').trim() || 'default'
+  const entry = aliasRouteIndex.get(`${connectionId}::${target}`) || null
+
+  return entry && entry.name !== String(bot?.name || '').trim() ? entry : null
+}
+
 // Bot metadata is scoped to the active gateway until the server exposes a
 // union of rich profile rows. Never paint that metadata onto a thin row from
 // another source: two `default` agents must not borrow each other's title,
-// pin, avatar, group, unread state, or canonical-chat pointer.
+// pin, avatar, group, unread state, or canonical-chat pointer. The ONE
+// exception is a configured alias route claiming the row — see
+// aliasRouteIndex above — which is connection-exact, never name-based.
 function botRosterMeta(bot, metaByName) {
   if (bot?.sourceScoped || bot?.remoteSource) {
     const route = botConnectionRoute(bot)
+    const direct = route ? metaByName?.[botRouteKey(route)] : null
 
-    return route ? metaByName?.[botRouteKey(route)] : null
+    if (direct) {
+      return direct
+    }
+
+    const alias = aliasIdentityFor(bot)
+
+    if (alias) {
+      for (const key of alias.metaKeys) {
+        if (metaByName?.[key]) {
+          return metaByName[key]
+        }
+      }
+    }
+
+    return direct
   }
 
-  return metaByName?.[bot?.name]
+  const own = metaByName?.[bot?.name]
+
+  if (own) {
+    return own
+  }
+
+  const alias = aliasIdentityFor(bot)
+
+  if (alias) {
+    for (const key of alias.metaKeys) {
+      if (metaByName?.[key]) {
+        return metaByName[key]
+      }
+    }
+  }
+
+  return own
 }
 
 function showsHandle(name, meta, bot) {
@@ -5023,12 +5150,17 @@ async function ensureBotMetadata(bot) {
 }
 
 function displayName(bot, meta) {
+  // A configured alias route claiming this row overrides source-derived
+  // identity: the friendly alias name must survive hosted-session
+  // activation and Cloud-only rosters (#89131).
+  const alias = aliasIdentityFor(bot)
+
   // Only THIN rows from another source trade the friendly name for their
   // connection label — the active gateway's own default must keep reading
   // "Hermes". Annotated active rows carry sourceScoped too, and keying this
   // off sourceScoped renamed the user's main agent to an IP-derived label
   // (community report, Aug 17 2026).
-  if (bot?.remoteSource && (bot.name || '').trim().toLowerCase() === 'default' && bot.connectionLabel) {
+  if (bot?.remoteSource && (bot.name || '').trim().toLowerCase() === 'default' && bot.connectionLabel && !alias && !meta?.title?.trim()) {
     return bot.connectionLabel
   }
 
@@ -5041,6 +5173,14 @@ function displayName(bot, meta) {
   // Mode title. Rides the profiles.list row; presentation-only.
   if (typeof bot?.display_name === 'string' && bot.display_name.trim()) {
     return bot.display_name.trim()
+  }
+
+  // An untitled backend row claimed by an alias reads as the alias name —
+  // never generic "Hermes" or a hostname-derived label.
+  if (alias) {
+    const raw = alias.name.replace(/[-_]+/g, ' ').trim()
+
+    return raw.replace(/\b\w/g, ch => ch.toUpperCase())
   }
 
   // The primary profile is literally named "default" — as a bot identity

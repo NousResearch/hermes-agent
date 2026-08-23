@@ -157,5 +157,5 @@ test('the canonical-chat adoption scan lists with include_hidden', () => {
   // findExistingCanonicalChat (the registry lookup) — canonical Bot Chats
   // are born hidden, so a visible-only scan would miss the very row that IS
   // the bot's identity.
-  assert.match(source, /include_hidden: true\s*\}\)\s*const rows = res\?\.sessions \?\? \[\]\s*return rows\.find\(row => isCanonicalBotChatHistory\(row\)\)/)
+  assert.match(source, /include_hidden: true\s*\}\)\s*\} catch \(error\) \{[\s\S]{0,400}?const rows = res\?\.sessions \?\? \[\]\s*return rows\.find\(row => isCanonicalBotChatHistory\(row\)\)/)
 })

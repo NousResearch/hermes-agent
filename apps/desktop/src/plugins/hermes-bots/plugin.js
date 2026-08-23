@@ -4096,18 +4096,31 @@ function isCanonicalBotChatHistory(history) {
  *  (window-free; a busy profile can push the forever-chat past any recency
  *  window). include_hidden is required (canonical chats are always hidden). */
 async function findExistingCanonicalChat(name) {
+  // FAIL CLOSED. A failed registry lookup MUST NOT read as "no Bot Chat
+  // exists" — that is the one remaining way to fork a bot's forever chat.
+  // The failure lives exactly in the post-update window: the desktop
+  // restarts every profile backend, the first bot click races the warm-up,
+  // the lookup RPC fails transiently, and a swallowed error here sent
+  // createCanonicalChat() straight to session.create — minting a fresh
+  // "Bot Chat" while the real one (data intact, hidden) still held the
+  // canonical title. Users read that as "my bot lost all context after the
+  // update". Both open paths catch and toast "try again", which is the
+  // correct outcome for a transient lookup failure: retry, never mint.
+  let res
   try {
-    const res = await host.request('session.list', {
+    res = await host.request('session.list', {
       profile: name,
       title: CANONICAL_CHAT_TITLE,
       limit: PROFILE_SESSION_LIST_LIMIT,
       include_hidden: true
     })
-    const rows = res?.sessions ?? []
-    return rows.find(row => isCanonicalBotChatHistory(row)) || null
-  } catch {
-    return null
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
+    throw new Error(`Could not check ${name}'s Bot Chat registry${detail} — not starting a new chat`)
   }
+
+  const rows = res?.sessions ?? []
+  return rows.find(row => isCanonicalBotChatHistory(row)) || null
 }
 
 /** Create the bot's ONE forever chat: a real session titled "Bot Chat",

@@ -175,3 +175,50 @@ test('an ordinary titled session never satisfies the registry lookup', async () 
     'no row titled "Bot Chat" → create; never adopt an ordinary conversation')
   assert.ok(!runtime.opened.some(o => o.id === 'scratch'))
 })
+
+// ── 4. a failed lookup fails CLOSED — never "no chat exists" ────────────────
+//
+// The post-update window: the desktop restarts every profile backend, the
+// first bot click races the warm-up, and the registry lookup RPC fails
+// transiently. Swallowing that error and returning null made the failure
+// indistinguishable from "this bot has no Bot Chat yet", so the create path
+// minted a fresh forever-chat while the real one (data intact, hidden) still
+// held the canonical title — read by users as "my bot lost everything after
+// the update". A lookup failure must surface (the open paths toast
+// "try again"), never resolve to mint.
+
+test('a failed registry lookup rejects instead of minting a replacement chat', async () => {
+  const runtime = loadOpenPath({
+    request: async method => {
+      if (method === 'session.list') {
+        throw new Error('gateway not ready')
+      }
+      if (method === 'session.create') {
+        throw new Error('must not create: a failed lookup is not "no chat exists"')
+      }
+      return {}
+    }
+  })
+
+  await assert.rejects(() => runtime.openBotCanonicalChat('ops'), /Bot Chat registry/)
+  assert.ok(!runtime.requests.some(r => r.method === 'session.create'),
+    'session.create must never fire off a failed lookup')
+  assert.equal(runtime.opened.length, 0)
+})
+
+test('createCanonicalChat also refuses to mint when the adoption lookup fails', async () => {
+  const runtime = loadOpenPath({
+    request: async method => {
+      if (method === 'session.list') {
+        throw new Error('backend warming up')
+      }
+      if (method === 'session.create') {
+        throw new Error('must not create: adoption check failed, ownership is unknown')
+      }
+      return {}
+    }
+  })
+
+  await assert.rejects(() => runtime.createCanonicalChat('ops'), /Bot Chat registry/)
+  assert.ok(!runtime.requests.some(r => r.method === 'session.create'))
+})

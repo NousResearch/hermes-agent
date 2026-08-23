@@ -13,6 +13,8 @@ import secrets
 import socket
 import struct
 import stat
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -487,6 +489,47 @@ class DaemonPermitReceiptAdapter:
                 raise ContractError("PERMIT_DENIED", key)
         return permit_id, normalized
 
+    def canonical_args_digest(self, args: Any) -> str:
+        """Ask the daemon owner to canonically digest an exact tool payload."""
+        command = self._config.get("canonical_digest_command")
+        timeout = self._config.get("timeout_seconds", 5.0)
+        if (
+            not isinstance(command, str)
+            or not os.path.isabs(command)
+            or not isinstance(timeout, (int, float))
+            or timeout <= 0
+        ):
+            raise ContractError("CANONICAL_DIGEST_UNAVAILABLE")
+        input_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="wb", prefix="ares-permit-", suffix=".json", delete=False) as handle:
+                input_path = handle.name
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(canonical_json(args))
+            result = subprocess.run(
+                [command, "canonical-digest", "--json", input_path],
+                capture_output=True,
+                text=True,
+                timeout=float(timeout),
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            raise ContractError("CANONICAL_DIGEST_UNAVAILABLE") from None
+        finally:
+            if input_path is not None:
+                try:
+                    os.unlink(input_path)
+                except OSError:
+                    pass
+        if result.returncode != 0 or not isinstance(result.stdout, str):
+            raise ContractError("CANONICAL_DIGEST_UNAVAILABLE")
+        raw = result.stdout
+        if raw.endswith("\n"):
+            raw = raw[:-1]
+        if len(raw) != 64 or any(character not in "0123456789abcdef" for character in raw):
+            raise ContractError("CANONICAL_DIGEST_MALFORMED")
+        return "sha256:" + raw
+
     @staticmethod
     def _send_frame(stream: socket.socket, value: Mapping[str, Any]) -> None:
         payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("utf-8")
@@ -647,7 +690,8 @@ def dispatcher_boundary(tool_name: str, args: Any, *, mission_ref: str | None, s
     if not consume_permit: return True, None, None
     try:
         target = target_ref or target_for(tool_name, args)
-        permit = adapter.validate_and_consume(mission_ref=mission_ref, tool_name=tool_name, args_digest=digest(args), target_ref=target)
+        args_digest = adapter.canonical_args_digest(args) if isinstance(adapter, DaemonPermitReceiptAdapter) else digest(args)
+        permit = adapter.validate_and_consume(mission_ref=mission_ref, tool_name=tool_name, args_digest=args_digest, target_ref=target)
     except ContractError as exc: return False, exc.code, None
     except Exception: return False, "PERMIT_DENIED", None
     return True, None, permit

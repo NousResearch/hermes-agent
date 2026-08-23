@@ -3,6 +3,7 @@ import os
 import socket
 import struct
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -21,7 +22,9 @@ from ares_runtime.collaboration import (
     evaluation_ui_projection,
     freeze_replay_corpus,
     make_artifact,
+    permit_adapter,
     replay_mutations,
+    reset_permit_adapter,
     EvidenceItemV1,
     FindingV1,
     HandoffPacketV1,
@@ -204,6 +207,80 @@ def _daemon_adapter(path):
         "permit_id": "permit:one",
         "binding": {"tool": "write_file", "args_digest": args_digest},
     }), args_digest
+
+
+def _write_digest_helper(path: Path, output: str, captured: Path | None = None) -> None:
+    capture = "" if captured is None else f"Path({str(captured)!r}).write_text(json.dumps({{'path': sys.argv[3], 'payload': json.loads(Path(sys.argv[3]).read_text())}}))"
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "assert sys.argv[1:3] == ['canonical-digest', '--json']\n"
+        f"{capture}\n"
+        f"print({output!r})\n"
+    )
+    path.chmod(0o700)
+
+
+def test_daemon_permit_digest_command_unavailable_fails_closed(tmp_path):
+    adapter = DaemonPermitReceiptAdapter({"canonical_digest_command": str(tmp_path / "missing-ra-daemon")})
+    with pytest.raises(ContractError, match="CANONICAL_DIGEST_UNAVAILABLE"):
+        adapter.canonical_args_digest({"path": "x"})
+
+
+def test_daemon_permit_digest_command_rejects_malformed_output(tmp_path):
+    helper = tmp_path / "ra-daemon"
+    _write_digest_helper(helper, "not-a-digest")
+    adapter = DaemonPermitReceiptAdapter({"canonical_digest_command": str(helper)})
+    with pytest.raises(ContractError, match="CANONICAL_DIGEST_MALFORMED"):
+        adapter.canonical_args_digest({"path": "x"})
+
+
+def test_daemon_permit_digest_mismatch_rejects_before_daemon_consumption(monkeypatch, tmp_path):
+    monkeypatch.setenv("ARES_RUNTIME_PERMITS_V1", "1")
+    helper = tmp_path / "ra-daemon"
+    _write_digest_helper(helper, "a" * 64)
+    adapter = DaemonPermitReceiptAdapter({
+        "canonical_digest_command": str(helper),
+        "socket_path": str(tmp_path / "unneeded.sock"),
+        "permit_id": "permit:one",
+        "binding": {"tool": "write_file", "args_digest": "sha256:" + "b" * 64},
+    })
+    token = permit_adapter(adapter)
+    try:
+        allowed, code, _permit = dispatcher_boundary("write_file", {"path": "x", "content": "payload"}, mission_ref="mission:1")
+    finally:
+        reset_permit_adapter(token)
+    assert (allowed, code) == (False, "PERMIT_DENIED")
+
+
+def test_daemon_permit_digest_helper_result_maps_to_daemon_binding(monkeypatch, tmp_path):
+    monkeypatch.setenv("ARES_RUNTIME_PERMITS_V1", "1")
+    helper, captured, path = tmp_path / "ra-daemon", tmp_path / "helper-input.json", tmp_path / "daemon.sock"
+    _write_digest_helper(helper, "c" * 64, captured)
+
+    def consumed(request):
+        assert request["request"]["binding"]["args_digest"] == "sha256:" + "c" * 64
+        return {"request_id": request["request_id"], "permit_id": "permit:one", "evidence": {}, "preflight_artifact": {}, "receipt_artifact": {"digest": "receipt"}}
+
+    _serve_one_permit_response(path, consumed)
+    adapter = DaemonPermitReceiptAdapter({
+        "canonical_digest_command": str(helper),
+        "socket_path": str(path),
+        "permit_id": "permit:one",
+        "binding": {"tool": "write_file", "args_digest": "sha256:" + "c" * 64},
+    })
+    token = permit_adapter(adapter)
+    try:
+        allowed, code, permit = dispatcher_boundary("write_file", {"path": "x", "content": "payload"}, mission_ref="mission:1")
+    finally:
+        reset_permit_adapter(token)
+    assert (allowed, code) == (True, None)
+    assert permit is not None and permit["canonical_permit_ref"] == "permit:one"
+    helper_input = json.loads(captured.read_text())
+    assert helper_input["payload"] == {"content": "payload", "path": "x"}
+    assert not Path(helper_input["path"]).exists()
 
 
 def test_daemon_permit_bridge_unavailable_denies_runtime_permit_mode(monkeypatch, tmp_path):

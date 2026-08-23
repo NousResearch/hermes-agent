@@ -352,13 +352,16 @@ describe('useRouteResume', () => {
     const creatingSessionRef = { current: false }
     const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
     const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
+
     const ownerRoute: SessionProfileRoute = {
       connectionId: 'source-a',
       mode: 'remote',
       profile: 'worker',
       targetProfile: 'backend-worker'
     }
+
     const request = { ownerRoute, sequence: 1, sessionId: 'session-1' }
+
     const props = {
       activeSessionId: 'runtime-1',
       activeSessionIdRef,

@@ -16,14 +16,13 @@ import {
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { requestGatewayForAgent } from '@/store/gateway'
 import {
   $activeGatewayProfile,
   $newChatProfile,
   $newChatRoute,
   ensureGatewayProfile
 } from '@/store/profile'
-import { requestGatewayForAgent } from '@/store/gateway'
-import type { SessionProfileRoute } from '@/store/session-request-router'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
@@ -54,6 +53,7 @@ import {
   setSessions,
   setTurnStartedAt
 } from '@/store/session'
+import type { SessionProfileRoute } from '@/store/session-request-router'
 import { $sessionTiles } from '@/store/session-states'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
@@ -600,6 +600,7 @@ describe('createBackendSessionForSend profile routing', () => {
       profile: 'default',
       targetProfile: 'backend-default'
     }
+
     const ambientRequest = vi.fn(async () => ({}) as never)
     vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({
       session_id: RUNTIME_SESSION_ID,
@@ -1812,12 +1813,15 @@ describe('resumeSession warm-cache mapping integrity', () => {
       profile: 'default',
       targetProfile: 'backend-default'
     }
+
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-warm', 'runtime-warm']])
     }
+
     const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
       current: new Map([['runtime-warm', clientState('stored-warm')]])
     }
+
     // Same-name rows without a source tag are not authoritative for an
     // explicit owner. Metadata must be re-read from the captured connection.
     setSessions([storedSession({ id: 'stored-warm', profile: 'default' })])
@@ -1845,11 +1849,13 @@ describe('resumeSession warm-cache mapping integrity', () => {
     })
 
     const ambientRequest = vi.fn(async () => ({}) as never)
+
     let resume: null | ((
       storedSessionId: string,
       replaceRoute?: boolean,
       ownerRoute?: SessionProfileRoute
     ) => Promise<unknown>) = null
+
     render(
       <ResumeHarness
         onReady={ready => (resume = ready)}

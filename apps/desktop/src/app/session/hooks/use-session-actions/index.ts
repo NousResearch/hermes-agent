@@ -46,6 +46,7 @@ import {
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
+  getSessionOwnerHint,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
   sessionPinId,
@@ -67,7 +68,6 @@ import {
   setSelectedStoredSessionId,
   setSessions,
   setSessionStartedAt,
-  getSessionOwnerHint,
   setTurnStartedAt,
   setWorkspaceCwdOwner,
   setYoloActive
@@ -473,6 +473,7 @@ export function useSessionActions({
 
         const capturedRoute = $newChatRoute.get()
         const params = await desktopSessionCreateParams(cwd, capturedRoute)
+
         const created = capturedRoute
           ? await requestGatewayForAgent<SessionCreateResponse>(
               capturedRoute.connectionId,
@@ -481,6 +482,7 @@ export function useSessionActions({
               params
             )
           : await requestGateway<SessionCreateResponse>('session.create', params)
+
         const stored = created.stored_session_id ?? null
 
         // Only a genuine move to a DIFFERENT chat mid-create should orphan the
@@ -597,6 +599,7 @@ export function useSessionActions({
         // (project scope → configured default).
         const capturedRoute = $newChatRoute.get()
         const params = await desktopSessionCreateParams((options?.cwd || resolveNewSessionCwd()).trim(), capturedRoute)
+
         const created = capturedRoute
           ? await requestGatewayForAgent<SessionCreateResponse>(
               capturedRoute.connectionId,
@@ -605,6 +608,7 @@ export function useSessionActions({
               params
             )
           : await requestGateway<SessionCreateResponse>('session.create', params)
+
         const stored = created.stored_session_id
 
         if (!stored) {
@@ -1785,12 +1789,14 @@ export function useSessionActions({
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
+
       const removedOwner: SessionOwnerScope = removed?.connection_id
         ? {
             connectionId: removed.connection_id,
             profile: removed.profile || 'default'
           }
         : removed?.profile
+
       const previousArchived = $archivedSessions.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.

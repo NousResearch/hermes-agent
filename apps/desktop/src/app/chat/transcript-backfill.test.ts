@@ -74,6 +74,7 @@ describe('transcript tail bookkeeping', () => {
       messages: [row(1, 'tail')],
       pagination: { limit: 120, offset: 0, order: 'latest' as const, returned: 1 }
     }
+
     const sourceA = { connectionId: 'source-a', profile: 'backend' }
     const sourceB = { connectionId: 'source-b', profile: 'backend' }
 
@@ -91,6 +92,7 @@ describe('transcript tail bookkeeping', () => {
       messages: [row(1, 'tail')],
       pagination: { limit: 120, offset: 0, order: 'latest' as const, returned: 1 }
     }
+
     const scope = { connectionId: 'source-a', profile: 'backend' }
 
     for (let index = 0; index < 257; index += 1) {
@@ -202,10 +204,12 @@ describe('backfillOlderTranscriptPage', () => {
   it('backfills the matching connection when two owners share one session id', async () => {
     const sourceA = { connectionId: 'source-a', profile: 'backend-a' }
     const sourceB = { connectionId: 'source-b', profile: 'backend-b' }
+
     const page = {
       messages: Array.from({ length: 120 }, (_, index) => row(index, `tail${index}`)),
       pagination: { limit: 120, offset: 0, order: 'latest' as const, returned: 120 }
     }
+
     recordTranscriptTail('same-session', page, sourceA)
     recordTranscriptTail('same-session', page, sourceB)
     vi.mocked(getOlderSessionMessages).mockResolvedValue({

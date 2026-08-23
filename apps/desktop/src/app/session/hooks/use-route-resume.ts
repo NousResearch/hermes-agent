@@ -178,8 +178,10 @@ export function useRouteResume({
         }
 
         bootResumeRef.current = false
+
         const ownerRoute =
           sessionResumeRequest?.sessionId === routedSessionId ? sessionResumeRequest.ownerRoute : undefined
+
         if (ownerRoute) {
           void resumeSession(routedSessionId, true, ownerRoute)
         } else {

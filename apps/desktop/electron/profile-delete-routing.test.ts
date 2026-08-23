@@ -156,6 +156,7 @@ test('resolveRouteProfile preserves a primary-backend route from another routing
 test('explicit registered local DELETE holds one gate through teardown and dispatch', async () => {
   const events: string[] = []
   const gate = new ProfileDeletionGate()
+
   const result = await dispatchConnectionScopedProfileDelete(
     { connectionId: 'local', method: 'DELETE', path: '/api/profiles/worker', profile: 'worker' },
     {
@@ -163,6 +164,7 @@ test('explicit registered local DELETE holds one gate through teardown and dispa
       acquire: profile => {
         events.push(`gate:${profile}`)
         const release = gate.acquire(profile)
+
         return () => {
           events.push(`release:${profile}`)
           release()
@@ -172,6 +174,7 @@ test('explicit registered local DELETE holds one gate through teardown and dispa
       dispatch: async routeProfile => {
         assert.equal(gate.blocks('worker'), true)
         events.push(`dispatch:${routeProfile ?? 'primary'}`)
+
         return 'deleted'
       },
       prepareLocal: async request => {
@@ -193,17 +196,20 @@ test('explicit registered local DELETE holds one gate through teardown and dispa
 
 test('explicit registered SSH DELETE tears down its source backend before dispatch', async () => {
   const events: string[] = []
+
   const result = await dispatchConnectionScopedProfileDelete(
     { connectionId: 'build-host', method: 'DELETE', path: '/api/profiles/worker', profile: 'worker' },
     {
       ...deps,
       acquire: profile => {
         events.push(`gate:${profile}`)
+
         return () => events.push(`release:${profile}`)
       },
       connectionKind: () => 'ssh',
       dispatch: async routeProfile => {
         events.push(`dispatch:${routeProfile ?? 'primary'}`)
+
         return 'deleted'
       },
       prepareLocal: async () => assert.fail('SSH deletion must not use local profile teardown'),
@@ -224,6 +230,7 @@ test('explicit registered SSH DELETE tears down its source backend before dispat
 
 test('non-identity connection DELETE tears down the logical pool and deletes the backend target', async () => {
   const events: string[] = []
+
   const request = {
     connectionId: 'source-a',
     method: 'DELETE',
@@ -235,11 +242,13 @@ test('non-identity connection DELETE tears down the logical pool and deletes the
     ...deps,
     acquire: profile => {
       events.push(`gate:${profile}`)
+
       return () => events.push(`release:${profile}`)
     },
     connectionKind: () => 'ssh',
     dispatch: async routeProfile => {
       events.push(`delete:${request.path}:${routeProfile ?? 'primary'}`)
+
       return 'deleted'
     },
     prepareLocal: async () => assert.fail('remote deletion must not use local profile teardown'),
@@ -266,11 +275,13 @@ test('connection-scoped default DELETE rejects before gate, preparation, teardow
       {
         acquire: profile => {
           events.push(`gate:${profile}`)
+
           return () => events.push(`release:${profile}`)
         },
         connectionKind: () => 'ssh',
         dispatch: async () => {
           events.push('dispatch')
+
           return 'deleted'
         },
         isDefaultProfile: profile => profile === 'default',
@@ -298,11 +309,13 @@ test('connection-scoped invalid-name DELETE rejects before gate, preparation, te
       {
         acquire: profile => {
           events.push(`gate:${profile}`)
+
           return () => events.push(`release:${profile}`)
         },
         connectionKind: () => 'local',
         dispatch: async () => {
           events.push('dispatch')
+
           return 'deleted'
         },
         isDefaultProfile: profile => profile === 'default',

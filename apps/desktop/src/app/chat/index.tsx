@@ -33,8 +33,8 @@ import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
 import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import {
-  $contextSuggestions,
   $connection,
+  $contextSuggestions,
   $freshDraftReady,
   $gatewayState,
   $introPersonality,
@@ -272,12 +272,15 @@ function ChatRuntimeBoundary({
   // appears/retires as tail hydrations and backfill pages record their state.
   const transcriptTailStates = useStore($transcriptTailBySessionId)
   const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
+
   const ownerRoute = storedId
     ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
     : undefined
+
   const tailProfile = ownerRoute
     ? { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile || ownerRoute.profile }
     : undefined
+
   const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
   const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
 

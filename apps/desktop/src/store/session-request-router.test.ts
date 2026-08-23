@@ -149,15 +149,19 @@ describe('requestForSessionProfile', () => {
     setPrimaryGateway(primary as never, 'default')
     installDesktop()
     await ensureGatewayForProfile('other')
+
     const desktop = (window as unknown as {
       hermesDesktop: { getConnectionFor: ReturnType<typeof vi.fn> }
     }).hermesDesktop
+
     const ambient = vi.fn(async () => ({ ambient: true }))
+
     const routeA = {
       connectionId: 'source-a',
       profile: 'default',
       targetProfile: 'backend-a'
     }
+
     const routeB = {
       connectionId: 'source-b',
       profile: 'default',
@@ -168,9 +172,11 @@ describe('requestForSessionProfile', () => {
       profile: 'default',
       session_id: 'stored-a'
     })
+
     routeA.connectionId = 'source-b'
     routeA.targetProfile = 'mutated-after-dispatch'
     await ensureGatewayForProfile('default')
+
     const fromB = requestForSessionProfile(routeB, ambient as never, 'session.resume', {
       profile: 'default',
       session_id: 'stored-b'

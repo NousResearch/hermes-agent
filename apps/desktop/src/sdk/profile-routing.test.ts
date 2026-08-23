@@ -274,6 +274,7 @@ describe('connection-aware plugin host APIs', () => {
       profile: 'worker',
       targetProfile: 'backend-worker'
     }
+
     vi.mocked(deleteProfile).mockResolvedValueOnce({ ok: true, path: '/profiles/backend-worker' })
 
     await host.deleteProfile(route)
@@ -319,6 +320,7 @@ describe('connection-aware plugin host APIs', () => {
       profile: 'worker',
       targetProfile: 'backend-worker'
     }
+
     vi.mocked(deleteProfile).mockResolvedValueOnce({ ok: true, path: '/profiles/backend-worker' })
 
     await host.deleteProfile(route)

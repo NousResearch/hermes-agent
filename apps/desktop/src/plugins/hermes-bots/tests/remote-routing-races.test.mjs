@@ -16,7 +16,7 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-function load({ requestProfile, agents, profileRoutes, storage } = {}) {
+function load({ requestProfile, agents, profileRoutes } = {}) {
   const values = new Map()
   const atom = initial => {
     const slot = {

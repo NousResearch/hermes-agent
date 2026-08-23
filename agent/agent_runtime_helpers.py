@@ -2322,46 +2322,68 @@ def anthropic_prompt_cache_policy(
     )
     _custom_providers = getattr(agent, "_custom_providers", None)
     _route_may_be_custom = False
-    if _custom_providers:
+    if not _supports_anthropic_cache_markers:
+        # Responses/Bedrock never consume the declaration — skip the
+        # identity probe entirely for those transports.
+        pass
+    elif _custom_providers:
         # The normalized list is already attached after agent initialization.
         # Use cheap runtime identity signals before calling the capability
         # helper so an unrelated configured provider does not put every
         # built-in chat-completions request on the route-normalization path.
+        #
+        # Identity must match the authoritative helper's semantics:
+        # get_custom_provider_model_capability compares base URLs via
+        # normalize_route_base_url, and runtime provider ids go through
+        # custom_provider_aliases (space→hyphen, custom: prefix variants).
+        # A raw-string gate here would silently drop declarations whose
+        # config spelling differs only in host case / trailing slash.
+        from hermes_cli.providers import custom_provider_aliases
+        from hermes_cli.route_identity import normalize_route_base_url
+
         _provider_ids = {provider_lower}
         if provider_lower.startswith("custom:"):
             _provider_ids.add(provider_lower.removeprefix("custom:"))
-        from hermes_cli.route_identity import normalize_route_base_url
-
-        _runtime_route_url = normalize_route_base_url(eff_base_url)
+        _eff_url_normalized = normalize_route_base_url(eff_base_url)
         for _entry in _custom_providers:
             if not isinstance(_entry, dict):
                 continue
-            _entry_ids = {
-                str(_entry.get("name") or "").strip().lower(),
-                str(_entry.get("provider_key") or "").strip().lower(),
-            }
-            if _provider_ids & (_entry_ids - {""}) or (
-                _runtime_route_url
+            _entry_ids = custom_provider_aliases(
+                str(_entry.get("name") or ""),
+                str(_entry.get("provider_key") or ""),
+            )
+            if _provider_ids & _entry_ids or (
+                _eff_url_normalized
                 and normalize_route_base_url(_entry.get("base_url"))
-                == _runtime_route_url
+                == _eff_url_normalized
             ):
                 _route_may_be_custom = True
                 break
     elif _custom_providers is None:
-        # During early agent initialization the normalized custom-provider list
-        # is not attached yet. Avoid rebuilding it for ordinary built-in routes,
+        # None = the list is not attached yet (early agent initialization or
+        # a blank_cache_policy_stub destination); an attached empty list means
+        # the agent initialized with no custom providers and correctly never
+        # matches. Avoid rebuilding the list for ordinary built-in routes,
         # while still recognizing arbitrary config keys and built-in-name
         # overrides that point at a different endpoint.
         try:
             from hermes_cli.providers import get_provider
 
-            _provider_def = get_provider(eff_provider)
+            # allow_network=False: this runs per request destination; a cold
+            # models.dev cache must not trigger a foreground registry fetch
+            # from the send path. A catalog miss (None) degrades to the
+            # conservative side (route may be custom → capability lookup).
+            _provider_def = get_provider(eff_provider, allow_network=False)
             _route_may_be_custom = _provider_def is None or (
                 bool(_provider_def.base_url)
                 and base_url_hostname(_provider_def.base_url)
                 != base_url_hostname(eff_base_url)
             )
-        except Exception:
+        except Exception as _pd_exc:
+            logger.debug(
+                "provider lookup failed during cache-policy pre-gate: %s",
+                _pd_exc,
+            )
             _route_may_be_custom = provider_lower.startswith("custom:")
 
     if _supports_anthropic_cache_markers and (

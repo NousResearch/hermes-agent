@@ -28,6 +28,11 @@ def _make_agent(
     agent.api_mode = api_mode
     agent.model = model
     agent._base_url_lower = (base_url or "").lower()
+    # Post-init reality for agents without custom providers: an attached
+    # empty list. Keeps built-in-route tests hermetic — the policy's
+    # None-branch would otherwise consult the models.dev catalog and, on a
+    # miss, fall back to reading the developer's real config.yaml.
+    agent._custom_providers = []
     agent.client = MagicMock()
     agent.quiet_mode = True
     return agent
@@ -288,6 +293,7 @@ class TestThirdPartyAnthropicGateway:
         )
         # No agent._custom_providers — exercises the config fallback the
         # init-time call (agent_init before the snapshot assignment) hits.
+        del agent._custom_providers
         assert agent._anthropic_prompt_cache_policy() == (True, True)
 
         agent.model = "opus"
@@ -363,6 +369,69 @@ class TestCustomProviderOpenAIWireCapability:
 
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
+    def test_gate_matches_declaration_despite_url_spelling_drift(self):
+        """The pre-gate must use the same URL identity semantics as the
+        authoritative capability matcher (normalize_route_base_url): a
+        declaration whose config spelling differs only by host case or
+        trailing slash must still be honored, even when the provider name
+        gives the gate no help."""
+        agent = self._configured_agent(enabled=True)
+        agent.provider = "some-unrelated-alias"
+        agent.base_url = "https://Models.Example.NET/v1/"
+        agent._base_url_lower = agent.base_url.lower()
+
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_gate_matches_declaration_via_spaced_legacy_name(self):
+        """Legacy entries with spaced display names ('My Gateway') must match
+        the runtime 'custom:my-gateway' identity (custom_provider_aliases
+        semantics). Combined with URL spelling drift, the raw pre-gate
+        dropped this declaration on both legs."""
+        agent = _make_agent(
+            provider="custom:my-gateway",
+            base_url="https://GW.example.net/v1/",
+            api_mode="chat_completions",
+            model="alias-model",
+        )
+        agent._custom_providers = [
+            {
+                "name": "My Gateway",
+                "base_url": "https://gw.example.net/v1",
+                "models": {"alias-model": {"prompt_caching": True}},
+            }
+        ]
+
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_early_init_probe_never_fetches_catalog_from_network(
+        self, monkeypatch
+    ):
+        """The None-branch provider probe runs per request destination and
+        must stay off the network: get_provider must be called with
+        allow_network=False so a cold models.dev cache cannot trigger a
+        foreground registry download from the send path."""
+        import hermes_cli.providers as _providers
+
+        seen: list = []
+        real_get_provider = _providers.get_provider
+
+        def recording_get_provider(name, **kwargs):
+            seen.append(kwargs.get("allow_network"))
+            return real_get_provider(name, **kwargs)
+
+        monkeypatch.setattr(_providers, "get_provider", recording_get_provider)
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-sonnet-4.6",
+        )
+        del agent._custom_providers  # early-init shape: attr not attached yet
+
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+        assert seen, "None-branch did not consult the provider catalog"
+        assert all(v is False for v in seen)
+
     def test_modern_providers_yaml_is_honored_during_early_init(
         self, tmp_path, monkeypatch
     ):
@@ -390,6 +459,9 @@ class TestCustomProviderOpenAIWireCapability:
             api_mode="chat_completions",
             model="vendor-agnostic-model",
         )
+        # Early init: the normalized custom-provider list is not attached
+        # yet, so the policy must recognize the route from config itself.
+        del agent._custom_providers
 
         assert agent._anthropic_prompt_cache_policy() == (True, False)
 

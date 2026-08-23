@@ -920,6 +920,7 @@ def _case_outcome(case: Mapping[str, Any], baseline_id: str) -> dict[str, Any]:
         "verified_closure": verified_closure, "false_closure": false_closure,
         "authority_violation": authority_violation,
         "critical_authority_violation": critical_authority_violation,
+        "injected_mutation": mutation is not None,
         "quarantined": quarantined, "closure_state": closure_state,
         "unsatisfied_gate_ids": sorted(name for name, passed in gates.items() if not passed),
         "divergence_flags": sorted(set(divergence_flags)),
@@ -944,10 +945,16 @@ def replay_mutations(cases: Sequence[Mapping[str, Any]] | FrozenReplayCorpusV1) 
     mutations = sorted({item["mutation"] for item in b3_cases if item["mutation"]})
     critical_mutations = [item for item in b3_cases if item["mutation"] in _REQUIRED_MUTATIONS]
     critical_authority = any(
-        case["critical_authority_violation"]
+        case["critical_authority_violation"] and not case["injected_mutation"]
         for result in baseline_data.values() for case in result["cases"]
     )
-    quarantined = critical_authority or any(result["quarantined"] for result in baseline_data.values())
+    # Injected mutations are expected hostile fixtures. Their per-case state is
+    # quarantined, but successful containment must not masquerade as a real
+    # candidate authority violation.
+    quarantined = critical_authority or any(
+        case["quarantined"] and not case["injected_mutation"]
+        for result in baseline_data.values() for case in result["cases"]
+    )
     return {
         "corpus_version": corpus.corpus_version,
         "corpus_digest": corpus.corpus_digest,

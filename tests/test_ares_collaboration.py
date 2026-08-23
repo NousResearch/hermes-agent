@@ -347,6 +347,18 @@ def test_phase_five_frozen_corpus_is_order_independent_and_covers_all_baselines(
         assert {"verified_closure", "false_closure", "authority_violation"} <= set(baseline["cases"][0])
 
 
+def test_phase_five_injected_authority_mutation_quarantines_case_not_candidate():
+    result = replay_mutations([
+        {"case_id": "case:valid", "gates": {"test": True}},
+        {"case_id": "case:injected-authority", "gates": {"test": True}, "mutation": "critical_authority_violation"},
+    ])
+    injected = next(case for case in result["cases"] if case["case_id"] == "case:injected-authority")
+    assert injected["quarantined"] is True
+    assert injected["injected_mutation"] is True
+    assert result["quarantined"] is False
+    assert result["promotion_state"] == "NOT_PROMOTED"
+
+
 def test_phase_five_critical_authority_violation_is_quarantined_and_ui_is_derived():
     result = replay_mutations([
         {"case_id": "case:authority", "gates": {"test": True}, "authority_violation": True, "critical_authority_violation": True},

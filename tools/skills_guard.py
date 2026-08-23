@@ -20,6 +20,20 @@ Usage:
     allowed, reason = should_allow_install(result)
     if not allowed:
         print(format_scan_report(result))
+
+Known limitation — programmatic writes (out of scope for this static pass):
+the agent-config persistence tiers score shell write mechanics
+(">>" redirection, "sed -i") and imperative modification prose only.
+Language write APIs in bundled scripts — Python open(..., 'w'/'a'),
+pathlib.Path.write_text(), os.replace(), shutil.copy*, and Node
+fs.writeFileSync()/appendFile() — aimed at agent-config files surface
+only the low-severity *_ref finding, never a scored persistence tier.
+Static regexes cannot reliably tie such a call to the config-file
+destination (paths may be built dynamically) without executing the
+skill, so language-API persistence is left to runtime gates (install
+confirmation, sandboxing). If coverage is added later, it belongs as a
+fourth "mechanical" tier next to agent_config_mod_shell, requiring the
+config-file name as a literal argument at the call site.
 """
 
 import re

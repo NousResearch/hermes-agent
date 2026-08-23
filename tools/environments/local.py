@@ -523,6 +523,14 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     # against the repo layout before trusting it.
     _strip_hermes_owned_pythonpath_and_runtime_markers(sanitized)
 
+    # Keep bare ``hermes`` invocations available to child jobs even when the
+    # gateway was launched by a service manager or cron without the console
+    # script's directory on PATH.  The terminal environment already applies
+    # this invariant; Cron scripts use this sanitizer directly (#92998).
+    path_key = _path_env_key(sanitized)
+    if path_key is not None:
+        sanitized[path_key] = _prepend_hermes_bin_dir(sanitized.get(path_key, ""))
+
     _apply_windows_msys_bash_env_defaults(sanitized)
 
     sanitized = _scrub_delegated_child_kanban_env(sanitized)

@@ -40,12 +40,22 @@ test('a superseded turn is discarded — epoch moved on while the turn ran', () 
   const { shouldCommitMemberTurn } = loadHelpers()
   assert.equal(shouldCommitMemberTurn(3, 4), false)
   assert.equal(shouldCommitMemberTurn(3, 7), false)
+  // explicit same-thread supersession
+  assert.equal(shouldCommitMemberTurn(3, 4, true), false)
 })
 
 test('a current turn commits — epoch unchanged since dispatch', () => {
   const { shouldCommitMemberTurn } = loadHelpers()
   assert.equal(shouldCommitMemberTurn(3, 3), true)
   assert.equal(shouldCommitMemberTurn(0, 0), true)
+})
+
+test('a cross-thread epoch bump does NOT discard finished work (no fresh loop re-drives it)', () => {
+  const { shouldCommitMemberTurn } = loadHelpers()
+  // Epoch moved, but no newer user entry landed in THIS thread: the
+  // superseding send lives in another thread whose loop filters this one
+  // out — dropping the reply would lose completed work forever.
+  assert.equal(shouldCommitMemberTurn(3, 4, false), true)
 })
 
 test('adjacent identical member reply is a duplicate append', () => {

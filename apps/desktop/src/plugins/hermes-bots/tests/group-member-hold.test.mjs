@@ -85,6 +85,20 @@ test('@all resume releases every hold', () => {
   assert.deepEqual(JSON.parse(JSON.stringify(next)), {})
 })
 
+test('@all stop holds every member — symmetric with @all resume', () => {
+  const { applyGroupHoldDirective } = loadHelpers()
+  const next = applyGroupHoldDirective(
+    {},
+    { mentioned: [], everyone: true },
+    '@all stop',
+    { at: 5 },
+    ['impl', 'docs']
+  )
+  assert.ok(next.impl)
+  assert.ok(next.docs)
+  assert.equal(next.impl.at, 5)
+})
+
 test('an unrelated room message leaves holds untouched (same object back)', () => {
   const { applyGroupHoldDirective } = loadHelpers()
   const held = { impl: { at: 1 } }

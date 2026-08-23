@@ -7065,9 +7065,19 @@ async function harvestStrandedGroupReply(group, member) {
  *  and advance its watermark). A turn dispatched under an older epoch was
  *  superseded mid-flight by a newer user send — its late result must be
  *  dropped, because the new send's own loop re-drives this member with the
- *  full delta and committing both is exactly the double-delivery bug. */
-function shouldCommitMemberTurn(epochAtDispatch, currentEpoch) {
-  return epochAtDispatch === currentEpoch
+ *  full delta and committing both is exactly the double-delivery bug.
+ *
+ *  The re-drive premise is only true for a send in the SAME thread (delta
+ *  filters are thread-scoped): a cross-thread epoch bump must NOT discard
+ *  finished work no fresh loop will regenerate. Callers pass whether a newer
+ *  USER entry landed in this thread since dispatch; the default (true)
+ *  preserves the conservative drop when the caller can't tell. */
+function shouldCommitMemberTurn(epochAtDispatch, currentEpoch, newerUserEntryInThread = true) {
+  if (epochAtDispatch === currentEpoch) {
+    return true
+  }
+
+  return !newerUserEntryInThread
 }
 
 /** #93127 insurance: byte-identical member echo detection. TRUE only when
@@ -7122,14 +7132,15 @@ function classifyGroupHoldDirective(text, mentionedKeys, everyone) {
   const resume = /\b(resume|continue|go|proceed)\b/i.test(value)
 
   if (stop) {
-    return { hold: mentioned, release: [], releaseAll: false }
+    // "@all stop" holds every member — symmetric with "@all resume".
+    return { hold: mentioned, holdAll: Boolean(everyone), release: [], releaseAll: false }
   }
 
   if (resume) {
-    return { hold: [], release: mentioned, releaseAll: Boolean(everyone) }
+    return { hold: [], holdAll: false, release: mentioned, releaseAll: Boolean(everyone) }
   }
 
-  return { hold: [], release: mentioned, releaseAll: false }
+  return { hold: [], holdAll: false, release: mentioned, releaseAll: false }
 }
 
 /** #93129: next holds map after one user message. Holds are keyed by
@@ -7137,7 +7148,7 @@ function classifyGroupHoldDirective(text, mentionedKeys, everyone) {
  *  mints a NEW thread, so a thread-scoped hold would never block the next
  *  send's turns and the stop would not stick. Returns the same object when
  *  nothing changed. */
-function applyGroupHoldDirective(holds, mentions, text, stamp) {
+function applyGroupHoldDirective(holds, mentions, text, stamp, allMemberKeys = []) {
   const prior = holds && typeof holds === 'object' ? holds : {}
   const action = classifyGroupHoldDirective(text, mentions?.mentioned || [], Boolean(mentions?.everyone))
 
@@ -7145,9 +7156,12 @@ function applyGroupHoldDirective(holds, mentions, text, stamp) {
     return Object.keys(prior).length ? {} : prior
   }
 
+  // "@all stop": expand to every member key the caller knows about.
+  const toHold = action.holdAll ? [...allMemberKeys] : action.hold
+
   let next = prior
 
-  for (const key of action.hold) {
+  for (const key of toHold) {
     if (next === prior) {
       next = { ...prior }
     }
@@ -7311,10 +7325,17 @@ async function runGroupChatRounds(group, members, thread) {
         // the room epoch. That newer send's loop re-drives this member with
         // the full delta, so committing this stale result (watermark advance
         // + append) would double-deliver the same reply. Drop it here —
-        // BEFORE the watermark advance and BEFORE the append.
-        const epochNow = ($groupChats.get()[group] || {}).epoch || 0
+        // BEFORE the watermark advance and BEFORE the append. Only a newer
+        // USER entry in THIS thread makes the re-drive premise true: a
+        // cross-thread send bumps the epoch too, but its loop filters this
+        // thread out and would never regenerate the finished reply.
+        const roomNow = $groupChats.get()[group] || { log: [] }
+        const epochNow = roomNow.epoch || 0
+        const newerUserEntryInThread = (roomNow.log || [])
+          .slice(room.log.length)
+          .some(e => e.from?.kind === 'user' && groupThreadOf(e) === thread)
 
-        if (!shouldCommitMemberTurn(startEpoch, epochNow)) {
+        if (!shouldCommitMemberTurn(startEpoch, epochNow, newerUserEntryInThread)) {
           recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })
           return
         }
@@ -7444,7 +7465,8 @@ function sendToGroupChat(group, members, text, thread, images) {
       room.holds,
       parseGroupChatMentions(trimmed, members),
       trimmed,
-      { at: sent?.at, byMessageId: sent?.id, thread: target }
+      { at: sent?.at, byMessageId: sent?.id, thread: target },
+      members.map(member => groupMemberKey(member))
     )
     return room
   })

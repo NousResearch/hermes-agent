@@ -17038,6 +17038,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from hermes_cli.plugins import discover_plugins
 
             discover_plugins()
+
+            # Register this profile's own declarative shell hooks and
+            # outbound webhooks. The startup-time registration in
+            # start() only ever sees the root/default profile's config
+            # (it runs before any profile scope exists), so without this
+            # a secondary profile's `hooks:` block is silently inert —
+            # its turns run under this profile's own plugin manager
+            # (hermes_cli.plugins.get_plugin_manager keys by resolved
+            # home), which never received the callbacks.
+            try:
+                from hermes_cli.config import load_config as _load_profile_config
+                from agent.shell_hooks import (
+                    register_from_config as _register_shell_hooks,
+                )
+                from agent.outbound_webhooks import (
+                    register_from_config as _register_outbound_webhooks,
+                )
+
+                _profile_hooks_cfg = _load_profile_config()
+                _register_shell_hooks(_profile_hooks_cfg, accept_hooks=False)
+                _register_outbound_webhooks(_profile_hooks_cfg)
+            except Exception:
+                logger.warning(
+                    "shell-hook/webhook registration failed for profile '%s'",
+                    profile_name,
+                    exc_info=True,
+                )
+
             profile_cfg = load_gateway_config()
             violation = _own_policy_open_startup_violation(profile_cfg)
         self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)

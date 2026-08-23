@@ -182,13 +182,17 @@ _BLOCKING_EVENTS = frozenset({"pre_tool_call"})
 _STDERR_MESSAGE_LIMIT = 400
 
 
-# (event, matcher, command) triples that have been wired to the plugin
+# (home, event, matcher, command) tuples that have been wired to the plugin
 # manager in the current process.  Matcher is part of the key because
 # the same script can legitimately register for different matchers under
-# the same event (e.g. one entry per tool the user wants to gate).
-# Second registration attempts for the exact same triple become no-ops
+# the same event (e.g. one entry per tool the user wants to gate). Home is
+# part of the key so a multiplexed gateway's secondary profiles — each with
+# their own plugin manager (see hermes_cli.plugins.get_plugin_manager) — can
+# register identical hook triples without the first profile's registration
+# silently shadowing the rest.
+# Second registration attempts for the exact same tuple become no-ops
 # so the CLI and gateway can both call register_from_config() safely.
-_registered: Set[Tuple[str, Optional[str], str]] = set()
+_registered: Set[Tuple[str, str, Optional[str], str]] = set()
 _registered_lock = threading.Lock()
 
 # Intra-process lock for allowlist read-modify-write on platforms that
@@ -289,13 +293,14 @@ def register_from_config(
     from hermes_cli.plugins import get_plugin_manager
 
     manager = get_plugin_manager()
+    home_key = str(get_hermes_home().expanduser().resolve())
 
     # Idempotence + allowlist read happen under the lock; the TTY
     # prompt runs outside so other threads aren't parked on a blocking
     # input().  Mutation re-takes the lock with a defensive idempotence
     # re-check in case two callers ever race through the prompt.
     for spec in specs:
-        key = (spec.event, spec.matcher, spec.command)
+        key = (home_key, spec.event, spec.matcher, spec.command)
         with _registered_lock:
             if key in _registered:
                 continue

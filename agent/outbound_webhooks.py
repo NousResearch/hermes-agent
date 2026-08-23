@@ -98,8 +98,12 @@ _TOOL_SCOPED_EVENTS = {"pre_tool_call", "post_tool_call"}
 # kwargs promoted to top-level payload keys (mirrors shell hooks wire).
 _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
 
-# (event, url) pairs already wired to the plugin manager in this process.
-_registered: Set[Tuple[str, str]] = set()
+# (home, event, url) triples already wired to the plugin manager in this
+# process. Home is part of the key so a multiplexed gateway's secondary
+# profiles — each with their own plugin manager (see
+# hermes_cli.plugins.get_plugin_manager) — can register identical webhook
+# targets without the first profile's registration shadowing the rest.
+_registered: Set[Tuple[str, str, str]] = set()
 _registered_lock = threading.Lock()
 
 _delivery_queue: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(
@@ -180,15 +184,17 @@ def register_from_config(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
         return []
 
     from hermes_cli.plugins import get_plugin_manager
+    from hermes_constants import get_hermes_home
 
     manager = get_plugin_manager()
+    home_key = str(get_hermes_home().expanduser().resolve())
 
     registered: List[WebhookTarget] = []
     with _registered_lock:
         for target in targets:
             wired_any = False
             for event in target.events:
-                key = (event, target.url)
+                key = (home_key, event, target.url)
                 if key in _registered:
                     continue
                 manager._hooks.setdefault(event, []).append(

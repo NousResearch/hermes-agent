@@ -1012,6 +1012,53 @@ class TestSecondaryProfileConfigHandling:
         assert runner._profile_adapters["later"][photon] is later
 
 
+class TestSecondaryProfileHookRegistration:
+    """A secondary profile's own `hooks:` block must register on ITS
+    plugin manager, not just the root/default profile's (#92672).
+
+    Startup only calls agent.shell_hooks/outbound_webhooks
+    register_from_config() once, against the root config, before any
+    profile scope exists. Without a matching call inside
+    _start_one_profile_adapters, a secondary profile's config.yaml
+    `hooks:` block (shell hooks and outbound webhooks) never registers.
+    """
+
+    @pytest.mark.asyncio
+    async def test_registers_shell_hooks_and_webhooks_for_secondary_profile(
+        self, monkeypatch
+    ):
+        runner = _secondary_recovery_runner()
+        config = GatewayConfig(multiplex_profiles=True, platforms={})
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+
+        profile_cfg = {
+            "hooks": {
+                "pre_tool_call": [
+                    {"matcher": "write_file", "command": "~/.hermes/deny.sh"}
+                ],
+                "outbound": [
+                    {"url": "http://127.0.0.1:9000/hook", "events": ["on_session_end"]}
+                ],
+            }
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: profile_cfg)
+
+        seen = []
+        monkeypatch.setattr(
+            "agent.shell_hooks.register_from_config",
+            lambda cfg, **kwargs: seen.append(("shell", cfg)) or [],
+        )
+        monkeypatch.setattr(
+            "agent.outbound_webhooks.register_from_config",
+            lambda cfg: seen.append(("webhook", cfg)) or [],
+        )
+
+        await runner._start_one_profile_adapters("second", "/tmp/second", {})
+
+        assert ("shell", profile_cfg) in seen
+        assert ("webhook", profile_cfg) in seen
+
+
 class TestFeishuPortBindingConditional:
     """Feishu websocket mode does NOT bind a port; only webhook mode does (#52563)."""
 

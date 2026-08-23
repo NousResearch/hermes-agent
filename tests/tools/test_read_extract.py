@@ -903,5 +903,37 @@ class TestPdfCoverageNote(unittest.TestCase):
         self.assertEqual(text, "converted\n")
 
 
+class TestXmlHardening(unittest.TestCase):
+    """Documents parsed by the stdlib extractor must not trigger XXE or
+    billion-laughs expansion through DTD/entity declarations (S314)."""
+
+    def test_docx_with_dtd_entity_is_rejected(self):
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as fh:
+            _write_docx(
+                fh.name,
+                '<!DOCTYPE root [<!ENTITY x "B">]><root>&x;</root>',
+            )
+        try:
+            with self.assertRaises(ExtractionError):
+                extract_document_text(fh.name)
+        finally:
+            os.unlink(fh.name)
+
+    def test_docx_comment_with_dtd_substring_still_works(self):
+        """A benign OOXML comment containing the literal DTD substring should
+        not be mistaken for an actual DTD declaration."""
+        valid_xml = (
+            f'<w:document xmlns:w="{_NS_W}">'
+            '<w:body><w:p><!-- <!DOCTYPE root> --><w:r><w:t>safe</w:t></w:r></w:p></w:body>'
+            '</w:document>'
+        )
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as fh:
+            _write_docx(fh.name, valid_xml)
+        try:
+            self.assertEqual(extract_document_text(fh.name), "safe\n")
+        finally:
+            os.unlink(fh.name)
+
+
 if __name__ == "__main__":
     unittest.main()

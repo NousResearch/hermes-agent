@@ -247,9 +247,10 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "process to satisfy the Verification criterion (e.g. CI is the "
     "verification and it's still running), return WAIT on that process "
     "instead of re-poking — re-poking now would be pure busy-work.\n"
-    "- If the response explains the work is blocked / unachievable / needs "
-    "user input (e.g. the stated Stop condition was hit), treat it as DONE "
-    "with the reason describing the block.\n"
+    "- If the response explains the work is blocked, unachievable, or needs user "
+    "input, it is NOT done. Return CONTINUE unless a valid WAIT directive names "
+    "an actual running process/session or bounded delay. The controller persists "
+    "the resulting paused/blocked state; never promote a technical block to DONE.\n"
     "- Otherwise the goal is NOT done — CONTINUE.\n\n"
     "Is the goal satisfied per its completion contract — done, continue, or wait?"
 )
@@ -599,6 +600,10 @@ class GoalState:
     # must ALL pass before the judge may declare the goal done. Empty by
     # default — a goal with no gates behaves exactly as before.
     gates: List[GoalGate] = field(default_factory=list)
+    # Immutable collaboration artifacts are attached to this existing goal
+    # record by content address only.  Their bytes remain in their owner
+    # artifact/attachment store; this is deliberately not a second goal DB.
+    collaboration_contract_refs: List[str] = field(default_factory=list)
 
     def to_json(self) -> str:
         data = asdict(self)
@@ -636,6 +641,10 @@ class GoalState:
                 for g in (data.get("gates") or [])
                 if isinstance(g, dict) and str(g.get("command") or "").strip()
             ],
+            collaboration_contract_refs=sorted({
+                str(ref) for ref in (data.get("collaboration_contract_refs") or [])
+                if isinstance(ref, str) and ref
+            }),
         )
 
     # --- contract helpers -------------------------------------------------
@@ -1499,6 +1508,24 @@ class GoalManager:
             return None
         self._state.contract = contract or GoalContract()
         save_goal(self.session_id, self._state)
+        return self._state
+
+    def add_collaboration_contract_ref(self, contract_ref: str) -> GoalState:
+        """Attach a content-addressed collaboration artifact to this goal.
+
+        The caller owns validation and artifact persistence.  This canonical
+        goal owner stores only an immutable reference, preserving legacy goal
+        behavior and avoiding a parallel mission store.
+        """
+        if self._state is None:
+            raise RuntimeError("no active goal")
+        ref = str(contract_ref or "").strip()
+        if not ref:
+            raise ValueError("contract reference is empty")
+        if ref not in self._state.collaboration_contract_refs:
+            self._state.collaboration_contract_refs.append(ref)
+            self._state.collaboration_contract_refs.sort()
+            save_goal(self.session_id, self._state)
         return self._state
 
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:

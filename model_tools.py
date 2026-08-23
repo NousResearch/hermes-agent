@@ -1230,7 +1230,39 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
-    # Coerce string arguments to their schema-declared types (e.g. "42"→42)
+    # Ares Phase 3 boundary is deliberately before legacy coercion: effectful
+    # calls must be exact or denied, never repaired into authority-bearing input.
+    _ares_permit = None
+    _ares_schema = None
+    _ares_mission_ref = task_id or os.getenv("ARES_MISSION_REF")
+    try:
+        from ares_runtime.collaboration import dispatcher_boundary
+        if os.getenv("ARES_STRICT_EFFECT_TOOL_ARGS_V1", "0") == "1":
+            for _ares_definition in get_tool_definitions(
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                quiet_mode=True,
+            ) or []:
+                if _ares_definition.get("function", {}).get("name") == function_name:
+                    _ares_schema = _ares_definition.get("function", {}).get("parameters")
+                    break
+        _ares_allowed, _ares_code, _ares_permit = dispatcher_boundary(
+            function_name,
+            function_args,
+            mission_ref=_ares_mission_ref,
+            schema=_ares_schema,
+            # This pass validates strict shape and bridge availability before
+            # legacy coercion; single-use consumption waits for final payload.
+            authorize_permit=True,
+            consume_permit=False,
+        )
+        if not _ares_allowed:
+            return tool_error(f"ARES_EFFECT_DENIED:{_ares_code}")
+    except Exception as _ares_boundary_error:
+        if os.getenv("ARES_RUNTIME_PERMITS_V1", "0") == "1" or os.getenv("ARES_STRICT_EFFECT_TOOL_ARGS_V1", "0") == "1":
+            return tool_error(f"ARES_EFFECT_BOUNDARY_ERROR:{type(_ares_boundary_error).__name__}")
+
+    # Legacy coercion remains available only after the Ares boundary.
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
@@ -1490,6 +1522,23 @@ def handle_function_call(
         except Exception:
             reset_current_observability_context = None
         try:
+            # Final admission is deliberately after middleware, plugin hooks,
+            # and edit approval. The permit binds the exact payload that the
+            # registry will execute, never an earlier model payload.
+            if os.getenv("ARES_RUNTIME_PERMITS_V1", "0") == "1":
+                from ares_runtime.collaboration import dispatcher_boundary
+                _ares_allowed, _ares_code, _ares_permit = dispatcher_boundary(
+                    function_name,
+                    function_args,
+                    mission_ref=_ares_mission_ref,
+                    schema=_ares_schema,
+                    authorize_permit=True,
+                )
+                if not _ares_allowed:
+                    result = tool_error(f"ARES_EFFECT_DENIED:{_ares_code}")
+                    from ares_runtime.collaboration import record_receipt
+                    record_receipt({"tool_name": function_name, "mission_ref": _ares_mission_ref, "state": "denied", "reason": _ares_code})
+                    return result
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
@@ -1532,6 +1581,24 @@ def handle_function_call(
                 except Exception:
                     pass
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+
+        if os.getenv("ARES_RUNTIME_PERMITS_V1", "0") == "1" and _ares_permit is not None:
+            try:
+                from ares_runtime.collaboration import record_receipt, digest as _ares_digest
+                _status, _error_type, _error_message = _tool_result_observer_fields(function_name, result)
+                record_receipt({
+                    "tool_name": function_name,
+                    "mission_ref": _ares_mission_ref,
+                    "permit_ref": _ares_permit.get("canonical_permit_ref") or _ares_permit.get("permit_ref"),
+                    "args_digest": _ares_digest(function_args),
+                    "state": _status,
+                    "error_type": _error_type,
+                    "error_message": _error_message,
+                    "duration_ms": duration_ms,
+                })
+            except Exception as _receipt_error:
+                logger.error("Ares receipt recording failed: %s", _receipt_error)
+                return tool_error("ARES_EFFECT_RECEIPT_FAILED")
 
         _emit_post_tool_call_hook(
             function_name=function_name,

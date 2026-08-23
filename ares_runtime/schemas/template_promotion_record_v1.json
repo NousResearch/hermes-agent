@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/template_promotion_record_v1.json",
+  "title": "TemplatePromotionRecordV1",
+  "description": "Operator-authorized promotion decision binding candidate identity to held-out, denial, reliability, cost and rollback evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "agent-graph-mcp promotion owner plus explicit Ares policy gate",
+  "x-storage-rule": "Reference agent-graph-mcp canonical candidate and operator receipt. Workflow search cannot write this record or self-promote.",
+  "required": [
+    "schema_version",
+    "promotion_record_id",
+    "canonical_template_ref",
+    "candidate_spec_digest",
+    "from_state",
+    "to_state",
+    "evaluation_outcome_refs",
+    "required_gates",
+    "operator_receipt_ref",
+    "rollback_policy_ref",
+    "decision",
+    "recorded_at",
+    "record_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "promotion_record_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "canonical_template_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "candidate_spec_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    },
+    "from_state": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "static_validated",
+        "offline_evaluated",
+        "shadow",
+        "canary",
+        "default",
+        "quarantined",
+        "deprecated",
+        "revoked"
+      ]
+    },
+    "to_state": {
+      "type": "string",
+      "enum": [
+        "static_validated",
+        "offline_evaluated",
+        "shadow",
+        "canary",
+        "default",
+        "quarantined",
+        "deprecated",
+        "revoked"
+      ]
+    },
+    "evaluation_outcome_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "required_gates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "gate_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "evidence_ref": {
+            "type": "string",
+            "description": "Resolvable owner-qualified reference; never proof by itself.",
+            "pattern": "^[A-Za-z0-9._:/@#-]+$"
+          }
+        },
+        "required": [
+          "gate_id",
+          "passed",
+          "evidence_ref"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "operator_receipt_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "rollback_policy_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "denied",
+        "quarantined",
+        "revoked"
+      ]
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "record_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    }
+  }
+}

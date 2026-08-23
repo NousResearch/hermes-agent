@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/specialist_bid_v1.json",
+  "title": "SpecialistBidV1",
+  "description": "Schema-bound declaration of fitness, cost, latency and expected evidence novelty for one uncovered question.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Deterministic allocator; bid is advisory and authority-free",
+  "x-storage-rule": "Ephemeral coordination artifact; cannot grant tools, permits, budget, priority or truth status.",
+  "required": [
+    "schema_version",
+    "bid_id",
+    "mission_ref",
+    "role_contract_ref",
+    "question_id",
+    "eligibility_evidence_refs",
+    "expected_information_gain",
+    "estimated_cost",
+    "estimated_latency_seconds",
+    "required_capability_classes",
+    "requested_context_classes",
+    "expires_at",
+    "recorded_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "bid_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "mission_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "role_contract_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "question_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "eligibility_evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "expected_information_gain": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "probability_changes_decision": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "estimated_cost": {
+      "type": "number",
+      "minimum": 0
+    },
+    "estimated_latency_seconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "required_capability_classes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "requested_context_classes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "requested_permit_classes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

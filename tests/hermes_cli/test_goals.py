@@ -710,6 +710,14 @@ class TestJudgeWithContract:
         assert "concrete evidence" in user_msg
 
 
+    def test_blocked_response_is_not_instructed_to_complete_goal(self, hermes_home):
+        from hermes_cli import goals
+
+        prompt = goals.JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE
+        assert "never promote a technical block to DONE" in prompt
+        assert "treat it as DONE" not in prompt
+
+
 class TestDraftContract:
     def test_draft_parses_json(self, hermes_home):
         from unittest.mock import patch

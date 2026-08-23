@@ -945,6 +945,53 @@ def write_profile_meta(
     atomic_yaml_write(path, existing, sort_keys=False)
 
 
+def set_role_contract_ref(profile_name: str, role_id: str, contract_ref: str) -> None:
+    """Attach a content-addressed RoleContract reference to an existing profile.
+
+    Only the role identifier and digest reference are persisted in profile
+    metadata.  Contract bytes and provider credentials are never read or copied
+    from the profile's secret/config files.
+    """
+    canon = normalize_profile_name(profile_name)
+    profile_dir = get_profile_dir(canon)
+    if not profile_exists(canon):
+        raise FileNotFoundError(f"Profile '{canon}' does not exist.")
+    role_id, contract_ref = str(role_id or "").strip(), str(contract_ref or "").strip()
+    if not role_id or not contract_ref:
+        raise ValueError("role_id and contract_ref are required")
+    import yaml
+    path = _profile_yaml_path(profile_dir)
+    existing: dict = {}
+    if path.is_file():
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            if isinstance(loaded, dict):
+                existing = loaded
+        except Exception:
+            existing = {}
+    refs = existing.get("role_contract_refs")
+    refs = dict(refs) if isinstance(refs, dict) else {}
+    refs[role_id] = contract_ref
+    existing["role_contract_refs"] = dict(sorted(refs.items()))
+    from utils import atomic_yaml_write
+    atomic_yaml_write(path, existing, sort_keys=False)
+
+
+def get_role_contract_ref(profile_name: str, role_id: str) -> Optional[str]:
+    """Return the profile-owned immutable RoleContract reference, if present."""
+    canon = normalize_profile_name(profile_name)
+    if not profile_exists(canon):
+        return None
+    path = _profile_yaml_path(get_profile_dir(canon))
+    try:
+        import yaml
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        ref = (data or {}).get("role_contract_refs", {}).get(role_id)
+        return ref if isinstance(ref, str) and ref else None
+    except Exception:
+        return None
+
+
 def format_profile_label(name: str, display_name: Optional[str]) -> str:
     """Render a profile for display: ``display_name (canonical_id)``.
 

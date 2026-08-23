@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/evaluation_outcome_v1.json",
+  "title": "EvaluationOutcomeV1",
+  "description": "Paired baseline/candidate result with deterministic metrics, denial tests, uncertainty and evidence refs.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "ri-agent-graph comparator / Ares evaluation harness",
+  "x-storage-rule": "Store in evaluation owner and reference from promotion record. Never mutates production policy automatically.",
+  "required": [
+    "schema_version",
+    "outcome_id",
+    "evaluation_case_ref",
+    "baseline_policy_ref",
+    "candidate_policy_ref",
+    "repetitions",
+    "metrics",
+    "denial_tests",
+    "decision",
+    "evidence_refs",
+    "recorded_at",
+    "outcome_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "outcome_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "evaluation_case_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "baseline_policy_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "candidate_policy_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "repetitions": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verified_closure": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "false_closure": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "unique_findings": {
+          "type": "number",
+          "minimum": 0
+        },
+        "duplicate_findings": {
+          "type": "number",
+          "minimum": 0
+        },
+        "authority_violations": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "human_minutes": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "verified_closure",
+        "false_closure",
+        "unique_findings",
+        "duplicate_findings",
+        "authority_violations",
+        "tokens",
+        "cost_usd",
+        "latency_ms",
+        "human_minutes"
+      ]
+    },
+    "denial_tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "test_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "evidence_ref": {
+            "type": "string",
+            "description": "Resolvable owner-qualified reference; never proof by itself.",
+            "pattern": "^[A-Za-z0-9._:/@#-]+$"
+          }
+        },
+        "required": [
+          "test_id",
+          "passed",
+          "evidence_ref"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "uncertainty": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "interval": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2
+        },
+        "sample_size": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "method",
+        "interval",
+        "sample_size"
+      ]
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "reject",
+        "continue_shadow",
+        "promote_canary",
+        "promote_default",
+        "quarantine",
+        "rollback"
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "outcome_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    }
+  }
+}

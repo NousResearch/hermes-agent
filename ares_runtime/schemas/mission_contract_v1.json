@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/mission_contract_v1.json",
+  "title": "MissionContractV1",
+  "description": "Typed definition of intent, boundaries, closure target, evidence gates and escalation policy for an existing Ares mission/task.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Ares Kanban/Goal/Session owners; contract is a bound artifact, not a second mission row",
+  "x-storage-rule": "Store as immutable artifact/attachment referenced by the existing Kanban root task; supersede by new artifact and event.",
+  "required": [
+    "schema_version",
+    "mission_id",
+    "kanban_root_task_ref",
+    "objective",
+    "source_freeze",
+    "closure_profile",
+    "risk_class",
+    "effect_class",
+    "boundaries",
+    "required_evidence",
+    "topology_policy",
+    "stop_conditions",
+    "recorded_at",
+    "contract_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "mission_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "kanban_root_task_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "session_ref": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Resolvable owner-qualified reference; never proof by itself.",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "goal_ref": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Resolvable owner-qualified reference; never proof by itself.",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "non_goals": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "source_freeze": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source_ref": {
+            "type": "string",
+            "description": "Resolvable owner-qualified reference; never proof by itself.",
+            "pattern": "^[A-Za-z0-9._:/@#-]+$"
+          },
+          "revision_or_digest": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "type": "string",
+            "description": "Evidence state of this projection or assertion.",
+            "enum": [
+              "LIVE_VERIFIED",
+              "OBSERVED_SOURCE",
+              "SOURCE_REPORTED",
+              "DATED_SNAPSHOT",
+              "PROPOSED",
+              "BLOCKED",
+              "UNKNOWN"
+            ]
+          }
+        },
+        "required": [
+          "source_ref",
+          "revision_or_digest",
+          "state"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "closure_profile": {
+      "type": "string",
+      "enum": [
+        "engineering",
+        "research",
+        "public_artifact",
+        "effectful_operation",
+        "ordinary_response",
+        "mixed"
+      ]
+    },
+    "risk_class": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "effect_class": {
+      "type": "string",
+      "enum": [
+        "none",
+        "read_only",
+        "reversible_local",
+        "durable_local",
+        "external_reversible",
+        "external_irreversible",
+        "authority_changing"
+      ]
+    },
+    "boundaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "forbidden": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_owners": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "description": "Resolvable owner-qualified reference; never proof by itself.",
+            "pattern": "^[A-Za-z0-9._:/@#-]+$"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "allowed",
+        "forbidden",
+        "source_owners"
+      ]
+    },
+    "required_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "gate_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "minimum_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "independent_witness_required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "gate_id",
+          "evidence_kinds",
+          "minimum_count",
+          "independent_witness_required"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "topology_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default_executor_count": {
+          "type": "integer",
+          "const": 1
+        },
+        "allowed_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "single",
+              "maker_witness",
+              "partitioned_parallel",
+              "blind_heterogeneous_pair",
+              "adversarial_cell",
+              "effect_cell"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "max_concurrent_specialists": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "escalation_requires_evidence_gap": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "default_executor_count",
+        "allowed_patterns",
+        "max_concurrent_specialists",
+        "escalation_requires_evidence_gap"
+      ]
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "max_cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "max_wall_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        }
+      },
+      "required": []
+    },
+    "stop_conditions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "contract_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    },
+    "supersedes_contract_ref": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Resolvable owner-qualified reference; never proof by itself.",
+          "pattern": "^[A-Za-z0-9._:/@#-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

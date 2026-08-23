@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/finding_v1.json",
+  "title": "FindingV1",
+  "description": "Typed audit/engineering/research finding with consequence, root cause, owner-preserving repair, acceptance and rollback.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Producing specialist; evidence validity remains with source owners",
+  "x-storage-rule": "Immutable finding artifact; status changes are append/supersession events, never in-place truth rewrites.",
+  "required": [
+    "schema_version",
+    "finding_id",
+    "mission_ref",
+    "role_contract_ref",
+    "severity",
+    "release_impact",
+    "surface",
+    "evidence_refs",
+    "consequence",
+    "root_cause",
+    "owner_preserving_fix",
+    "acceptance_test",
+    "rollback_or_quarantine",
+    "confidence_basis",
+    "status",
+    "recorded_at",
+    "finding_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "finding_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "mission_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "role_contract_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "release_impact": {
+      "type": "string",
+      "enum": [
+        "none",
+        "advisory",
+        "blocks_phase",
+        "blocks_release",
+        "requires_rollback"
+      ]
+    },
+    "surface": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "consequence": {
+      "type": "string",
+      "minLength": 1
+    },
+    "root_cause": {
+      "type": "string",
+      "minLength": 1
+    },
+    "owner_preserving_fix": {
+      "type": "string",
+      "minLength": 1
+    },
+    "acceptance_test": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rollback_or_quarantine": {
+      "type": "string",
+      "minLength": 1
+    },
+    "confidence_basis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unknowns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "confidence",
+        "basis",
+        "unknowns"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "accepted",
+        "rejected_with_reason",
+        "contested",
+        "resolved",
+        "superseded"
+      ]
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finding_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    }
+  }
+}

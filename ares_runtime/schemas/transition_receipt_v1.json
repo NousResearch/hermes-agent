@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/transition_receipt_v1.json",
+  "title": "TransitionReceiptV1",
+  "description": "Proof-bearing request/result for one closure transition.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Canonical owner of the event being advanced; closure projector verifies",
+  "x-storage-rule": "Append as event/receipt in the current canonical owner. Transition denial is retained, not overwritten.",
+  "required": [
+    "schema_version",
+    "transition_id",
+    "mission_ref",
+    "from_state",
+    "to_state",
+    "gate_id",
+    "witness_refs",
+    "source_event_refs",
+    "decision",
+    "recorded_at",
+    "receipt_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "transition_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "mission_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "from_state": {
+      "type": "string",
+      "minLength": 1
+    },
+    "to_state": {
+      "type": "string",
+      "minLength": 1
+    },
+    "gate_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "witness_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "uniqueItems": true
+    },
+    "source_event_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Resolvable owner-qualified reference; never proof by itself.",
+        "pattern": "^[A-Za-z0-9._:/@#-]+$"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "admitted",
+        "denied",
+        "blocked",
+        "quarantined",
+        "rolled_back"
+      ]
+    },
+    "denial_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "actor_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "receipt_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    }
+  }
+}

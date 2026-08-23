@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recursiveintell.local/schemas/ares-collaboration/evidence_item_v1.json",
+  "title": "EvidenceItemV1",
+  "description": "Immutable observation or artifact reference with provenance, temporal coordinates, taint and acquisition receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-canonical-owner": "Domain owner (source repository, ClaimLedger, semantic-memory, runtime ledger or test harness)",
+  "x-storage-rule": "Persist in the canonical evidence owner; Kanban/blackboard stores only the reference and digest.",
+  "required": [
+    "schema_version",
+    "evidence_id",
+    "mission_ref",
+    "kind",
+    "source_ref",
+    "artifact_digest",
+    "recorded_at",
+    "evidence_state",
+    "authority_class",
+    "taint",
+    "acquisition_receipt_ref"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0.0"
+      ]
+    },
+    "evidence_id": {
+      "type": "string",
+      "description": "Typed ID from stack-ids or an owner-defined stable identifier.",
+      "minLength": 1
+    },
+    "mission_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "source_span",
+        "repository_revision",
+        "command_output",
+        "test_result",
+        "runtime_identity",
+        "artifact",
+        "external_primary_source",
+        "tool_result",
+        "human_attestation",
+        "effect_postcondition"
+      ]
+    },
+    "source_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "source_locator": {
+      "type": "string",
+      "minLength": 1
+    },
+    "artifact_digest": {
+      "type": "string",
+      "description": "Canonical digest including algorithm prefix.",
+      "pattern": "^(blake3|sha256):[0-9a-f]{64}$"
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "valid_from": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "valid_to": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "evidence_state": {
+      "type": "string",
+      "description": "Evidence state of this projection or assertion.",
+      "enum": [
+        "LIVE_VERIFIED",
+        "OBSERVED_SOURCE",
+        "SOURCE_REPORTED",
+        "DATED_SNAPSHOT",
+        "PROPOSED",
+        "BLOCKED",
+        "UNKNOWN"
+      ]
+    },
+    "authority_class": {
+      "type": "string",
+      "enum": [
+        "canonical_source",
+        "primary_source",
+        "direct_observation",
+        "derived_reproduction",
+        "model_observation",
+        "human_attestation"
+      ]
+    },
+    "taint": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "untrusted_data": {
+          "type": "boolean"
+        },
+        "contains_instructions": {
+          "type": "boolean"
+        },
+        "secret_class": {
+          "type": "string",
+          "enum": [
+            "none",
+            "internal",
+            "confidential",
+            "restricted"
+          ]
+        },
+        "allowed_sinks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "untrusted_data",
+        "contains_instructions",
+        "secret_class",
+        "allowed_sinks"
+      ]
+    },
+    "acquisition_receipt_ref": {
+      "type": "string",
+      "description": "Resolvable owner-qualified reference; never proof by itself.",
+      "pattern": "^[A-Za-z0-9._:/@#-]+$"
+    },
+    "content_excerpt": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

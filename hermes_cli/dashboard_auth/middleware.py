@@ -10,15 +10,20 @@ redirected to ``/login``; ``/api/*`` routes get a 401 JSON envelope.
 from __future__ import annotations
 
 import logging
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Optional
 from urllib.parse import quote
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from hermes_cli.dashboard_auth import list_session_providers
+from hermes_cli.dashboard_auth import list_request_auth_providers, list_session_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
-from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError
+from hermes_cli.dashboard_auth.base import (
+    DashboardAuthProvider,
+    ProviderError,
+    RefreshExpiredError,
+    Session,
+)
 from hermes_cli.dashboard_auth.cookies import (
     clear_session_cookies, clear_sso_attempt_cookie, detect_https, read_session_cookies,
     read_session_provider, read_sso_attempt_cookie, set_session_cookies,
@@ -145,6 +150,41 @@ def _session_expired_response(request: Request) -> Response:
     return response
 
 
+def _verify_request_auth(request) -> Optional[Session]:
+    """Trusted-request auth: try every ``supports_request_auth`` provider.
+
+    Request-scoped analog of ``_verify_bearer``. Called when a protected
+    request carries no valid session cookie (and has already passed the
+    bearer path). Each trusted-request provider vouchs for the caller from the
+    request context — e.g. an ``X-Remote-User`` header set by an authenticated
+    reverse proxy — and MUST independently confirm the request came from a
+    trusted proxy (peer allowlist / shared secret) before honoring it.
+
+    A provider that returns ``None`` simply declines and we move to the next;
+    a ``ProviderError`` marks it unavailable (remembered so a transient outage
+    surfaces as 503, mirroring the bearer/cookie paths). There is no refresh:
+    a trusted-request credential is per-request, so every request is verified
+    fresh.
+    """
+    unreachable_provider: str | None = None
+    for provider in list_request_auth_providers():
+        try:
+            session = provider.verify_request_auth(request=request)
+        except ProviderError as err:
+            _log.warning(
+                "dashboard-auth: provider %r unreachable during request auth: %s",
+                provider.name, err,
+            )
+            if unreachable_provider is None:
+                unreachable_provider = provider.name
+            continue
+        if session is not None:
+            return session
+    if unreachable_provider is not None:
+        raise ProviderError(unreachable_provider)
+    return None
+
+
 async def gated_auth_middleware(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     """Engaged only when ``app.state.auth_required is True``."""
@@ -172,7 +212,32 @@ async def gated_auth_middleware(
     at, _rt = read_session_cookies(request)
     provider_hint = read_session_provider(request)
     if not at and not _rt:
-        # No session at all: try the silent portal bounce before /login.
+        # Neither token present — no session at all. Before falling back to
+        # the /login interstitial (or the auto-SSO bounce), give a
+        # trusted-request provider — e.g. an authenticated reverse proxy that
+        # set ``X-Remote-User`` — a chance to vouch for the caller from the
+        # request context. A provider returns None when it can't confirm the
+        # request came from a trusted proxy, and we fall through normally. The
+        # credential is per-request, so there is no refresh.
+        try:
+            request_auth_session = _verify_request_auth(request)
+        except ProviderError as e:
+            # A trusted-request provider's backing store was unreachable and
+            # none accepted the request — transient outage, not 401.
+            return JSONResponse(
+                {"detail": f"Auth provider {str(e)!r} unreachable"},
+                status_code=503,
+            )
+        if request_auth_session is not None:
+            request.state.session = request_auth_session
+            return await call_next(request)
+
+        # No trusted-request provider vouched for the caller. Try the portal
+        # auto-SSO silent bounce: the portal auto-approves org members and
+        # 302s straight back when they already hold a portal session, so the
+        # interstitial click is pure friction for the common case. The
+        # one-shot loop-guard inside _auto_sso_response prevents a ping-pong
+        # when the portal genuinely has no session.
         auto = _auto_sso_response(request)
         return auto if auto is not None else _unauth_response(request, reason="no_cookie")
     # An absent AT with a present RT is the COMMON expiry case (the AT cookie's Max-Age tracks

@@ -1490,7 +1490,7 @@ class TestBedrockIamStreamingFallback:
         return agent
 
     def test_iam_denial_falls_back_inline_and_disables_streaming(self):
-        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from botocore.exceptions import ClientError
 
         agent = self._make_bedrock_agent()
@@ -1614,7 +1614,7 @@ class TestBedrockStreamLivenessWatchdog:
         """A Bedrock stream that opens then stops yielding events trips the
         watchdog: it bumps the cross-turn stale streak and raises TimeoutError
         instead of hanging forever."""
-        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         import threading as _t
 
         # Tiny stale timeout so the watchdog trips quickly; give-up threshold
@@ -1647,7 +1647,7 @@ class TestBedrockStreamLivenessWatchdog:
     def test_pre_elevated_streak_aborts_before_streaming(self, monkeypatch):
         """A streak already past the give-up threshold aborts at entry with
         RuntimeError — Bedrock never even opens a stream (cross-turn breaker)."""
-        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
 
         monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "5")
 
@@ -1669,7 +1669,7 @@ class TestBedrockStreamLivenessWatchdog:
     def test_successful_stream_resets_streak(self, monkeypatch):
         """A Bedrock stream that completes normally clears any prior stale
         streak so a recovered provider doesn't carry it into later turns."""
-        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
 
         monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "60")
 

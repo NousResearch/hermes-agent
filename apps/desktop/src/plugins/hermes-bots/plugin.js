@@ -5149,7 +5149,11 @@ async function findExistingCanonicalChat(owner) {
       include_hidden: true
     })
   } catch (error) {
-    const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
+    // Plugin tests and host bridges can return Error-like values from another
+    // JS realm, where `instanceof Error` is false. Preserve the provider/RPC
+    // message so update-required classification and diagnostics still work.
+    const message = typeof error?.message === 'string' ? error.message : ''
+    const detail = message ? ` (${message})` : ''
     throw new Error(`Could not check ${name}'s Bot Chat registry${detail} — not starting a new chat`)
   }
 

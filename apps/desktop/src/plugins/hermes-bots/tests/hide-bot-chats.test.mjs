@@ -278,6 +278,6 @@ test('the canonical-chat adoption scan lists with include_hidden', () => {
   // and fails CLOSED: a thrown lookup never falls through to minting.
   assert.match(
     source,
-    /requestForBot\(bot, 'session\.list', \{\s*profile: backendTargetProfile\(route, name\),\s*title: CANONICAL_CHAT_TITLE,[\s\S]{0,200}?include_hidden: true\s*\}\)\s*\} catch \(error\) \{[\s\S]{0,400}?const rows = res\?\.sessions \?\? \[\]\s*return rows\.find\(row => isCanonicalBotChatHistory\(row\)\)/
+    /requestForBot\(bot, 'session\.list', \{\s*profile: backendTargetProfile\(route, name\),\s*title: CANONICAL_CHAT_TITLE,[\s\S]{0,200}?include_hidden: true\s*\}\)\s*\} catch \(error\) \{[\s\S]{0,800}?const rows = res\?\.sessions \?\? \[\]\s*return rows\.find\(row => isCanonicalBotChatHistory\(row\)\)/
   )
 })

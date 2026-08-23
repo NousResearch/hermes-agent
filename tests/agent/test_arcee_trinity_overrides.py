@@ -16,10 +16,12 @@ import pytest
 from agent.agent_init import _resolve_compression_threshold
 from agent.auxiliary_client import (
     _compression_threshold_for_model,
+    _effective_compression_threshold_percent,
     _fixed_temperature_for_model,
     _is_arcee_trinity_thinking,
     _is_codex_gpt54_or_gpt55,
     _is_codex_spark,
+    _update_compressor_model,
 )
 
 
@@ -185,5 +187,122 @@ def test_resolve_no_override_keeps_global() -> None:
     )
     assert effective == 0.50
     assert notice is None
+
+
+# ---------------------------------------------------------------------------
+# _effective_compression_threshold_percent (external-engine forwarding)
+#
+# Host update_model() call sites forward the resolved threshold (autoraise
+# included) to external context engines whose update_model accepts
+# threshold_percent, so ri-context-governor triggers at 0.85 like the
+# built-in compressor instead of silently keeping the 0.5 adapter default.
+# ---------------------------------------------------------------------------
+
+
+def test_effective_threshold_percent_codex_gpt56_autoraise() -> None:
+    assert _effective_compression_threshold_percent("gpt-5.6-sol", "openai-codex") == 0.85
+    assert _effective_compression_threshold_percent("gpt-5.6-terra", "openai-codex") == 0.85
+    assert _effective_compression_threshold_percent("gpt-5.6-luna", "openai-codex") == 0.85
+    assert _effective_compression_threshold_percent("gpt-5.4", "openai-codex") == 0.85
+
+
+def test_effective_threshold_percent_falls_back_to_global() -> None:
+    # No override for the route → the global compression.threshold (0.50).
+    assert _effective_compression_threshold_percent("deepseek-v4-flash", "deepseek") == 0.5
+    # Same slug on a non-Codex route keeps the global threshold.
+    assert _effective_compression_threshold_percent("gpt-5.6-sol", "openai") == 0.5
+
+
+def test_effective_threshold_percent_never_lowers_user_threshold() -> None:
+    # Autoraise is a raise-only override: a higher user global wins.
+    assert (
+        _effective_compression_threshold_percent(
+            "gpt-5.6-sol", "openai-codex", global_threshold=0.9
+        )
+        == 0.9
+    )
+    # A lower user global is raised to the autoraised value.
+    assert (
+        _effective_compression_threshold_percent(
+            "gpt-5.6-sol", "openai-codex", global_threshold=0.3
+        )
+        == 0.85
+    )
+
+
+class _AcceptsThresholdEngine:
+    """Engine with the ri-context-governor-style update_model signature."""
+
+    def __init__(self) -> None:
+        self.threshold_percent = None
+        self.threshold_tokens = None
+
+    def update_model(
+        self,
+        model,
+        context_length,
+        base_url="",
+        api_key="",
+        provider="",
+        api_mode="",
+        threshold_percent=None,
+    ) -> None:
+        self.model = model
+        self.context_length = context_length
+        if threshold_percent is not None:
+            self.threshold_percent = threshold_percent
+            self.threshold_tokens = int(context_length * threshold_percent)
+
+
+class _BuiltinLikeEngine:
+    """Engine with the built-in ContextCompressor signature (no threshold kwarg)."""
+
+    def __init__(self) -> None:
+        self.threshold_percent = 0.5
+        self.threshold_tokens = None
+
+    def update_model(
+        self,
+        model,
+        context_length,
+        base_url="",
+        api_key="",
+        provider="",
+        api_mode="",
+        max_tokens=None,
+    ) -> None:
+        self.model = model
+        self.context_length = context_length
+        self.threshold_tokens = int(context_length * self.threshold_percent)
+
+
+def test_update_compressor_model_forwards_threshold_when_supported() -> None:
+    engine = _AcceptsThresholdEngine()
+    _update_compressor_model(
+        engine,
+        model="gpt-5.6-sol",
+        context_length=272000,
+        provider="openai-codex",
+        api_mode="codex_app_server",
+        threshold_percent=0.85,
+    )
+    assert engine.threshold_percent == 0.85
+    assert engine.threshold_tokens == int(272000 * 0.85)
+
+
+def test_update_compressor_model_skips_unsupported_engine() -> None:
+    # The built-in ContextCompressor re-resolves internally; the guard must
+    # not pass an unknown kwarg and must not clobber its own threshold.
+    engine = _BuiltinLikeEngine()
+    _update_compressor_model(
+        engine,
+        model="gpt-5.6-sol",
+        context_length=272000,
+        provider="openai-codex",
+        api_mode="codex_app_server",
+        threshold_percent=0.85,
+    )
+    assert engine.threshold_percent == 0.5
+    assert engine.threshold_tokens == int(272000 * 0.5)
 
 

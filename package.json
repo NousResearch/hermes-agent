@@ -47,6 +47,9 @@
     "yauzl": "^3.3.1",
     "protobufjs": "^8.7.1",
     "brace-expansion": "5.0.9",
+    "minimatch@3.1.5": {
+      "brace-expansion": "1.1.12"
+    },
     "mermaid": "11.16.1",
     "dompurify": "3.4.13",
     "ip-address": "10.3.1",
@@ -69,7 +72,6 @@
     "electron-winstaller@5.4.0": true,
     "electron@40.10.2": true,
     "fsevents@2.3.2": true,
-    "fsevents@2.3.3": true,
-    "get-windows@9.3.0": true
+    "fsevents@2.3.3": true
   }
 }

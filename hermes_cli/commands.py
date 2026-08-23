@@ -245,6 +245,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model"),
+    CommandDef("llm-pipeline", "Toggle Rust-backed llm-pipeline transport", "Configuration",
+               aliases=("llm_pipeline",), args_hint="[on|off|status|providers ...]"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]",
@@ -1366,7 +1368,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "whoami", "platform"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "whoami", "platform", "llm-pipeline", "llm_pipeline"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

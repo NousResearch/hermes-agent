@@ -3326,10 +3326,10 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
     # Keep explicit custom paths lexical. Resolving a non-existent custom path
     # can rewrite it through host-specific path mappings, which would bake a
     # different HERMES_HOME into the generated service unit.
-    current_default = Path.home() / ".hermes"
-    target_default = Path(target_home_dir) / ".hermes"
+    current_default = Path.home() / ".ares"
+    target_default = Path(target_home_dir) / ".ares"
 
-    # Default ~/.hermes → remap to target user's default
+    # Default ~/.ares → remap to target user's default
     if current_hermes == current_default:
         return str(target_default)
 
@@ -5919,7 +5919,10 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     # that ships new unit settings won't take effect until the next manual
     # `hermes gateway start/restart` — leaving the gateway vulnerable to
     # the exact failure mode the new settings were meant to prevent.
-    if supports_systemd_services():
+    # Ares owns its isolated release-pointer unit and promotes it atomically.
+    # Letting Hermes regenerate a generic unit from inside that supervised
+    # process replaces the Ares launcher mid-start and causes a restart loop.
+    if supports_systemd_services() and os.environ.get("ARES_MANAGED_RUNTIME") != "1":
         try:
             refresh_systemd_unit_if_needed(system=False)
         except Exception:

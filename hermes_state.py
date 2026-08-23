@@ -441,7 +441,7 @@ _STATE_DB_GUARD_BYPASS = False
 _STATE_DB_GUARD_BYPASS_ENV = "HERMES_STATE_DB_GUARD_BYPASS"
 
 #: Additional production roots to refuse (beyond the platform default
-#: ``~/.hermes``).  The test conftest injects the pre-sandbox production
+#: ``~/.ares``).  The test conftest injects the pre-sandbox production
 #: root here so custom-``HERMES_HOME`` deployments are covered too.
 _STATE_DB_GUARD_EXTRA_DENY_ROOTS: Tuple[Path, ...] = ()
 
@@ -461,12 +461,12 @@ def _real_platform_state_root() -> Optional[Path]:
         if sys.platform == "win32":
             base = os.environ.get("LOCALAPPDATA", "").strip()
             root = (
-                Path(base) / "hermes"
+                Path(base) / "ares"
                 if base
-                else Path(os.path.expanduser("~")) / "AppData" / "Local" / "hermes"
+                else Path(os.path.expanduser("~")) / "AppData" / "Local" / "ares"
             )
         else:
-            root = Path(os.path.expanduser("~")) / ".hermes"
+            root = Path(os.path.expanduser("~")) / ".ares"
         return root.resolve()
     except Exception:
         return None

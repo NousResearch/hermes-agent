@@ -486,7 +486,7 @@ def load_hermes_dotenv(
     """
     loaded: list[Path] = []
 
-    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".ares"))
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 
@@ -800,4 +800,4 @@ def _process_hermes_home() -> Path:
 
         return get_hermes_home()
     except Exception:
-        return Path.home() / ".hermes"
+        return Path.home() / ".ares"

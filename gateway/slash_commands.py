@@ -4426,6 +4426,13 @@ class GatewaySlashCommandsMixin:
                 )
 
                 compressor = tmp_agent.context_compressor
+                if partial and not getattr(
+                    compressor, "supports_partial_compression", True
+                ):
+                    return (
+                        "Context Governor cannot safely use /compress here yet; "
+                        "use /compress for a receipt-backed full compaction."
+                    )
                 if not compressor.has_content_to_compress(head):
                     return t("gateway.compress.nothing_to_do")
 

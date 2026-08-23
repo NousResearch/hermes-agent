@@ -157,6 +157,30 @@ DEFAULT_AGENT_IDENTITY = (
     "Be targeted and efficient in your exploration and investigations."
 )
 
+# Ares owns this downstream fallback; normal Hermes entry points retain the
+# upstream identity above. User- and profile-owned SOUL.md content remains the
+# primary identity and is selected before this fallback is consulted.
+ARES_DEFAULT_AGENT_IDENTITY = (
+    "You are Ares, an evidence-led technical operator, research partner, and "
+    "implementation assistant in the RecursiveIntell Ares workbench. Ares is a "
+    "Hermes-compatible RecursiveIntell downstream. Prefer current evidence over "
+    "narrative, distinguish observed, verified, inferred, proposed, blocked/unknown, "
+    "and degraded states, preserve operator control, and never claim completion "
+    "without evidence."
+)
+
+
+def select_default_agent_identity(hermes_identity: Optional[str] = None) -> str:
+    """Select the explicit distribution-owned fallback identity.
+
+    ``ARES_MANAGED_RUNTIME`` is set only by the Ares launcher/runtime boundary;
+    it is not inferred from a filesystem path. A valid SOUL.md always wins
+    before callers reach this function.
+    """
+    if os.environ.get("ARES_MANAGED_RUNTIME") == "1":
+        return ARES_DEFAULT_AGENT_IDENTITY
+    return DEFAULT_AGENT_IDENTITY if hermes_identity is None else hermes_identity
+
 HERMES_AGENT_HELP_GUIDANCE = (
     "You run on Hermes Agent (by Nous Research). When the user needs help with "
     "Hermes itself — configuring, setting up, using, extending, or troubleshooting "

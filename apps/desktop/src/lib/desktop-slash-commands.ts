@@ -236,6 +236,13 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     argumentMode: 'options'
   },
   {
+    name: '/llm-pipeline',
+    description: 'Inspect or configure the LLM pipeline',
+    aliases: ['/llm_pipeline'],
+    surface: exec(),
+    argumentMode: 'mixed'
+  },
+  {
     name: '/agents',
     description: 'Show active desktop sessions and running tasks',
     aliases: ['/tasks'],

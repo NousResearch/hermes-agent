@@ -319,6 +319,7 @@ import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-market
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
+import { createWindowRepaintController } from './window-repaint'
 import { createWindowRevealController } from './window-reveal'
 import {
   bindGeometryPersistence,
@@ -1322,6 +1323,10 @@ let backendOrphanReapPromise = null
 const RENDERER_RELOAD_WINDOW_MS = 60_000
 const RENDERER_RELOAD_MAX = 3
 const rendererReloadTimesRef: { current: number[] } = { current: [] }
+// How long after a GPU-process death to wait before forcing the repaint:
+// Chromium restarts the GPU process asynchronously, and a kick fired before
+// the restart lands would be swallowed by the dying pipeline.
+const GPU_PROCESS_RESTART_GRACE_MS = 2_500
 // Latched bootstrap failure: when the first-launch install fails, we hold
 // onto the error so subsequent startHermes() calls (e.g. the renderer's
 // ensureGatewayOpen retrying after the WS won't open) return the same error
@@ -11115,6 +11120,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
   win.on('leave-full-screen', () => sendWindowStateChanged(false))
 
   streamThrottle.register(win)
+  repaintController.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
   attachRendererConsoleCapture(win, 'session-window', rememberLog)
 
@@ -11216,6 +11222,7 @@ function createInstanceWindow() {
   win.on('leave-full-screen', () => sendWindowStateChanged(false, win))
 
   streamThrottle.register(win)
+  repaintController.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
   // Renderer lifecycle diagnostics + recovery (#81290), same policy as the
@@ -11702,6 +11709,7 @@ function spawnHudWindow(sessionId, profile) {
   // app) is the entire feature, so it gets the same stream-aware unthrottling
   // every chat window does.
   streamThrottle.register(win)
+  repaintController.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
   // Remember where the user parks and sizes it (debounced — these fire many
@@ -12167,6 +12175,7 @@ function createWindow() {
   })
 
   streamThrottle.register(mainWindow)
+  repaintController.register(mainWindow)
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
 
   // Per-window renderer lifecycle diagnostics + recovery (#81290). The reload
@@ -14208,6 +14217,31 @@ const activeWorkByWebContents = new Map<number, ActiveWork>()
 // unthrottled while any turn is in flight (streaming must paint while hidden)
 // and fall back to Chromium's default throttling at idle. See stream-throttle.ts.
 const streamThrottle = createStreamThrottle()
+
+// Frozen-frame recovery: chat windows are nudged (a transient ±2 DIP bounds
+// kick) when they are revealed and after a GPU-process death, the two ways
+// Chromium can silently stop presenting frames on Linux/XWayland — the window
+// then freezes on a solid color until a manual resize forces a new surface.
+// See window-repaint.ts.
+const repaintController = createWindowRepaintController()
+
+// GPU-process death recovery. Chromium restarts a crashed GPU process on its
+// own but does not always resume presenting afterward — the window freezes on
+// a solid color until a resize. The Windows sandbox handler above already
+// owns GPU deaths there (it relaunches --no-sandbox for the breakpoint
+// signature), so this non-Windows branch logs the event and force-repaints
+// every chat window once the automatic restart has had time to come up.
+if (!IS_WINDOWS) {
+  app.on('child-process-gone', (_event, details) => {
+    if (details.type !== 'GPU') {
+      return
+    }
+
+    rememberLog(`[hermes] GPU process gone (exitCode=${details.exitCode ?? '?'}); forcing chat window repaint`)
+
+    setTimeout(() => repaintController.kickAll(), GPU_PROCESS_RESTART_GRACE_MS)
+  })
+}
 
 function updateStreamThrottleFromActiveWork() {
   streamThrottle.update(mergeActiveWork(activeWorkByWebContents.values()).count > 0)

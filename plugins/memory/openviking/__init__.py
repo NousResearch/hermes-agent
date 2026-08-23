@@ -1451,7 +1451,7 @@ def _openviking_server_log_path() -> Path:
         from hermes_constants import get_hermes_home
         home = get_hermes_home()
     except Exception:
-        home = Path(os.environ.get("HERMES_HOME", "")).expanduser() if os.environ.get("HERMES_HOME") else Path.home() / ".hermes"
+        home = Path(os.environ.get("HERMES_HOME", "")).expanduser() if os.environ.get("HERMES_HOME") else Path.home() / ".ares"
     return home / _OPENVIKING_SERVER_LOG_RELATIVE_PATH
 
 
@@ -2753,7 +2753,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 from hermes_constants import get_hermes_home
                 hermes_home = str(get_hermes_home())
             except Exception:
-                hermes_home = str(Path.home() / ".hermes")
+                hermes_home = str(Path.home() / ".ares")
         self._hermes_home = hermes_home
         self._acquire_run_lock()
         self._profile_prefetched_sessions.clear()

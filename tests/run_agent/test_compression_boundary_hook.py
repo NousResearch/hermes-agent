@@ -22,6 +22,47 @@ from agent.conversation_compression import (
     finalize_context_engine_compression_notification,
 )
 
+
+class _TransactionalCompressor:
+    """Small explicit engine used to exercise commit/discard hook ordering."""
+
+    def __init__(self, events, projection):
+        self.events = events
+        self.projection = projection
+        self.compression_count = 0
+        self.last_prompt_tokens = 0
+        self.last_completion_tokens = 0
+        self._last_summary_error = None
+        self._last_summary_fallback_used = False
+        self._last_compress_aborted = False
+        self._last_compression_made_progress = False
+
+    def compress(self, _messages, **_kwargs):
+        self.events.append("prepare")
+        self._last_compression_made_progress = True
+        return list(self.projection)
+
+    def commit_pending_compression(self, committed_messages, **kwargs):
+        self.events.append(
+            (
+                "activate",
+                list(committed_messages),
+                kwargs.get("old_session_id"),
+                kwargs.get("new_session_id"),
+            )
+        )
+        self.compression_count += 1
+        return True
+
+    def discard_pending_compression(self, **kwargs):
+        self.events.append(("discard", kwargs.get("reason")))
+        return True
+
+    def on_session_start(self, _session_id, **kwargs):
+        if kwargs.get("boundary_reason") == "compression":
+            self.events.append("lifecycle")
+
+
 class TestCompressionBoundaryHook:
     def _make_agent(self, session_db):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
@@ -137,6 +178,93 @@ class TestCompressionBoundaryHook:
                 )
 
             assert events == ["persist", "compression"]
+
+    def test_transactional_engine_activates_after_persistence(self):
+        from hermes_state import SessionDB
+
+        events = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            compressor = _TransactionalCompressor(
+                events,
+                [{"role": "user", "content": "receipt-backed summary"}],
+            )
+            agent.context_compressor = compressor
+            original_sid = agent.session_id
+            original_publish = db.publish_compression_child
+
+            def _record_publish(*args, **kwargs):
+                result = original_publish(*args, **kwargs)
+                events.append("persist")
+                return result
+
+            with patch.object(
+                db, "publish_compression_child", side_effect=_record_publish
+            ):
+                compressed, _ = agent._compress_context(
+                    [{"role": "user", "content": "request" * 200}],
+                    "sys",
+                    approx_tokens=1_000,
+                )
+
+            assert events[0:2] == ["prepare", "persist"]
+            activation = events[2]
+            assert activation[0] == "activate"
+            assert activation[1] == compressed
+            assert activation[2] == original_sid
+            assert activation[3] == agent.session_id
+            assert events[3] == "lifecycle"
+            assert compressor.compression_count == 1
+
+    def test_deferred_observer_abort_does_not_undo_durable_activation(self):
+        from hermes_state import SessionDB
+
+        events = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            agent.context_compressor = _TransactionalCompressor(
+                events,
+                [{"role": "user", "content": "receipt-backed summary"}],
+            )
+
+            agent._compress_context(
+                [{"role": "user", "content": "request" * 200}],
+                "sys",
+                approx_tokens=1_000,
+                defer_context_engine_notification=True,
+            )
+
+            assert events[0] == "prepare"
+            assert events[1][0] == "activate"
+            assert not finalize_context_engine_compression_notification(
+                agent,
+                committed=False,
+            )
+            assert len(events) == 2
+
+    def test_anti_growth_rejection_discards_prepared_engine_state(self):
+        from hermes_state import SessionDB
+
+        events = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            original = [{"role": "user", "content": "small request"}]
+            agent.context_compressor = _TransactionalCompressor(
+                events,
+                [{"role": "user", "content": "growing summary" * 2_000}],
+            )
+
+            returned, _ = agent._compress_context(
+                original,
+                "sys",
+                approx_tokens=100,
+            )
+
+            assert returned == original
+            assert events == ["prepare", ("discard", "would_grow")]
 
     def test_failure_before_persistence_does_not_notify(self):
         from hermes_state import SessionDB
@@ -324,4 +452,3 @@ class TestSessionCompressEvent:
                 [{"role": "user", "content": "m"}], "sys", approx_tokens=100
             )
             assert compressed
-

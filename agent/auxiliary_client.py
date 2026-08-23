@@ -780,6 +780,90 @@ def _compression_threshold_for_model(
         return _CODEX_SPARK_COMPACTION_THRESHOLD
     return None
 
+
+def _effective_compression_threshold_percent(
+    model: Optional[str],
+    provider: Optional[str] = None,
+    *,
+    global_threshold: Optional[float] = None,
+    allow_codex_gpt55_autoraise: bool = True,
+) -> float:
+    """Resolve the effective compression trigger threshold for a route.
+
+    Applies the per-model overrides (gpt-5.4/5.5/5.6 272K family → 0.85,
+    gpt-5.3-codex-spark → 0.70 on the Codex OAuth route) over the global
+    ``compression.threshold`` so external context engines observe the same
+    effective threshold as the built-in ContextCompressor's initial
+    construction. Reads the global threshold from config when not supplied.
+    """
+    if global_threshold is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            _cfg = load_config_readonly() or {}
+        except Exception:
+            _cfg = {}
+        _raw = (_cfg.get("compression") or {}).get("threshold", 0.50)
+        try:
+            global_threshold = float(_raw)
+        except (TypeError, ValueError):
+            global_threshold = 0.50
+    # Lazy import: agent_init imports this module only at function scope,
+    # so a module-level import here would be circular.
+    from agent.agent_init import _resolve_compression_threshold
+
+    _override = _compression_threshold_for_model(
+        model, provider, allow_codex_gpt55_autoraise=allow_codex_gpt55_autoraise
+    )
+    _resolved, _ = _resolve_compression_threshold(
+        float(global_threshold),
+        _override,
+        model=model,
+        is_codex_autoraise=(
+            _is_codex_gpt54_or_gpt55(model, provider) or _is_codex_spark(model, provider)
+        ),
+    )
+    return float(_resolved)
+
+
+def _update_compressor_model(
+    compressor,
+    *,
+    model: str,
+    context_length: int,
+    base_url: str = "",
+    api_key: Any = "",
+    provider: str = "",
+    api_mode: str = "",
+    threshold_percent: Optional[float] = None,
+) -> None:
+    """Call ``update_model``, forwarding ``threshold_percent`` when supported.
+
+    The built-in ContextCompressor re-resolves its threshold internally and
+    does not accept the kwarg; external engines (e.g. ri-context-governor)
+    accept it so the resolved host threshold (including the Codex gpt-5.x
+    autoraise) reaches their trigger. A signature guard keeps every engine
+    on its own contract.
+    """
+    _kwargs = {
+        "model": model,
+        "context_length": context_length,
+        "base_url": base_url,
+        "api_key": api_key,
+        "provider": provider,
+        "api_mode": api_mode,
+    }
+    if threshold_percent is not None:
+        try:
+            import inspect
+
+            _params = inspect.signature(compressor.update_model).parameters
+        except (TypeError, ValueError):
+            _params = {}
+        if "threshold_percent" in _params:
+            _kwargs["threshold_percent"] = threshold_percent
+    compressor.update_model(**_kwargs)
+
 # Model-family priority for the auxiliary "fast tier", fastest first.
 #
 # Matched as substrings against the provider's LIVE /v1/models catalog rather

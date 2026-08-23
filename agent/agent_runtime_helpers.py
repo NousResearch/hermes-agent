@@ -2939,13 +2939,25 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             config_context_length=_effective_context_length,
             custom_providers=_sm_custom_providers,
         )
-        agent.context_compressor.update_model(
+        # Forward the per-model resolved threshold (Codex gpt-5.x autoraise
+        # included) to engines that accept threshold_percent; the built-in
+        # compressor re-resolves internally and is skipped by the guard.
+        from agent.auxiliary_client import (
+            _effective_compression_threshold_percent,
+            _update_compressor_model,
+        )
+
+        _update_compressor_model(
+            agent.context_compressor,
             model=agent.model,
             context_length=new_context_length,
             base_url=agent.base_url,
             api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
             provider=agent.provider,
             api_mode=agent.api_mode,
+            threshold_percent=_effective_compression_threshold_percent(
+                agent.model, agent.provider
+            ),
         )
 
     # ── Re-resolve reasoning_config from per-model override ──

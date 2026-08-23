@@ -5349,6 +5349,13 @@ def _compress_session_history(
         usage = _get_usage(agent)
         return 0, usage
     partial, keep_last, focus_topic = parse_partial_compress_args(focus_topic or "")
+    if partial and not getattr(
+        agent.context_compressor, "supports_partial_compression", True
+    ):
+        raise ValueError(
+            "Context Governor cannot safely use /compress here yet; "
+            "use /compress for a receipt-backed full compaction."
+        )
     # Boundary-aware split: only the head is summarized; the most recent
     # `keep_last` exchanges ride along verbatim. A degenerate split (empty
     # tail — everything would be kept, or no head left to compress) falls

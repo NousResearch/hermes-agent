@@ -107,7 +107,7 @@ class CodexAppServerClient:
                 else spawn_env.get(
                     "HERMES_KANBAN_ROOT",
                     os.path.join(
-                        spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
+                        spawn_env.get("HERMES_HOME", os.path.expanduser("~/.ares")),
                         "kanban",
                     ),
                 )

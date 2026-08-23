@@ -89,6 +89,11 @@ def automatic_compaction_status_message(
 class ContextEngine(ABC):
     """Base class all context engines must implement."""
 
+    # Receipt-backed engines may require the committed transcript to retain
+    # their exact projection as a prefix. Generic head/tail partial
+    # compression is compatible by default; stricter engines can turn it off.
+    supports_partial_compression = True
+
     # -- Identity ----------------------------------------------------------
 
     @property
@@ -407,6 +412,38 @@ class ContextEngine(ABC):
         self.last_completion_tokens = 0
         self.last_total_tokens = 0
         self.compression_count = 0
+
+    def commit_pending_compression(
+        self,
+        committed_messages: List[Dict[str, Any]],
+        **kwargs,
+    ) -> bool:
+        """Activate engine-owned state after the host commits a boundary.
+
+        Receipt-backed engines may prepare durable-but-inactive state inside
+        :meth:`compress`, then publish it immediately after the host's durable
+        transcript commit. Later observer/UI work cannot revoke that commit. The default has
+        no staged state and therefore reports success.  ``kwargs`` may include
+        ``new_session_id``, ``old_session_id``, ``session_db``, and ``durable``.
+        """
+        return True
+
+    def validate_pending_compression(
+        self,
+        committed_messages: List[Dict[str, Any]],
+        **kwargs,
+    ) -> bool:
+        """Validate staged state before the host mutates durable transcript state."""
+        return True
+
+    def discard_pending_compression(self, **kwargs) -> bool:
+        """Discard engine-owned state for a host-rejected boundary.
+
+        Called for cancellation, anti-growth rejection, or a transcript
+        transaction failure before durability. Observer deferral is separate. The
+        default has no staged state and therefore reports success.
+        """
+        return True
 
     # -- Optional: tools ---------------------------------------------------
 

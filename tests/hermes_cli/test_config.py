@@ -36,20 +36,30 @@ class TestGetHermesHome:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
-            assert home == Path.home() / ".hermes"
+            assert home == Path.home() / ".ares"
 
 
 class TestEnsureHermesHome:
 
-    def test_creates_default_soul_md_if_missing(self, tmp_path):
+    def test_creates_default_soul_md_if_missing(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("ARES_MANAGED_RUNTIME", raising=False)
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             ensure_hermes_home()
             soul_path = tmp_path / "SOUL.md"
             assert soul_path.exists()
             assert soul_path.read_text(encoding="utf-8").strip() != ""
 
+    def test_managed_runtime_does_not_seed_default_soul_md(self, tmp_path):
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path), "ARES_MANAGED_RUNTIME": "1"},
+        ):
+            ensure_hermes_home()
+            assert not (tmp_path / "SOUL.md").exists()
 
-    def test_upgrades_legacy_template_soul_md(self, tmp_path):
+
+    def test_upgrades_legacy_template_soul_md(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("ARES_MANAGED_RUNTIME", raising=False)
         # Older installers seeded a comment-only scaffold that shadowed the
         # runtime default. A SOUL.md still matching that scaffold carries no
         # user persona and should be upgraded in place to DEFAULT_SOUL_MD.
@@ -60,6 +70,39 @@ class TestEnsureHermesHome:
             soul_path.write_text(_LEGACY_TEMPLATE_SOULS[0] + "\n", encoding="utf-8")
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
+
+    def test_managed_runtime_preserves_existing_legacy_soul_md(self, tmp_path):
+        from hermes_cli.default_soul import _LEGACY_TEMPLATE_SOULS
+
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path), "ARES_MANAGED_RUNTIME": "1"},
+        ):
+            soul_path = tmp_path / "SOUL.md"
+            original = _LEGACY_TEMPLATE_SOULS[0] + "\n"
+            soul_path.write_text(original, encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == original
+
+    def test_managed_runtime_preserves_existing_custom_soul_md(self, tmp_path):
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path), "ARES_MANAGED_RUNTIME": "1"},
+        ):
+            soul_path = tmp_path / "SOUL.md"
+            original = "# Custom identity\n"
+            soul_path.write_text(original, encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == original
+
+    def test_normal_runtime_preserves_existing_custom_soul_md(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("ARES_MANAGED_RUNTIME", raising=False)
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            original = "# Custom identity\n"
+            soul_path.write_text(original, encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == original
 
 
 

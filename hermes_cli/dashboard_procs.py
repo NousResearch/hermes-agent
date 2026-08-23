@@ -735,7 +735,7 @@ def _hermes_home_dir() -> Path:
     override = os.environ.get("HERMES_HOME", "").strip()
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".hermes"
+    return Path.home() / ".ares"
 
 
 def _valid_lockfile_payload(parsed: object, ownership_id: str) -> bool:

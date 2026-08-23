@@ -2176,6 +2176,85 @@ _PENDING_CONTEXT_ENGINE_NOTIFICATION = (
 )
 
 
+def _context_engine_boundary_callback(
+    agent: Any,
+    method_name: str,
+    **kwargs: Any,
+) -> bool:
+    """Invoke an explicitly implemented transactional engine hook.
+
+    Resolve the hook on the class rather than through the instance.  Test
+    doubles commonly use ``MagicMock`` (whose arbitrary attributes are
+    callable), and treating those synthetic attributes as durability hooks
+    would manufacture commit/discard behavior that the engine never declared.
+    """
+    engine = getattr(agent, "context_compressor", None)
+    if engine is None:
+        return True
+    callback = getattr(type(engine), method_name, None)
+    if not callable(callback):
+        return True
+    return callback(engine, **kwargs) is not False
+
+
+def _discard_context_engine_pending_compression(
+    agent: Any,
+    *,
+    reason: str,
+) -> bool:
+    """Best-effort compensation for a boundary the host did not accept."""
+    try:
+        return _context_engine_boundary_callback(
+            agent,
+            "discard_pending_compression",
+            reason=reason,
+            session_id=str(getattr(agent, "session_id", "") or ""),
+            session_db=getattr(agent, "_session_db", None),
+        )
+    except Exception:
+        logger.warning(
+            "context engine pending-compression discard failed (%s)",
+            reason,
+            exc_info=True,
+        )
+        return False
+
+
+def _commit_context_engine_pending_compression(
+    agent: Any,
+    *,
+    committed_messages: list[dict[str, Any]],
+    new_session_id: str,
+    old_session_id: str,
+    durable: bool,
+) -> bool:
+    """Activate staged engine state at the transcript's actual commit point."""
+    return _context_engine_boundary_callback(
+        agent,
+        "commit_pending_compression",
+        committed_messages=copy.deepcopy(committed_messages),
+        new_session_id=new_session_id,
+        old_session_id=old_session_id,
+        session_db=getattr(agent, "_session_db", None),
+        durable=durable,
+    )
+
+
+def _validate_context_engine_pending_compression(
+    agent: Any,
+    *,
+    committed_messages: list[dict[str, Any]],
+) -> bool:
+    """Reject a projection mismatch before SessionDB becomes irreversible."""
+    return _context_engine_boundary_callback(
+        agent,
+        "validate_pending_compression",
+        committed_messages=copy.deepcopy(committed_messages),
+        session_id=str(getattr(agent, "session_id", "") or ""),
+        session_db=getattr(agent, "_session_db", None),
+    )
+
+
 def _notify_context_engine_compression_complete(
     agent: Any,
     *,
@@ -3066,6 +3145,10 @@ def compress_context(
                 except Exception:
                     pass
     except AuxiliaryExplicitCancellation:
+        _discard_context_engine_pending_compression(
+            agent,
+            reason="explicit_interrupt",
+        )
         try:
             _restore_compressor_attempt_state(
                 agent.context_compressor,
@@ -3117,6 +3200,10 @@ def compress_context(
         # ANY exception after lock acquisition — memory hook, capability
         # inspection, engine lookup, or compress() — must release the lock so
         # the session isn't permanently blocked from future compression.
+        _discard_context_engine_pending_compression(
+            agent,
+            reason=f"compression_exception:{type(_compress_exc).__name__}",
+        )
         if _activity_heartbeat is not None:
             _activity_heartbeat.stop("context compression failed")
             _activity_heartbeat = None
@@ -3131,9 +3218,29 @@ def compress_context(
         raise
     finally:
         if _activity_heartbeat is not None:
-            _activity_heartbeat.stop("context compression completed")
+            try:
+                _activity_heartbeat.stop("context compression completed")
+            except Exception:
+                logger.debug(
+                    "compression activity heartbeat cleanup failed",
+                    exc_info=True,
+                )
 
     _commit_fence_entered = False
+    _session_commit_succeeded = False
+    _context_engine_pending_settled = False
+
+    def _discard_pending_once(reason: str) -> bool:
+        nonlocal _context_engine_pending_settled
+        if _context_engine_pending_settled:
+            return True
+        result = _discard_context_engine_pending_compression(
+            agent,
+            reason=reason,
+        )
+        _context_engine_pending_settled = result
+        return result
+
     try:
         # Capture boundary quality before session-rotation callbacks run. Built-in
         # and plugin lifecycle hooks may reset per-session compressor fields while
@@ -3156,6 +3263,7 @@ def compress_context(
         # the no-op via len(returned) == len(input).
         if getattr(agent.context_compressor, "_last_compress_aborted", False):
             try:
+                _discard_pending_once("engine_aborted")
                 _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
                 if getattr(agent, "_last_compression_summary_warning", None) != _err:
                     agent._last_compression_summary_warning = _err
@@ -3213,6 +3321,7 @@ def compress_context(
             return messages, _existing_sp
 
         if not compressed:
+            _discard_pending_once("empty_projection")
             logger.error(
                 "context compression returned an empty transcript; refusing to "
                 "rotate session=%s so the parent remains resumable",
@@ -3234,6 +3343,7 @@ def compress_context(
         if commit_fence is not None:
             _commit_fence_entered = commit_fence.begin_commit(_hard_cancel_event)
             if not _commit_fence_entered:
+                _discard_pending_once("commit_fence_cancelled")
                 _restore_compressor_attempt_state(
                     agent.context_compressor,
                     _compressor_attempt_snapshot,
@@ -3389,7 +3499,14 @@ def compress_context(
             new_system_prompt = agent._build_system_prompt(system_message)
             agent._cached_system_prompt = new_system_prompt
 
-        _session_commit_succeeded = False
+        if not _validate_context_engine_pending_compression(
+            agent,
+            committed_messages=compressed,
+        ):
+            raise RuntimeError(
+                "context engine rejected the pending transcript projection"
+            )
+
         split_status = "not_applicable"
         if agent._session_db:
             split_status = "pending"
@@ -3541,7 +3658,28 @@ def compress_context(
                         watermark=_commit_watermark,
                         lock_holder=_lock_holder,
                     )
+                    _session_commit_succeeded = True
                     split_status = "in_place_committed"
+                    try:
+                        _context_engine_pending_settled = (
+                            _commit_context_engine_pending_compression(
+                                agent,
+                                committed_messages=compressed,
+                                new_session_id=agent.session_id or "",
+                                old_session_id=agent.session_id or "",
+                                durable=True,
+                            )
+                        )
+                    except Exception:
+                        # The SessionDB transcript is already durable. Leave
+                        # the authenticated receipt pending for bind-time
+                        # reconciliation; never publish a mismatched tip or
+                        # roll back the non-destructive archive here.
+                        logger.warning(
+                            "context engine receipt activation failed after "
+                            "in-place SessionDB commit; pending recovery will retry",
+                            exc_info=True,
+                        )
                     # Reset the flush identity set so the next turn's appends are
                     # diffed against the COMPACTED transcript: the compacted dicts
                     # are passed as conversation_history next turn and skipped by
@@ -3684,6 +3822,24 @@ def compress_context(
                         ),
                         watermark_ceiling=_foreign_tail_ceiling,
                     )
+                    _session_commit_succeeded = True
+                    split_status = "rotated_committed"
+                    try:
+                        _context_engine_pending_settled = (
+                            _commit_context_engine_pending_compression(
+                                agent,
+                                committed_messages=compressed,
+                                new_session_id=new_session_id,
+                                old_session_id=old_session_id,
+                                durable=True,
+                            )
+                        )
+                    except Exception:
+                        logger.warning(
+                            "context engine receipt activation failed after "
+                            "compression-child publication; pending recovery will retry",
+                            exc_info=True,
+                        )
                     agent.session_id = new_session_id
                     try:
                         from gateway.session_context import set_current_session_id
@@ -3698,7 +3854,6 @@ def compress_context(
                     except Exception:
                         pass
                     agent._session_db_created = True
-                    split_status = "rotated_committed"
                     # Carry a persistent /goal onto the continuation session.
                     # Compression mints a fresh child id; load_goal does a flat
                     # per-session lookup with no parent walk, so without this an
@@ -3784,8 +3939,14 @@ def compress_context(
                         for message in compressed
                         if isinstance(message, dict)
                     }
-                _session_commit_succeeded = True
             except Exception as e:
+                if not _session_commit_succeeded:
+                    _discard_pending_once(
+                        f"session_commit_failed:{type(e).__name__}"
+                    )
+                    messages[:] = copy.deepcopy(messages_before_compression)
+                    compressed = messages
+                    _compression_made_progress = False
                 if (
                     not in_place
                     and locals().get("old_session_id")
@@ -3815,23 +3976,44 @@ def compress_context(
                                 "_proactive_prune_rearm_tokens"
                             ]
                         )
-                split_status = (
-                    "aborted"
-                    if locals().get("old_session_id") is None and not in_place
-                    else "failed_not_indexed"
-                )
+                if not _session_commit_succeeded:
+                    split_status = (
+                        "aborted"
+                        if locals().get("old_session_id") is None and not in_place
+                        else "failed_not_indexed"
+                    )
                 # If the rotation rolled back to the parent (orphan-avoidance
                 # above), agent.session_id is the still-indexed parent and
                 # old_session_id was cleared — so this is recovery, not an
                 # un-indexed orphan. Otherwise an earlier step failed before the
                 # child was created and the warning's original meaning holds.
-                if locals().get("old_session_id") is None and not in_place:
+                if _session_commit_succeeded:
+                    logger.warning(
+                        "Post-commit compression bookkeeping failed; the durable "
+                        "transcript remains authoritative: %s",
+                        e,
+                    )
+                elif locals().get("old_session_id") is None and not in_place:
                     logger.warning(
                         "Compression rotation aborted and rolled back to the "
                         "parent session (%s): %s", agent.session_id or "?", e,
                     )
                 else:
                     logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+        else:
+            _context_engine_pending_settled = (
+                _commit_context_engine_pending_compression(
+                    agent,
+                    committed_messages=compressed,
+                    new_session_id=agent.session_id or "",
+                    old_session_id=agent.session_id or "",
+                    durable=False,
+                )
+            )
+            if not _context_engine_pending_settled:
+                raise RuntimeError(
+                    "context engine rejected the in-memory compression boundary"
+                )
 
         # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
         # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`
@@ -4010,6 +4192,8 @@ def compress_context(
         )
         return compressed, new_system_prompt
     finally:
+        if not _context_engine_pending_settled and not _session_commit_succeeded:
+            _discard_pending_once("host_boundary_not_committed")
         # Release the lock on the OLD session_id only AFTER rotation completed
         # and all post-rotation bookkeeping (memory manager, context engine,
         # file dedup) ran. A concurrent path that wakes up the moment we

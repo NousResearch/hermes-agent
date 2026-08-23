@@ -1,17 +1,19 @@
 ---
 slug: /
 sidebar_position: 0
-title: "Hermes Agent Documentation"
-description: "The self-improving AI agent built by Nous Research. A built-in learning loop that creates skills from experience, improves them during use, and remembers across sessions."
+title: "Ares Documentation"
+description: "Ares is an evidence-native, Hermes-compatible downstream distribution maintained by RecursiveIntell."
 hide_table_of_contents: true
 displayed_sidebar: docs
 ---
 
 import Link from "@docusaurus/Link";
 
-# Hermes Agent
+# Ares
 
-The self-improving AI agent built by [Nous Research](https://nousresearch.com). The only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, and builds a deepening model of who you are across sessions.
+**Ares is an evidence-native, Hermes-compatible AI workbench maintained by RecursiveIntell.** It is a downstream distribution of [Hermes Agent](https://github.com/NousResearch/hermes-agent), not an official Nous Research product.
+
+Ares preserves the familiar `hermes` package and CLI while adding a distinct installer, an isolated `~/.ares` default home, and documented integration boundaries for evidence-oriented local services.
 
 <div
   style={{
@@ -22,18 +24,18 @@ The self-improving AI agent built by [Nous Research](https://nousresearch.com). 
   }}
 >
   <Link
-    to="/getting-started/installation"
+    to="/ares"
     style={{
       display: "inline-block",
       padding: "0.6rem 1.2rem",
-      backgroundColor: "#FFD700",
+      backgroundColor: "#9b7bff",
       color: "#07070d",
       borderRadius: "8px",
       fontWeight: 600,
       textDecoration: "none",
     }}
   >
-    Get Started →
+    What is Ares? →
   </Link>
   <Link
     to="/user-guide/bot-mode"
@@ -48,50 +50,59 @@ The self-improving AI agent built by [Nous Research](https://nousresearch.com). 
     Explore Bot Mode
   </Link>
   <a
-    href="https://hermes-agent.nousresearch.com/"
+    href="https://github.com/RecursiveIntell/hermes-agent#readme"
     style={{
       display: "inline-block",
       padding: "0.6rem 1.2rem",
-      border: "1px solid rgba(255,215,0,0.2)",
+      border: "1px solid rgba(155,123,255,0.35)",
       borderRadius: "8px",
       textDecoration: "none",
     }}
   >
-    Download Desktop
+    Install from source
   </a>
   <a
     href="https://github.com/NousResearch/hermes-agent"
     style={{
       display: "inline-block",
       padding: "0.6rem 1.2rem",
-      border: "1px solid rgba(255,215,0,0.2)",
+      border: "1px solid rgba(155,123,255,0.35)",
       borderRadius: "8px",
       textDecoration: "none",
     }}
   >
-    View on GitHub
+    Upstream Hermes
   </a>
 </div>
 
-## Install
+## Start here
 
-### Windows or macOS
+1. Read the [Ares distribution boundary](/ares) to understand what is fork-owned, optional, or merely Hermes-compatible.
+2. Follow the source-reviewed bootstrap in the [Ares README](https://github.com/RecursiveIntell/hermes-agent#quick-start).
+3. Configure a provider through `ares setup`; the bootstrap does not create credentials or select a provider for you.
+4. Add optional services only after their own lifecycle and verification gates pass.
 
-To easily install the command-line and desktop applications, [download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/) from our website and run it.
+## Ares-specific capability model
 
-### Without Hermes Desktop:
+| Layer | State | Evidence needed before relying on it |
+|---|---|---|
+| Ares runtime | Hermes-compatible | A fresh `ares --version` / `ares doctor` check |
+| Plugin | Installed | Fresh plugin discovery and tool registration |
+| Service | Configured | Reachable service with typed configuration |
+| Governed execution | Exercised | Bounded run plus daemon-derived verification facts |
 
-For a command-line only install without Hermes Desktop, run:
+A selected or registered component is not necessarily exposed in the current session; an exposed component is not proof of a successful real-world run.
 
-#### Linux / macOS / WSL2 / Android (Termux)
+## Hermes-compatible reference documentation
 
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-```
+The rest of this site documents the Hermes-compatible base. It remains relevant for the CLI, configuration, tools, skills, gateway, and desktop surfaces that Ares has not replaced. Where this documentation names upstream distribution URLs or upstream support channels, treat those as **upstream Hermes references**, not Ares delivery or support commitments.
 
-#### Windows (native)
+## Important boundaries
 
-Run in powershell:
+- Ares does not claim production readiness, security certification, or universal provider/platform support.
+- Plugins and hooks execute with the authority of the Ares/Hermes agent process; review them before installation.
+- Operating-system or whole-process isolation—not prompts, receipts, or tool allowlists—is the containment boundary for hostile-input workloads.
+- Recursive Agent, semantic memory, Agent Graph, Claim Ledger, CEA Graph, and Pilot Bridge are separate services/projects. Their source presence does not make them installed or active.
 
 ```powershell
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)

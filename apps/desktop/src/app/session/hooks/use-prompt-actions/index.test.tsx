@@ -2191,10 +2191,8 @@ describe('usePromptActions submit / queue drain semantics', () => {
     )
   })
 
-  it('rides out a transient "session busy" so the user never sees it (retries, no error bubble)', async () => {
-    // A submit racing the settle edge can hit a transient 4009 before the turn
-    // has fully wound down. It must be invisible: retried in place until the
-    // gateway accepts, never a red "session busy" bubble.
+  it('surfaces a transient "session busy" instead of hiding it behind a retry', async () => {
+    // No client-side retry: a rejected submit must remain an explicit failure.
     let attempt = 0
     const seeds: Record<string, unknown>[] = []
 
@@ -2220,11 +2218,10 @@ describe('usePromptActions submit / queue drain semantics', () => {
       />
     )
 
-    expect(await handle!.submitText('sent while settling')).toBe(true)
-    expect(attempt).toBe(2) // rode past the busy on the second try
-    // No assistant-error message was appended for the transient busy.
+    expect(await handle!.submitText('sent while settling')).toBe(false)
+    expect(attempt).toBe(1)
     expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
-      false
+      true
     )
   })
 

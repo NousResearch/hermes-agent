@@ -13372,6 +13372,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # most recent `keep_last` exchanges ride along verbatim.
                 tail: list = []
                 head = original_history
+                if partial and not getattr(
+                    self.agent.context_compressor,
+                    "supports_partial_compression",
+                    True,
+                ):
+                    print(
+                        "  Context Governor cannot safely use /compress here yet; "
+                        "use /compress for a receipt-backed full compaction."
+                    )
+                    return
                 if partial:
                     head, tail = split_history_for_partial_compress(
                         original_history, keep_last

@@ -75,7 +75,9 @@ class TestUpdateYesConfigMigration:
 
         args = SimpleNamespace(yes=True)
 
-        with patch("builtins.input") as mock_input:
+        with patch("builtins.input") as mock_input, patch(
+            "hermes_cli.gateway.find_gateway_pids", return_value=[]
+        ):
             cmd_update(args)
             # Never prompted the user.
             mock_input.assert_not_called()
@@ -126,7 +128,9 @@ class TestUpdateYesConfigMigration:
         # "Non-interactive session" branch instead of prompting.
         import sys as _sys
 
-        with patch("builtins.input", return_value="n") as mock_input, patch.object(
+        with patch("builtins.input", return_value="n") as mock_input, patch(
+            "hermes_cli.gateway.find_gateway_pids", return_value=[]
+        ), patch.object(
             _sys.stdin, "isatty", return_value=True
         ), patch.object(_sys.stdout, "isatty", return_value=True):
             cmd_update(args)
@@ -180,7 +184,9 @@ class TestUnicodeDecodeErrorInUpdatePrompts:
         with patch(
             "builtins.input",
             side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
-        ), patch.object(_sys.stdin, "isatty", return_value=True), patch.object(
+        ), patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), patch.object(
+            _sys.stdin, "isatty", return_value=True
+        ), patch.object(
             _sys.stdout, "isatty", return_value=True
         ):
             cmd_update(args)  # must not raise

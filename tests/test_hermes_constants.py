@@ -34,11 +34,11 @@ class TestGetDefaultHermesRoot:
     """Tests for get_default_hermes_root() — Docker/custom deployment awareness."""
 
     def test_no_hermes_home_returns_native(self, tmp_path, monkeypatch):
-        """When HERMES_HOME is not set, returns ~/.hermes."""
+        """When HERMES_HOME is not set, returns ~/.ares."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        assert get_default_hermes_root() == tmp_path / ".hermes"
+        assert get_default_hermes_root() == tmp_path / ".ares"
 
 
 
@@ -56,13 +56,13 @@ class TestGetDefaultHermesRoot:
 
     @pytest.mark.windows_only
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
-        """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""
+        """Native Windows falls back to %LOCALAPPDATA%\\ares, not ~/.ares."""
         local_appdata = tmp_path / "LocalAppData"
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
 
-        assert get_default_hermes_root() == local_appdata / "hermes"
+        assert get_default_hermes_root() == local_appdata / "ares"
 
     def test_result_memoised_until_env_or_home_changes(self, tmp_path, monkeypatch):
         """Repeated calls reuse the memo; HERMES_HOME / home changes invalidate.

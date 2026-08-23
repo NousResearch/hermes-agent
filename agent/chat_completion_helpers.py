@@ -2792,13 +2792,26 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 config_context_length=getattr(agent, "_config_context_length", None),
                 custom_providers=getattr(agent, "_custom_providers", None),
             )
-            agent.context_compressor.update_model(
+            # Forward the per-model resolved threshold (Codex gpt-5.x
+            # autoraise included) to engines that accept threshold_percent;
+            # the built-in compressor re-resolves internally and is skipped
+            # by the signature guard.
+            from agent.auxiliary_client import (
+                _effective_compression_threshold_percent,
+                _update_compressor_model,
+            )
+
+            _update_compressor_model(
+                agent.context_compressor,
                 model=agent.model,
                 context_length=fb_context_length,
                 base_url=agent.base_url,
                 api_key=getattr(agent, "api_key", ""),  # callable preserved → call_llm
                 provider=agent.provider,
                 api_mode=agent.api_mode,
+                threshold_percent=_effective_compression_threshold_percent(
+                    agent.model, agent.provider
+                ),
             )
 
         # Re-resolve reasoning_config for the new fallback model (Closes #21256).

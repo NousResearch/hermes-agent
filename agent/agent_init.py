@@ -2697,12 +2697,10 @@ def init_agent(
 
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
-        # External engines own compaction policy: the host compression
-        # threshold (including the Codex gpt-5.5 autoraise above) only
-        # configures the built-in ContextCompressor and never reaches the
-        # plugin, so the autoraise notice would announce a change that does
-        # not apply. Drop it. (#44439)
-        agent._compression_threshold_autoraised = None
+        # The host compression threshold (including the Codex gpt-5.x
+        # autoraise above) is forwarded below to engines whose update_model
+        # accepts threshold_percent, so the autoraise notice stays accurate
+        # for plugin engines too (previously dropped here, #44439).
         # Resolve context_length for plugin engines — mirrors switch_model() path
         from agent.model_metadata import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
@@ -2723,13 +2721,20 @@ def init_agent(
         # and may ignore the attribute.
         if compression_model_thresholds:
             agent.context_compressor.model_thresholds = compression_model_thresholds
-        agent.context_compressor.update_model(
+        # Forward the resolved host threshold (config value or Codex gpt-5.x
+        # autoraise) to engines that accept threshold_percent; the built-in
+        # compressor re-resolves internally and is skipped by the guard.
+        from agent.auxiliary_client import _update_compressor_model
+
+        _update_compressor_model(
+            agent.context_compressor,
             model=agent.model,
             context_length=_plugin_ctx_len,
             base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""),
             provider=agent.provider,
             api_mode=agent.api_mode,
+            threshold_percent=compression_threshold,
         )
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)

@@ -100,17 +100,6 @@ DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 # run until the turn budget, wasting every turn on an unreachable judge.
 DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
 
-# Quality gates: deterministic shell commands that must pass before the goal
-# judge may declare the goal done. Defaults mirror the bounded-autonomy
-# pattern (per-gate retry limit + timeout, bounded output fed back to the
-# agent). A failed gate short-circuits the judge — its output IS the
-# continuation prompt, so the agent works on concrete evidence instead of a
-# vibe check.
-DEFAULT_GATE_TIMEOUT_SECONDS = 300
-DEFAULT_GATE_MAX_RETRIES = 3
-# Bounded tail of a failed gate's combined stdout/stderr fed back to the agent.
-_GATE_OUTPUT_TAIL_CHARS = 3000
-
 
 CONTINUATION_PROMPT_TEMPLATE = (
     "[Continuing toward your standing goal]\n"
@@ -150,25 +139,6 @@ CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "additional criterion are complete, state so explicitly and stop. "
     "If you are blocked and need input from the user, say so clearly "
     "and stop."
-)
-
-
-# Fed back when a quality gate fails: the gate's bounded output is the
-# evidence the agent must repair against. Deterministic — no judge involved.
-CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE = (
-    "[Continuing toward your standing goal — a quality gate failed]\n"
-    "Goal: {goal}\n\n"
-    "The quality gate command below must pass before this goal can be "
-    "declared done, and it just failed (attempt {attempt}/{max_retries}):\n"
-    "  $ {command}\n"
-    "Exit code: {exit_code}\n"
-    "Output (tail):\n"
-    "```\n"
-    "{output}\n"
-    "```\n\n"
-    "Fix the underlying problem so this gate passes, then re-run it to "
-    "confirm. Do not declare the goal complete while any gate fails. If the "
-    "gate itself is wrong or cannot pass, say so clearly and stop."
 )
 
 
@@ -395,6 +365,91 @@ class GoalContract:
         return "\n".join(lines)
 
 
+@dataclass
+class GoalGate:
+    """Durable deterministic completion gate state.
+
+    Compatibility port from upstream Hermes commit 6e041d524; the Ares source
+    tree predates that commit, so this type is retained here to prevent state
+    loss when profiles move between the two owners.
+    """
+
+    command: str
+    timeout_seconds: int = DEFAULT_GATE_TIMEOUT_SECONDS
+    max_retries: int = DEFAULT_GATE_MAX_RETRIES
+    attempts: int = 0
+    last_exit_code: Optional[int] = None
+    last_output_tail: str = ""
+    last_failed_fingerprint: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GoalGate":
+        if not isinstance(data, dict):
+            return cls(command="")
+        return cls(
+            command=str(data.get("command") or ""),
+            timeout_seconds=int(data.get("timeout_seconds", DEFAULT_GATE_TIMEOUT_SECONDS) or DEFAULT_GATE_TIMEOUT_SECONDS),
+            max_retries=int(data.get("max_retries", DEFAULT_GATE_MAX_RETRIES) or DEFAULT_GATE_MAX_RETRIES),
+            attempts=int(data.get("attempts", 0) or 0),
+            last_exit_code=(int(data["last_exit_code"]) if data.get("last_exit_code") is not None else None),
+            last_output_tail=str(data.get("last_output_tail") or ""),
+            last_failed_fingerprint=str(data.get("last_failed_fingerprint") or ""),
+        )
+
+
+def workspace_fingerprint(cwd: Optional[str] = None) -> str:
+    """Hash repository HEAD plus status for deterministic gate replay."""
+    workdir = cwd or os.getcwd()
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=workdir,
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=workdir,
+        )
+        if head.returncode or status.returncode:
+            return ""
+        return hashlib.sha256((head.stdout.strip() + "\n" + status.stdout).encode("utf-8", "replace")).hexdigest()
+    except Exception:
+        return ""
+
+
+def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, str]:
+    """Run one bounded deterministic shell gate and return its receipt data."""
+    try:
+        result = subprocess.run(
+            gate.command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(1, int(gate.timeout_seconds)),
+            cwd=cwd or None,
+        )
+        combined = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
+        return result.returncode == 0, result.returncode, combined[-_GATE_OUTPUT_TAIL_CHARS:]
+    except subprocess.TimeoutExpired as exc:
+        output = ""
+        for chunk in (exc.stdout, exc.stderr):
+            if chunk:
+                output += chunk if isinstance(chunk, str) else chunk.decode("utf-8", "replace")
+        return False, -1, (output + f"\n[gate timed out after {gate.timeout_seconds}s]")[-_GATE_OUTPUT_TAIL_CHARS:]
+    except Exception as exc:
+        return False, -1, f"[gate could not run: {type(exc).__name__}: {exc}]"
+
+
 def parse_contract(text: str) -> Tuple[str, GoalContract]:
     """Split user-typed goal text into a headline + structured contract.
 
@@ -442,124 +497,6 @@ def parse_contract(text: str) -> Tuple[str, GoalContract]:
     # IS the outcome — don't duplicate it into the contract block (the goal
     # text already carries it), so leave outcome empty in that case.
     return headline, contract
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Quality gates
-# ──────────────────────────────────────────────────────────────────────
-
-
-@dataclass
-class GoalGate:
-    """A deterministic shell command that must pass before a goal can be done.
-
-    Gates run at turn boundary BEFORE the LLM judge. A failing gate
-    short-circuits judging entirely: its bounded output becomes the
-    continuation prompt, so the agent iterates against concrete evidence.
-    Only when every gate passes does the judge get to decide DONE.
-
-    ``attempts`` counts failed runs; when it exceeds ``max_retries`` the goal
-    auto-pauses (mirrors the turn-budget pause) instead of spinning. A gate
-    that failed on an unchanged workspace is not re-run — the recorded
-    failure is replayed and the attempt count advances, so a stuck agent
-    can't burn wall-clock re-running the same red suite.
-    """
-
-    command: str
-    timeout_seconds: int = DEFAULT_GATE_TIMEOUT_SECONDS
-    max_retries: int = DEFAULT_GATE_MAX_RETRIES
-    attempts: int = 0
-    last_exit_code: Optional[int] = None
-    last_output_tail: str = ""
-    # Workspace fingerprint at the time of the last FAILED run — used to skip
-    # re-running an identical gate when nothing changed since it failed.
-    last_failed_fingerprint: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GoalGate":
-        if not isinstance(data, dict):
-            return cls(command="")
-        return cls(
-            command=str(data.get("command") or ""),
-            timeout_seconds=int(data.get("timeout_seconds", DEFAULT_GATE_TIMEOUT_SECONDS) or DEFAULT_GATE_TIMEOUT_SECONDS),
-            max_retries=int(data.get("max_retries", DEFAULT_GATE_MAX_RETRIES) or DEFAULT_GATE_MAX_RETRIES),
-            attempts=int(data.get("attempts", 0) or 0),
-            last_exit_code=(int(data["last_exit_code"]) if data.get("last_exit_code") is not None else None),
-            last_output_tail=str(data.get("last_output_tail") or ""),
-            last_failed_fingerprint=str(data.get("last_failed_fingerprint") or ""),
-        )
-
-
-def workspace_fingerprint(cwd: Optional[str] = None) -> str:
-    """Cheap workspace change fingerprint for unchanged-gate skip.
-
-    Uses ``git status --porcelain`` + ``git rev-parse HEAD`` when inside a git
-    repo (covers tracked edits, stages, and commits). Outside git, returns
-    an empty string — an empty fingerprint never matches, so gates simply
-    always re-run (safe fallback, no behavior regression for non-repo work).
-    """
-    workdir = cwd or os.getcwd()
-    try:
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=10, cwd=workdir,
-        )
-        if head.returncode != 0:
-            return ""
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=30, cwd=workdir,
-        )
-        if status.returncode != 0:
-            return ""
-        blob = head.stdout.strip() + "\n" + status.stdout
-        return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
-    except Exception:
-        return ""
-
-
-def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, str]:
-    """Run one gate command. Returns ``(passed, exit_code, output_tail)``.
-
-    The command runs through the shell in ``cwd`` (default: process cwd) with
-    a hard timeout; on timeout the process is killed and treated as failed
-    with exit code -1. Output is the combined stdout+stderr tail, bounded to
-    ``_GATE_OUTPUT_TAIL_CHARS``.
-    """
-    try:
-        proc = subprocess.run(
-            gate.command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            # A gate runs whatever the operator configured, so its output is
-            # arbitrary bytes. The default text mode decodes with the process
-            # codepage under errors="strict": one byte the codepage can't map
-            # (emoji or CJK from a test runner on a non-UTF-8 Windows console,
-            # or stray binary) kills the reader thread, leaves stdout as None,
-            # and the tail the agent needs to fix the failure arrives empty.
-            encoding="utf-8",
-            errors="replace",
-            timeout=max(1, int(gate.timeout_seconds)),
-            cwd=cwd or None,
-        )
-        combined = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
-        tail = combined[-_GATE_OUTPUT_TAIL_CHARS:]
-        return proc.returncode == 0, proc.returncode, tail
-    except subprocess.TimeoutExpired as exc:
-        out = ""
-        for chunk in (exc.stdout, exc.stderr):
-            if chunk:
-                out += chunk if isinstance(chunk, str) else chunk.decode("utf-8", "replace")
-        tail = (out + f"\n[gate timed out after {gate.timeout_seconds}s]")[-_GATE_OUTPUT_TAIL_CHARS:]
-        return False, -1, tail
-    except Exception as exc:
-        return False, -1, f"[gate could not run: {type(exc).__name__}: {exc}]"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -872,7 +809,7 @@ def _get_session_db() -> Optional[Any]:
         return _DB_CACHE.get(home)
 
     try:
-        db = SessionDB()
+        db = SessionDB(db_path=Path(home) / "state.db")
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB() raised (%s)", exc)
         return None
@@ -1955,11 +1892,6 @@ class GoalManager:
         timeout_seconds: Optional[int] = None,
         max_retries: Optional[int] = None,
     ) -> GoalGate:
-        """Append a quality-gate command to the active goal.
-
-        Requires ``has_goal()``; raises ``RuntimeError`` otherwise. Returns
-        the created gate so callers can echo it back.
-        """
         if self._state is None or not self.has_goal():
             raise RuntimeError("no active goal")
         command = (command or "").strip()
@@ -2004,44 +1936,24 @@ class GoalManager:
         if not self._state.gates:
             return "(no quality gates — use /goal gate add <command> to require one)"
         lines = []
-        for i, g in enumerate(self._state.gates, start=1):
-            status = ""
-            if g.last_exit_code is not None:
-                status = " ✓ passing" if g.last_exit_code == 0 else (
-                    f" ✗ failing (exit {g.last_exit_code}, attempt {g.attempts}/{g.max_retries})"
-                )
-            lines.append(f"- {i}. $ {g.command}{status}")
-        return "\n".join(lines)
+        for index, gate in enumerate(self._state.gates, start=1):
+            if gate.last_exit_code is None:
+                status = ""
+            elif gate.last_exit_code == 0:
+                status = " ✓ passing"
+            else:
+                status = f" ✗ failing (exit {gate.last_exit_code}, attempt {gate.attempts}/{gate.max_retries})"
+            lines.append(f"- {index}. $ {gate.command}{status}")
+        return "\\n".join(lines)
 
     def _check_gates(self) -> Optional[Dict[str, Any]]:
-        """Run quality gates in order; return a decision dict on failure.
-
-        Returns ``None`` when there are no gates or every gate passes —
-        the caller then proceeds to the LLM judge. On the first failing
-        gate, returns a full ``evaluate_after_turn``-shaped decision dict:
-        either a continuation carrying the gate's output (attempts left)
-        or an auto-pause (retries exhausted).
-
-        An unchanged workspace since the last failure of the same gate is
-        NOT re-run — the recorded failure is replayed and the attempt count
-        advances, so a stalled agent can't spin re-running an identical red
-        suite (mirrors Prime-Agent's unchanged-gate rule).
-        """
         state = self._state
         if state is None or not state.gates:
             return None
-
         fingerprint = workspace_fingerprint()
         for gate in state.gates:
-            unchanged = (
-                bool(fingerprint)
-                and gate.last_exit_code not in (None, 0)
-                and gate.last_failed_fingerprint == fingerprint
-            )
-            if unchanged:
-                passed, exit_code, tail = False, int(gate.last_exit_code or -1), gate.last_output_tail
-            else:
-                passed, exit_code, tail = run_gate(gate)
+            unchanged = bool(fingerprint) and gate.last_exit_code not in (None, 0) and gate.last_failed_fingerprint == fingerprint
+            passed, exit_code, tail = (False, int(gate.last_exit_code or -1), gate.last_output_tail) if unchanged else run_gate(gate)
             gate.last_exit_code = exit_code
             gate.last_output_tail = tail
             if passed:
@@ -2655,11 +2567,9 @@ KANBAN_GOAL_CONTINUATION_TEMPLATE = (
     "[Continuing toward this kanban task — judge says it is not done yet]\n"
     "Reason: {reason}\n\n"
     "Take the next concrete step toward completing the task. When the work "
-    "is genuinely finished, call kanban_complete with a summary. If it is a "
-    "code change that needs same-card review before counting as done, call "
-    "kanban_request_review with a summary instead. If you are blocked and "
-    "need human input, call kanban_block with a reason. Do not stop without "
-    "calling one of them."
+    "is genuinely finished, call kanban_complete with a summary. If you are "
+    "blocked and need human input, call kanban_block with a reason. Do not "
+    "stop without calling one of them."
 )
 
 # Fed when the judge believes the work is done but the worker never called
@@ -2669,9 +2579,8 @@ KANBAN_GOAL_FINALIZE_TEMPLATE = (
     "[The work looks complete, but the task is still open]\n"
     "Reason: {reason}\n\n"
     "If the task is genuinely done, call kanban_complete now with a short "
-    "summary of what you did. If it is a code change awaiting same-card review, "
-    "call kanban_request_review with that summary instead. If something still "
-    "blocks completion, call kanban_block with the reason instead."
+    "summary of what you did. If something still blocks completion, call "
+    "kanban_block with the reason instead."
 )
 
 
@@ -2710,8 +2619,7 @@ def run_kanban_goal_loop(
     (reason: str -> None).
 
     Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
-    outcome is one of ``"completed_by_worker"``, ``"review_requested_by_worker"``,
-    ``"changes_requested_by_reviewer"``, ``"blocked_budget"``,
+    outcome is one of ``"completed_by_worker"``, ``"blocked_budget"``,
     ``"blocked_by_worker"``, or ``"stopped"``.
     """
 
@@ -2746,9 +2654,6 @@ def run_kanban_goal_loop(
             _log(f"kanban goal loop: task {task_id} blocked by worker after {turns_used} turn(s)")
             return {"outcome": "blocked_by_worker", "turns_used": turns_used, "reason": "worker blocked the task"}
         if status == "review":
-            # A legitimate worker-driven terminator (kanban_request_review),
-            # not an unexpected stop: the implementation is done and the task
-            # is awaiting a reviewer. Stop the loop cleanly.
             _log(f"kanban goal loop: task {task_id} handed off for review by worker after {turns_used} turn(s)")
             return {"outcome": "review_requested_by_worker", "turns_used": turns_used, "reason": "worker requested review"}
         if status == "changes_requested":
@@ -2826,8 +2731,6 @@ __all__ = [
     "CANCELLED",
     "parse_contract",
     "draft_contract",
-    "run_gate",
-    "workspace_fingerprint",
     "CONTINUATION_PROMPT_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE",

@@ -35,6 +35,7 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     EXECUTION_GUIDANCE_MODELS,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+    select_default_agent_identity,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
@@ -388,8 +389,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             _soul_loaded = True
 
     if not _soul_loaded:
-        # Fallback to hardcoded identity
-        stable_parts.append(DEFAULT_AGENT_IDENTITY)
+        # Fallback to an explicit distribution-owned identity.
+        stable_parts.append(select_default_agent_identity(DEFAULT_AGENT_IDENTITY))
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)

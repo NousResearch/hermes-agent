@@ -279,6 +279,7 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     """The cache split must not reorder the stored coding prompt."""
     import agent.system_prompt as system_prompt
 
+    monkeypatch.delenv("ARES_MANAGED_RUNTIME", raising=False)
     agent = _make_agent(
         valid_tool_names=["read_file"],
         _parallel_tool_call_guidance=False,

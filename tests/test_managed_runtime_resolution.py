@@ -125,6 +125,12 @@ def _source_files() -> list[Path]:
         rel = path.relative_to(REPO_ROOT)
         if rel.parts and rel.parts[0] in _EXEMPT_DIRS:
             continue
+        # Packaging tests may unpack an sdist as ``hermes_agent-<version>``
+        # alongside the source tree while this suite runs in parallel. That
+        # artifact is not a source call site and must not make this ratchet
+        # inspect a stale copy of the project.
+        if rel.parts and rel.parts[0].startswith("hermes_agent-"):
+            continue
         files.append(path)
     return files
 

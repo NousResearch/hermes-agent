@@ -4745,6 +4745,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 mime_type="image/png",
                 max_base64_bytes=_EMBED_TARGET_BYTES,
                 max_dimension=_EMBED_MAX_DIMENSION,
+                force_jpeg=True,
             )
             native_result = _build_native_vision_tool_result(
                 image_url=str(screenshot_path),

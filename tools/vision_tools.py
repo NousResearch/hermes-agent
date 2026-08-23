@@ -793,7 +793,8 @@ def _build_scale_note(
 def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                               max_base64_bytes: int = _RESIZE_TARGET_BYTES,
                               max_dimension: Optional[int] = None,
-                              scale_out: Optional[dict] = None) -> str:
+                              scale_out: Optional[dict] = None,
+                              force_jpeg: bool = False) -> str:
     """Convert an image to a base64 data URL, auto-resizing if too large.
 
     Tries Pillow first to progressively downscale oversized images.  If Pillow
@@ -805,6 +806,13 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
             count are forcibly downscaled even if they're under the byte
             budget.  Anthropic enforces an 8000 px per-side cap independently
             of the 5 MB byte cap.
+        force_jpeg: Re-encode as JPEG even for PNG input when a resize is
+            needed.  PNG has no quality ladder — its only shrink lever is
+            halving dimensions, which destroys text legibility on dense
+            screenshots.  History-reuse embeds (#92699) opt in so a text-heavy
+            screenshot keeps its readable resolution and shrinks via JPEG
+            quality instead.  Images already under both caps are returned
+            unchanged (still PNG).
 
     Returns the base64 data URL string.
     """
@@ -862,8 +870,14 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                 max_base64_bytes / (1024 * 1024), max_dimension)
 
     mime = mime_type or _determine_mime_type(image_path)
-    # Choose output format: JPEG for photos (smaller), PNG for transparency
-    pil_format = "PNG" if mime == "image/png" else "JPEG"
+    # Choose output format: JPEG for photos (smaller), PNG for transparency.
+    # force_jpeg overrides for history-reuse embeds: a resize-needing PNG
+    # screenshot re-encodes as JPEG so the quality ladder can shrink bytes
+    # without halving resolution (text legibility, #92699).
+    if force_jpeg:
+        pil_format = "JPEG"
+    else:
+        pil_format = "PNG" if mime == "image/png" else "JPEG"
     out_mime = "image/png" if pil_format == "PNG" else "image/jpeg"
 
     try:
@@ -1254,6 +1268,7 @@ async def _vision_analyze_native(
                 max_base64_bytes=_EMBED_TARGET_BYTES,
                 max_dimension=_EMBED_MAX_DIMENSION,
                 scale_out=_scale_info,
+                force_jpeg=True,
             )
             # If even resizing can't get under the absolute hard ceiling,
             # there's nothing more we can do — reject rather than embed a

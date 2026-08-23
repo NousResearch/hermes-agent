@@ -221,13 +221,15 @@ test('sweepBotProfileSessions hides Bot-Mode-titled rows per roster bot, and onl
   const calls = []
   const rowsByProfile = {
     alpha: [
-      { id: 'a-1', title: 'Bot Chat' },
-      { id: 'a-2', title: 'Agent Inbox' },
-      { id: 'a-3', title: 'Group: Core' },
-      { id: 'a-4', title: 'My real conversation' },
-      { id: 'a-5', title: 'Bot Chat notes' } // not an exact title — kept
+      { id: 'a-1', title: 'Bot Chat', started_at: 1 },
+      { id: 'a-2', title: 'Agent Inbox', started_at: 1 },
+      { id: 'a-3', title: 'Group: Core', started_at: 1 },
+      { id: 'a-4', title: 'My real conversation', started_at: 1 },
+      { id: 'a-5', title: 'Bot Chat notes', started_at: 1 }, // not an exact title — kept
+      { id: 'a-6', title: 'Bot Chat', started_at: Date.now() / 1000 }, // live draft — kept
+      { id: 'a-7', title: 'Agent Inbox' } // missing age metadata — kept fail-closed
     ],
-    remy: [{ id: 'r-1', title: 'Agent Inbox' }]
+    remy: [{ id: 'r-1', title: 'Agent Inbox', started_at: 1 }]
   }
   const context = {
     host: { request: async () => ({}) },
@@ -256,7 +258,7 @@ test('sweepBotProfileSessions hides Bot-Mode-titled rows per roster bot, and onl
   assert.deepEqual(
     hidden.map(c => c.params.session_id).sort(),
     ['a-1', 'a-2', 'a-3', 'r-1'],
-    'exact plumbing titles only — user-titled rows in bot profiles stay visible'
+    'exact plumbing titles only — user-titled and brand-new rows stay visible'
   )
   assert.ok(hidden.every(c => c.params.hidden === true))
   // Remote-source bots route through requestForBot with their own bot row.

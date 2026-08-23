@@ -2093,10 +2093,23 @@ function hideOwnedBotSessions() {
 // user's real conversation inside a bot profile keeps whatever title the
 // user gave it and is never touched.
 const BOT_MODE_SWEEP_TITLES = new Set(['Bot Chat', 'Agent Inbox'])
+const BOT_MODE_SWEEP_MIN_AGE_SECONDS = 5 * 60
 
 function isBotModeSweepTitle(title) {
   const t = String(title || '').trim()
   return BOT_MODE_SWEEP_TITLES.has(t) || t.startsWith('Group: ')
+}
+
+function isBotModeSweepCandidate(row, nowSeconds = Date.now() / 1000) {
+  const startedAt = Number(row?.started_at)
+  return (
+    row &&
+    row.id &&
+    isBotModeSweepTitle(row.title) &&
+    Number.isFinite(startedAt) &&
+    startedAt > 0 &&
+    nowSeconds - startedAt >= BOT_MODE_SWEEP_MIN_AGE_SECONDS
+  )
 }
 
 /** Ownership-based sweep: the id-based sweep above only covers sessions the
@@ -2106,8 +2119,11 @@ function isBotModeSweepTitle(title) {
  *  profile) — and those ids the plugin never learns. So: enumerate each
  *  roster bot's OWN profile sessions (only bot profiles — a non-bot profile
  *  is never listed, so its sessions are never touched) and hide any VISIBLE
- *  row whose title is Bot Mode plumbing. session.list without include_hidden
- *  returns only visible rows, which keeps the sweep naturally idempotent.
+ *  row whose title is Bot Mode plumbing and whose creation grace period has
+ *  elapsed. The grace period protects a new desktop draft while its first-turn
+ *  title is pending; missing or future timestamps fail closed. session.list
+ *  without include_hidden returns only visible rows, which keeps the sweep
+ *  naturally idempotent.
  *  Remote-source bots route to their own connection via requestForBot.
  *  Feature-detected + fire-and-forget: older gateways without per-profile
  *  session.list / session.set_hidden simply reject and the sweep no-ops. */
@@ -2142,7 +2158,7 @@ async function sweepBotProfileSessions() {
 
         await Promise.all(
           rows
-            .filter(row => row && row.id && isBotModeSweepTitle(row.title))
+            .filter(row => isBotModeSweepCandidate(row))
             .map(row =>
               Promise.resolve(
                 requestForBot(bot, 'session.set_hidden', { session_id: row.id, hidden: true, profile: name })

@@ -905,6 +905,7 @@ export interface Translations extends NoticeTranslations {
         overlayShapes: Record<'ellipse' | 'strip', string>
         overlayColor: string
         overlayColorTheme: string
+        overlayFeather: string
         overlayWidth: string
         overlayHeight: string
         overlayPosition: string

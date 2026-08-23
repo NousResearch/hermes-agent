@@ -694,6 +694,7 @@ export const jaOverrides = {
         overlayShapes: { ellipse: '楕円', strip: '縦帯' },
         overlayColor: 'マスクの色',
         overlayColorTheme: 'テーマに合わせる',
+        overlayFeather: 'マスクのぼかし',
         overlayWidth: 'マスクの幅',
         overlayHeight: 'マスクの高さ',
         overlayPosition: 'マスク位置',

@@ -102,9 +102,46 @@ class TestGatewayLifecyclePattern:
         "Monitor the gateway and tell me if a restart is recommended",
         "research how the OpenAI API gateway handles restart after rate limiting",
         "compare AWS API Gateway vs Cloudflare on restart latency",
+        # #92372 Branch A: no trailing boundary meant ordinary prose matched —
+        # "restarted" carries the "restart" prefix and the old pattern ended
+        # exactly there. \b after the verb group fixes it.
+        "echo after the hermes gateway restarted cleanly",
+        "the hermes gateway stopped responding, please investigate",
+        # #92372 Branch D: `p?kill` without a leading \b matched the "kill"
+        # tail of "skill".
+        "hermes skill view gateway-notes && echo hermes gateway docs",
     ])
     def test_safe_commands(self, text):
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        # Trailing-boundary fix must not weaken real commands.
+        "hermes gateway restart",
+        "hermes gateway restart; echo done",
+        "hermes gateway stop && echo stopped",
+    ])
+    def test_boundary_fix_still_blocks_real_commands(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    def test_quoted_multiline_payload_tokenizes_as_one_logical_line(self):
+        # #92372: a newline inside a quoted string is data, not a command
+        # separator. A quoted data-file path on its own physical line inside
+        # a multiline construct must not be promoted to command position.
+        text = (
+            'FILES=(\n'
+            '  "/tmp/notes about procedures.txt"\n'
+            ')\n'
+            'echo "${FILES[@]}"'
+        )
+        assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
+
+    def test_unbalanced_quotes_still_scanned_not_waved_through(self):
+        # Fail-closed contract: when the logical line cannot tokenize
+        # (unbalanced quote), the per-physical-line fallback must still SCAN
+        # the content — a lifecycle command alongside an unbalanced quote
+        # must remain blocked, never waved through.
+        text = 'echo "unbalanced\nhermes gateway restart'
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
 
 class TestCronCreateLifecycleBlock:

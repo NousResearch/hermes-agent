@@ -633,8 +633,10 @@ Without `-o`, the CLI and TUI place the archive in Hermes's managed
 `profile-exports/` directory under the default Hermes home, not in the current
 working directory. This keeps routine exports out of source checkouts and
 prevents a generated profile snapshot from being mistaken for a repository
-source file. An explicit `-o` path is still honored when you intentionally
-choose where to save the archive.
+source file. If the Hermes home itself lives inside a Git checkout (some
+Docker/custom deployments), the archive goes to `~/.hermes-profile-exports/`
+instead — never into the checkout. An explicit `-o` path is still honored
+when you intentionally choose where to save the archive.
 
 Or from a shell, same machinery:
 

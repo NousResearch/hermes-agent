@@ -477,14 +477,14 @@ class CLICommandsMixin:
             parts = parts[:idx] + parts[idx + 2:]
 
         name = parts[0] if parts else (get_active_profile_name() or "default")
-        if not output:
-            output = str(get_profile_export_path(name))
 
         try:
+            if not output:
+                output = str(get_profile_export_path(name))
             result = export_profile(name, output)
             print(f"  ✓ Exported '{name}' to {result}")
             print("  Share it: the other user runs /import or `hermes profile import <archive>`.")
-        except (ValueError, FileNotFoundError) as e:
+        except (ValueError, FileNotFoundError, OSError) as e:
             print(f"  Error: {e}")
 
     def _handle_import_command(self, command: str):

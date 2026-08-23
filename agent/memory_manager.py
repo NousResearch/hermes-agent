@@ -78,10 +78,11 @@ def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
 
 @dataclass(frozen=True)
 class _NormalizedPrefetchResult:
-    """Validated provider result plus private envelope sizes for aggregation."""
+    """Validated provider result plus private operation-boundary metadata."""
 
     result: MemoryPrefetchResult
     observation_sizes: tuple[int, ...]
+    truncated_reason: Optional[str] = None
 
 
 def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
@@ -469,9 +470,24 @@ class MemoryManager:
 
     @staticmethod
     def _normalize_prefetch_result(
-        provider: MemoryProvider, raw_result: Any
+        provider: MemoryProvider,
+        raw_result: Any,
+        *,
+        remaining_count: int = MAX_MEMORY_OBSERVATIONS,
+        remaining_bytes: int = MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+        inspect_observations: bool = True,
     ) -> _NormalizedPrefetchResult:
-        """Normalize one provider result without weakening legacy strings."""
+        """Normalize one provider result within the remaining operation budget.
+
+        Observation data is intentionally traversed here, rather than first
+        materializing a fully normalized provider result. A provider controls
+        the size of its returned tuple, so the manager must stop at the
+        operation boundary before validating or encoding more items than can
+        possibly be returned. ``inspect_observations=False`` is used after a
+        previous provider has exhausted the operation budget: the provider's
+        context still gets normalized, but its observation container is never
+        touched.
+        """
         if raw_result is None:
             raw_result = ""
         if isinstance(raw_result, str):
@@ -489,13 +505,40 @@ class MemoryManager:
                 f"Memory provider '{provider.name}' returned non-string prefetch context"
             )
 
+        if not inspect_observations:
+            return _NormalizedPrefetchResult(
+                result=MemoryPrefetchResult(context=raw_result.context),
+                observation_sizes=(),
+            )
+
         observations: List[MemoryObservation] = []
         observation_sizes: List[int] = []
+        observation_bytes = 0
         raw_observations = raw_result.observations
-        if not isinstance(raw_observations, tuple):
-            raw_observations = tuple(raw_observations or ())
-
-        for candidate in raw_observations:
+        if raw_observations is None:
+            raw_observations = ()
+        observation_iterator = iter(raw_observations)
+        truncated_reason = None
+        while True:
+            # Once the prefix has consumed a budget, inspect at most one more
+            # item to establish that data would be dropped. Do not validate or
+            # encode that item, and never continue into the unbounded tail.
+            if (
+                len(observations) >= remaining_count
+                or observation_bytes >= remaining_bytes
+            ):
+                try:
+                    next(observation_iterator)
+                except StopIteration:
+                    break
+                truncated_reason = (
+                    "count" if len(observations) >= remaining_count else "bytes"
+                )
+                break
+            try:
+                candidate = next(observation_iterator)
+            except StopIteration:
+                break
             try:
                 if not isinstance(candidate, MemoryObservation):
                     raise TypeError("observation has the wrong type")
@@ -536,6 +579,9 @@ class MemoryManager:
                 ).encode("utf-8")
                 if len(encoded) > MAX_MEMORY_OBSERVATION_BYTES:
                     raise ValueError("observation envelope is too large")
+                if observation_bytes + len(encoded) > remaining_bytes:
+                    truncated_reason = "bytes"
+                    break
                 observations.append(
                     MemoryObservation(
                         source_kind=candidate.source_kind,
@@ -546,6 +592,7 @@ class MemoryManager:
                     )
                 )
                 observation_sizes.append(len(encoded))
+                observation_bytes += len(encoded)
             except (TypeError, ValueError, OverflowError) as exc:
                 # Observation data is an optional side channel. A malformed
                 # envelope is dropped, while the provider's formatted context
@@ -564,6 +611,7 @@ class MemoryManager:
                 observations=tuple(observations),
             ),
             observation_sizes=tuple(observation_sizes),
+            truncated_reason=truncated_reason,
         )
 
     @staticmethod
@@ -637,42 +685,41 @@ class MemoryManager:
                 raw_result = self._prefetch_provider(
                     provider, clean_query, session_id=session_id
                 )
-                normalized = self._normalize_prefetch_result(provider, raw_result)
+                normalized = self._normalize_prefetch_result(
+                    provider,
+                    raw_result,
+                    remaining_count=MAX_MEMORY_OBSERVATIONS - len(observations),
+                    remaining_bytes=MAX_MEMORY_OBSERVATION_BATCH_BYTES
+                    - observation_bytes,
+                    inspect_observations=not observation_budget_exhausted,
+                )
                 result = normalized.result
                 if result.context and result.context.strip():
                     parts.append(result.context)
                 if observation_budget_exhausted:
                     continue
-                for observation, encoded_size in zip(
-                    result.observations, normalized.observation_sizes
-                ):
-                    if len(observations) >= MAX_MEMORY_OBSERVATIONS:
-                        logger.warning(
-                            "Memory prefetch operation exceeded the observation "
-                            "count budget of %d; keeping the deterministic "
-                            "provider-ordered prefix and dropping remaining "
-                            "observations (reduce provider observation count or "
-                            "payload sizes)",
-                            MAX_MEMORY_OBSERVATIONS,
-                        )
-                        observation_budget_exhausted = True
-                        break
-                    if (
-                        observation_bytes + encoded_size
-                        > MAX_MEMORY_OBSERVATION_BATCH_BYTES
-                    ):
-                        logger.warning(
-                            "Memory prefetch operation exceeded the aggregate "
-                            "observation batch budget of %d bytes; keeping the "
-                            "deterministic provider-ordered prefix and dropping "
-                            "remaining observations (reduce observation payload "
-                            "sizes or count)",
-                            MAX_MEMORY_OBSERVATION_BATCH_BYTES,
-                        )
-                        observation_budget_exhausted = True
-                        break
-                    observations.append(observation)
-                    observation_bytes += encoded_size
+                observations.extend(result.observations)
+                observation_bytes += sum(normalized.observation_sizes)
+                if normalized.truncated_reason == "count":
+                    logger.warning(
+                        "Memory prefetch operation exceeded the observation "
+                        "count budget of %d; keeping the deterministic "
+                        "provider-ordered prefix and dropping remaining "
+                        "observations (reduce provider observation count or "
+                        "payload sizes)",
+                        MAX_MEMORY_OBSERVATIONS,
+                    )
+                    observation_budget_exhausted = True
+                elif normalized.truncated_reason == "bytes":
+                    logger.warning(
+                        "Memory prefetch operation exceeded the aggregate "
+                        "observation batch budget of %d bytes; keeping the "
+                        "deterministic provider-ordered prefix and dropping "
+                        "remaining observations (reduce observation payload "
+                        "sizes or count)",
+                        MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+                    )
+                    observation_budget_exhausted = True
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",

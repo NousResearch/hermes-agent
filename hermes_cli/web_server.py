@@ -1211,6 +1211,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "dashboard": "display",
     "code_execution": "agent",
     "prompt_caching": "agent",
+    # bot_mode currently surfaces a single field (envelope_ttl_seconds) —
+    # fold it into agent until the section grows.
+    "bot_mode": "agent",
     "goals": "agent",
     "updates": "general",
     # `onboarding.profile_build` is the only schema-surfaced onboarding field

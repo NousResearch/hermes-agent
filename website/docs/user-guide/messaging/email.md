@@ -119,7 +119,7 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 On startup, the adapter:
 1. Tests IMAP and SMTP connections
 2. Marks all existing inbox messages as "seen" (only processes new emails)
-3. Starts polling for new messages
+3. Starts the configured receive mode for new messages
 
 ---
 
@@ -127,7 +127,7 @@ On startup, the adapter:
 
 ### Receiving Messages
 
-The adapter polls the IMAP inbox for UNSEEN messages at a configurable interval (default: 15 seconds). For each new email:
+By default, the adapter polls the IMAP inbox for UNSEEN messages at a configurable interval (default: 15 seconds). For each new email:
 
 - **Subject line** is included as context (e.g., `[Subject: Deploy to production]`)
 - **Reply emails** (subject starting with `Re:`) skip the subject prefix — the thread context is already established
@@ -137,6 +137,25 @@ The adapter polls the IMAP inbox for UNSEEN messages at a configurable interval 
 - **HTML-only emails** have tags stripped for plain text extraction
 - **Self-messages** are filtered out to prevent reply loops
 - **Automated/noreply senders** are silently ignored — `noreply@`, `mailer-daemon@`, `bounce@`, `no-reply@`, and emails with `Auto-Submitted`, `Precedence: bulk`, or `List-Unsubscribe` headers
+
+### Receive Mode
+
+Polling remains the default and most compatible receive mode. To opt in to IMAP IDLE for providers that support it, configure the email platform in `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    receive_mode: poll  # poll or idle
+```
+
+| Mode | Behavior |
+|------|----------|
+| `poll` | Check the inbox every `EMAIL_POLL_INTERVAL` seconds. This is the default. |
+| `idle` | Use IMAP IDLE when the server advertises support. If IDLE is unavailable or rejected, Hermes falls back to polling waits. |
+
+IDLE keeps a long-lived IMAP session instead of doing a full TLS connect, login, search, and logout on every poll cycle. This can reduce IMAP connection volume for providers such as Gmail that may throttle frequent reconnects. Exchange and self-hosted IMAP servers that document reliable IDLE support are good candidates.
+
+IDLE delivery latency still depends on provider behavior and is not guaranteed to be faster than short-interval polling. Some consumer providers may delay IDLE notifications, reject IDLE despite advertising it, or not document support clearly. Keep `poll` unless you have tested IDLE successfully with your provider.
 
 ### Sending Replies
 
@@ -189,7 +208,7 @@ Email access is stricter by default than chat-style platforms:
 | **Messages not received** | Check `EMAIL_ALLOWED_USERS` includes the sender's email. Check spam folder — some providers flag automated replies. |
 | **"Authentication failed"** | For Gmail, you must use an App Password, not your regular password. Ensure 2FA is enabled first. |
 | **Duplicate replies** | Ensure only one gateway instance is running. Check `hermes gateway status`. |
-| **Slow response** | The default poll interval is 15 seconds. Reduce with `EMAIL_POLL_INTERVAL=5` for faster response (but more IMAP connections). |
+| **Slow response** | The default poll interval is 15 seconds. Reduce `EMAIL_POLL_INTERVAL` for a lower polling worst case, or set `platforms.email.receive_mode: idle` to reduce reconnect volume when IDLE works. IDLE does not guarantee lower latency. |
 | **Replies not threading** | The adapter uses In-Reply-To headers. Some email clients (especially web-based) may not thread correctly with automated messages. |
 
 ---

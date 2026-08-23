@@ -160,6 +160,11 @@ class TestGatewayLifecyclePattern:
         # #92372 Branch D: `p?kill` without a leading \b matched the "kill"
         # tail of "skill".
         "hermes skill view gateway-notes && echo hermes gateway docs",
+        # #77173/#77536: a file path with embedded spaces containing the
+        # lifecycle words must not match — `hermes` is a path component
+        # there, not a command.
+        "cat '/docs/hermes gateway restart-notes.md'",
+        "less /home/user/notes/hermes gateway restart runbook.txt",
     ])
     def test_safe_commands(self, text):
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
@@ -169,6 +174,12 @@ class TestGatewayLifecyclePattern:
         "hermes gateway restart",
         "hermes gateway restart; echo done",
         "hermes gateway stop && echo stopped",
+        # #77173 command-position anchor must not weaken separator/subshell
+        # forms either.
+        "true;hermes gateway restart",
+        "true && hermes gateway stop",
+        "echo $(hermes gateway restart)",
+        "echo `hermes gateway restart`",
     ])
     def test_boundary_fix_still_blocks_real_commands(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"

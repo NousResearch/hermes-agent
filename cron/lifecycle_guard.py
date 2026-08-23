@@ -64,7 +64,13 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # `start` is intentionally excluded: starting a gateway from inside a
     # gateway is benign (a no-op or "already running" error), and a
     # legitimate cron job might start a sibling profile's gateway.
-    r"(?:hermes\s+gateway\s+(?:restart|stop)\b)"
+    # The leading separator class (#77173): `hermes` must sit at command
+    # position — start of text, after whitespace/`;`/`&`/`|`, or inside a
+    # substitution/subshell opener — not be a path component. Without it, a
+    # file path with embedded spaces like `/docs/hermes gateway
+    # restart-notes.md` matched via the `/hermes` tail and hard-blocked an
+    # innocent `cat`.
+    r"(?:(?:^|[\s;&|(`])hermes\s+gateway\s+(?:restart|stop)\b)"
     # Branch B: launchctl ops on a hermes-gateway label. macOS launchd
     # labels look like `ai.hermes.gateway` / `hermes-gateway`. Requiring the
     # gateway identifier prevents blocking unrelated hermes services (e.g.

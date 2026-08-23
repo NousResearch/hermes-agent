@@ -1390,6 +1390,38 @@ export const ar = defineLocale({
     switchToConnection: name => `التبديل إلى ${name}`,
     switchConnectionFailed: name => `تعذّر الاتصال بـ ${name}`,
     manageProfiles: 'إدارة الملفات الشخصية',
+    remoteOverride: {
+      menuItem: 'الاتصال بمضيف بعيد…',
+      badge: (host: string) => `يعمل على ${host}`,
+      title: (profile: string) => `ربط ${profile} بمضيف بعيد`,
+      description: 'ستعمل جلسات هذا الملف الشخصي على خادم Hermes البعيد الذي تحدده، بدلاً من هذا الجهاز.',
+      urlLabel: 'العنوان البعيد',
+      urlPlaceholder: 'https://hermes.example.com',
+      urlInvalid: 'أدخل عنواناً كاملاً يبدأ بـ http:// أو https://',
+      tokenLabel: 'رمز الوصول',
+      tokenPlaceholder: 'الصق رمز الجلسة البعيد',
+      tokenSavedHint: 'يوجد رمز محفوظ بالفعل. اتركه فارغاً للاحتفاظ به.',
+      plainTextOptIn:
+        'لا يتوفر تخزين مفاتيح آمن على هذا الجهاز، لذا سيُحفظ الرمز على القرص دون تشفير. احفظه على أي حال.',
+      collisionWarning: (label: string) =>
+        `توجد بوابة باسم «${label}» في الإعدادات بالفعل. اتصال هذا الملف الشخصي منفصل ولن يغيّرها.`,
+      confirmTitle: 'ربط هذا الملف الشخصي بمضيف بعيد؟',
+      confirmNote: (profile: string, host: string) =>
+        `ستعمل المحادثات الجديدة في ${profile} على ${host}. سيقوم ذلك الجهاز بتنفيذ الأوامر وقراءة الملفات هناك، وليس هنا. اتصل فقط بمضيف تثق به.`,
+      confirmBack: 'رجوع',
+      connect: 'اتصال',
+      connecting: 'جارٍ الاتصال…',
+      disconnect: 'إزالة الاتصال البعيد',
+      savedTitle: 'تم ربط الملف الشخصي',
+      savedMessage: (profile: string, host: string) => `${profile} يعمل الآن على ${host}`,
+      removedTitle: 'تمت إزالة الاتصال البعيد',
+      removedMessage: (profile: string) => `${profile} يعمل الآن على هذا الجهاز`,
+      removeFailed: 'تعذّرت إزالة الاتصال البعيد',
+      authFailedTitle: 'رفض المضيف البعيد الرمز المحفوظ',
+      authFailedMessage: (profile: string, host: string) =>
+        `رفض ${host} الرمز المحفوظ لـ ${profile}. ربما تم تغييره على الجانب البعيد.`,
+      updateToken: 'أدخل رمزاً جديداً…'
+    },
     actions: 'إجراءات',
     color: 'اللون',
     colorFor: 'اللون',

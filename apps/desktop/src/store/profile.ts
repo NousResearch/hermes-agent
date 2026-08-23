@@ -14,6 +14,7 @@ import {
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
 import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
+import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -516,7 +517,10 @@ export function selectProfile(name: string): void {
     requestFreshSession()
   }
 
-  void ensureGatewayProfile(target)
+  // A profile with a remote override can fail to activate because the remote
+  // host rejected its saved token (rotated/revoked). That must surface as a
+  // "re-enter token" affordance, never a silently dead profile (#91349).
+  void ensureGatewayProfile(target).catch(error => notifyRemoteOverrideAuthFailure(target, error))
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
@@ -530,7 +534,7 @@ export function newSessionInProfile(name: string): void {
   $newChatProfile.set(target)
   $newChatRoute.set(null)
   requestFreshSession()
-  void ensureGatewayProfile(target)
+  void ensureGatewayProfile(target).catch(error => notifyRemoteOverrideAuthFailure(target, error))
 }
 
 /** Start a draft owned by a specific registry agent. Foreground activation is

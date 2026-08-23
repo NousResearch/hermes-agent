@@ -27,6 +27,10 @@ vi.mock('@/i18n', () => ({
         importProfile: 'Import profile…',
         manageProfiles: 'Manage profiles…',
         newProfile: 'New profile',
+        remoteOverride: {
+          badge: (host: string) => `Runs on ${host}`,
+          menuItem: 'Connect to a remote host…'
+        },
         saveSoul: 'Save',
         saving: 'Saving…',
         showAllProfiles: 'Show all profiles',

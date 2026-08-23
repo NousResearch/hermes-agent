@@ -92,8 +92,11 @@ def test_language_pin_propagates(voice_home, monkeypatch):
 def test_local_whisper_relays(voice_home):
     voice_home({"stt": {"provider": "local"}})
     stt = _resolve()["stt"]
+    # The CONTRACT is the verdict: a server-host-only provider must relay.
+    # The reason string varies with the host (faster-whisper installed vs
+    # not, lazy installs allowed vs not) — don't pin it.
     assert stt["mode"] == "relay"
-    assert "local" in stt["reason"]
+    assert "api_key" not in stt
 
 
 def test_missing_credentials_relay(voice_home):

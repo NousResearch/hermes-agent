@@ -22,6 +22,7 @@ import os
 import random
 import re
 import ssl
+import sys
 import time
 from typing import Any, Dict, List, Optional
 
@@ -270,6 +271,24 @@ _LOCAL_PROCESSING_MODULES = frozenset({
 _API_CALL_MODULES = frozenset({
     "chat_completion_helpers",
 })
+
+
+def _is_interpreter_shutdown_error(exc: Exception) -> bool:
+    """Check if *exc* is a fatal interpreter-shutdown failure.
+
+    During teardown, ``concurrent.futures`` refuses new work with
+    ``RuntimeError: cannot schedule new futures after interpreter shutdown``
+    (or the shorter ``... after shutdown`` variant from a plain
+    ThreadPoolExecutor).  Both are documented in #58720.  The common
+    prefix catches both; the module-global ``is_finalizing`` flag can
+    lag the error by a hair, so matching the error text is the safe
+    fallback for that race.
+    """
+    if isinstance(exc, RuntimeError):
+        msg = str(exc).lower()
+        if "cannot schedule new futures" in msg:
+            return True
+    return False
 
 
 def _moa_client_consumes_prepared_request(client: Any) -> bool:
@@ -8309,6 +8328,43 @@ def run_conversation(
             # local post-processing helpers and never entered the interruptible
             # API-call helpers, it is almost certainly a local processing bug.
             # (#66267)
+            #
+            # Interpreter shutdown: if the process is tearing down, every
+            # executor-backed operation (API call, tool dispatch, memory sync)
+            # raises ``RuntimeError: cannot schedule new futures after
+            # interpreter shutdown``. Retrying is pointless — the executor is
+            # gone for good — and each retry just spams another traceback.
+            # Break immediately so the turn exits cleanly. (#93217)
+            if sys.is_finalizing() or _is_interpreter_shutdown_error(e):
+                error_msg = (
+                    f"Interpreter is shutting down — cannot continue "
+                    f"(API call #{api_call_count}): {e}"
+                )
+                try:
+                    agent._safe_print(f"❌ {error_msg}")
+                except (OSError, ValueError):
+                    pass
+                logger.warning(error_msg)
+                # Best-effort persist — the executor is dying, so this may
+                # raise the same RuntimeError.  Don't let that mask the
+                # shutdown exit.  finalize_turn will retry the persist.
+                try:
+                    agent._persist_session(messages, conversation_history)
+                except Exception:
+                    pass
+                _turn_exit_reason = "interpreter_shutdown"
+                final_response = (
+                    "Session is shutting down. Your conversation can be "
+                    "resumed with: hermes --resume <session-id>"
+                )
+                # Don't append the assistant message here — a thinking-prefill
+                # or interim assistant may already be the tail, and appending
+                # would create assistant→assistant.  finalize_turn handles
+                # this case safely (lines 341-353: appends only when
+                # _tail_role != "assistant"), matching the pattern at other
+                # break sites that set final_response without appending.
+                break
+
             tb_module_names: set[str] = set()
             _tb = e.__traceback__
             while _tb is not None:

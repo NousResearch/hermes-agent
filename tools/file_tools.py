@@ -916,6 +916,7 @@ def _request_protected_instruction_approval(
         choice = _approval.prompt_dangerous_approval(
             display, description,
             allow_permanent=False,
+            allow_session=False,
             approval_callback=callback,
         )
         if choice in {"once", "session", "always"}:

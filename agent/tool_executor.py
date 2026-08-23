@@ -274,7 +274,15 @@ def _ra():
 
 
 def _is_interpreter_shutdown_submit_error(exc: RuntimeError) -> bool:
-    return "cannot schedule new futures after interpreter shutdown" in str(exc)
+    """Shutdown-race predicate — shared home in ``tools.interpreter_shutdown``.
+
+    Delegates so all sites (cron delivery, conversation-loop retry, tool
+    submission) recognize both CPython shutdown-message variants instead of
+    each matching its own substring (the bug class behind #55924/#58720).
+    """
+    from tools.interpreter_shutdown import interpreter_shutting_down
+
+    return interpreter_shutting_down(exc)
 
 
 def _emit_terminal_post_tool_call(

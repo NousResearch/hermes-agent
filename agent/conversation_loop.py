@@ -4675,6 +4675,39 @@ def run_conversation(
                 status_code = getattr(api_error, "status_code", None)
                 error_context = agent._extract_api_error_context(api_error)
 
+                # ── Interpreter finalization: abandon immediately ──
+                # The process is exiting (TUI quit, SIGTERM, one-shot done)
+                # while this turn — typically the post-turn review fork's
+                # daemon thread — is mid-flight. Retries, credential
+                # rotation, and fallbacks are all futile ("cannot schedule
+                # new futures..."), and the buffered ⚠️/❌ retry trace spams
+                # the shell after the TUI already exited. End the turn with
+                # a single log line: no print, no traceback, no debug dump,
+                # no retry. Same class as cron delivery (#55924/#58720) and
+                # concurrent tool submission — shared predicate.
+                from tools.interpreter_shutdown import interpreter_shutting_down
+
+                if interpreter_shutting_down(api_error):
+                    logger.warning(
+                        "%sInterpreter is shutting down — abandoning turn "
+                        "during API call #%d (%s)",
+                        agent.log_prefix, api_call_count, api_error,
+                    )
+                    _shutdown_summary = (
+                        "Turn abandoned: the process was shutting down "
+                        "before the model call could complete."
+                    )
+                    return {
+                        "final_response": _shutdown_summary,
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "error": _shutdown_summary,
+                        "failure_reason": "interpreter_shutdown",
+                        "failure_retryable": False,
+                    }
+
                 # ── Classify the error for structured recovery decisions ──
                 _compressor = getattr(agent, "context_compressor", None)
                 _ctx_len = getattr(_compressor, "context_length", 200000) if _compressor else 200000
@@ -8377,6 +8410,34 @@ def run_conversation(
 
             _is_local_processing_error = _hit_local and not _hit_api
 
+            # Interpreter finalization: the process is exiting (TUI quit,
+            # SIGTERM, one-shot CLI done) while a background turn — most
+            # commonly the post-turn review fork's daemon thread — is still
+            # mid-request. Every further API attempt raises "cannot schedule
+            # new futures after interpreter shutdown", so retrying is futile
+            # and the un-gated ❌ prints spam the user's shell AFTER the TUI
+            # already exited (call #4, #5, #6...). Same shutdown-race class
+            # as cron delivery (#55924/#58720) and concurrent tool submission;
+            # shared predicate in tools/interpreter_shutdown.py. Log one
+            # warning, no traceback, no synthetic history append (nothing can
+            # persist it anymore), and leave the loop immediately.
+            from tools.interpreter_shutdown import interpreter_shutting_down
+
+            if interpreter_shutting_down(e):
+                logger.warning(
+                    "Interpreter is shutting down — abandoning turn after "
+                    "API call #%d (%s)",
+                    api_call_count,
+                    e,
+                )
+                _turn_exit_reason = "interpreter_shutdown"
+                failed = True
+                final_response = (
+                    "Turn abandoned: the process was shutting down before "
+                    "the model call could complete."
+                )
+                break
+
             if _is_local_processing_error:
                 error_msg = (
                     f"Error during local message processing after "
@@ -8384,10 +8445,20 @@ def run_conversation(
                 )
             else:
                 error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
-            try:
-                print(f"❌ {error_msg}")
-            except (OSError, ValueError):
+            # The background-review fork sets suppress_status_output=True so
+            # lifecycle noise never reaches the user's terminal — but this
+            # bare print() bypassed it, leaking ❌ lines onto the shell after
+            # the TUI exited. Honor the same contract _vprint enforces
+            # (quiet_mode -q still shows hard failures, matching force=True
+            # semantics; suppress_status_output silences them). The
+            # logger.exception below still captures the full traceback.
+            if getattr(agent, "suppress_status_output", False):
                 logger.error(error_msg)
+            else:
+                try:
+                    print(f"❌ {error_msg}")
+                except (OSError, ValueError):
+                    logger.error(error_msg)
 
             # Emit the full traceback at ERROR level so it lands in both
             # agent.log AND errors.log.  Previously this was logged at DEBUG,

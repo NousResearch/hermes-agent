@@ -108,6 +108,16 @@ def build_api_request(
     # require reasoning_content — re-apply the echo-back pad (idempotent) and re-render
     # the prompt-cache decoration for the current provider.
     agent._reapply_reasoning_echo_for_provider(api_messages)
+    # Same staleness class: OpenRouter-only 'reasoning_details' must be reconciled
+    # against the provider serving THIS attempt (mid-retry fallback can have just
+    # switched it). Recompute the OpenRouter flag from live agent state each
+    # iteration; idempotent, O(n), history keeps the field for a switch back.
+    from agent.message_sanitization import strip_reasoning_details_for_non_openrouter
+    strip_reasoning_details_for_non_openrouter(
+        api_messages,
+        (getattr(agent, "provider", "") or "").strip().lower() == "openrouter"
+        or agent._is_openrouter_url(),
+    )
     api_messages, _moa_prepared_request, tools_for_api = (
         _redecorate_prompt_cache_for_provider(
             agent, api_messages, system_message=system_message, moa_prepared=_moa_prepared_request,

@@ -1275,20 +1275,17 @@ def build_api_messages(
         # wire for every route that does not replay it (OpenRouter/Nous do).
         api_messages.append(api_msg)
 
-    # LOCAL MOD: reconcile OpenRouter-only 'reasoning_details' against the active
-    # provider. OpenRouter emits it on reasoning turns and consumes it back for
-    # continuity (kept verbatim above); it is NOT standard Chat Completions schema,
-    # so strict proxies reject it. The observed failure is the Palantir Foundry LLM
-    # proxy 400-ing with 'unrecognizedProperty=reasoning_details' after a session
-    # mixes an OpenRouter reasoning turn into history and then routes to Palantir —
-    # the session then loops on the 400 until /new. Strip from the outgoing API copy
-    # for every non-OpenRouter provider (history keeps it, so a switch back to
-    # OpenRouter still has it).
-    from agent.message_sanitization import strip_reasoning_details_for_non_openrouter
-    _is_or_provider = (getattr(agent, "provider", "") or "").strip().lower() == "openrouter" or (
-        agent._is_openrouter_url()
-    )
-    strip_reasoning_details_for_non_openrouter(api_messages, _is_or_provider)
+    # NOTE: OpenRouter-only 'reasoning_details' is deliberately NOT reconciled
+    # here. OpenRouter emits it on reasoning turns and consumes it back for
+    # continuity (kept verbatim in the assistant branch above); it is NOT
+    # standard Chat Completions schema, so strict proxies reject it with 400
+    # unrecognizedProperty (observed on the Palantir Foundry LLM proxy — session
+    # loops on the 400 until /new). Which side wins depends on the provider that
+    # actually serves each request, and mid-retry fallback can switch that
+    # provider AFTER this point — so the reconcile runs per attempt inside the
+    # retry loop, right next to _reapply_reasoning_echo_for_provider (same
+    # built-once-vs-current-provider staleness class). History keeps the field,
+    # so a later switch back to OpenRouter still finds it.
 
     # Final system message = cached prompt + ephemeral additions (API-time only).
     # Plugin/recall context goes into the user message, never the system prompt: the

@@ -323,14 +323,17 @@ class TestBridgeDispatch:
             current_tool_defs=[tool_def],
         ))
 
-        assert result["results"] == [{"query": "unrelated vocabulary", "matches": []}]
+        [group] = result["results"]
+        assert group["query"] == "unrelated vocabulary"
+        assert group["matches"] == []
         assert result["tools"] == {}
         assert result["total_available"] == 1
-        assert result["available_sources"] == [
+        assert group["available_sources"] == [
             {"name": "recovery-catalog", "tool_count": 1},
         ]
-        assert "remain available" in result["hint"]
-        assert "before concluding" in result["hint"]
+        assert "remain available" in group["hint"]
+        assert "before concluding" in group["hint"]
+        assert "available_sources" not in result
 
 
     def test_resolve_underlying_call_parses_object_args(self):

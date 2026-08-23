@@ -87,6 +87,54 @@ class TestStemming:
 
 
 # ---------------------------------------------------------------------------
+# Exact-name ranking and shared corpus statistics
+# ---------------------------------------------------------------------------
+
+
+class TestCatalogRanking:
+    def test_exact_name_beats_shorter_siblings(self):
+        from tools.tool_search import build_catalog, search_catalog
+
+        exact = _td(
+            "github_create_issue",
+            "Create a new issue with a title, body, assignees, labels, "
+            "milestone, project metadata, and linked context for a repository.",
+        )
+        catalog = build_catalog([
+            exact,
+            _td("github_create_issue_comment", "Comment."),
+            _td("github_create_issue_label", "Label."),
+        ])
+
+        assert search_catalog(catalog, "github_create_issue", limit=1) == [catalog[0]]
+
+    def test_exact_short_name_beats_prefixed_names(self):
+        from tools.tool_search import build_catalog, search_catalog
+
+        catalog = build_catalog([
+            _td("list", "List one item."),
+            _td("list_x", "List x."),
+            _td("list_all_the_open_items", "List every open item."),
+        ])
+
+        assert search_catalog(catalog, "list", limit=1) == [catalog[0]]
+
+    def test_precomputed_corpus_stats_preserve_results(self, issue_defs):
+        from tools.tool_search import _corpus_stats, build_catalog, search_catalog
+
+        catalog = build_catalog(issue_defs)
+        expected = search_catalog(catalog, "create issues", limit=3)
+        actual = search_catalog(
+            catalog,
+            "create issues",
+            limit=3,
+            corpus_stats=_corpus_stats(catalog),
+        )
+
+        assert actual == expected
+
+
+# ---------------------------------------------------------------------------
 # Multi-query dispatch_tool_search
 # ---------------------------------------------------------------------------
 
@@ -133,7 +181,7 @@ class TestMultiQuerySearch:
         for group in result["results"]:
             assert len(group["matches"]) <= 1
 
-    def test_partial_miss_adds_single_toplevel_fallback(self, issue_defs):
+    def test_partial_miss_adds_fallback_to_empty_group(self, issue_defs):
         from tools.tool_search import ToolSearchConfig, dispatch_tool_search
 
         result = json.loads(dispatch_tool_search(
@@ -142,14 +190,14 @@ class TestMultiQuerySearch:
             config=ToolSearchConfig.from_raw({}),
         ))
         assert result["results"][1]["matches"] == []
-        # ONE fallback block at top level — not per empty group.
-        assert "available_sources" in result
-        assert "Some queries" in result["hint"]
-        for group in result["results"]:
-            assert "available_sources" not in group
-            assert "hint" not in group
-        source_names = {s["name"] for s in result["available_sources"]}
+        assert "available_sources" not in result["results"][0]
+        assert "hint" not in result["results"][0]
+        missed = result["results"][1]
+        assert "This query returned no lexical matches" in missed["hint"]
+        source_names = {s["name"] for s in missed["available_sources"]}
         assert {"mq-linear", "mq-slack"} <= source_names
+        assert "available_sources" not in result
+        assert "hint" not in result
 
     def test_bare_string_query_coerced_to_single_query(self, issue_defs):
         from tools.tool_search import ToolSearchConfig, dispatch_tool_search

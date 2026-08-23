@@ -502,7 +502,27 @@ def _bm25_score(query_tokens: List[str], doc_tokens: List[str],
     return score
 
 
-def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> List[CatalogEntry]:
+_CorpusStats = Tuple[List[int], float, Dict[str, int], int]
+
+
+def _corpus_stats(catalog: List[CatalogEntry]) -> _CorpusStats:
+    """Compute the BM25 statistics shared by every query over a catalog."""
+    doc_lengths = [len(entry._tokens) for entry in catalog]
+    avg_dl = sum(doc_lengths) / max(len(doc_lengths), 1)
+    doc_freq: Dict[str, int] = {}
+    for entry in catalog:
+        for token in set(entry._tokens):
+            doc_freq[token] = doc_freq.get(token, 0) + 1
+    return doc_lengths, avg_dl, doc_freq, len(catalog)
+
+
+def search_catalog(
+    catalog: List[CatalogEntry],
+    query: str,
+    limit: int = 5,
+    *,
+    corpus_stats: Optional[_CorpusStats] = None,
+) -> List[CatalogEntry]:
     """Return the top-``limit`` catalog entries for ``query`` by BM25.
 
     Falls back to a stable name-substring match when every query token
@@ -519,18 +539,16 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> L
     if not query_tokens:
         return []
 
-    # Precompute doc statistics.
-    doc_lengths = [len(e._tokens) for e in catalog]
-    avg_dl = sum(doc_lengths) / max(len(doc_lengths), 1)
-    doc_freq: Dict[str, int] = {}
-    for e in catalog:
-        seen = set(e._tokens)
-        for t in seen:
-            doc_freq[t] = doc_freq.get(t, 0) + 1
-    n_docs = len(catalog)
+    if corpus_stats is None:
+        corpus_stats = _corpus_stats(catalog)
+    doc_lengths, avg_dl, doc_freq, n_docs = corpus_stats
 
     scored: List[Tuple[float, CatalogEntry]] = []
+    exact_name = query.strip().lower()
     for entry in catalog:
+        if entry.name.lower() == exact_name:
+            scored.append((float("inf"), entry))
+            continue
         s = _bm25_score(query_tokens, entry._tokens, doc_lengths, avg_dl,
                         doc_freq, n_docs)
         if s > 0:
@@ -995,9 +1013,9 @@ def dispatch_tool_search(args: Dict[str, Any],
                                      "description": ..., "required": [...]}}
         }
 
-    ``limit`` applies PER QUERY. When one or more queries return no matches,
-    a single top-level ``available_sources`` + ``hint`` block is added so a
-    lexical miss is not mistaken for a missing capability.
+    ``limit`` applies PER QUERY. Each query group that returns no matches gets
+    an ``available_sources`` + ``hint`` block so a lexical miss is not mistaken
+    for a missing capability.
     """
     if config is None:
         config = load_config()
@@ -1028,15 +1046,23 @@ def dispatch_tool_search(args: Dict[str, Any],
 
     results: List[Dict[str, Any]] = []
     tools_map: Dict[str, Dict[str, Any]] = {}
-    any_empty = False
+    corpus_stats = _corpus_stats(catalog)
+    available_sources = _available_source_summary(catalog) if catalog else []
     for query in queries:
-        hits = search_catalog(catalog, query, limit=limit)
-        if not hits:
-            any_empty = True
+        hits = search_catalog(catalog, query, limit=limit, corpus_stats=corpus_stats)
         for h in hits:
             if h.name not in tools_map:
                 tools_map[h.name] = _shared_tool_record(h)
-        results.append({"query": query, "matches": [h.name for h in hits]})
+        group: Dict[str, Any] = {"query": query, "matches": [h.name for h in hits]}
+        if not hits and catalog:
+            group["available_sources"] = available_sources
+            group["hint"] = (
+                "This query returned no lexical matches, but the sources above "
+                "are connected and their tools remain available. Retry "
+                "tool_search with the service name plus a concrete action or "
+                "object before concluding the capability is unavailable."
+            )
+        results.append(group)
 
     result: Dict[str, Any] = {
         "queries": queries,
@@ -1044,14 +1070,6 @@ def dispatch_tool_search(args: Dict[str, Any],
         "results": results,
         "tools": tools_map,
     }
-    if any_empty and catalog:
-        result["available_sources"] = _available_source_summary(catalog)
-        result["hint"] = (
-            "Some queries returned no lexical matches, but the sources above "
-            "are connected and their tools remain available. Retry "
-            "tool_search with the service name plus a concrete action or "
-            "object before concluding the capability is unavailable."
-        )
     return json.dumps(result, ensure_ascii=False)
 
 

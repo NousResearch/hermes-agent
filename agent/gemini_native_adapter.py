@@ -324,6 +324,13 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any], include_ids: bool 
         args = json.loads(args_raw) if isinstance(args_raw, str) and args_raw else {}
     except json.JSONDecodeError:
         args = {"_raw": args_raw}
+    # NB: args are deliberately NOT run through _strip_nulls (unlike
+    # functionResponse.response). functionCall.args are model-generated and
+    # replayed verbatim from history; Gemini 3 thinking models validate a
+    # replayed functionCall against its thoughtSignature, so mutating args
+    # (dropping a null the model emitted) risks trading a hypothetical 422 for a
+    # real 400 INVALID_ARGUMENT signature mismatch. The observed 422 is only on
+    # response payloads, never args.
     call: Dict[str, Any] = {"name": str(fn.get("name") or ""), "args": args if isinstance(args, dict) else {"_value": args}}
     if include_ids and (call_id := _tool_call_id(tool_call)):
         call["id"] = call_id
@@ -338,6 +345,27 @@ def _looks_like_json_schema(node: Any) -> bool:
     if isinstance(node, dict):
         return any((k == "$ref" and isinstance(v, str) and v.startswith("#/")) or _looks_like_json_schema(v) for k, v in node.items())
     return isinstance(node, list) and any(_looks_like_json_schema(item) for item in node)
+
+
+def _strip_nulls(value):
+    """Recursively drop ``None`` values from parsed tool-result payloads.
+
+    The Foundry google-proxy rejects any ``null`` inside
+    ``functionResponse.response`` with an opaque HTTP 422 (native Google AI
+    Studio tolerates it) — e.g. terminal's ``"error": null``. Verified live
+    against the proxy (session 20260613_214056_c75da3).
+
+    Scope note: only the ``null`` values are removed, not the containers that
+    held them. A dict that becomes empty (``{"e": None}`` -> ``{}``) is kept as
+    ``{}`` rather than dropped, because the 422 is triggered by the ``null``
+    literal, not by empty objects — and recursively pruning now-empty
+    dicts/lists would risk deleting keys a downstream schema still expects.
+    """
+    if isinstance(value, dict):
+        return {k: _strip_nulls(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_strip_nulls(v) for v in value if v is not None]
+    return value
 
 
 def _translate_tool_result_to_gemini(
@@ -358,7 +386,11 @@ def _translate_tool_result_to_gemini(
     # display_name"; see vercel/ai#14369). A tool result that is itself a JSON Schema (e.g. tool_describe
     # output for an MCP tool) must therefore be forwarded as opaque text, not as a structured response.
     structured = isinstance(parsed, dict) and not _looks_like_json_schema(parsed)
-    function_response: Dict[str, Any] = {"name": name, "response": parsed if structured else {"output": content}}
+    response = parsed if structured else {"output": content}
+    # The Foundry google-proxy rejects any ``null`` inside functionResponse.response with an opaque
+    # HTTP 422 (native Google AI Studio tolerates it) — e.g. terminal's ``"error": null``.
+    response = _strip_nulls(response)
+    function_response: Dict[str, Any] = {"name": name, "response": response}
     if include_ids and tool_call_id:
         function_response["id"] = tool_call_id
     # Gemini 3.x accepts images inside functionResponse.parts; 2.x rejects the field.

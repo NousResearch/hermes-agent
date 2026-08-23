@@ -37,6 +37,7 @@ import { sessionContextDrift } from '../session-context-drift'
 import { resolveSessionProfile } from '../use-session-actions/utils'
 
 import { finalizeInterruptedMessages } from './rewind'
+import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
 import {
   acquireSubmitInFlight,
   type GatewayRequest,
@@ -543,6 +544,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         if (routedResumeDrift) {
           console.warn('[submit-drift-abort]', routedResumeDrift, { phase: 'post-routed-resume' })
 
+          // The high-level resume may have already published a fresh runtime
+          // for this durable session. Don't strand it: record it so the next
+          // action targeting this stored session reuses it (#91276).
+          const publishedRuntimeId = getRuntimeIdForStoredSession(routedStoredSessionId)
+
+          if (publishedRuntimeId) {
+            registerRecoveredRuntime(routedStoredSessionId, publishedRuntimeId)
+          }
+
           return abortForSessionSwitch(null)
         }
 
@@ -573,19 +583,33 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         try {
           // Re-register on the session's OWNING profile — resuming on whichever
           // profile is live would fork the conversation into the wrong DB (#67603).
-          const resumeProfile = await resolveSessionProfile(targetStoredSessionId)
+          // A runtime a previous drift-aborted recovery already minted for this
+          // exact stored session is reused instead of resuming again.
+          const cachedRuntimeId = takeRecoveredRuntime(targetStoredSessionId)
 
-          const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-            session_id: targetStoredSessionId,
-            source: 'desktop',
-            omit_messages: true,
-            ...(resumeProfile ? { profile: resumeProfile } : {})
-          })
+          const resumed = cachedRuntimeId
+            ? { session_id: cachedRuntimeId }
+            : await singleFlightSessionResume(targetStoredSessionId, async () => {
+                const resumeProfile = await resolveSessionProfile(targetStoredSessionId)
+
+                return requestGateway<{ session_id: string }>('session.resume', {
+                  session_id: targetStoredSessionId,
+                  source: 'desktop',
+                  omit_messages: true,
+                  ...(resumeProfile ? { profile: resumeProfile } : {})
+                })
+              })
 
           const resumeDrift = sessionDriftReason()
 
           if (resumeDrift) {
             console.warn('[submit-drift-abort]', resumeDrift, { phase: 'post-resume' })
+
+            // Keep the freshly-bound runtime findable for the next action on
+            // this stored session instead of stranding it for the reaper.
+            if (resumed?.session_id) {
+              registerRecoveredRuntime(targetStoredSessionId, resumed.session_id)
+            }
 
             return abortForSessionSwitch(sessionId)
           }

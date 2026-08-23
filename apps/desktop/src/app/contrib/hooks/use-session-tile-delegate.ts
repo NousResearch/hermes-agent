@@ -8,6 +8,7 @@ import { publishSessionState, sessionTileOwnerRoute, setSessionTileDelegate } fr
 import type { SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
+import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
 import { resolveSessionProfile } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
@@ -176,12 +177,14 @@ export function useSessionTileDelegate({
 
         const [prefetch, resumed] = await Promise.all([
           getLatestSessionMessages(storedSessionId, restScope).catch(() => null),
-          requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
-            session_id: storedSessionId,
-            cols: 96,
-            omit_messages: true,
-            ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
-          })
+          singleFlightSessionResume(storedSessionId, () =>
+            requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
+              session_id: storedSessionId,
+              cols: 96,
+              omit_messages: true,
+              ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
+            })
+          )
         ])
 
         const runtimeId = resumed?.session_id

@@ -29,9 +29,17 @@ import { dropSessionState, publishSessionState } from '@/store/session-states'
 import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 import type { SessionInfo } from '@/types/hermes'
 
+import { clearSingleFlightSessionResumeState } from './single-flight-resume'
 import type { SubmitTextOptions } from './utils'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
+
+// Suites in this file reuse the same stored-id constants. The module-level
+// single-flight resume map (and drift-recovery cache) would otherwise leak a
+// never-settling in-flight promise from one test into the next.
+beforeEach(() => {
+  clearSingleFlightSessionResumeState()
+})
 
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),

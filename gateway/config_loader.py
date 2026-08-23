@@ -233,6 +233,10 @@ def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict) -> dict:
     for key in _PORT_BRIDGE_KEYS.get(plat, ()):
         if key in platform_cfg and key not in platform_cfg.get("extra", {}):
             bridged[key] = platform_cfg[key]
+    if plat == Platform.EMAIL and "receive_mode" in platform_cfg and "receive_mode" not in platform_cfg.get("extra", {}):
+        # Behavioral email settings live in config.yaml, while platform adapters
+        # consume platform-owned options from PlatformConfig.extra.
+        bridged["receive_mode"] = platform_cfg["receive_mode"]
     return bridged
 
 

@@ -368,6 +368,13 @@ def _looks_like_json_schema(node: Any) -> bool:
     HTTP 400 INVALID_ARGUMENT. A tool result that is itself a JSON Schema
     (e.g. the output of ``tool_describe`` for an MCP tool) must therefore be
     forwarded as opaque text rather than as a structured response.
+
+    Detection is deliberately structural, not semantic: any ``$ref`` value
+    shaped like a JSON pointer (``#/...``) demotes the whole result. Non-schema
+    data that happens to carry such a pointer is a false positive, but the raw
+    content is preserved verbatim either way, so the cost is fidelity-free.
+    The recursive walk is O(n) over the parsed value; tool-result payloads are
+    small, so this is negligible per turn.
     """
     if isinstance(node, dict):
         for key, value in node.items():

@@ -180,6 +180,67 @@ def test_plain_json_tool_result_remains_structured():
     assert out["functionResponse"]["response"] == {"status": "ok", "count": 3}
 
 
+def test_deeply_nested_ref_is_detected():
+    """A ``$ref`` pointer buried several levels deep through mixed lists and
+    dicts still demotes the result to opaque text (recursion coverage)."""
+    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+
+    deep = {"a": [{"b": {"c": [{"$ref": "#/$defs/Deep"}]}}]}
+    msg = {
+        "role": "tool",
+        "tool_call_id": "call_3",
+        "name": "some_tool",
+        "content": json.dumps(deep),
+    }
+
+    out = _translate_tool_result_to_gemini(msg)
+
+    response = out["functionResponse"]["response"]
+    assert "output" in response
+    assert "#/$defs/Deep" in response["output"]
+
+
+def test_top_level_json_array_is_wrapped_as_opaque_text():
+    """A top-level JSON array is never forwarded as a structured response.
+
+    ``response = parsed if isinstance(parsed, dict) else {"output": content}``
+    already wraps lists, so a list of schemas cannot reach the Gemini 400 path.
+    """
+    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+
+    arr = [{"$ref": "#/$defs/SetCookieParam", "type": "object"}]
+    msg = {
+        "role": "tool",
+        "tool_call_id": "call_4",
+        "name": "some_tool",
+        "content": json.dumps(arr),
+    }
+
+    out = _translate_tool_result_to_gemini(msg)
+
+    response = out["functionResponse"]["response"]
+    assert "output" in response
+    assert "$ref" not in response
+
+
+def test_ref_value_without_pointer_prefix_remains_structured():
+    """Only values shaped like a JSON pointer (``#/...``) demote a result; a
+    ``$ref`` value that is not a pointer leaves the structured path intact."""
+    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+
+    payload = {"$ref": "not-a-pointer", "status": "ok"}
+    msg = {
+        "role": "tool",
+        "tool_call_id": "call_5",
+        "name": "some_tool",
+        "content": json.dumps(payload),
+    }
+
+    out = _translate_tool_result_to_gemini(msg)
+
+    assert out["functionResponse"]["response"] == payload
+
+
 
 
 def test_translate_native_response_surfaces_reasoning_and_tool_calls():

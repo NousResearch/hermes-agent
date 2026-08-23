@@ -98,6 +98,7 @@ gateway:
     summary_failed:        "⚠️ 摘要產生失敗（{error}）。{count} 則歷史訊息已被移除並以佔位符取代；先前的上下文已無法復原。建議檢查 auxiliary.compression 模型設定。"
     aborted:               "⚠️ 壓縮已中止 ({error})。未刪除任何訊息 — 對話保持不變。執行 /compress 重試，執行 /reset 開始新工作階段，或檢查你的 auxiliary.compression 模型設定。"
     aux_failed:            "ℹ️ 設定的壓縮模型 `{model}` 失敗（{error}）。已使用主要模型復原 — 上下文完整 — 但您可能想檢查 config.yaml 中的 `auxiliary.compression.model`。"
+    turnhold_deferred:     "ℹ️ 上下文壓縮已延後 — 摘要仍在產生中。本回合將不壓縮繼續。"
     failed:                "壓縮失敗：{error}"
 
   debug:

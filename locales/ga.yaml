@@ -102,6 +102,7 @@ gateway:
     summary_failed:        "⚠️ Theip ar ghiniúint achoimre ({error}). Baineadh {count} teachtaireacht stairiúil agus cuireadh ionadaí ina n-áit; níl an comhthéacs roimhe seo in-aisghabhála a thuilleadh. Smaoinigh ar an gcumraíocht auxiliary.compression a sheiceáil."
     aborted:               "⚠️ Cuireadh deireadh leis an dlúthú ({error}). Níor baineadh aon teachtaireacht — tá an comhrá gan athrú. Rith /compress chun é a thriail arís, /reset le haghaidh seisiún glan, nó seiceáil do chumraíocht samhla auxiliary.compression."
     aux_failed:            "ℹ️ Theip ar an tsamhail dlúthúcháin chumraithe `{model}` ({error}). Aisghafa ag baint úsáide as do phríomhshamhail — tá an comhthéacs slán — ach b'fhéidir gur mhaith leat `auxiliary.compression.model` i config.yaml a sheiceáil."
+    turnhold_deferred:     "ℹ️ Cuireadh comhbhrú comhthéacs siar — tá an achoimre fós á sruthú. Ag leanúint ar aghaidh gan chomhbhrú don seal seo."
     failed:                "Theip ar dhlúthú: {error}"
 
   debug:

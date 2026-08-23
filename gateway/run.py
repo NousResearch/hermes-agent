@@ -20660,6 +20660,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             if _cancelled is None:
                                                 await asyncio.sleep(0.025)
                                         if not _cancelled:
+                                            # NOTE: bounded overshoot by design.
+                                            # The turn can be held past
+                                            # _hyg_max_turn_hold_seconds by up to the
+                                            # commit duration (summary apply + storage
+                                            # write). Aborting mid-commit would corrupt
+                                            # the message-store transaction — the
+                                            # overshoot is the cheaper failure mode.
+                                            # Do NOT "fix" this into a mid-commit
+                                            # cancellation.
                                             _compressed, _ = await _hyg_future
                                         else:
                                             _hyg_commit_fence.release_cancelled_compression_lock()
@@ -20703,10 +20712,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                 session_entry.session_id,
                                                 time.monotonic() - _hyg_wait_started,
                                             )
-                                            _turnhold_msg = (
-                                                "ℹ️ Context compression deferred — "
-                                                "summary still streaming. "
-                                                "Continuing without compression this turn."
+                                            _turnhold_msg = t(
+                                                "gateway.compress.turnhold_deferred"
                                             )
                                             try:
                                                 _adapter = self._adapter_for_source(source)

@@ -3203,7 +3203,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "session_id": effective_session_id, "message_id": message_id, **fields,
                     "messages": turn_messages, "usage": usage, "runtime": effective_runtime}))
                 self._set_run_status(
-                    run_id, status, session_id=effective_session_id, usage=usage,
+                    run_id, status, session_id=effective_session_id,
+                    # The reply text, so a caller whose stream died can still read it from
+                    # GET /v1/runs/{run_id}; POST /v1/runs already records output in `_finish`.
+                    output=final_response, usage=usage,
                     last_event=f"run.{status}", **fields)
             except asyncio.CancelledError:
                 self._set_run_status(run_id, "cancelled", last_event="run.cancelled")

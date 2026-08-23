@@ -130,7 +130,11 @@ describe('IncrementalExternalStoreThreadRuntimeCore adapter swap notifications',
     expect(notifications).toBeGreaterThan(0)
 
     // And flipping back also notifies — but an unchanged repeat stays silent.
+    const beforeFlipBack = notifications
     core.setAdapter(adapterWith(repo, { isDisabled: false }))
+
+    expect(notifications).toBeGreaterThan(beforeFlipBack)
+
     const afterFlipBack = notifications
 
     core.setAdapter(adapterWith(repo, { isDisabled: false }))

@@ -7328,12 +7328,20 @@ async function runGroupChatRounds(group, members, thread) {
         // BEFORE the watermark advance and BEFORE the append. Only a newer
         // USER entry in THIS thread makes the re-drive premise true: a
         // cross-thread send bumps the epoch too, but its loop filters this
-        // thread out and would never regenerate the finished reply.
+        // thread out and would never regenerate the finished reply. The
+        // during-turn tail is anchored by entry id, not index — the history
+        // trim drops entries from the FRONT, so an index slice could
+        // overshoot after a mid-turn trim and silently commit a stale turn.
         const roomNow = $groupChats.get()[group] || { log: [] }
         const epochNow = roomNow.epoch || 0
-        const newerUserEntryInThread = (roomNow.log || [])
-          .slice(room.log.length)
-          .some(e => e.from?.kind === 'user' && groupThreadOf(e) === thread)
+        const anchorId = room.log.length ? room.log[room.log.length - 1].id : null
+        const anchorIdx = anchorId === null ? -1 : roomNow.log.findIndex(e => e.id === anchorId)
+        // Anchor trimmed away ⇒ every pre-turn entry was dropped, so every
+        // surviving entry is newer — scanning the whole log stays exact.
+        const turnTail = anchorIdx >= 0 ? roomNow.log.slice(anchorIdx + 1) : roomNow.log
+        const newerUserEntryInThread = turnTail.some(
+          e => e.from?.kind === 'user' && groupThreadOf(e) === thread
+        )
 
         if (!shouldCommitMemberTurn(startEpoch, epochNow, newerUserEntryInThread)) {
           recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })

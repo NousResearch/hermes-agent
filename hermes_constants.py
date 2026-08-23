@@ -1023,6 +1023,15 @@ def secure_parent_dir(path: Path) -> None:
     # Refuse root and its direct children (/usr, /home, /var, /tmp, …).
     if parent == Path("/") or len(parent.parts) < 3:
         return
+    # Refuse /opt/hermes. The install dir lives on the image layer;
+    # chmodding it to 0700 breaks hermes-user traversal and produces
+    # spurious "Permission denied" on every new exec until manual
+    # `chmod 0755 /opt/hermes`. Reproducer: any auth write to a file
+    # directly under /opt/hermes (e.g. /opt/hermes/auth.json when
+    # HERMES_HOME resolves there) triggers the 0700 chmod and locks
+    # out UID 10000. See issue #25821 follow-up.
+    if str(parent) == "/opt/hermes":
+        return
     try:
         os.chmod(parent, 0o700)
     except OSError:

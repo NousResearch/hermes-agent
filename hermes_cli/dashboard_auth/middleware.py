@@ -150,7 +150,7 @@ def _session_expired_response(request: Request) -> Response:
     return response
 
 
-def _verify_request_auth(request) -> Optional[Session]:
+def _verify_request_auth(request: Request) -> Optional[Session]:
     """Trusted-request auth: try every ``supports_request_auth`` provider.
 
     Request-scoped analog of ``_verify_bearer``. Called when a protected

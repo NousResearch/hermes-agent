@@ -182,17 +182,15 @@ interface ModelSettingsProps {
   /** Notified after the main model is applied, so live UI stores can sync. */
   onMainModelChanged?: (provider: string, model: string) => void
   /** Shared settings "Applies to" scope: a concrete profile to edit instead of
-   *  the app's active one, or null to follow the active profile (default). */
-  scopeProfile?: null | string
+   *  the app's active one, or undefined to follow the active profile (default).
+   *  Request-shaped on purpose — the API helpers treat `null` as "deliberately
+   *  target the primary/default backend", so this prop never carries null. */
+  scopeProfile?: string
 }
 
-export function ModelSettings({ onMainModelChanged, scopeProfile = null }: ModelSettingsProps) {
+export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.model
-  // `null` means "follow the active profile" at the settings layer. The
-  // Hermes API helpers use `undefined` for that contract; passing null would
-  // deliberately suppress the active profile and read the primary/default.
-  const requestProfile = scopeProfile ?? undefined
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [mainModel, setMainModel] = useState<{ model: string; provider: string } | null>(null)
@@ -239,10 +237,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
 
       try {
         const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
-          getGlobalModelInfo(requestProfile),
-          getGlobalModelOptions(undefined, requestProfile),
-          getAuxiliaryModels(requestProfile),
-          getMoaModels(requestProfile).catch(() => null)
+          getGlobalModelInfo(scopeProfile),
+          getGlobalModelOptions(undefined, scopeProfile),
+          getAuxiliaryModels(scopeProfile),
+          getMoaModels(scopeProfile).catch(() => null)
         ])
 
         if (profileEpoch.current !== epoch) {
@@ -280,7 +278,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
         }
       }
     },
-    [requestProfile, scopeProfile]
+    [scopeProfile]
   )
 
   useEffect(() => {
@@ -543,7 +541,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile = null }: Model
       setConfig(next)
 
       try {
-        await saveHermesConfig(next, scopeProfile ?? undefined)
+        await saveHermesConfig(next, scopeProfile)
       } catch (err) {
         setConfig(prev)
         notifyError(err, m.defaultsFailed)

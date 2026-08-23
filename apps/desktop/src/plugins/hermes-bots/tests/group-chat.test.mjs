@@ -196,7 +196,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, groupSpeakerLabel, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, $lastRoster, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -1278,6 +1278,43 @@ test('default profile speaks as Hermes in room transcripts, not @default', () =>
   assert.equal(you, 'Hermes (you): hi')
   const plain = gc.formatGroupChatLine({ from: { kind: 'member', name: 'builder' }, text: 'yo' }, 'research')
   assert.equal(plain, 'builder: yo')
+})
+
+test('speaker labels honor friendly identity: Bot Mode title, then display_name, never a stale Hermes', () => {
+  const gc = load(() => '(pass)')
+
+  // A renamed default (core display_name via `hermes profile rename`) must
+  // read as its new name — the community report was "Lucy" still showing
+  // "Hermes is thinking…" in group rooms.
+  gc.$lastRoster.set([{ name: 'default', display_name: 'Lucy' }])
+  assert.equal(gc.groupSpeakerLabel('default'), 'Lucy')
+  assert.equal(
+    gc.formatGroupChatLine({ from: { kind: 'member', name: 'default' }, text: 'hi' }, 'builder'),
+    'Lucy: hi'
+  )
+
+  // A Bot Mode title outranks display_name (same precedence as displayName).
+  gc.$botMeta.set({ default: { title: 'Moxie' } })
+  assert.equal(gc.groupSpeakerLabel('default'), 'Moxie')
+
+  // Secondary profiles get their title too — the thinking line names the
+  // renamed bot, not the raw profile slug.
+  gc.$botMeta.set({ research: { title: 'Radar' } })
+  gc.$lastRoster.set([])
+  assert.equal(gc.groupSpeakerLabel('research'), 'Radar')
+
+  // Untitled rows keep today's behavior: default → Hermes, others verbatim.
+  gc.$botMeta.set({})
+  assert.equal(gc.groupSpeakerLabel('default'), 'Hermes')
+  assert.equal(gc.groupSpeakerLabel('builder'), 'builder')
+})
+
+test('speaker labels never borrow a remote row\u2019s display_name for a local speaker', () => {
+  const gc = load(() => '(pass)')
+  // Only a remote/thin row named default exists — its display_name belongs
+  // to that connection, not to the active gateway's default.
+  gc.$lastRoster.set([{ name: 'default', display_name: 'HomelabBot', remoteSource: true }])
+  assert.equal(gc.groupSpeakerLabel('default'), 'Hermes')
 })
 
 test('turn prompt addresses the default profile as @hermes', () => {

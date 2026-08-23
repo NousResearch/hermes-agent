@@ -5975,11 +5975,43 @@ function rotateGroupSpeakers(members, round) {
   return [...members.slice(shift), ...members.slice(0, shift)]
 }
 
-/** Transcript form of a room speaker's profile name. The primary profile is
- *  literally named "default" — render it as Hermes (matching displayName and
- *  the @hermes handle) so the main agent never loses its name in rooms. */
+/** Transcript form of a room speaker's profile name. Friendly identity wins:
+ *  a Bot Mode title or a core profile display_name (e.g. default renamed to
+ *  "Lucy") labels the speaker everywhere this helper feeds — the "X is
+ *  thinking…" working line, the activity feed, and transcript lines — so a
+ *  renamed bot never shows up as its raw profile id or a stale "Hermes"
+ *  (community report, Aug 21 2026: renamed default still read "Hermes is
+ *  thinking…" in group rooms). The untitled primary profile is literally
+ *  named "default" — render it as Hermes (matching displayName and the
+ *  @hermes handle) so the main agent never loses its name in rooms. */
 function groupSpeakerLabel(name) {
-  return (name || '').trim().toLowerCase() === 'default' ? 'Hermes' : name
+  const trimmed = (name || '').trim()
+
+  if (!trimmed) {
+    return trimmed
+  }
+
+  // Bot Mode title (edit dialog) — same first rung as displayName().
+  const title = String($botMeta.get()?.[trimmed]?.title || '').trim()
+
+  if (title) {
+    return title
+  }
+
+  // Core profile display_name (`hermes profile rename …` / dashboard) from
+  // the ACTIVE gateway's roster row. Source-scoped remote speakers carry
+  // their device suffix separately and keep their raw name here.
+  const roster = $lastRoster.get()
+  const row = Array.isArray(roster)
+    ? roster.find(bot => bot?.name === trimmed && !bot?.remoteSource && !bot?.sourceScoped)
+    : null
+  const renamed = typeof row?.display_name === 'string' ? row.display_name.trim() : ''
+
+  if (renamed) {
+    return renamed
+  }
+
+  return trimmed.toLowerCase() === 'default' ? 'Hermes' : trimmed
 }
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /

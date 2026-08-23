@@ -286,17 +286,6 @@ export const ClarifyTool = (props: ToolCallMessagePartProps) => {
     return <ClarifyToolSettled {...props} />
   }
 
-  return <ClarifyToolLive {...props} />
-}
-
-function ClarifyToolLive(props: ToolCallMessagePartProps) {
-  const messageRunning = useAuiState(selectMessageRunning)
-
-  // Stopped mid-prompt with no result — don't leave a dead interactive panel.
-  if (!messageRunning) {
-    return <ToolFallback {...props} />
-  }
-
   return <ClarifyToolPending {...props} />
 }
 
@@ -384,6 +373,25 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   const $request = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
   const request = useStore($request)
   const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
+  const messageRunning = useAuiState(selectMessageRunning)
+  // Answering clears the request a beat before `tool.complete` swaps in the
+  // settled card. Latch that this card was live so that gap doesn't demote it.
+  const [wasLive, setWasLive] = useState(false)
+
+  if (request && !wasLive) {
+    setWasLive(true)
+  }
+
+  // Stopped mid-prompt with no result — don't leave a dead interactive panel.
+  // The turn's running flag alone can't decide that: `session.info` reports
+  // running=false while clarify is blocking on the user, and demoting there
+  // remounts the question as a tool row and jumps the transcript. The live
+  // request is the real signal — every path that ends a turn (complete, stop,
+  // error) clears it for the session, so a request that never arrived on a
+  // settled turn means there is nothing left to answer.
+  if (!messageRunning && !request && !wasLive) {
+    return <ToolFallback {...props} />
+  }
 
   // Batch: the gateway request carries qid-keyed questions. Args alone can't
   // drive the form (no qids to respond with), so batch waits for the request.
@@ -435,11 +443,12 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   // Race: tool.start fires a tick before clarify.request, so request_id
-  // arrives slightly after the tool block mounts. Hold the whole panel on a
-  // spinner until the gateway request is wired — showing disabled choices or
-  // a "loading question" stub is worse than a brief wait.
+  // arrives slightly after the tool block mounts. If the question text is
+  // already in the tool args, paint the card immediately (disabled until
+  // the request is wired) — a spinner→question swap is a layout jump for
+  // no reason. Only spin when we have nothing to show yet.
   const ready = Boolean(matchingRequest?.requestId)
-  const loading = !ready && !submitting
+  const loading = !ready && !submitting && !question
 
   const respond = useCallback(
     async (answer: string) => {
@@ -708,7 +717,7 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
                 active={activeIndex === index}
                 char={letterFor(index)}
                 choice={choice}
-                disabled={submitting}
+                disabled={submitting || !ready}
                 key={`${index}-${choice}`}
                 keyShortcuts={`${letterFor(index)} ${index + 1}`}
                 onClick={() => selectChoice(choice, index)}
@@ -732,7 +741,7 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
                 aria-current={activeIndex === choices.length || undefined}
                 aria-keyshortcuts={`${letterFor(choices.length)} ${choices.length + 1}`}
                 className={CLARIFY_TEXTAREA_CLASS}
-                disabled={submitting}
+                disabled={submitting || !ready}
                 onBlur={() => setOtherFocused(false)}
                 onChange={event => onDraftChange(event.target.value)}
                 onFocus={() => {
@@ -752,7 +761,7 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
         ) : (
           <Textarea
             className={CLARIFY_TEXTAREA_CLASS}
-            disabled={submitting}
+            disabled={submitting || !ready}
             onChange={event => onDraftChange(event.target.value)}
             onKeyDown={handleTextareaKey}
             placeholder={copy.placeholder}
@@ -765,10 +774,10 @@ function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs
       </ClarifyShell>
 
       <div className="flex items-center justify-end gap-1">
-        <Button disabled={submitting} onClick={() => void respond('')} size="xs" type="button" variant="text">
+        <Button disabled={submitting || !ready} onClick={() => void respond('')} size="xs" type="button" variant="text">
           {copy.skip}
         </Button>
-        <Button disabled={submitting || !pendingAnswer} size="xs" type="submit">
+        <Button disabled={submitting || !ready || !pendingAnswer} size="xs" type="submit">
           {submitting ? (
             <Loader2 className="size-3 animate-spin" />
           ) : (

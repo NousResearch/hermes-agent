@@ -1,5 +1,5 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -11,10 +11,12 @@ import { $activeSessionId } from '@/store/session'
 
 import { ClarifyTool, readClarifyBatchResult, readClarifyResult } from './clarify-tool'
 
-// The live pending card only renders while its message is running. Force that so
-// keyboard-navigation tests can exercise ClarifyToolPending directly.
+// The live pending card used to require message-running. Tests that exercise
+// the pending form force that on; the settle-shift case flips it off.
+let messageRunning = true
+
 vi.mock('@assistant-ui/react', () => ({
-  useAuiState: () => true
+  useAuiState: () => messageRunning
 }))
 
 afterEach(() => {
@@ -22,6 +24,7 @@ afterEach(() => {
   clearClarifyRequest()
   $activeSessionId.set(null)
   $gateway.set(null)
+  messageRunning = true
   vi.clearAllMocks()
 })
 
@@ -87,6 +90,50 @@ function renderLiveClarify({ multiSelect = false }: { multiSelect?: boolean } = 
 
   return request
 }
+
+describe('ClarifyTool live card stays mounted across settle', () => {
+  it('keeps the question card while the gateway request is open and the turn reports not-running', () => {
+    messageRunning = false
+    renderLiveClarify()
+
+    expect(screen.getByText('Which deployment target?')).toBeTruthy()
+    expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
+    expect(document.querySelector('[data-clarify-settled]')).toBeNull()
+  })
+
+  it('demotes to a tool row when the turn stopped and no request is left to answer', () => {
+    messageRunning = false
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+
+    expect(document.querySelector('[data-clarify-choices]')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
+  })
+
+  it('holds the card through the gap between answering and the settled result', () => {
+    renderLiveClarify()
+
+    expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
+
+    // Answering clears the request; the settled card only arrives with
+    // tool.complete, and the turn can already read as not-running by then.
+    messageRunning = false
+    act(() => clearClarifyRequest('request-1', 'session-1'))
+
+    expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
+  })
+
+  it('paints the question from tool args instead of a spinner while request_id is still racing', () => {
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+
+    expect(screen.getByText('Which deployment target?')).toBeTruthy()
+    expect(screen.queryByRole('status', { name: /loading question/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Continue/ }).hasAttribute('disabled')).toBe(true)
+  })
+})
 
 describe('ClarifyTool choice selection', () => {
   it('selects independently, deselects and submits multi-select choices as a JSON array', async () => {

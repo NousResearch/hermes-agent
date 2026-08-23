@@ -44,30 +44,33 @@ class TestResolverWithMultiplexOff:
 
     def test_prefix_naming_own_profile_is_honored(self, adapter, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name", lambda: "researcher"
+            "hermes_cli.profiles.profile_matches_home",
+            lambda name, home=None: name == "researcher",
         )
         assert adapter._resolve_request_profile(_request("researcher")) is None
 
     def test_prefix_naming_default_on_default_home_is_honored(self, adapter, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+            "hermes_cli.profiles.profile_matches_home",
+            lambda name, home=None: name == "default",
         )
         assert adapter._resolve_request_profile(_request("default")) is None
 
     def test_prefix_naming_another_agent_fails_closed(self, adapter, monkeypatch):
         """The misdelivery case: addressed to researcher, running as default."""
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+            "hermes_cli.profiles.profile_matches_home",
+            lambda name, home=None: name == "default",
         )
         assert adapter._resolve_request_profile(_request("researcher")) is _PROFILE_REJECTED
 
     def test_unresolvable_own_identity_fails_closed(self, adapter, monkeypatch):
         """If the process cannot prove who it is, it must not answer as anyone."""
 
-        def boom():
+        def boom(name, home=None):
             raise RuntimeError("no home")
 
-        monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", boom)
+        monkeypatch.setattr("hermes_cli.profiles.profile_matches_home", boom)
         assert adapter._resolve_request_profile(_request("researcher")) is _PROFILE_REJECTED
 
 

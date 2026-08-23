@@ -11,6 +11,7 @@ import {
   isReauthRequiredError,
   isServerSideHttpError,
   makeNousCloudBackendDownError,
+  makeUnsignedOauthError,
   waitForHermesReady
 } from './backend-health'
 
@@ -217,6 +218,20 @@ test('a credentialed 401 fails fast for reauth instead of reporting a dead sessi
 
   // Fail fast: never reached the public /api/status leg.
   assert.deepEqual(calls, [['probe', 'https://gateway.example/api/health']])
+})
+
+test('unsigned OAuth is a terminal reauth failure; needsOauthLogin alone is not', () => {
+  // The unsigned-in throw must set isReauthRequired so startHermes latches.
+  // needsOauthLogin alone (ticket 401/403) stays a Sign-in hint, not a latch —
+  // a lapsed AT cookie can still rotate from a live RT on the next mint.
+  const unsigned = makeUnsignedOauthError() as any
+
+  assert.equal(unsigned.needsOauthLogin, true)
+  assert.equal(unsigned.isReauthRequired, true)
+  assert.equal(isReauthRequiredError(unsigned), true)
+  assert.match(unsigned.message, /not signed in/i)
+  assert.equal(isReauthRequiredError({ needsOauthLogin: true }), false)
+  assert.equal(isReauthRequiredError(new Error('Could not reach the remote Hermes gateway')), false)
 })
 
 test('a credentialed 403 is also a terminal reauth failure', async () => {

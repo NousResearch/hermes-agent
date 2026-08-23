@@ -42,6 +42,34 @@ def test_line_input_preserves_builtin_input_for_redirected_stdin(monkeypatch):
     assert seen["prompt"] == "Enter model name: "
 
 
+def test_line_input_falls_back_to_input_when_prompt_toolkit_raises_oserror(monkeypatch):
+    """isatty() can report True while the asyncio selector still rejects stdin.
+
+    Under a `curl ... | bash` install the setup wizard reattaches stdin from
+    /dev/tty, so isatty() is True and the guard above passes. prompt_toolkit
+    then fails to register fd 0 with the event-loop selector (observed on
+    macOS, where kqueue raises OSError EINVAL / "Invalid argument"). line_input
+    must degrade to the built-in reader instead of letting the OSError abort
+    the whole wizard.
+    """
+    seen = {}
+
+    def raising_prompt(*_args, **_kwargs):
+        raise OSError(22, "Invalid argument")
+
+    def fake_input(prompt_text):
+        seen["prompt"] = prompt_text
+        return "fallback-value"
+
+    monkeypatch.setattr(cli_output.sys, "stdin", _TTY())
+    monkeypatch.setattr(cli_output.sys, "stdout", _TTY())
+    monkeypatch.setattr("prompt_toolkit.prompt", raising_prompt)
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    assert cli_output.line_input("Choice [1/2]: ") == "fallback-value"
+    assert seen["prompt"] == "Choice [1/2]: "
+
+
 def test_password_prompt_uses_masked_secret_prompt(monkeypatch):
     seen = {}
 

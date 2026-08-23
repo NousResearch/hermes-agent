@@ -261,7 +261,7 @@ def test_daemon_permit_digest_helper_result_maps_to_daemon_binding(monkeypatch, 
     _write_digest_helper(helper, "c" * 64, captured)
 
     def consumed(request):
-        assert request["request"]["binding"]["args_digest"] == "sha256:" + "c" * 64
+        assert request["request"]["binding"]["args_digest"] == "c" * 64
         return {"request_id": request["request_id"], "permit_id": "permit:one", "evidence": {}, "preflight_artifact": {}, "receipt_artifact": {"digest": "receipt"}}
 
     _serve_one_permit_response(path, consumed)
@@ -269,7 +269,7 @@ def test_daemon_permit_digest_helper_result_maps_to_daemon_binding(monkeypatch, 
         "canonical_digest_command": str(helper),
         "socket_path": str(path),
         "permit_id": "permit:one",
-        "binding": {"tool": "write_file", "args_digest": "sha256:" + "c" * 64},
+        "binding": {"tool": "write_file", "args_digest": "c" * 64},
     })
     token = permit_adapter(adapter)
     try:

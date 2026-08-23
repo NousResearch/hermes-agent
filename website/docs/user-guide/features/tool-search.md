@@ -57,9 +57,9 @@ Each query in a `tool_search` call is searched independently against the
 same catalog (`limit` applies per query); the per-query groups carry tool
 names only, while the shared `tools` map holds each matched tool's
 description and required parameter names once. Queries are stemmed, so
-"issues" finds `create_issue`. When some queries return no matches, the
-response includes a single `available_sources` summary of the connected
-servers so a lexical miss is not mistaken for a missing capability.
+"issues" finds `create_issue`. Each query group that returns no matches
+includes an `available_sources` summary of the connected servers so a lexical
+miss is not mistaken for a missing capability.
 `tool_describe` resolves every requested name in one call; unknown names
 are reported in `not_found` without failing the rest of the batch.
 
@@ -96,8 +96,6 @@ tools:
     threshold_pct: 5    # listing budget as a percentage of context
     search_default_limit: 5
     max_search_limit: 25
-    max_queries: 10
-    max_describe_names: 10
     listing: auto       # embed a grouped name+description catalog manifest
     listing_max_tokens: 4000
 ```
@@ -108,10 +106,11 @@ tools:
 | `threshold_pct` | `5` | Listing budget as a percentage of the active model's context length. Range 0–100. |
 | `search_default_limit` | `5` | Hits returned per query when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `25` | Hard upper bound the model can request via `limit` (per query). Range 1–50. |
-| `max_queries` | `10` | Maximum queries per `tool_search` call. Over-cap calls return an error and the model retries with fewer. No upper clamp. |
-| `max_describe_names` | `10` | Maximum names per `tool_describe` call. Same error-and-retry semantics. No upper clamp. |
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
+
+Per-call array caps are internal safety bounds, not configuration. Over-cap
+calls return an error so the model can retry with a smaller batch.
 
 ### Why the listing exists
 

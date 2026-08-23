@@ -316,14 +316,15 @@ class TestMultiQuerySearch:
         ))
         assert result["queries"] == ["post slack message"]
 
-    def test_max_queries_config_respected(self, issue_defs):
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_search
+    def test_max_query_cap_respected(self, issue_defs, monkeypatch):
+        import tools.tool_search as tool_search
 
-        cfg = ToolSearchConfig.from_raw({"max_queries": 2})
-        ok = json.loads(dispatch_tool_search(
+        monkeypatch.setattr(tool_search, "_MAX_QUERIES_PER_CALL", 2)
+        cfg = tool_search.ToolSearchConfig.from_raw({})
+        ok = json.loads(tool_search.dispatch_tool_search(
             {"queries": ["a b", "c d"]}, current_tool_defs=issue_defs, config=cfg))
         assert "error" not in ok
-        over = json.loads(dispatch_tool_search(
+        over = json.loads(tool_search.dispatch_tool_search(
             {"queries": ["a", "b", "c"]}, current_tool_defs=issue_defs, config=cfg))
         assert "too many queries" in over["error"]
 
@@ -441,16 +442,17 @@ class TestBatchedDescribe:
         assert list(result["tools"]) == ["mq_linear_create_issue"]
         assert "not_found" not in result
 
-    def test_empty_and_overcap_names_error(self, issue_defs):
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+    def test_empty_and_overcap_names_error(self, issue_defs, monkeypatch):
+        import tools.tool_search as tool_search
 
-        cfg = ToolSearchConfig.from_raw({})
-        assert "error" in json.loads(dispatch_tool_describe(
+        monkeypatch.setattr(tool_search, "_MAX_DESCRIBE_NAMES_PER_CALL", 2)
+        cfg = tool_search.ToolSearchConfig.from_raw({})
+        assert "error" in json.loads(tool_search.dispatch_tool_describe(
             {}, current_tool_defs=issue_defs, config=cfg))
-        assert "error" in json.loads(dispatch_tool_describe(
+        assert "error" in json.loads(tool_search.dispatch_tool_describe(
             {"names": []}, current_tool_defs=issue_defs, config=cfg))
-        over = ["n%d" % i for i in range(cfg.max_describe_names + 1)]
-        parsed = json.loads(dispatch_tool_describe(
+        over = ["n%d" % i for i in range(3)]
+        parsed = json.loads(tool_search.dispatch_tool_describe(
             {"names": over}, current_tool_defs=issue_defs, config=cfg))
         assert "too many names" in parsed["error"]
 
@@ -471,26 +473,13 @@ class TestBatchedDescribe:
 
 
 class TestConfigAndSchema:
-    def test_new_caps_default_and_parse(self):
-        from tools.tool_search import ToolSearchConfig
-
-        cfg = ToolSearchConfig.from_raw(None)
-        assert cfg.max_queries >= 1
-        assert cfg.max_describe_names >= 1
-        # Operator-tunable with no upper clamp; floored at 1.
-        big = ToolSearchConfig.from_raw({"max_queries": 500,
-                                         "max_describe_names": 500})
-        assert big.max_queries == 500
-        assert big.max_describe_names == 500
-        floored = ToolSearchConfig.from_raw({"max_queries": 0,
-                                             "max_describe_names": -3})
-        assert floored.max_queries == 1
-        assert floored.max_describe_names == 1
-
     def test_limit_default_within_cap(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
         from tools.tool_search import ToolSearchConfig
 
-        cfg = ToolSearchConfig.from_raw({})
+        cfg = ToolSearchConfig.from_raw(DEFAULT_CONFIG["tools"]["tool_search"])
+        assert cfg.max_search_limit == 25
+        assert cfg.search_default_limit == 5
         assert 1 <= cfg.search_default_limit <= cfg.max_search_limit <= 50
 
     def test_bridge_schema_declares_array_inputs(self):
@@ -500,6 +489,15 @@ class TestConfigAndSchema:
         search_params = schemas["tool_search"]["parameters"]
         assert search_params["required"] == ["queries"]
         assert search_params["properties"]["queries"]["type"] == "array"
+        query_description = search_params["properties"]["queries"]["description"]
+        assert "single string is accepted" in query_description
+        assert "one query" in query_description
+        limit_description = search_params["properties"]["limit"]["description"]
+        assert "per query" in limit_description
+        assert "configured maximum (25 by default)" in limit_description
         describe_params = schemas["tool_describe"]["parameters"]
         assert describe_params["required"] == ["names"]
         assert describe_params["properties"]["names"]["type"] == "array"
+        name_description = describe_params["properties"]["names"]["description"]
+        assert "single string is accepted" in name_description
+        assert "one name" in name_description

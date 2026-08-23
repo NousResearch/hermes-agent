@@ -293,14 +293,15 @@ class TestBridgeDispatch:
         assert "error" in json.loads(result)
 
     def test_tool_search_rejects_empty_and_overcap_queries(self):
-        from tools.tool_search import dispatch_tool_search, ToolSearchConfig
-        cfg = ToolSearchConfig.from_raw({})
-        assert "error" in json.loads(dispatch_tool_search(
+        import tools.tool_search as tool_search
+
+        cfg = tool_search.ToolSearchConfig.from_raw({})
+        assert "error" in json.loads(tool_search.dispatch_tool_search(
             {"queries": []}, current_tool_defs=[], config=cfg))
-        assert "error" in json.loads(dispatch_tool_search(
+        assert "error" in json.loads(tool_search.dispatch_tool_search(
             {"queries": ["  ", ""]}, current_tool_defs=[], config=cfg))
-        over = ["q"] * (cfg.max_queries + 1)
-        parsed = json.loads(dispatch_tool_search(
+        over = ["q"] * (tool_search._MAX_QUERIES_PER_CALL + 1)
+        parsed = json.loads(tool_search.dispatch_tool_search(
             {"queries": over}, current_tool_defs=[], config=cfg))
         assert "error" in parsed
         assert "too many queries" in parsed["error"]

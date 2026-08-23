@@ -75,6 +75,11 @@ BRIDGE_TOOL_NAMES = frozenset({TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME, TOOL_CALL_N
 # underestimating, which is the safer default.
 CHARS_PER_TOKEN = 4.0
 
+# Bound the work one tool_search bridge call can request.
+_MAX_QUERIES_PER_CALL = 10
+# Bound the work one tool_describe bridge call can request.
+_MAX_DESCRIBE_NAMES_PER_CALL = 10
+
 
 # ---------------------------------------------------------------------------
 # Configuration plumbing
@@ -94,12 +99,6 @@ class ToolSearchConfig:
     threshold_pct: float  # 0..100
     search_default_limit: int
     max_search_limit: int
-    # Per-call caps on the model-facing array inputs. ``max_queries`` bounds
-    # ``tool_search``'s ``queries`` list; ``max_describe_names`` bounds
-    # ``tool_describe``'s ``names`` list. Over-cap calls error (the model
-    # repairs in one round-trip) rather than silently truncating.
-    max_queries: int = 10
-    max_describe_names: int = 10
     # Catalog listing ("skills-style" progressive disclosure): when active,
     # a grouped name + short-description manifest of every deferred tool is
     # embedded in the tool_search bridge description, so capabilities stay
@@ -149,11 +148,6 @@ class ToolSearchConfig:
         search_default_limit = max(1, min(max_search_limit,
                                           _safe_int(raw.get("search_default_limit"), 5)))
 
-        # Per-call array caps. Floored at 1 (a non-positive cap would reject
-        # every call); no upper clamp — deliberately operator-tunable.
-        max_queries = max(1, _safe_int(raw.get("max_queries"), 10))
-        max_describe_names = max(1, _safe_int(raw.get("max_describe_names"), 10))
-
         listing_raw = str(raw.get("listing", "auto")).strip().lower()
         if listing_raw in ("true", "1", "yes"):
             listing = "on"
@@ -170,8 +164,6 @@ class ToolSearchConfig:
             threshold_pct=threshold_pct,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
-            max_queries=max_queries,
-            max_describe_names=max_describe_names,
             listing=listing,
             listing_max_tokens=listing_max_tokens,
         )
@@ -835,11 +827,11 @@ def bridge_tool_schemas(
                         "queries": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Search queries, each a few keywords describing one capability (e.g. ['create github issue', 'send slack message']). Searched in parallel; results come back grouped per query.",
+                            "description": "Search queries, each a few keywords describing one capability (e.g. ['create github issue', 'send slack message']). Searched in parallel; results come back grouped per query. A single string is accepted and treated as one query.",
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of matches PER QUERY. Default 5.",
+                            "description": "Maximum number of matches per query. Defaults to 5 and is clamped to the configured maximum (25 by default).",
                         },
                     },
                     "required": ["queries"],
@@ -857,7 +849,7 @@ def bridge_tool_schemas(
                         "names": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Exact tool names (as returned by tool_search).",
+                            "description": "Exact tool names (as returned by tool_search). A single string is accepted and treated as one name.",
                         },
                     },
                     "required": ["names"],
@@ -1074,9 +1066,9 @@ def dispatch_tool_search(args: Dict[str, Any],
     queries = [str(q).strip() for q in raw_queries if str(q or "").strip()]
     if not queries:
         return tool_error("queries is required and must contain at least one non-empty string")
-    if len(queries) > config.max_queries:
+    if len(queries) > _MAX_QUERIES_PER_CALL:
         return tool_error(
-            f"too many queries: {len(queries)} > max {config.max_queries}. "
+            f"too many queries: {len(queries)} > max {_MAX_QUERIES_PER_CALL}. "
             "Retry with fewer, more targeted queries."
         )
 
@@ -1153,9 +1145,9 @@ def dispatch_tool_describe(args: Dict[str, Any],
             names.append(n)
     if not names:
         return tool_error("names is required and must contain at least one non-empty string")
-    if len(names) > config.max_describe_names:
+    if len(names) > _MAX_DESCRIBE_NAMES_PER_CALL:
         return tool_error(
-            f"too many names: {len(names)} > max {config.max_describe_names}. "
+            f"too many names: {len(names)} > max {_MAX_DESCRIBE_NAMES_PER_CALL}. "
             "Retry with fewer names per call."
         )
 

@@ -20,6 +20,7 @@ from agent.manual_compression_feedback import summarize_manual_compression
 from hermes_state import SessionDB
 from plugins.context_engine import load_context_engine
 from plugins.context_engine._context_governor import (
+    DEFAULT_MAX_PROVENANCE_BYTES,
     ContextGovernorEngine,
     _SummaryLLMResult,
     _SummaryLLMRoute,
@@ -860,6 +861,16 @@ def test_default_provenance_budget_covers_a_tool_heavy_recursive_suffix():
     )
 
 
+def test_default_provenance_budget_is_large_but_still_bounded():
+    """Large initial transcripts must reach receipt/LLM admission before failing."""
+    with patch("hermes_cli.config.load_config", return_value={}):
+        engine = ContextGovernorEngine(binary="/tmp/context-governor")
+
+    assert engine._policy["max_provenance_bytes"] == DEFAULT_MAX_PROVENANCE_BYTES
+    assert DEFAULT_MAX_PROVENANCE_BYTES == 16 * 1024 * 1024
+    assert DEFAULT_MAX_PROVENANCE_BYTES < 64 * 1024 * 1024
+
+
 def test_after_n_checkpoint_policy_calls_llm_only_on_intended_boundary():
     engine, llm = _checkpoint_engine(
         target_tokens=900,
@@ -1241,9 +1252,27 @@ def test_host_todo_snapshot_does_not_block_recursive_llm_checkpoint():
     second = engine.compress(first, current_tokens=100)
     engine.commit_pending_compression(second)
 
+    # A third generation must remain on the authenticated parent chain. The
+    # generation-2 LLM checkpoint is already applied; generation 3 is a normal
+    # deterministic pass that must not strand the session or lose exact refs.
+    third = engine.compress(
+        second + [
+            {"role": "assistant", "content": "third-generation work"},
+            {"role": "user", "content": "third-generation active task"},
+        ],
+        current_tokens=100,
+    )
+    engine.commit_pending_compression(third)
+
     assert llm.call_count == 1
     assert "=== PRIOR CONTEXT SUMMARY ===\nrecursive checkpoint" in second[0]["content"]
     assert f"receipt_id={_receipt_id(2)}" in second[0]["content"]
+    assert engine.compression_count == 3
+    assert engine.last_receipt_id == _receipt_id(3)
+    assert engine.last_compaction_metrics["integrity_result"] == (
+        "host_commit_activation_verified"
+    )
+    assert engine.last_compaction_metrics["exact_fallback_available"] is True
     assert engine.last_error is None
 
 

@@ -2081,12 +2081,13 @@ class APIServerAdapter(BasePlatformAdapter):
         """Resolve + validate the /p/<profile>/ URL prefix on an API request.
 
         Returns:
-          - ``None`` when no profile prefix is present, or multiplexing is off
-            (the prefix is ignored; request handled as the default profile).
+          - ``None`` when no profile prefix is present, or when multiplexing
+            is off and the prefix names this process's own profile (the
+            request is already scoped to the only agent served here).
           - the profile name (str) when present, multiplexing is on, and the
             profile is one this gateway serves.
-          - ``_PROFILE_REJECTED`` when a prefix is present but the profile is
-            unknown/unconfigured (handler/middleware returns 404).
+          - ``_PROFILE_REJECTED`` when a prefix is present but names a profile
+            this process cannot serve (handler/middleware returns 404).
         """
         profile = (request.match_info.get("profile") or "").strip()
         if not profile:
@@ -2094,9 +2095,25 @@ class APIServerAdapter(BasePlatformAdapter):
         runner = getattr(self, "gateway_runner", None)
         cfg = getattr(runner, "config", None)
         if not getattr(cfg, "multiplex_profiles", False):
-            # Prefix supplied but multiplexing is off — ignore it, behave as
-            # the single-profile gateway (don't 404 a would-be valid route).
-            return None
+            # A prefix names a specific agent. With multiplexing off this
+            # process serves exactly one, so honor the prefix only when it
+            # names that one (peers address single-profile daemons this way
+            # without knowing the host's topology). Anything else must fail
+            # closed: answering as the local profile would deliver the
+            # request to a DIFFERENT agent than the one addressed — silent
+            # misdelivery, strictly worse than a 404. Observed live (Aug
+            # 2026): `hermes peer dm mini/researcher` answered by the mini's
+            # default agent, with no error anywhere.
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+
+                own = get_active_profile_name()
+            except Exception:
+                return _PROFILE_REJECTED
+            if profile == own:
+                # Scoped to self: same handling as no prefix at all.
+                return None
+            return _PROFILE_REJECTED
         try:
             from hermes_cli.profiles import profiles_to_serve
 

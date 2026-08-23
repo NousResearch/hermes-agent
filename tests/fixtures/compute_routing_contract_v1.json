@@ -1,0 +1,60 @@
+{
+  "schema_version": "compute_routing_contract/v1",
+  "public_interface": {
+    "module": "hermes_cli.compute_routing",
+    "callable": "route_task",
+    "arguments": ["task_context", "role_decision", "capability_snapshot", "role_constraints", "policy", "execution", "unattended"]
+  },
+  "common_input": {
+    "task_context": {"task_id": "t_route_contract", "signals": ["standard"], "requested_route": null, "persisted_route": null, "proposed_boundary": null},
+    "role_decision": {"role_ref": "role-v7:t_route_contract", "role": "coding", "assignee": "bmk", "write_scope": ["tests/**"], "workspace": "G:/worktrees/t_route_contract", "approval": "review_required", "toolsets": ["terminal", "file", "kanban"], "master_forbidden": true},
+    "capability_snapshot": {
+      "snapshot_id": "cap-20260823-1", "catalog_observed": true, "auth_observed": true, "runtime_observed": true,
+      "candidates": [
+        {"provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning_efforts": ["low"]},
+        {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_efforts": ["medium", "high", "xhigh"]},
+        {"provider": "vision-adapter", "model": "vision-specialist-v1", "reasoning_efforts": ["medium"]}
+      ]
+    },
+    "role_constraints": {"allowed_providers": ["openai-codex", "vision-adapter"], "allowed_models": ["gpt-5.6-luna", "gpt-5.6-sol", "vision-specialist-v1"], "write_scope": ["tests/**"], "workspace": "G:/worktrees/t_route_contract", "approval": "review_required", "toolsets": ["terminal", "file", "kanban"], "master_forbidden": true},
+    "policy": {
+      "schema_version": "compute_routing_policy/v1", "policy_version": "2026-08-contract-1", "mode": "opt_in",
+      "precedence": ["specialist", "architect", "deep", "standard", "quick"],
+      "eligible_fallback_reasons": ["model_unavailable", "provider_rejected", "transient_network", "quota_exhausted"],
+      "ineligible_fallback_reasons": ["auth_missing", "permission_denied", "write_scope_violation", "test_failed", "contract_failed", "invalid_output", "human_denied", "security_block"],
+      "classes": {
+        "quick": {"provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning_effort": "low", "max_fallbacks": 1, "automation": "opt_in"},
+        "standard": {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "medium", "max_fallbacks": 1, "automation": "opt_in"},
+        "deep": {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high", "max_fallbacks": 1, "automation": "attended"},
+        "architect": {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "xhigh", "max_fallbacks": 0, "automation": "attended"},
+        "specialist": {"provider": "vision-adapter", "model": "vision-specialist-v1", "reasoning_effort": "medium", "max_fallbacks": 0, "automation": "attended"}
+      }
+    },
+    "execution": {"attempted": false, "fallback_index": 0, "error": null, "reported_done": false, "verification": {"performed": false, "passed": false}, "actual": {"provider": null, "model": null, "reasoning_effort": null}},
+    "unattended": false
+  },
+  "normal_cases": [
+    {"id": "N01-specialist-precedence", "input_patch": {"task_context": {"signals": ["specialist", "architect", "deep", "standard", "quick"]}}, "expected": {"status": "dispatchable", "compute_class": "specialist", "route": {"provider": "vision-adapter", "model": "vision-specialist-v1", "reasoning_effort": "medium", "max_fallbacks": 0}}},
+    {"id": "N02-architect-precedence", "input_patch": {"task_context": {"signals": ["architect", "deep", "standard", "quick"]}}, "expected": {"status": "dispatchable", "compute_class": "architect", "route": {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "xhigh", "max_fallbacks": 0}}},
+    {"id": "N03-deep-precedence", "input_patch": {"task_context": {"signals": ["deep", "standard", "quick"]}}, "expected": {"status": "dispatchable", "compute_class": "deep", "route": {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high", "max_fallbacks": 1}}},
+    {"id": "N04-standard-precedence", "input_patch": {"task_context": {"signals": ["standard", "quick"]}}, "expected": {"status": "dispatchable", "compute_class": "standard", "route": {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "medium", "max_fallbacks": 1}}},
+    {"id": "N05-quick-precedence", "input_patch": {"task_context": {"signals": ["quick"]}}, "expected": {"status": "dispatchable", "compute_class": "quick", "route": {"provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning_effort": "low", "max_fallbacks": 1}, "verification_required": true}}
+  ],
+  "mutants": [
+    {"id": "I01-role-boundary-mutation", "invariant": "I1", "input_patch": {"task_context": {"proposed_boundary": {"role": "review", "assignee": "b", "write_scope": ["**"], "workspace": "G:/other", "approval": "none"}}}, "expected": {"status": "rejected", "spawn": false, "reason_code": "role_boundary_mutation"}},
+    {"id": "I02-posthoc-class-inference", "invariant": "I2", "input_patch": {"task_context": {"requested_route": {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high"}, "persisted_route": {"compute_class": null, "route_decision_id": null, "policy_version": null}}, "execution": {"attempted": true, "reported_done": true, "verification": {"performed": true, "passed": true}, "actual": {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high"}}}, "expected": {"status": "rejected", "spawn": false, "reason_code": "compute_class_not_persisted", "outcome": "reported_done"}},
+    {"id": "I03-provider-without-model", "invariant": "I3", "input_patch": {"task_context": {"requested_route": {"provider": "openai-codex", "model": null, "reasoning_effort": "medium"}}}, "expected": {"status": "rejected", "spawn": false, "reason_code": "provider_requires_model"}},
+    {"id": "I04-invalid-reasoning-default-fallback", "invariant": "I4", "input_patch": {"task_context": {"requested_route": {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "hihg"}}}, "expected": {"status": "rejected", "spawn": false, "reason_code": "invalid_reasoning_effort"}},
+    {"id": "I05-catalog-only-capability", "invariant": "I5", "input_patch": {"capability_snapshot": {"auth_observed": false, "runtime_observed": false}}, "expected": {"status": "prepared_not_observed", "spawn": false, "reason_code": "capability_unverified"}},
+    {"id": "I06-work-failure-model-fallback", "invariant": "I6", "input_patch": {"execution": {"attempted": true, "fallback_index": 0, "error": "test_failed"}}, "expected": {"status": "rework_required", "spawn": false, "outcome": "work_failed", "event_kind": "verification_failed", "fallback_index": 0, "retry_policy": "same_owner"}},
+    {"id": "I07-third-spawn-chain", "invariant": "I7", "input_patch": {"execution": {"attempted": true, "fallback_index": 1, "error": "model_unavailable"}}, "expected": {"status": "blocked", "spawn": false, "outcome": "routing_unavailable", "event_kind": "fallback_exhausted", "fallback_index": 1}},
+    {"id": "I08-fallback-widens-safety-boundary", "invariant": "I8", "input_patch": {"task_context": {"requested_route": {"provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning_effort": "low", "fallback_index": 1, "write_scope": ["**"], "toolsets": ["terminal", "file", "kanban", "unsafe"], "approval": "none", "master_forbidden": false}}}, "expected": {"status": "rejected", "spawn": false, "reason_code": "safety_boundary_mutation"}},
+    {"id": "I09-verified-without-actual-model", "invariant": "I9", "input_patch": {"execution": {"attempted": true, "reported_done": true, "verification": {"performed": true, "passed": true}, "actual": {"provider": null, "model": null, "reasoning_effort": null}}}, "expected": {"status": "observation_incomplete", "spawn": false, "outcome": "reported_done", "reason_code": "actual_route_missing"}},
+    {"id": "I10-quick-skips-verification", "invariant": "I10", "input_patch": {"task_context": {"signals": ["quick"]}, "execution": {"attempted": true, "reported_done": true, "verification": {"performed": false, "passed": false}, "actual": {"provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning_effort": "low"}}}, "expected": {"status": "verification_required", "spawn": false, "compute_class": "quick", "outcome": "reported_done", "verification_required": true}},
+    {"id": "I11-unattended-architect-spawn", "invariant": "I11", "input_patch": {"task_context": {"signals": ["architect"]}, "unattended": true}, "expected": {"status": "approval_required", "spawn": false, "compute_class": "architect", "reason_code": "attended_routing_required"}},
+    {"id": "I12-quota-work-failure-conflation", "invariant": "I12", "variants": [
+      {"name": "quota", "input_patch": {"execution": {"attempted": true, "fallback_index": 0, "error": "quota_exhausted"}}, "expected": {"status": "fallback_pending", "spawn": true, "outcome": "routing_unavailable", "event_kind": "fallback_started", "fallback_index": 1}},
+      {"name": "work", "input_patch": {"execution": {"attempted": true, "fallback_index": 0, "error": "test_failed"}}, "expected": {"status": "rework_required", "spawn": false, "outcome": "work_failed", "event_kind": "verification_failed", "fallback_index": 0}}
+    ]}
+  ]
+}

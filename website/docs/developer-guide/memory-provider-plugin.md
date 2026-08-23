@@ -304,9 +304,9 @@ dropped while that provider's formatted context is retained. A provider
 exception keeps the existing fail-isolated behavior and may omit that
 provider's context, as it did for string prefetch failures.
 
-The `memory_prefetch` plugin hook is an opt-in, observer-only boundary. It
-fires synchronously only when a prefetch produced at least one valid structured
-observation and receives exactly these keyword fields:
+The `memory_prefetch` plugin hook is an opt-in, observer-only boundary. It is
+queued asynchronously only when a prefetch produced at least one valid
+structured observation and receives these keyword fields:
 
 - `observations`: the immutable tuple of validated `MemoryObservation` envelopes;
   each envelope is provider-bound and its JSON payload is recursively frozen.
@@ -327,31 +327,74 @@ merged context can be read. Raw recalled/source content may therefore reach the
 hook only when the provider explicitly authors it into that provider's
 observation payload. Legacy/string-only provider context never reaches this
 hook. Hook return values cannot transform context, and callback errors are
-isolated by the normal plugin hook registry. Hermes provides no telemetry,
-network delivery, or storage for this event. The operation-bound observation
-tuple and explicit `task_id`/`turn_id` avoid query, hash, call-order, mutable
-provider `last_*`, or session-cache inference and therefore do not share
-observations between concurrent turns. `memory_prefetch` binds to the owning
-turn only: it intentionally has no `api_request_id`, `api_call_count`, or
-`retry_count`, because one turn may issue several provider requests and the
-prefetch occurs before a single final request can be known. Direct callers may
-still use `prefetch_all()` / `prefetch_all_result()` without correlation; their
-structured event is explicit about unavailable task/turn IDs (`None`) and does
-not invent IDs in the memory subsystem.
+isolated by the host-owned observer dispatcher. Hermes provides no telemetry,
+network delivery, or storage for this event. Delivery uses one bounded FIFO of
+`1024` pending events per callback; enqueue never waits, and a full queue drops
+the oldest pending event. Callback exceptions are logged and isolated. During
+shutdown Hermes places a stop sentinel and waits at most the dispatcher's
+bounded drain timeout (one second by default); a stuck callback is left on its
+daemon worker rather than delaying process teardown. Consumers must therefore
+treat this observer as best-effort and tolerate delay or drop.
+
+The operation-bound observation tuple and explicit `task_id`/`turn_id` avoid
+query, hash, call-order, mutable provider `last_*`, or session-cache inference
+and therefore do not share observations between concurrent turns.
+`memory_prefetch` binds to the owning turn only: it intentionally has no
+`api_request_id`, `api_call_count`, or `retry_count`, because one turn may
+issue several provider requests and the prefetch occurs before a single final
+request can be known. Direct callers may still use `prefetch_all()` /
+`prefetch_all_result()` without correlation; their structured event is explicit
+about unavailable task/turn IDs (`None`) and does not invent IDs in the memory
+subsystem.
+
+A provider-neutral external observer can consume the contract without knowing
+the provider's internal schema:
+
+```python
+from collections import deque
+
+
+class ObservationCollector:
+    def __init__(self):
+        self.events = deque(maxlen=128)
+
+    def record(self, *, observations, session_id, task_id, turn_id, **metadata):
+        self.events.append({
+            "session_id": session_id,
+            "task_id": task_id,
+            "turn_id": turn_id,
+            "observations": observations,
+            "context_sha256": metadata["context_sha256"],
+            "context_byte_length": metadata["context_byte_length"],
+        })
+
+
+collector = ObservationCollector()
+
+
+def register(ctx):
+    ctx.register_hook("memory_prefetch", collector.record)
+```
+
+The collector receives the exact operation envelope and can hand it to its own
+bounded audit/evaluation pipeline; Hermes does not choose that pipeline, persist
+it, or send it anywhere.
 
 ### Correlation ownership matrix
 
 The canonical owner is the agent turn prologue in
 `agent/turn_context.py`. It creates `effective_task_id` (the caller-supplied
 `task_id`, or the core's normal task ID) and the immutable `turn_id` before
-`pre_llm_call`, before synchronous memory prefetch, and before the first API
+`pre_llm_call`, before the memory prefetch operation, and before the first API
 request. The values are locals returned in `TurnContext`; memory receives them
-as explicit arguments rather than reading agent/provider mutable state.
+as explicit arguments rather than reading agent/provider mutable state. The
+provider call remains part of the synchronous prefetch operation; observer
+delivery is queued asynchronously afterward.
 
 | Boundary | Owner and timing | Canonical correlation |
 |---|---|---|
 | `pre_llm_call` | `agent/turn_context.py`, once after turn IDs are created | `session_id`, `task_id`, `turn_id` |
-| `memory_prefetch` | Same prologue, synchronous `prefetch_all()` for the current turn | Same `session_id`, `task_id`, `turn_id`; no request ID |
+| `memory_prefetch` | Same prologue, `prefetch_all()` for the current turn; observer delivery is queued asynchronously | Same `session_id`, `task_id`, `turn_id`; no request ID |
 | `pre_api_request`, `post_api_request`, `api_request_error` | `agent/conversation_loop.py`, around each provider attempt | Same `task_id`/`turn_id` plus the outer model-call `api_request_id`/`api_call_count`; retries of that request retain those IDs and are distinguished by `retry_count` |
 | `post_llm_call` | `agent/turn_finalizer.py`, successful final-answer ownership | Same `session_id`, `task_id`, `turn_id` |
 | canonical `on_session_end` | `agent/turn_finalizer.py`, every `run_conversation()` finalization | Same turn IDs and outcome; it is not a session teardown ID |

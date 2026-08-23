@@ -455,7 +455,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
-| `memory_prefetch` | Observer (Python plugins only) | Synchronous, after one memory-manager prefetch operation has produced at least one valid structured observation; return ignored and context cannot be transformed. | `query`, `session_id`, `task_id`, `turn_id`, `observations` (immutable `tuple[MemoryObservation, ...]`, provider-bound/frozen), `context_sha256`, `context_byte_length` | `query` is sensitive and may contain raw user input. Hermes does not pass merged context or a result object; raw recalled/source content may appear only in a provider-authored observation payload. Legacy/string-only provider context never reaches the hook. No outbound telemetry or storage; shell hooks cannot carry the immutable tuple. |
+| `memory_prefetch` | Observer (Python plugins only) | Queued asynchronously after one memory-manager prefetch operation has produced at least one valid structured observation; return ignored and context cannot be transformed. | `query`, `session_id`, `task_id`, `turn_id`, `observations` (immutable `tuple[MemoryObservation, ...]`, provider-bound/frozen), `context_sha256`, `context_byte_length` | `query` is sensitive and may contain raw user input. Hermes does not pass merged context or a result object; raw recalled/source content may appear only in a provider-authored observation payload. Legacy/string-only provider context never reaches the hook. No outbound telemetry or storage; shell hooks cannot carry the immutable tuple. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
@@ -529,7 +529,7 @@ def register(ctx):
     ctx.register_hook("memory_prefetch", observe_memory_prefetch)
 ```
 
-The callback receives exactly these event-specific fields: `observations` (an
+The callback receives these event-specific fields: `observations` (an
 immutable tuple of provider-bound, recursively frozen `MemoryObservation`
 envelopes), `query` (the exact clean query), `session_id`, `task_id`, `turn_id`,
 `context_sha256` (the lowercase hexadecimal SHA-256 digest over the final
@@ -556,6 +556,13 @@ validation, so string-only providers and structured results with no valid
 observation do not create events. It is observer-only: return values are
 ignored, and the normal hook registry isolates callback errors so memory
 injection continues.
+
+Delivery uses the same host-owned bounded observer dispatcher as streaming
+hooks: one FIFO of 1024 pending events per callback, non-blocking enqueue, and
+drop-oldest overflow behavior. A callback that is slow or raises cannot delay
+memory injection or other consumers. Shutdown places a stop sentinel and
+allows a bounded one-second drain by default; a stuck daemon worker may be
+left behind, so consumers must tolerate delayed or dropped events.
 
 Hermes does not itself redact, persist, export, or send this event anywhere;
 an enabled plugin is responsible for its own privacy policy and any user

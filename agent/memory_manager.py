@@ -514,7 +514,9 @@ class MemoryManager:
                 if len(provider.name) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
                     raise ValueError("provider name is too long")
 
-                frozen_payload = _freeze_memory_observation_payload(candidate.payload)
+                frozen_payload, _payload_bytes = _freeze_memory_observation_payload(
+                    candidate.payload
+                )
                 encoded = json.dumps(
                     {
                         "source_kind": candidate.source_kind,
@@ -571,7 +573,7 @@ class MemoryManager:
         task_id: Optional[str],
         turn_id: Optional[str],
     ) -> None:
-        """Notify opt-in plugins without exposing merged recalled context.
+        """Queue an opt-in observer event without exposing merged context.
 
         The hook receives only the validated, provider-bound observation tuple,
         operation identifiers, and a digest/byte length for the final merged
@@ -579,17 +581,17 @@ class MemoryManager:
         direct callers that do not own a turn leave them ``None``. The public
         result remains available to trusted direct callers, but must never cross
         this observer boundary. Hook return values are ignored so observers
-        cannot transform context or affect the agent turn.
+        cannot transform context or affect the agent turn. Delivery uses the
+        shared host-owned bounded observer dispatcher, so callback latency is
+        not on the turn path.
         """
         if not result.observations:
             return
         try:
-            from hermes_cli.lifecycle import has_hook, invoke_hook
+            from agent.plugin_stream_hooks import enqueue_plugin_observer_hook
 
-            if not has_hook("memory_prefetch"):
-                return
             context_bytes = result.context.encode("utf-8")
-            invoke_hook(
+            enqueue_plugin_observer_hook(
                 "memory_prefetch",
                 query=query,
                 session_id=session_id,

@@ -212,8 +212,8 @@ VALID_HOOKS: Set[str] = {
 # directive that ``agent/shell_hooks._parse_response`` cannot represent;
 # ``memory_prefetch`` is the in-process Python-plugin event whose immutable
 # observation tuple must not be stringified across a subprocess boundary.
-# ``VALID_HOOKS`` doubles
-# as the shell-hook config allow-list, so registration is refused loudly.
+# ``VALID_HOOKS`` doubles as the shell-hook config allow-list, so registration
+# is refused loudly.
 SHELL_UNSUPPORTED_HOOKS: Set[str] = {
     "transform_api_error_classification",
     "memory_prefetch",

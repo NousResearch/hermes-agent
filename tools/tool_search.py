@@ -48,7 +48,7 @@ import math
 import re
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 import snowballstemmer
 
@@ -204,6 +204,20 @@ def load_config() -> ToolSearchConfig:
         return ToolSearchConfig.from_raw(None)
 
 
+def load_config_readonly() -> ToolSearchConfig:
+    """Load tool-search config without copying the cached full config."""
+    try:
+        from hermes_cli.config import load_config_readonly as _load
+        cfg = _load() or {}
+        tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+        if not isinstance(tools_cfg, dict):
+            tools_cfg = {}
+        return ToolSearchConfig.from_raw(tools_cfg.get("tool_search"))
+    except Exception as e:
+        logger.debug("Failed to load tool-search config: %s", e)
+        return ToolSearchConfig.from_raw(None)
+
+
 # ---------------------------------------------------------------------------
 # Tool classification
 # ---------------------------------------------------------------------------
@@ -254,6 +268,26 @@ def is_deferrable_tool_name(name: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _describe_classification(
+    name: str,
+) -> Literal["available", "not_found", "not_deferrable"]:
+    """Classify a describe name without treating unknown names as errors."""
+    try:
+        from tools.registry import registry
+        entry = registry.get_entry(name)
+    except Exception:
+        return "not_found"
+    if entry is None:
+        return "not_found"
+    if (
+        name in BRIDGE_TOOL_NAMES
+        or name in _core_tool_names()
+        or entry.toolset in _DIRECT_SURFACE_TOOLSETS
+    ):
+        return "not_deferrable"
+    return "available"
 
 
 def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -1087,12 +1121,13 @@ def dispatch_tool_describe(args: Dict[str, Any],
           "errors": {"<name>": "..."}     # only for non-deferrable names
         }
 
-    Unknown names land in ``not_found`` instead of failing the whole call;
-    non-deferrable names (core tools, typos of visible tools) keep their
-    per-name error message in ``errors``. Duplicates are deduped silently.
+    Unknown/unregistered names and registered deferrable names absent from the
+    current assembly land in ``not_found`` instead of failing the whole call.
+    Registered non-deferrable names keep their per-name message in ``errors``.
+    Duplicates are deduped silently.
     """
     if config is None:
-        config = load_config()
+        config = load_config_readonly()
 
     raw_names = args.get("names")
     if isinstance(raw_names, str):
@@ -1130,7 +1165,7 @@ def dispatch_tool_describe(args: Dict[str, Any],
                 "description": fn.get("description", ""),
                 "parameters": fn.get("parameters", {}),
             }
-        elif not is_deferrable_tool_name(name):
+        elif _describe_classification(name) == "not_deferrable":
             errors[name] = (
                 f"'{name}' is not a deferrable tool. If you see it in the tools list "
                 "already, call it directly; otherwise check the spelling against tool_search."

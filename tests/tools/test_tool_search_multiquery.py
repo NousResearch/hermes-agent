@@ -245,13 +245,39 @@ class TestBatchedDescribe:
         schema = result["tools"]["mq_linear_create_issue"]
         assert schema["description"] == "Create a new issue in a team."
         assert schema["parameters"]["required"] == ["title", "team"]
-        # Deferrable-but-absent collects in not_found; found ones still resolve.
-        assert result["not_found"] == ["mq_out_of_scope_op"]
+        # Deferrable-but-absent and unknown names collect in not_found; found
+        # ones still resolve.
+        assert result["not_found"] == ["mq_out_of_scope_op", "mcp__bogus__missing"]
         assert "tool_search" in result["hint"]
-        # A name unknown to the registry keeps the spelling-check error.
-        assert "not a deferrable tool" in result["errors"]["mcp__bogus__missing"]
+        assert "errors" not in result
 
-    def test_non_deferrable_name_keeps_per_name_error(self, issue_defs):
+    def test_real_schemas_and_unknown_name_are_classified_independently(self):
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        tool_defs = [
+            _register("mcp__linear__get_issue", "mcp-linear"),
+            _register("mcp__granola__list_meeting_folders", "mcp-granola"),
+        ]
+        result = json.loads(dispatch_tool_describe(
+            {
+                "names": [
+                    "mcp__linear__get_issue",
+                    "mcp__granola__list_meeting_folders",
+                    "mcp__linear__does_not_exist_zzz",
+                ]
+            },
+            current_tool_defs=tool_defs,
+            config=ToolSearchConfig.from_raw({}),
+        ))
+
+        assert set(result["tools"]) == {
+            "mcp__linear__get_issue",
+            "mcp__granola__list_meeting_folders",
+        }
+        assert result["not_found"] == ["mcp__linear__does_not_exist_zzz"]
+        assert "errors" not in result
+
+    def test_unregistered_core_name_is_not_found(self, issue_defs):
         from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
 
         result = json.loads(dispatch_tool_describe(
@@ -260,7 +286,42 @@ class TestBatchedDescribe:
             config=ToolSearchConfig.from_raw({}),
         ))
         assert "mq_linear_create_issue" in result["tools"]
-        assert "not a deferrable tool" in result["errors"]["terminal"]
+        assert "terminal" in result["not_found"]
+        assert "errors" not in result
+
+    def test_registered_direct_surface_name_keeps_exact_error(self):
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        name = "mq_desktop_direct_action"
+        tool_def = _register(name, "desktop_ui")
+        result = json.loads(dispatch_tool_describe(
+            {"names": [name]},
+            current_tool_defs=[tool_def],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+
+        assert result["errors"][name] == (
+            f"'{name}' is not a deferrable tool. If you see it in the tools list "
+            "already, call it directly; otherwise check the spelling against tool_search."
+        )
+        assert name not in result.get("not_found", [])
+
+    def test_registry_lookup_failure_is_not_found(self, monkeypatch):
+        from tools.registry import registry
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        def fail_lookup(name):
+            raise RuntimeError("registry unavailable")
+
+        monkeypatch.setattr(registry, "get_entry", fail_lookup)
+        result = json.loads(dispatch_tool_describe(
+            {"names": ["mq_unknown_during_lookup"]},
+            current_tool_defs=[],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+
+        assert result["not_found"] == ["mq_unknown_during_lookup"]
+        assert "errors" not in result
 
     def test_duplicates_deduped_silently(self, issue_defs):
         from tools.tool_search import ToolSearchConfig, dispatch_tool_describe

@@ -80,6 +80,35 @@ def _actual_route(execution: Mapping[str, Any]) -> dict[str, Any] | None:
     return {key: actual[key] for key in keys}
 
 
+def _has_distinct_candidate(
+    candidates: object,
+    route: Mapping[str, Any],
+    role_constraints: Mapping[str, Any],
+) -> bool:
+    if not isinstance(candidates, (list, tuple)):
+        return False
+    current = (route["provider"], route["model"], route["reasoning_effort"])
+    allowed_providers = role_constraints.get("allowed_providers")
+    allowed_models = role_constraints.get("allowed_models")
+    for item in candidates:
+        if not isinstance(item, Mapping):
+            continue
+        provider = item.get("provider")
+        model = item.get("model")
+        if (
+            not provider
+            or not model
+            or (allowed_providers is not None and provider not in allowed_providers)
+            or (allowed_models is not None and model not in allowed_models)
+        ):
+            continue
+        for effort in item.get("reasoning_efforts") or ():
+            candidate = (provider, model, effort)
+            if effort in REASONING_EFFORTS and candidate != current:
+                return True
+    return False
+
+
 def route_task(
     task_context: Mapping[str, Any],
     role_decision: Mapping[str, Any],
@@ -167,10 +196,26 @@ def route_task(
     route_decision_id = _decision_id(
         task_context, role_decision, capability_snapshot, policy, compute_class
     )
-    persisted_route = {
+    route_identity = {
         "compute_class": compute_class,
-        "route_decision_id": route_decision_id,
         "policy_version": policy.get("policy_version"),
+        "provider": route["provider"],
+        "model": route["model"],
+        "reasoning_effort": route["reasoning_effort"],
+    }
+    if execution.get("attempted") and isinstance(persisted_input, Mapping):
+        if any(
+            persisted_input.get(field) != value
+            for field, value in route_identity.items()
+        ):
+            return result(
+                "rejected",
+                spawn=False,
+                reason_code="route_persistence_mismatch",
+            )
+    persisted_route = {
+        **route_identity,
+        "route_decision_id": route_decision_id,
     }
     common: dict[str, Any] = {
         "compute_class": compute_class,
@@ -238,7 +283,10 @@ def route_task(
             retry_policy="same_owner",
         )
     if error in eligible_errors:
-        if fallback_index < route["max_fallbacks"]:
+        if (
+            fallback_index < route["max_fallbacks"]
+            and _has_distinct_candidate(candidates, route, role_constraints)
+        ):
             return result(
                 "fallback_pending",
                 **common,

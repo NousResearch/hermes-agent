@@ -88,6 +88,21 @@ def test_native_mcp_reference_documents_reload():
     assert "requires restarting the agent" not in NATIVE_MCP_TEXT
 
 
+def test_native_mcp_reference_matches_runtime_interpolation():
+    """Every credential example depends on ``${VAR}`` expansion existing.
+
+    A refactor that drops interpolation silently invalidates every documented
+    credential example, so pin the contract the way the timeout test does:
+    against the runtime source, not a copy of it.
+    """
+    source = (REPO / "tools" / "mcp_tool.py").read_text(encoding="utf-8")
+    assert "def _interpolate_env_vars(" in source, (
+        "the runtime no longer resolves ${VAR} placeholders in MCP configs"
+    )
+    assert "`${env:VAR}`" in NATIVE_MCP_TEXT
+    assert "keeps its literal `${VAR}` placeholder" in NATIVE_MCP_TEXT
+
+
 def test_native_mcp_reference_keeps_credentials_out_of_config():
     forbidden = ("ghp_x", "sk-x", 'GITHUB_PERSONAL_ACCESS_TOKEN: "ghp', "Bearer sk-")
     for token in forbidden:

@@ -89,6 +89,16 @@ mcp_servers:
 
 Note: A server config must have either `command` (stdio) or `url` (HTTP), not both.
 
+### Variable Interpolation
+
+String values interpolate `${VAR}` placeholders. Both plain `${VAR}` and
+Cursor-style `${env:VAR}` are accepted, as are the context variables
+`${userHome}`, `${workspaceFolder}`, `${workspaceFolderBasename}`,
+`${pathSeparator}` and `${/}` (case-sensitive). Values resolve from the active
+profile's secret scope when multiplexing is on, otherwise from `os.environ`
+(which includes `~/.hermes/.env` loaded at startup). A variable that is unset
+keeps its literal `${VAR}` placeholder.
+
 ## How It Works
 
 ### Startup Discovery

@@ -48,6 +48,8 @@ import {
   markSessionRead,
   sessionMatchesStoredId,
   setActiveSessionStoredIdRotation,
+  setAwaitingResponse,
+  setBusy,
   setSessions
 } from './session'
 import { requestForSessionProfile, type SessionOwnerScope, type SessionProfileRoute } from './session-request-router'
@@ -441,7 +443,17 @@ export function clearAllSessionStates() {
  *  answer, and post-reconnect refresh re-asserts or retires it via its own
  *  path. Transition side-effects run through publishSessionState, so
  *  watchdogs disarm, stall hints drop, and settle/unread bookkeeping stays
- *  consistent. */
+ *  consistent.
+ *
+ *  The downgrade goes through the delegate's `retireBusyClaim` (the wiring
+ *  cache's updateSessionState), not straight into this mirror: the claim has
+ *  four holders — wiring cache, mirror, the focused view's draft latches,
+ *  busyRef — and retiring only the mirror left Send silently no-oping behind
+ *  a stale busy until restart (#93059). The mirror publish stays as the
+ *  fallback for runtimes the cache never held (background-sync rows, no
+ *  wiring mounted). A PRIMARY reconcile also clears the focused draft
+ *  latches, which outlive the state they mirrored; a scoped one leaves them
+ *  alone — a background socket says nothing about the primary composer. */
 export function reconcileBusyStatesOnReconnect(scope?: string) {
   const states = $sessionStates.get()
 
@@ -456,7 +468,19 @@ export function reconcileBusyStatesOnReconnect(scope?: string) {
       continue
     }
 
-    publishSessionState(runtimeId, { ...state, awaitingResponse: false, busy: false })
+    sessionTileDelegate()?.retireBusyClaim?.(runtimeId)
+
+    // Re-read — the write path may have republished (and released) this entry.
+    const published = $sessionStates.get()[runtimeId]
+
+    if (published?.busy || published?.awaitingResponse) {
+      publishSessionState(runtimeId, { ...published, awaitingResponse: false, busy: false })
+    }
+  }
+
+  if (scope === undefined) {
+    setBusy(false)
+    setAwaitingResponse(false)
   }
 }
 
@@ -1052,6 +1076,12 @@ export interface SessionTileDelegate {
   /** Bind a live runtime id for a stored session (resume without touching
    *  the main view). Returns the runtime id, or throws. */
   resumeTile(storedSessionId: string): Promise<string>
+  /** Retire one runtime's busy/awaiting claim through the wiring cache
+   *  (updateSessionState), so cache, focused view, busyRef, and tile mirrors
+   *  settle together. Returns false when the cache holds no busy state for
+   *  it — the caller downgrades the mirror itself. Reconnect-time twin of
+   *  invalidateRuntimeBindings (#93059). */
+  retireBusyClaim?(runtimeId: string): boolean
   /** Submit a prompt to a tile's live session. */
   submitToSession(runtimeId: string, text: string): Promise<void>
   /** THE session-state write path — routes through the wiring cache so the

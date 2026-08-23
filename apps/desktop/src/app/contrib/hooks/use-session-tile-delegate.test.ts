@@ -254,6 +254,45 @@ describe('useSessionTileDelegate resumeTile', () => {
   })
 })
 
+describe('useSessionTileDelegate retireBusyClaim', () => {
+  it('retires a stale busy claim through the session-state write path (#93059)', () => {
+    const busyState = { awaitingResponse: true, busy: true, messages: [{ id: 'm1' }], storedSessionId: 'stored-d' }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', busyState]]) }
+    const updateSessionState = vi.fn()
+
+    renderTile(
+      vi.fn(async () => ({}) as never),
+      { sessionStateByRuntimeIdRef, updateSessionState }
+    )
+
+    expect(sessionTileDelegate()!.retireBusyClaim!('runtime-dead')).toBe(true)
+    expect(updateSessionState).toHaveBeenCalledWith('runtime-dead', expect.any(Function))
+
+    // The updater is the downgrade: busy/awaiting off, everything else intact.
+    const updater = updateSessionState.mock.calls[0][1] as (state: typeof busyState) => typeof busyState
+
+    expect(updater(busyState)).toEqual({ ...busyState, awaitingResponse: false, busy: false })
+  })
+
+  it('reports a miss instead of minting a cache entry for a runtime it never held', () => {
+    // No phantoms: updateSessionState mints a state for any id it is handed,
+    // and prune never collects a transcript-less entry — so a miss must not
+    // reach the write path; the store retires its own mirror instead.
+    const idle = { awaitingResponse: false, busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-e' }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-idle', idle]]) }
+    const updateSessionState = vi.fn()
+
+    renderTile(
+      vi.fn(async () => ({}) as never),
+      { sessionStateByRuntimeIdRef, updateSessionState }
+    )
+
+    expect(sessionTileDelegate()!.retireBusyClaim!('runtime-unknown')).toBe(false)
+    expect(sessionTileDelegate()!.retireBusyClaim!('runtime-idle')).toBe(false)
+    expect(updateSessionState).not.toHaveBeenCalled()
+  })
+})
+
 describe('useSessionTileDelegate interruptSession', () => {
   beforeEach(() => {
     setSessions([])

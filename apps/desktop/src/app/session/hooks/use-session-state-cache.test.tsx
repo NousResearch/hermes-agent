@@ -21,7 +21,13 @@ import {
   setCurrentServiceTier,
   setTurnStartedAt
 } from '@/store/session'
-import { $sessionStates } from '@/store/session-states'
+import {
+  $sessionStates,
+  clearAllSessionStates,
+  reconcileBusyStatesOnReconnect,
+  type SessionTileDelegate,
+  setSessionTileDelegate
+} from '@/store/session-states'
 
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -518,5 +524,55 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     // check must reject it instead of allowing a submit into stored-B.
     cache.runtimeIdByStoredSessionIdRef.current.set('stored-A', 'runtime-B')
     expect(cache.getRuntimeIdForStoredSession('stored-A')).toBeNull()
+  })
+})
+
+// #93059: reconnect used to downgrade the $sessionStates mirror only, leaving
+// this cache (which warm resume ORs over `running: false`) still busy.
+describe('useSessionStateCache — reconnect busy reconcile (#93059)', () => {
+  // Only retireBusyClaim is reachable from the store.
+  const asDelegate = (partial: Partial<SessionTileDelegate>) => partial as SessionTileDelegate
+
+  // Stands in for "no wiring mounted": every claim is a miss, nothing written.
+  const inertDelegate = asDelegate({ retireBusyClaim: () => false })
+
+  afterEach(() => {
+    cleanup()
+    setSessionTileDelegate(inertDelegate)
+    clearAllSessionStates()
+    setActiveSessionId(null)
+  })
+
+  it('retires the wiring cache entry, not just the store mirror', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-1')
+    render(
+      <Harness activeSessionId="runtime-1" onReady={value => (cache = value)} selectedStoredSessionId="stored-1" />
+    )
+
+    // The wiring layer's own retireBusyClaim, over the REAL updateSessionState.
+    setSessionTileDelegate(
+      asDelegate({
+        retireBusyClaim: runtimeId => {
+          cache.updateSessionState(runtimeId, state => ({ ...state, awaitingResponse: false, busy: false }))
+
+          return true
+        }
+      })
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-1', state => ({ ...state, awaitingResponse: true, busy: true }), 'stored-1')
+    })
+
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.busy).toBe(true)
+
+    // Backend respawned: no terminal busy:false can arrive for this runtime.
+    act(() => reconcileBusyStatesOnReconnect())
+
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.busy).toBe(false)
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.awaitingResponse).toBe(false)
+    expect($sessionStates.get()['runtime-1']?.busy).toBe(false)
   })
 })

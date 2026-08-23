@@ -119,6 +119,21 @@ export function useSessionTileDelegate({
           }
         }
       },
+      // Reconnect reconcile (#93059): retire an orphaned runtime's busy claim
+      // through updateSessionState so the cache, focused view, busyRef and
+      // tile mirrors settle together. A runtime this cache never held reports
+      // false instead of minting an entry; the store downgrades its mirror.
+      retireBusyClaim: runtimeId => {
+        const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)
+
+        if (!cached || (!cached.busy && !cached.awaitingResponse)) {
+          return false
+        }
+
+        updateSessionState(runtimeId, state => ({ ...state, awaitingResponse: false, busy: false }))
+
+        return true
+      },
       interruptSession: async runtimeId => {
         // Same cooldown as the primary chat's Stop (#83855): the gateway may
         // still be winding down after this interrupt, so a quick edit/resend

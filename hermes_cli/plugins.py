@@ -1183,6 +1183,13 @@ class PluginRegistration:
     key: str
     release: Callable[[], None]
     plugin_key: str = ""
+    # Process-global host infrastructure (e.g. dashboard-auth providers) whose
+    # lifetime is the server, not this per-home manager: kept out of
+    # ``_registration_order`` so a routine unload-all cannot dispose it
+    # (#91701), but still disposed by a *targeted* unload (plugin disable/
+    # uninstall) and evicted on force re-discovery when the plugin no longer
+    # re-registers it.
+    persistent: bool = False
     _disposed: bool = field(default=False, init=False, repr=False)
     _on_dispose: Optional[Callable[["PluginRegistration"], None]] = field(
         default=None, init=False, repr=False
@@ -3468,6 +3475,13 @@ class PluginManager:
         # symmetric force-reload lands.
         self._ownership_ledger: Dict[str, List[PluginRegistration]] = {}
         self._registration_order: List[PluginRegistration] = []
+        # Persistent (process-global) registrations that survived an
+        # unload-all. Force re-discovery drains this via
+        # _evict_stale_persistent_registrations(): entries whose plugin
+        # re-registered the same (kind, key) are kept (the upsert rotated
+        # them in place), the rest are disposed so a disabled/removed auth
+        # plugin's provider does not outlive its plugin (#91701 follow-up).
+        self._persistent_carryover: List[PluginRegistration] = []
         # Deferred platform plugins whose client tools were registered at
         # discovery time (see _register_deferred_platform_tools). Keyed by
         # plugin id: the already-imported package module, so materializing the
@@ -3505,6 +3519,7 @@ class PluginManager:
             key=key,
             release=release,
             plugin_key=plugin_key,
+            persistent=persistent,
         )
         registration._on_dispose = lambda disposed: self._forget_registrations(
             [disposed]
@@ -3513,6 +3528,48 @@ class PluginManager:
         if not persistent:
             self._registration_order.append(registration)
         return registration
+
+    def _evict_stale_persistent_registrations(self) -> None:
+        """Dispose carried-over persistent registrations not re-registered.
+
+        Persistent registrations (process-global host infrastructure such as
+        dashboard-auth providers) survive an unload-all by design (#91701);
+        ``_unload_scoped`` parks their handles in ``_persistent_carryover``.
+        After a re-discovery pass, three cases exist for each parked handle:
+
+        - the plugin re-registered the same ``(kind, key)`` → the upsert
+          rotated the entry in place. The old handle is superseded; drop it
+          WITHOUT disposing (a plugin that re-registered the *same object*
+          would otherwise pass the identity check and evict the live entry).
+        - the plugin did not come back (disabled, uninstalled, omitted) →
+          dispose, releasing the process-global registration.
+        - the handle was already disposed elsewhere (targeted unload) → drop.
+        """
+        if not self._persistent_carryover:
+            return
+        parked = self._persistent_carryover
+        self._persistent_carryover = []
+        current = {
+            (registration.kind, registration.key)
+            for owned in self._ownership_ledger.values()
+            for registration in owned
+            if registration.persistent and registration.active
+        }
+        stale = [
+            registration
+            for registration in parked
+            if registration.active
+            and (registration.kind, registration.key) not in current
+        ]
+        for registration in stale:
+            logger.info(
+                "Evicting persistent registration %s/%s: plugin '%s' no "
+                "longer supplies it after re-discovery",
+                registration.kind,
+                registration.key,
+                registration.plugin_key,
+            )
+        self._dispose_registrations(stale)
 
     @staticmethod
     def _remove_identity(values: list, target: Any) -> bool:
@@ -3683,6 +3740,18 @@ class PluginManager:
                 for registration in self._registration_order
                 if registration.plugin_key in target_keys
             ]
+            # Persistent registrations (process-global host infrastructure,
+            # e.g. dashboard-auth providers) are deliberately absent from
+            # _registration_order so an unload-all cannot dispose them
+            # (#91701). A *targeted* unload is different: it is the plugin
+            # disable/uninstall path, and a disabled auth plugin's provider
+            # must NOT stay live process-wide. Gather them from the ledger.
+            registrations.extend(
+                registration
+                for key in target_keys
+                for registration in self._ownership_ledger.get(key, [])
+                if registration.persistent and registration.active
+            )
 
         found = bool(target_keys or registrations)
         self._dispose_registrations(registrations)
@@ -3736,6 +3805,21 @@ class PluginManager:
                                 tool_name,
                                 exc,
                             )
+            # Persistent registrations survive this unload-all by design
+            # (#91701) but must not be orphaned by the ledger clear below:
+            # carry them over so a force re-discovery can evict the ones
+            # whose plugin does not come back (disabled/removed/omitted).
+            carryover_ids = {
+                id(registration) for registration in self._persistent_carryover
+            }
+            self._persistent_carryover.extend(
+                registration
+                for owned in self._ownership_ledger.values()
+                for registration in owned
+                if registration.persistent
+                and registration.active
+                and id(registration) not in carryover_ids
+            )
             self._ownership_ledger.clear()
             self._plugins.clear()
             self._hooks.clear()
@@ -3817,6 +3901,13 @@ class PluginManager:
             self._discovered = True
             try:
                 self._discover_and_load_inner()
+                # Persistent registrations deliberately survived the
+                # unload-all above (#91701). Now that plugins have had their
+                # chance to re-register, dispose the ones whose plugin did
+                # not come back (disabled, removed, or omitted from this
+                # discovery pass) so e.g. a disabled auth plugin's provider
+                # does not stay live process-wide until restart.
+                self._evict_stale_persistent_registrations()
                 # Plugin secret sources register during discover; the initial
                 # load_hermes_dotenv() already ran at import time. Re-pull so the
                 # first process sees plugin backends (tracking #64177).

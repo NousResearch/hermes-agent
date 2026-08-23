@@ -169,3 +169,89 @@ def test_auth_provider_re_register_rotates_in_place():
     # The superseded handle is identity-conditional: disposing it is a no-op.
     stale.dispose()
     assert get_provider("basic") is new
+
+
+# ---------------------------------------------------------------------------
+# #91701 follow-up: persistence must not outlive the plugin. A targeted
+# unload (plugin disable/uninstall) and a re-discovery that drops the plugin
+# must both release the process-global provider — only the ROUTINE
+# unload-all path keeps it alive.
+# ---------------------------------------------------------------------------
+
+
+def test_targeted_unload_disposes_persistent_auth_provider():
+    """Disabling the auth plugin removes its provider process-wide."""
+    manager, ctx = _real_ctx()
+    ctx.register_dashboard_auth_provider(_Basic())
+    assert get_provider("basic") is not None
+
+    # `hermes plugins disable basic` drives a targeted unload of that plugin.
+    assert manager.unload("basic") is True
+
+    assert get_provider("basic") is None, (
+        "disabled auth plugin's provider stayed registered process-wide"
+    )
+    assert _auth_registry.list_session_providers() == []
+
+
+def test_rediscovery_evicts_provider_when_plugin_gone():
+    """Force re-discovery where the plugin does not come back → evicted."""
+    manager, ctx = _real_ctx()
+    ctx.register_dashboard_auth_provider(_Basic())
+
+    # discover_and_load(force=True) step 1: unload-all parks the handle.
+    manager.unload()
+    assert get_provider("basic") is not None
+
+    # Step 2: discovery ran, plugin did not re-register (disabled/removed).
+    manager._evict_stale_persistent_registrations()
+
+    assert get_provider("basic") is None, (
+        "provider survived a re-discovery its plugin was dropped from"
+    )
+
+
+def test_rediscovery_keeps_provider_when_plugin_returns():
+    """Force re-discovery where the plugin re-registers → new provider live."""
+    manager, ctx = _real_ctx()
+    old = _Basic("old")
+    ctx.register_dashboard_auth_provider(old)
+
+    manager.unload()
+    # Plugin re-registers during discovery (upsert rotates in place).
+    new = _Basic("new")
+    ctx.register_dashboard_auth_provider(new)
+    manager._evict_stale_persistent_registrations()
+
+    assert get_provider("basic") is new
+    # Eviction must be one-shot: the parked list is drained.
+    assert manager._persistent_carryover == []
+
+
+def test_rediscovery_same_object_reregistration_survives_eviction():
+    """A plugin re-registering the SAME provider object must stay live."""
+    manager, ctx = _real_ctx()
+    provider = _Basic("same")
+    ctx.register_dashboard_auth_provider(provider)
+
+    manager.unload()
+    ctx.register_dashboard_auth_provider(provider)
+    manager._evict_stale_persistent_registrations()
+
+    assert get_provider("basic") is provider
+
+
+def test_persistent_dispose_is_idempotent_after_targeted_unload():
+    """A handle disposed by a targeted unload never re-parks or re-releases."""
+    manager, ctx = _real_ctx()
+    ctx.register_dashboard_auth_provider(_Basic())
+
+    manager.unload("basic")   # targeted unload disposes + forgets the handle
+    assert get_provider("basic") is None
+
+    # A later unload-all parks nothing (the handle is gone from the ledger),
+    # and the eviction pass must not raise or double-release.
+    manager.unload()
+    assert manager._persistent_carryover == []
+    manager._evict_stale_persistent_registrations()
+    assert get_provider("basic") is None

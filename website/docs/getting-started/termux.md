@@ -242,7 +242,33 @@ The blocker is currently the `voice` extra:
 
 ### `uv pip install` fails on Android
 
-Use the Termux path with the stdlib venv + `pip` instead:
+`hermes update` and interrupted-install recovery automatically pass an
+**arch-specific** `--python-platform` on Termux (for example
+`aarch64-unknown-linux-gnu` on arm64 devices) so locally built `linux_*`
+wheels (e.g. `markupsafe`) are accepted.
+
+Do **not** use bare `--python-platform linux` with uv 0.12+: that tag
+resolves to **x86_64** manylinux even on aarch64 Android and installs
+unloadable native extensions (symptom:
+`No module named 'pydantic_core._pydantic_core'`). Prefer
+`~/bin/opk-hermes-update.sh --repair-python` or re-run with the matching
+arch tag:
+
+```bash
+# aarch64 Termux / Android
+uv pip install -e '.[termux-all]' --python-platform aarch64-unknown-linux-gnu
+```
+
+If you are installing by hand with uv and see:
+
+```text
+The built wheel `…-linux_aarch64.whl` is not compatible with the current
+Python … on Android aarch64
+```
+
+use the same arch-specific flag (or set `HERMES_UV_PYTHON_PLATFORM`).
+
+Or use the Termux path with the stdlib venv + `pip` instead:
 
 ```bash
 python -m venv venv
@@ -251,6 +277,20 @@ export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
+
+### `tsc: not found` / `bad interpreter: /usr/bin/env` after npm install
+
+If `/usr/bin/env` is missing (common when termux-exec is inactive under
+glibc-runner), npm script shebangs break. `hermes update` rewrites them
+via `termux-fix-shebang` after a successful Node refresh. To fix an
+existing tree:
+
+```bash
+find node_modules -type f -exec grep -l '^#!/usr/bin/env' {} + | xargs -r termux-fix-shebang
+```
+
+Also ensure Termux's bionic tools win on PATH (put `$PREFIX/bin` first)
+so child builds do not pick glibc `bash`/`dirname` from `$PREFIX/glibc/bin`.
 
 ### `jiter` / `maturin` complains about `ANDROID_API_LEVEL`
 

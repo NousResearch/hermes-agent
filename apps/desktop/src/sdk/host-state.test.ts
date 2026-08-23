@@ -217,11 +217,13 @@ describe('host.state.focusedSessionProfile', () => {
       profile: 'worker',
       targetProfile: 'backend-worker-b'
     })
-    session.$sessions.set([{
-      connection_id: 'source-a',
-      id: 'ambiguous-hint',
-      profile: 'worker'
-    } as never])
+    session.$sessions.set([
+      {
+        connection_id: 'source-a',
+        id: 'ambiguous-hint',
+        profile: 'worker'
+      } as never
+    ])
     session.$selectedStoredSessionId.set('ambiguous-hint')
 
     expect(host.state.focusedSessionOwner.get()).toBeNull()

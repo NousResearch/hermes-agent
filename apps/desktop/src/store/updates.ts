@@ -592,10 +592,7 @@ function completedAfterRestart(
  *  run started at-or-after we kicked the update off counts — an older
  *  receipt describes a previous update, and a still-running one proves
  *  nothing yet. The 60s slack absorbs client/backend clock skew. */
-function receiptProvesOutcome(
-  status: Awaited<ReturnType<typeof getActionStatus>>,
-  applyStartedAtMs: number
-): boolean {
+function receiptProvesOutcome(status: Awaited<ReturnType<typeof getActionStatus>>, applyStartedAtMs: number): boolean {
   const receipt = status.receipt
 
   if (!receipt || !receipt.finished_at || !receipt.started_at) {

@@ -645,9 +645,7 @@ export function setSessionOwnerHint(sessionId: string, route: SessionProfileRout
 export function getSessionOwnerHints(sessionId: string): SessionProfileRoute[] {
   const id = sessionId.trim()
 
-  return [...sessionOwnerHints.values()]
-    .filter(entry => entry.id === id)
-    .map(entry => ({ ...entry.route }))
+  return [...sessionOwnerHints.values()].filter(entry => entry.id === id).map(entry => ({ ...entry.route }))
 }
 
 export function getSessionOwnerHint(

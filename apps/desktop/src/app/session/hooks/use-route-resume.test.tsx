@@ -378,23 +378,13 @@ describe('useRouteResume', () => {
     }
 
     const { rerender } = render(
-      <RouteResumeHarness
-        {...props}
-        locationPathname="/session-1"
-        routedSessionId="session-1"
-      />
+      <RouteResumeHarness {...props} locationPathname="/session-1" routedSessionId="session-1" />
     )
 
     expect(resumeSession).toHaveBeenCalledWith('session-1', true, ownerRoute)
     resumeSession.mockClear()
 
-    rerender(
-      <RouteResumeHarness
-        {...props}
-        locationPathname="/session-2"
-        routedSessionId="session-2"
-      />
-    )
+    rerender(<RouteResumeHarness {...props} locationPathname="/session-2" routedSessionId="session-2" />)
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
     expect(resumeSession).toHaveBeenCalledWith('session-2', true)

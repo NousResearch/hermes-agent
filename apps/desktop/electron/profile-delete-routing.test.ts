@@ -186,12 +186,7 @@ test('explicit registered local DELETE holds one gate through teardown and dispa
   )
 
   assert.equal(result, 'deleted')
-  assert.deepEqual(events, [
-    'gate:worker',
-    'prepare:local:worker',
-    'dispatch:primary',
-    'release:worker'
-  ])
+  assert.deepEqual(events, ['gate:worker', 'prepare:local:worker', 'dispatch:primary', 'release:worker'])
 })
 
 test('explicit registered SSH DELETE tears down its source backend before dispatch', async () => {
@@ -220,12 +215,7 @@ test('explicit registered SSH DELETE tears down its source backend before dispat
   )
 
   assert.equal(result, 'deleted')
-  assert.deepEqual(events, [
-    'gate:worker',
-    'teardown:build-host:worker',
-    'dispatch:primary',
-    'release:worker'
-  ])
+  assert.deepEqual(events, ['gate:worker', 'teardown:build-host:worker', 'dispatch:primary', 'release:worker'])
 })
 
 test('non-identity connection DELETE tears down the logical pool and deletes the backend target', async () => {

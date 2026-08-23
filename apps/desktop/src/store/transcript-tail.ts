@@ -28,10 +28,13 @@ export interface TranscriptTailState {
   profile?: TranscriptProfileScope
 }
 
-export type TranscriptProfileScope = null | string | {
-  connectionId?: null | string
-  profile?: null | string
-}
+export type TranscriptProfileScope =
+  | null
+  | string
+  | {
+      connectionId?: null | string
+      profile?: null | string
+    }
 
 export const $transcriptTailBySessionId = atom<Record<string, TranscriptTailState>>({})
 const TRANSCRIPT_TAIL_LIMIT = 256
@@ -60,9 +63,7 @@ function transcriptTailKey(storedSessionId: string, profile?: TranscriptProfileS
   return scope ? JSON.stringify([scope.connectionId, scope.profile, storedSessionId]) : storedSessionId
 }
 
-function matchingTailEntries(
-  storedSessionId: string
-): Array<[string, TranscriptTailState]> {
+function matchingTailEntries(storedSessionId: string): Array<[string, TranscriptTailState]> {
   return Object.entries($transcriptTailBySessionId.get()).filter(([key]) => {
     if (key === storedSessionId) {
       return true
@@ -131,9 +132,10 @@ export function recordTranscriptBackfillPage(
 ): void {
   const current = $transcriptTailBySessionId.get()
 
-  const selected: Array<[string, TranscriptTailState | undefined]> = profile === undefined
-    ? matchingTailEntries(storedSessionId)
-    : [[transcriptTailKey(storedSessionId, profile), current[transcriptTailKey(storedSessionId, profile)]]]
+  const selected: Array<[string, TranscriptTailState | undefined]> =
+    profile === undefined
+      ? matchingTailEntries(storedSessionId)
+      : [[transcriptTailKey(storedSessionId, profile), current[transcriptTailKey(storedSessionId, profile)]]]
 
   if (selected.length !== 1) {
     return
@@ -168,9 +170,10 @@ export function transcriptTailState(
 export function clearTranscriptTail(storedSessionId: string, profile?: TranscriptProfileScope): void {
   const current = $transcriptTailBySessionId.get()
 
-  const keys = profile === undefined
-    ? matchingTailEntries(storedSessionId).map(([key]) => key)
-    : [transcriptTailKey(storedSessionId, profile)]
+  const keys =
+    profile === undefined
+      ? matchingTailEntries(storedSessionId).map(([key]) => key)
+      : [transcriptTailKey(storedSessionId, profile)]
 
   if (keys.length === 0) {
     return

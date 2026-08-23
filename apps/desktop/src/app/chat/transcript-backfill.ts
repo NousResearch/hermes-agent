@@ -17,11 +17,7 @@
 
 import { getOlderSessionMessages } from '@/hermes'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
-import {
-  recordTranscriptBackfillPage,
-  type TranscriptProfileScope,
-  transcriptTailState
-} from '@/store/transcript-tail'
+import { recordTranscriptBackfillPage, type TranscriptProfileScope, transcriptTailState } from '@/store/transcript-tail'
 
 /** Older rows likely exist beyond what the in-memory store holds. */
 export function transcriptBackfillAvailable(

@@ -13820,8 +13820,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
       isDefaultProfile: profile => profile === 'default',
       isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
       prepareLocal: localRequest => prepareProfileDeleteRequest(localRequest).then(() => undefined),
-      teardownConnection: (connectionId, profile) =>
-        teardownConnectionScopedProfileBackend(connectionId, profile)
+      teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
     })
   }
 

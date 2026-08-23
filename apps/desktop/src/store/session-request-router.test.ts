@@ -150,9 +150,11 @@ describe('requestForSessionProfile', () => {
     installDesktop()
     await ensureGatewayForProfile('other')
 
-    const desktop = (window as unknown as {
-      hermesDesktop: { getConnectionFor: ReturnType<typeof vi.fn> }
-    }).hermesDesktop
+    const desktop = (
+      window as unknown as {
+        hermesDesktop: { getConnectionFor: ReturnType<typeof vi.fn> }
+      }
+    ).hermesDesktop
 
     const ambient = vi.fn(async () => ({ ambient: true }))
 

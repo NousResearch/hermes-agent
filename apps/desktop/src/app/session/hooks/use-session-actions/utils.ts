@@ -1318,7 +1318,8 @@ export async function resolveStoredSession(
       profile: ownerRoute.targetProfile || ownerRoute.profile
     }
 
-    const cachedOwnerMatches = cached &&
+    const cachedOwnerMatches =
+      cached &&
       cached.connection_id === ownerRoute.connectionId &&
       (!cached.profile || normalizeProfileKey(cached.profile) === normalizeProfileKey(ownerRoute.profile))
 

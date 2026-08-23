@@ -132,9 +132,7 @@ export interface PluginFocusedSessionOwner {
 const $focusedSessionOwner = computed(
   [$focusedStoredSessionId, $sessions, $activeGatewayProfile, $connection],
   (focused, sessions, activeProfile, connection): PluginFocusedSessionOwner | null => {
-    const activeConnectionId = String(
-      connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
-    ).trim()
+    const activeConnectionId = String(connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')).trim()
 
     const fallback = {
       connectionId: activeConnectionId,
@@ -175,8 +173,8 @@ const $focusedSessionOwner = computed(
 
 const $focusedSessionProfile = computed(
   [$focusedSessionOwner, $focusedStoredSessionId, $sessions, $activeGatewayProfile],
-  (owner, focused, sessions, activeProfile) => owner?.profile ||
-    rememberedSessionProfile(sessions, focused, activeProfile)
+  (owner, focused, sessions, activeProfile) =>
+    owner?.profile || rememberedSessionProfile(sessions, focused, activeProfile)
 )
 
 export interface PluginProfileRoute {
@@ -577,10 +575,7 @@ export const host = {
       retireLocalProfileGateways(targetProfile)
     }
 
-    await deleteProfile(
-      targetProfile,
-      route ? { connectionId: route.connectionId, profile: route.profile } : undefined
-    )
+    await deleteProfile(targetProfile, route ? { connectionId: route.connectionId, profile: route.profile } : undefined)
 
     // The profile rail paints from the shared $profiles cache; without a
     // refresh the deleted profile's badge survives and clicking it starts a

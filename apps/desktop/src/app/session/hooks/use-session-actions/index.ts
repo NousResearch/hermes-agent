@@ -72,7 +72,11 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
-import { requestForSessionProfile, type SessionOwnerScope, type SessionProfileRoute } from '@/store/session-request-router'
+import {
+  requestForSessionProfile,
+  type SessionOwnerScope,
+  type SessionProfileRoute
+} from '@/store/session-request-router'
 import {
   $sessionTiles,
   closeSessionTile,
@@ -774,7 +778,8 @@ export function useSessionActions({
       // A row spliced from a CONNECTED registry gateway (#88880) carries its
       // owning connection — activate THAT gateway, not a same-named local
       // profile. Rows without the tag keep the legacy profile path.
-      const sessionOwner: SessionOwnerScope = ownerRoute ||
+      const sessionOwner: SessionOwnerScope =
+        ownerRoute ||
         (storedForProfile?.connection_id
           ? {
               connectionId: storedForProfile.connection_id,
@@ -1821,12 +1826,9 @@ export function useSessionActions({
 
       try {
         if (closingRuntimeId) {
-          await requestForSessionProfile(
-            removedOwner,
-            requestGateway,
-            'session.close',
-            { session_id: closingRuntimeId }
-          ).catch(() => undefined)
+          await requestForSessionProfile(removedOwner, requestGateway, 'session.close', {
+            session_id: closingRuntimeId
+          }).catch(() => undefined)
         }
 
         await deleteSession(storedSessionId, removedOwner)

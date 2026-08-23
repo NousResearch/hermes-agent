@@ -444,9 +444,9 @@ describe('Hermes REST helpers', () => {
     api.mockResolvedValue({ ok: true, path: '/profiles/worker' })
 
     await deleteProfile('backend-worker', { connectionId: 'source-a', profile: 'backend-worker' })
-    await expect(
-      deleteProfile('worker', { connectionId: 'source-a', profile: 'default' })
-    ).rejects.toThrow(/default profile cannot be deleted/i)
+    await expect(deleteProfile('worker', { connectionId: 'source-a', profile: 'default' })).rejects.toThrow(
+      /default profile cannot be deleted/i
+    )
 
     expect(api).toHaveBeenCalledOnce()
     expect(api).toHaveBeenCalledWith({

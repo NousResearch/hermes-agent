@@ -228,6 +228,30 @@ def test_get_gateway_eligible_tools_treats_explicit_backend_as_configured(monkey
     assert "web" not in already_managed
 
 
+def test_get_gateway_eligible_tools_treats_browser_use_selection_as_explicit(monkeypatch):
+    """An explicit BYOK `browser.cloud_provider: browser-use` selection must
+    land in explicit_configured, not unconfigured/has_direct — the same
+    protection as searxng above. This is distinct from the gateway's own
+    managed selection, which is always stored as `cloud_provider: nous`
+    (see apply_gateway_defaults); "browser-use" only appears here when the
+    user picked it directly, so it must never be treated as up for grabs.
+    """
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "browser": True},
+    )
+
+    config = {"model": {"provider": "nous"}, "browser": {"cloud_provider": "browser-use"}}
+    unconfigured, has_direct, explicit_configured, already_managed = ns.get_gateway_eligible_tools(config)
+
+    assert "browser" not in unconfigured
+    assert "browser" not in has_direct
+    assert "browser" in explicit_configured
+    assert "browser" not in already_managed
+
+
 def test_get_gateway_eligible_tools_not_entitled_returns_four_empty_lists(monkeypatch):
     """A logged-in Nous account with no paid access and no free tool pool
     must fail closed with a 4-tuple, not a 3-tuple — regression for a crash

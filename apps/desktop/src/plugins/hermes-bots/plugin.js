@@ -2121,13 +2121,15 @@ function isBotModeSweepCandidate(row, nowSeconds = Date.now() / 1000) {
  *  is never listed, so its sessions are never touched) and hide any VISIBLE
  *  row whose title is Bot Mode plumbing and whose creation grace period has
  *  elapsed. The grace period protects a new desktop draft while its first-turn
- *  title is pending; missing or future timestamps fail closed. session.list
+ *  title is pending; after five minutes an unchanged plumbing title is treated
+ *  as Bot Mode-owned. session.list supplies epoch seconds; missing, malformed,
+ *  millisecond, or future timestamps fail closed and stay visible. session.list
  *  without include_hidden returns only visible rows, which keeps the sweep
  *  naturally idempotent.
  *  Remote-source bots route to their own connection via requestForBot.
  *  Feature-detected + fire-and-forget: older gateways without per-profile
  *  session.list / session.set_hidden simply reject and the sweep no-ops. */
-async function sweepBotProfileSessions() {
+async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
   const cached = $lastRoster.get()
   let roster = Array.isArray(cached) && cached.length ? cached : null
 
@@ -2158,7 +2160,7 @@ async function sweepBotProfileSessions() {
 
         await Promise.all(
           rows
-            .filter(row => isBotModeSweepCandidate(row))
+            .filter(row => isBotModeSweepCandidate(row, nowSeconds))
             .map(row =>
               Promise.resolve(
                 requestForBot(bot, 'session.set_hidden', { session_id: row.id, hidden: true, profile: name })

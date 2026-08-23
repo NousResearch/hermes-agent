@@ -219,6 +219,7 @@ test('sweepBotProfileSessions hides Bot-Mode-titled rows per roster bot, and onl
   const start = source.indexOf('function hideOwnedBotSessions()')
   const end = source.indexOf('/** Fetch server-side avatars', start)
   const calls = []
+  const nowSeconds = 1_000
   const rowsByProfile = {
     alpha: [
       { id: 'a-1', title: 'Bot Chat', started_at: 1 },
@@ -226,8 +227,9 @@ test('sweepBotProfileSessions hides Bot-Mode-titled rows per roster bot, and onl
       { id: 'a-3', title: 'Group: Core', started_at: 1 },
       { id: 'a-4', title: 'My real conversation', started_at: 1 },
       { id: 'a-5', title: 'Bot Chat notes', started_at: 1 }, // not an exact title — kept
-      { id: 'a-6', title: 'Bot Chat', started_at: Date.now() / 1000 }, // live draft — kept
-      { id: 'a-7', title: 'Agent Inbox' } // missing age metadata — kept fail-closed
+      { id: 'a-6', title: 'Bot Chat', started_at: nowSeconds - 299 }, // live draft — kept
+      { id: 'a-7', title: 'Agent Inbox' }, // missing age metadata — kept fail-closed
+      { id: 'a-8', title: 'Bot Chat', started_at: nowSeconds - 300 } // boundary reached — hidden
     ],
     remy: [{ id: 'r-1', title: 'Agent Inbox', started_at: 1 }]
   }
@@ -247,7 +249,7 @@ test('sweepBotProfileSessions hides Bot-Mode-titled rows per roster bot, and onl
   }
   const section = source.slice(start, end).concat('\nglobalThis.__h = { hideOwnedBotSessions, sweepBotProfileSessions };\n')
   vm.runInNewContext(section, context, { filename: 's.js' })
-  await context.__h.sweepBotProfileSessions()
+  await context.__h.sweepBotProfileSessions(nowSeconds)
 
   const lists = calls.filter(c => c.method === 'session.list')
   assert.deepEqual(lists.map(c => c.params.profile).sort(), ['alpha', 'remy'])
@@ -257,7 +259,7 @@ test('sweepBotProfileSessions hides Bot-Mode-titled rows per roster bot, and onl
   const hidden = calls.filter(c => c.method === 'session.set_hidden')
   assert.deepEqual(
     hidden.map(c => c.params.session_id).sort(),
-    ['a-1', 'a-2', 'a-3', 'r-1'],
+    ['a-1', 'a-2', 'a-3', 'a-8', 'r-1'],
     'exact plumbing titles only — user-titled and brand-new rows stay visible'
   )
   assert.ok(hidden.every(c => c.params.hidden === true))

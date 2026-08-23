@@ -1129,7 +1129,7 @@ class TestDmClassification:
     @pytest.mark.asyncio
     async def test_dm_shaped_channel_discovered_when_dms_list_empty(self):
         """Fallback discovery: with `dms list` broken (returns []), a
-        DM-shaped `channels list` entry gets watched; real channels not
+        DM-shaped `channels list` entry becomes a DM; real channels not
         already watched are left alone."""
         a = _make_adapter()
         cli = _ScriptedCli()
@@ -1141,11 +1141,26 @@ class TestDmClassification:
         ])
         a._run_cli = cli
         await a._discover_dms(seed=False)
-        # Watched as group; the p-tag latch flips it on the first real DM.
-        assert a._channel_state[DM_CHANNEL]["chat_type"] == "group"
+        assert a._channel_state[DM_CHANNEL]["chat_type"] == "dm"
         assert a._may_reclassify_as_dm(DM_CHANNEL) is True
         assert CHANNEL not in a._channel_state
         assert a._may_reclassify_as_dm(CHANNEL) is False
+
+    @pytest.mark.asyncio
+    async def test_dm_metadata_promotes_existing_group_without_recipient_tag(self, adapter):
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [])
+        cli.script("channels", "list", [adapter._channel_meta[DM_CHANNEL]])
+        adapter._run_cli = cli
+        await adapter._discover_dms(seed=False)
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="no mention and no p tag"),
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+        assert adapter._dispatched[0]["chat_type"] == "dm"
 
 
 class TestThreadRoots:

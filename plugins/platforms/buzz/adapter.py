@@ -1318,10 +1318,8 @@ class BuzzAdapter(BasePlatformAdapter):
         ``dms list`` is only a best-effort source: on some hosted relays it
         returns ``[]`` even when DM conversations exist (#68871).  Those DMs
         DO surface in ``channels list`` as entries named "DM" with an empty
-        description, so that listing is scanned as a fallback.  Fallback
-        finds are watched as ``group`` and latch to ``dm`` via p-tag
-        detection (_is_direct_message_event) rather than trusting the name
-        alone to unlock the mention-free DM path.
+        description, so that exact metadata shape is the fallback.  Named
+        rooms and missing metadata still fail closed as groups.
         """
         code, out, _err = await self._run_cli(["dms", "list"])
         if code == 0:
@@ -1344,12 +1342,15 @@ class BuzzAdapter(BasePlatformAdapter):
                 continue
             self._channel_meta[ch_id] = ch
             self._channel_names.setdefault(ch_id, str(ch.get("name") or ch_id))
-            if ch_id in self._channel_state or not self._may_reclassify_as_dm(ch_id):
+            if not self._may_reclassify_as_dm(ch_id):
+                continue
+            if ch_id in self._channel_state:
+                self._channel_state[ch_id]["chat_type"] = "dm"
                 continue
             if seed:
-                await self._seed_channel(ch_id, chat_type="group")
+                await self._seed_channel(ch_id, chat_type="dm")
             else:
-                self._channel_state[ch_id] = self._new_channel_state("group")
+                self._channel_state[ch_id] = self._new_channel_state("dm")
 
     async def _poll_channel(self, channel_id: str) -> None:
         state = self._channel_state.get(channel_id)
@@ -1459,10 +1460,10 @@ class BuzzAdapter(BasePlatformAdapter):
     # ``buzz dms list`` returns [] on some hosted relays even when DM
     # conversations exist, so DMs can leak in through ``channels list`` as
     # chat_type="group".  Relay-materialized DMs are named "DM" with an empty
-    # description, and their messages carry a structural p-tag to us.  Only
-    # that explicit metadata shape may latch to DM; named channels and missing
-    # metadata fail closed.  In normal channels the same p-tag is an addressing
-    # signal and must wake the agent without changing the conversation type.
+    # description, which periodic discovery promotes to DM even when messages
+    # omit recipient p-tags.  Named channels and missing metadata fail closed.
+    # In normal channels a p-tag is only an addressing signal and must wake the
+    # agent without changing the conversation type.
 
     def _may_reclassify_as_dm(self, channel_id: str) -> bool:
         """True when the conversation's metadata does not rule out a DM.

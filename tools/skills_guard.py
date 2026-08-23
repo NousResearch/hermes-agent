@@ -356,6 +356,196 @@ THREAT_PATTERNS = [
 
 _COMPILED_THREAT_PATTERNS = [(re.compile(pattern, re.IGNORECASE), *rest) for pattern, *rest in THREAT_PATTERNS]
 
+# ── Inert path references ─────────────────────────────────────────────────
+#
+# The patterns below fire on a bare filesystem path token — `authorized_keys`,
+# `~/.aws` — with no verb, no redirection and no caller. That is deliberate:
+# spelling the path is the one thing every attack on it has in common, and the
+# scanner would rather ask than miss. It also means the pattern cannot tell
+# `cat ~/.ssh/authorized_keys` from a skill that names the file in order to
+# REFUSE to read it, and the refusing skill is the one that gets a `critical`
+# and, through `_determine_verdict`, a `dangerous` verdict with no override on
+# a community source (#92478).
+#
+# Two contexts are inert enough to say so. Both DEMOTE rather than drop, for
+# the reason `allowed_tools_field` is kept as a `low`: the auditor should still
+# see the token, its file and its line. What changes is whether it alone
+# decides the verdict.
+_PATH_REFERENCE_PATTERN_IDS = frozenset({
+    "ssh_dir_access",
+    "aws_dir_access",
+    "gpg_dir_access",
+    "kube_dir_access",
+    "docker_dir_access",
+    "shell_rc_mod",
+    "ssh_backdoor",
+    "system_passwd_access",
+})
+
+# Comment syntax, per file type, for the languages a skill actually ships.
+#
+# Markdown, plain text, HTML, XML, JSON and TeX are ABSENT on purpose. `#` in
+# `SKILL.md` opens a heading, not a comment, and Markdown prose is the
+# prompt-injection surface itself — the instructions the agent reads. Treating
+# a `#` line as inert there would be a real weakening wearing a
+# false-positive fix as a disguise. A comment is only inert in a language that
+# has comments.
+_COMMENT_PREFIXES_BY_SUFFIX = {
+    ".py": ("#",),
+    ".sh": ("#",),
+    ".bash": ("#",),
+    ".rb": ("#",),
+    ".pl": ("#",),
+    ".r": ("#",),
+    ".jl": ("#",),
+    ".yaml": ("#",),
+    ".yml": ("#",),
+    ".toml": ("#",),
+    ".conf": ("#",),
+    ".cfg": ("#", ";"),
+    ".ini": ("#", ";"),
+    ".js": ("//",),
+    ".ts": ("//",),
+    ".php": ("//", "#"),
+    ".css": (),
+}
+
+# A name that says "these are the things we will NOT touch". Matched against
+# the target of the assignment (or the mapping key) that encloses the line.
+_DENYLIST_NAME_RE = re.compile(
+    r"(deny|denied|denylist|blacklist|blocklist|block|blocked|skip|skipped"
+    r"|exclude|excluded|exclusion|ignore|ignored|forbid|forbidden|refuse"
+    r"|reject|rejected|never|unsafe|sensitive|secret_?file|redact)",
+    re.IGNORECASE,
+)
+
+# `NAME = `, `NAME: Type = `, and the mapping-key form `name:` that YAML and
+# a dict literal both use.
+_ASSIGNMENT_TARGET_RE = re.compile(
+    r"^\s*(?:(?:const|let|var|export)\s+)?"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_.\-]*)\s*"
+    r"(?::[^=]*?)?"
+    r"(?:=|:\s*$|:\s*[\[({])"
+)
+
+# Something on the line that could actually touch the path: a shell verb, a
+# file API, a process spawn, or an append redirection. Bare `|` and bare `>`
+# are NOT in here on purpose - both are ordinary regex metacharacters, and
+# the alternation fragment that provoked #92478 is literally `r"|authorized_
+# keys"`. This gates only the denylist demotion, never the comment one: a
+# comment does not run whatever it happens to spell.
+_ACTION_ON_LINE_RE = re.compile(
+    r"\b(?:cat|less|more|head|tail|cp|mv|rm|scp|rsync|curl|wget|tee|chmod|chown"
+    r"|ssh|sudo|install|source|eval|exec|system|popen|run|check_output)\b"
+    r"|\.(?:read|write|open|unlink|copy|append)\s*\("
+    r"|\bopen\s*\(|readFileSync|writeFileSync|appendFileSync"
+    r"|>>",
+    re.IGNORECASE,
+)
+
+
+_QUOTED_SPAN_RE = re.compile(r"""(?:'''|\"\"\")|'[^'\n]*'|\"[^\"\n]*\"""")
+
+_BRACKET_OPEN = "([{"
+_BRACKET_CLOSE = ")]}"
+
+
+def _strip_quoted_spans(line: str) -> str:
+    """Blank out single-line string literals so bracket counting isn't fooled.
+
+    Deliberately naive: it does not track triple-quoted blocks across lines or
+    escaped quotes. It only has to be good enough to keep `_statement_owners`
+    from mistaking a bracket inside a regex literal for real nesting, and a
+    wrong answer there costs a missed demotion (the finding stays `critical`),
+    never a missed finding.
+    """
+    return _QUOTED_SPAN_RE.sub("", line)
+
+
+def _statement_owners(lines: List[str]) -> List[int]:
+    """Map each line index to the index of the line that opened its statement.
+
+    A line that starts a statement owns itself. A continuation — inside an
+    unclosed bracket, or after a trailing backslash — is owned by the line that
+    opened it. This is what makes the denylist check work on the shape that
+    provoked #92478: the reported match sat on line 32 of a multi-line regex
+    whose name is on line 28, so a per-line name test would have found nothing
+    to read.
+    """
+    owners: List[int] = []
+    depth = 0
+    continued = False
+    owner = 0
+    for i, line in enumerate(lines):
+        if depth <= 0 and not continued:
+            owner = i
+        owners.append(owner)
+        stripped = _strip_quoted_spans(line)
+        for char in stripped:
+            if char in _BRACKET_OPEN:
+                depth += 1
+            elif char in _BRACKET_CLOSE:
+                depth -= 1
+        if depth < 0:
+            depth = 0
+        continued = line.rstrip().endswith("\\")
+    return owners
+
+
+def _is_comment_line(line: str, suffix: str) -> bool:
+    """Whether ``line`` is a whole-line comment in a language that has them."""
+    prefixes = _COMMENT_PREFIXES_BY_SUFFIX.get(suffix)
+    if not prefixes:
+        return False
+    stripped = line.lstrip()
+    return any(stripped.startswith(prefix) for prefix in prefixes)
+
+
+def _in_denylist_construct(lines: List[str], owners: List[int], index: int) -> bool:
+    """Whether line ``index`` belongs to a construct NAMED as a denylist.
+
+    Recognising the idiom by name is narrower than asking whether the line has
+    an action verb on it. "No verb here" is satisfied by a quoted fragment that
+    a later line interpolates into a command; "the enclosing assignment is
+    called SKIP_PATTERNS" is not. For a `critical` finding, the narrower test
+    is the one worth having.
+    """
+    owner_index = owners[index] if index < len(owners) else index
+    match = _ASSIGNMENT_TARGET_RE.match(lines[owner_index])
+    if not match:
+        return False
+    return bool(_DENYLIST_NAME_RE.search(match.group("name")))
+
+
+def _demote_inert_path_reference(pid: str, severity: str, description: str,
+                                 line: str, suffix: str, is_denylist: bool):
+    """Lower the severity of a path token that cannot act where it sits.
+
+    Returns ``(severity, description)`` unchanged for anything outside
+    ``_PATH_REFERENCE_PATTERN_IDS``. Inside it:
+
+    * a whole-line comment, in a language that has comments, drops to ``low``.
+      A comment does not run;
+    * a line belonging to a construct named as a denylist, AND carrying no
+      verb that could touch the path, drops to ``medium``. It stays a rung
+      above the comment because a string literal, unlike a comment, can be
+      read by code elsewhere in the file; and the verb guard is there because
+      the construct's NAME is attacker-chosen. ``BLOCKED = os.system("cat
+      ~/.ssh/authorized_keys")`` is a denylist by name only.
+
+    Neither reaches the ``high``/``critical`` bar in ``_determine_verdict``, so
+    neither decides a verdict on its own, and both keep their file, line and
+    matched text in the report.
+    """
+    if pid not in _PATH_REFERENCE_PATTERN_IDS:
+        return severity, description
+    if _is_comment_line(line, suffix):
+        return "low", f"{description} (in a comment; informational)"
+    if is_denylist and not _ACTION_ON_LINE_RE.search(line):
+        return "medium", f"{description} (in a denylist literal; informational)"
+    return severity, description
+
+
 # Structural limits: file count; total KB (5MB, informational only — large skills don't block); single-file KB.
 MAX_FILE_COUNT, MAX_TOTAL_SIZE_KB, MAX_SINGLE_FILE_KB = 50, 5120, 256
 
@@ -408,12 +598,15 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
         return []
     findings = []
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
+    suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion
     for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
             if i not in docstring_lines and pattern.search(line):
                 text = line.strip()
-                findings.append(Finding(pid, severity, category, rel_path, i,
-                                        text if len(text) <= 120 else text[:117] + "...", description))
+                line_severity, line_description = _demote_inert_path_reference(
+                    pid, severity, description, line, suffix, _in_denylist_construct(lines, owners, i - 1))
+                findings.append(Finding(pid, line_severity, category, rel_path, i,
+                                        text if len(text) <= 120 else text[:117] + "...", line_description))
     for i, line in enumerate(lines, start=1):
         if (char := next((c for c in INVISIBLE_CHARS if c in line), None)) is not None:
             name = _unicode_char_name(char)

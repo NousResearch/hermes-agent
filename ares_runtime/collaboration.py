@@ -528,7 +528,7 @@ class DaemonPermitReceiptAdapter:
             raw = raw[:-1]
         if len(raw) != 64 or any(character not in "0123456789abcdef" for character in raw):
             raise ContractError("CANONICAL_DIGEST_MALFORMED")
-        return "sha256:" + raw
+        return raw
 
     @staticmethod
     def _send_frame(stream: socket.socket, value: Mapping[str, Any]) -> None:

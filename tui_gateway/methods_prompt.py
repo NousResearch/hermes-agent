@@ -1518,11 +1518,64 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5004, str(e))
 
 
+def _approval_respond_session_fallback(params: dict):
+    """Durable-identity fallback for ``approval.respond`` (#91684).
+
+    The desktop can answer an approval prompt with a stale live sid (its
+    runtime record was re-minted after a reconnect while the prompt stayed
+    on screen). Before failing with 4001, try resolving the target session:
+
+    1. by the approval ``request_id`` — unique across sessions — scanning
+       every live session's pending gateway approvals;
+    2. by treating ``session_id`` as a STORED session id and mapping it to
+       the live runtime record for that stored id.
+
+    Returns the live session record or None.
+    """
+    request_id = str(params.get("request_id") or "")
+    if request_id:
+        try:
+            from tools.approval import list_gateway_approvals
+
+            with _sessions_lock:
+                live = list(_sessions.items())
+            for sid, session in live:
+                key = str(session.get("session_key") or "")
+                if not key:
+                    continue
+                for pending in list_gateway_approvals(key):
+                    if str(pending.get("request_id") or "") == request_id:
+                        return session
+        except Exception:
+            logger.debug(
+                "approval.respond request_id fallback failed", exc_info=True
+            )
+    target = str(params.get("session_id") or "")
+    if target:
+        try:
+            live = _find_live_session_by_key(target)
+            if live is not None:
+                return live[1]
+        except Exception:
+            logger.debug(
+                "approval.respond stored-id fallback failed", exc_info=True
+            )
+    return None
+
+
 @method("approval.respond")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
-        return err
+        # Session-not-found (4001) only: the client may hold a stale live
+        # sid for a session whose runtime was re-minted after a reconnect.
+        # Resolve by durable identity before failing (#91684).
+        code = (err.get("error") or {}).get("code")
+        if code != 4001:
+            return err
+        session = _approval_respond_session_fallback(params)
+        if session is None:
+            return err
     try:
         from tools.approval import resolve_gateway_approval
 
@@ -1558,6 +1611,7 @@ def register(server) -> None:
         _coerce_truncate_int,
         _reconcile_client_ordinal,
         _pending_reaction_notes,
+        _approval_respond_session_fallback,
     ):
         setattr(
             server,

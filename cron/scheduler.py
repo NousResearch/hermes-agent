@@ -7618,6 +7618,10 @@ def _run_one_job_body(
             raise
         return False
     finally:
+        # Function-level on purpose: this must scope delivery, deferred-agent
+        # teardown, claim-loss handling and bookkeeping, not just run_job.
+        # An earlier revision reset inside the run block's finally, which left
+        # _deliver_result unscoped — do not move it back in a tidy-up.
         if _scope_token is not None:
             reset_secret_scope(_scope_token)
 

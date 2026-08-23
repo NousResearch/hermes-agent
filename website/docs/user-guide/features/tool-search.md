@@ -30,21 +30,38 @@ When Tool Search activates for a turn, the model sees three new tools in
 place of the deferred ones:
 
 ```
-tool_search(query, limit?)     — search the deferred-tool catalog
-tool_describe(name)            — load the full schema for one tool
+tool_search(queries, limit?)   — search the deferred-tool catalog (one or more queries)
+tool_describe(names)           — load the full schemas for one or more tools
 tool_call(name, arguments)     — invoke a deferred tool
 ```
 
 A typical interaction looks like:
 
 ```
-Model: tool_search("create a github issue")
-  → { matches: [{ name: "mcp_github_create_issue", ... }, ...] }
-Model: tool_describe("mcp_github_create_issue")
-  → { parameters: { type: "object", properties: { ... } } }
+Model: tool_search(["create a github issue", "send a slack message"])
+  → { results: [ { query: "create a github issue",
+                   matches: ["mcp_github_create_issue", ...] },
+                 { query: "send a slack message",
+                   matches: ["mcp_slack_post_message", ...] } ],
+      tools: { mcp_github_create_issue: { description: "...",
+                                          required: ["title"], ... },
+               mcp_slack_post_message: { ... } } }
+Model: tool_describe(["mcp_github_create_issue", "mcp_slack_post_message"])
+  → { tools: { mcp_github_create_issue: { parameters: { ... } },
+               mcp_slack_post_message: { parameters: { ... } } } }
 Model: tool_call("mcp_github_create_issue", { title: "...", body: "..." })
   → { ok: true, issue_number: 42 }
 ```
+
+Each query in a `tool_search` call is searched independently against the
+same catalog (`limit` applies per query); the per-query groups carry tool
+names only, while the shared `tools` map holds each matched tool's
+description and required parameter names once. Queries are stemmed, so
+"issues" finds `create_issue`. When some queries return no matches, the
+response includes a single `available_sources` summary of the connected
+servers so a lexical miss is not mistaken for a missing capability.
+`tool_describe` resolves every requested name in one call; unknown names
+are reported in `not_found` without failing the rest of the batch.
 
 When the model invokes `tool_call`, Hermes **unwraps the bridge** and
 dispatches the underlying tool exactly as if the model had called it
@@ -78,7 +95,9 @@ tools:
     enabled: auto       # auto (default), on, or off
     threshold_pct: 5    # listing budget as a percentage of context
     search_default_limit: 5
-    max_search_limit: 20
+    max_search_limit: 25
+    max_queries: 10
+    max_describe_names: 10
     listing: auto       # embed a grouped name+description catalog manifest
     listing_max_tokens: 4000
 ```
@@ -87,8 +106,10 @@ tools:
 | --- | --- | --- |
 | `enabled` | `auto` | `auto`/`on` activate whenever at least one deferrable tool exists; `off` disables entirely (everything stays eager). `auto` is currently an alias of `on` — it is reserved for a future mode that inlines schemas when they fit the context and defers only when they don't. Pin `on` or `off` if you want today's behavior guaranteed across upgrades. |
 | `threshold_pct` | `5` | Listing budget as a percentage of the active model's context length. Range 0–100. |
-| `search_default_limit` | `5` | Hits returned when the model calls `tool_search` without a `limit`. |
-| `max_search_limit` | `20` | Hard upper bound the model can request via `limit`. Range 1–50. |
+| `search_default_limit` | `5` | Hits returned per query when the model calls `tool_search` without a `limit`. |
+| `max_search_limit` | `25` | Hard upper bound the model can request via `limit` (per query). Range 1–50. |
+| `max_queries` | `10` | Maximum queries per `tool_search` call. Over-cap calls return an error and the model retries with fewer. No upper clamp. |
+| `max_describe_names` | `10` | Maximum names per `tool_describe` call. Same error-and-retry semantics. No upper clamp. |
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
 
@@ -151,9 +172,12 @@ to any progressive-disclosure design, not specific to this implementation:
 - **Retrieval:** BM25 over tokenized tool name, source name (the MCP
   server or plugin toolset the tool belongs to, so searching `"linear"`
   finds that server's tools even when a tool's own name doesn't carry
-  the service), description, and parameter names. Falls back to a
-  literal substring match on the tool name when no query token matches
-  any document (e.g. searching `"hub"` where the token is `github`).
+  the service), description, and parameter names, with Snowball
+  stemming (English) applied to both the index and the query so
+  morphological variants match ("issues" finds `create_issue`). Falls
+  back to a literal substring match on the tool name when no query
+  token matches any document (e.g. searching `"hub"` where the token is
+  `github`).
 - **Parallel execution unwraps the bridge.** The batch planner decides
   concurrency on the *underlying* tool of a `tool_call`, not on the
   literal bridge name — so an MCP server opted in via

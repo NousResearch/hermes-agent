@@ -16,6 +16,8 @@ module graph from the updated checkout.
 
 from __future__ import annotations
 
+import importlib
+import json
 import sys
 import types
 
@@ -80,6 +82,31 @@ def test_purge_protects_executing_modules():
     assert sys.modules.get("hermes_cli.update_cmd") is update_cmd
     assert sys.modules.get("hermes_cli.main") is cli_main
     assert "hermes_cli" in sys.modules
+
+
+def test_purge_preserves_active_update_receipt(tmp_path, monkeypatch):
+    """A receipt begun before the post-pull purge must still be finalizable."""
+    import hermes_cli.update_receipt as receipt
+
+    receipt_dir = tmp_path / "update_receipts"
+    monkeypatch.setattr(receipt, "_receipt_dir", lambda: receipt_dir)
+    receipt._current = None
+    post_purge_receipt = receipt
+    try:
+        receipt.begin_update_receipt()
+        receipt.record_step("git_pull", True, "updated checkout")
+
+        cli_main._purge_stale_hermes_modules()
+        post_purge_receipt = importlib.import_module("hermes_cli.update_receipt")
+        path = post_purge_receipt.finalize_update_receipt("success")
+
+        assert path is not None and path.is_file()
+        latest = json.loads((receipt_dir / "latest.json").read_text(encoding="utf-8"))
+        assert latest["outcome"] == "success"
+        assert latest["steps"][0]["name"] == "git_pull"
+    finally:
+        receipt._current = None
+        post_purge_receipt._current = None
 
 
 def test_purge_leaves_prefix_lookalikes_alone():

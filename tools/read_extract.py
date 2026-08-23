@@ -5,6 +5,7 @@ documents raise :class:`ExtractionError`; callers fall back to text/binary handl
 
 from __future__ import annotations
 
+import codecs
 import contextlib
 import functools
 import importlib
@@ -454,22 +455,70 @@ def _open_zip(path: str, kind: str) -> Iterator[zipfile.ZipFile]:
         raise ExtractionError(f"Not a valid {kind}: {exc}" if bad_zip else str(exc)) from exc
 
 
+# Byte-order marks for XML encodings that Python/Expat need to know about.
+_BOMS = (
+    (codecs.BOM_UTF8, "utf-8"),
+    (codecs.BOM_UTF16_LE, "utf-16-le"),
+    (codecs.BOM_UTF16_BE, "utf-16-be"),
+    (codecs.BOM_UTF32_LE, "utf-32-le"),
+    (codecs.BOM_UTF32_BE, "utf-32-be"),
+)
+
+# XML declaration encoding attribute (UTF-16/UTF-32 files are detected by BOM
+# rather than by scanning the declaration, whose bytes are interleaved with NULs).
+_XML_DECL_RE = re.compile(
+    rb'''<\?xml[^?]*?encoding=([A-Za-z0-9._-]+)''',
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Remove the encoding attribute from the XML declaration after we've decoded
+# with it, so ElementTree gets bytes whose declared encoding matches the data.
+_XML_DECL_ENCODING_RE = re.compile(
+    r'''\s+encoding=(["'])([^"']*?)\1''',
+    re.IGNORECASE,
+)
+
+
+def _normalize_to_utf8(data: bytes) -> bytes:
+    """Return ``data`` decoded and re-encoded as UTF-8.
+
+    Uses the BOM or ``<?xml ... encoding="..."?>`` declaration to decide the
+    source encoding. The encoding attribute is stripped from the declaration
+    so callers see consistent UTF-8 bytes.
+    """
+    encoding = "utf-8"
+    for bom, enc in _BOMS:
+        if data.startswith(bom):
+            encoding = enc
+            data = data[len(bom):]
+            break
+    else:
+        m = _XML_DECL_RE.search(data[:256])
+        if m:
+            encoding = m.group(1).decode("ascii")
+    try:
+        text = data.decode(encoding)
+    except (LookupError, UnicodeError) as exc:
+        raise ET.ParseError(f"Unsupported or malformed XML encoding {encoding!r}: {exc}")
+    text = _XML_DECL_ENCODING_RE.sub("", text, count=1)
+    return text.encode("utf-8")
+
+
 def _parse_xml(data: bytes) -> ET.Element:
     """Parse XML bytes, rejecting documents that declare a DTD or entity.
 
     ``xml.etree.ElementTree`` does not safely handle internal/external
-    entity expansion by default (S314 / billion-laughs / XXE). We pre-screen
-    every payload for ``<!DOCTYPE ...>`` / ``<!ENTITY ...>`` declarations;
-    any match is confirmed by a short Expat pass that distinguishes real
-    declarations from the same substring appearing in escaped text or
-    comments. Documents without declarations use the normal parser.
+    entity expansion by default (S314 / billion-laughs / XXE). We first
+    normalize every payload to UTF-8, then pre-screen it for
+    ``<!DOCTYPE ...>`` / ``<!ENTITY ...>`` declarations. Any match is confirmed
+    by a short Expat pass that distinguishes real declarations from the same
+    substring appearing in escaped text or comments. Documents without
+    declarations are parsed normally.
     """
-    if _DTD_ENTITY_RE.search(data):
-        _confirm_no_dtd_or_entity(data)
-    try:
-        return ET.fromstring(data)
-    except ET.ParseError:
-        raise
+    utf8_data = _normalize_to_utf8(data)
+    if _DTD_ENTITY_RE.search(utf8_data):
+        _confirm_no_dtd_or_entity(utf8_data)
+    return ET.fromstring(utf8_data)
 
 
 def _confirm_no_dtd_or_entity(data: bytes) -> None:

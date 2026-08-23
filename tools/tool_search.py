@@ -42,6 +42,7 @@ for the full rationale):
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import math
@@ -417,6 +418,12 @@ def _stemmer() -> Any:
     return st
 
 
+@functools.lru_cache(maxsize=16384)
+def _stem(token: str) -> str:
+    """Stem one token, memoized across stateless catalog rebuilds."""
+    return _stemmer().stemWord(token)
+
+
 def _tokenize(text: str) -> List[str]:
     """Lowercase alphanumeric tokens, Snowball-stemmed (English).
 
@@ -427,8 +434,7 @@ def _tokenize(text: str) -> List[str]:
     """
     if not text:
         return []
-    tokens = [t.lower() for t in _TOKEN_RE.findall(text)]
-    return list(_stemmer().stemWords(tokens))
+    return [_stem(token.lower()) for token in _TOKEN_RE.findall(text)]
 
 
 def _entry_search_text(td: Dict[str, Any], source_label: str = "") -> str:
@@ -994,8 +1000,13 @@ def _shared_tool_record(entry: CatalogEntry) -> Dict[str, Any]:
     required parameter names so the model can attempt a call without a
     ``tool_describe`` round-trip when the required surface is trivial.
     """
-    fn = (entry.schema or {}).get("function") or {}
-    params = fn.get("parameters") or {}
+    schema = entry.schema if isinstance(entry.schema, dict) else {}
+    fn = schema.get("function")
+    if not isinstance(fn, dict):
+        fn = {}
+    params = fn.get("parameters")
+    if not isinstance(params, dict):
+        params = {}
     required = params.get("required")
     if not isinstance(required, list):
         required = []
@@ -1004,7 +1015,7 @@ def _shared_tool_record(entry: CatalogEntry) -> Dict[str, Any]:
         "source_name": entry.source_name,
         # Cap description so a chatty MCP server doesn't blow up the result.
         "description": (entry.description or "")[:400],
-        "required": [r for r in required if isinstance(r, str)],
+        "required": [r[:64] for r in required if isinstance(r, str)][:32],
     }
 
 

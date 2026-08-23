@@ -7,6 +7,7 @@ and added Snowball stemming to the shared tokenizer.
 """
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -84,6 +85,79 @@ class TestStemming:
         catalog = build_catalog(issue_defs)
         names = [h.name for h in search_catalog(catalog, "post_mess", limit=5)]
         assert names == ["mq_slack_post_message"]
+
+    def test_single_token_stems_are_cached(self):
+        from tools.tool_search import _stem, _tokenize
+
+        _stem.cache_clear()
+        corpus = "issues creating issues creating"
+        _tokenize(corpus)
+        hits_before = _stem.cache_info().hits
+        _tokenize(corpus)
+
+        assert _stem.cache_info().hits > hits_before
+        assert _stem.cache_info().hits > 0
+        assert _tokenize("issues creating") == ["issu", "creat"]
+
+    def test_parallel_tokenize_search_and_dispatch_are_deterministic(self, issue_defs):
+        from tools.tool_search import (
+            ToolSearchConfig,
+            _tokenize,
+            build_catalog,
+            dispatch_tool_search,
+            search_catalog,
+        )
+
+        corpus = (
+            "issues",
+            "issue",
+            "creating",
+            "create",
+            "meetings",
+            "meeting",
+            "post slack message",
+            "messages posted",
+        )
+        catalog = build_catalog(issue_defs)
+        expected = {
+            text: (
+                _tokenize(text),
+                [entry.name for entry in search_catalog(catalog, text, limit=3)],
+            )
+            for text in corpus
+        }
+
+        def tokenize_and_search(index):
+            text = corpus[index % len(corpus)]
+            return text, _tokenize(text), [
+                entry.name for entry in search_catalog(catalog, text, limit=3)
+            ]
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            threaded = list(pool.map(tokenize_and_search, range(512)))
+
+        for text, tokens, names in threaded:
+            assert (tokens, names) == expected[text]
+
+        args = {"queries": ["issues", "post slack message", "meetings"]}
+        config = ToolSearchConfig.from_raw({})
+        expected_json = dispatch_tool_search(
+            args,
+            current_tool_defs=issue_defs,
+            config=config,
+        )
+
+        def dispatch(_index):
+            return dispatch_tool_search(
+                args,
+                current_tool_defs=issue_defs,
+                config=config,
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            dispatched = list(pool.map(dispatch, range(64)))
+
+        assert dispatched == [expected_json] * 64
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +254,39 @@ class TestMultiQuerySearch:
         ))
         for group in result["results"]:
             assert len(group["matches"]) <= 1
+
+    def test_required_names_are_bounded(self):
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_search
+
+        required = [f"field_{index}_" + ("x" * 5000) for index in range(200)]
+        name = "mq_bounded_required_fields"
+        tool_def = _register(name, "mcp-mq-bounds", required=required)
+        result = json.loads(dispatch_tool_search(
+            {"queries": [name]},
+            current_tool_defs=[tool_def],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+        record = result["tools"][name]
+
+        assert len(record["required"]) <= 32
+        assert all(len(item) <= 64 for item in record["required"])
+
+    @pytest.mark.parametrize("schema", [
+        {"function": "not an object"},
+        {"function": {"parameters": ["not", "an", "object"]}},
+    ])
+    def test_shared_record_handles_non_object_schema_fields(self, schema):
+        from tools.tool_search import CatalogEntry, _shared_tool_record
+
+        entry = CatalogEntry(
+            name="mq_malformed_schema",
+            description="Malformed schema fixture.",
+            schema=schema,
+            source="mcp",
+            source_name="mcp-mq-malformed",
+        )
+
+        assert _shared_tool_record(entry)["required"] == []
 
     def test_partial_miss_adds_fallback_to_empty_group(self, issue_defs):
         from tools.tool_search import ToolSearchConfig, dispatch_tool_search

@@ -1,6 +1,6 @@
 import { resolveGatewayWsUrl } from '@hermes/shared'
 
-import { getApiRequestProfile, speakText } from '@/hermes'
+import { getApiRequestConnection, getApiRequestProfile, speakText } from '@/hermes'
 import {
   cutSentences,
   directTtsConfig,
@@ -102,7 +102,9 @@ export function stopVoicePlayback() {
 // instead of after full synthesis + base64 transfer.
 // ---------------------------------------------------------------------------
 
-async function resolveSpeakStreamUrl(): Promise<null | string> {
+/** Exported for tests: the (connection, profile) routing contract below is
+ *  exactly what broke in the desktop-remote voice report — keep it pinned. */
+export async function resolveSpeakStreamUrl(): Promise<null | string> {
   const desktop = window.hermesDesktop
 
   if (!desktop?.getConnection) {
@@ -111,10 +113,31 @@ async function resolveSpeakStreamUrl(): Promise<null | string> {
 
   try {
     // Mint a fresh credential (single-use ticket in OAuth mode) for the
-    // ACTIVE profile's backend, then swap the gateway endpoint for the PCM
-    // one — auth is shared across WS routes.
+    // ACTIVE (connection, profile) backend, then swap the gateway endpoint
+    // for the PCM one — auth is shared across WS routes. A registry-scoped
+    // remote MUST resolve through the *For bridges (same seam as
+    // store/gateway's openSecondary): the bare getConnection/getGatewayWsUrl
+    // pair answers for the v1 primary backend, which — when a registry
+    // remote rides over a local install — is the LOCAL machine, so spoken
+    // replies would synthesize with the local (often unconfigured) TTS
+    // instead of the profile the user is actually talking to (#90051-adjacent
+    // desktop-remote voice report, Aug 2026).
     const profile = getApiRequestProfile()
-    const wsUrl = await resolveGatewayWsUrl(desktop, await desktop.getConnection(profile))
+    const connectionId = getApiRequestConnection()
+
+    const conn =
+      connectionId && desktop.getConnectionFor
+        ? await desktop.getConnectionFor({ connectionId, profile })
+        : await desktop.getConnection(profile)
+
+    const wsDeps =
+      connectionId && desktop.getGatewayWsUrlFor
+        ? { getGatewayWsUrl: () => desktop.getGatewayWsUrlFor!({ connectionId, profile }) }
+        : connectionId
+          ? {}
+          : desktop
+
+    const wsUrl = await resolveGatewayWsUrl(wsDeps, conn)
     const url = new URL(wsUrl)
 
     if (!url.pathname.endsWith('/api/ws')) {
@@ -124,8 +147,11 @@ async function resolveSpeakStreamUrl(): Promise<null | string> {
     url.pathname = url.pathname.replace(/\/api\/ws$/, '/api/audio/speak-stream')
 
     // The backend resolves the TTS provider chain from this profile's
-    // config/.env (same seam as /api/pty?profile=).
-    if (profile) {
+    // config/.env (same seam as /api/pty?profile=). A registry-minted URL may
+    // already carry the BACKEND-namespace profile (sharedRemote scoping, SSH
+    // remoteProfile aliasing) — never overwrite it with the desktop-side
+    // routing alias.
+    if (profile && !url.searchParams.has('profile')) {
       url.searchParams.set('profile', profile)
     }
 

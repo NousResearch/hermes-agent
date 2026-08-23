@@ -882,6 +882,13 @@ def _reap_orphaned_desktop_local_serves(
       by another client/machine* which legitimately sit at ppid 1 after sshd
       exits. Killing those is a production incident, not cleanup.
     - never fixed-port remote serves (e.g. ``--port 9119``)
+    - never a candidate younger than ``_REAP_MIN_AGE_SECONDS`` (or whose age
+      cannot be determined). The Desktop client writes ``backend.lock.json``
+      only after the backend reports HERMES_BACKEND_READY, so during
+      concurrent multi-profile startup a live sibling is briefly unowned and
+      otherwise indistinguishable from a corpse; sparing young processes
+      closes that mutual-reap window. A genuine corpse merely waits for a
+      later scan.
     - best-effort; failures never raise to the caller
     """
     import signal as _signal

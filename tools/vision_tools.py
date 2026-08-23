@@ -631,8 +631,9 @@ _MAX_BASE64_BYTES = 20 * 1024 * 1024
 # safety nets; those are one-shot viewing limits, not history-reuse sizes.
 # A 4 MB / 7900px embed was observed at ~400K chars and ~100–260K billed
 # tokens per image (#92699), so we size for model reading instead: 256 KB
-# is tens of KB after JPEG encode of a 1568px screenshot, well under every
-# provider's per-image limit, and cheap enough to ride the session.
+# keeps a 1568px screenshot cheap enough to ride the session (PNGs that
+# exceed it are downscaled further by the byte-budget ladder), well under
+# every provider's per-image limit.
 _EMBED_TARGET_BYTES = 256 * 1024
 
 # Proactive embed dimension cap (px, longest side).  Anthropic still rejects

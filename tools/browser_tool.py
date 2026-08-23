@@ -4711,26 +4711,46 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 ),
             }, ensure_ascii=False)
 
-        # Convert screenshot to base64 at full resolution.
-        _screenshot_bytes = screenshot_path.read_bytes()
-        _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
-        data_url = f"data:image/png;base64,{_screenshot_b64}"
+        # NOTE: the full-resolution base64 encode is deliberately deferred.
+        # The native fast path below sizes its own history-reuse embed via
+        # _resize_image_for_vision (stat-based quick estimate — no full-res
+        # encode when oversized), and only the aux-LLM fallback path needs
+        # the one-shot full-res data URL.
 
         # Fast path: when native image routing is in effect for the active main
         # model, attach the screenshot directly instead of describing it through
         # an auxiliary vision LLM. The model inspects the pixels on its next
         # turn — no aux call, no information loss. Consistent with vision_analyze.
         from tools.vision_tools import (
+            _EMBED_MAX_DIMENSION,
+            _EMBED_TARGET_BYTES,
             _build_native_vision_tool_result,
+            _resize_image_for_vision,
             _should_use_native_vision_fast_path,
         )
 
         if _should_use_native_vision_fast_path():
+            # History-reuse cap (#92699): this embed is baked into the tool
+            # result and re-sent on every later turn, exactly like
+            # vision_analyze's native path — apply the same proactive resize
+            # so full-res screenshots can't enter immutable history uncapped.
+            # The helper's internal stat/dimension quick-estimate skips the
+            # resize (and encodes directly) when the screenshot is already
+            # under both caps, so no full-res base64 is built just to be
+            # thrown away. Fail-open: without Pillow it falls back to the
+            # raw bytes and the compressor's keep-newest pass still retires
+            # stale embeds.
+            data_url = _resize_image_for_vision(
+                screenshot_path,
+                mime_type="image/png",
+                max_base64_bytes=_EMBED_TARGET_BYTES,
+                max_dimension=_EMBED_MAX_DIMENSION,
+            )
             native_result = _build_native_vision_tool_result(
                 image_url=str(screenshot_path),
                 question=question,
                 image_data_url=data_url,
-                image_size_bytes=len(_screenshot_bytes),
+                image_size_bytes=screenshot_path.stat().st_size,
             )
             meta = native_result.setdefault("meta", {})
             meta["screenshot_path"] = str(screenshot_path)
@@ -4752,6 +4772,13 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             f"or CAPTCHAs, describe what type they are and what action might be needed. "
             f"Focus on answering the user's specific question."
         )
+
+        # Aux-LLM path: one-shot analysis, not baked into history — encode at
+        # full resolution here (the pre-existing 5 MB oversize guard below
+        # still applies).
+        _screenshot_bytes = screenshot_path.read_bytes()
+        _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
+        data_url = f"data:image/png;base64,{_screenshot_b64}"
 
         # Use the centralized LLM router
         vision_model = _get_vision_model()

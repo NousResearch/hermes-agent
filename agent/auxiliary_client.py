@@ -1715,18 +1715,34 @@ class _CodexCompletionsAdapter:
                             exc_info=True,
                         )
                 return
-            close = getattr(self._client, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    logger.debug("Codex auxiliary: client close during timeout failed", exc_info=True)
+            # #29507/#70773 thread-ownership contract: NEVER call ``close()``
+            # from this timer thread. ``self._client`` is process-shared and
+            # may have an in-flight worker whose SSL BIO caches the raw FD of
+            # a live TLS socket. Releasing that FD here lets the kernel
+            # recycle the integer into the next ``open()`` (e.g. the kanban
+            # dispatcher's ``kanban.db``), and the worker's delayed unwind
+            # then flushes one encrypted TLS application-data record over the
+            # new file's header (24-byte clobber of SQLite bytes 5..28).
+            # Instead, abort in-flight I/O the FD-safe way: shut the sockets
+            # down (SHUT_RDWR) without releasing them. That unblocks any
+            # pending recv/send immediately — the timeout still lands — while
+            # the owning thread's own unwind performs the actual close.
+            try:
+                from agent.agent_runtime_helpers import force_close_tcp_sockets
+
+                force_close_tcp_sockets(self._client)
+            except Exception:
+                logger.debug(
+                    "Codex auxiliary: socket abort during timeout failed",
+                    exc_info=True,
+                )
             # The cached auxiliary client wraps this same ``self._client``
             # (or *is* a ``CodexAuxiliaryClient`` whose ``_real_client`` is
-            # this instance).  After we close the httpx transport above, the
-            # cache must drop that entry — otherwise the next auxiliary call
-            # (compression retry, memory flush, etc.) reuses the dead client
-            # and fails fast with a connection error.  See issue #23432.
+            # this instance).  After we abort its sockets above, the cache
+            # must drop that entry — otherwise the next auxiliary call
+            # (compression retry, memory flush, etc.) reuses the aborted
+            # client and fails fast with a connection error.  See issue
+            # #23432.
             try:
                 _evict_cached_client_instance(self._client)
             except Exception:

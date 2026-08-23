@@ -11,7 +11,9 @@ pin-verification contract is REMOVED (pointers dangle; names cannot).
 Contract under test:
 - Every profile row (with include_sessions on) carries ``canonical_session``:
   a summary dict when a "Bot Chat" row exists, ``None`` when it does not
-  (no row, denied internal source, archived).
+  (no row, denied internal source, deliberately archived; a row archived by
+  a recoverable accident — ws_orphan_reap/agent_close — is resurrected,
+  #92687).
 - Summary keys: ``id`` (the durable registry row), ``resolved_id`` (live
   compression tip; equal to ``id`` when uncompressed), ``root_title``,
   ``title``, ``preview`` (newest user/assistant text at the tip),
@@ -45,7 +47,7 @@ def _db(profile_dir):
 
 
 def _add_session(db, sid, *, source="cli", title="", ts, text, hidden=False,
-                 parent=None, end_reason=None):
+                 parent=None, end_reason=None, archived=False):
     """Create one session with a single user message at an exact timestamp."""
     db.create_session(sid, source, parent_session_id=parent)
     db.append_message(sid, "user", text, timestamp=ts)
@@ -58,6 +60,9 @@ def _add_session(db, sid, *, source="cli", title="", ts, text, hidden=False,
                 "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
                 (ts + 1, end_reason, sid),
             )
+        if archived:
+            db._conn.execute(
+                "UPDATE sessions SET archived = 1 WHERE id = ?", (sid,))
     if hidden:
         db.set_session_hidden(sid, True)
 
@@ -154,6 +159,175 @@ def test_canonical_session_resolves_compression_tip(home):
     assert canonical["root_title"] == "Bot Chat"
     assert canonical["title"] == "Bot Chat (continued)"
     assert "post-compression content" in canonical["preview"]
+
+
+# ---------------------------------------------------------------------------
+# Recoverable-archive resurrection (#92687)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("reason", ["ws_orphan_reap", "agent_close"])
+def test_canonical_session_archived_by_recoverable_reason_is_resurrected(home, reason):
+    # The ws-orphan reaper (and older agent cleanup) archives by ACCIDENT —
+    # the canonical forever-chat must come back with the SAME id, un-archived.
+    db = _db(home)
+    _add_session(db, "reaped1", title="Bot Chat", ts=1000,
+                 text="surviving forever chat", hidden=True,
+                 end_reason=reason, archived=True)
+    db.close()
+
+    row = _row(_profiles({}), "default")
+
+    canonical = row["canonical_session"]
+    assert canonical is not None
+    assert canonical["id"] == "reaped1"
+    assert "surviving forever chat" in canonical["preview"]
+
+    # Idempotence: a second listing resolves the same row again (the stale
+    # end stamp was cleared, nothing re-hides or re-resurrects in a loop).
+    again = _row(_profiles({}), "default")["canonical_session"]
+    assert again is not None and again["id"] == "reaped1"
+
+    # The archive flag was durably cleared, not just masked for this call —
+    # and the accidental end stamp went with it.
+    db = _db(home)
+    try:
+        fresh = db.get_session("reaped1")
+        assert not fresh["archived"]
+        assert fresh["end_reason"] is None
+    finally:
+        db.close()
+
+
+def test_resurrection_unarchives_the_whole_compression_lineage(home):
+    # unarchive_recoverable_session promises lineage-wide un-archive via
+    # set_session_archived: a compressed canonical chat (root + tip both
+    # archived by the reaper) must fully resurrect, resolved to the tip.
+    db = _db(home)
+    _add_session(db, "root1", title="Bot Chat", ts=1000,
+                 text="pre-compression", hidden=True,
+                 end_reason="compression", archived=True)
+    _add_session(db, "tip1", ts=2000, text="post-compression content",
+                 parent="root1", end_reason="ws_orphan_reap", archived=True)
+    db.close()
+
+    row = _row(_profiles({}), "default")
+    canonical = row["canonical_session"]
+    assert canonical is not None
+    assert canonical["id"] == "root1"
+    assert canonical["resolved_id"] == "tip1"
+
+    db = _db(home)
+    try:
+        assert not db.get_session("root1")["archived"]
+        assert not db.get_session("tip1")["archived"]
+    finally:
+        db.close()
+
+
+def test_canonical_session_deliberately_archived_stays_archived(home):
+    # No recoverable end_reason ⇒ the user retired it on purpose: absent.
+    db = _db(home)
+    _add_session(db, "retired1", title="Bot Chat", ts=1000,
+                 text="deliberately retired", hidden=True, archived=True)
+    db.close()
+
+    row = _row(_profiles({}), "default")
+    assert row["canonical_session"] is None
+
+    db = _db(home)
+    try:
+        assert db.get_session("retired1")["archived"]
+    finally:
+        db.close()
+
+
+def test_canonical_session_archived_with_explicit_boundary_stays_archived(home):
+    # Explicit boundary reasons (session_reset) are not recoverable either.
+    db = _db(home)
+    _add_session(db, "reset1", title="Bot Chat", ts=1000,
+                 text="reset boundary", hidden=True,
+                 end_reason="session_reset", archived=True)
+    db.close()
+
+    row = _row(_profiles({}), "default")
+    assert row["canonical_session"] is None
+
+
+def test_non_canonical_archived_session_untouched_by_resurrection(home):
+    # Ordinary sessions keep today's behavior exactly: an archived
+    # non-canonical row stays archived even with a recoverable reason.
+    db = _db(home)
+    _add_session(db, "plain1", title="Scratch", ts=1000, text="scratch",
+                 end_reason="ws_orphan_reap", archived=True)
+    _add_session(db, "chat1", title="Bot Chat", ts=2000, text="forever")
+    db.close()
+
+    row = _row(_profiles({}), "default")
+    assert row["canonical_session"]["id"] == "chat1"
+
+    db = _db(home)
+    try:
+        assert db.get_session("plain1")["archived"]
+    finally:
+        db.close()
+
+
+def test_session_list_title_lookup_resurrects_recoverable_bot_chat(home, monkeypatch):
+    # The exact-title registry lookup (session.list title=) — the desktop's
+    # click-open path — must also resurrect instead of returning no rows.
+    db = _db(home)
+    _add_session(db, "reaped2", title="Bot Chat", ts=1000,
+                 text="click target", hidden=True,
+                 end_reason="ws_orphan_reap", archived=True)
+    monkeypatch.setattr(srv, "_get_db", lambda: db)
+
+    envelope = srv._methods["session.list"](1, {"title": "Bot Chat"})
+    sessions = envelope["result"]["sessions"]
+    assert len(sessions) == 1
+    assert sessions[0]["id"] == "reaped2"
+
+    # The archive flag was durably cleared.
+    assert not db.get_session("reaped2")["archived"]
+    db.close()
+
+
+def test_session_list_title_lookup_keeps_deliberate_archive_hidden(home, monkeypatch):
+    db = _db(home)
+    _add_session(db, "retired2", title="Bot Chat", ts=1000,
+                 text="retired", hidden=True, archived=True)
+    monkeypatch.setattr(srv, "_get_db", lambda: db)
+
+    envelope = srv._methods["session.list"](1, {"title": "Bot Chat"})
+    assert envelope["result"]["sessions"] == []
+    assert db.get_session("retired2")["archived"]
+    db.close()
+
+
+def test_deliberate_archive_after_resurrection_stays_archived(home):
+    # Resurrection must clear the accidental end stamp: if ws_orphan_reap
+    # survived on the row, a LATER deliberate archive (which writes no
+    # end_reason) would auto-resurrect on the next lookup — permanently
+    # overriding user intent.
+    db = _db(home)
+    _add_session(db, "cycle1", title="Bot Chat", ts=1000,
+                 text="reaped then retired", hidden=True,
+                 end_reason="ws_orphan_reap", archived=True)
+    db.close()
+
+    # First lookup resurrects (accidental archive).
+    row = _row(_profiles({}), "default")
+    assert row["canonical_session"] is not None
+
+    # User now deliberately archives the resurrected row.
+    db = _db(home)
+    assert db.get_session("cycle1")["end_reason"] is None  # stamp cleared
+    db.set_session_archived("cycle1", True)
+    db.close()
+
+    # Second lookup must respect the deliberate archive.
+    row = _row(_profiles({}), "default")
+    assert row["canonical_session"] is None
 
 
 # ---------------------------------------------------------------------------

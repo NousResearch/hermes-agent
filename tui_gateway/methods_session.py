@@ -192,6 +192,22 @@ def _(rid, params: dict) -> dict:
             title_lookup = str(params.get("title") or "").strip()
             if title_lookup:
                 row = db.get_session_by_title(title_lookup)
+                if row and row.get("archived"):
+                    from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+                    if title_lookup == BOT_CHAT_TITLE:
+                        # The canonical Bot Chat is identity-scoped: an archive
+                        # stamped by the ws-orphan reaper or older agent cleanup
+                        # (ws_orphan_reap / agent_close) is an accident, not user
+                        # intent, and hiding the row here makes the desktop mint
+                        # transient replacements forever (#92687). Resurrect it —
+                        # same recoverable-reason set as stale-route recovery.
+                        # Deliberate archives (no/explicit end_reason) still hide.
+                        # Re-fetch by ID: title has no DB-level UNIQUE, so a
+                        # title re-query could grab a different (still-archived)
+                        # duplicate row.
+                        if db.unarchive_recoverable_session(row["id"]):
+                            row = db.get_session(row["id"])
                 if (
                     not row
                     or row.get("archived")

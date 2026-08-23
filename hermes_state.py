@@ -65,6 +65,8 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _LISTABLE_CHILD_SQL,
     _PREVIEW_ELIGIBLE_SQL,
     _PREVIEW_RAW_SELECT,
+    _RECOVERABLE_END_REASONS,
+    _RECOVERABLE_END_REASONS_SQL,
     _RESET_END_REASONS,
     _RESET_END_REASONS_SQL,
     _ephemeral_child_sql,
@@ -5747,7 +5749,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
                 WHERE s.session_key = ?
                   AND s.source = ?
-                  AND (s.ended_at IS NULL OR s.end_reason IN ('agent_close', 'ws_orphan_reap'))
+                  AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))
                   AND NOT EXISTS (
                       SELECT 1 FROM sessions b
                       WHERE b.session_key = s.session_key
@@ -5786,7 +5788,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                   AND COALESCE(s.chat_id, '') = COALESCE(?, '')
                   AND COALESCE(s.chat_type, '') = COALESCE(?, '')
                   AND COALESCE(s.thread_id, '') = COALESCE(?, '')
-                  AND (s.ended_at IS NULL OR s.end_reason IN ('agent_close', 'ws_orphan_reap'))
+                  AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))
                   AND (COALESCE(s.message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
                   ))
@@ -6422,7 +6424,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             cursor = conn.execute(
                 "UPDATE sessions SET ended_at = ?, end_reason = ? "
                 "WHERE id = ? AND (ended_at IS NULL "
-                "OR end_reason IN ('agent_close', 'ws_orphan_reap'))",
+                f"OR end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))",
                 (now, reason, session_id),
             )
             return cursor.rowcount
@@ -8828,6 +8830,63 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return rowcount
         rowcount = self._execute_write(_do)
         return rowcount > 0
+
+    # Accidental end reasons that recovery treats as resumable. Single source
+    # of truth: hermes_state_common._RECOVERABLE_END_REASONS, interpolated
+    # into find_latest_gateway_session_for_peer / promote_to_session_reset
+    # SQL — literals cannot drift (docs/session-lifecycle.md "recoverable
+    # accidental reasons").
+    RECOVERABLE_END_REASONS = _RECOVERABLE_END_REASONS
+
+    def unarchive_recoverable_session(self, session_id: str) -> bool:
+        """Un-archive a session that was archived by a recoverable accident.
+
+        Registry-style lookups (Bot Mode's canonical "Bot Chat") use this to
+        resurrect a row the ws-orphan reaper (``ws_orphan_reap``) or older
+        agent cleanup (``agent_close``) archived: those ends are accidents,
+        not user intent, so the identity-scoped canonical chat must survive
+        them (#92687). Sessions archived with no end_reason or an explicit
+        boundary reason (user archived deliberately, ``session_reset``, …)
+        are left untouched — returns ``False`` for those, ``True`` only when
+        the row was archived for a recoverable reason and is now un-archived
+        (whole compression lineage, via :meth:`set_session_archived`).
+        """
+        if not session_id:
+            return False
+        try:
+            row = self.get_session(session_id)
+        except Exception:
+            return False
+        if not row or not row.get("archived"):
+            return False
+        # A compressed lineage's registry row keeps end_reason='compression';
+        # the accidental stamp lives on the live TIP. Judge recoverability at
+        # the tip (== the row itself when uncompressed).
+        tip = row
+        try:
+            tip_id = self.resolve_resume_session_id(session_id) or session_id
+            if tip_id != session_id:
+                tip = self.get_session(tip_id) or row
+        except Exception:
+            tip_id = session_id
+        if (tip.get("end_reason") or "") not in self.RECOVERABLE_END_REASONS:
+            return False
+        if not self.set_session_archived(session_id, False):
+            return False
+
+        # Clear the accidental end stamp: the session is live again, and a
+        # surviving ws_orphan_reap/agent_close reason would make a LATER
+        # deliberate archive (which never writes end_reason) auto-resurrect
+        # on the next lookup — permanently overriding user intent.
+        def _clear_end(conn):
+            conn.execute(
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
+                (tip["id"],),
+            )
+            return 1
+
+        self._execute_write(_clear_end)
+        return True
 
     def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
         """Pin or unpin a session (and its whole compression lineage).

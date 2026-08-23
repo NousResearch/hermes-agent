@@ -4258,6 +4258,31 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         if title_filter:
             sessions = [s for s in sessions if (s.get("title") or "").strip() == title_filter]
+            if not sessions:
+                # Recoverable-archive resurrection (#92687): a canonical Bot
+                # Chat archived by the ws-orphan reaper / older agent cleanup
+                # is invisible to list_sessions_rich (include_archived=False),
+                # which would fail `hermes peer dm` resolution and mint
+                # transient sessions — same accident the tui_gateway lookups
+                # heal. Resurrect and re-list; deliberate archives stay put.
+                try:
+                    from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+                    stale = db.get_session_by_title(title_filter) if title_filter == BOT_CHAT_TITLE else None
+                    if stale and stale.get("archived") and db.unarchive_recoverable_session(stale["id"]):
+                        sessions = await asyncio.to_thread(db.list_sessions_rich,
+                            source=source,
+                            limit=limit,
+                            offset=offset,
+                            include_children=include_children,
+                            order_by_last_active=True,
+                            include_pinned=True,
+                            search_query=title_filter,
+                            include_hidden=include_hidden,
+                        )
+                        sessions = [s for s in sessions if (s.get("title") or "").strip() == title_filter]
+                except Exception:
+                    pass  # resolution degrades to today's no-row behavior
         # Back-filled pins arrive PAST the limit, so counting them would report
         # another page that doesn't exist. Only the recency window decides.
         windowed = sum(1 for s in sessions if not s.get("pinned"))

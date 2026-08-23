@@ -200,6 +200,13 @@ _RESET_END_REASONS = (
 )
 _RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASONS)
 
+# Accidental end reasons that recovery treats as resumable (see
+# docs/session-lifecycle.md "recoverable accidental reasons"). Interpolated
+# into the recovery SQL below AND exposed as SessionDB.RECOVERABLE_END_REASONS
+# so the tuple is the single source of truth — literals cannot drift.
+_RECOVERABLE_END_REASONS = ("agent_close", "ws_orphan_reap")
+_RECOVERABLE_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RECOVERABLE_END_REASONS)
+
 
 def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
     """Pre-marker reset-continuation heuristic.

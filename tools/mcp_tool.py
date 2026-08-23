@@ -110,6 +110,7 @@ import shutil
 import sys
 import threading
 import time
+import uuid
 from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
@@ -5751,6 +5752,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
+        # Stable across this invocation's transport/auth recovery retry, but
+        # fresh for the next intentional model tool call. Governed MCP servers
+        # can use it to return one durable result after a lost response without
+        # conflating two identical user-requested actions.
+        tool_attempt_id = str(uuid.uuid4())
         # Trust-tier gate (security boundary): write-capable tools on
         # servers configured ``trust: untrusted`` must be approved by the
         # user before ANY transport work happens — including the lazy
@@ -5827,7 +5833,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    result = await server.session.call_tool(
+                        tool_name,
+                        arguments=args,
+                        meta={"com.nousresearch.hermes/toolAttemptId": tool_attempt_id},
+                    )
                 finally:
                     server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably

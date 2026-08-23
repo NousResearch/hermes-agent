@@ -118,7 +118,12 @@ def test_initial_connect_failure_revives_same_registered_server(monkeypatch, tmp
     mock_registry = ToolRegistry()
 
     class _Session:
-        async def call_tool(self, name, arguments):
+        async def call_tool(self, name, arguments, *, meta=None):
+            assert meta == {
+                "com.nousresearch.hermes/toolAttemptId": meta[
+                    "com.nousresearch.hermes/toolAttemptId"
+                ]
+            }
             state["tool_calls"] += 1
             return SimpleNamespace(
                 isError=False,

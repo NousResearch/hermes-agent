@@ -148,6 +148,217 @@ class TestStartRun:
                 assert status["object"] == "hermes.run"
 
     @pytest.mark.asyncio
+    async def test_idempotency_key_replays_one_run(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "mobile-turn-1"}
+
+                first = await cli.post(
+                    "/v1/runs", json={"input": "hello"}, headers=headers
+                )
+                second = await cli.post(
+                    "/v1/runs", json={"input": "hello"}, headers=headers
+                )
+                first_data = await first.json()
+                second_data = await second.json()
+
+                assert first.status == 202
+                assert second.status == 202
+                assert second_data == first_data
+                for _ in range(40):
+                    if mock_agent.run_conversation.call_count:
+                        break
+                    await asyncio.sleep(0.05)
+                mock_agent.run_conversation.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_conflicting_body_is_rejected(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, ready, interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "mobile-turn-2"}
+
+                first = await cli.post(
+                    "/v1/runs", json={"input": "hello"}, headers=headers
+                )
+                assert first.status == 202
+                assert ready.wait(timeout=3.0)
+
+                conflict = await cli.post(
+                    "/v1/runs", json={"input": "changed"}, headers=headers
+                )
+                data = await conflict.json()
+
+                assert conflict.status == 409
+                assert data["error"]["code"] == "idempotency_conflict"
+                mock_agent.run_conversation.assert_called_once()
+                interrupted.set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("second_input", "expected_statuses"),
+        [("hello", [202, 202]), ("changed", [202, 409])],
+    )
+    async def test_concurrent_first_idempotency_key_is_atomic(
+        self, adapter, second_input, expected_statuses
+    ):
+        app = _create_runs_app(adapter)
+        original_json = web.Request.json
+        parsing = 0
+        both_parsing = asyncio.Event()
+
+        async def _barrier_json(request, *args, **kwargs):
+            nonlocal parsing
+            parsing += 1
+            if parsing == 2:
+                both_parsing.set()
+            await asyncio.wait_for(both_parsing.wait(), timeout=3.0)
+            return await original_json(request, *args, **kwargs)
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(web.Request, "json", _barrier_json),
+                patch.object(adapter, "_create_agent") as mock_create,
+            ):
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "mobile-turn-concurrent"}
+
+                first, second = await asyncio.gather(
+                    cli.post("/v1/runs", json={"input": "hello"}, headers=headers),
+                    cli.post(
+                        "/v1/runs",
+                        json={"input": second_input},
+                        headers=headers,
+                    ),
+                )
+                first_data, second_data = await asyncio.gather(
+                    first.json(), second.json()
+                )
+
+                assert sorted([first.status, second.status]) == expected_statuses
+                if second_input == "hello":
+                    assert first_data["run_id"] == second_data["run_id"]
+                else:
+                    conflict = first_data if first.status == 409 else second_data
+                    assert conflict["error"]["code"] == "idempotency_conflict"
+                for _ in range(40):
+                    if mock_agent.run_conversation.call_count:
+                        break
+                    await asyncio.sleep(0.05)
+                mock_agent.run_conversation.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_idempotent_replay_bypasses_concurrency_limit(self, adapter):
+        adapter._max_concurrent_runs = 1
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, ready, interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "mobile-turn-3"}
+
+                first = await cli.post(
+                    "/v1/runs", json={"input": "hello"}, headers=headers
+                )
+                first_data = await first.json()
+                assert ready.wait(timeout=3.0)
+
+                replay = await cli.post(
+                    "/v1/runs", json={"input": "hello"}, headers=headers
+                )
+                replay_data = await replay.json()
+
+                assert replay.status == 202
+                assert replay_data["run_id"] == first_data["run_id"]
+                mock_agent.run_conversation.assert_called_once()
+                interrupted.set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("headers", [{}, {"Idempotency-Key": "new-mobile-turn"}])
+    async def test_new_run_is_rate_limited_before_body_parsing(self, adapter, headers):
+        adapter._max_concurrent_runs = 1
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, ready, interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                first = await cli.post("/v1/runs", json={"input": "hello"})
+                assert first.status == 202
+                assert ready.wait(timeout=3.0)
+
+                limited = await cli.post(
+                    "/v1/runs",
+                    data="not-json",
+                    headers={"Content-Type": "application/json", **headers},
+                )
+                data = await limited.json()
+
+                assert limited.status == 429
+                assert data["error"]["code"] == "rate_limit_exceeded"
+                mock_agent.run_conversation.assert_called_once()
+                interrupted.set()
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_is_bounded(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello"},
+                    headers={"Idempotency-Key": "x" * 256},
+                )
+                data = await response.json()
+
+        assert response.status == 400
+        assert data["error"]["code"] == "invalid_idempotency_key"
+        mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_idempotency_capacity_fails_closed(self, adapter):
+        adapter._RUN_IDEMPOTENCY_MAX_ITEMS = 1
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, ready, interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                first = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello"},
+                    headers={"Idempotency-Key": "mobile-turn-capacity-1"},
+                )
+                assert first.status == 202
+                assert ready.wait(timeout=3.0)
+
+                second = await cli.post(
+                    "/v1/runs",
+                    json={"input": "different"},
+                    headers={"Idempotency-Key": "mobile-turn-capacity-2"},
+                )
+                data = await second.json()
+
+                assert second.status == 429
+                assert data["error"]["code"] == "idempotency_capacity_exceeded"
+                mock_agent.run_conversation.assert_called_once()
+                interrupted.set()
+
+    @pytest.mark.asyncio
     async def test_start_binds_chat_id_for_delegation_wake_target(self, adapter):
         """/v1/runs must bind the raw session id as the api_server chat_id
         (like every other agent-entry route does via _run_agent): the async

@@ -1536,6 +1536,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._stopping_run_ids: set[str] = set()
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        # Idempotent /v1/runs starts. Entries are profile-scoped and retained
+        # only while their pollable run status exists; the status TTL therefore
+        # bounds both memory and key reuse without a second lifecycle clock.
+        self._run_idempotency: Dict[tuple[str, str], Dict[str, str]] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
@@ -7382,6 +7386,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
+    _RUN_IDEMPOTENCY_MAX_ITEMS = 1000
+    _RUN_IDEMPOTENCY_KEY_MAX_LENGTH = 255
 
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
@@ -7499,11 +7505,38 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
-        # Enforce concurrency limit (shared across all agent-serving
-        # endpoints; configurable via gateway.api_server.max_concurrent_runs).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
+        idempotency_key = request.headers.get("Idempotency-Key")
+        if idempotency_key is not None:
+            idempotency_key = idempotency_key.strip()
+            if not idempotency_key or len(idempotency_key) > self._RUN_IDEMPOTENCY_KEY_MAX_LENGTH:
+                return web.json_response(
+                    _openai_error(
+                        "Idempotency-Key must contain 1 to 255 characters.",
+                        code="invalid_idempotency_key",
+                    ),
+                    status=400,
+                )
+
+        idempotency_scope: Optional[tuple[str, str]] = None
+        prior_idempotent_run: Optional[Dict[str, str]] = None
+        if idempotency_key is not None:
+            request_profile = _api_request_profile.get() or ""
+            idempotency_scope = (request_profile, idempotency_key)
+            prior_idempotent_run = self._run_idempotency.get(idempotency_scope)
+            if (
+                prior_idempotent_run is not None
+                and prior_idempotent_run["run_id"] not in self._run_statuses
+            ):
+                self._run_idempotency.pop(idempotency_scope, None)
+                prior_idempotent_run = None
+
+        # Preserve the concurrency guard's original pre-parse boundary for
+        # genuinely new work. A live replay may pass so its body can be
+        # fingerprinted, then return the original run without consuming a slot.
+        if prior_idempotent_run is None:
+            limited = self._concurrency_limited_response()
+            if limited is not None:
+                return limited
 
         try:
             body = await request.json()
@@ -7577,6 +7610,62 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         if selection_error:
             return web.json_response(_openai_error(selection_error), status=400)
+
+        idempotency_fingerprint: Optional[str] = None
+        if idempotency_key is not None:
+            idempotency_fingerprint = hashlib.sha256(
+                json.dumps(
+                    {"body": body, "session_key": gateway_session_key},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            # Body parsing yields to the event loop. Re-read after fingerprinting
+            # so a concurrent first request cannot reuse the stale pre-parse
+            # snapshot and start a second run for the same scoped key.
+            prior = self._run_idempotency.get(idempotency_scope)
+            if prior is not None and prior["run_id"] not in self._run_statuses:
+                self._run_idempotency.pop(idempotency_scope, None)
+                prior = None
+            if prior is not None:
+                if prior["fingerprint"] != idempotency_fingerprint:
+                    return web.json_response(
+                        _openai_error(
+                            "Idempotency-Key was already used with a different request.",
+                            code="idempotency_conflict",
+                        ),
+                        status=409,
+                    )
+                response_headers = (
+                    {"X-Hermes-Session-Key": gateway_session_key}
+                    if gateway_session_key
+                    else {}
+                )
+                return web.json_response(
+                    {"run_id": prior["run_id"], "status": "started"},
+                    status=202,
+                    headers=response_headers,
+                )
+
+            for scope, entry in list(self._run_idempotency.items()):
+                if entry["run_id"] not in self._run_statuses:
+                    self._run_idempotency.pop(scope, None)
+            if len(self._run_idempotency) >= self._RUN_IDEMPOTENCY_MAX_ITEMS:
+                return web.json_response(
+                    _openai_error(
+                        "Run idempotency capacity is temporarily exhausted.",
+                        code="idempotency_capacity_exceeded",
+                    ),
+                    status=429,
+                    headers={"Retry-After": "1"},
+                )
+
+        # A replay returns above even when the original run fills the
+        # concurrency ceiling. Only genuinely new work is rate-limited.
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = session_id or run_id
@@ -7910,6 +7999,12 @@ class APIServerAdapter(BasePlatformAdapter):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
 
+        if idempotency_scope is not None and idempotency_fingerprint is not None:
+            self._run_idempotency[idempotency_scope] = {
+                "fingerprint": idempotency_fingerprint,
+                "run_id": run_id,
+            }
+
         response_headers = (
             {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
         )
@@ -8213,6 +8308,11 @@ class APIServerAdapter(BasePlatformAdapter):
         ]
         for run_id in stale_statuses:
             self._run_statuses.pop(run_id, None)
+        if stale_statuses:
+            stale_status_set = set(stale_statuses)
+            for scope, entry in list(self._run_idempotency.items()):
+                if entry["run_id"] in stale_status_set:
+                    self._run_idempotency.pop(scope, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface

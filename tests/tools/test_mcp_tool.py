@@ -5,6 +5,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import json
+import uuid
 import logging
 import os
 import sys
@@ -572,7 +573,10 @@ class TestToolHandler:
             with self._patch_mcp_loop():
                 result = json.loads(handler({"name": "world"}))
             assert result["result"] == "hello world"
-            mock_session.call_tool.assert_called_once_with("greet", arguments={"name": "world"})
+            call = mock_session.call_tool.call_args
+            assert call.args == ("greet",)
+            assert call.kwargs["arguments"] == {"name": "world"}
+            assert str(uuid.UUID(call.kwargs["meta"]["com.nousresearch.hermes/toolAttemptId"])) == call.kwargs["meta"]["com.nousresearch.hermes/toolAttemptId"]
         finally:
             _servers.pop("test_srv", None)
 
@@ -603,7 +607,10 @@ class TestToolHandler:
                 result = json.loads(handler({"name": "world"}))
             assert result["result"] == "reconnected"
             reconnect.assert_called_once()
-            mock_session.call_tool.assert_called_once_with("greet", arguments={"name": "world"})
+            call = mock_session.call_tool.call_args
+            assert call.args == ("greet",)
+            assert call.kwargs["arguments"] == {"name": "world"}
+            assert str(uuid.UUID(call.kwargs["meta"]["com.nousresearch.hermes/toolAttemptId"])) == call.kwargs["meta"]["com.nousresearch.hermes/toolAttemptId"]
         finally:
             _servers.pop("test_srv", None)
 

@@ -86,6 +86,27 @@ def test_schema_init_preserves_shared_state_db_journal_mode(tmp_path, monkeypatc
         conn.close()
 
 
+@pytest.mark.macos_only
+def test_connect_preserves_wal_and_applies_macos_durability_barriers(
+    tmp_path, monkeypatch
+):
+    """Each ledger connection must carry the macOS write barriers."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    seed = sqlite3.connect(tmp_path / "state.db")
+    try:
+        assert seed.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    finally:
+        seed.close()
+
+    conn = ad._connect()
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2
+        assert conn.execute("PRAGMA checkpoint_fullfsync").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
 def test_active_for_session_counts_every_live_delegation_state():
     with ad._records_lock:
         ad._records.update(

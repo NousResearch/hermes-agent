@@ -115,6 +115,29 @@ describe('IncrementalExternalStoreThreadRuntimeCore adapter swap notifications',
     expect(notifications).toBeGreaterThan(0)
   })
 
+  it('still notifies on an isDisabled flip even when transcript and run state are unchanged', () => {
+    const repo = repositoryOf([message('a', 'one')])
+    const core = new IncrementalExternalStoreRuntimeCore(adapterWith(repo))
+    const thread = core.threads.getMainThreadRuntimeCore()
+
+    let notifications = 0
+    thread.subscribe(() => {
+      notifications += 1
+    })
+
+    core.setAdapter(adapterWith(repo, { isDisabled: true }))
+
+    expect(notifications).toBeGreaterThan(0)
+
+    // And flipping back also notifies — but an unchanged repeat stays silent.
+    core.setAdapter(adapterWith(repo, { isDisabled: false }))
+    const afterFlipBack = notifications
+
+    core.setAdapter(adapterWith(repo, { isDisabled: false }))
+
+    expect(notifications).toBe(afterFlipBack)
+  })
+
   it('a subscriber that swaps a fresh-but-identical adapter on every notify must not recurse unboundedly', () => {
     // Direct simulation of the feedback loop: the subscriber plays the role of
     // React re-rendering ChatRuntimeBoundary (new literal -> setAdapter). With

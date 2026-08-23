@@ -146,7 +146,9 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
     }
 
     const isRunning = store.isRunning ?? false
-    this.isDisabled = store.isDisabled ?? false
+    const newDisabled = store.isDisabled ?? false
+    const disabledChanged = this.isDisabled !== newDisabled
+    this.isDisabled = newDisabled
 
     const oldStore = self._store
     self._store = store
@@ -158,7 +160,7 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
     // (render -> new literal -> setAdapter -> notify -> render), which React
     // kills with "Maximum update depth exceeded" and takes the session tile
     // down with its error boundary.
-    let changed = false
+    let changed = disabledChanged
 
     if (this.extras !== store.extras) {
       this.extras = store.extras

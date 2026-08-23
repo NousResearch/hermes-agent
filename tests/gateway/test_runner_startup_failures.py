@@ -138,6 +138,21 @@ async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
         "gateway.status.terminate_pid",
         lambda pid, force=False: calls.append((pid, force)),
     )
+    # Ownership guard (#89315): legitimate same-home replace fixture — the
+    # persisted record is bound to target pid 42 in this home.
+    monkeypatch.setattr(
+        "gateway.status._read_pid_record",
+        lambda path=None: {
+            "pid": 42,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 0,
+            "hermes_home": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
+    )
     # _pid_exists never goes False — the force-kill did not take.
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
     monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
@@ -215,6 +230,23 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
         _pid_state["alive"] = False
     monkeypatch.setattr("gateway.status.get_running_pid", _mock_get_running_pid)
     monkeypatch.setattr("gateway.status.remove_pid_file", _mock_remove_pid_file)
+    # Ownership guard (#89315): this test simulates a legitimate same-home
+    # replace, so the persisted pid record must be a valid BOUND record for
+    # the target pid in THIS home. start_time 0 matches the legacy fixture's
+    # convention; the live probe is patched to agree.
+    monkeypatch.setattr(
+        "gateway.status._read_pid_record",
+        lambda path=None: {
+            "pid": 42,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 0,
+            "hermes_home": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
+    )
     monkeypatch.setattr(
         "gateway.status.release_all_scoped_locks",
         lambda **kwargs: 0,

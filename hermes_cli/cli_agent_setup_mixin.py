@@ -169,6 +169,24 @@ def _resume_panel_colors() -> tuple:
         return tuple(default for _, default in _RESUME_SKIN_COLORS)
 
 
+def apply_per_provider_output_cap(agent, runtime: dict) -> None:
+    """Apply the resolved custom-provider output cap onto ``agent.max_tokens``.
+
+    Mirrors gateway/run.py: the per-provider cap (custom_providers
+    ``max_output_tokens``, with ``max_tokens`` accepted as an alias) is a
+    fallback only — it applies when the documented global keys
+    (``HERMES_MAX_TOKENS`` / ``model.max_tokens``) left ``agent.max_tokens``
+    unset, so the global key always wins.
+    """
+    if getattr(agent, "max_tokens", None) is not None:
+        return
+    for _key in ("max_output_tokens", "max_tokens"):
+        _value = runtime.get(_key)
+        if isinstance(_value, int) and _value > 0:
+            agent.max_tokens = _value
+            return
+
+
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
@@ -229,6 +247,12 @@ class CLIAgentSetupMixin:
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+
+        # Per-provider output cap (custom_providers ``max_output_tokens`` /
+        # ``max_tokens``) — mirrors gateway/run.py: applied only when the
+        # documented global model.max_tokens / HERMES_MAX_TOKENS left
+        # self.max_tokens unset, so the global key still wins.
+        apply_per_provider_output_cap(self, runtime)
 
         # A custom_provider entry's explicit `model` wins when the CLI model is unset or
         # is just the provider slug/display name (`hermes chat --model <provider-name>`

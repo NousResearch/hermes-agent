@@ -905,16 +905,14 @@ export function useSessionActions({
           sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
           dropSessionState(cachedRuntimeId)
         } else {
-          // Paint the warm cache immediately, but also refresh the persisted
-          // transcript in parallel. A resumed runtime carries the agent's
-          // compression projection, which can have the same row count as the
-          // stored conversation while containing different rows. Trusting that
-          // projection alone made completed prompts disappear after an app
-          // restart whenever this warm path short-circuited the cold REST
-          // prefetch. Watch mirrors stay live-only by design.
-          const persistedTranscriptPromise = isWatchWindow()
-            ? null
-            : getLatestSessionMessages(storedSessionId, sessionRestScope).catch(() => null)
+          // Paint the warm cache immediately. The persisted transcript still
+          // needs a refresh because a resumed runtime may carry only the
+          // agent's compressed projection, but that read must start after
+          // session.activate reattaches the live transport. Otherwise a turn
+          // can finish between the early REST snapshot and the reattach: its
+          // terminal events go to the detached socket while the stale snapshot
+          // leaves Desktop showing only the pre-disconnect partial answer.
+          const shouldRefreshPersistedTranscript = !isWatchWindow()
 
           setFreshDraftReady(false)
           clearNotifications()
@@ -975,6 +973,16 @@ export function useSessionActions({
               sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
               dropSessionState(cachedRuntimeId)
             } else {
+              // session.activate is the ordering barrier for reconnect recovery:
+              // it atomically rebinds a running turn before returning. If the
+              // turn is already terminal, this post-barrier REST read sees its
+              // durable final row; if it is still running, later deltas/finish
+              // events arrive on the newly attached transport and the
+              // concurrent-overlay step below preserves them.
+              const persistedTranscriptPromise = shouldRefreshPersistedTranscript
+                ? getLatestSessionMessages(storedSessionId, sessionRestScope).catch(() => null)
+                : null
+
               const pendingApproval = restorePendingApproval(activated, cachedRuntimeId)
 
               const pendingClarifyState = restorePendingClarifyFromSnapshot(

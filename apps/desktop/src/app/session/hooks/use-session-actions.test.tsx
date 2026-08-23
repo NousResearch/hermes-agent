@@ -2619,6 +2619,93 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-newer' })
   })
 
+  it('reads the terminal transcript after warm reconnect transport reattachment', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [
+      {
+        id: 'cached-user',
+        role: 'user',
+        parts: [{ type: 'text', text: 'long running prompt' }]
+      },
+      {
+        id: 'cached-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'partial before disconnect' }],
+        pending: true
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    let transportAttached = false
+    let attachedWhenTranscriptRead: boolean | null = null
+
+    vi.mocked(getLatestSessionMessages).mockReset()
+    vi.mocked(getLatestSessionMessages).mockImplementation(async () => {
+      attachedWhenTranscriptRead = transportAttached
+
+      return {
+        messages: [
+          { content: 'long running prompt', role: 'user', timestamp: 1 },
+          {
+            content: transportAttached ? 'complete answer persisted during disconnect' : 'partial before disconnect',
+            role: 'assistant',
+            timestamp: 2
+          }
+        ],
+        session_id: 'stored-A'
+      } as never
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        // The backend rebinds the session transport before returning this
+        // terminal snapshot. A transcript read issued earlier can miss the
+        // final persisted row and no live event will arrive to repair it.
+        transportAttached = true
+
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: 2,
+          messages: [],
+          messages_omitted: true,
+          running: false,
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    expect(attachedWhenTranscriptRead).toBe(true)
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(resumedState?.messages)).toContain('complete answer persisted during disconnect')
+    expect(JSON.stringify(resumedState?.messages)).not.toContain('partial before disconnect')
+  })
+
   it('preserves cached image attachments through an idle persisted transcript refresh', async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])

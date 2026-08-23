@@ -804,6 +804,42 @@ class TestResizeImageForVision:
         )
         assert result.startswith("data:image/png;base64,")
 
+    def test_force_jpeg_handles_alpha_and_exotic_modes(self, tmp_path):
+        """RGBA/LA/P PNGs must convert cleanly — JPEG can't encode alpha.
+
+        force_jpeg newly routes PNG inputs to the JPEG encoder, so modes
+        JPEG can't save (LA grayscale+alpha especially) must be normalized
+        to RGB instead of crashing img.save().
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        import random
+
+        rng = random.Random(7)
+        for mode, size in (("RGBA", (600, 400)), ("LA", (600, 400)), ("P", (600, 400))):
+            img = Image.new(mode, size)
+            # Noise so the PNG exceeds a tiny budget and the resize fires.
+            if mode == "P":
+                img.putpalette([i % 256 for i in range(768)])
+                img.putdata([rng.randrange(256) for _ in range(size[0] * size[1])])
+            else:
+                bands = len(img.getbands())
+                img.putdata([
+                    tuple(rng.randrange(256) for _ in range(bands))
+                    for _ in range(size[0] * size[1])
+                ])
+            path = tmp_path / f"img_{mode}.png"
+            img.save(path, "PNG")
+
+            result = _resize_image_for_vision(
+                path, mime_type="image/png",
+                max_base64_bytes=16 * 1024, max_dimension=1568,
+                force_jpeg=True,
+            )
+            assert result.startswith("data:image/jpeg;base64,"), mode
+
 
 # ---------------------------------------------------------------------------
 # _image_exceeds_dimension — proactive embed-time pixel-cap detector

@@ -887,8 +887,10 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
         if data_url is None:
             data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         return data_url  # fall through to size-check in caller
-    # Convert RGBA to RGB for JPEG output
-    if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
+    # JPEG cannot encode alpha or palette/grayscale-alpha modes; normalize
+    # anything that isn't already plain RGB/grayscale.  force_jpeg newly
+    # routes PNG inputs here, so exotic modes (LA/PA) must not crash save().
+    if pil_format == "JPEG" and img.mode not in {"RGB", "L"}:
         img = img.convert("RGB")
 
     # Strategy: halve dimensions until both base64 fits AND pixel dimensions

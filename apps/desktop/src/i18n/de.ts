@@ -11,6 +11,25 @@ import { defineLocale } from './define-locale'
 // automatisch auf Englisch zurück.
 
 export const de = defineLocale({
+  sendDiagnostics: {
+    title: 'Diagnose an Nous senden',
+    privacyNotice: 'Das lädt ein Debug-Bundle in den Nous-internen Speicher hoch (kein öffentliches Paste). Enthalten sind Systeminfos (OS, Versionen, Provider, welche API-Keys konfiguriert sind — niemals die Keys selbst) sowie vollständige Agent-, Gateway- und Desktop-Logs (je bis zu 512 KB), die vermutlich Gesprächsinhalte, Tool-Ausgaben und Dateipfade enthalten. Secrets werden vor dem Upload geschwärzt. Das Bundle ist nur für Nous-Mitarbeiter und freigeschaltete Discord-Moderatoren einsehbar und wird nach 14 Tagen automatisch gelöscht.',
+    upload: 'Hochladen',
+    uploading: 'Lade hoch…',
+    cancel: 'Abbrechen',
+    close: 'Schließen',
+    copyLink: 'Link kopieren',
+    uploadIdFallback: (id) => `Kein Ansichtslink erhalten — nenne dem Support die Upload-ID ${id}`,
+    doneTitle: 'Diagnose gesendet',
+    doneDescription: 'Dein Bundle wurde privat hochgeladen. Teile den Link unten in deinem Support-Thread, damit das Team deine Logs sehen kann.',
+    failedTitle: 'Upload fehlgeschlagen',
+    failedHint: 'Du kannst auch `hermes debug share --nous` in einem Terminal ausführen oder `hermes debug share --local`, um den Bericht auszugeben, ohne ihn hochzuladen.',
+    handoffLead: 'Weiterdiskutieren in:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'Nous Portal Support',
+    },
+  },
   common: {
     apply: 'Übernehmen',
     back: 'Zurück',
@@ -102,6 +121,11 @@ export const de = defineLocale({
       gatewayConnectionLost: 'Verbindung zum Gateway verloren'
     },
     failure: {
+      cloudDownTitle: 'Nous-Cloud-Agent ist offline',
+      cloudDownDescription: 'Der von Nous verwaltete Cloud-Agent, mit dem sich dieses Gateway verbindet, liefert einen Serverfehler. Von hier aus lässt er sich nicht neu starten — prüfe seinen Status, wechsle zum lokalen Gateway oder hol dir Support.',
+      cloudDownHint: 'Die Buttons unten öffnen das Nous Portal (Instanz-Status und Steuerung) und unseren Discord für Support.',
+      cloudDownCheckPortal: 'Portal-Status prüfen',
+      cloudDownDiscord: 'Hilfe auf Discord holen',
       title: 'Hermes konnte nicht starten',
       description:
         'Das Hintergrund-Gateway ist nicht hochgekommen. Probiere einen der Wiederherstellungsschritte unten. Nichts davon löscht deine Chats oder Einstellungen.',
@@ -250,6 +274,7 @@ export const de = defineLocale({
       view: 'Ansicht'
     },
     actions: {
+      'view.toggleTabStrip': 'Tabs ein-/ausblenden',
       'keybinds.openPanel': 'Tastenkürzel öffnen',
       'nav.commandPalette': 'Befehlspalette öffnen',
       'nav.commandCenter': 'Command Center öffnen',
@@ -451,6 +476,11 @@ export const de = defineLocale({
       system: { label: 'System', description: 'Der OS-Darstellung folgen' }
     },
     appearance: {
+      tabStripTitle: 'Tab-Leiste',
+      tabStripDesc: 'Zeigt Tabs über einer Zone an. Auto blendet sie aus, wenn eine Zone nur ein Pane enthält.',
+      tabStripAuto: 'Auto',
+      tabStripAlways: 'Immer',
+      tabStripNever: 'Nie',
       title: 'Darstellung',
       intro:
         'Dies sind reine Desktop-Anzeigeeinstellungen. Der Modus steuert die Helligkeit; das Theme steuert die Akzentfarben und die Gestaltung der Chat-Oberfläche.',
@@ -568,6 +598,11 @@ export const de = defineLocale({
       }
     },
     fieldLabels: defineFieldCopy({
+      desktop: {
+        repoScanEnabled: 'Automatische Repository-Erkennung',
+        repoScanRoots: 'Wurzelordner für die Repository-Erkennung',
+        repoScanExcludePaths: 'Ausgeschlossene Repository-Pfade',
+      },
       model: 'Standard-Modell',
       modelContextLength: 'Kontextfenster',
       fallbackProviders: 'Fallback-Modelle',
@@ -628,6 +663,7 @@ export const de = defineLocale({
         autoTts: 'Antworten vorlesen'
       },
       stt: {
+        echoTranscripts: 'Transkripte spiegeln',
         enabled: 'Spracherkennung',
         provider: 'Spracherkennungs-Provider',
         local: {
@@ -651,6 +687,10 @@ export const de = defineLocale({
         }
       },
       tts: {
+        deepinfra: {
+          model: 'DeepInfra-TTS-Modell',
+          voice: 'DeepInfra-Stimme',
+        },
         provider: 'Text-To-Speech-Provider',
         edge: {
           voice: 'Edge-Stimme'
@@ -664,6 +704,11 @@ export const de = defineLocale({
           modelId: 'ElevenLabs-Modell'
         },
         xai: {
+          speed: 'xAI-Wiedergabegeschwindigkeit',
+          autoSpeechTags: 'xAI-Sprach-Tags automatisch setzen',
+          optimizeStreamingLatency: 'xAI-Streaming-Latenz-Optimierung',
+          sampleRate: 'xAI-Samplerate',
+          bitRate: 'xAI-Bitrate',
           voiceId: 'xAI-(Grok)-Stimme',
           language: 'xAI-Sprache'
         },
@@ -720,6 +765,11 @@ export const de = defineLocale({
       }
     }),
     fieldDescriptions: defineFieldCopy({
+      desktop: {
+        repoScanEnabled: 'Lokale Ordner nach Git-Repositories durchsuchen, um sie unter Projekte anzuzeigen.',
+        repoScanRoots: 'Ordner, die durchsucht werden. Leer lassen, um dein Home-Verzeichnis zu durchsuchen.',
+        repoScanExcludePaths: 'Ordner samt Unterordnern, die bei der Repository-Erkennung übersprungen werden.',
+      },
       model: 'Wird für neue Chats verwendet, sofern du in der Eingabe kein anderes Modell wählst.',
       modelContextLength: 'Auf 0 lassen, um das erkannte Kontextfenster des gewählten Modells zu nutzen.',
       fallbackProviders: 'Backup-Einträge provider:model, die versucht werden, falls das Standard-Modell fehlschlägt.',
@@ -770,6 +820,11 @@ export const de = defineLocale({
       },
       tts: {
         xai: {
+          speed: 'Wiedergabegeschwindigkeit. 0.7 = langsamer, 1.0 = normal, 1.5 = schneller.',
+          autoSpeechTags: 'Ein LLM fügt vor der Synthese ausdrucksstarke Audio-Tags ([laughing], [sighs]) in den Text ein.',
+          optimizeStreamingLatency: 'Abwägung zwischen Latenz und Qualität. 0 = beste Qualität, 2 = niedrigste Latenz.',
+          sampleRate: 'Audio-Samplerate in Hz. Höher = bessere Qualität, größere Dateien.',
+          bitRate: 'MP3-Bitrate in bps. Gilt nur, wenn der Codec mp3 ist.',
           voiceId: 'xAI-Voice-ID (z. B. eve) oder eine eigene Voice-ID.',
           language: 'Gesprochener Sprachcode, z. B. en.'
         },
@@ -778,6 +833,7 @@ export const de = defineLocale({
         }
       },
       stt: {
+        echoTranscripts: 'Das rohe 🎙️-Transkript von Sprachnachrichten zurück in den Chat posten.',
         enabled: 'Lokale oder provider-gestützte Sprachtranskription aktivieren.',
         elevenlabs: {
           languageCode: 'Optionaler ISO-639-3-Sprachcode. Leer lässt ElevenLabs automatisch erkennen.'
@@ -1931,6 +1987,34 @@ export const de = defineLocale({
   },
 
   profiles: {
+    remoteOverride: {
+      menuItem: 'Mit einem Remote-Host verbinden…',
+      badge: (host) => `Läuft auf ${host}`,
+      title: (profile) => `${profile} mit einem Remote-Host verbinden`,
+      description: 'Sitzungen in diesem Profil laufen auf dem Remote-Hermes, auf den du sie zeigen lässt, statt auf diesem Rechner.',
+      urlLabel: 'Remote-Adresse',
+      urlPlaceholder: 'https://hermes.example.com',
+      urlInvalid: 'Gib eine vollständige Adresse an, die mit http:// oder https:// beginnt',
+      tokenLabel: 'Zugriffs-Token',
+      tokenPlaceholder: 'Remote-Sitzungs-Token einfügen',
+      tokenSavedHint: 'Es ist bereits ein Token gespeichert. Leer lassen, um es zu behalten.',
+      plainTextOptIn: 'Dieser Rechner hat keinen sicheren Schlüsselspeicher, das Token würde also unverschlüsselt auf der Festplatte liegen. Trotzdem speichern.',
+      collisionWarning: (label) => `Ein Gateway namens „${label}“ existiert bereits in den Einstellungen. Diese Profil-Verbindung ist davon getrennt und ändert daran nichts.`,
+      confirmTitle: 'Dieses Profil mit einem Remote-Host verbinden?',
+      confirmNote: (profile, host) => `Neue Chats in ${profile} laufen auf ${host}. Dieser Rechner führt dort Befehle aus und liest dort Dateien, nicht auf diesem hier. Verbinde dich nur mit einem Host, dem du vertraust.`,
+      confirmBack: 'Zurück',
+      connect: 'Verbinden',
+      connecting: 'Verbinde…',
+      disconnect: 'Remote-Verbindung entfernen',
+      savedTitle: 'Profil verbunden',
+      savedMessage: (profile, host) => `${profile} läuft jetzt auf ${host}`,
+      removedTitle: 'Remote-Verbindung entfernt',
+      removedMessage: (profile) => `${profile} läuft jetzt auf diesem Rechner`,
+      removeFailed: 'Die Remote-Verbindung konnte nicht entfernt werden',
+      authFailedTitle: 'Remote-Host hat das gespeicherte Token abgelehnt',
+      authFailedMessage: (profile, host) => `${host} hat das für ${profile} gespeicherte Token abgelehnt. Möglicherweise wurde es auf der Remote-Seite geändert.`,
+      updateToken: 'Neues Token eingeben…',
+    },
     close: 'Profile schließen',
     nameHint:
       'Kleinbuchstaben, Ziffern, Bindestriche und Unterstriche. Muss mit einem Buchstaben oder einer Ziffer beginnen.',
@@ -3171,6 +3255,24 @@ export const de = defineLocale({
 
   assistant: {
     thread: {
+      errorLayers: {
+        auth: 'Authentifizierungsfehler',
+        billing: 'Kein Guthaben mehr',
+        disk: 'Festplatte voll',
+        endpoint: 'Fehler beim benutzerdefinierten Endpunkt',
+        gateway: 'Gateway-Fehler',
+        generic: 'Turn fehlgeschlagen',
+        provider: 'Provider-Fehler',
+        runtime: 'Lokaler Laufzeitfehler',
+        streaming: 'Fehler bei der Streaming-Verbindung',
+      },
+      errorRetry: 'Erneut versuchen',
+      errorSwitchProvider: 'Provider wechseln',
+      errorOpenLogs: 'Logs öffnen',
+      errorOpenLogsFailed: 'Der Logs-Ordner konnte nicht geöffnet werden',
+      errorOpenDesktopLogs: 'Desktop-Logs öffnen',
+      errorCopyDiagnostics: 'Fehlerdetails kopieren',
+      errorSendDiagnostics: 'Diagnose senden',
       loadingSession: 'Lade Sitzung',
       showEarlier: 'Frühere Nachrichten anzeigen',
       loadingResponse: 'Hermes lädt eine Antwort',

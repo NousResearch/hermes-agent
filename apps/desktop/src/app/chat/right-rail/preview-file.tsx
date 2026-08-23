@@ -802,7 +802,13 @@ export function LocalFilePreview({
     setConflict(false)
     draftRef.current = ''
     baselineRef.current = ''
-  }, [filePath, reloadKey])
+    // Keyed on file IDENTITY only. The global reload tick (workspace events,
+    // unrelated saves elsewhere) must NOT reset an in-progress edit: the load
+    // effect below deliberately renders the editor before its own loading
+    // branch so background re-reads can't drop the draft — a reloadKey here
+    // would undo exactly that protection (found via E2E: saving one file
+    // killed a draft being typed in another preview tab).
+  }, [filePath])
 
   // In source mode HTML files take the same path as plain text files; the
   // pane owns the rendered (webview) mode. `previewKind === 'binary'` arrives

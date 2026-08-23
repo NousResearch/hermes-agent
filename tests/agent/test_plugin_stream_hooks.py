@@ -164,6 +164,66 @@ def test_stream_hook_queue_isolated_per_consumer(monkeypatch):
     assert slow_delivered == ["first", "third"]
 
 
+def test_observer_dispatcher_shutdown_has_bounded_join(monkeypatch):
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_consumer(**_kwargs):
+        started.set()
+        release.wait(timeout=1.0)
+
+    monkeypatch.setattr(
+        "hermes_cli.plugins.iter_hook_callbacks",
+        _callbacks({"memory_prefetch": [blocked_consumer]}),
+    )
+
+    assert enqueue_plugin_observer_hook("memory_prefetch", turn_id="turn") is True
+    assert started.wait(timeout=1.0)
+    started_at = time.monotonic()
+    shutdown_plugin_observer_dispatcher(timeout=0.01)
+    elapsed = time.monotonic() - started_at
+
+    assert elapsed < 0.2
+    release.set()
+
+
+def test_observer_dispatcher_shutdown_drains_pending_events(monkeypatch):
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    delivered = []
+    first_started = threading.Event()
+    release_first = threading.Event()
+
+    def consumer(**kwargs):
+        delivered.append(kwargs["event_id"])
+        if kwargs["event_id"] == "first":
+            first_started.set()
+            release_first.wait(timeout=1.0)
+
+    monkeypatch.setattr(
+        "hermes_cli.plugins.iter_hook_callbacks",
+        _callbacks({"memory_prefetch": [consumer]}),
+    )
+
+    assert enqueue_plugin_observer_hook("memory_prefetch", event_id="first") is True
+    assert first_started.wait(timeout=1.0)
+    assert enqueue_plugin_observer_hook("memory_prefetch", event_id="second") is True
+    release_first.set()
+    shutdown_plugin_observer_dispatcher(timeout=1.0)
+
+    assert delivered == ["first", "second"]
+
+
 def test_reasoning_stream_delta_plugin_hook_is_opt_in(monkeypatch):
     from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
 

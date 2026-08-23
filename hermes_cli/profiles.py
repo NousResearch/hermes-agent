@@ -2154,13 +2154,14 @@ def _profile_export_directory() -> Path:
     for candidate in candidates:
         if not _inside_git_checkout(candidate):
             return candidate
-    logger.warning(
-        "Every managed export destination resolves inside a Git checkout; "
-        "falling back to %s. Pass an explicit output path to avoid staging "
-        "profile archives in a source tree.",
-        export_dir,
+    # Fail closed: writing a secret-bearing archive into a source tree is the
+    # incident this helper exists to prevent (#92457). A warning on stderr
+    # would not stop a scripted export from recreating it.
+    raise ValueError(
+        "No safe automatic export destination: every candidate directory is "
+        "inside a Git checkout. Pass an explicit output path outside the "
+        "checkout (e.g. -o /path/outside/repo/profile.tar.gz)."
     )
-    return export_dir
 
 
 def get_profile_export_path(name: str, *, timestamp: Optional[str] = None) -> Path:

@@ -111,6 +111,5 @@ plans/
 /log.txt
 /sqlite_leak_fix.png
 /*.png.bak
-/default.tar.gz
 *.tar.gz
 *.tgz

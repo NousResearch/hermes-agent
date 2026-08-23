@@ -172,3 +172,43 @@ async def test_profile_export_api_uses_the_shared_managed_destination(
     result = await router_mod.export_profile_endpoint("default", ProfileExport())
 
     assert result == {"ok": True, "archive": str(managed)}
+
+
+def test_cwd_in_unrelated_checkout_does_not_prove_safety(
+    tmp_path, monkeypatch, profiles
+):
+    """cwd inside unrelated checkout A must not stand in for the safety proof
+    of a HERMES_HOME inside checkout B."""
+    checkout_b = tmp_path / "checkout-b"
+    checkout_b.mkdir()
+    (checkout_b / ".git").mkdir()
+    checkout_a = tmp_path / "checkout-a"
+    checkout_a.mkdir()
+    (checkout_a / ".git").write_text("gitdir: ../git\n", encoding="utf-8")
+    monkeypatch.chdir(checkout_a)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: checkout_b)
+
+    result = profiles.get_profile_export_path("default", timestamp="20260823-120000")
+
+    assert not result.resolve().is_relative_to(checkout_b.resolve())
+    assert not result.resolve().is_relative_to(checkout_a.resolve())
+
+
+def test_every_candidate_inside_a_checkout_fails_closed(
+    tmp_path, monkeypatch, profiles
+):
+    """When home, sibling store, and tempdir all resolve inside checkouts the
+    helper must refuse — a warning would not stop a scripted export from
+    recreating the #92457 incident artifact."""
+    import tempfile
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / ".git").mkdir()
+    monkeypatch.setattr(Path, "home", lambda: checkout / "home")
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: checkout)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(checkout / "tmp"))
+
+    with pytest.raises(ValueError, match="No safe automatic export destination"):
+        profiles.get_profile_export_path("default")

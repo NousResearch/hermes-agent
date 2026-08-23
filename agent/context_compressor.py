@@ -5699,22 +5699,14 @@ This compaction should PRIORITISE preserving all information related to the focu
     def _tool_call_id_variants(tc) -> set:
         """Return every id variant a tool result might reference *tc* by.
 
-        A tool result's ``tool_call_id`` may be keyed on either ``id`` or
-        ``call_id`` depending on which code path built it — in the Codex
-        Responses API format they are distinct (``id`` is the ``fc_...``
-        response-item id, ``call_id`` is the ``call_...`` function-call id).
-        Matching on a single value (the old ``call_id || id`` precedence)
-        misclassified a genuinely matching pair as orphaned whenever the
-        result used the field that precedence didn't pick, dropping BOTH the
-        valid result and its tool_call. Registering the superset of both ids
-        is the same fix #58168 applied to ``repair_message_sequence``'s
-        known-id set.
+        Thin forwarder — the policy owner is
+        ``agent.message_sanitization.tool_call_id_variants``, which also
+        expands ``response_item_id`` and composite ``call|item`` bridge
+        spellings (#63000), so the compressor's pairing tolerance matches
+        the pre-call sanitizer's exactly and the two can never drift.
         """
-        if isinstance(tc, dict):
-            get = tc.get
-        else:
-            get = lambda key: getattr(tc, key, None)
-        return {v for v in (get("id"), get("call_id")) if v}
+        from agent.message_sanitization import tool_call_id_variants
+        return set(tool_call_id_variants(tc))
 
     def _sanitize_tool_pairs(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs after compression.

@@ -439,22 +439,47 @@ def _dm_dir() -> Path:
     return path
 
 
-def _sweep_stale_dm_files(*, now: float | None = None) -> None:
-    """Best-effort cleanup for files orphaned before their runner started."""
-    cutoff = (time.time() if now is None else now) - _DM_STALE_SECONDS
-    # Include the legacy temp-root location so upgrades clean files created by
-    # versions predating the dedicated directory.
-    locations = ((Path(tempfile.gettempdir()), "hermes-dm-*.txt"), (_dm_dir(), "*.txt"))
+def cleanup_bot_dm_cache(
+    max_age_hours: float = _DM_STALE_SECONDS / 3600, *, now: float | None = None
+) -> int:
+    """Delete orphaned DM payload files older than *max_age_hours*.
+
+    Same contract as the other ``cleanup_*_cache`` helpers — returns the
+    number of files removed — so the gateway housekeeping loop can prune
+    this cache on the same hourly cadence as the media caches, even on
+    installs that never send another DM (the in-band sweep in
+    ``_write_dm_file`` only runs when a DM is written).
+    """
+    cutoff = (time.time() if now is None else now) - max_age_hours * 3600
+    removed = 0
+    # Include the legacy temp-root locations so upgrades clean files created
+    # by versions predating the dedicated directory.
+    temp_root = Path(tempfile.gettempdir())
+    locations: list[tuple[Path, str]] = [
+        (temp_root, "hermes-dm-*.txt"),
+        (temp_root, "hermes-relay-dm-*.txt"),
+    ]
+    try:
+        locations.append((_dm_dir(), "*.txt"))
+    except OSError:
+        pass
     for directory, pattern in locations:
         try:
             for candidate in directory.glob(pattern):
                 try:
                     if candidate.is_file() and candidate.stat().st_mtime < cutoff:
                         candidate.unlink()
+                        removed += 1
                 except OSError:
                     pass
         except OSError:
             pass
+    return removed
+
+
+def _sweep_stale_dm_files(*, now: float | None = None) -> None:
+    """Best-effort cleanup for files orphaned before their runner started."""
+    cleanup_bot_dm_cache(now=now)
 
 
 def _write_dm_file(content: str) -> str:

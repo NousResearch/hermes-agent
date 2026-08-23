@@ -205,6 +205,7 @@ def test_close_all_rejects_and_closes_inflight_success() -> None:
     entered = threading.Event()
     release = threading.Event()
     handle = object()
+    replacement = object()
     closed: list[object] = []
     result: list[object | None] = []
 
@@ -217,13 +218,14 @@ def test_close_all_rejects_and_closes_inflight_success() -> None:
     thread.start()
     assert entered.wait(timeout=5)
     cache.close_all(closed.append)
+    assert cache.get(path, lambda: replacement) is replacement
     release.set()
     thread.join(timeout=5)
 
     assert not thread.is_alive()
     assert result == [None]
     assert closed == [handle]
-    assert cache.status_for(path) == "unknown"
+    assert cache.get(path, lambda: object()) is replacement
 
 
 def test_close_all_preserves_inflight_failure() -> None:
@@ -233,6 +235,7 @@ def test_close_all_preserves_inflight_failure() -> None:
     release = threading.Event()
     errors: list[BaseException] = []
     failure = OSError("original open failure")
+    replacement = object()
 
     def opener():
         entered.set()
@@ -249,12 +252,13 @@ def test_close_all_preserves_inflight_failure() -> None:
     thread.start()
     assert entered.wait(timeout=5)
     cache.close_all(lambda handle: None)
+    assert cache.get(path, lambda: replacement) is replacement
     release.set()
     thread.join(timeout=5)
 
     assert not thread.is_alive()
     assert errors == [failure]
-    assert cache.status_for(path) == "unknown"
+    assert cache.get(path, lambda: object()) is replacement
 
 
 def test_recovered_db_rows_survive_fallback_structural_save(monkeypatch, tmp_path) -> None:

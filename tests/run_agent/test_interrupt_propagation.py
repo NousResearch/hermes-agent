@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import MagicMock
 
-from tools.interrupt import set_interrupt, is_interrupted
+from tools.interrupt import get_interrupt_reason, set_interrupt, is_interrupted
 
 
 class TestInterruptPropagationToChild(unittest.TestCase):
@@ -74,6 +74,23 @@ class TestInterruptPropagationToChild(unittest.TestCase):
 
         assert agent._interrupt_requested is True
         assert not agent._hard_interrupt_requested.is_set()
+
+    def test_message_interrupt_records_source_without_user_text(self):
+        agent = self._make_bare_agent()
+        agent._execution_thread_id = threading.current_thread().ident
+
+        agent.interrupt("private follow-up text")
+
+        assert get_interrupt_reason() == "user sent a new message"
+        assert "private follow-up text" not in get_interrupt_reason()
+
+    def test_hard_interrupt_records_control_reason(self):
+        agent = self._make_bare_agent()
+        agent._execution_thread_id = threading.current_thread().ident
+
+        agent.hard_interrupt("superseded by a new live turn")
+
+        assert get_interrupt_reason() == "superseded by a new live turn"
 
     def test_active_turn_redirect_does_not_set_hard_cancel(self):
         agent = self._make_bare_agent()

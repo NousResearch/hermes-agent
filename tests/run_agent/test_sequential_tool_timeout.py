@@ -215,6 +215,49 @@ def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkey
     ]
 
 
+def test_sequential_tool_interrupt_reports_hard_cancel_reason(tmp_path, monkeypatch):
+    agent = _make_agent(tmp_path)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    terminal_events: list[dict] = []
+
+    def _dispatch(*_args, **_kwargs):
+        first_started.set()
+        release_first.wait()
+        return "late result"
+
+    def _interrupt():
+        assert first_started.wait(timeout=5)
+        agent.hard_interrupt("superseded by a new live turn")
+
+    interrupter = threading.Thread(target=_interrupt, daemon=True)
+    interrupter.start()
+    messages: list[dict] = []
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "30")
+
+    try:
+        with (
+            patch("run_agent.handle_function_call", side_effect=_dispatch),
+            patch(
+                "agent.tool_executor._emit_terminal_post_tool_call",
+                side_effect=lambda *_args, **kwargs: terminal_events.append(kwargs),
+            ),
+        ):
+            execute_tool_calls_sequential(
+                agent,
+                SimpleNamespace(tool_calls=[_tool_call("hung")]),
+                messages,
+                "task",
+            )
+    finally:
+        release_first.set()
+        interrupter.join(timeout=2)
+
+    assert "superseded by a new live turn" in messages[0]["content"]
+    assert "user interrupt" not in messages[0]["content"]
+    assert terminal_events[0]["error_type"] == "tool_interrupted"
+
+
 @pytest.mark.parametrize(
     "clarify_timeout",
     [resolve_clarify_timeout({}), 0],

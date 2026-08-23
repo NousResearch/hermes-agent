@@ -905,7 +905,11 @@ def _run_sequential_tool_execution_middleware(
             # tids, but the worker may have registered after the fan-out ran.
             for tid in worker_tid:
                 try:
-                    _ra()._set_interrupt(True, tid)
+                    _ra()._set_interrupt(
+                        True,
+                        tid,
+                        reason=getattr(agent, "_tool_interrupt_reason", None),
+                    )
                 except Exception:
                     pass
             # Give a cooperative tool a moment to notice its per-thread
@@ -916,13 +920,17 @@ def _run_sequential_tool_execution_middleware(
                 return future.result()
             timed_out = True  # reuse the abandon-shutdown path in finally
             future.cancel()
+            interrupt_reason = (
+                getattr(agent, "_tool_interrupt_reason", None)
+                or "interrupt requested"
+            )
             message = (
-                f"[Tool execution cancelled — {function_name} was abandoned "
-                "after user interrupt]"
+                f"[Tool execution cancelled — {function_name} was abandoned: "
+                f"{interrupt_reason}]"
             )
             logger.info(
-                "sequential tool %s abandoned after user interrupt (%.1fs elapsed)",
-                function_name, time.monotonic() - started,
+                "sequential tool %s abandoned due to %s (%.1fs elapsed)",
+                function_name, interrupt_reason, time.monotonic() - started,
             )
             trace = middleware_trace if middleware_trace is not None else []
             _emit_terminal_post_tool_call(
@@ -934,8 +942,8 @@ def _run_sequential_tool_execution_middleware(
                 tool_call_id=tool_call_id,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 status="cancelled",
-                error_type="keyboard_interrupt",
-                error_message="Tool execution cancelled by user interrupt",
+                error_type="tool_interrupted",
+                error_message=f"Tool execution cancelled: {interrupt_reason}",
                 middleware_trace=list(trace),
             )
             return _ManagedToolResult(
@@ -1313,7 +1321,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # the tool returns True on the next poll.
         if agent._interrupt_requested:
             try:
-                _ra()._set_interrupt(True, _worker_tid)
+                _ra()._set_interrupt(
+                    True,
+                    _worker_tid,
+                    reason=getattr(agent, "_tool_interrupt_reason", None),
+                )
             except Exception:
                 pass
         # Set the activity callback on THIS worker thread so

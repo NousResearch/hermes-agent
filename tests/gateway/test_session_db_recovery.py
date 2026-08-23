@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from unittest.mock import patch
@@ -196,3 +197,161 @@ def test_non_cacheable_guard_is_retried_immediately() -> None:
             pass
     assert calls == 2
     assert cache.status_for(path) == "unknown"
+
+
+def test_close_all_rejects_and_closes_inflight_success() -> None:
+    cache = RecoverableHandleCache()
+    path = Path("state.db")
+    entered = threading.Event()
+    release = threading.Event()
+    handle = object()
+    closed: list[object] = []
+    result: list[object | None] = []
+
+    def opener():
+        entered.set()
+        assert release.wait(timeout=5)
+        return handle
+
+    thread = threading.Thread(target=lambda: result.append(cache.get(path, opener)))
+    thread.start()
+    assert entered.wait(timeout=5)
+    cache.close_all(closed.append)
+    release.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert result == [None]
+    assert closed == [handle]
+    assert cache.status_for(path) == "unknown"
+
+
+def test_close_all_preserves_inflight_failure() -> None:
+    cache = RecoverableHandleCache()
+    path = Path("state.db")
+    entered = threading.Event()
+    release = threading.Event()
+    errors: list[BaseException] = []
+    failure = OSError("original open failure")
+
+    def opener():
+        entered.set()
+        assert release.wait(timeout=5)
+        raise failure
+
+    def run() -> None:
+        try:
+            cache.get(path, opener, raise_on_error=True)
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert entered.wait(timeout=5)
+    cache.close_all(lambda handle: None)
+    release.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert errors == [failure]
+    assert cache.status_for(path) == "unknown"
+
+
+def test_recovered_db_rows_survive_fallback_structural_save(monkeypatch, tmp_path) -> None:
+    import hermes_state
+    from gateway.config import GatewayConfig, Platform
+    from gateway.session import SessionEntry, SessionSource, SessionStore, _now
+
+    db_path = tmp_path / "state.db"
+    sessions_dir = tmp_path / "sessions"
+    scope = str(sessions_dir.resolve())
+    now = _now()
+    durable = SessionEntry(
+        session_key="agent:main:telegram:dm:durable",
+        session_id="durable-session",
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        created_at=now,
+        updated_at=now,
+        origin=SessionSource(platform=Platform.TELEGRAM, chat_id="durable"),
+    )
+    deleted = SessionEntry(
+        session_key="agent:main:telegram:dm:deleted",
+        session_id="deleted-session",
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        created_at=now,
+        updated_at=now,
+        origin=SessionSource(platform=Platform.TELEGRAM, chat_id="deleted"),
+    )
+    changed = SessionEntry(
+        session_key="agent:main:telegram:dm:changed",
+        session_id="changed-before-recovery",
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        created_at=now,
+        updated_at=now,
+        origin=SessionSource(platform=Platform.TELEGRAM, chat_id="changed"),
+    )
+    database = hermes_state.SessionDB(db_path=db_path)
+    for entry in (durable, deleted, changed):
+        database.save_gateway_routing_entry(
+            entry.session_key,
+            json.dumps(entry.to_dict()),
+            scope=scope,
+        )
+    database.close()
+    sessions_dir.mkdir()
+    (sessions_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                deleted.session_key: deleted.to_dict(),
+                changed.session_key: changed.to_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    real_session_db = hermes_state.SessionDB
+    calls = 0
+
+    def fail_once_session_db(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("temporary open failure")
+        return real_session_db(db_path=db_path)
+
+    monkeypatch.setattr(hermes_state, "SessionDB", fail_once_session_db)
+    monkeypatch.setattr(hermes_state, "_default_db_path", lambda: db_path)
+    store = SessionStore(
+        sessions_dir,
+        GatewayConfig(sessions_dir=sessions_dir, write_sessions_json=False),
+    )
+    store._ensure_loaded()
+    store._db_handle_cache._unavailable[db_path].next_retry_at = 0
+
+    current = SessionEntry(
+        session_key="agent:main:telegram:dm:current",
+        session_id="current-session",
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        created_at=now,
+        updated_at=now,
+        origin=SessionSource(platform=Platform.TELEGRAM, chat_id="current"),
+    )
+    with store._lock:
+        store._entries.pop(deleted.session_key)
+        store._entries[changed.session_key].session_id = "changed-during-fallback"
+        store._entries[current.session_key] = current
+        store._save()
+
+    rows = store._db.load_gateway_routing_entries(scope=scope)
+    assert set(rows) == {durable.session_key, changed.session_key, current.session_key}
+    assert store._entries[durable.session_key].session_id == durable.session_id
+    assert (
+        json.loads(rows[changed.session_key])["session_id"]
+        == "changed-during-fallback"
+    )
+    assert store._entries[current.session_key].session_id == current.session_id
+    store.close_all_db_handles()

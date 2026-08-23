@@ -74,6 +74,8 @@ class RecoverableHandleCache:
         )
         self._unavailable: dict[Path, _Unavailable] = {}
         self._health_source = _HealthSource()
+        self._generation = 0
+        self._close_rejected: Callable[[Any], None] | None = None
 
     def get(
         self,
@@ -96,6 +98,7 @@ class RecoverableHandleCache:
                 return None
             unavailable.in_flight = True
             was_unavailable = unavailable.failures > 0
+            generation = self._generation
 
         if was_unavailable:
             _publish_health(self._health_source, path, "retrying")
@@ -105,26 +108,51 @@ class RecoverableHandleCache:
         except Exception as exc:
             if non_cacheable is not None and non_cacheable(exc):
                 with self.lock:
-                    self._unavailable.pop(path, None)
+                    if (
+                        generation == self._generation
+                        and self._unavailable.get(path) is unavailable
+                    ):
+                        self._unavailable.pop(path, None)
                 raise
             with self.lock:
-                unavailable = self._unavailable[path]
-                unavailable.failures += 1
-                delay = min(
-                    self._initial_retry_delay
-                    * (2 ** min(unavailable.failures - 1, 30)),
-                    self._max_retry_delay,
-                )
-                unavailable.next_retry_at = self._clock() + delay
-                unavailable.in_flight = False
+                current = self._unavailable.get(path)
+                stale = generation != self._generation or current is not unavailable
+                if not stale:
+                    unavailable.failures += 1
+                    delay = min(
+                        self._initial_retry_delay
+                        * (2 ** min(unavailable.failures - 1, 30)),
+                        self._max_retry_delay,
+                    )
+                    unavailable.next_retry_at = self._clock() + delay
+                    unavailable.in_flight = False
+            if stale:
+                if raise_on_error:
+                    raise
+                return None
             _publish_health(self._health_source, path, "unavailable")
             if raise_on_error:
                 raise
             return None
 
         with self.lock:
-            self.handles[path] = handle
-            self._unavailable.pop(path, None)
+            stale = (
+                generation != self._generation
+                or self._unavailable.get(path) is not unavailable
+            )
+            if stale:
+                close_rejected = self._close_rejected
+            else:
+                self.handles[path] = handle
+                self._unavailable.pop(path, None)
+                close_rejected = None
+        if stale:
+            if close_rejected is not None:
+                try:
+                    close_rejected(handle)
+                except Exception:
+                    pass
+            return None
         _publish_health(self._health_source, path, "ok")
         if was_unavailable and on_recovered is not None:
             on_recovered()
@@ -133,6 +161,8 @@ class RecoverableHandleCache:
     def close_all(self, close: Callable[[Any], None]) -> None:
         """Drain cached handles under the lock and close them outside it."""
         with self.lock:
+            self._generation += 1
+            self._close_rejected = close
             handles = list(self.handles.values())
             paths = set(self.handles) | set(self._unavailable)
             self.handles.clear()

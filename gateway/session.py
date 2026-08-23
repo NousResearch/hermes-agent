@@ -1256,6 +1256,10 @@ class SessionStore:
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
+        # A fallback-only initial load must be reconciled with state.db after
+        # the handle recovers, before a whole-index save can replace DB rows.
+        self._routing_db_loaded = False
+        self._routing_fallback_baseline: Optional[Dict[str, Any]] = None
         self._lock = threading.Lock()
         # Serialize whole-index persistence without holding ``_lock`` across
         # SQLite / fsync. Each writer snapshots the latest state only after
@@ -1456,6 +1460,7 @@ class SessionStore:
         the DB doesn't have, then persisted to the DB on the next _save).
         """
         if self._loaded:
+            self._reconcile_recovered_routing_locked()
             return
 
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -1464,6 +1469,7 @@ class SessionStore:
         # partially-initialized stores without __init__ (same pattern as
         # _prune_stale_sessions_locked).
         db_had_entries = False
+        db_load_succeeded = False
         _db = getattr(self, "_db", None)
         if _db:
             loader = getattr(_db, "load_gateway_routing_entries", None)
@@ -1479,6 +1485,7 @@ class SessionStore:
                                 "Skipping invalid routing entry %r: %s", key, e
                             )
                     db_had_entries = bool(self._entries)
+                    db_load_succeeded = True
                 except Exception as e:
                     logger.warning(
                         "gateway.session: state.db routing load failed: %s", e
@@ -1528,6 +1535,12 @@ class SessionStore:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 
         self._loaded = True
+        self._routing_db_loaded = db_load_succeeded
+        self._routing_fallback_baseline = (
+            None
+            if db_load_succeeded
+            else {key: entry.to_dict() for key, entry in self._entries.items()}
+        )
 
         # Prune any sessions.json entries that point to sessions already ended
         # in state.db. A hard gateway crash (exit code 1) skips the graceful
@@ -1641,8 +1654,52 @@ class SessionStore:
         self._routing_generation = getattr(self, "_routing_generation", 0) + 1
         return self._routing_generation
 
+    def _reconcile_recovered_routing_locked(self) -> None:
+        """Merge authoritative rows after a fallback-only startup load."""
+        baseline = getattr(self, "_routing_fallback_baseline", None)
+        if getattr(self, "_routing_db_loaded", False) or baseline is None:
+            return
+
+        db = getattr(self, "_db", None)
+        loader = getattr(db, "load_gateway_routing_entries", None) if db else None
+        if not callable(loader):
+            return
+        try:
+            durable = loader(scope=self._routing_scope())
+        except Exception as exc:
+            logger.warning(
+                "gateway.session: recovered state.db routing load failed: %s", exc
+            )
+            return
+
+        current = {key: entry.to_dict() for key, entry in self._entries.items()}
+        for key, entry_json in durable.items():
+            try:
+                entry_data = json.loads(entry_json)
+                if not isinstance(entry_data, dict):
+                    continue
+                durable_entry = SessionEntry.from_dict(entry_data)
+            except (ValueError, KeyError, TypeError) as exc:
+                logger.warning("Skipping invalid routing entry %r: %s", key, exc)
+                continue
+
+            if key not in baseline:
+                # A key created while on fallback wins over a DB-only key;
+                # otherwise restore the authoritative row that fallback never saw.
+                self._entries.setdefault(key, durable_entry)
+            elif key not in current:
+                # The key was loaded from fallback and deliberately removed.
+                continue
+            elif current[key] == baseline[key]:
+                # Unchanged fallback data yields to the authoritative DB copy.
+                self._entries[key] = durable_entry
+
+        self._routing_db_loaded = True
+        self._routing_fallback_baseline = None
+
     def _snapshot_routing_locked(self) -> tuple[Dict[str, Any], int]:
         """Capture immutable routing data and a monotonic generation."""
+        self._reconcile_recovered_routing_locked()
         return (
             {key: entry.to_dict() for key, entry in self._entries.items()},
             self._next_routing_generation_locked(),

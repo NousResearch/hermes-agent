@@ -19316,6 +19316,20 @@ def start_server(
     # ping at 20/20 to detect it promptly and stay under the tunnel's idle
     # window.
     _is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    # Non-loopback ping cadence is config-driven (dashboard.ws_ping_interval /
+    # dashboard.ws_ping_timeout, #79635); the 20/20 defaults keep the
+    # Cloudflare-Tunnel-friendly behaviour when unset or invalid.
+    try:
+        _dash_cfg = load_config().get("dashboard") or {}
+    except Exception:
+        _dash_cfg = {}
+
+    def _ws_ping_setting(key: str, default: float = 20.0) -> float:
+        try:
+            return float(_dash_cfg.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         # proxy_headers defaults to False so _ws_client_is_allowed sees
@@ -19330,8 +19344,8 @@ def start_server(
         # disables the protocol ping (None) so an event-loop stall can never
         # trigger a false disconnect; a genuinely dead local client is still
         # reaped via the WebSocketDisconnect → disconnect/reap path.
-        ws_ping_interval=None if _is_loopback else 20.0,
-        ws_ping_timeout=None if _is_loopback else 20.0,
+        ws_ping_interval=None if _is_loopback else _ws_ping_setting("ws_ping_interval"),
+        ws_ping_timeout=None if _is_loopback else _ws_ping_setting("ws_ping_timeout"),
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     )
     server = uvicorn.Server(config)

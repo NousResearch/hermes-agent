@@ -180,13 +180,31 @@ _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 # After this grace window, an orphaned WS session is interrupted if it is still
 # running, then reaped once the normal turn-finalization path settles.
 # Set to 0 to disable (park forever, pre-fix behaviour).
-try:
-    _ws_orphan_reap_grace = float(
-        os.environ.get("HERMES_TUI_WS_ORPHAN_REAP_GRACE_S") or "20"
-    )
-except (ValueError, TypeError):
-    _ws_orphan_reap_grace = 20.0
-_WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
+def _resolve_ws_orphan_reap_grace() -> float:
+    """Resolve the WS-orphan reap grace window (seconds).
+
+    Config-driven via ``dashboard.ws_orphan_reap_grace_s`` (#79635); the
+    ``HERMES_TUI_WS_ORPHAN_REAP_GRACE_S`` env var is kept as an internal
+    override for backward compatibility and wins when set.
+    """
+    raw = os.environ.get("HERMES_TUI_WS_ORPHAN_REAP_GRACE_S")
+    if raw is None or not str(raw).strip():
+        try:
+            from hermes_cli.config import load_config
+
+            raw = (load_config().get("dashboard") or {}).get(
+                "ws_orphan_reap_grace_s"
+            )
+        except Exception:
+            raw = None
+    try:
+        grace = float(raw) if raw is not None else 20.0
+    except (ValueError, TypeError):
+        grace = 20.0
+    return max(0.0, grace)
+
+
+_WS_ORPHAN_REAP_GRACE_S = _resolve_ws_orphan_reap_grace()
 _WS_ORPHAN_INTERRUPT_REAP_POLL_S = 1.0
 # Total budget for the interrupt-then-reap poll chain. If an interrupted turn
 # never settles (agent thread hung in a syscall, supervisor lost), each 1s poll

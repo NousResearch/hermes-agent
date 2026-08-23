@@ -1571,6 +1571,18 @@ DEFAULT_CONFIG = {
         # Set this to True to re-enable the surfaces with the understanding
         # that the numbers are a local lower-bound estimate, not billing.
         "show_token_analytics": False,
+        # WebSocket keepalive for the dashboard/desktop web server (#79635).
+        # Applied to NON-loopback binds only: loopback always disables the
+        # protocol ping (see hermes_cli/web_server.py — an event-loop stall
+        # must never kill a healthy local connection). Values are seconds.
+        "ws_ping_interval": 20.0,
+        "ws_ping_timeout": 20.0,
+        # Grace window (seconds) before a WS-orphaned gateway session is
+        # interrupted/reaped after its client disconnects (#79635). The
+        # HERMES_TUI_WS_ORPHAN_REAP_GRACE_S env var remains an internal
+        # override for backward compatibility. 0 disables the reap
+        # (park forever).
+        "ws_orphan_reap_grace_s": 20.0,
         # OAuth gate configuration (engaged when ``--host`` is set and
         # ``--insecure`` is not). The bundled Nous Portal plugin reads
         # both keys at startup; they are the canonical surface for these

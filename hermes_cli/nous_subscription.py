@@ -1073,9 +1073,9 @@ def get_gateway_eligible_tools(
     try:
         account_info = get_nous_portal_account_info(force_fresh=force_fresh)
     except Exception:
-        return [], [], []
+        return [], [], [], []
     if not (account_info and account_info.logged_in and account_info.tool_gateway_entitled):
-        return [], [], []
+        return [], [], [], []
 
     if config is None:
         config = load_config() or {}
@@ -1083,7 +1083,7 @@ def get_gateway_eligible_tools(
     # Quick provider check without the heavy get_nous_subscription_features call
     model_cfg = config.get("model")
     if not isinstance(model_cfg, dict) or str(model_cfg.get("provider") or "").strip().lower() != "nous":
-        return [], [], []
+        return [], [], [], []
 
     direct = _get_gateway_direct_credentials()
 

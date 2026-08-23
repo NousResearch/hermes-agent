@@ -228,6 +228,29 @@ def test_get_gateway_eligible_tools_treats_explicit_backend_as_configured(monkey
     assert "web" not in already_managed
 
 
+def test_get_gateway_eligible_tools_not_entitled_returns_four_empty_lists(monkeypatch):
+    """A logged-in Nous account with no paid access and no free tool pool
+    must fail closed with a 4-tuple, not a 3-tuple — regression for a crash
+    where the early 'not entitled' return still had the pre-refactor arity
+    while the happy path and every caller had moved to 4 values."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=False))
+
+    config = {"model": {"provider": "nous"}}
+    result = ns.get_gateway_eligible_tools(config)
+
+    assert result == ([], [], [], [])
+
+
+def test_prompt_enable_tool_gateway_not_entitled_does_not_crash(monkeypatch):
+    """The unconditional call site in model_setup_flows (no try/except) must
+    not raise when a Nous account is logged in but not entitled to the Tool
+    Gateway (i.e. an ordinary non-paid, non-pool account)."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=False))
+
+    config = {"model": {"provider": "nous"}}
+    assert ns.prompt_enable_tool_gateway(config) == set()
+
+
 def test_prompt_enable_tool_gateway_never_offers_explicit_backend(monkeypatch):
     """The checklist itself must not list (let alone pre-check) a tool with
     an explicit non-nous selection, so it can never be silently overwritten

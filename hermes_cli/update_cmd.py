@@ -1665,7 +1665,13 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
+        # Same third-party UV-env isolation as the main update path (#83914):
+        # a user-level UV_PYTHON_INSTALL_DIR / UV_PYTHON from unrelated
+        # software must not steer which interpreter uv resolves here.
+        from hermes_cli.managed_uv import managed_python_env
+
+        uv_env = managed_python_env()
+        uv_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
         if _m()._is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -6300,7 +6306,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         check=False,
                     )
                 if repair_uv:
-                    repair_env = {**os.environ, "VIRTUAL_ENV": str(_m().PROJECT_ROOT / "venv")}
+                    # Isolated from third-party UV env vars (#83914), same as
+                    # the main-path and git-path dependency syncs.
+                    from hermes_cli.managed_uv import managed_python_env
+
+                    repair_env = managed_python_env()
+                    repair_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
                     _m()._install_python_dependencies_with_optional_fallback(
                         [repair_uv, "pip"], env=repair_env, group="all"
                     )

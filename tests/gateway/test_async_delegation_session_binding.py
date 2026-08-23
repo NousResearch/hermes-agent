@@ -118,6 +118,108 @@ class TestGatewayPinningFailsClosed:
         )
 
     @pytest.mark.asyncio
+    async def test_live_delegate_child_resolves_to_parent_without_rebinding_route(self):
+        current = self._entry("sess_parent")
+        runner = self._make_runner(
+            {
+                "sess_parent": {"id": "sess_parent", "ended_at": None},
+                "sess_child": {
+                    "id": "sess_child",
+                    "ended_at": None,
+                    "model_config": {"_delegate_from": "sess_parent"},
+                },
+            },
+        )
+
+        resolved = await runner._resolve_async_delegation_session(current, "sess_child")
+
+        assert resolved is current
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_nested_delegate_child_resolves_to_gateway_parent(self):
+        current = self._entry("sess_parent")
+        runner = self._make_runner(
+            {
+                "sess_parent": {"id": "sess_parent", "ended_at": None},
+                "sess_child": {
+                    "id": "sess_child",
+                    "ended_at": None,
+                    "model_config": {"_delegate_from": "sess_parent"},
+                },
+                "sess_grandchild": {
+                    "id": "sess_grandchild",
+                    "ended_at": None,
+                    "model_config": {"_delegate_from": "sess_child"},
+                },
+            },
+        )
+
+        resolved = await runner._resolve_async_delegation_session(current, "sess_grandchild")
+
+        assert resolved is current
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_delegate_provenance_cycle_fails_closed_without_route_change(self):
+        current = self._entry("sess_current")
+        runner = self._make_runner(
+            {
+                "sess_a": {
+                    "id": "sess_a",
+                    "ended_at": None,
+                    "model_config": {"_delegate_from": "sess_b"},
+                },
+                "sess_b": {
+                    "id": "sess_b",
+                    "ended_at": None,
+                    "model_config": {"_delegate_from": "sess_a"},
+                },
+            },
+        )
+
+        resolved = await runner._resolve_async_delegation_session(current, "sess_a")
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_delegate_with_missing_parent_fails_closed_without_route_change(self):
+        current = self._entry("sess_current")
+        runner = self._make_runner(
+            {
+                "sess_child": {
+                    "id": "sess_child",
+                    "ended_at": None,
+                    "model_config": {"_delegate_from": "sess_missing"},
+                },
+            },
+        )
+
+        resolved = await runner._resolve_async_delegation_session(current, "sess_child")
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_malformed_delegate_config_fails_closed_without_route_change(self):
+        current = self._entry("sess_current")
+        runner = self._make_runner(
+            {
+                "sess_child": {
+                    "id": "sess_child",
+                    "ended_at": None,
+                    "model_config": "{not-json}",
+                },
+            },
+        )
+
+        resolved = await runner._resolve_async_delegation_session(current, "sess_child")
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
     async def test_non_compression_ended_parent_drops(self):
         current = self._entry("sess_old")
         runner = self._make_runner(

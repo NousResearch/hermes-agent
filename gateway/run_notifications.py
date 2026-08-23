@@ -274,6 +274,53 @@ class GatewayNotificationsMixin:
                 "dropping injection (#55578 fail-closed).", pinned_session_id,
             )
             return None
+        # Delegate rows are execution transcripts, not gateway route owners. A process completion can
+        # be stamped with the child session id even though the human-facing conversation belongs to
+        # `_delegate_from`. Follow that durable provenance before any route verification or mutation;
+        # otherwise switch_session() can end the real parent and rebind the platform chat to an
+        # internal child (#92611).
+        delegate_chain: set[str] = set()
+        while True:
+            if pinned_session_id in delegate_chain:
+                logger.warning(
+                    "Async-delegation completion has cyclic delegate provenance at session %s; "
+                    "dropping injection (#92611).", pinned_session_id,
+                )
+                return None
+            delegate_chain.add(pinned_session_id)
+            model_config = pinned_row.get("model_config")
+            if isinstance(model_config, str):
+                try:
+                    model_config = json.loads(model_config)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Async-delegation completion has malformed model_config for session %s; "
+                        "dropping injection (#92611).", pinned_session_id,
+                    )
+                    return None
+            if model_config is not None and not isinstance(model_config, dict):
+                logger.warning(
+                    "Async-delegation completion has non-object model_config for session %s; "
+                    "dropping injection (#92611).", pinned_session_id,
+                )
+                return None
+            if not isinstance(model_config, dict):
+                model_config = {}
+            delegate_parent_id = str(model_config.get("_delegate_from") or "").strip()
+            if not delegate_parent_id:
+                break
+            try:
+                delegate_parent_row = await session_db.get_session(delegate_parent_id)
+            except Exception:
+                delegate_parent_row = None
+            if delegate_parent_row is None:
+                logger.warning(
+                    "Async-delegation completion has missing delegate parent %s for child %s; "
+                    "dropping injection (#92611).", delegate_parent_id, pinned_session_id,
+                )
+                return None
+            pinned_session_id = delegate_parent_id
+            pinned_row = delegate_parent_row
         target_session_id = pinned_session_id
         follows_compression = False
         if pinned_row.get("ended_at"):

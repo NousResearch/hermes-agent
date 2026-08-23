@@ -151,14 +151,25 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
     const oldStore = self._store
     self._store = store
 
+    // Track whether anything OBSERVABLE changed. ChatRuntimeBoundary passes a
+    // fresh adapter literal on every render, so identity churn of the adapter
+    // object itself is NOT a change — notifying on it lets a subscriber whose
+    // notification re-renders the boundary drive an unbounded feedback loop
+    // (render -> new literal -> setAdapter -> notify -> render), which React
+    // kills with "Maximum update depth exceeded" and takes the session tile
+    // down with its error boundary.
+    let changed = false
+
     if (this.extras !== store.extras) {
       this.extras = store.extras
+      changed = true
     }
 
     const newSuggestions = store.suggestions ?? EMPTY_ARRAY
 
     if (!shallowEqual(this.suggestions, newSuggestions)) {
       this.suggestions = newSuggestions
+      changed = true
     }
 
     const newCapabilities = {
@@ -178,10 +189,16 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
 
     if (!shallowEqual(self._capabilities, newCapabilities)) {
       self._capabilities = newCapabilities
+      changed = true
     }
 
     if (oldStore && oldStore.isRunning === store.isRunning && oldStore.messageRepository === store.messageRepository) {
-      self._notifySubscribers()
+      // Same transcript, same run state: notify only if extras/suggestions/
+      // capabilities actually moved. A silent no-op swap here is what breaks
+      // the render feedback loop — see the render-loop guard test.
+      if (changed) {
+        self._notifySubscribers()
+      }
 
       return
     }
@@ -220,7 +237,7 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
   }
 }
 
-class IncrementalExternalStoreRuntimeCore extends BaseAssistantRuntimeCore {
+export class IncrementalExternalStoreRuntimeCore extends BaseAssistantRuntimeCore {
   threads: ExternalStoreThreadListRuntimeCore
 
   constructor(adapter: ExternalStoreAdapter) {

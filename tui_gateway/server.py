@@ -275,6 +275,14 @@ _LONG_HANDLERS = frozenset(
         "profiles.get_asset",
         "profiles.list",
         "profiles.set_asset",
+        # Bot-relay RPCs: roster.sync/outbox.drain/reply are cheap file I/O,
+        # but bot_relay.deliver runs a FULL one-turn agent conversation
+        # (subprocess, up to 600s) — all four stay off the WS reader thread
+        # so a slow relay delivery can never block prompt.submit.
+        "bot_relay.roster.sync",
+        "bot_relay.outbox.drain",
+        "bot_relay.deliver",
+        "bot_relay.reply",
         # image.generate is a multi-second remote API round-trip.
         "image.generate",
         "projects.discover_repos",
@@ -15703,6 +15711,7 @@ def _mcp_summarize_server(name, cfg):  # noqa: E402
 # over already exists; register() rebinds them onto this namespace.
 from . import (  # noqa: E402
     methods_browser_control as _methods_browser_control,
+    methods_bot_relay as _methods_bot_relay,
     methods_complete as _methods_complete,
     methods_config as _methods_config,
     methods_images as _methods_images,
@@ -15721,6 +15730,7 @@ for _m in (
     _methods_tools,
     _methods_profiles,
     _methods_images,
+    _methods_bot_relay,
 ):
     _m.register(sys.modules[__name__])
 del _m

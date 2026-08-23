@@ -92,6 +92,24 @@ def _roster(root: Path) -> list[tuple[str, Path]]:
     return entries
 
 
+def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
+    """True when ANY profile on this install is Bot-Mode-managed.
+
+    The tool-injection gate for ``message_agent`` — deliberately independent
+    of :func:`get_bot_mode_protocol_section`'s emptiness: a profile whose
+    SOUL.md carries the legacy plugin-appended protocol gets an empty
+    section (text dedupe) but must still get the tool. Never raises.
+    """
+    try:
+        resolved = Path(
+            str(home) if home else (os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+        )
+        root = _hermes_root(resolved)
+        return any(_is_bot_managed(d) for _n, d in _roster(root))
+    except Exception:
+        return False
+
+
 def _soul_has_protocol(profile_dir: Path) -> bool:
     try:
         soul = profile_dir / "SOUL.md"
@@ -174,6 +192,38 @@ def _peers(root: Path) -> list[str]:
         return []
 
 
+def _remote_paragraph(root: Path) -> str:
+    """Protocol addendum for agents on OTHER connected machines.
+
+    Fed by the Desktop relay roster (``tools/bot_relay.py``) — every gateway
+    connected to the user's Desktop (local, remote URL, SSH, Hermes Cloud,
+    docker) syncs its agents here, so bots can DM across machines with the
+    same message_agent tool. Only rendered when the relay roster is
+    non-empty.
+    """
+    try:
+        from tools.bot_relay import read_remote_roster, remote_target_forms
+
+        roster = read_remote_roster(root)
+    except Exception:
+        return ""
+    if not roster:
+        return ""
+    lines = []
+    for row, form in zip(roster, remote_target_forms(roster)):
+        where = row["connection_label"] or row["connection_id"]
+        role = " — ".join(p for p in (row["title"], row["description"]) if p)
+        lines.append(
+            f"- `@{form}` — on {where}" + (f" — {role}" if role else "")
+        )
+    return (
+        "\n\nTeammates on OTHER connected machines (reachable through the "
+        "Desktop relay — message them with message_agent exactly like local "
+        "teammates; replies arrive as completion notifications the same "
+        "way):\n" + "\n".join(lines)
+    )
+
+
 def _peer_paragraph(root: Path) -> str:
     """Protocol addendum for cross-machine DMs — only when peers exist."""
     peers = _peers(root)
@@ -230,6 +280,7 @@ def _build_section(home: Path) -> str:
         f"You are `@{handle}`. Your teammates (live roster; roles from their "
         "profiles):\n"
         f"{roster_block}"
+        + _remote_paragraph(root)
         + _peer_paragraph(root)
     )
 
@@ -340,6 +391,18 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         surface["peers"] = _peers(_hermes_root(resolved))
     except Exception:
         surface["peers"] = []
+    try:
+        # The Desktop relay roster is part of the messaging surface too:
+        # connecting/disconnecting a machine, or agents appearing on one,
+        # must refresh eternal Bot Chat prompts the same way.
+        from tools.bot_relay import read_remote_roster
+
+        surface["remote_roster"] = sorted(
+            f"{r['connection_id']}:{r['profile']}:{r['title']}"
+            for r in read_remote_roster(_hermes_root(resolved))
+        )
+    except Exception:
+        surface["remote_roster"] = []
     try:
         blob = json.dumps(surface, sort_keys=True).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()[:12]

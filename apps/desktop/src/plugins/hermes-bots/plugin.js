@@ -1190,6 +1190,222 @@ function handleSessionsGatewayTransition() {
     .then(() => scheduleGroupChatServerSync($groupChats.get()))
 }
 
+// ── cross-connection bot relay ────────────────────────────────────────────
+// Connections ARE the peer set: every gateway this Desktop holds a socket
+// to (local, remote URL, SSH, Hermes Cloud, docker) must be able to find
+// every other connection's agents and message them via message_agent. The
+// Desktop is the relay — it owns every socket. Two loops:
+//  - roster loop: pushes each gateway the union roster of agents on the
+//    OTHER connections (bot_relay.roster.sync), so message_agent resolves
+//    cross-connection targets and Bot Chat prompts list them;
+//  - drain loop: collects queued envelopes from every gateway
+//    (bot_relay.outbox.drain), delivers each on the target connection's
+//    own socket (bot_relay.deliver), and posts the reply back to the
+//    sender gateway (bot_relay.reply) where a waiter wakes the sender.
+// Older backends without the RPCs fail per-call and are skipped — the
+// relay degrades to whatever subset of connections supports it.
+const RELAY_ROSTER_INTERVAL_MS = 60_000
+const RELAY_DRAIN_INTERVAL_MS = 4_000
+let relayDisposed = false
+let relayRosterTimer = null
+let relayDrainTimer = null
+let relayRosterBusy = false
+let relayDrainBusy = false
+
+/** One representative route per reachable connection id. */
+async function relayConnections() {
+  if (typeof host.profileRoutes !== 'function' || typeof host.requestProfile !== 'function') {
+    return []
+  }
+
+  try {
+    const routes = await host.profileRoutes()
+    const byConnection = new Map()
+
+    for (const route of Array.isArray(routes) ? routes : []) {
+      const id = String(route?.connectionId || '')
+
+      if (id && !byConnection.has(id)) {
+        byConnection.set(id, route)
+      }
+    }
+
+    return [...byConnection.entries()].map(([id, route]) => ({ id, route }))
+  } catch {
+    return []
+  }
+}
+
+/** The agents living on one connection, as relay roster rows. */
+async function relayAgentsOn(connection) {
+  try {
+    const res = await host.requestProfile(connection.route, 'profiles.list', { include_sessions: false })
+    const profiles = Array.isArray(res?.profiles) ? res.profiles : []
+    const label = String(
+      connection.route?.connectionLabel || connection.route?.label || connection.id
+    )
+
+    return profiles
+      .map(profile => ({
+        profile: String(profile?.name || ''),
+        handle: botHandle(profile?.name, profile),
+        connection_id: connection.id,
+        connection_label: label,
+        title: String(profile?.ui_meta?.['hermes-bots']?.title || profile?.display_name || ''),
+        description: String(profile?.description || '')
+      }))
+      .filter(row => row.profile)
+  } catch {
+    return []
+  }
+}
+
+/** Push every gateway the union roster of agents on the OTHER connections. */
+async function syncRelayRosters() {
+  if (relayDisposed || relayRosterBusy) {
+    return
+  }
+
+  relayRosterBusy = true
+
+  try {
+    const connections = await relayConnections()
+
+    if (connections.length < 2) {
+      return
+    }
+
+    const agentsByConnection = new Map()
+    await Promise.all(
+      connections.map(async connection => {
+        agentsByConnection.set(connection.id, await relayAgentsOn(connection))
+      })
+    )
+
+    await Promise.all(
+      connections.map(async connection => {
+        const others = []
+
+        for (const [id, agents] of agentsByConnection) {
+          if (id !== connection.id) {
+            others.push(...agents)
+          }
+        }
+
+        try {
+          await host.requestProfile(connection.route, 'bot_relay.roster.sync', { agents: others })
+        } catch {
+          // Older backend without the relay RPCs — skip this connection.
+        }
+      })
+    )
+  } finally {
+    relayRosterBusy = false
+  }
+}
+
+/** Drain every gateway's outbox and deliver each envelope on the target
+ *  connection's own socket; the reply (or error) is posted back to the
+ *  sender gateway for its waiter. */
+async function drainRelayOutboxes() {
+  if (relayDisposed || relayDrainBusy) {
+    return
+  }
+
+  relayDrainBusy = true
+
+  try {
+    const connections = await relayConnections()
+
+    if (connections.length < 2) {
+      return
+    }
+
+    const byId = new Map(connections.map(connection => [connection.id, connection]))
+
+    for (const sender of connections) {
+      let envelopes = []
+
+      try {
+        const res = await host.requestProfile(sender.route, 'bot_relay.outbox.drain', {})
+        envelopes = Array.isArray(res?.envelopes) ? res.envelopes : []
+      } catch {
+        continue
+      }
+
+      for (const envelope of envelopes) {
+        if (relayDisposed) {
+          return
+        }
+
+        const envelopeId = String(envelope?.id || '')
+        const target = byId.get(String(envelope?.target_connection || ''))
+        const postReply = async payload => {
+          try {
+            await host.requestProfile(sender.route, 'bot_relay.reply', { id: envelopeId, ...payload })
+          } catch {
+            // Sender gateway unreachable — its waiter times out with guidance.
+          }
+        }
+
+        if (!envelopeId) {
+          continue
+        }
+
+        if (!target) {
+          await postReply({ error: `connection '${envelope?.target_connection}' is not connected to this Desktop right now` })
+          continue
+        }
+
+        try {
+          const res = await host.requestProfile(target.route, 'bot_relay.deliver', {
+            profile: String(envelope?.target_profile || ''),
+            message: String(envelope?.message || '')
+          })
+          await postReply({ reply: String(res?.reply || '') })
+        } catch (error) {
+          await postReply({ error: String(error?.message || error || 'delivery failed') })
+        }
+      }
+    }
+  } finally {
+    relayDrainBusy = false
+  }
+}
+
+function startBotRelay() {
+  relayDisposed = false
+
+  // Source-shape test harnesses evaluate plugin.js without DOM timers —
+  // the relay only runs where a real event loop exists.
+  if (typeof setInterval !== 'function' || typeof clearInterval !== 'function') {
+    return
+  }
+
+  if (relayRosterTimer === null) {
+    relayRosterTimer = setInterval(() => void syncRelayRosters(), RELAY_ROSTER_INTERVAL_MS)
+    void syncRelayRosters()
+  }
+
+  if (relayDrainTimer === null) {
+    relayDrainTimer = setInterval(() => void drainRelayOutboxes(), RELAY_DRAIN_INTERVAL_MS)
+  }
+}
+
+function stopBotRelay() {
+  relayDisposed = true
+
+  if (relayRosterTimer !== null) {
+    clearInterval(relayRosterTimer)
+    relayRosterTimer = null
+  }
+
+  if (relayDrainTimer !== null) {
+    clearInterval(relayDrainTimer)
+    relayDrainTimer = null
+  }
+}
+
 /** Per-bot appearance + display meta, persisted via ctx.storage:
  *  { [botName]: { shape, color, title } } */
 const $botMeta = atom({})
@@ -11954,10 +12170,14 @@ export default {
     pluginCtx = ctx
     groupChatSyncDisposed = false
     startFaceClock()
+    // The cross-connection relay rides every gateway socket this Desktop
+    // holds: roster sync + envelope drain/deliver/reply loops.
+    startBotRelay()
     // Disabling the plugin (or a hot reload) must actually stop the clock —
     // before this, the rAF loop + 1Hz document scan ran until app restart.
     if (typeof ctx.onDispose === 'function') {
       ctx.onDispose(stopFaceClock)
+      ctx.onDispose(stopBotRelay)
     }
 
     // @-mention autocomplete: typing "@rese…" in ANY composer offers the
@@ -12306,20 +12526,22 @@ export default {
 
           // Identification only. Each line names the agent the user's tag
           // resolves to (friendly title + device for cross-connection rows),
-          // so the agent knows exactly who "@research-buddy" is without the
-          // renderer ever acting on the user's behalf.
+          // so the agent knows exactly who "@research-buddy" is. Cross-
+          // connection targets carry the '@connection' suffix message_agent
+          // resolves against the Desktop-synced relay roster.
           const lines = mentionedBots.map(bot => {
             const handle = botHandle(bot.name, bot)
             const title = String(botRosterMeta(bot, $botMeta.get())?.title || bot.ui_meta?.['hermes-bots']?.title || bot.title || '').trim()
+            const target = bot.remoteSource && bot.connectionId ? `${handle}@${bot.connectionId}` : handle
             const where = bot.remoteSource
-              ? ` — on ${bot.connectionLabel || bot.connectionId}`
+              ? ` — on ${bot.connectionLabel || bot.connectionId} (message_agent target: "${target}")`
               : ''
             return `@${handle} = agent profile "${bot.name}"${title ? ` ("${title}")` : ''}${where}`
           })
           const note =
             '\n\n[@mentions resolved from the Bot Mode roster — the user is referring to: ' +
             lines.join('; ') +
-            '. If they want one of these agents contacted, compose your own message and send it with your message_agent tool; never forward the user\u2019s text verbatim. If this session has no message_agent tool, agent messaging is unavailable here — say so.]'
+            '. If they want one of these agents contacted, compose your own message and send it with your message_agent tool (agents on other connected machines are reachable too — the Desktop relays it); never forward the user\u2019s text verbatim. If this session has no message_agent tool, agent messaging is unavailable here — say so.]'
 
           return { ...draft, text: text + note }
         }      }

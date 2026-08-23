@@ -1,0 +1,168 @@
+"""Bot-relay JSON-RPC handlers — the gateway side of cross-connection A2A.
+
+Connections ARE the peer set: every gateway the Desktop holds a socket to
+(local, remote URL, SSH, Hermes Cloud, docker) must be able to find every
+other connection's agents and message them. The Desktop is the relay — it
+owns every socket — and these four methods are the door it uses on EACH
+connected gateway:
+
+- ``bot_relay.roster.sync``  — Desktop pushes the union roster of agents on
+  the OTHER connections into this gateway's ``bot_relay/roster.json``, so
+  ``message_agent`` can resolve cross-connection targets and Bot Chat
+  prompts list them (capability-epoch refresh picks up changes).
+- ``bot_relay.outbox.drain`` — Desktop collects envelopes queued here by
+  ``message_agent`` for targets on other connections.
+- ``bot_relay.deliver``      — Desktop hands an envelope to the TARGET
+  gateway; this method runs the same one-turn Bot Chat delivery local DMs
+  use and returns the reply text.
+- ``bot_relay.reply``        — Desktop writes the reply (or a delivery
+  error) back on the SENDER gateway; the waiter spawned at send time picks
+  it up and wakes the sending agent via the standard completion path.
+
+Storage/validation plumbing lives in ``tools/bot_relay.py``. Handlers are
+rebound onto server.py's globals at install time (see method_ctx.py) and may
+reference server module globals (``_ok``, ``_err``) not imported here.
+"""
+
+from .method_ctx import HandlerRegistry
+
+_registry = HandlerRegistry()
+method = _registry.method
+
+
+@method("bot_relay.roster.sync")
+def _(rid, params: dict) -> dict:
+    """Replace this gateway's view of agents on OTHER connections.
+
+    Params: ``agents`` — list of rows ``{profile, handle, connection_id,
+    connection_label?, title?, description?}``. Rows failing validation are
+    dropped, not fatal. Result: ``{count}`` (accepted rows).
+    """
+    try:
+        import os
+        from pathlib import Path
+
+        from tools.bot_relay import write_remote_roster
+
+        home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+        root = home.parent.parent if home.parent.name == "profiles" else home
+        count = write_remote_roster(root, params.get("agents"))
+        return _ok(rid, {"count": count})
+    except Exception as e:
+        return _err(rid, 5090, str(e))
+
+
+@method("bot_relay.outbox.drain")
+def _(rid, params: dict) -> dict:
+    """Claim every pending cross-connection envelope queued on this gateway.
+
+    Claimed envelopes move to ``claimed/`` atomically, so concurrent drains
+    (two Desktop windows) can't double-deliver. Result: ``{envelopes}``.
+    """
+    try:
+        import os
+        from pathlib import Path
+
+        from tools.bot_relay import claim_pending_envelopes
+
+        home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+        root = home.parent.parent if home.parent.name == "profiles" else home
+        return _ok(rid, {"envelopes": claim_pending_envelopes(root)})
+    except Exception as e:
+        return _err(rid, 5091, str(e))
+
+
+@method("bot_relay.deliver")
+def _(rid, params: dict) -> dict:
+    """Deliver a relayed DM into a profile's Bot Chat ON THIS GATEWAY.
+
+    Params: ``profile`` (target on this install), ``message`` (already
+    attribution-prefixed by the sender gateway). Runs the same one-turn
+    ``hermes -p <profile> chat -c "Bot Chat"`` transport local DMs use and
+    returns ``{reply}`` — the target agent's response text. Blocking by
+    design (the Desktop calls it from its relay worker, off any UI path;
+    the RPC pool keeps it off the WS reader thread).
+    """
+    import os
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    profile = str(params.get("profile") or "").strip()
+    message = str(params.get("message") or "").strip()
+    if not profile or not message:
+        return _err(rid, 4090, "profile and message required")
+    try:
+        from tools.bot_mode_dm import MESSAGE_MAX_CHARS
+        from tools.bot_relay import local_delivery_command
+
+        if len(message) > MESSAGE_MAX_CHARS + 200:  # + attribution headroom
+            return _err(rid, 4091, "message too long")
+
+        home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+        root = home.parent.parent if home.parent.name == "profiles" else home
+        known = {"default"}
+        profiles_dir = root / "profiles"
+        if profiles_dir.is_dir():
+            known.update(c.name for c in profiles_dir.iterdir() if c.is_dir())
+        resolved = "default" if profile.lower() == "hermes" else profile
+        if resolved not in known:
+            return _err(rid, 4092, f"no profile '{profile}' on this gateway")
+
+        fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(message)
+        try:
+            proc = subprocess.run(
+                local_delivery_command(resolved, tmp),
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()[-500:]
+            return _err(rid, 5092, f"delivery turn failed: {detail or proc.returncode}")
+        return _ok(rid, {"reply": (proc.stdout or "").strip()})
+    except subprocess.TimeoutExpired:
+        return _err(rid, 5093, "delivery turn timed out")
+    except Exception as e:
+        return _err(rid, 5094, str(e))
+
+
+@method("bot_relay.reply")
+def _(rid, params: dict) -> dict:
+    """Write a relayed reply (or delivery error) for a sender-side waiter.
+
+    Params: ``id`` (envelope id), ``reply`` and/or ``error``.
+    """
+    envelope_id = str(params.get("id") or "").strip()
+    if not envelope_id:
+        return _err(rid, 4093, "id required")
+    try:
+        import os
+        from pathlib import Path
+
+        from tools.bot_relay import write_reply
+
+        home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+        root = home.parent.parent if home.parent.name == "profiles" else home
+        write_reply(
+            root,
+            envelope_id,
+            reply=str(params.get("reply") or ""),
+            error=str(params.get("error") or ""),
+        )
+        return _ok(rid, {"ok": True})
+    except ValueError as e:
+        return _err(rid, 4094, str(e))
+    except Exception as e:
+        return _err(rid, 5095, str(e))
+
+
+def register(server) -> None:
+    _registry.install(server)

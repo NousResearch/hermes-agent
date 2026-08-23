@@ -84,9 +84,11 @@ def message_agent_tool_schema() -> dict:
                 "clearly relevant teammate when it genuinely helps the user's goal; "
                 "don't fan out to several agents unless the user explicitly asked. "
                 "Use the teammate roster in your system prompt (names + roles) to pick "
-                "the right recipient; targets: a teammate name (e.g. 'researcher'), or "
+                "the right recipient; targets: a teammate name (e.g. 'researcher'), "
                 "'<peer>/<agent>' for an agent on a registered peer gateway "
-                "(e.g. 'spark/researcher', or just '<peer>' for the peer's main agent)."
+                "(e.g. 'spark/researcher', or just '<peer>' for the peer's main agent), "
+                "or an agent on another connected machine from your roster (use "
+                "'<handle>@<connection>' if the same handle exists on several)."
             ),
             "parameters": {
                 "type": "object",
@@ -135,11 +137,15 @@ def ensure_message_agent_tool(agent: Any) -> bool:
                     and tool.get("function", {}).get("name") == MESSAGE_AGENT_TOOL_NAME
                 ):
                     return True
-        from tools.bot_mode_probe import BOT_CHAT_TITLE, get_bot_mode_protocol_section
+        from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
 
         if _session_title(agent) != BOT_CHAT_TITLE:
             return False
-        if not get_bot_mode_protocol_section(_agent_home(agent)):
+        # Managed-install check, NOT section non-emptiness: a profile whose
+        # SOUL.md carries the legacy plugin-appended protocol text gets an
+        # empty section (dedupe) but must still receive the tool — otherwise
+        # upgraded installs silently lose A2A messaging (Aug 2026).
+        if not is_bot_mode_managed(_agent_home(agent)):
             return False
         if agent.tools is None:
             agent.tools = []
@@ -235,7 +241,7 @@ def message_agent_tool(
     # ── defense-in-depth gate: only a canonical Bot Chat may deliver ──
     home = _agent_home(agent)
     try:
-        from tools.bot_mode_probe import BOT_CHAT_TITLE, get_bot_mode_protocol_section
+        from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
 
         title = _session_title(agent)
         if title != BOT_CHAT_TITLE:
@@ -243,7 +249,7 @@ def message_agent_tool(
                 "message_agent is only available in a Bot Mode 'Bot Chat' session. "
                 "This session is not one; do not retry."
             )
-        if not get_bot_mode_protocol_section(home):
+        if not is_bot_mode_managed(home):
             return _err(
                 "This install is not Bot-Mode-managed (no bot roster); "
                 "message_agent is unavailable. Do not retry."
@@ -289,17 +295,35 @@ def message_agent_tool(
         return _spawn_delivery(command, label, task_id=task_id, agent=agent)
 
     # ── local teammate ──
-    if not _LOCAL_TARGET_RE.match(raw_target):
+    if not _LOCAL_TARGET_RE.match(raw_target) and "@" not in raw_target:
         return _err(f"Invalid target: {raw_target!r}.", roster=teammates, peers=peers)
-    resolved = _resolve_local_name(raw_target, roster)
+    resolved = _resolve_local_name(raw_target, roster) if _LOCAL_TARGET_RE.match(raw_target) else None
     if resolved is None:
+        # ── cross-connection teammate (Desktop relay) ──
+        # Every gateway connected to the user's Desktop is reachable: the
+        # relay roster lists agents on the other connections; delivery rides
+        # the Desktop's own persistent socket to that gateway.
+        relayed = _try_relay_delivery(
+            root, raw_target, body, me, sender_handle, task_id=task_id, agent=agent
+        )
+        if relayed is not None:
+            return relayed
         return _err(
-            f"No teammate named '{raw_target}' on this install. "
-            "Pick a name from the roster (roles are listed in your system prompt).",
+            f"No teammate named '{raw_target}' on this install, on a connected "
+            "machine, or on a registered peer. Pick a name from the roster "
+            "(roles are listed in your system prompt).",
             roster=teammates,
             peers=peers,
         )
     if resolved == me:
+        # Same-name target on ANOTHER connection (e.g. this gateway's
+        # 'default' messaging the cloud 'default') — try the relay before
+        # calling it a self-message.
+        relayed = _try_relay_delivery(
+            root, raw_target, body, me, sender_handle, task_id=task_id, agent=agent
+        )
+        if relayed is not None:
+            return relayed
         return _err("You can't message yourself. Pick a teammate from the roster.")
 
     dm_file = _write_dm_file(prefix + body)
@@ -308,6 +332,64 @@ def message_agent_tool(
         f"--create-if-missing -Q --query-file {shlex.quote(dm_file)}"
     )
     return _spawn_delivery(command, f"@{_handle(resolved)}", task_id=task_id, agent=agent)
+
+
+def _try_relay_delivery(
+    root: Path,
+    raw_target: str,
+    body: str,
+    me: str,
+    sender_handle: str,
+    *,
+    task_id: Optional[str],
+    agent: Any,
+) -> Optional[str]:
+    """Cross-connection delivery via the Desktop relay, or None if the
+    target doesn't resolve against the relay roster.
+
+    The envelope is queued on disk; the Desktop drains it over RPC and
+    delivers on the target connection's own socket. A background waiter is
+    spawned immediately so the relayed reply wakes the sender through the
+    standard completion-notification path — identical UX to a local DM.
+    """
+    try:
+        from tools.bot_relay import (
+            enqueue_envelope,
+            read_remote_roster,
+            resolve_remote_target,
+            waiter_command,
+        )
+
+        roster = read_remote_roster(root)
+        if not roster:
+            return None
+        match = resolve_remote_target(raw_target, roster)
+        if match is None:
+            return None
+        if match == "ambiguous":
+            forms = ", ".join(
+                f"{r['handle']}@{r['connection_id']}"
+                for r in roster
+                if r["handle"].lower() == raw_target.strip().lstrip("@").lower()
+            )
+            return _err(
+                f"'{raw_target}' exists on several connected machines — "
+                f"disambiguate with one of: {forms}."
+            )
+        envelope = enqueue_envelope(
+            root,
+            target=match,
+            message=f"Message from 🤖 {sender_handle} (@{sender_handle}): {body}",
+            sender_profile=me,
+            sender_handle=sender_handle,
+        )
+        label = f"@{match['handle']} on {match['connection_label'] or match['connection_id']}"
+        return _spawn_delivery(
+            waiter_command(root, envelope), label, task_id=task_id, agent=agent
+        )
+    except Exception:
+        logger.debug("relay delivery attempt failed", exc_info=True)
+        return None
 
 
 def _write_dm_file(content: str) -> str:

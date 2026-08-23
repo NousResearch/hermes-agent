@@ -706,6 +706,10 @@ def _spawn_delivery(
         except (ValueError, TypeError):
             parsed = {}
         proc_id = parsed.get("session_id") or ""
+        # A populated error wins over the approval branch below: the "blocked"
+        # response carries a real explanation, and status is "blocked" rather
+        # than "pending_approval", so nothing is lost by reporting it verbatim.
+        # Do not reorder these two checks.
         if parsed.get("error"):
             return _err(f"Delivery to {label} failed to start: {parsed['error']}")
         # terminal_tool's approval gate returns status=pending_approval with

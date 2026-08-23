@@ -814,3 +814,36 @@ def test_successful_spawn_still_reports_sent(monkeypatch):
 
     assert out["status"] == "sent"
     assert out["process_id"] == "proc_abc"
+
+
+def test_pending_approval_contract_matches_terminal_tool():
+    """The literals `_spawn_delivery` keys off must still exist in terminal_tool.
+
+    `_spawn_delivery` restates terminal_tool's gate response inline
+    (`approval_pending`, `status == "pending_approval"`). If terminal_tool ever
+    renames either, this module silently degrades back to reporting a delivered
+    message as "no process id returned" — the exact bug this branch fixes, with
+    no test failing anywhere. Assert against the real source so a rename breaks
+    CI instead of a user's fleet.
+    """
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[2] / "tools" / "terminal_tool.py"
+    ).read_text(encoding="utf-8")
+
+    assert '"status": "pending_approval"' in src, (
+        "terminal_tool no longer emits status=pending_approval — update "
+        "_spawn_delivery's approval branch in tools/bot_mode_dm.py"
+    )
+    assert '"approval_pending": True' in src, (
+        "terminal_tool no longer emits approval_pending — update "
+        "_spawn_delivery's approval branch in tools/bot_mode_dm.py"
+    )
+    # And the reason the falsy-error check cannot catch it: that same response
+    # sets error to an empty string on purpose (#28323).
+    gate = src[src.index('"status": "pending_approval"') - 400 : src.index('"status": "pending_approval"') + 200]
+    assert '"error": ""' in gate, (
+        "the pending-approval response no longer empties `error` — the "
+        "falsy-error guard in _spawn_delivery may now be redundant; re-check it"
+    )

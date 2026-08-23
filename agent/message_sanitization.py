@@ -699,5 +699,48 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
     return changed
 
 
+def strip_reasoning_details_for_non_openrouter(
+    api_messages: list, is_openrouter: bool
+) -> int:
+    """Strip ``reasoning_details`` from assistant turns for non-OpenRouter APIs.
+
+    ``reasoning_details`` is an OpenRouter-specific field: OpenRouter emits it
+    on reasoning-model turns and consumes it back on the next turn to maintain
+    reasoning continuity (``chat_completion_helpers`` preserves it verbatim for
+    exactly this).  It is NOT part of the standard Chat Completions schema.
+
+    Strict OpenAI-compatible endpoints validate the schema and reject the
+    unknown field.  The one observed in the wild is the Palantir Foundry LLM
+    proxy (``LanguageModelService``), whose GPT/Gemini endpoints 400 with
+    ``INVALID_ARGUMENT ... unrecognizedProperty=reasoning_details`` when a
+    session mixes an OpenRouter reasoning turn into history and then routes a
+    request to Palantir — the session then loops on the 400 until ``/new``.
+    Mistral, Fireworks, and other strict Chat Completions proxies are the same
+    field-rejection class.
+
+    ``api_messages`` is built once before the retry loop while the *primary*
+    provider is active; a mid-conversation fallback can switch providers, so
+    the field baked in for a prior OpenRouter turn must be reconciled against
+    the *current* provider.  Only OpenRouter should carry it on the wire; every
+    other provider gets it stripped from the outgoing API copy (the internal
+    history keeps it, so a later switch back to OpenRouter still has it).
+
+    Idempotent and safe to call every iteration.  Returns the number of
+    assistant turns whose ``reasoning_details`` was removed.
+    """
+    if is_openrouter:
+        return 0
+    removed = 0
+    for api_msg in api_messages:
+        if not isinstance(api_msg, dict):
+            continue
+        if api_msg.get("role") != "assistant":
+            continue
+        if "reasoning_details" in api_msg:
+            api_msg.pop("reasoning_details", None)
+            removed += 1
+    return removed
+
+
 # Image / multimodal parts are deliberately NOT consolidated here: per-adapter handling is
 # format-specific SYNTAX. The one shared image POLICY is ``_strip_images_from_messages``.

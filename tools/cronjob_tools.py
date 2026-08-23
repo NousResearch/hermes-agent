@@ -1223,6 +1223,28 @@ def _apply_continuity(
     return refs or None
 
 
+def _builtin_gateway_liveness() -> Optional[bool]:
+    """Gateway liveness for the builtin cron scheduler, or None when unknown.
+
+    Mirrors the CLI's ``_warn_if_gateway_not_running`` heuristic (#87033): the
+    builtin ticker only runs inside the gateway process, so a scheduled job
+    with no live gateway can never fire. Non-builtin providers (e.g. Chronos)
+    fire through their own machinery and are deliberately exempt — a missing
+    gateway process means nothing for them. ``None`` = probe failed; callers
+    must not claim either way.
+    """
+    try:
+        from hermes_cli.cron import _active_cron_provider_name
+
+        if _active_cron_provider_name() != "builtin":
+            return True  # external provider fires jobs without the gateway
+        from hermes_cli.gateway import find_gateway_pids
+
+        return bool(find_gateway_pids())
+    except Exception:
+        return None
+
+
 def cronjob(
     action: str,
     job_id: Optional[str] = None,
@@ -1368,22 +1390,38 @@ def cronjob(
             _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
             if _local_notice:
                 _create_message = f"{_create_message} {_local_notice}"
-            return json.dumps(
-                {
-                    "success": True,
-                    "job_id": job["id"],
-                    "name": job["name"],
-                    "skill": job.get("skill"),
-                    "skills": job.get("skills", []),
-                    "schedule": job["schedule_display"],
-                    "repeat": _repeat_display(job),
-                    "deliver": job.get("deliver", "local"),
-                    "next_run_at": job["next_run_at"],
-                    "job": _format_job(job),
-                    "message": _create_message,
-                },
-                indent=2,
-            )
+            # Gateway liveness surfacing (#87033): the builtin scheduler's
+            # ticker lives in the gateway process, so a job created with no
+            # gateway running is stored but will never fire. Tell the model
+            # here — the CLI already warns, but the agent path saw only a
+            # clean success and confidently told the user it was scheduled.
+            _gw_running = _builtin_gateway_liveness()
+            _result = {
+                "success": True,
+                "job_id": job["id"],
+                "name": job["name"],
+                "skill": job.get("skill"),
+                "skills": job.get("skills", []),
+                "schedule": job["schedule_display"],
+                "repeat": _repeat_display(job),
+                "deliver": job.get("deliver", "local"),
+                "next_run_at": job["next_run_at"],
+                "job": _format_job(job),
+                "message": _create_message,
+            }
+            if _gw_running is False:
+                _result["gateway_running"] = False
+                _result["warning"] = (
+                    "The Hermes gateway is not running — this job is saved "
+                    "but will NOT fire until the gateway is started "
+                    "(hermes gateway install / hermes gateway start). "
+                    "Tell the user the task is scheduled but not active yet."
+                )
+            elif _gw_running is None:
+                _result["gateway_running"] = None
+            else:
+                _result["gateway_running"] = True
+            return json.dumps(_result, indent=2)
 
         if normalized == "list":
             jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]

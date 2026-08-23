@@ -1631,6 +1631,138 @@ class ProcessRegistry:
                 return False
         return True
 
+    def wait_for_pending_completions(
+        self,
+        task_id: Optional[str] = None,
+        *,
+        timeout: float | None = None,
+        poll_interval: float = 1.0,
+    ) -> dict:
+        """Bounded wait for tracked ``notify_on_complete`` background processes.
+
+        One-shot CLI runs (``hermes -q/-Q/-z``) exit as soon as their single
+        turn ends.  Any background process the turn spawned with
+        ``notify_on_complete=True`` — a bounded task whose completion the
+        caller explicitly cares about — still holds a stdout pipe owned by
+        the dying parent, so it is killed by SIGPIPE on its next write a few
+        seconds later.  Bot Mode handoff REPLIES are the visible casualty
+        (#90879): a recipient invoked as ``hermes -p <bot> chat -Q
+        --query-file ...`` dispatches its reply via ``message_agent`` /
+        ``bot_relay`` exactly this way, then exits, and the reply process is
+        destroyed ~3s later.  The sender waits forever for a reply that was
+        already killed.
+
+        Called from the one-shot exit paths so the parent lingers (bounded)
+        until those deliveries actually finish.  This fixes the class — ANY
+        bounded background task in a one-shot run, not just DMs: bot_mode_dm
+        deliveries, bot_relay waiter processes, and plain
+        ``terminal(background=true, notify_on_complete=true)`` jobs.
+
+        Only ``notify_on_complete`` processes are waited on. Plain background
+        processes (servers, daemons, watch-pattern monitors) carry no
+        completion contract and are not the parent's to wait for.
+
+        Args:
+            task_id: restrict to processes spawned for this task; ``None``
+                waits on every tracked process (a one-shot CLI process hosts
+                exactly one agent, so its registry is private to that run).
+            timeout: max seconds to linger. ``None`` reads
+                ``terminal.oneshot_completion_wait_seconds`` from config
+                (default 600). ``<= 0`` disables the wait entirely.
+            poll_interval: per-pass event-wait bound; each pass re-reconciles
+                child state so an orphaned-pipe exit (#17327) can't wedge the
+                linger for the full timeout.
+
+        Returns:
+            ``{"waited": [...], "completed": [...], "timed_out": [...]}``
+            (session ids). All lists empty when there was nothing to wait on.
+        """
+        if timeout is None:
+            timeout = self._oneshot_completion_wait_seconds()
+        result: dict = {"waited": [], "completed": [], "timed_out": []}
+        with self._lock:
+            pending = [
+                s
+                for s in self._running.values()
+                if s.notify_on_complete
+                and not s.exited
+                and (task_id is None or s.task_id == task_id)
+            ]
+        if not pending or timeout <= 0:
+            return result
+        result["waited"] = [s.id for s in pending]
+        logger.info(
+            "One-shot exit lingering (bounded %ss) for %d notify_on_complete "
+            "background process(es): %s",
+            timeout,
+            len(pending),
+            ", ".join(s.id for s in pending),
+        )
+        deadline = time.monotonic() + max(float(timeout), 0.0)
+        interval = max(float(poll_interval), 0.05)
+        try:
+            from tools.interrupt import is_interrupted as _is_interrupted
+        except Exception:
+            def _is_interrupted() -> bool:
+                return False
+        interrupted = False
+        for session in pending:
+            try:
+                while not session.exited:
+                    if interrupted or _is_interrupted():
+                        interrupted = True
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    # Reconcile first: catches direct-child exits whose reader
+                    # is blocked on a pipe held open by a descendant (#17327)
+                    # and detached/env sessions, so the event actually fires.
+                    try:
+                        self._reconcile_local_exit(session)
+                        self._refresh_detached_session(session)
+                    except Exception:
+                        pass
+                    if session.exited:
+                        break
+                    session._completion_event.wait(min(remaining, interval))
+            except KeyboardInterrupt:
+                # User aborted the linger — stop waiting on everything but
+                # never let the interrupt skip the caller's durable teardown
+                # (session flush, end_session) that follows this wait.
+                interrupted = True
+            if session.exited:
+                result["completed"].append(session.id)
+            else:
+                result["timed_out"].append(session.id)
+        if result["timed_out"]:
+            logger.warning(
+                "One-shot exit linger timed out after %ss with %d background "
+                "process(es) still running: %s — they may be killed when this "
+                "process exits.",
+                timeout,
+                len(result["timed_out"]),
+                ", ".join(result["timed_out"]),
+            )
+        return result
+
+    @staticmethod
+    def _oneshot_completion_wait_seconds() -> float:
+        """Bounded linger (s) for one-shot exits with pending notify_on_complete
+        processes.  Read from ``terminal.oneshot_completion_wait_seconds``;
+        0 disables. Falls back to the DEFAULT_CONFIG value (600) when config
+        is unreadable so callers always get a sane bound.
+        """
+        try:
+            from hermes_cli.config import DEFAULT_CONFIG, cfg_get, read_raw_config
+            cfg = read_raw_config()
+            val = cfg_get(cfg, "terminal", "oneshot_completion_wait_seconds")
+            if val is None:
+                val = DEFAULT_CONFIG["terminal"]["oneshot_completion_wait_seconds"]
+            return max(float(val), 0.0)
+        except Exception:
+            return 600.0
+
     def _drain_should_skip(
         self, session_id: str, *, skip_poll_observed: bool = True
     ) -> bool:

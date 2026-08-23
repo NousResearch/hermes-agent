@@ -397,6 +397,17 @@ DEFAULT_CONFIG = {
         # window so it can't leak indefinitely. 0 disables escalation (SIGTERM
         # only — the historical behavior). Floored internally at 0.
         "daemon_term_grace_seconds": 2.0,
+        # Bounded linger (seconds) for one-shot CLI runs (-q/-Q/-z) that exit
+        # while background processes spawned with notify_on_complete=true are
+        # still running. The dying parent owns those children's stdout pipes,
+        # so exiting immediately kills the delivery a few seconds later —
+        # destroying Bot Mode handoff replies dispatched via message_agent /
+        # bot_relay from a short-lived `hermes -p <bot> chat -Q` recipient
+        # (#90879). The parent instead waits (up to this bound) for tracked
+        # notify_on_complete processes to finish before exiting. Plain
+        # background processes without notify_on_complete (servers, daemons)
+        # are never waited on. 0 disables the linger.
+        "oneshot_completion_wait_seconds": 600.0,
         # Environment variables to pass through to sandboxed execution
         # (terminal and execute_code).  Skill-declared required_environment_variables
         # are passed through automatically; this list is for non-skill use cases.

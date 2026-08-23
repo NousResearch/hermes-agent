@@ -9606,16 +9606,18 @@ def _interpreter_scripts_dir() -> Path | None:
     Used when pinning an install to ``sys.executable`` on a site-packages
     install where ``PROJECT_ROOT / "venv"`` does not exist: the entry-point
     shims uv rewrites live next to the interpreter, not under a project venv.
+    Layout comes from the canonical ``venv_bin_dir`` helper (#76105 —
+    hand-rolling Scripts/bin is lint-tested against).
     """
+    from hermes_constants import venv_bin_dir
+
     exe = Path(sys.executable)
-    parent = exe.parent
-    scripts_candidates = (
-        [parent / "Scripts"] if _is_windows() else [parent / "bin"]
-    )
-    for cand in scripts_candidates:
-        if cand.is_dir():
-            return cand
-    return None
+    # sys.executable lives IN the bin/Scripts dir; its parent.parent is the
+    # env root venv_bin_dir derives from.
+    cand = venv_bin_dir(exe.parent.parent, windows=_is_windows())
+    if cand.is_dir():
+        return cand
+    return exe.parent if exe.parent.is_dir() else None
 
 
 def _install_python_dependencies_with_optional_fallback(

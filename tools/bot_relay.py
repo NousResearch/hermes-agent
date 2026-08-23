@@ -398,7 +398,7 @@ def write_reply(
 ) -> Path:
     """Persist the relayed reply (or delivery error) for the waiter.
 
-``reason`` is an optional typed failure code (see
+    ``reason`` is an optional typed failure code (see
     ``tools.bot_failure_reasons``, e.g. 'queued_expired'); when omitted and
     ``error`` is non-empty it is classified from the error text. The waiter
     only surfaces the human ``error``.

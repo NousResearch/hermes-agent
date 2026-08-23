@@ -1314,7 +1314,12 @@ async function relayConnections() {
   }
 }
 
-/** The agents living on one connection, as relay roster rows. */
+/** The agents living on one connection, as relay roster rows.
+ *  Returns null on FAILURE (transient RPC blip, slow socket) — distinct from
+ *  a genuine empty profile list. Conflating the two would push a fresh union
+ *  roster missing a LIVE connection's agents, and the gateway-side liveness
+ *  check (bot_relay._target_liveness) reads "absent from a fresh roster" as
+ *  definitively offline → false runtime_offline refusals (#93091 item 2). */
 async function relayAgentsOn(connection) {
   try {
     const res = await host.requestProfile(connection.route, 'profiles.list', { include_sessions: false })
@@ -1334,9 +1339,13 @@ async function relayAgentsOn(connection) {
       }))
       .filter(row => row.profile)
   } catch {
-    return []
+    return null
   }
 }
+
+/** Last good agent rows per connection id — reused when a fetch blips so a
+ *  transient failure never reads as "everyone on that machine went away". */
+const relayAgentsCache = new Map()
 
 /** Push every gateway the union roster of agents on the OTHER connections. */
 async function syncRelayRosters() {
@@ -1356,9 +1365,29 @@ async function syncRelayRosters() {
     const agentsByConnection = new Map()
     await Promise.all(
       connections.map(async connection => {
-        agentsByConnection.set(connection.id, await relayAgentsOn(connection))
+        const agents = await relayAgentsOn(connection)
+
+        if (agents === null) {
+          // Transient fetch failure: reuse the last good rows for this
+          // connection (or contribute nothing this cycle) so the pushed
+          // roster never drops a live machine's agents — absence from a
+          // fresh roster means offline to the gateway-side fail-fast.
+          agentsByConnection.set(connection.id, relayAgentsCache.get(connection.id) || [])
+        } else {
+          relayAgentsCache.set(connection.id, agents)
+          agentsByConnection.set(connection.id, agents)
+        }
       })
     )
+
+    // Connections gone from profileRoutes are genuinely disconnected — drop
+    // their cache so a later reconnect starts from live data.
+    const liveIds = new Set(connections.map(connection => connection.id))
+    for (const id of [...relayAgentsCache.keys()]) {
+      if (!liveIds.has(id)) {
+        relayAgentsCache.delete(id)
+      }
+    }
 
     await Promise.all(
       connections.map(async connection => {

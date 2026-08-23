@@ -1247,8 +1247,8 @@ def _refuse_update_for_contended_shims(exc: BaseException) -> None:
     print("  moved aside:")
     for name in getattr(exc, "failed_shims", []) or ["hermes.exe"]:
         print(f"    {name}")
-    print("  Another process is holding this install's venv open (Hermes")
-    print("  Desktop, a gateway, or another hermes REPL) — mutating the venv")
+    print("  Another process is holding this install's venv — typically Hermes")
+    print("  Desktop, a gateway, or another hermes REPL — and mutating the venv")
     print("  now would strand it half-updated.")
     print("  The dependency install has been deferred: close the process(es)")
     print("  above, then run any `hermes` command to finish it automatically.")

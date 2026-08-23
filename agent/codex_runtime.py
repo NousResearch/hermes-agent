@@ -1084,6 +1084,10 @@ def _consume_codex_event_stream(
     * ``interrupt_check()`` — returns True to break the loop early.
     """
     collected_output_items: List[Any] = []
+    # output_index of each collected_output_items entry, appended in lockstep
+    # so settled pending calls can be merged back in stream order.
+    collected_output_indexes: List[Any] = []
+    collected_output_sequences: List[int] = []
     collected_text_deltas: List[str] = []
     has_tool_calls = False
     # Function calls announced via output_item.added but not yet confirmed by
@@ -1106,6 +1110,11 @@ def _consume_codex_event_stream(
     terminal_incomplete_details: Any = None
     terminal_error: Any = None
     saw_terminal = False
+    # Settlement of pending calls requires an actually observed successful
+    # terminal frame.  ``terminal_status`` defaults to "completed", so it
+    # cannot distinguish a real response.completed from EOF/interruption.
+    saw_response_completed = False
+    next_output_sequence = 0
 
     for event in event_iter:
         if on_event is not None:
@@ -1152,10 +1161,16 @@ def _consume_codex_event_stream(
                 has_tool_calls = True
                 item_id = str(_item_field(item, "id", ""))
                 if item_id:
+                    # Seed from the announced item's own arguments when the
+                    # backend attaches them up front, and remember the stream
+                    # position so a settled call keeps its place in the output.
                     pending_function_calls[item_id] = {
                         "item": item,
-                        "arguments": "",
+                        "arguments": str(_item_field(item, "arguments", "") or ""),
+                        "output_index": _event_field(event, "output_index", None),
+                        "sequence": next_output_sequence,
                     }
+                    next_output_sequence += 1
             continue
 
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
@@ -1204,12 +1219,15 @@ def _consume_codex_event_stream(
                     pending["arguments"] += delta_args
                 continue
             if event_type.endswith("function_call_arguments.done"):
-                done_args = _event_field(event, "arguments", "")
+                done_args = _event_field(event, "arguments", None)
                 pending = pending_function_calls.get(str(_event_field(event, "item_id", "")))
-                if pending is not None and done_args:
+                if pending is not None and done_args is not None:
                     # Per-item arguments.done is authoritative for the
                     # accumulated string when the item itself never lands.
-                    pending["arguments"] = done_args
+                    # An explicit empty string (zero-argument call) counts as
+                    # authoritative; only a missing field leaves the streamed
+                    # deltas in place.
+                    pending["arguments"] = str(done_args)
                 continue
             # other function_call frames fall through — function_call items still get added on output_item.done
 
@@ -1237,6 +1255,9 @@ def _consume_codex_event_stream(
             done_item = _event_field(event, "item")
             if done_item is not None:
                 collected_output_items.append(done_item)
+                collected_output_indexes.append(_event_field(event, "output_index", None))
+                collected_output_sequences.append(next_output_sequence)
+                next_output_sequence += 1
                 # Confirmed by the authoritative per-item done event; remove
                 # from pending so it is not settled twice.
                 pending_function_calls.pop(str(_item_field(done_item, "id", "")), None)
@@ -1288,6 +1309,7 @@ def _consume_codex_event_stream(
                     if terminal_error is None and isinstance(resp_obj, dict):
                         terminal_error = resp_obj.get("error")
             if event_type == "response.completed":
+                saw_response_completed = True
                 terminal_status = terminal_status or "completed"
             elif event_type == "response.incomplete":
                 terminal_status = terminal_status or "incomplete"
@@ -1317,17 +1339,50 @@ def _consume_codex_event_stream(
     # OpenAI-compatible backends omit per-item done events on a successful
     # completion (anomalyco/opencode#37159).  Done items stay authoritative;
     # this only fills the gap so the call executes instead of vanishing.
-    if pending_function_calls and terminal_status == "completed":
-        for pending in pending_function_calls.values():
+    if pending_function_calls and saw_response_completed:
+        # Assemble settled calls and .done items in output_index order instead
+        # of appending at the tail: a pending call that streamed before a later
+        # .done item must keep its position, or dependent side effects invert.
+        indexed = [
+            (index, sequence, position, item)
+            for position, (index, sequence, item) in enumerate(
+                zip(
+                    collected_output_indexes,
+                    collected_output_sequences,
+                    collected_output_items,
+                )
+            )
+        ]
+        for position, pending in enumerate(pending_function_calls.values(), start=len(indexed)):
             item = pending["item"]
-            output.append(SimpleNamespace(
+            # Canonicalize empty/whitespace arguments so zero-delta calls stay
+            # executable; malformed non-empty JSON passes through untouched and
+            # stays rejected by downstream argument parsing.
+            arguments = (pending["arguments"] or "").strip() or "{}"
+            indexed.append((pending.get("output_index"), pending["sequence"], position, SimpleNamespace(
                 type="function_call",
                 id=_item_field(item, "id", None),
                 call_id=_item_field(item, "call_id", None),
                 name=_item_field(item, "name", None),
-                arguments=pending["arguments"],
+                arguments=arguments,
                 status="completed",
-            ))
+            )))
+
+        # output_index is optional in compatible Responses streams.  A partial
+        # ordering (sorting indexed entries while interleaving unindexed ones)
+        # is not well-defined and can produce contradictory comparisons.  Keep
+        # the observed wire order whenever any index is missing; use the
+        # protocol ordering only when every entry provides an index.
+        if all(entry[0] is not None for entry in indexed):
+            try:
+                indexed.sort(key=lambda entry: entry[0])
+            except TypeError:
+                # Preserve wire order if a backend sends non-comparable index
+                # values instead of integers.
+                pass
+        else:
+            indexed.sort(key=lambda entry: entry[1])
+        output = [entry[3] for entry in indexed]
 
     # If the stream ended without any terminal event AND produced no usable
     # content (no items, no text deltas), surface that as a RuntimeError so

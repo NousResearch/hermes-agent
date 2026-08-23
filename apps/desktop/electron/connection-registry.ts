@@ -185,6 +185,7 @@ export interface RegistryLocalRoute {
 }
 
 export interface ResolvedConnectionSshDescriptor {
+  effectiveConfigFingerprint?: string
   host?: string
   keyPath?: string
   port?: number
@@ -331,6 +332,53 @@ export function resolvedConnectionId(
   }
 
   return matchingConnectionId(registry, route, 'unique') ?? null
+}
+
+export interface ReuseMatchingPrimarySshBackendOptions {
+  connectionId: null | string | undefined
+  effectiveFingerprint: (source: RegistryConnection) => Promise<string>
+  ensurePrimary: () => Promise<ResolvedConnectionDescriptor>
+  profile: null | string | undefined
+  registry: ConnectionRegistry
+  source: RegistryConnection
+}
+
+/**
+ * Reuse the already-booted v1 window SSH backend only when its actual dialing
+ * identity matches the registry primary. Guards run before either async
+ * dependency so secondary profiles and sources never bootstrap the primary.
+ */
+export async function reuseMatchingPrimarySshBackend({
+  connectionId,
+  effectiveFingerprint,
+  ensurePrimary,
+  profile,
+  registry,
+  source
+}: ReuseMatchingPrimarySshBackendOptions): Promise<null | ResolvedConnectionDescriptor> {
+  const id = String(connectionId ?? '').trim()
+  const profileKey = String(profile ?? '').trim() || 'default'
+
+  if (profileKey !== 'default' || !id || id !== registry.primary || source.id !== id || source.kind !== 'ssh') {
+    return null
+  }
+
+  const sourceFingerprint = String(await effectiveFingerprint(source)).trim()
+  const descriptor = await ensurePrimary()
+  const activeSsh = descriptor.mode === 'remote' && descriptor.remoteKind === 'ssh' ? descriptor.ssh : null
+  const rootProfile = (value: unknown) => String(value || '').trim() || 'default'
+
+  if (
+    !sourceFingerprint ||
+    !activeSsh ||
+    sourceFingerprint !== String(activeSsh.effectiveConfigFingerprint || '').trim() ||
+    String(source.remoteHermesPath || '').trim() !== String(activeSsh.remoteHermesPath || '').trim() ||
+    rootProfile(source.remoteProfile) !== rootProfile(activeSsh.remoteProfile)
+  ) {
+    return null
+  }
+
+  return descriptor
 }
 
 function normalizedSshTarget(route: { host?: unknown; port?: unknown; user?: unknown }): null | string {

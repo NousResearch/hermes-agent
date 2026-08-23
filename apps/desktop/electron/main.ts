@@ -137,6 +137,7 @@ import {
   removeConnection,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
+  reuseMatchingPrimarySshBackend,
   setConnectionLaunchMode,
   setLastUsedConnection,
   setPrimaryConnection,
@@ -9669,7 +9670,7 @@ async function reachablePreviewUrl(webContentsId: number, rawUrl: string): Promi
   }
 }
 
-function effectiveSshConfigFingerprint(sshConfig) {
+async function effectiveSshConfigFingerprint(sshConfig) {
   const ssh =
     process.platform === 'win32'
       ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
@@ -9686,14 +9687,14 @@ function effectiveSshConfigFingerprint(sshConfig) {
   }
 
   args.push('--', sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host)
-  const output = execFileSync(ssh, args, { encoding: 'utf8', timeout: 10_000, windowsHide: true })
+  const output = await execText(ssh, args, { timeout: 10_000 })
 
   return crypto.createHash('sha256').update(output).digest('hex')
 }
 
-async function bootstrapSshConnection(profile, sshConfig, reuseToken, source) {
+async function bootstrapSshConnection(profile, sshConfig, reuseToken, source, resolvedEffectiveFingerprint?) {
   const scope = sshScopeKey(profile)
-  const effectiveConfigFingerprint = effectiveSshConfigFingerprint(sshConfig)
+  const effectiveConfigFingerprint = resolvedEffectiveFingerprint || (await effectiveSshConfigFingerprint(sshConfig))
   const resolvedConfig = { ...sshConfig, effectiveConfigFingerprint }
   const fingerprint = sshConfigFingerprint(scope, resolvedConfig)
 
@@ -9835,7 +9836,19 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     result.ownershipId
   )
 
-  return { ...connection, remoteHermesVersion: result.hermesVersion || '' }
+  return {
+    ...connection,
+    remoteHermesVersion: result.hermesVersion || '',
+    ssh: {
+      effectiveConfigFingerprint: sshConfig.effectiveConfigFingerprint,
+      host: sshConfig.host,
+      keyPath: sshConfig.keyPath,
+      port: sshConfig.port,
+      remoteHermesPath: sshConfig.remoteHermesPath,
+      remoteProfile: sshConfig.remoteProfile,
+      user: sshConfig.user
+    }
+  }
 }
 
 function persistSshConnectionToken(profile, source, token) {
@@ -10492,6 +10505,64 @@ async function ensureRegistryBackend(connectionId, profile) {
     throw new Error(`No connection with id "${id}".`)
   }
 
+  const profileKey = String(profile ?? '').trim() || 'default'
+  let resolvedRegistrySshConfig
+  let registryEffectiveFingerprintPromise: null | Promise<string> = null
+
+  const resolveRegistrySshConfig = () => {
+    if (source.kind !== 'ssh') {
+      return null
+    }
+
+    if (!resolvedRegistrySshConfig) {
+      resolvedRegistrySshConfig = normalizeSshConfig({
+        mode: 'ssh',
+        host: source.host,
+        user: source.user,
+        port: source.port,
+        keyPath: source.keyPath,
+        remoteHermesPath: source.remoteHermesPath,
+        remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
+      })
+    }
+
+    return resolvedRegistrySshConfig
+  }
+
+  const resolveRegistryEffectiveFingerprint = () => {
+    if (!registryEffectiveFingerprintPromise) {
+      const sshConfig = resolveRegistrySshConfig()
+
+      registryEffectiveFingerprintPromise = sshConfig
+        ? effectiveSshConfigFingerprint(sshConfig)
+        : Promise.reject(new Error(`SSH connection "${source.label}" has no host configured.`))
+    }
+
+    return registryEffectiveFingerprintPromise
+  }
+
+  // The v2 registry is migrated from (but intentionally coexists with) the
+  // v1 primary connection config. Reuse the already-booted primary descriptor
+  // when both identities match; otherwise a default-profile registry request
+  // opens a second SSH dashboard under a different scope and the competing
+  // lifecycle probes repeatedly tear down each other's tunnel.
+  const primary = await reuseMatchingPrimarySshBackend({
+    connectionId: id,
+    effectiveFingerprint: resolveRegistryEffectiveFingerprint,
+    ensurePrimary: () => ensureBackend(profile),
+    profile,
+    registry,
+    source
+  })
+
+  if (primary) {
+    return {
+      ...primary,
+      profile: profileKey,
+      connectionId: id
+    }
+  }
+
   if (source.kind === 'local') {
     // The registry's 'local' entry means THIS machine's runtime — always.
     // ensureBackend() follows the v1 routing table, which resolves to a
@@ -10502,8 +10573,6 @@ async function ensureRegistryBackend(connectionId, profile) {
     // the v1 route is genuinely local; otherwise spawn/reuse a forced-local
     // child pooled under the composite 'conn:local::<profile>' key so it
     // can't collide with the v1 remote descriptor cached at the bare key.
-    const profileKey = String(profile ?? '').trim() || 'default'
-
     profileDeletionGate.assertCanStart(profileKey)
 
     const localRoute = resolveRegistryLocalRoute(profileKey, {
@@ -10613,7 +10682,14 @@ async function ensureRegistryBackend(connectionId, profile) {
     remoteBaseUrl: null
   }
 
-  entry.connectionPromise = connectRegistryBackend(source, profile, key, entry).catch(error => {
+  entry.connectionPromise = connectRegistryBackend(
+    source,
+    profile,
+    key,
+    entry,
+    resolveRegistrySshConfig(),
+    source.kind === 'ssh' ? resolveRegistryEffectiveFingerprint() : null
+  ).catch(error => {
     if (backendPool.get(key) === entry) {
       backendPool.delete(key)
     }
@@ -10629,7 +10705,14 @@ async function ensureRegistryBackend(connectionId, profile) {
 // Dial a non-local registry connection for one profile. Never spawns a local
 // child (entry.process stays null — stopPoolBackend/evict already tolerate
 // that shape from remote per-profile overrides).
-async function connectRegistryBackend(source, profile, key, poolEntry) {
+async function connectRegistryBackend(
+  source,
+  profile,
+  key,
+  poolEntry,
+  resolvedSshConfig?,
+  resolvedEffectiveFingerprint?: null | Promise<string>
+) {
   const profileKey = String(profile ?? '').trim() || 'default'
 
   if (source.kind === 'ssh') {
@@ -10637,15 +10720,7 @@ async function connectRegistryBackend(source, profile, key, poolEntry) {
     // pair owns its own tunnel + remote dashboard; the profile that re-homes
     // the REMOTE process is the entry's remoteProfile or the requested one —
     // never the composite string.
-    const sshConfig = normalizeSshConfig({
-      mode: 'ssh',
-      host: source.host,
-      user: source.user,
-      port: source.port,
-      keyPath: source.keyPath,
-      remoteHermesPath: source.remoteHermesPath,
-      remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
-    })
+    const sshConfig = resolvedSshConfig
 
     if (!sshConfig) {
       throw new Error(`SSH connection "${source.label}" has no host configured.`)
@@ -10655,7 +10730,8 @@ async function connectRegistryBackend(source, profile, key, poolEntry) {
       key,
       sshConfig,
       decryptDesktopSecret(source.token),
-      `registry:${source.id}`
+      `registry:${source.id}`,
+      resolvedEffectiveFingerprint ? await resolvedEffectiveFingerprint : undefined
     )
 
     poolEntry.remoteBaseUrl = connection.baseUrl

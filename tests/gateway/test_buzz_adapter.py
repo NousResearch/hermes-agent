@@ -690,6 +690,67 @@ class TestMentionGating:
     async def test_name_mention_dispatched(self, adapter):
         await self._poll_with(adapter, _event("e1", content="hey @Chip can you help?", created_at=10))
         assert len(adapter._dispatched) == 1
+        assert adapter._dispatched[0]["text"] == "hey @Chip can you help?"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "Chip should stay silent",
+            "ask @Chipmunk instead",
+            "ask @Chip-bot instead",
+            "email chip@example.com",
+        ],
+    )
+    async def test_bare_or_prefix_name_does_not_dispatch(self, adapter, content):
+        await self._poll_with(adapter, _event("e1", content=content, created_at=10))
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("identity", [SELF_NPUB, SELF_PUBKEY])
+    async def test_identity_text_dispatches(self, adapter, identity):
+        await self._poll_with(
+            adapter,
+            _event("e1", content=f"please check {identity}", created_at=10),
+        )
+        assert len(adapter._dispatched) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "content",
+        [f"a{SELF_PUBKEY}b", f"x{SELF_NPUB}y"],
+    )
+    async def test_identity_substring_does_not_dispatch(self, adapter, content):
+        await self._poll_with(
+            adapter,
+            _event("e1", content=content, created_at=10),
+        )
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_signed_recipient_tag_dispatches_without_text_mention(self, adapter):
+        event = _event("e1", content="please take a look", created_at=10)
+        event["tags"].append(["p", SELF_PUBKEY])
+        await self._poll_with(adapter, event)
+        assert len(adapter._dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_other_recipient_tag_does_not_dispatch(self, adapter):
+        event = _event("e1", content="please take a look", created_at=10)
+        event["tags"].append(["p", "b" * 64])
+        await self._poll_with(adapter, event)
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_require_mention_false_still_dispatches_unaddressed_message(self, adapter):
+        adapter.require_mention = False
+        await self._poll_with(adapter, _event("e1", content="just chatting", created_at=10))
+        assert len(adapter._dispatched) == 1
+
+    def test_strip_mention_requires_at_for_display_name(self, adapter):
+        assert adapter._strip_mention("@Chip: /whoami") == "/whoami"
+        assert adapter._strip_mention("Chip: please review") == "Chip: please review"
+        assert adapter._strip_mention("@Chip-bot: please review") == "@Chip-bot: please review"
 
 
     @pytest.mark.asyncio
@@ -1034,9 +1095,8 @@ class TestDmClassification:
 
 
     @pytest.mark.asyncio
-    async def test_channel_like_metadata_blocks_latch_even_without_mention(self, adapter):
-        """Second guard on its own: even a p-tagged, un-mentioned message
-        cannot reclassify a conversation whose metadata says real channel."""
+    async def test_channel_ptag_dispatches_without_latching(self, adapter):
+        """A signed recipient tag wakes a channel without turning it into a DM."""
         adapter._channel_meta[CHANNEL]["description"] = ""
         adapter._channel_meta[CHANNEL]["name"] = "announcements"
         await self._poll_with(
@@ -1044,7 +1104,26 @@ class TestDmClassification:
             _tagged_event("e1", CHANNEL, content="fyi everyone", p=SELF_PUBKEY),
         )
         assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
-        assert adapter._dispatched == []
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+
+        await self._poll_with(
+            adapter, CHANNEL,
+            _tagged_event(
+                "e2", CHANNEL, content="plain follow-up", created_at=1001, p=None
+            ),
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+
+    @pytest.mark.asyncio
+    async def test_missing_metadata_never_latches_group_as_dm(self, adapter):
+        adapter._channel_meta.pop(CHANNEL)
+        await self._poll_with(
+            adapter, CHANNEL,
+            _tagged_event("e1", CHANNEL, content="tag-only mention", p=SELF_PUBKEY),
+        )
+        assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+        assert adapter._may_reclassify_as_dm(CHANNEL) is False
 
 
     @pytest.mark.asyncio

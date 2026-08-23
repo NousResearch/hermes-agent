@@ -1409,9 +1409,14 @@ class BuzzAdapter(BasePlatformAdapter):
         # A NIP-10 thread reply whose direct parent is one of our messages is
         # treated as addressed (parity with Signal/WhatsApp; fixes #75826 —
         # e.g. Desktop "/approve session" replies that never type @name).
-        # DMs always dispatch. p-tag semantics stay untouched (#68871).
-        mentioned = self._is_mentioned(content)
-        if not is_dm and self.require_mention and not mentioned and not reply_to_is_own:
+        # Explicit addressing is a text @mention OR a signed recipient p-tag
+        # (#92781). DMs always dispatch.
+        if (
+            not is_dm
+            and self.require_mention
+            and not self._is_addressed(event)
+            and not reply_to_is_own
+        ):
             return
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
@@ -1452,43 +1457,42 @@ class BuzzAdapter(BasePlatformAdapter):
     # ── DM classification (issue #68871) ──────────────────────────────────
     #
     # ``buzz dms list`` returns [] on some hosted relays even when DM
-    # conversations exist, so DMs leak in via ``channels list`` and get
-    # watched as chat_type="group" — which wrongly puts them behind the
-    # channel mention gate.  Classification therefore keys off the Nostr
-    # tags of the messages themselves.  Observed on a live hosted relay:
-    #
-    #   * every message another user sends IN A DM carries a structural
-    #     ["p", <our pubkey>] tag, even when the text never mentions us
-    #     (recipient addressing);
-    #   * in a real channel, a ["p", <our pubkey>] tag appears only when the
-    #     text visibly @mentions us (typed mention, with or without a reply
-    #     ["e", ...] tag) — never on plain broadcasts.
-    #
-    # So "p-tagged to self WITHOUT a visible mention in the content" is the
-    # DM discriminator: in a channel that combination does not occur, and a
-    # channel reply/mention that p-tags us is excluded because the mention
-    # is right there in the text.  As a second, independent guard, a
-    # conversation whose ``channels list`` metadata looks like a real
-    # community channel (real name / non-empty description) is never
-    # reclassified at all, whereas relay-materialized DMs are always named
-    # "DM" with an empty description.  Nothing is lost while unlatched: a
-    # DM message that DOES mention us dispatches through the mention gate
-    # anyway, so the latch flips exactly on the first message that needs it.
+    # conversations exist, so DMs can leak in through ``channels list`` as
+    # chat_type="group".  Relay-materialized DMs are named "DM" with an empty
+    # description, and their messages carry a structural p-tag to us.  Only
+    # that explicit metadata shape may latch to DM; named channels and missing
+    # metadata fail closed.  In normal channels the same p-tag is an addressing
+    # signal and must wake the agent without changing the conversation type.
 
     def _may_reclassify_as_dm(self, channel_id: str) -> bool:
         """True when the conversation's metadata does not rule out a DM.
 
         Known real community channels (real name or non-empty description in
         ``channels list``) must never turn into DMs just because a message
-        p-tags us.  A conversation with no metadata at all is trusted only
-        when the user did not explicitly configure it as a watched channel.
+        p-tags us.  Missing metadata fails closed rather than allowing a named
+        channel to latch as a DM before its metadata arrives.
         """
         meta = self._channel_meta.get(channel_id)
         if meta is None:
-            return channel_id not in self.channels
+            return False
         name = str(meta.get("name") or "").strip()
         description = str(meta.get("description") or "").strip()
         return name == "DM" and not description
+
+    def _p_tagged_to_self(self, event: dict) -> bool:
+        """True when the signed event addresses this identity by pubkey."""
+        if not self._self_pubkey:
+            return False
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return False
+        return any(
+            isinstance(tag, (list, tuple))
+            and len(tag) > 1
+            and tag[0] == "p"
+            and str(tag[1]).lower() == self._self_pubkey
+            for tag in tags
+        )
 
     def _is_direct_message_event(self, channel_id: str, event: dict) -> bool:
         """True when ``event`` is shaped like a direct message to us: a chat
@@ -1502,17 +1506,7 @@ class BuzzAdapter(BasePlatformAdapter):
         pubkey = str(event.get("pubkey") or "").lower()
         if not pubkey or pubkey == self._self_pubkey:
             return False
-        tags = event.get("tags")
-        if not isinstance(tags, list):
-            return False
-        p_tagged_to_self = any(
-            isinstance(tag, (list, tuple))
-            and len(tag) > 1
-            and tag[0] == "p"
-            and str(tag[1]).lower() == self._self_pubkey
-            for tag in tags
-        )
-        if not p_tagged_to_self:
+        if not self._p_tagged_to_self(event):
             return False
         content = event.get("content")
         return isinstance(content, str) and not self._is_mentioned(content)
@@ -1528,17 +1522,32 @@ class BuzzAdapter(BasePlatformAdapter):
         logger.info("Buzz: conversation %s reclassified as DM (message p-tagged to self)", channel_id)
 
     def _is_mentioned(self, content: str) -> bool:
-        """True when the message addresses this agent (npub, hex, or name)."""
+        """True when text explicitly addresses this agent (npub, hex, or @name)."""
         lowered = content.lower()
-        if self._self_pubkey and self._self_pubkey in lowered:
-            return True
-        if self._self_npub and self._self_npub in lowered:
-            return True
+        if self._self_pubkey and re.fullmatch(r"[0-9a-f]{64}", self._self_pubkey):
+            pattern = rf"(?<![0-9a-f]){re.escape(self._self_pubkey)}(?![0-9a-f])"
+            if re.search(pattern, lowered):
+                return True
+        if self._self_npub:
+            pattern = rf"(?<![a-z0-9]){re.escape(self._self_npub.lower())}(?![a-z0-9])"
+            if re.search(pattern, lowered):
+                return True
         if self._display_name:
-            pattern = rf"(?<!\w)@?{re.escape(self._display_name.lower())}(?!\w)"
+            pattern = (
+                rf"(?<![\w@])@{re.escape(self._display_name.lower())}"
+                r"(?=$|[\s,;.!?:)\]}])"
+            )
             if re.search(pattern, lowered):
                 return True
         return False
+
+    def _is_addressed(self, event: dict) -> bool:
+        """True when a group event carries an explicit text or p-tag address."""
+        content = event.get("content")
+        return (
+            isinstance(content, str)
+            and (self._is_mentioned(content) or self._p_tagged_to_self(event))
+        )
 
     def _strip_mention(self, content: str) -> str:
         """Remove a leading @mention of this agent so the remaining text can be
@@ -1554,16 +1563,18 @@ class BuzzAdapter(BasePlatformAdapter):
         text = content.strip()
         candidates = []
         if self._display_name:
-            candidates.append(re.escape(self._display_name))
+            candidates.append(
+                rf"@{re.escape(self._display_name)}" + r"(?=$|[\s,;.!?:)\]}])"
+            )
         if self._self_npub:
-            candidates.append(re.escape(self._self_npub))
+            candidates.append(rf"@?{re.escape(self._self_npub)}(?![a-z0-9])")
         if self._self_pubkey:
-            candidates.append(re.escape(self._self_pubkey))
+            candidates.append(rf"@?{re.escape(self._self_pubkey)}(?![0-9a-f])")
         if not candidates:
             return text
-        # Optional leading '@', one of the identity forms, optional trailing
-        # ':' or ',' and surrounding whitespace.
-        pattern = rf"^@?(?:{'|'.join(candidates)})[\s:,]*"
+        # Display names require '@'; npub and hex identities are already
+        # unambiguous and may optionally include it.
+        pattern = rf"^(?:{'|'.join(candidates)})[\s:,]*"
         stripped = re.sub(pattern, "", text, count=1, flags=re.IGNORECASE)
         return stripped.strip()
 

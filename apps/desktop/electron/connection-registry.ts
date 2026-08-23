@@ -232,9 +232,7 @@ export function resolvedConnectionId(
       return null
     }
 
-    return registry.connections.some(connection => connection.id === explicitConnectionId)
-      ? explicitConnectionId
-      : null
+    return registry.connections.some(connection => connection.id === explicitConnectionId) ? explicitConnectionId : null
   }
 
   if (descriptor.mode === 'local') {
@@ -335,11 +333,7 @@ export function resolvedConnectionId(
   return matchingConnectionId(registry, route, 'unique') ?? null
 }
 
-function normalizedSshTarget(route: {
-  host?: unknown
-  port?: unknown
-  user?: unknown
-}): null | string {
+function normalizedSshTarget(route: { host?: unknown; port?: unknown; user?: unknown }): null | string {
   const ssh = normalizeSshConfig({ ...route, mode: 'ssh' })
 
   if (!ssh) {

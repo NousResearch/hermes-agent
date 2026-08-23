@@ -163,6 +163,39 @@ class TestStemming:
 
         assert dispatched == [expected_json] * 64
 
+    def test_stemmer_is_safe_under_concurrent_cache_misses(self):
+        """Hammer the raw stemmer from 8 threads with cache-missing input.
+
+        ``_stem``'s lru_cache means a small corpus warms after a handful of
+        misses and later iterations never reach the stemmer, so a shared
+        (non-thread-local) stemmer instance can survive a threaded test over
+        repeated tokens. This test bypasses the cache: every call stems a
+        unique token via ``_stem.__wrapped__``, so thousands of stems execute
+        concurrently on the underlying per-thread instances. A shared
+        stemmer's mutable parse state produces wrong stems or raises here.
+        """
+        from tools.tool_search import _stem
+
+        words = ["issues", "creating", "meetings", "categories", "searching"]
+
+        def serial_baseline(salt):
+            return [
+                _stem.__wrapped__(f"{word}x{salt}n{i}")
+                for i, word in enumerate(words)
+            ]
+
+        expected = {salt: serial_baseline(salt) for salt in range(400)}
+
+        def worker(salt):
+            return salt, [
+                _stem.__wrapped__(f"{word}x{salt}n{i}")
+                for i, word in enumerate(words)
+            ]
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for salt, stems in pool.map(worker, range(400)):
+                assert stems == expected[salt]
+
 
 # ---------------------------------------------------------------------------
 # Exact-name ranking and shared corpus statistics

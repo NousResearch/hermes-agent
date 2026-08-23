@@ -79,7 +79,7 @@ import {
   setMessages
 } from '@/store/session'
 import { requestForSessionProfile } from '@/store/session-request-router'
-import { $focusedStoredSessionId, sessionTileOwnerRoute } from '@/store/session-states'
+import { $focusedStoredSessionId, sessionTileOwnerRoute, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isHudWindow } from '@/store/windows'
@@ -296,20 +296,30 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // When chrome stays on the launch backend (Bot Mode / all-profiles
   // navigation), session-owned RPCs still have to hit the session's backend.
   //
+  // Route by the SESSION THIS RPC TARGETS first: a session-scoped RPC carries
+  // its target in params.session_id, and dispatching it by the WINDOW's
+  // focused tile instead sends a background bot's prompt.submit to whichever
+  // backend the focused pane happens to own — the bot then runs on the
+  // default backend (its store, its logs), or 4001s when default doesn't
+  // hold the session. params.session_id is a RUNTIME id while tile routes
+  // key on the STORED id, so translate via the tile map before resolving.
+  // Only when the RPC names no session (config reads, list refreshes, cron)
+  // does the focused-tile key apply — those are genuinely window-ambient.
+  //
   // A bot chat is a persisted TILE that already records the EXACT owning route
   // (connectionId + profile) it was opened with — the same authoritative owner
-  // Sessions mode reads off the session row. Prefer it, keyed on the FOCUSED
-  // stored id: a tile is never $selectedStoredSessionId (that stays the primary
-  // pane), so routing off `selected` would send the bot's RPC to the primary's
-  // profile. The canonical Bot Chat is also hidden, so it never appears in
-  // $sessions and rememberedSessionProfile's row lookup misses and falls back to
-  // the ACTIVE profile — the Bot Mode "session not found" / hang. The tile route
-  // is per-session, survives relaunch, and needs no list membership, so it fixes
-  // an already-open chat too. Fall back to the list-derived profile (keyed on
-  // the same focused id) only when no tile route exists.
+  // Sessions mode reads off the session row. Prefer it. The canonical Bot Chat
+  // is hidden, so it never appears in $sessions and rememberedSessionProfile's
+  // row lookup misses and falls back to the ACTIVE profile — the Bot Mode
+  // "session not found" / hang. The tile route is per-session, survives
+  // relaunch, and needs no list membership, so it fixes an already-open chat
+  // too. Fall back to the list-derived profile only when no tile route exists.
   const requestGateway = useCallback(
     <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
-      const routingSessionId = $focusedStoredSessionId.get() ?? selectedStoredSessionIdRef.current
+      const paramsSessionId = typeof params?.session_id === 'string' ? params.session_id.trim() : ''
+      const targetStoredSessionId = paramsSessionId ? storedSessionIdForRuntimeId(paramsSessionId) : null
+
+      const routingSessionId = targetStoredSessionId ?? $focusedStoredSessionId.get() ?? selectedStoredSessionIdRef.current
 
       const owner =
         (routingSessionId ? sessionTileOwnerRoute(routingSessionId) : undefined) ??

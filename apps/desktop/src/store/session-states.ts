@@ -738,6 +738,34 @@ export function sessionTileOwnerRoute(storedSessionId: string): SessionProfileRo
   return $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute
 }
 
+/** Resolve a session id THAT MAY BE A RUNTIME ID to the stored id its tile
+ *  keys on. Session-scoped RPC params carry the runtime id, while tile owner
+ *  routes (and everything else durable) key on the stored id — so routing an
+ *  RPC by its own target session needs this translation first (#93080 /
+ *  Bot Mode misroute). Ids that match a tile's stored id pass through, so
+ *  callers can hand in either identity. Unknown ids return null: the caller
+ *  falls back to its ambient routing rather than guessing. */
+export function storedSessionIdForRuntimeId(sessionId: string): null | string {
+  const tiles = $sessionTiles.get()
+
+  // Stored-id claims are authoritative (durable identity): check them all
+  // before any runtime binding, so a stale tile whose dead runtimeId collides
+  // with a live tile's stored id cannot hijack the lookup.
+  for (const tile of tiles) {
+    if (tile.storedSessionId === sessionId) {
+      return tile.storedSessionId
+    }
+  }
+
+  for (const tile of tiles) {
+    if (tile.runtimeId && tile.runtimeId === sessionId) {
+      return tile.storedSessionId
+    }
+  }
+
+  return null
+}
+
 export function setSessionTileWorkspaceScope(storedSessionId: string, scope: SessionTileWorkspaceScope): boolean {
   const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
   const workspaceOwnerKey = scope.workspaceMode === 'bots' ? scope.workspaceOwnerKey : undefined

@@ -1034,16 +1034,34 @@ _GATEWAY_DIRECT_LABELS = {
 
 _ALL_GATEWAY_KEYS = ("web", "image_gen", "video_gen", "tts", "stt", "browser")
 
+# Config section + selection field for each gateway key, matching the
+# field names ``apply_gateway_defaults`` writes and
+# ``get_nous_subscription_features`` reads (web uses "backend", browser
+# uses "cloud_provider", everything else uses "provider").
+_GATEWAY_SECTION_FIELDS = {
+    "web": ("web", "backend"),
+    "image_gen": ("image_gen", "provider"),
+    "video_gen": ("video_gen", "provider"),
+    "tts": ("tts", "provider"),
+    "stt": ("stt", "provider"),
+    "browser": ("browser", "cloud_provider"),
+}
+
 
 def get_gateway_eligible_tools(
     config: Optional[Dict[str, object]] = None,
     *,
     force_fresh: bool = False,
-) -> tuple[list[str], list[str], list[str]]:
-    """Return (unconfigured, has_direct, already_managed) tool key lists.
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Return (unconfigured, has_direct, explicit_configured, already_managed)
+    tool key lists.
 
-    - unconfigured: tools with no direct credentials (easy switch)
+    - unconfigured: tools with no direct credentials and no explicit
+      non-nous selection (easy switch, safe to pre-check)
     - has_direct: tools where the user has their own API keys
+    - explicit_configured: tools with an explicit non-nous selection stored
+      (e.g. ``web.backend: searxng``), including keyless backends that would
+      otherwise look unconfigured
     - already_managed: tools already routed through the gateway
 
     All lists are empty when the user is not a paid Nous subscriber or
@@ -1084,6 +1102,7 @@ def get_gateway_eligible_tools(
 
     unconfigured: list[str] = []
     has_direct: list[str] = []
+    explicit_configured: list[str] = []
     already_managed: list[str] = []
     for key in _ALL_GATEWAY_KEYS:
         # Only offer tools the user's entitlement actually covers. For a free
@@ -1093,13 +1112,20 @@ def get_gateway_eligible_tools(
             MANAGED_FEATURE_COVERAGE_CATEGORY[key]
         ):
             continue
+        section_key, field = _GATEWAY_SECTION_FIELDS[key]
+        selected = _selected_provider(config.get(section_key), field)
         if opted_in.get(key):
             already_managed.append(key)
+        elif selected is not None and selected != "nous":
+            # An explicit non-nous selection (e.g. a keyless local backend
+            # like SearXNG or Camofox) is configured on purpose, even
+            # though it has no direct credentials to detect.
+            explicit_configured.append(key)
         elif direct.get(key):
             has_direct.append(key)
         else:
             unconfigured.append(key)
-    return unconfigured, has_direct, already_managed
+    return unconfigured, has_direct, explicit_configured, already_managed
 
 
 def apply_gateway_defaults(
@@ -1193,7 +1219,10 @@ def prompt_enable_tool_gateway(
     Returns the set of tools that were enabled, or empty set if the user
     declined or no tools were eligible.
     """
-    unconfigured, has_direct, already_managed = get_gateway_eligible_tools(
+    # explicit_configured tools (e.g. an explicit `web.backend: searxng`) are
+    # configured on purpose and are never offered here — same treatment as
+    # already_managed, just for a non-nous vendor.
+    unconfigured, has_direct, _explicit_configured, already_managed = get_gateway_eligible_tools(
         config,
         force_fresh=force_fresh,
     )

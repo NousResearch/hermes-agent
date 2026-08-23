@@ -206,6 +206,46 @@ def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
     assert "free" in captured["title"].lower() and "pool" in captured["title"].lower()
 
 
+def test_get_gateway_eligible_tools_treats_explicit_backend_as_configured(monkeypatch):
+    """A keyless local backend (e.g. searxng) has no credentials to detect,
+    but an explicit non-nous selection must still keep it out of
+    'unconfigured' — regression for #92647, where it was pre-checked and a
+    single Enter during `hermes model` overwrote it to `web.backend: nous`.
+    """
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "browser": False},
+    )
+
+    config = {"model": {"provider": "nous"}, "web": {"backend": "searxng"}}
+    unconfigured, has_direct, explicit_configured, already_managed = ns.get_gateway_eligible_tools(config)
+
+    assert "web" not in unconfigured
+    assert "web" not in has_direct
+    assert "web" in explicit_configured
+    assert "web" not in already_managed
+
+
+def test_prompt_enable_tool_gateway_never_offers_explicit_backend(monkeypatch):
+    """The checklist itself must not list (let alone pre-check) a tool with
+    an explicit non-nous selection, so it can never be silently overwritten
+    by an accidental Enter."""
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True))
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "browser": False},
+    )
+    captured = _capture_checklist(monkeypatch, selected_idx=[])
+
+    config = {"model": {"provider": "nous"}, "web": {"backend": "searxng"}}
+    ns.prompt_enable_tool_gateway(config)
+
+    blob = " ".join(captured["items"]).lower()
+    assert "firecrawl" not in blob  # web (searxng-configured) NOT offered
+    assert "image" in blob  # other unconfigured tools still offered
 
 
 def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):

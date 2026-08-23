@@ -298,11 +298,16 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
             $sessionStates.get()[liveSessionId]?.provider !== prevProvider
 
         if (isStale) {
-          if (confirmNotificationId) dismissNotification(confirmNotificationId)
+          if (confirmNotificationId) {
+            dismissNotification(confirmNotificationId)
+          }
+
           return
         }
 
-        if (confirmNotificationId) dismissNotification(confirmNotificationId)
+        if (confirmNotificationId) {
+          dismissNotification(confirmNotificationId)
+        }
 
         paintSelection()
         cacheSelection(selection.provider, selection.model)

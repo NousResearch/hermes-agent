@@ -14,7 +14,7 @@ redirected to ``/login``; ``/api/*`` routes get a 401 JSON envelope.
 from __future__ import annotations
 
 import logging
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Optional
 from urllib.parse import quote
 
 from fastapi import Request
@@ -22,9 +22,10 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from hermes_cli import webapp_sign_in
-from hermes_cli.dashboard_auth import list_interactive_providers, list_session_providers
+from hermes_cli.dashboard_auth import (
+    list_interactive_providers, list_request_auth_providers, list_session_providers)
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
-from hermes_cli.dashboard_auth.base import ProviderError
+from hermes_cli.dashboard_auth.base import ProviderError, Session
 from hermes_cli.dashboard_auth.cookies import (
     clear_session_cookies, clear_sso_attempt_cookie, detect_https, read_session_cookies,
     read_session_provider, read_sso_attempt_cookie, set_session_cookies,
@@ -260,6 +261,42 @@ def _cookie_write_refusal(
     return None
 
 
+def _verify_request_auth(request: Request) -> Session | None:
+    """Trusted-request auth: try every ``supports_request_auth`` provider.
+
+    Request-scoped analog of ``_verify_access_token``. Called when a protected
+    request carries no valid session cookie (and has already passed the
+    bearer path). Each trusted-request provider vouches for the caller from
+    the request context — e.g. an ``X-Remote-User`` header set by an
+    authenticated reverse proxy — and MUST independently confirm the request
+    came from a trusted proxy (peer allowlist / shared secret) before
+    honoring it.
+
+    A provider that returns ``None`` simply declines and we move to the next;
+    a ``ProviderError`` marks it unavailable (remembered so a transient outage
+    surfaces as 503, mirroring the bearer/cookie paths). There is no refresh:
+    a trusted-request credential is per-request, so every request is verified
+    fresh.
+    """
+    unreachable_provider: str | None = None
+    for provider in list_request_auth_providers():
+        try:
+            session = provider.verify_request_auth(request=request)
+        except ProviderError as err:
+            _log.warning(
+                "dashboard-auth: provider %r unreachable during request auth: %s",
+                provider.name, err,
+            )
+            if unreachable_provider is None:
+                unreachable_provider = provider.name
+            continue
+        if session is not None:
+            return session
+    if unreachable_provider is not None:
+        raise ProviderError(unreachable_provider)
+    return None
+
+
 async def gated_auth_middleware(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     """Engaged only when ``app.state.auth_required is True``."""
@@ -316,7 +353,21 @@ async def gated_auth_middleware(
         if header_session is not None:
             request.state.session = header_session
             return await call_next(request)
-        # No session at all: try the silent portal bounce before /login.
+        # No session at all: a trusted-request provider — e.g. an authenticated reverse proxy that
+        # set ``X-Remote-User`` — gets a chance to vouch for the caller from the request context
+        # before the /login interstitial (or the auto-SSO bounce). The provider returns None when
+        # it cannot confirm the request came from a trusted proxy, and we fall through normally;
+        # the credential is per-request, so there is no refresh.
+        try:
+            request_auth_session = _verify_request_auth(request)
+        except ProviderError as e:
+            # A trusted-request provider's backing store was unreachable and none accepted the
+            # request — transient outage, not 401.
+            return unreachable_response(str(e))
+        if request_auth_session is not None:
+            request.state.session = request_auth_session
+            return await call_next(request)
+        # No trusted-request provider vouched. Try the silent portal bounce before /login.
         auto = _auto_sso_response(request)
         return auto if auto is not None else _unauth_response(request, reason="no_cookie")
     if webapp_sign_in.applies(request) and not webapp_sign_in.check(request):

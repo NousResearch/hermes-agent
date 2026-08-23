@@ -803,6 +803,7 @@ def classify_api_error(
         status_code = 429
     body = _extract_error_body(error)
     error_code = _extract_error_code(body)
+    response_headers = _extract_response_headers(error)
 
     # Build a comprehensive error message string for pattern matching.
     # str(error) alone may not include the body message (e.g. OpenAI SDK's
@@ -1047,6 +1048,7 @@ def classify_api_error(
             provider=provider_lower, model=model_lower,
             approx_tokens=approx_tokens, context_length=context_length,
             num_messages=num_messages,
+            response_headers=response_headers,
             result_fn=_result,
         )
         if classified is not None:
@@ -1204,6 +1206,7 @@ def _classify_by_status(
     approx_tokens: int,
     context_length: int,
     num_messages: int = 0,
+    response_headers=None,
     result_fn,
 ) -> Optional[ClassifiedError]:
     """Classify based on HTTP status code with message-aware refinement."""
@@ -1348,8 +1351,10 @@ def _classify_by_status(
             or "usage limit" in error_msg
             or "usage_limit_reached" in error_msg
         )
-        has_transient_signal = any(
-            p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS
+        has_transient_signal = _has_usage_limit_transient_signal(
+            error_msg,
+            body,
+            response_headers,
         )
         if has_usage_limit and not has_transient_signal:
             return result_fn(
@@ -1463,6 +1468,41 @@ def _classify_by_status(
         return result_fn(FailoverReason.server_error, retryable=True)
 
     return None
+
+
+def _has_usage_limit_transient_signal(
+    error_msg: str,
+    body: dict,
+    response_headers,
+) -> bool:
+    """Return whether a usage-limit response identifies a reset window."""
+    if any(pattern in error_msg for pattern in _USAGE_LIMIT_TRANSIENT_SIGNALS):
+        return True
+
+    payloads = [body]
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        payloads.append(body["error"])
+    reset_fields = ("resets_in_seconds", "resets_at", "reset_at", "retry_after")
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        if any(
+            payload.get(field) is not None and payload.get(field) != ""
+            for field in reset_fields
+        ):
+            return True
+
+    if response_headers and hasattr(response_headers, "get"):
+        for header in (
+            "retry-after",
+            "Retry-After",
+            "x-ratelimit-reset",
+            "X-RateLimit-Reset",
+        ):
+            value = response_headers.get(header)
+            if value is not None and value != "":
+                return True
+    return False
 
 
 def _classify_402(error_msg: str, result_fn) -> ClassifiedError:
@@ -1978,6 +2018,21 @@ def _extract_error_body(error: Exception) -> dict:
                     return json_body
             except Exception:
                 pass
+        cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if cause is None or cause is current:
+            break
+        current = cause
+    return {}
+
+
+def _extract_response_headers(error: Exception):
+    """Walk the error and its cause chain to find response headers."""
+    current = error
+    for _ in range(5):
+        response = getattr(current, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers and hasattr(headers, "get"):
+            return headers
         cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
         if cause is None or cause is current:
             break

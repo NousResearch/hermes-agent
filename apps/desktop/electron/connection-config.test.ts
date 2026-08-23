@@ -35,6 +35,7 @@ import {
   normalizeRemoteHeaders,
   normalizeSshConfig,
   normAuthMode,
+  pathForRegistryBackendRequest,
   pathWithGlobalRemoteProfile,
   pathWithProfileScope,
   profileHasRemoteConnection,
@@ -482,6 +483,27 @@ test('pathWithProfileScope keeps an explicit profile query and no-ops on empty p
   assert.equal(pathWithProfileScope('/api/cron/jobs?profile=all', 'research'), '/api/cron/jobs?profile=all')
   assert.equal(pathWithProfileScope('/api/cron/jobs', ''), '/api/cron/jobs')
   assert.equal(pathWithProfileScope('/api/cron/jobs', null), '/api/cron/jobs')
+})
+
+test('pathForRegistryBackendRequest uses the resolved registry backend scope', () => {
+  assert.equal(
+    pathForRegistryBackendRequest('/api/fs/read-data-url?path=%2Fsrv%2Fimage.png', 'research', {
+      sharedRemote: true
+    }),
+    '/api/fs/read-data-url?path=%2Fsrv%2Fimage.png&profile=research'
+  )
+  assert.equal(
+    pathForRegistryBackendRequest('/api/fs/download?path=%2Fsrv%2Freport.pdf&profile=mara', 'mara', {
+      remoteProfile: 'default'
+    }),
+    '/api/fs/download?path=%2Fsrv%2Freport.pdf&profile=default'
+  )
+  assert.equal(
+    pathForRegistryBackendRequest('/api/fs/download?path=%2Fsrv%2Freport.pdf', 'mara', {
+      remoteProfile: 'default'
+    }),
+    '/api/fs/download?path=%2Fsrv%2Freport.pdf'
+  )
 })
 
 // --- pathWithGlobalRemoteProfile ---

@@ -8,7 +8,8 @@ import {
   gatewayFilePath,
   isNotFoundError,
   parseDataUrlToBuffer,
-  pumpStreamToFile
+  pumpStreamToFile,
+  resolveGatewayFileBackend
 } from './gateway-file-download'
 
 // A Readable-like response driven manually in tests.
@@ -187,4 +188,56 @@ test('isNotFoundError matches only HTTP 404', () => {
   assert.equal(isNotFoundError(forbidden), false)
   assert.equal(isNotFoundError(new Error('plain')), false)
   assert.equal(isNotFoundError(null), false)
+})
+
+test('resolveGatewayFileBackend pins registered files to their owning connection', async () => {
+  const calls: string[] = []
+
+  const route = await resolveGatewayFileBackend(
+    { connectionId: '  work-ssh  ', profile: ' default ' },
+    {
+      ensureLegacy: async profile => {
+        calls.push(`legacy:${profile}`)
+
+        return { baseUrl: 'http://local.invalid' }
+      },
+      ensureRegistry: async (connectionId, profile) => {
+        calls.push(`registry:${connectionId}:${profile}`)
+
+        return { baseUrl: 'http://ssh.invalid' }
+      }
+    }
+  )
+
+  assert.deepEqual(calls, ['registry:work-ssh:default'])
+  assert.deepEqual(route, {
+    connection: { baseUrl: 'http://ssh.invalid' },
+    connectionId: 'work-ssh',
+    profile: 'default'
+  })
+})
+
+test('resolveGatewayFileBackend preserves the legacy route when no connection owns the file', async () => {
+  const calls: string[] = []
+
+  const route = await resolveGatewayFileBackend(
+    { profile: 'coder' },
+    {
+      ensureLegacy: async profile => {
+        calls.push(`legacy:${profile}`)
+
+        return { baseUrl: 'http://local.invalid' }
+      },
+      ensureRegistry: async connectionId => {
+        calls.push(`registry:${connectionId}`)
+
+        return { baseUrl: 'http://remote.invalid' }
+      }
+    }
+  )
+
+  assert.deepEqual(calls, ['legacy:coder'])
+  assert.equal(route.connectionId, null)
+  assert.equal(route.profile, 'coder')
+  assert.deepEqual(route.connection, { baseUrl: 'http://local.invalid' })
 })

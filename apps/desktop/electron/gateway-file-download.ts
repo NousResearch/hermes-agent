@@ -35,6 +35,34 @@ export interface PumpDeps {
   unlink: (destPath: string) => Promise<unknown>
 }
 
+export interface GatewayFileBackendDeps<T> {
+  ensureLegacy: (profile: null | string) => Promise<T>
+  ensureRegistry: (connectionId: string, profile: null | string) => Promise<T>
+}
+
+export interface GatewayFileBackendRoute<T> {
+  connection: T
+  connectionId: null | string
+  profile: null | string
+}
+
+/**
+ * Resolve the backend that owns a renderer-requested gateway file. Registered
+ * connections must never fall through to the legacy profile pool: that pool
+ * can point at another machine with another authentication credential.
+ */
+export async function resolveGatewayFileBackend<T>(
+  payload: { connectionId?: unknown; profile?: unknown },
+  deps: GatewayFileBackendDeps<T>
+): Promise<GatewayFileBackendRoute<T>> {
+  const connectionId = String(payload.connectionId ?? '').trim() || null
+  const profile = String(payload.profile ?? '').trim() || null
+
+  const connection = connectionId ? await deps.ensureRegistry(connectionId, profile) : await deps.ensureLegacy(profile)
+
+  return { connection, connectionId, profile }
+}
+
 // Stream `res` into `destPath`, honoring backpressure. On any read/write error
 // the write stream is torn down and the (partial) destination file is removed
 // before the returned promise rejects, so a failed download never leaves a

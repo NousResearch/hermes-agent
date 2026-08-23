@@ -221,7 +221,12 @@ declare global {
       }) => Promise<null | string>
       writeClipboard: (text: string) => Promise<boolean>
       readClipboard: () => Promise<string>
-      saveGatewayFile?: (payload: { path: string; profile?: null | string; suggestedName?: string }) => Promise<{
+      saveGatewayFile?: (payload: {
+        connectionId?: null | string
+        path: string
+        profile?: null | string
+        suggestedName?: string
+      }) => Promise<{
         canceled?: boolean
         path?: string
         saved: boolean

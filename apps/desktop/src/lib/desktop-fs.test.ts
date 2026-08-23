@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection } from '@/api/client'
 import { $connection } from '@/store/session'
 
 import {
@@ -66,12 +67,14 @@ describe('desktop filesystem facade', () => {
   beforeEach(() => {
     stubBridge()
     $connection.set(null)
+    setApiRequestConnection(null)
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.clearAllMocks()
     $connection.set(null)
+    setApiRequestConnection(null)
     setDesktopFsRemotePicker(null)
   })
 
@@ -142,6 +145,24 @@ describe('desktop filesystem facade', () => {
 
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fsrv%2Fproject', profile: 'remote-docker' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'remote-docker' })
+  })
+
+  it('pins SSH filesystem reads to the active registry connection', async () => {
+    $connection.set({
+      connectionId: 'work-ssh',
+      mode: 'remote',
+      profile: 'default',
+      remoteKind: 'ssh'
+    } as never)
+    setApiRequestConnection('work-ssh')
+
+    await readDesktopFileDataUrl('/srv/project/image.png')
+
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'work-ssh',
+      path: '/api/fs/read-data-url?path=%2Fsrv%2Fproject%2Fimage.png',
+      profile: 'default'
+    })
   })
 
   it('keys SSH filesystem caches by stable host identity instead of the forwarded port', () => {

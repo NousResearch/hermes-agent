@@ -87,11 +87,12 @@ import {
   normalizeRemoteHeaders,
   normalizeSshConfig,
   normAuthMode,
+  pathForRegistryBackendRequest,
   pathWithGlobalRemoteProfile,
-  pathWithProfileScope,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  type RegistryBackendRequestScope,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileApiRequest,
@@ -100,7 +101,6 @@ import {
   resolveTestWsUrl,
   savedProfileSsh,
   tokenPreview,
-  translateSelfProfileQuery,
   withTransientRetries
 } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
@@ -166,7 +166,8 @@ import {
   gatewayFilePath,
   isNotFoundError,
   parseDataUrlToBuffer,
-  pumpStreamToFile
+  pumpStreamToFile,
+  resolveGatewayFileBackend
 } from './gateway-file-download'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
@@ -1292,7 +1293,8 @@ function registerMediaProtocol() {
 
       return resolvedPath
     },
-    resolveRemoteConnection: profile => ensureBackend(profile)
+    resolveRemoteConnection: ({ connectionId, profile }) =>
+      connectionId ? ensureRegistryBackend(connectionId, profile) : ensureBackend(profile)
   })
 
   protocol.handle(MEDIA_PROTOCOL, handler)
@@ -7517,30 +7519,63 @@ function readGatewayErrorText(res): Promise<string> {
   })
 }
 
-async function gatedFileAuth(connection) {
+interface GatewayFileConnection extends RegistryBackendRequestScope {
+  authMode?: 'oauth' | 'token'
+  baseUrl: string
+  token?: null | string
+}
+
+interface GatewayFileSaveContext {
+  fallbackName: string
+  suggested: string
+}
+
+interface GatewayFileSavePayload {
+  connectionId?: unknown
+  path?: unknown
+  profile?: unknown
+  suggestedName?: unknown
+}
+
+async function gatedFileAuth(connection: GatewayFileConnection) {
   const nativeAt =
     connection.authMode === 'oauth' ? await ensureNativeAccessToken(connection.baseUrl).catch(() => null) : null
 
   return resolveGatedDownloadAuth(connection.authMode, nativeAt, connection.token)
 }
 
-async function saveGatewayFile(payload: any = {}) {
+function gatewayFileRequestPath(
+  connection: GatewayFileConnection,
+  connectionId: null | string,
+  profile: null | string,
+  requestPath: string
+) {
+  return connectionId
+    ? pathForRegistryBackendRequest(requestPath, profile, connection)
+    : pathWithGlobalRemoteProfile(requestPath, profile, profileRouteOptions(profile))
+}
+
+async function saveGatewayFile(payload: GatewayFileSavePayload = {}) {
   const filePath = gatewayFilePath(payload.path)
 
   if (!filePath) {
     throw new Error('Missing gateway file path')
   }
 
-  const profile = payload.profile || null
-  const connection = await ensureBackend(profile)
+  const { connection, connectionId, profile } = await resolveGatewayFileBackend<GatewayFileConnection>(payload, {
+    ensureLegacy: ensureBackend,
+    ensureRegistry: ensureRegistryBackend
+  })
+
   const suggested = String(payload.suggestedName || '').trim()
   const fallbackName = path.basename(filePath) || suggested || 'download'
   const ctx = { suggested, fallbackName }
 
-  const requestPath = pathWithGlobalRemoteProfile(
-    `/api/fs/download?path=${encodeURIComponent(filePath)}`,
+  const requestPath = gatewayFileRequestPath(
+    connection,
+    connectionId,
     profile,
-    profileRouteOptions(profile)
+    `/api/fs/download?path=${encodeURIComponent(filePath)}`
   )
 
   const url = `${connection.baseUrl}${requestPath}`
@@ -7562,7 +7597,7 @@ async function saveGatewayFile(payload: any = {}) {
     // /api/fs/download 404s here; fall back (ONLY on 404) to the older capped
     // data-URL route so downloads keep working against older backends.
     if (isNotFoundError(error)) {
-      return await saveGatewayFileViaDataUrl(connection, profile, filePath, ctx)
+      return await saveGatewayFileViaDataUrl(connection, connectionId, profile, filePath, ctx)
     }
 
     throw error
@@ -7573,16 +7608,23 @@ async function saveGatewayFile(payload: any = {}) {
 // `/api/fs/read-data-url` route, decode it, and save. Bounded by the gateway's
 // data-URL cap, so it only serves smaller files — enough to keep older gateways
 // working until they gain the streaming route.
-async function saveGatewayFileViaDataUrl(connection, profile, filePath, ctx: any = {}) {
-  const requestPath = pathWithGlobalRemoteProfile(
-    `/api/fs/read-data-url?path=${encodeURIComponent(filePath)}`,
+async function saveGatewayFileViaDataUrl(
+  connection: GatewayFileConnection,
+  connectionId: null | string,
+  profile: null | string,
+  filePath: string,
+  ctx: GatewayFileSaveContext
+) {
+  const requestPath = gatewayFileRequestPath(
+    connection,
+    connectionId,
     profile,
-    profileRouteOptions(profile)
+    `/api/fs/read-data-url?path=${encodeURIComponent(filePath)}`
   )
 
   const url = `${connection.baseUrl}${requestPath}`
   const auth = await gatedFileAuth(connection)
-  let json: any
+  let json: unknown
 
   if (auth.kind === 'bearer') {
     json = await fetchJson(url, null, { bearer: auth.token })
@@ -7592,7 +7634,8 @@ async function saveGatewayFileViaDataUrl(connection, profile, filePath, ctx: any
     json = await fetchJson(url, auth.token)
   }
 
-  const dataUrl = json?.dataUrl
+  const dataUrl =
+    json && typeof json === 'object' && 'dataUrl' in json && typeof json.dataUrl === 'string' ? json.dataUrl : ''
 
   if (!dataUrl) {
     throw new Error('Gateway returned no file data')
@@ -13865,9 +13908,7 @@ async function dispatchRegistryApiRequest(
 ) {
   const connection: any = await ensureRegistryBackend(registryConnectionId, routeProfile)
 
-  const requestPath = connection.sharedRemote
-    ? pathWithProfileScope(request.path, requestProfile)
-    : translateSelfProfileQuery(request.path, requestProfile, connection.remoteProfile)
+  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
 
   return fetchJsonForBackend(connection, requestPath, {
     method: request?.method,

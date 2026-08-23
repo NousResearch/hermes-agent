@@ -811,6 +811,23 @@ function pathWithProfileScope(path, profile) {
   return `${parsed.pathname}${parsed.search}${parsed.hash}`
 }
 
+export interface RegistryBackendRequestScope {
+  remoteProfile?: null | string
+  sharedRemote?: boolean
+}
+
+/**
+ * Scope a REST path for a resolved registry backend. Shared remotes serve
+ * multiple profiles from one process and need an explicit profile query;
+ * isolated SSH backends already own one profile but may translate a Desktop
+ * alias in an existing self-profile filter.
+ */
+function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRequestScope) {
+  return backend.sharedRemote
+    ? pathWithProfileScope(path, profile)
+    : translateSelfProfileQuery(path, profile, backend.remoteProfile)
+}
+
 /**
  * Registry connection a REST request is explicitly pinned to, or null for the
  * legacy profile-routed path. An explicit `local` id must stay registry-scoped:
@@ -985,6 +1002,7 @@ export {
   normalizeRemoteHeaders,
   normalizeSshConfig,
   normAuthMode,
+  pathForRegistryBackendRequest,
   pathWithGlobalRemoteProfile,
   pathWithProfileScope,
   PRIVY_ACCESS_COOKIE_VARIANTS,

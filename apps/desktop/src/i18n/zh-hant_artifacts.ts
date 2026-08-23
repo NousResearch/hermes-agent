@@ -61,6 +61,8 @@ export const zhHantArtifacts = {
     closePane: '關閉預覽窗格',
     loading: '正在載入預覽',
     unavailable: '預覽不可用',
+    missingTitle: '檔案已不存在',
+    missingBody: label => `${label} 已被刪除、移動，或其暫存位置已被清除。此分頁不會在下一次啟動時還原。`,
     opening: '開啟中...',
     hide: '隱藏',
     openPreview: '開啟預覽',

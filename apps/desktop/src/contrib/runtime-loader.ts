@@ -785,7 +785,11 @@ async function watchDiskPluginFile(desktop: NonNullable<Window['hermesDesktop']>
   }
 
   try {
-    record.watchId = (await desktop.watchPreviewFile(record.file)).id
+    const watch = await desktop.watchPreviewFile(record.file)
+
+    // Structured "folder gone" answer — nothing to watch; the poll still
+    // reconciles new folders and edits need a manual reload.
+    record.watchId = isReadFileErrorResult(watch) ? null : watch.id
   } catch {
     // Unwatchable — the poll still reconciles new folders; edits need a
     // manual "Reload desktop plugins".

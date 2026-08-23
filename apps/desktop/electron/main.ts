@@ -290,6 +290,7 @@ import {
   encryptDesktopSecret as encryptDesktopSecretStrict,
   homeRelativeAttachmentCandidates,
   isMissingFileError,
+  missingFileResult,
   readFileDataUrlForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
@@ -6065,7 +6066,21 @@ async function filePathFromPreviewUrl(rawUrl) {
 }
 
 async function watchPreviewFile(owner, rawUrl) {
-  const filePath = await filePathFromPreviewUrl(rawUrl)
+  let filePath
+
+  try {
+    filePath = await filePathFromPreviewUrl(rawUrl)
+  } catch (error) {
+    // A restored tab probing a file that is gone is an expected outcome —
+    // answer it like the read handlers do instead of rejecting (Electron logs
+    // every rejected handler as a stack trace at startup).
+    if (isMissingFileError(error)) {
+      return missingFileResult(rawUrl, error)
+    }
+
+    throw error
+  }
+
   const watchDir = path.dirname(filePath)
   const targetName = path.basename(filePath)
   const id = crypto.randomBytes(12).toString('base64url')
@@ -17598,12 +17613,7 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
     })
   } catch (error) {
     if (isMissingFileError(error)) {
-      return {
-        ok: false as const,
-        error: (error as NodeJS.ErrnoException).code || 'ENOENT',
-        message: error instanceof Error ? error.message : 'File does not exist.',
-        path: String(filePath ?? '')
-      }
+      return missingFileResult(filePath, error)
     }
 
     throw error
@@ -17625,12 +17635,7 @@ ipcMain.handle('hermes:readFileDataUrlForAttach', async (_event, filePath) => {
     })
   } catch (error) {
     if (isMissingFileError(error)) {
-      return {
-        ok: false as const,
-        error: (error as NodeJS.ErrnoException).code || 'ENOENT',
-        message: error instanceof Error ? error.message : 'File does not exist.',
-        path: String(filePath ?? '')
-      }
+      return missingFileResult(filePath, error)
     }
 
     throw error
@@ -17671,12 +17676,7 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
     // every rejected handler with a stack trace even though the renderer shows
     // "preview unavailable" either way.
     if (isMissingFileError(error)) {
-      return {
-        ok: false as const,
-        error: (error as NodeJS.ErrnoException).code || 'ENOENT',
-        message: error instanceof Error ? error.message : 'File does not exist.',
-        path: String(filePath ?? '')
-      }
+      return missingFileResult(filePath, error)
     }
 
     throw error

@@ -84,7 +84,21 @@ export function isReadFileErrorResult(value: unknown): value is HermesReadFileEr
 }
 
 function throwForReadErrorResult(result: HermesReadFileErrorResult): never {
-  throw new Error(result.message || `File read failed: ${result.error}`)
+  throw new DesktopFileMissingError(result)
+}
+
+/** Thrown by the facade when the main process answered that the file is simply
+ *  not on disk (the structured `{ ok:false }` result). Callers that need to
+ *  tell expected absence apart from real failures check `instanceof`; everyone
+ *  else sees an ordinary error whose message matches the old rejection. */
+export class DesktopFileMissingError extends Error {
+  readonly code: string
+
+  constructor(result: HermesReadFileErrorResult) {
+    super(result.message || `File read failed: ${result.error}`)
+    this.name = 'DesktopFileMissingError'
+    this.code = result.error
+  }
 }
 
 export async function readDesktopDir(path: string): Promise<HermesReadDirResult> {

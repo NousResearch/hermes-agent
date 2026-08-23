@@ -7,6 +7,7 @@ import {
   createRemoteDir,
   desktopDefaultCwd,
   desktopFileDiff,
+  DesktopFileMissingError,
   desktopFsCacheKey,
   desktopGitRoot,
   readDesktopDir,
@@ -360,5 +361,16 @@ describe('desktop filesystem facade', () => {
     })
 
     await expect(readDesktopFileDataUrl('/gone.png')).rejects.toThrow('Text preview failed: file does not exist.')
+
+    // The rejection is the typed missing-file error, so callers can tell
+    // expected absence apart from real failures without string matching.
+    readFileText.mockResolvedValueOnce({
+      ok: false,
+      error: 'ENOENT',
+      message: 'gone',
+      path: '/gone.txt'
+    })
+
+    await expect(readDesktopFileText('/gone.txt')).rejects.toBeInstanceOf(DesktopFileMissingError)
   })
 })

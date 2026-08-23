@@ -362,7 +362,10 @@ declare global {
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
-      watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>
+      /** Resolves to `HermesReadFileErrorResult` when the watched file was
+       *  already gone at call time (a restored tab probing a deleted path) —
+       *  structured data instead of a rejection, matching the read handlers. */
+      watchPreviewFile: (url: string) => Promise<HermesPreviewWatch | HermesReadFileErrorResult>
       /** Watch a directory for entry churn (disk-plugin door); same watcher
        *  registry + onPreviewFileChanged channel as watchPreviewFile. Optional:
        *  older Electron shells predate it and fall back to the readdir poll. */

@@ -800,12 +800,42 @@ export function setSessionTileWorkspaceScope(storedSessionId: string, scope: Ses
  *  tile atoms left `resumeTile`'s warm path free to re-bind the same dead
  *  runtime id from the cache, so post-wake tiles repainted empty and never
  *  actually re-resumed. */
-export function resetTileRuntimeBindings() {
+export interface RuntimeReconnectScope {
+  connectionId: string
+  profile?: null | string
+}
+
+export function resetTileRuntimeBindings(reconnectedScope?: null | string | RuntimeReconnectScope) {
   const tiles = $sessionTiles.get()
+
+  const reconnected =
+    typeof reconnectedScope === 'string'
+      ? { connectionId: reconnectedScope.trim(), profile: null }
+      : reconnectedScope
+        ? {
+            connectionId: reconnectedScope.connectionId.trim(),
+            profile: reconnectedScope.profile?.trim() || null
+          }
+        : null
+
+  const belongsToReconnectedRuntime = (tile: SessionTile): boolean => {
+    const route = tile.ownerRoute
+
+    if (!reconnected?.connectionId || route?.connectionId !== reconnected.connectionId) {
+      return false
+    }
+
+    return !reconnected.profile || (route.targetProfile || route.profile) === reconnected.profile
+  }
 
   const preservedStoredIds = new Set(
     tiles
-      .filter(tile => tile.workspaceMode === 'bots' && Boolean(tile.ownerRoute?.connectionId))
+      .filter(
+        tile =>
+          tile.workspaceMode === 'bots' &&
+          Boolean(tile.ownerRoute?.connectionId) &&
+          (!reconnected || !belongsToReconnectedRuntime(tile))
+      )
       .map(tile => tile.storedSessionId)
   )
 

@@ -59,6 +59,7 @@ interface SubmitPromptDeps {
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
+  onRuntimeRecovered?: (runtimeId: string) => void
   requestGateway: GatewayRequest
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
@@ -105,6 +106,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     getRoutedStoredSessionId,
     getRuntimeIdForStoredSession,
     getRouteToken,
+    onRuntimeRecovered,
     requestGateway,
     runtimeIdByStoredSessionIdRef,
     resumeStoredSession,
@@ -731,7 +733,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               requestGateway,
               driftReason: sessionDriftReason,
               onRecovered: recoveredId => {
-                if (targetIsCurrentView()) {
+                if (onRuntimeRecovered) {
+                  onRuntimeRecovered(recoveredId)
+                } else if (targetIsCurrentView()) {
                   activeSessionIdRef.current = recoveredId
                   setActiveSessionId(recoveredId)
                 }
@@ -829,6 +833,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       getRoutedStoredSessionId,
       getRuntimeIdForStoredSession,
       getRouteToken,
+      onRuntimeRecovered,
       requestGateway,
       runtimeIdByStoredSessionIdRef,
       resumeStoredSession,

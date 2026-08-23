@@ -394,7 +394,13 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
     // fail to load — a skipped reconcile there must not surface as an
     // unhandled rejection (the real graph always loads in production).
     void import('@/store/session-states')
-      .then(({ reconcileBusyStatesOnReconnect }) => reconcileBusyStatesOnReconnect(entry.scope))
+      .then(({ reconcileBusyStatesOnReconnect, resetTileRuntimeBindings }) => {
+        reconcileBusyStatesOnReconnect(entry.scope)
+        resetTileRuntimeBindings({
+          connectionId: entry.connectionId || 'local',
+          profile: entry.profile
+        })
+      })
       .catch(() => undefined)
   } catch (error) {
     // The registry no longer knows this connection (removed while we were

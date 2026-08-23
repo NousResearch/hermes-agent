@@ -21,6 +21,11 @@ const gatewayMocks = vi.hoisted(() => {
   }
 })
 
+const reconnectStateMocks = vi.hoisted(() => ({
+  reconcileBusyStatesOnReconnect: vi.fn(),
+  resetTileRuntimeBindings: vi.fn()
+}))
+
 vi.mock('@/hermes', () => ({
   setApiRequestConnection: vi.fn(),
   HermesGateway: class {
@@ -44,6 +49,7 @@ vi.mock('@/store/session', () => ({
   setGatewayState: vi.fn()
 }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
+vi.mock('@/store/session-states', () => reconnectStateMocks)
 
 const {
   activeGateway,
@@ -170,6 +176,28 @@ describe('disposeSecondariesForConnection', () => {
     disposeSecondariesForConnection('ghost')
 
     expect(gatewayMocks.instances[0].close).not.toHaveBeenCalled()
+  })
+})
+
+describe('secondary reconnect runtime scope', () => {
+  it('rebinds only Bot runtimes owned by the reconnected profile route', async () => {
+    installDesktop({
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => descriptorFor(connectionId, profile))
+    })
+
+    await ensureGatewayForAgent('homelab', 'writer')
+    const socket = gatewayMocks.instances[0]
+    socket.connectionState = 'closed'
+
+    reconnectSecondaryGateways()
+
+    await vi.waitFor(() =>
+      expect(reconnectStateMocks.resetTileRuntimeBindings).toHaveBeenCalledWith({
+        connectionId: 'homelab',
+        profile: 'writer'
+      })
+    )
+    expect(reconnectStateMocks.reconcileBusyStatesOnReconnect).toHaveBeenCalledWith('conn:homelab::writer')
   })
 })
 

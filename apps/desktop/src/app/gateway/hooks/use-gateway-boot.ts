@@ -88,6 +88,17 @@ const BOOT_RETRY_MAX_ATTEMPTS = 5
 // loop's 300ms: each attempt may rebuild an SSH master + remote dashboard.
 const BOOT_RETRY_BASE_DELAY_MS = 2_000
 
+/** Registry identity whose runtimes died with the primary connection. */
+export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'connectionId' | 'mode'>): null | string {
+  const connectionId = connection.connectionId?.trim()
+
+  if (connectionId) {
+    return connectionId
+  }
+
+  return connection.mode === 'local' ? 'local' : null
+}
+
 interface GatewayBootOptions {
   beforeConnectionSwitch: () => void
   handleGatewayEvent: (event: RpcEvent) => void
@@ -253,7 +264,7 @@ export function useGatewayBoot({
         reconnectFailingSince = null
         // A respawned backend re-mints (recycles) runtime ids, so any tile's
         // bound runtime id is now stale — drop them so each tile re-resumes.
-        resetTileRuntimeBindings()
+        resetTileRuntimeBindings(primaryRuntimeConnectionId(conn))
         // Same staleness, other half: pre-reconnect busy flags are keyed by
         // those dead runtime ids and would never receive their terminal
         // busy:false — clear them or the sidebar running arc lies forever

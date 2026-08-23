@@ -58,7 +58,7 @@ describe('resetTileRuntimeBindings', () => {
     expect($sessionTiles.get()[0]?.runtimeId).toBeUndefined()
   })
 
-  it('keeps exact-owner Bot runtimes when only the primary gateway reconnects', () => {
+  it('keeps Bot runtimes owned by a different connection', () => {
     const invalidateRuntimeBindings = vi.fn()
     setSessionTileDelegate({ invalidateRuntimeBindings } as unknown as SessionTileDelegate)
     $sessionTiles.set([
@@ -76,10 +76,54 @@ describe('resetTileRuntimeBindings', () => {
       }
     ])
 
-    resetTileRuntimeBindings()
+    resetTileRuntimeBindings('work-vps')
 
     expect($sessionTiles.get()[0]?.runtimeId).toBe('runtime-bot')
     expect(invalidateRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-bot']))
+  })
+
+  it('rebinds only the restarted connection while preserving other Bot gateways', () => {
+    const invalidateRuntimeBindings = vi.fn()
+    setSessionTileDelegate({ invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'barry', mode: 'remote', profile: 'oxcoder', targetProfile: 'oxcoder' },
+        runtimeId: 'runtime-barry-dead',
+        storedSessionId: 'stored-barry-bot',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:barry::oxcoder'
+      },
+      {
+        ownerRoute: { connectionId: 'barry', mode: 'remote', profile: 't2oracle', targetProfile: 't2oracle' },
+        runtimeId: 'runtime-barry-sibling-live',
+        storedSessionId: 'stored-barry-sibling-bot',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:barry::t2oracle'
+      },
+      {
+        ownerRoute: { connectionId: 'work-vps', mode: 'remote', profile: 'ceo', targetProfile: 'ceo' },
+        runtimeId: 'runtime-work-live',
+        storedSessionId: 'stored-work-bot',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:work-vps::ceo'
+      },
+      { runtimeId: 'runtime-session-dead', storedSessionId: 'stored-session' }
+    ])
+
+    resetTileRuntimeBindings({ connectionId: 'barry', profile: 'oxcoder' })
+
+    const [barryBot, barrySibling, workBot, ordinarySession] = $sessionTiles.get()
+
+    expect(barryBot).toMatchObject({ storedSessionId: 'stored-barry-bot' })
+    expect(barryBot).not.toHaveProperty('runtimeId')
+    expect(barrySibling).toMatchObject({
+      runtimeId: 'runtime-barry-sibling-live',
+      storedSessionId: 'stored-barry-sibling-bot'
+    })
+    expect(workBot).toMatchObject({ runtimeId: 'runtime-work-live', storedSessionId: 'stored-work-bot' })
+    expect(ordinarySession).toMatchObject({ storedSessionId: 'stored-session' })
+    expect(ordinarySession).not.toHaveProperty('runtimeId')
+    expect(invalidateRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-barry-sibling-bot', 'stored-work-bot']))
   })
 })
 

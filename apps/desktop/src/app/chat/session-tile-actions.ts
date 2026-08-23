@@ -11,7 +11,6 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useCallback, useMemo, useRef } from 'react'
 
-import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import type { ClientSessionState } from '@/app/types'
 import { useI18n } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
@@ -24,13 +23,14 @@ import { notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
 import { $connection, $sessions, sessionMatchesStoredId } from '@/store/session'
-import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
+import { $sessionStates, patchSessionTile, sessionTileDelegate } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 import type { SessionInfo } from '@/types/hermes'
 
+import type { GatewayRequester } from '../contrib/types'
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
 import {
   appendMidTurnUserMessage,
@@ -96,15 +96,15 @@ export function listTileSessionRow(deps: {
 }
 
 interface SessionTileActionsArgs {
+  requestGateway: GatewayRequester
   runtimeId: string
   scope: ComposerScope
   storedSessionId: string
 }
 
-export function useSessionTileActions({ runtimeId, scope, storedSessionId }: SessionTileActionsArgs) {
+export function useSessionTileActions({ requestGateway, runtimeId, scope, storedSessionId }: SessionTileActionsArgs) {
   const { t } = useI18n()
   const copy = t.desktop
-  const { requestGateway } = useGatewayRequest()
 
   const runtimeIdRef = useRef(runtimeId)
   runtimeIdRef.current = runtimeId
@@ -115,6 +115,14 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   // cache explicitly rather than relying on the primary route cache.
   const runtimeIdByStoredSessionIdRef = useRef(new Map([[storedSessionId, runtimeId]]))
   runtimeIdByStoredSessionIdRef.current.set(storedSessionId, runtimeId)
+
+  const bindRecoveredRuntime = useCallback((recoveredId: string) => {
+    const storedId = storedIdRef.current
+
+    runtimeIdRef.current = recoveredId
+    runtimeIdByStoredSessionIdRef.current.set(storedId, recoveredId)
+    patchSessionTile(storedId, { error: undefined, runtimeId: recoveredId })
+  }, [])
 
   // Tile busy tracks the SESSION state, never the global $busy — and it must
   // read LIVE. A render-time snapshot goes stale (this hook's host doesn't
@@ -177,7 +185,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       // tile's ref rather than the foreground session's.
       const onSessionRecovered = (recoveredId: string) => {
         liveSessionId = recoveredId
-        runtimeIdRef.current = recoveredId
+        bindRecoveredRuntime(recoveredId)
       }
 
       for (const attachment of attachments) {
@@ -224,7 +232,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
       return { attachments: synced, sessionId: liveSessionId }
     },
-    [requestGateway, scope.attachments]
+    [bindRecoveredRuntime, readState, requestGateway, scope.attachments]
   )
 
   // The REAL submit pipeline with tile seams: session always exists, and the
@@ -239,6 +247,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     // A tile IS its session — no route to abandon, so the create-abort guard's
     // token is a stable constant (the guard never trips for a tile).
     getRouteToken: () => runtimeId,
+    onRuntimeRecovered: bindRecoveredRuntime,
     requestGateway,
     runtimeIdByStoredSessionIdRef,
     // Tile ids are always bound before this hook mounts, so routed recovery is
@@ -308,15 +317,13 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
         liveId => requestGateway('session.interrupt', { session_id: liveId }),
         {
           requestGateway,
-          onRecovered: recoveredId => {
-            runtimeIdRef.current = recoveredId
-          }
+          onRecovered: bindRecoveredRuntime
         }
       )
     } catch (err) {
       notifyError(err, copy.stopFailed)
     }
-  }, [copy.stopFailed, requestGateway, update])
+  }, [bindRecoveredRuntime, copy.stopFailed, requestGateway, update])
 
   const steerPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
@@ -369,9 +376,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
           liveId => requestGateway<{ status?: string }>('session.redirect', { session_id: liveId, text }),
           {
             requestGateway,
-            onRecovered: recoveredId => {
-              runtimeIdRef.current = recoveredId
-            }
+            onRecovered: bindRecoveredRuntime
           }
         )
 
@@ -398,7 +403,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
       return false
     },
-    [requestGateway]
+    [bindRecoveredRuntime, requestGateway]
   )
 
   // Rewind primitive (interrupt-first for live turns, busy-retry) — shared with
@@ -421,14 +426,12 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
         interruptFirst,
         {
           storedSessionId: storedIdRef.current,
-          onSessionRecovered: recoveredId => {
-            runtimeIdRef.current = recoveredId
-          }
+          onSessionRecovered: bindRecoveredRuntime
         },
         truncateRowId,
         sourceText
       ),
-    [requestGateway]
+    [bindRecoveredRuntime, requestGateway]
   )
 
   // After a durable rewind the surviving bubbles' cached rowIds are stale (the

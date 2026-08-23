@@ -6,9 +6,10 @@ import { closeSecondaryGateways, isActivePrimary } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $activeGatewayProfile, $profiles, ensureGatewayProfile } from '@/store/profile'
 import { $connection, $currentCwd, $gatewayState } from '@/store/session'
+import { $sessionTiles } from '@/store/session-states'
 
 import { takeGatewaySurvivor } from './gateway-hmr-survivor'
-import { useGatewayBoot } from './use-gateway-boot'
+import { primaryRuntimeConnectionId, useGatewayBoot } from './use-gateway-boot'
 
 // End-to-end-ish repro of the "remote VPS → stuck on CONNECTING, no Settings"
 // bug that drives the REAL useGatewayBoot hook + REAL HermesGateway through a
@@ -23,6 +24,20 @@ import { useGatewayBoot } from './use-gateway-boot'
 
 type Listener = (ev: unknown) => void
 let connectionApplied: null | (() => void) = null
+
+describe('primaryRuntimeConnectionId', () => {
+  it('uses the registry identity when the primary connection has one', () => {
+    expect(primaryRuntimeConnectionId({ connectionId: ' tower ', mode: 'remote' })).toBe('tower')
+  })
+
+  it('uses the stable local identity for an app-managed backend', () => {
+    expect(primaryRuntimeConnectionId({ mode: 'local' })).toBe('local')
+  })
+
+  it('preserves legacy remote Bot bindings when the primary identity is unknown', () => {
+    expect(primaryRuntimeConnectionId({ mode: 'remote' })).toBeNull()
+  })
+})
 
 // Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
 // touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
@@ -82,6 +97,7 @@ class FakeWebSocket {
 const primaryConn = {
   authMode: 'token' as const,
   baseUrl: 'https://vps.example.com',
+  connectionId: 'primary-vps',
   profile: 'default',
   token: 't',
   wsUrl: 'wss://vps.example.com/api/ws?token=t'
@@ -90,6 +106,7 @@ const primaryConn = {
 const coderConn = {
   authMode: 'token' as const,
   baseUrl: 'https://coder.example.com',
+  connectionId: 'coder-remote',
   profile: 'coder',
   token: 'c',
   wsUrl: 'wss://coder.example.com/api/ws?token=c'
@@ -176,6 +193,7 @@ beforeEach(() => {
   $activeGatewayProfile.set('default')
   $connection.set(null)
   $profiles.set([])
+  $sessionTiles.set([])
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
@@ -214,6 +232,7 @@ afterEach(() => {
   $activeGatewayProfile.set('default')
   $connection.set(null)
   $profiles.set([])
+  $sessionTiles.set([])
   vi.useRealTimers()
   ;(globalThis as { WebSocket: unknown }).WebSocket = originalWebSocket
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
@@ -406,6 +425,36 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('rebinds Bot tabs owned by the restarted primary without touching another gateway', async () => {
+    render(<Harness />)
+    await flushAsync()
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'primary-vps', mode: 'remote', profile: 'writer', targetProfile: 'writer' },
+        runtimeId: 'runtime-primary-dead',
+        storedSessionId: 'primary-bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'primary-vps::writer'
+      },
+      {
+        ownerRoute: { connectionId: 'coder-remote', mode: 'remote', profile: 'coder', targetProfile: 'coder' },
+        runtimeId: 'runtime-secondary-live',
+        storedSessionId: 'secondary-bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'coder-remote::coder'
+      }
+    ])
+
+    act(() => FakeWebSocket.instances[0].drop())
+    FakeWebSocket.mode = 'open'
+    await advanceBackoff()
+
+    const [primaryBot, secondaryBot] = $sessionTiles.get()
+
+    expect(primaryBot).not.toHaveProperty('runtimeId')
+    expect(secondaryBot).toMatchObject({ runtimeId: 'runtime-secondary-live' })
   })
 
   it('manual reconnect revalidates, re-resolves, re-mints, and re-dials the dropped socket', async () => {

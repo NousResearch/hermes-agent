@@ -1404,7 +1404,7 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
             def execute(self, command, **kwargs):
                 calls.append(command)
                 if "head -c" in command and "/remote/workspace/remote.sh" in command:
-                    return {"output": "#!/bin/bash\\nhermes gateway restart\\n", "returncode": 0}
+                    return {"output": "#!/bin/bash\nhermes gateway restart\n", "returncode": 0}
                 return {"output": "", "returncode": 0}
 
         fake_env = _RemoteEnv()

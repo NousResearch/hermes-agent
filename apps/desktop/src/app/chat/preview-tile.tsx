@@ -122,7 +122,10 @@ export function watchPreviewTiles(): void {
 
 const watchPreviewTileMirror = paneMirror<{ id: string }>({
   source: $previewTabs,
-  workspaceMode: 'sessions',
+  // Unscoped on purpose. `$previewTabs` is one global Browser/file surface —
+  // clicking a link in a bot chat must open the same pane Sessions already
+  // shows. Scoping this to `sessions` filtered the pane out of Bot Mode, so
+  // `openPreview` ran and the click looked like a no-op.
   key: tab => tab.id,
   prefix: PREVIEW_TILE_PREFIX,
   // Identical to route (page) tiles: its own zone docked beside main, sized by

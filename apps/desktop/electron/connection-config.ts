@@ -161,7 +161,9 @@ async function withTransientRetries(run, options: any = {}) {
   const delaysMs = Array.isArray(options.delaysMs) && options.delaysMs.length > 0 ? options.delaysMs : [250, 750]
 
   const sleep =
-    typeof options.sleep === 'function' ? options.sleep : (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+    typeof options.sleep === 'function'
+      ? options.sleep
+      : (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
   const isRetryable =
     typeof options.isRetryable === 'function' ? options.isRetryable : (error: unknown) => !isGatewayAuthRejection(error)

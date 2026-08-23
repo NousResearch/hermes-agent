@@ -453,8 +453,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     // That used to promote into BootFailureOverlay and lock reading/drafting.
     act(() => {
       desktop.emitBootProgress({
-        error:
-          'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.',
+        error: 'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.',
         message: 'Desktop boot failed',
         phase: 'backend.error',
         progress: 94,

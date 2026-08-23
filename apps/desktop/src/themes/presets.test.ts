@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK, nousAltTheme } from './presets'
+import {
+  BUILTIN_THEME_LIST,
+  BUILTIN_THEMES,
+  DEFAULT_SKIN_NAME,
+  DEFAULT_TYPOGRAPHY,
+  EMOJI_FALLBACK,
+  nousAltTheme
+} from './presets'
 
 // #40364: none of the UI text/mono fonts carry emoji glyphs, so every font
 // stack must end with a color-emoji fallback or emoji render as tofu on

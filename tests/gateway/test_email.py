@@ -14,6 +14,7 @@ Covers:
 
 import os
 import unittest
+from pathlib import Path
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -41,6 +42,27 @@ class TestConfigEnvOverrides(unittest.TestCase):
         home = config.platforms[Platform.EMAIL].home_channel
         self.assertIsNotNone(home)
         self.assertEqual(home.chat_id, "user@test.com")
+
+    def test_email_receive_mode_bridged_from_platform_config(self):
+        """platforms.email.receive_mode should reach the adapter via extra."""
+        from gateway.config import Platform, load_gateway_config
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / ".hermes"
+            hermes_home.mkdir()
+            (hermes_home / "config.yaml").write_text(
+                "platforms:\n"
+                "  email:\n"
+                "    receive_mode: idle\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}, clear=False):
+                config = load_gateway_config()
+
+        email_config = config.platforms.get(Platform.EMAIL)
+        self.assertIsNotNone(email_config)
+        self.assertEqual(email_config.extra.get("receive_mode"), "idle")
 
 
 class TestCheckRequirements(unittest.TestCase):
@@ -724,6 +746,252 @@ class TestPollLoop(unittest.TestCase):
         self.assertIn(b"1", adapter._seen_uids)
         self.assertIn(b"2", adapter._seen_uids)
         self.assertFalse(adapter._last_fetch_failed)
+
+
+class TestIMAPIdleReceiveMode(unittest.TestCase):
+    """Test optional IMAP IDLE receive mode selection and loop behavior."""
+
+    def _make_adapter(self, receive_mode=None):
+        from gateway.config import PlatformConfig
+        extra = {}
+        if receive_mode is not None:
+            extra["receive_mode"] = receive_mode
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True, extra=extra))
+
+    def _connect(self, adapter, *, capabilities):
+        import asyncio
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b"1 2"])
+        mock_imap.capability.return_value = ("OK", [capabilities])
+        mock_smtp = MagicMock()
+
+        async def run_connect_and_disconnect():
+            result = await adapter.connect()
+            started_poll = adapter._poll_task is not None
+            started_idle = adapter._idle_task is not None
+            await adapter.disconnect()
+            return result, started_poll, started_idle
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), patch.object(
+            adapter, "_connect_smtp", return_value=mock_smtp
+        ):
+            return asyncio.run(run_connect_and_disconnect())
+
+    def test_default_receive_mode_starts_polling(self):
+        adapter = self._make_adapter()
+
+        result, started_poll, started_idle = self._connect(
+            adapter, capabilities=b"IMAP4rev1 IDLE"
+        )
+
+        self.assertTrue(result)
+        self.assertTrue(started_poll)
+        self.assertFalse(started_idle)
+        self.assertIsNone(adapter._idle_task)
+        self.assertIsNone(adapter._poll_task)
+        self.assertEqual(adapter._receive_mode, "poll")
+
+    def test_idle_receive_mode_starts_idle_when_supported(self):
+        adapter = self._make_adapter("idle")
+
+        result, started_poll, started_idle = self._connect(
+            adapter, capabilities=b"IMAP4rev1 IDLE"
+        )
+
+        self.assertTrue(result)
+        self.assertFalse(started_poll)
+        self.assertTrue(started_idle)
+        self.assertIsNone(adapter._idle_task)
+        self.assertIsNone(adapter._poll_task)
+
+    def test_idle_receive_mode_falls_back_to_polling_when_unsupported(self):
+        adapter = self._make_adapter("idle")
+
+        result, started_poll, started_idle = self._connect(
+            adapter, capabilities=b"IMAP4rev1"
+        )
+
+        self.assertTrue(result)
+        self.assertTrue(started_poll)
+        self.assertFalse(started_idle)
+        self.assertIsNone(adapter._idle_task)
+        self.assertIsNone(adapter._poll_task)
+
+    def test_invalid_receive_mode_falls_back_to_polling(self):
+        adapter = self._make_adapter("invalid")
+
+        result, started_poll, started_idle = self._connect(
+            adapter, capabilities=b"IMAP4rev1 IDLE"
+        )
+
+        self.assertTrue(result)
+        self.assertTrue(started_poll)
+        self.assertFalse(started_idle)
+        self.assertEqual(adapter._receive_mode, "poll")
+
+    def test_capability_check_is_case_insensitive(self):
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.capability.return_value = ("OK", [b"imap4rev1 idle"])
+
+        self.assertTrue(adapter._imap_supports_idle(mock_imap))
+
+    def test_poll_loop_still_checks_inbox_and_sleeps(self):
+        import asyncio
+
+        adapter = self._make_adapter("poll")
+        adapter._running = True
+        adapter._check_inbox = AsyncMock()
+
+        async def fake_sleep(delay):
+            self.assertEqual(delay, adapter._poll_interval)
+            adapter._running = False
+
+        with patch("asyncio.sleep", side_effect=fake_sleep) as mock_sleep:
+            asyncio.run(adapter._poll_loop())
+
+        adapter._check_inbox.assert_called_once()
+        mock_sleep.assert_called_once()
+
+    def test_idle_loop_checks_inbox_after_event(self):
+        import asyncio
+        from plugins.platforms.email import adapter as email_adapter
+
+        adapter = self._make_adapter("idle")
+        adapter._running = True
+        calls = []
+
+        async def check_once():
+            calls.append("check")
+            if len(calls) >= 2:
+                adapter._running = False
+
+        adapter._check_inbox = check_once
+
+        with patch.object(adapter, "_idle_wait_once", return_value=email_adapter._IDLE_EVENT):
+            asyncio.run(adapter._idle_loop())
+
+        self.assertEqual(calls, ["check", "check"])
+
+    def test_idle_loop_backs_off_after_backoff_result(self):
+        import asyncio
+        from plugins.platforms.email import adapter as email_adapter
+
+        adapter = self._make_adapter("idle")
+        adapter._running = True
+        adapter._check_inbox = AsyncMock()
+
+        async def fake_sleep(delay):
+            self.assertEqual(delay, adapter._poll_interval)
+            adapter._running = False
+
+        with patch.object(adapter, "_idle_wait_once", return_value=email_adapter._IDLE_BACKOFF), \
+             patch("asyncio.sleep", side_effect=fake_sleep) as mock_sleep:
+            asyncio.run(adapter._idle_loop())
+
+        mock_sleep.assert_called_once()
+
+    def test_idle_wait_once_returns_event_and_sends_done(self):
+        from plugins.platforms.email import adapter as email_adapter
+
+        adapter = self._make_adapter("idle")
+        adapter._running = True
+        mock_sock = MagicMock()
+        mock_imap = MagicMock()
+        mock_imap.sock = mock_sock
+        mock_imap.capability.return_value = ("OK", [b"IMAP4rev1 IDLE"])
+        mock_imap._new_tag.return_value = b"A001"
+        mock_imap.readline.side_effect = [b"+ idling\r\n", b"* 3 EXISTS\r\n", b"A001 OK\r\n"]
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("select.select", return_value=([mock_sock], [], [])), \
+             self.assertLogs("plugins.platforms.email.adapter", level="INFO") as logs:
+            result = adapter._idle_wait_once()
+
+        self.assertEqual(result, email_adapter._IDLE_EVENT)
+        self.assertTrue(any("IMAP IDLE accepted by server" in line for line in logs.output))
+        mock_imap.send.assert_any_call(b"A001 IDLE\r\n")
+        mock_imap.send.assert_any_call(b"DONE\r\n")
+        mock_imap.logout.assert_called()
+
+    def test_idle_wait_once_without_runtime_capability_backs_off(self):
+        from plugins.platforms.email import adapter as email_adapter
+
+        adapter = self._make_adapter("idle")
+        adapter._running = True
+        mock_imap = MagicMock()
+        mock_imap.capability.return_value = ("OK", [b"IMAP4rev1"])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            result = adapter._idle_wait_once()
+
+        self.assertEqual(result, email_adapter._IDLE_BACKOFF)
+        mock_imap.send.assert_not_called()
+        mock_imap.logout.assert_called()
+
+    def test_idle_rejection_backs_off_and_closes_connection(self):
+        from plugins.platforms.email import adapter as email_adapter
+
+        adapter = self._make_adapter("idle")
+        adapter._running = True
+        mock_imap = MagicMock()
+        mock_imap.capability.return_value = ("OK", [b"IMAP4rev1 IDLE"])
+        mock_imap._new_tag.return_value = b"A001"
+        mock_imap.readline.return_value = b"A001 BAD unsupported\r\n"
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            result = adapter._idle_wait_once()
+
+        self.assertEqual(result, email_adapter._IDLE_BACKOFF)
+        mock_imap.logout.assert_called()
+
+    def test_idle_wait_once_connection_close_backs_off(self):
+        from plugins.platforms.email import adapter as email_adapter
+
+        adapter = self._make_adapter("idle")
+        adapter._running = True
+        mock_sock = MagicMock()
+        mock_imap = MagicMock()
+        mock_imap.sock = mock_sock
+        mock_imap.capability.return_value = ("OK", [b"IMAP4rev1 IDLE"])
+        mock_imap._new_tag.return_value = b"A001"
+        mock_imap.readline.side_effect = [b"+ idling\r\n", b"", b"A001 OK\r\n"]
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("select.select", return_value=([mock_sock], [], [])):
+            result = adapter._idle_wait_once()
+
+        self.assertEqual(result, email_adapter._IDLE_BACKOFF)
+        mock_imap.send.assert_any_call(b"DONE\r\n")
+        mock_imap.logout.assert_called()
+
+    def test_idle_wait_once_deadline_reconnects_and_sends_done(self):
+        from plugins.platforms.email import adapter as email_adapter
+
+        adapter = self._make_adapter("idle")
+        adapter._running = True
+        mock_sock = MagicMock()
+        mock_imap = MagicMock()
+        mock_imap.sock = mock_sock
+        mock_imap.capability.return_value = ("OK", [b"IMAP4rev1 IDLE"])
+        mock_imap._new_tag.return_value = b"A001"
+        mock_imap.readline.side_effect = [b"+ idling\r\n", b"A001 OK\r\n"]
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("select.select", return_value=([], [], [])), \
+             patch("time.monotonic", side_effect=[0, 0, 1501]):
+            result = adapter._idle_wait_once()
+
+        self.assertEqual(result, email_adapter._IDLE_RECONNECT)
+        mock_imap.send.assert_any_call(b"DONE\r\n")
+        mock_imap.logout.assert_called()
 
 
 class TestReconnectSeenUidsRestore(unittest.TestCase):

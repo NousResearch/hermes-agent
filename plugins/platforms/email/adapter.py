@@ -25,8 +25,10 @@ import imaplib
 import logging
 import os
 import re
+import select
 import smtplib
 import socket
+import time
 
 # Profile-scoped secret reader for multiplexing support (PR #50094)
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -147,6 +149,21 @@ _AUTOMATED_HEADERS = {
 MAX_MESSAGE_LENGTH = 50_000
 
 SMTP_CONNECT_TIMEOUT = 30
+# End IDLE before common 30-minute server timeouts while still keeping the
+# connection long-lived enough to avoid per-poll reconnect/login churn.
+_IDLE_RECONNECT_SECONDS = 25 * 60
+# Wake the worker thread periodically so shutdown can observe self._running;
+# this timeout does not send any IMAP command or poll the server.
+_IDLE_READ_TIMEOUT_SECONDS = 5
+_IDLE_EVENT = "event"
+_IDLE_BACKOFF = "backoff"
+_IDLE_RECONNECT = "reconnect"
+_RECEIVE_MODE_POLL = "poll"
+_RECEIVE_MODE_IDLE = "idle"
+_VALID_RECEIVE_MODES = {
+    _RECEIVE_MODE_POLL,
+    _RECEIVE_MODE_IDLE,
+}
 
 
 def _close_imap(imap: "imaplib.IMAP4") -> None:
@@ -610,6 +627,16 @@ class EmailAdapter(BasePlatformAdapter):
         )
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
 
+        self._receive_mode = str(
+            extra.get("receive_mode", _RECEIVE_MODE_POLL)
+        ).strip().lower()
+        if self._receive_mode not in _VALID_RECEIVE_MODES:
+            logger.warning(
+                "[Email] Invalid platforms.email.receive_mode=%r; falling back to polling",
+                self._receive_mode,
+            )
+            self._receive_mode = _RECEIVE_MODE_POLL
+
         # Skip attachments — configured via config.yaml:
         #   platforms:
         #     email:
@@ -648,6 +675,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
+        self._idle_task: Optional[asyncio.Task] = None
 
         # Track the last IMAP fetch attempt so the poll loop can distinguish
         # "checked, nothing new" from "the check itself failed" (#80016).
@@ -783,11 +811,13 @@ class EmailAdapter(BasePlatformAdapter):
             # monotonically until fd exhaustion on macOS's 256 soft limit
             # (#79889).
             imap = None
+            imap_supports_idle = False
             try:
                 imap = self._connect_imap()
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)
                 imap.select("INBOX")
+                imap_supports_idle = self._imap_supports_idle(imap)
                 snapshot = self._seen_uids_snapshot.get(self._address)
                 if is_reconnect and snapshot is not None:
                     # Reconnect within the same process: restore the previous
@@ -867,8 +897,17 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         self._running = True
-        self._poll_task = asyncio.create_task(self._poll_loop())
-        print(f"[Email] Connected as {self._address}")
+        receive_mode = self._resolve_receive_mode(imap_supports_idle)
+        if receive_mode == _RECEIVE_MODE_IDLE:
+            self._idle_task = asyncio.create_task(self._idle_loop())
+        else:
+            self._poll_task = asyncio.create_task(self._poll_loop())
+        idle_capability = "supported" if imap_supports_idle else "unsupported"
+        print(
+            f"[Email] Connected as {self._address} "
+            f"(configured_receive_mode: {self._receive_mode}, "
+            f"imap_idle: {idle_capability}, receive_mode: {receive_mode})"
+        )
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
         return True
@@ -883,7 +922,40 @@ class EmailAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._poll_task = None
+        if self._idle_task:
+            self._idle_task.cancel()
+            try:
+                await self._idle_task
+            except asyncio.CancelledError:
+                pass
+            self._idle_task = None
         logger.info("[Email] Disconnected.")
+
+    def _imap_supports_idle(self, imap: "imaplib.IMAP4") -> bool:
+        """Return True when the server advertises IMAP IDLE support."""
+        try:
+            status, data = imap.capability()
+        except Exception as exc:
+            logger.debug("[Email] IMAP CAPABILITY check failed: %s", exc)
+            return False
+        if status != "OK" or not data:
+            return False
+        capabilities = b" ".join(
+            item if isinstance(item, bytes) else str(item).encode("ascii", "ignore")
+            for item in data
+        ).upper().split()
+        return b"IDLE" in capabilities
+
+    def _resolve_receive_mode(self, imap_supports_idle: bool) -> str:
+        """Resolve configured receive mode to the loop that should run now."""
+        if self._receive_mode == _RECEIVE_MODE_POLL:
+            return _RECEIVE_MODE_POLL
+        if imap_supports_idle:
+            return _RECEIVE_MODE_IDLE
+        logger.warning(
+            "[Email] IMAP server does not advertise IDLE; falling back to polling"
+        )
+        return _RECEIVE_MODE_POLL
 
     async def _poll_loop(self) -> None:
         """Poll IMAP for new messages at regular intervals."""
@@ -895,6 +967,93 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.error("[Email] Poll error: %s", e)
             await asyncio.sleep(self._poll_interval)
+
+    async def _idle_loop(self) -> None:
+        """Wait for IMAP IDLE notifications, then reuse the normal inbox path."""
+        while self._running:
+            try:
+                await self._check_inbox()
+                result = await asyncio.to_thread(self._idle_wait_once)
+                if result == _IDLE_EVENT and self._running:
+                    await self._check_inbox()
+                elif result == _IDLE_BACKOFF and self._running:
+                    await asyncio.sleep(self._poll_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("[Email] IDLE error: %s", e)
+                if self._running:
+                    await asyncio.sleep(self._poll_interval)
+
+    def _idle_wait_once(self) -> str:
+        """Run one IMAP IDLE wait cycle in a worker thread."""
+        imap: Optional[imaplib.IMAP4] = None
+        idling = False
+        try:
+            imap = self._connect_imap()
+            imap.login(self._address, self._password)
+            _send_imap_id(imap)
+            imap.select("INBOX")
+            if not self._imap_supports_idle(imap):
+                logger.warning(
+                    "[Email] IMAP server stopped advertising IDLE; falling back to polling wait"
+                )
+                return _IDLE_BACKOFF
+
+            tag = imap._new_tag()  # type: ignore[attr-defined]
+            if isinstance(tag, str):
+                tag_bytes = tag.encode("ascii")
+            else:
+                tag_bytes = tag
+            imap.send(tag_bytes + b" IDLE\r\n")
+            continuation = imap.readline()
+            if not continuation.startswith(b"+"):
+                logger.warning(
+                    "[Email] IMAP IDLE was not accepted by server: %r",
+                    continuation,
+                )
+                return _IDLE_BACKOFF
+            idling = True
+            logger.info("[Email] IMAP IDLE accepted by server; waiting for mailbox updates")
+
+            deadline = time.monotonic() + _IDLE_RECONNECT_SECONDS
+            while self._running and time.monotonic() < deadline:
+                sock = getattr(imap, "sock", None)
+                if sock is None:
+                    return _IDLE_BACKOFF
+                # Wait with a short timeout so gateway shutdown can exit even
+                # when the server sends no IDLE response for many minutes.
+                readable, _, _ = select.select(
+                    [sock], [], [], _IDLE_READ_TIMEOUT_SECONDS
+                )
+                if not readable:
+                    continue
+                line = imap.readline()
+                if not line:
+                    return _IDLE_BACKOFF
+                upper = line.upper()
+                if b"EXISTS" in upper or b"RECENT" in upper or b"EXPUNGE" in upper:
+                    return _IDLE_EVENT
+            return _IDLE_RECONNECT
+        finally:
+            if imap is not None:
+                if idling:
+                    try:
+                        imap.send(b"DONE\r\n")
+                        self._drain_idle_completion(imap)
+                    except Exception as exc:
+                        logger.debug("[Email] IMAP IDLE DONE failed: %s", exc)
+                _close_imap(imap)
+
+    def _drain_idle_completion(self, imap: "imaplib.IMAP4") -> None:
+        """Drain the tagged completion after DONE without hanging shutdown."""
+        try:
+            sock = getattr(imap, "sock", None)
+            if sock is not None:
+                sock.settimeout(_IDLE_READ_TIMEOUT_SECONDS)
+            imap.readline()
+        except (TimeoutError, socket.timeout, OSError):
+            pass
 
     async def _check_inbox(self) -> None:
         """Check INBOX for unseen messages and dispatch them."""

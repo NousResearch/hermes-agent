@@ -4680,9 +4680,16 @@ def _looks_like_desktop_control_plane(cmdline: str) -> bool:
     That is the Desktop control plane, not the messaging gateway. Serve and
     dashboard do not host platform adapters (#92091); do not feed this into
     ``looks_like_gateway_command_line``.
+
+    Token-based via the parser-derived subcommand classifier — never
+    substring (#90778/#91869: ``kanban --preserve-cache`` contains "serve",
+    ``-m dashboard chat`` contains " dashboard"; both are NOT control
+    planes). A cmdline whose subcommand cannot be determined is NOT a
+    control plane — callers must not guess ownership.
     """
-    low = (cmdline or "").lower()
-    return "hermes_cli.main" in low and (" serve" in low or " dashboard" in low)
+    if "hermes_cli.main" not in (cmdline or "").lower():
+        return False
+    return _hermes_holder_subcommand(cmdline) in ("serve", "dashboard")
 
 
 def _desktop_owns_gateway_lifecycle() -> bool:

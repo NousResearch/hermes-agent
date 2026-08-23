@@ -41,6 +41,29 @@ def test_control_plane_argv_is_not_a_gateway():
     assert looks_like_gateway_command_line(run) is True
 
 
+def test_control_plane_classifier_is_token_based_not_substring():
+    """#90778/#91869 class: flag values and lookalike tokens must not read
+    as a control plane. The salvage swapped the original substring check
+    for the parser-derived subcommand classifier."""
+    py = "C:\\Hermes\\.venv\\Scripts\\python.exe -m hermes_cli.main"
+    # "dashboard" as a FLAG VALUE, real subcommand is chat
+    assert update_cmd._looks_like_desktop_control_plane(f"{py} -m dashboard chat") is False
+    # "--preserve-cache" contains "serve"; real subcommand is kanban
+    assert (
+        update_cmd._looks_like_desktop_control_plane(f"{py} kanban --preserve-cache")
+        is False
+    )
+    # profile selector before the real subcommand still classifies correctly
+    assert (
+        update_cmd._looks_like_desktop_control_plane(f"{py} --profile serve dashboard")
+        is True
+    )
+    # dashboard as the real subcommand
+    assert update_cmd._looks_like_desktop_control_plane(f"{py} dashboard") is True
+    # undeterminable subcommand → NOT a control plane (never guess ownership)
+    assert update_cmd._looks_like_desktop_control_plane("python.exe -c import time") is False
+
+
 def test_ledger_live_serve_with_live_spawner_owns_lifecycle(monkeypatch):
     monkeypatch.setattr(
         process_identity, "ledger_entries", lambda **_k: [_live_serve_ledger_entry()]

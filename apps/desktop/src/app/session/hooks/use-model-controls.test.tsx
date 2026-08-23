@@ -23,6 +23,7 @@ import { useModelControls } from './use-model-controls'
 const setGlobalModel = vi.fn()
 const notify = vi.fn()
 const notifyError = vi.fn()
+const dismissNotification = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock('@/i18n', () => ({
 }))
 
 vi.mock('@/store/notifications', () => ({
+  dismissNotification: (...args: Parameters<typeof dismissNotification>) => dismissNotification(...args),
   notify: (...args: Parameters<typeof notify>) => notify(...args),
   notifyError: (...args: Parameters<typeof notifyError>) => notifyError(...args)
 }))

@@ -6,7 +6,7 @@ import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
 import { manualPickRemoved, modelOptionsQueryKey } from '@/lib/model-options'
-import { notify, notifyError } from '@/store/notifications'
+import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -170,12 +170,18 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
     [queryClient]
   )
 
-  // Returns whether the switch succeeded so callers can await it before applying
-  // follow-up changes. The composer model is plain UI state: with no live
-  // session it's just stored (and shipped on the next session.create); with one
-  // it's scoped to that session via config.set. It NEVER writes the profile
-  // default — that lives in Settings → Model — so picking a model here can't
-  // silently mutate global config.
+  // Returns whether the switch was applied so callers can await it before
+  // applying follow-up changes. `true` means applied (or deferred/busy-queued
+  // for the next turn). `false` means NOT applied — either pending
+  // confirmation (warning with Confirm action already shown, pill rolled back)
+  // or a real failure (error toast). Callers must NOT treat `false` as a
+  // generic failure: for `pending` the gateway intentionally returned
+  // `confirm_required` and no error should be surfaced.
+  // The composer model is plain UI state: with no live session it's just
+  // stored (and shipped on the next session.create); with one it's scoped to
+  // that session via config.set. It NEVER writes the profile default — that
+  // lives in Settings → Model — so picking a model here can't silently mutate
+  // global config.
   //
   // `selection.sessionId` targets a specific surface (tile). When omitted, the
   // primary `$activeSessionId` is used (overlay / legacy callers). A tile
@@ -276,7 +282,28 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         }
       }
 
+      let confirmNotificationId: string | null = null
+
       const applyConfirmedSwitch = async () => {
+        // Staleness guard — the warning can linger while the user picks a
+        // different model or switches sessions. Clicking Confirm must not
+        // clobber the newer choice: bail and dismiss if the live state no
+        // longer matches the snapshot this notification was created for.
+        const isStale = touchesPrimary
+          ? $activeSessionId.get() !== liveSessionId ||
+            $currentModel.get() !== prevModel ||
+            $currentProvider.get() !== prevProvider
+          : !liveSessionId ||
+            $sessionStates.get()[liveSessionId]?.model !== prevModel ||
+            $sessionStates.get()[liveSessionId]?.provider !== prevProvider
+
+        if (isStale) {
+          if (confirmNotificationId) dismissNotification(confirmNotificationId)
+          return
+        }
+
+        if (confirmNotificationId) dismissNotification(confirmNotificationId)
+
         paintSelection()
         cacheSelection(selection.provider, selection.model)
 
@@ -299,13 +326,13 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
 
         if (result?.confirm_required) {
           rollbackSelection()
-          notify({
+          confirmNotificationId = notify({
             action: {
               label: t.common.confirm,
               onClick: applyConfirmedSwitch
             },
             kind: 'warning',
-            message: result.confirm_message?.trim() || copy.modelSwitchFailed,
+            message: result.confirm_message?.trim() || 'Confirm this model switch?',
             title: t.common.confirm
           })
 

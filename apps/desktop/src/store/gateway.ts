@@ -218,6 +218,24 @@ export function activeGatewayConnectionId(): null | string {
   return g.secondaries.get(g.activeKey)?.connectionId ?? null
 }
 
+/**
+ * Registry connections currently served by a live (open-socket) secondary.
+ * Used by the reconnect path when the restarted primary's own registry
+ * identity is unknown: Bot runtimes owned by these connections are provably
+ * NOT the restarted backend and keep their bindings; everything else re-resumes.
+ */
+export function liveSecondaryConnectionIds(): Set<string> {
+  const live = new Set<string>()
+
+  for (const entry of g.secondaries.values()) {
+    if (entry.connectionId && isOpen(entry.gateway)) {
+      live.add(entry.connectionId)
+    }
+  }
+
+  return live
+}
+
 // Mirror a backend's connection state into the global composer state, but only
 // when that backend is the one the user is currently looking at. Lets the
 // composer reflect the active profile's socket without a background reconnect

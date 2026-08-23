@@ -125,6 +125,41 @@ describe('resetTileRuntimeBindings', () => {
     expect(ordinarySession).not.toHaveProperty('runtimeId')
     expect(invalidateRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-barry-sibling-bot', 'stored-work-bot']))
   })
+
+  it('unknown restarted identity preserves only Bot runtimes owned by provably-live connections', () => {
+    // Legacy remote primary: no registry connectionId to scope by. The dead
+    // owner can't be named, so keep only owners we know are alive elsewhere —
+    // the restarted backend's own Bot tile must still drop its binding.
+    const invalidateRuntimeBindings = vi.fn()
+    setSessionTileDelegate({ invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'legacy-remote', mode: 'remote', profile: 'writer', targetProfile: 'writer' },
+        runtimeId: 'runtime-legacy-dead',
+        storedSessionId: 'stored-legacy-bot',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:legacy-remote::writer'
+      },
+      {
+        ownerRoute: { connectionId: 'work-vps', mode: 'remote', profile: 'ceo', targetProfile: 'ceo' },
+        runtimeId: 'runtime-work-live',
+        storedSessionId: 'stored-work-bot',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:work-vps::ceo'
+      },
+      { runtimeId: 'runtime-session-dead', storedSessionId: 'stored-session' }
+    ])
+
+    resetTileRuntimeBindings({ liveConnectionIds: new Set(['work-vps']) })
+
+    const [legacyBot, workBot, ordinarySession] = $sessionTiles.get()
+
+    expect(legacyBot).toMatchObject({ storedSessionId: 'stored-legacy-bot' })
+    expect(legacyBot).not.toHaveProperty('runtimeId')
+    expect(workBot).toMatchObject({ runtimeId: 'runtime-work-live', storedSessionId: 'stored-work-bot' })
+    expect(ordinarySession).not.toHaveProperty('runtimeId')
+    expect(invalidateRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-work-bot']))
+  })
 })
 
 describe('SessionTile workspace scope', () => {

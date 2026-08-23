@@ -34,7 +34,7 @@ describe('primaryRuntimeConnectionId', () => {
     expect(primaryRuntimeConnectionId({ mode: 'local' })).toBe('local')
   })
 
-  it('preserves legacy remote Bot bindings when the primary identity is unknown', () => {
+  it('returns null for an unknown remote identity so the caller falls back to live-connection scoping', () => {
     expect(primaryRuntimeConnectionId({ mode: 'remote' })).toBeNull()
   })
 })

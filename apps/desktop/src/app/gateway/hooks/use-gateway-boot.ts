@@ -23,6 +23,7 @@ import {
   ensureGatewayForProfile,
   gatewayActivationEpoch,
   isActivePrimary,
+  liveSecondaryConnectionIds,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   reportPrimaryGatewayState,
@@ -264,7 +265,12 @@ export function useGatewayBoot({
         reconnectFailingSince = null
         // A respawned backend re-mints (recycles) runtime ids, so any tile's
         // bound runtime id is now stale — drop them so each tile re-resumes.
-        resetTileRuntimeBindings(primaryRuntimeConnectionId(conn))
+        // A legacy remote primary has no registry identity to scope by; fall
+        // back to preserving only Bot runtimes owned by provably-live
+        // secondaries so the restarted backend's own tiles still rebind.
+        resetTileRuntimeBindings(
+          primaryRuntimeConnectionId(conn) ?? { liveConnectionIds: liveSecondaryConnectionIds() }
+        )
         // Same staleness, other half: pre-reconnect busy flags are keyed by
         // those dead runtime ids and would never receive their terminal
         // busy:false — clear them or the sidebar running arc lies forever

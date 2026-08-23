@@ -805,21 +805,43 @@ export interface RuntimeReconnectScope {
   profile?: null | string
 }
 
-export function resetTileRuntimeBindings(reconnectedScope?: null | string | RuntimeReconnectScope) {
+/** Fallback scope for a restarted connection whose registry identity is
+ *  unknown (a legacy remote primary with no connectionId). We cannot name the
+ *  dead owner, so instead preserve only Bot runtimes whose owner is provably
+ *  alive elsewhere; every other binding is dropped and re-resumes. A reset
+ *  only costs a re-resume, so unknown owners fail toward recovery. */
+export interface UnknownRuntimeReconnectScope {
+  liveConnectionIds: ReadonlySet<string>
+}
+
+export function resetTileRuntimeBindings(
+  reconnectedScope?: null | string | RuntimeReconnectScope | UnknownRuntimeReconnectScope
+) {
   const tiles = $sessionTiles.get()
+
+  const liveConnectionIds =
+    reconnectedScope && typeof reconnectedScope === 'object' && 'liveConnectionIds' in reconnectedScope
+      ? reconnectedScope.liveConnectionIds
+      : null
 
   const reconnected =
     typeof reconnectedScope === 'string'
       ? { connectionId: reconnectedScope.trim(), profile: null }
-      : reconnectedScope
+      : reconnectedScope && !liveConnectionIds
         ? {
-            connectionId: reconnectedScope.connectionId.trim(),
-            profile: reconnectedScope.profile?.trim() || null
+            connectionId: (reconnectedScope as RuntimeReconnectScope).connectionId.trim(),
+            profile: (reconnectedScope as RuntimeReconnectScope).profile?.trim() || null
           }
         : null
 
   const belongsToReconnectedRuntime = (tile: SessionTile): boolean => {
     const route = tile.ownerRoute
+
+    if (liveConnectionIds) {
+      // Unknown restarted identity: a tile survives only when its owner is a
+      // connection we know is still live — anything else rebinds on resume.
+      return !route?.connectionId || !liveConnectionIds.has(route.connectionId)
+    }
 
     if (!reconnected?.connectionId || route?.connectionId !== reconnected.connectionId) {
       return false
@@ -834,7 +856,7 @@ export function resetTileRuntimeBindings(reconnectedScope?: null | string | Runt
         tile =>
           tile.workspaceMode === 'bots' &&
           Boolean(tile.ownerRoute?.connectionId) &&
-          (!reconnected || !belongsToReconnectedRuntime(tile))
+          (!(reconnected || liveConnectionIds) || !belongsToReconnectedRuntime(tile))
       )
       .map(tile => tile.storedSessionId)
   )

@@ -130,6 +130,7 @@ export function recordTranscriptBackfillPage(
   profile?: TranscriptProfileScope
 ): void {
   const current = $transcriptTailBySessionId.get()
+
   const selected: Array<[string, TranscriptTailState | undefined]> = profile === undefined
     ? matchingTailEntries(storedSessionId)
     : [[transcriptTailKey(storedSessionId, profile), current[transcriptTailKey(storedSessionId, profile)]]]
@@ -166,6 +167,7 @@ export function transcriptTailState(
 
 export function clearTranscriptTail(storedSessionId: string, profile?: TranscriptProfileScope): void {
   const current = $transcriptTailBySessionId.get()
+
   const keys = profile === undefined
     ? matchingTailEntries(storedSessionId).map(([key]) => key)
     : [transcriptTailKey(storedSessionId, profile)]

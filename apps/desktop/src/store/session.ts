@@ -9,8 +9,8 @@ import { activeConnectionScopeSuffix, rescopeConnectionScopedStores } from '@/li
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
-import type { SessionProfileRoute } from './session-request-router'
 
+import type { SessionProfileRoute } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
 type Updater<T> = T | ((current: T) => T)
@@ -615,6 +615,7 @@ function sessionOwnerHintKey(sessionId: string, route: Pick<SessionProfileRoute,
 
 export function setSessionOwnerHint(sessionId: string, route: SessionProfileRoute): void {
   const id = sessionId.trim()
+
   const normalized = {
     ...route,
     connectionId: route.connectionId.trim(),
@@ -665,6 +666,7 @@ export function getSessionOwnerHint(
 
   return matches.length === 1 ? { ...matches[0].route } : undefined
 }
+
 // Stored-session id whose resume has EXHAUSTED its bounded auto-retries (the
 // terminal-failure latch above kept failing through all MAX_RESUME_RETRIES
 // attempts). Distinct from $resumeFailedSessionId, which is armed *during* the

@@ -58,12 +58,25 @@ def _seed_session(db: SessionDB, sid: str, turns: int = 3) -> None:
 
 
 def test_marker_constant_in_sync() -> None:
-    """hermes_state cannot import run_agent (circular) — literals must match."""
+    """One shared literal across every module that touches the marker.
+
+    ``hermes_state`` and ``agent.turn_finalizer`` import the constant from
+    ``agent.context_compressor`` (single source), so the only genuine drift
+    surface left is ``run_agent``'s predating copy — hermes_state cannot
+    import run_agent (circular), and run_agent's own literal predates the
+    consolidation.
+    """
     import agent.context_compressor as cc
+    import agent.turn_finalizer as tf
     import run_agent
 
     assert _DB_PERSISTED_MARKER_KEY == run_agent._DB_PERSISTED_MARKER
     assert _DB_PERSISTED_MARKER_KEY == cc._DB_PERSISTED_MARKER
+    assert _DB_PERSISTED_MARKER_KEY == tf._DB_PERSISTED_MARKER
+    # The import aliases must be the SAME object as the canonical constant,
+    # not re-defined literals.
+    assert _DB_PERSISTED_MARKER_KEY is cc._DB_PERSISTED_MARKER
+    assert tf._DB_PERSISTED_MARKER is cc._DB_PERSISTED_MARKER
 
 
 def test_loaded_rows_are_stamped_durable(tmp_path: Path) -> None:
@@ -145,3 +158,40 @@ def test_compaction_copy_strips_stamp_so_child_flush_writes(tmp_path: Path) -> N
     # Idempotent thereafter: the flush stamped the copies on write.
     agent._flush_messages_to_session_db(compacted)
     assert len(db.get_messages("CHILD")) == len(loaded)
+
+
+def test_noop_progress_check_is_marker_insensitive(tmp_path: Path) -> None:
+    """A marker-swept no-op copy must still compare equal to stamped input.
+
+    The commit layer's "no progress" check compares compress() output against
+    a pre-dispatch deepcopy of the live messages. Load-stamping (#92231) puts
+    ``_db_persisted`` on cold-resumed dicts while compress() output is
+    marker-swept — a raw ``==`` would misclassify the semantically-identical
+    no-op as progress and rotate the session for nothing.
+    """
+    from agent.conversation_compression import _strip_marker_for_comparison
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_session(db, "NOOP", turns=2)
+
+    stamped = db.get_messages_as_conversation("NOOP")
+    assert all(m.get(_DB_PERSISTED_MARKER_KEY) is True for m in stamped)
+    # What a no-op engine hands back after the terminal marker sweep.
+    swept = [
+        {k: v for k, v in m.items() if k != _DB_PERSISTED_MARKER_KEY}
+        for m in stamped
+    ]
+    assert swept != stamped  # raw equality is asymmetric — the bug shape
+    assert _strip_marker_for_comparison(swept) == _strip_marker_for_comparison(
+        stamped
+    )
+
+    # Genuine progress must still register as inequality.
+    compacted = swept[:-1]
+    assert _strip_marker_for_comparison(compacted) != _strip_marker_for_comparison(
+        stamped
+    )
+
+    # Defensive passthrough shapes.
+    assert _strip_marker_for_comparison(None) is None
+    assert _strip_marker_for_comparison(["not-a-dict"]) == ["not-a-dict"]

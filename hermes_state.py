@@ -37,6 +37,15 @@ from pathlib import Path
 from agent.memory_manager import sanitize_context
 from agent.session_activity import ActivityProvenance
 from agent.message_sanitization import _sanitize_surrogates
+# Intrinsic persistence marker stamped on message dicts that are known-durable
+# (#92231). One shared constant with agent.context_compressor (this module
+# already imports agent.* at module level, and context_compressor is a
+# transitive dependency via hermes_state_common). run_agent keeps its own
+# predating copy — hermes_state cannot import run_agent (circular) — guarded
+# by test_marker_constant_in_sync.
+from agent.context_compressor import (
+    _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY,
+)
 from agent.skill_commands import (
     SKILL_EXCERPT_JOINT,
     SKILL_SCAFFOLD_SQL_LIKE,
@@ -775,14 +784,6 @@ def _strip_background_review_harness(
 
 # Matches a bare protocol/tool-name marker such as "[memory]" or "[skill_manage]".
 _STALE_TOOL_CALL_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
-
-# Intrinsic persistence marker stamped on message dicts that are known-durable.
-# MUST stay in sync with run_agent._DB_PERSISTED_MARKER and
-# agent.context_compressor._DB_PERSISTED_MARKER (same literal; defined locally
-# because hermes_state must not import run_agent — circular import — and
-# importing the agent layer for one constant inverts the state/agent layering).
-# Drift is guarded by test_marker_constant_in_sync (#92231).
-_DB_PERSISTED_MARKER_KEY = "_db_persisted"
 
 
 def _is_stale_tool_call_marker_message(msg: Dict[str, Any]) -> bool:

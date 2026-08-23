@@ -104,6 +104,27 @@ COMPACTION_STATUS = (
 COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
 
 
+def _strip_marker_for_comparison(msgs: Any) -> Any:
+    """Copy ``msgs`` with the ``_db_persisted`` persistence marker removed.
+
+    Used by the no-op progress check: live and loaded dicts carry the marker
+    (loaded rows are stamped at materialization time, #92231) while
+    ``compress()`` output is marker-swept, so a raw ``==`` would misclassify a
+    semantically-identical no-op copy as progress. Non-list inputs and
+    non-dict entries pass through unchanged.
+    """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    if not isinstance(msgs, list):
+        return msgs
+    return [
+        {k: v for k, v in m.items() if k != _DB_PERSISTED_MARKER}
+        if isinstance(m, dict)
+        else m
+        for m in msgs
+    ]
+
+
 def _emit_compaction_done(agent: Any) -> None:
     """Emit the structured terminal edge for a started compaction."""
     status_callback = getattr(agent, "status_callback", None)
@@ -3163,8 +3184,15 @@ def compress_context(
         # Compare against the pre-dispatch semantic state, not object identity:
         # legacy/plugin engines may return an equal copy for a no-op, or mutate
         # the live list while returning an unchanged snapshot. Neither case may
-        # rotate or rewrite the session.
-        if compressed == messages_before_compression:
+        # rotate or rewrite the session. The raw ``==`` leg runs FIRST so a
+        # list subclass returned by an engine keeps its ``__eq__`` semantics
+        # (tests seam on this); the marker-insensitive leg (#92231) then covers
+        # the cold-resume shape where the stamped snapshot differs from the
+        # marker-swept compress() output only by ``_db_persisted``.
+        if compressed == messages_before_compression or (
+            _strip_marker_for_comparison(compressed)
+            == _strip_marker_for_comparison(messages_before_compression)
+        ):
             if messages != messages_before_compression:
                 messages[:] = copy.deepcopy(messages_before_compression)
             logger.info(

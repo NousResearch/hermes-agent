@@ -54,6 +54,26 @@ class SessionStructuredProvider(FakeMemoryProvider):
         )
 
 
+class GuardedObservationTuple(tuple):
+    """Tuple fixture that fails if the manager traverses past a bounded prefix."""
+
+    max_index: int
+    accessed_indices: list[int]
+
+    def __new__(cls, values, *, max_index):
+        instance = super().__new__(cls, values)
+        instance.max_index = max_index
+        instance.accessed_indices = []
+        return instance
+
+    def __iter__(self):
+        for index in range(tuple.__len__(self)):
+            if index > self.max_index:
+                raise AssertionError("observation traversal exceeded its bound")
+            self.accessed_indices.append(index)
+            yield tuple.__getitem__(self, index)
+
+
 def _observation(payload=None, *, provider=""):
     return MemoryObservation(
         source_kind="fixture_context",
@@ -279,6 +299,7 @@ def test_malformed_observations_are_dropped_but_context_survives(monkeypatch):
             observations=(
                 _observation(object()),
                 _observation("x" * (MAX_MEMORY_OBSERVATION_BYTES + 1)),
+                _observation({"valid": True}),
             ),
         ),
     )
@@ -288,8 +309,8 @@ def test_malformed_observations_are_dropped_but_context_survives(monkeypatch):
     result = manager.prefetch_all_result("question")
 
     assert result.context == "usable context"
-    assert result.observations == ()
-    assert events == []
+    assert [item.payload for item in result.observations] == [{"valid": True}]
+    assert events[0]["observations"] is result.observations
 
 
 def test_observations_are_bounded_and_recursively_immutable(monkeypatch):
@@ -488,6 +509,52 @@ def test_operation_observation_count_budget_keeps_ordered_prefix_and_context(
     assert isinstance(events[0]["observations"], tuple)
 
 
+def test_operation_budget_bounds_provider_traversal_and_preserves_later_context(
+    monkeypatch, caplog
+):
+    _disable_hook(monkeypatch)
+    first_observations = GuardedObservationTuple(
+        (
+            _observation({"index": index})
+            for index in range(MAX_MEMORY_OBSERVATIONS + 1_000)
+        ),
+        max_index=MAX_MEMORY_OBSERVATIONS,
+    )
+    later_observations = GuardedObservationTuple((), max_index=-1)
+    first_result = MemoryPrefetchResult(
+        context="first provider context",
+        observations=first_observations,
+    )
+    later_result = MemoryPrefetchResult(
+        context="later provider context",
+        observations=later_observations,
+    )
+    assert len(first_result.observations) == MAX_MEMORY_OBSERVATIONS + 1_000
+    manager = MemoryManager()
+    manager.add_provider(StructuredMemoryProvider(name="builtin", result=first_result))
+    manager.add_provider(StructuredMemoryProvider(name="external", result=later_result))
+
+    with caplog.at_level("WARNING", logger="agent.memory_manager"):
+        result = manager.prefetch_all_result("question")
+
+    assert result.context == "first provider context\n\nlater provider context"
+    assert [item.payload["index"] for item in result.observations] == list(
+        range(MAX_MEMORY_OBSERVATIONS)
+    )
+    # MAX + 1 is the only look-ahead needed to prove that the prefix is
+    # truncated; the large tail is never visited or encoded.
+    assert first_observations.accessed_indices == list(
+        range(MAX_MEMORY_OBSERVATIONS + 1)
+    )
+    assert later_observations.accessed_indices == []
+    warnings = [
+        record
+        for record in caplog.records
+        if "observation count budget" in record.message
+    ]
+    assert len(warnings) == 1
+
+
 def test_operation_observation_batch_budget_is_aggregate_across_providers(
     monkeypatch, caplog
 ):
@@ -500,6 +567,10 @@ def test_operation_observation_batch_budget_is_aggregate_across_providers(
     large_payload = {"parts": ["x" * 3500] * 4}
     monkeypatch.setattr(
         memory_manager_module, "MAX_MEMORY_OBSERVATION_BATCH_BYTES", 20_000
+    )
+    second_observations = GuardedObservationTuple(
+        (_observation(large_payload) for _ in range(1_000)),
+        max_index=0,
     )
     manager = MemoryManager()
     manager.add_provider(
@@ -516,7 +587,7 @@ def test_operation_observation_batch_budget_is_aggregate_across_providers(
             name="external",
             result=MemoryPrefetchResult(
                 context="second provider context",
-                observations=(_observation(large_payload),),
+                observations=second_observations,
             ),
         )
     )
@@ -526,6 +597,7 @@ def test_operation_observation_batch_budget_is_aggregate_across_providers(
 
     assert result.context == "first provider context\n\nsecond provider context"
     assert [item.provider for item in result.observations] == ["builtin"]
+    assert second_observations.accessed_indices == [0]
     warnings = [
         record
         for record in caplog.records

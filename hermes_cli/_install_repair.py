@@ -395,7 +395,7 @@ def migrate_windows_bin_path(
     root = Path(root)
 
     # Same per-machine anchor as ensure_windows_bin_launchers (see there).
-    from hermes_constants import get_default_hermes_root
+    from hermes_constants import get_default_hermes_root, venv_bin_dir
 
     try:
         home = Path(get_default_hermes_root())
@@ -425,7 +425,11 @@ def migrate_windows_bin_path(
 
     legacy_keys = {
         _normalize_windows_path(root / "bin"),
-        _normalize_windows_path(root / "venv" / "Scripts"),
+        # The pre-#83797 installer put the venv's Scripts dir itself on PATH,
+        # always at the literal `venv` layout (never `.venv`) — this strips
+        # that stale entry, so it must match what the installer wrote then,
+        # not where the venv lives now.
+        _normalize_windows_path(venv_bin_dir(root / "venv", windows=True)),
     }
     home_bin_key = _normalize_windows_path(home_bin)
 

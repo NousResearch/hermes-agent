@@ -90,21 +90,27 @@ def test_launcher_names_stay_in_lockstep_with_install_ps1():
 
 
 class TestManagedBinPathMarker:
-    """The managed ``bin`` PATH entry goes only when the dir itself goes."""
+    """The managed ``bin`` PATH entry goes only when the dir itself goes.
 
-    def test_keep_data_markers_spare_the_managed_bin(self, tmp_path: Path):
-        home = tmp_path / "hermes"
-        markers = [m.lower() for m in uninstall._hermes_path_markers(home)]
+    Markers match against Windows registry PATH entries, so the inputs here
+    are Windows-shaped path strings regardless of the host — feeding
+    ``tmp_path`` would make the test pass only on Windows hosts.
+    """
 
-        bin_key = str(home / "bin").lower()
-        assert not any(bin_key.startswith(m) for m in markers)
+    HOME = r"C:\Users\me\AppData\Local\hermes"
+    BIN_ENTRY = r"C:\Users\me\AppData\Local\hermes\bin"
 
-    def test_full_wipe_markers_take_the_managed_bin(self, tmp_path: Path):
-        home = tmp_path / "hermes"
+    def test_keep_data_markers_spare_the_managed_bin(self):
+        markers = [m.lower() for m in uninstall._hermes_path_markers(Path(self.HOME))]
+
+        assert not any(self.BIN_ENTRY.lower().startswith(m) for m in markers)
+
+    def test_full_wipe_markers_take_the_managed_bin(self):
         markers = [
             m.lower()
-            for m in uninstall._hermes_path_markers(home, include_managed_bin=True)
+            for m in uninstall._hermes_path_markers(
+                Path(self.HOME), include_managed_bin=True
+            )
         ]
 
-        bin_key = str(home / "bin").lower()
-        assert any(bin_key.startswith(m) for m in markers)
+        assert any(self.BIN_ENTRY.lower().startswith(m) for m in markers)

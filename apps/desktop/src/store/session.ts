@@ -117,42 +117,50 @@ export function sessionBelongsToProfile(
 }
 
 /**
- * The profile a routed session belongs to, for keying the remembered id.
+ * The profile that owns a session, from SYNC known sources only: the session
+ * row (the cross-profile aggregator tags each row) then the owner hint recorded
+ * at open time. Returns undefined when neither knows — the caller must resolve
+ * it (cross-profile probe) rather than fall back to whatever is active, because
+ * "active" is presentation state and never a routing authority. Hidden sessions
+ * (Bot Mode's canonical "Bot Chat") never appear in the row list, so the hint is
+ * often the only sync source.
+ */
+export function knownSessionProfile(
+  sessions: readonly SessionInfo[],
+  sessionId: null | string
+): string | undefined {
+  if (!sessionId) {
+    return undefined
+  }
+
+  const owner = sessions.find(session => sessionMatchesStoredId(session, sessionId))?.profile?.trim()
+
+  if (owner) {
+    return owner
+  }
+
+  const hint = getSessionOwnerHint(sessionId)
+
+  return (hint?.targetProfile ?? hint?.profile)?.trim() || undefined
+}
+
+/**
+ * The profile a routed session belongs to, for keying the remembered id and
+ * other PRESENTATION uses (which profile's sidebar/navigation this session sits
+ * under). Falls back to the active gateway profile when the owner is unknown.
  *
- * Prefer the owning profile recorded on the session row (the cross-profile
- * aggregator tags each row), so the session is remembered under ITS profile
- * even while a different one is live. Falls back to the active gateway profile
- * for a session not yet in the in-memory list.
+ * Do NOT use this to ROUTE a session-scoped RPC: the active-profile fallback is
+ * exactly what sends a hidden/unlisted session's RPC to a backend that never
+ * owned it. Routing must use `knownSessionProfile` + a cross-profile probe and
+ * surface an error instead of falling back. This remains for the navigation
+ * keying it was written for.
  */
 export function rememberedSessionProfile(
   sessions: readonly SessionInfo[],
   sessionId: null | string,
   activeProfile: null | string
 ): string {
-  if (sessionId) {
-    const owner = sessions.find(session => sessionMatchesStoredId(session, sessionId))?.profile?.trim()
-
-    if (owner) {
-      return owner
-    }
-
-    // Hidden / plugin-owned sessions (Bot Mode's canonical "Bot Chat" rows are
-    // born hidden) never appear in the sidebar list, so the row lookup above
-    // misses for them whenever the aggregator page replaced the in-memory row.
-    // Falling straight through to the ACTIVE profile routed their session RPCs
-    // at a backend that never owned the session — prompt.submit answered 4001
-    // "session not found" while the bot's own backend sat healthy. The open
-    // path records an owner hint for exactly this; honor it before falling
-    // back to the active profile.
-    const hint = getSessionOwnerHint(sessionId)
-    const hinted = (hint?.targetProfile ?? hint?.profile)?.trim()
-
-    if (hinted) {
-      return hinted
-    }
-  }
-
-  return (activeProfile ?? '').trim() || 'default'
+  return knownSessionProfile(sessions, sessionId) ?? ((activeProfile ?? '').trim() || 'default')
 }
 
 // The last non-overlay route (a page like /skills, or a session route), so a

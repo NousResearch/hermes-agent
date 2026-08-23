@@ -14,6 +14,7 @@ import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEff
 import { useLocation, useNavigate } from 'react-router'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { resolveSessionProfile } from '@/app/session/hooks/use-session-actions/utils'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
@@ -71,14 +72,14 @@ import {
   $selectedStoredSessionId,
   $sessionResumeRequest,
   $sessions,
-  rememberedSessionProfile,
+  knownSessionProfile,
   sessionMatchesStoredId,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
   setMessages
 } from '@/store/session'
-import { requestForSessionProfile } from '@/store/session-request-router'
+import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
 import { $focusedStoredSessionId, sessionTileOwnerRoute, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
@@ -315,8 +316,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // "session not found" / hang. The tile route is per-session, survives
   // relaunch, and needs no list membership, so it fixes an already-open chat
   // too. Fall back to the list-derived profile only when no tile route exists.
+  // Session-scoped RPCs route to the backend that OWNS the session — its
+  // profile's own local gateway — never to whatever is "active" (active is
+  // presentation only). Resolve the owner from, in order: the tile's persisted
+  // route (bot chats carry an exact connectionId+profile), the known session
+  // profile (row or open-time hint), then a cross-profile REST probe that
+  // stamps ownership for a hidden/unlisted session. Only a request with NO
+  // session at all (a fresh draft, global chrome) falls to the ambient socket.
+  // The probe result is cached as an owner hint so the next call is sync.
   const requestGateway = useCallback(
-    <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
+    async <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
       // Route each RPC by the session IT targets, not by whatever tile is
       // focused. `requestGateway` is one shared closure used for every session
       // RPC in the window; keying the owner off $focusedStoredSessionId sent a
@@ -347,9 +356,22 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           undefined
       })
 
-      const owner =
+      let owner: SessionOwnerScope =
         (routingSessionId ? sessionTileOwnerRoute(routingSessionId) : undefined) ??
-        rememberedSessionProfile($sessions.get(), routingSessionId, $activeGatewayProfile.get())
+        knownSessionProfile($sessions.get(), routingSessionId)
+
+      if (!owner && routingSessionId) {
+        // Unknown owner for a REAL session: probe across profiles (REST, not the
+        // gateway socket, so no recursion) rather than defaulting to active. A
+        // hit stamps ownership + caches a hint; a miss leaves owner undefined
+        // and the request falls to ambient, exactly as an unroutable session did
+        // before — but only after we tried, never as a silent active fallback.
+        const probed = await resolveSessionProfile(routingSessionId)
+
+        if (probed) {
+          owner = probed
+        }
+      }
 
       return requestForSessionProfile<T>(owner, ambientRequestGateway, method, params ?? {}, timeoutMs, signal)
     },

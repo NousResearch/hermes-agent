@@ -30,6 +30,7 @@ import {
   getRememberedRoute,
   getRememberedSessionId,
   getSessionOwnerHint,
+  knownSessionProfile,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
@@ -947,5 +948,27 @@ describe('rememberedSessionProfile', () => {
   it('normalizes a blank active profile to default', () => {
     expect(rememberedSessionProfile([], null, '')).toBe('default')
     expect(rememberedSessionProfile([], null, null)).toBe('default')
+  })
+})
+
+describe('knownSessionProfile', () => {
+  it('returns the row owner when the session is listed', () => {
+    const sessions = [session({ id: 'stored-1', profile: 'ai-engineer' })]
+
+    expect(knownSessionProfile(sessions, 'stored-1')).toBe('ai-engineer')
+  })
+
+  it('returns the owner hint for a hidden session absent from the list', () => {
+    setSessionOwnerHint('hidden-bot-chat', { connectionId: 'local', mode: 'local', profile: 'developer' })
+
+    expect(knownSessionProfile([], 'hidden-bot-chat')).toBe('developer')
+  })
+
+  it('returns undefined for an unknown session — NEVER falls back to active', () => {
+    // This is the whole point of the no-active-fallback architecture: an
+    // unresolved owner must be undefined so the caller does a cross-profile
+    // probe, not silently route the RPC to whatever profile is on screen.
+    expect(knownSessionProfile([], 'totally-unknown')).toBeUndefined()
+    expect(knownSessionProfile([], null)).toBeUndefined()
   })
 })

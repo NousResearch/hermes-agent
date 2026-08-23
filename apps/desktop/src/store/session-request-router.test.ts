@@ -128,18 +128,26 @@ describe('$activeGatewayRoute (registry-owned active profile)', () => {
 })
 
 describe('sessionRpcNeedsProfileRoute', () => {
-  it('routes ambient when the owner is unknown or already active', () => {
-    expect(sessionRpcNeedsProfileRoute(null, 'default')).toBe(false)
-    expect(sessionRpcNeedsProfileRoute('', 'default')).toBe(false)
-    expect(sessionRpcNeedsProfileRoute('   ', 'loki')).toBe(false)
-    expect(sessionRpcNeedsProfileRoute('loki', 'loki')).toBe(false)
-    expect(sessionRpcNeedsProfileRoute('default', 'default')).toBe(false)
+  it('routes ambient ONLY when the owner is unknown (no session / global chrome)', () => {
+    expect(sessionRpcNeedsProfileRoute(null)).toBe(false)
+    expect(sessionRpcNeedsProfileRoute(undefined)).toBe(false)
+    expect(sessionRpcNeedsProfileRoute('')).toBe(false)
+    expect(sessionRpcNeedsProfileRoute('   ')).toBe(false)
   })
 
-  it('pins to the owning profile when the active route diverges', () => {
-    expect(sessionRpcNeedsProfileRoute('loki', 'default')).toBe(true)
-    expect(sessionRpcNeedsProfileRoute('default', 'loki')).toBe(true)
-    expect(sessionRpcNeedsProfileRoute('loki', 'hulk')).toBe(true)
+  it('pins a KNOWN owner to its own profile regardless of what is active', () => {
+    // No active-profile comparison exists anymore: "active" is presentation
+    // state, never a routing authority. A known owner ALWAYS routes to its own
+    // profile — even when it happens to equal whatever is currently active,
+    // gatewayForProfile collapses that back to the primary socket (no cost).
+    expect(sessionRpcNeedsProfileRoute('loki')).toBe(true)
+    expect(sessionRpcNeedsProfileRoute('default')).toBe(true)
+    expect(sessionRpcNeedsProfileRoute('hulk')).toBe(true)
+  })
+
+  it('pins a route owner with a connectionId', () => {
+    expect(sessionRpcNeedsProfileRoute({ connectionId: 'local', profile: 'developer' })).toBe(true)
+    expect(sessionRpcNeedsProfileRoute({ connectionId: '', profile: 'developer' })).toBe(false)
   })
 })
 
@@ -303,11 +311,10 @@ describe('requestForSessionProfile', () => {
     )
   })
 
-  it('keeps the ambient dispatcher when the active route already serves the owner', async () => {
+  it('routes an owner that IS the primary profile onto the primary socket (no active comparison)', async () => {
     const primary = makePrimary()
-    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGateway(primary as never, 'loki')
     installDesktop()
-    await ensureGatewayForProfile('loki')
 
     const ambient = vi.fn(async (method: string, params?: Record<string, unknown>) => ({
       ambient: true,
@@ -315,10 +322,21 @@ describe('requestForSessionProfile', () => {
       params
     }))
 
-    const result = await requestForSessionProfile('loki', ambient as never, 'session.activate', { session_id: 'rt-1' })
+    // Owner 'loki' equals the PRIMARY profile. There is no active-profile
+    // comparison anymore, but gatewayForProfile collapses a primary-profile
+    // owner back to the primary socket — so no secondary is spun up. The
+    // ambient fn isn't used (routing goes through requestGatewayForProfile),
+    // but the request still lands on the one primary gateway.
+    const result = await requestForSessionProfile<{ method: string; params: Record<string, unknown> }>(
+      'loki',
+      ambient as never,
+      'session.activate',
+      { session_id: 'rt-1' }
+    )
 
-    expect(ambient).toHaveBeenCalledWith('session.activate', { session_id: 'rt-1' })
-    expect(result).toEqual({ ambient: true, method: 'session.activate', params: { session_id: 'rt-1' } })
+    expect(secondaryGateways).toHaveLength(0)
+    expect(primary.request).toHaveBeenCalledWith('session.activate', { session_id: 'rt-1' })
+    expect(result).toEqual({ method: 'session.activate', params: { session_id: 'rt-1' } })
   })
 
   it('keeps the ambient dispatcher for sessions with no owning profile', async () => {

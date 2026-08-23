@@ -4203,6 +4203,15 @@ class APIServerAdapter(BasePlatformAdapter):
         offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
         source = request.query.get("source") or None
         include_children = _coerce_request_bool(request.query.get("include_children"), default=False)
+        # Exact-title lookup, used by `hermes peer dm` to resolve a peer's
+        # canonical "Bot Chat" session. ``include_hidden`` is honored ONLY
+        # alongside a title filter: Bot Mode hides canonical chats, so a
+        # title-scoped lookup must see them (issue #91583), but a blanket
+        # hidden listing stays off this client surface.
+        title_filter = (request.query.get("title") or "").strip() or None
+        include_hidden = bool(title_filter) and _coerce_request_bool(
+            request.query.get("include_hidden"), default=False
+        )
         sessions = await asyncio.to_thread(db.list_sessions_rich,
             source=source,
             limit=limit,
@@ -4212,7 +4221,14 @@ class APIServerAdapter(BasePlatformAdapter):
             # A pin means "always reachable", so a pinned conversation that has
             # aged past the recency window is back-filled rather than dropped.
             include_pinned=True,
+            # Push the title needle into SQL so a hidden/old canonical row is
+            # found even when it falls outside the recency window, then apply
+            # the exact-match contract below (search_query is substring-based).
+            search_query=title_filter,
+            include_hidden=include_hidden,
         )
+        if title_filter:
+            sessions = [s for s in sessions if (s.get("title") or "").strip() == title_filter]
         # Back-filled pins arrive PAST the limit, so counting them would report
         # another page that doesn't exist. Only the recency window decides.
         windowed = sum(1 for s in sessions if not s.get("pinned"))

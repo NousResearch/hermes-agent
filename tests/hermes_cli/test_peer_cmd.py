@@ -186,3 +186,137 @@ def test_dm_reuses_existing_bot_chat(monkeypatch, capsys, fake_peer_server):
     assert payload["reply"] == "reply from the other machine"
     # No new session was created — the existing canonical chat was reused.
     assert _FakePeer.sessions == ["bc_existing"]
+
+
+# ── hidden canonical Bot Chat (issue #91583) ─────────────────────────────────
+
+
+class _HiddenBotChatPeer(_FakePeer):
+    """A NEW-style peer: its Bot Chat exists but is HIDDEN (Bot Mode hides
+    canonical chats), so it only appears in the listing when the client
+    sends the exact-title + include_hidden lookup."""
+
+    hidden_sessions: list = []
+    get_queries: list = []
+
+    def do_GET(self):
+        type(self).auth_seen.append(self.headers.get("Authorization", ""))
+        if self.path.startswith("/api/sessions"):
+            from urllib.parse import parse_qs, urlparse
+
+            query = parse_qs(urlparse(self.path).query)
+            type(self).get_queries.append(query)
+            data = [{"id": s, "title": "Bot Chat", "hidden": False} for s in type(self).sessions]
+            if query.get("title", [""])[0] == "Bot Chat" and query.get("include_hidden", ["0"])[0] in ("1", "true"):
+                data += [{"id": s, "title": "Bot Chat", "hidden": True} for s in type(self).hidden_sessions]
+            return self._json({"object": "list", "data": data})
+        return self._json({"error": {"message": "not found"}}, 404)
+
+
+class _OldHiddenBotChatPeer(_FakePeer):
+    """An OLD peer: ignores title/include_hidden, its hidden Bot Chat is
+    invisible in every listing, and the duplicate create trips the DB's
+    UNIQUE(title) guard with the real api_server 400 shape."""
+
+    def do_GET(self):
+        type(self).auth_seen.append(self.headers.get("Authorization", ""))
+        if self.path.startswith("/api/sessions"):
+            return self._json({"object": "list", "data": []})
+        return self._json({"error": {"message": "not found"}}, 404)
+
+    def do_POST(self):
+        type(self).auth_seen.append(self.headers.get("Authorization", ""))
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        if self.path == "/api/sessions":
+            return self._json(
+                {"error": {"message": "Title already in use by session hidden_bc_1", "code": "invalid_title"}},
+                400,
+            )
+        return self._json({"error": {"message": "not found"}}, 404)
+
+
+@pytest.fixture()
+def hidden_peer_server():
+    _HiddenBotChatPeer.sessions = []
+    _HiddenBotChatPeer.hidden_sessions = ["bc_hidden"]
+    _HiddenBotChatPeer.chats = []
+    _HiddenBotChatPeer.auth_seen = []
+    _HiddenBotChatPeer.get_queries = []
+    server = HTTPServer(("127.0.0.1", 0), _HiddenBotChatPeer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+@pytest.fixture()
+def old_hidden_peer_server():
+    _OldHiddenBotChatPeer.sessions = []
+    _OldHiddenBotChatPeer.chats = []
+    _OldHiddenBotChatPeer.auth_seen = []
+    server = HTTPServer(("127.0.0.1", 0), _OldHiddenBotChatPeer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_find_bot_chat_sends_hidden_aware_lookup(hidden_peer_server):
+    """The lookup carries title + include_hidden so a hidden canonical row resolves."""
+    found = peer_cmd._find_bot_chat(hidden_peer_server, "secret-key-123456")
+    assert found == "bc_hidden"
+    query = _HiddenBotChatPeer.get_queries[-1]
+    assert query.get("title") == ["Bot Chat"]
+    assert query.get("include_hidden") == ["1"]
+
+
+def test_dm_resolves_hidden_bot_chat_without_duplicate_create(monkeypatch, capsys, hidden_peer_server):
+    """Regression for issue #91583: hidden canonical Bot Chat must be reused,
+    never re-created (the peer's UNIQUE(title) guard rejects the duplicate)."""
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": hidden_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reply"] == "reply from the other machine"
+    # No create was attempted: the hidden canonical chat resolved directly.
+    assert _HiddenBotChatPeer.sessions == []
+    assert _HiddenBotChatPeer.chats == ["ping"]
+
+
+def test_dm_older_peer_hidden_duplicate_gives_clear_error(monkeypatch, capsys, old_hidden_peer_server):
+    """Against an older peer that can't expose hidden sessions, the UNIQUE(title)
+    rejection must surface a diagnosable error naming the hidden canonical chat."""
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": old_hidden_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=False))
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "hidden" in err
+    assert "Bot Chat" in err
+    assert "Title already in use" in err
+
+
+def test_dm_older_peer_with_visible_bot_chat_still_works(monkeypatch, capsys, fake_peer_server):
+    """Backward compat: an older peer ignores the new query params and returns
+    the plain visible listing — a visible Bot Chat must still resolve."""
+    _FakePeer.sessions = ["bc_visible"]
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True))
+
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["reply"] == "reply from the other machine"
+    assert _FakePeer.sessions == ["bc_visible"]

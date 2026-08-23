@@ -45,8 +45,14 @@ vi.mock('@/store/session', () => ({
 }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 
-const { activeGateway, closeSecondaryGateways, configureGatewayRegistry, ensureGatewayForProfile, setPrimaryGateway } =
-  await import('./gateway')
+const {
+  activeGateway,
+  closeSecondaryGateways,
+  configureGatewayRegistry,
+  ensureGatewayForProfile,
+  pruneSecondaryGateways,
+  setPrimaryGateway
+} = await import('./gateway')
 
 function installDesktop(stub: Record<string, unknown>): void {
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = stub
@@ -99,6 +105,26 @@ describe('ensureGatewayForProfile — secondary connect failure surfaces (#81094
 
     expect(stillActive).toBe(live)
     expect(gatewayMocks.instances).toHaveLength(1)
+  })
+
+  it('releases the activation lease when the first dial is rejected so pruning disposes it', async () => {
+    const getConnection = vi.fn(async ({ profile }: { profile: string }) => ({
+      authMode: 'token',
+      baseUrl: `https://${profile}.invalid`,
+      mode: 'local',
+      profile,
+      token: 'fake-test-token',
+      wsUrl: `wss://${profile}.invalid/ws`
+    }))
+
+    installDesktop({ getConnection })
+    gatewayMocks.connect.mockRejectedValue(new Error('backend unreachable'))
+
+    await expect(ensureGatewayForProfile('work')).rejects.toThrow('backend unreachable')
+
+    pruneSecondaryGateways(new Set())
+
+    expect(gatewayMocks.instances[0].close).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the reconnect schedule armed so transient failures still self-heal', async () => {

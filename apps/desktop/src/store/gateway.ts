@@ -1086,27 +1086,29 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   // profile-door twin of the agent path's lease above (#89622).
   entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
 
-  if (!isOpen(entry.gateway)) {
-    clearTimer(entry)
-    entry.reconnectAttempt = 0
+  try {
+    if (!isOpen(entry.gateway)) {
+      clearTimer(entry)
+      entry.reconnectAttempt = 0
 
-    try {
-      await openSecondary(entry)
-    } catch (error) {
-      // #81094: a failed secondary dial must NOT fall through to setActive()
-      // with a closed socket — that silently routes the user's messages to the
-      // primary backend (cross-profile session writes). Keep the reconnect
-      // schedule (transient failures still self-heal via the backoff below)
-      // but RE-THROW so the profile-door caller surfaces the failure and skips
-      // the activation. The agent-door twin (ensureGatewayForAgent) keeps its
-      // boolean contract and is guarded by the activeGateway() null invariant.
-      scheduleReconnect(entry)
-      throw error
+      try {
+        await openSecondary(entry)
+      } catch (error) {
+        // #81094: a failed secondary dial must NOT fall through to setActive()
+        // with a closed socket — that silently routes the user's messages to the
+        // primary backend (cross-profile session writes). Keep the reconnect
+        // schedule (transient failures still self-heal via the backoff below)
+        // but RE-THROW so the profile-door caller surfaces the failure and skips
+        // the activation. The agent-door twin (ensureGatewayForAgent) keeps its
+        // boolean contract and is guarded by the activeGateway() null invariant.
+        scheduleReconnect(entry)
+        throw error
+      }
     }
+  } finally {
+    // The activation is settling either way — release the prune lease.
+    entry.activationLeaseUntil = 0
   }
-
-  // The activation is settling either way — release the prune lease.
-  entry.activationLeaseUntil = 0
 
   if (entry.wantOpen && g.secondaries.get(key) === entry && applyActive(key, activationEpoch) && entry.connection) {
     publishActiveConnection(entry.connection)

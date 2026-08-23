@@ -83,3 +83,20 @@ test('subscription is feature-detected, disposed, and the poll backstop stays', 
   assert.match(pluginSource, /RELAY_DRAIN_INTERVAL_MS = 4_000/)
   assert.match(pluginSource, /setInterval\(\(\) => void drainRelayOutboxes\(\), RELAY_DRAIN_INTERVAL_MS\)/)
 })
+
+test('a push racing an in-flight drain schedules a follow-up pass instead of dropping', () => {
+  // The gateway signature is monotone — one event per new envelope, never
+  // re-broadcast — so a push swallowed by the relayDrainBusy early-return
+  // would strand its envelope until the poll. The rerun flag re-schedules.
+  const drain = pluginSource.slice(
+    pluginSource.indexOf('async function drainRelayOutboxes'),
+    pluginSource.indexOf('function scheduleRelayPushDrain')
+  )
+  assert.match(drain, /if \(relayDrainBusy\) \{/)
+  assert.match(drain, /relayDrainRerun = true/)
+  // finally block: after busy clears, a remembered push re-schedules once.
+  const finallyBlock = drain.slice(drain.indexOf('} finally {'))
+  assert.match(finallyBlock, /relayDrainBusy = false/)
+  assert.match(finallyBlock, /relayDrainRerun && !relayDisposed/)
+  assert.match(finallyBlock, /scheduleRelayPushDrain\(\)/)
+})

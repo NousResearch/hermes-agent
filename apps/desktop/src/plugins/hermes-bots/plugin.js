@@ -1388,6 +1388,10 @@ let relayRosterBusy = false
 let relayDrainBusy = false
 let relayPushUnsub = null
 let relayPushDebounceTimer = null
+// A push landing while a drain is ALREADY running would be lost forever —
+// the gateway signature is monotone (one event per new envelope, never
+// re-broadcast) — so remember it and re-schedule after the drain finishes.
+let relayDrainRerun = false
 
 /** One representative route per reachable connection id. */
 async function relayConnections() {
@@ -1514,7 +1518,16 @@ async function syncRelayRosters() {
  *  connection's own socket; the reply (or error) is posted back to the
  *  sender gateway for its waiter. */
 async function drainRelayOutboxes() {
-  if (relayDisposed || relayDrainBusy) {
+  if (relayDisposed) {
+    return
+  }
+
+  if (relayDrainBusy) {
+    // A push signal raced an in-flight drain. The gateway never re-sends it
+    // (monotone signature), so without this flag the envelope would wait out
+    // the full poll interval — exactly the latency the push path removes.
+    relayDrainRerun = true
+
     return
   }
 
@@ -1582,6 +1595,13 @@ async function drainRelayOutboxes() {
     }
   } finally {
     relayDrainBusy = false
+
+    if (relayDrainRerun && !relayDisposed) {
+      // Envelopes signaled mid-drain: schedule one follow-up pass (debounced)
+      // instead of leaving them to the interval poll.
+      relayDrainRerun = false
+      scheduleRelayPushDrain()
+    }
   }
 }
 

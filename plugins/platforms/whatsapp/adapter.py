@@ -60,6 +60,9 @@ logger = logging.getLogger(__name__)
 # Inbound owner-typed WhatsApp text is prefixed at MessageEvent construction so
 # transcripts stay disambiguated even if downstream plugins fail before silent_ingest.
 _OWNER_REPLY_PREFIX = "[owner reply] "
+_POLL_RESTART_DELAY_SECONDS = 1.0
+_POLL_INTERVAL_SECONDS = 1.0
+_INBOUND_EVENT_TIMEOUT_SECONDS = 120.0
 
 
 def _listener_pids_on_port(port: int) -> list:
@@ -460,6 +463,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_log_fh = None
         self._bridge_log: Optional[Path] = None
         self._poll_task: Optional[asyncio.Task] = None
+        self._poll_restart_task: Optional[asyncio.Task] = None
+        self._poll_restart_delay = _POLL_RESTART_DELAY_SECONDS
+        self._poll_interval = _POLL_INTERVAL_SECONDS
+        self._inbound_event_timeout = _INBOUND_EVENT_TIMEOUT_SECONDS
+        self._inbound_tasks: set[asyncio.Task] = set()
         self._http_session: Optional["aiohttp.ClientSession"] = None
         # Set to True by disconnect() before we SIGTERM our child bridge so
         # _check_managed_bridge_exit() can distinguish an intentional
@@ -512,6 +520,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         
         This launches the Node.js bridge process and waits for it to be ready.
         """
+        # A stopped adapter may be connected again on the same instance.
+        # Clear the intentional-shutdown guard before starting any supervised
+        # work, and retire a delayed restart left over from the prior run.
+        self._shutting_down = False
+        restart_task = getattr(self, "_poll_restart_task", None)
+        if restart_task is not None and not restart_task.done():
+            restart_task.cancel()
+        self._poll_restart_task = None
+
         if not check_whatsapp_requirements():
             logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
             self._set_fatal_error(
@@ -649,7 +666,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                     self._mark_connected()
                                     self._bridge_process = None  # Not managed by us
                                     self._http_session = aiohttp.ClientSession()
-                                    self._poll_task = asyncio.create_task(self._poll_messages())
+                                    self._start_polling()
                                     return True
                                 stale_reason = (
                                     f"running={running_hash or 'unversioned'}, disk={disk_hash}"
@@ -805,10 +822,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Create a persistent HTTP session for all bridge communication
             self._http_session = aiohttp.ClientSession()
 
-            # Start message polling task
-            self._poll_task = asyncio.create_task(self._poll_messages())
-            
             self._mark_connected()
+            self._start_polling()
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")
             return True
             
@@ -868,6 +883,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # path (which runs from other tasks like send() and the poll loop)
         # doesn't race us and report the intentional termination as fatal.
         self._shutting_down = True
+
+        restart_task = getattr(self, "_poll_restart_task", None)
+        if restart_task is not None and not restart_task.done():
+            restart_task.cancel()
+            try:
+                await restart_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._poll_restart_task = None
+
         if self._bridge_process:
             try:
                 try:
@@ -900,6 +925,31 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             except (asyncio.CancelledError, Exception):
                 pass
         self._poll_task = None
+
+        # Per-message ingestion includes media caching and can outlive the
+        # poll request that discovered it. Cancel and join all such work before
+        # closing the HTTP session it may still be using.
+        inbound_tasks = list(getattr(self, "_inbound_tasks", ()))
+        for task in inbound_tasks:
+            task.cancel()
+        if inbound_tasks:
+            await asyncio.gather(*inbound_tasks, return_exceptions=True)
+        self._inbound_tasks = set()
+
+        # Debounced text dispatch is created by inbound ingestion but can
+        # otherwise outlive it. Retire it only after inbound work is joined so
+        # no ingestion task can repopulate these maps during teardown.
+        pending_text_batch_tasks = getattr(self, "_pending_text_batch_tasks", None)
+        text_batch_tasks = list((pending_text_batch_tasks or {}).values())
+        for task in text_batch_tasks:
+            task.cancel()
+        if text_batch_tasks:
+            await asyncio.gather(*text_batch_tasks, return_exceptions=True)
+        if pending_text_batch_tasks is not None:
+            pending_text_batch_tasks.clear()
+        pending_text_batches = getattr(self, "_pending_text_batches", None)
+        if pending_text_batches is not None:
+            pending_text_batches.clear()
 
         # Close the persistent HTTP session
         if self._http_session and not self._http_session.closed:
@@ -1313,6 +1363,62 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         
         return {"name": chat_id, "type": "dm"}
     
+    def _start_polling(self) -> None:
+        """Start the bridge poll loop and supervise every termination."""
+        current = getattr(self, "_poll_task", None)
+        if current is not None and not current.done():
+            return
+        task = asyncio.create_task(self._poll_messages())
+        self._poll_task = task
+        task.add_done_callback(self._poll_task_done)
+
+    def _poll_task_done(self, task: asyncio.Task) -> None:
+        """Report an unexpected poll-loop stop and arrange a delayed restart."""
+        exc = None if task.cancelled() else task.exception()
+        if getattr(self, "_shutting_down", False) or not getattr(self, "_running", False):
+            return
+
+        if task.cancelled():
+            logger.error("[whatsapp] Poll task was cancelled unexpectedly; restarting")
+        else:
+            if exc is not None:
+                logger.error(
+                    "[whatsapp] Poll task exited with unexpected exception: %s; restarting",
+                    exc,
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+            else:
+                logger.error(
+                    "[whatsapp] Poll task exited unexpectedly (including a missing HTTP session); restarting"
+                )
+
+        restart_task = getattr(self, "_poll_restart_task", None)
+        if restart_task is None or restart_task.done():
+            self._poll_restart_task = asyncio.create_task(
+                self._restart_polling_after_delay()
+            )
+
+    async def _restart_polling_after_delay(self) -> None:
+        """Restart polling after a bounded delay, unless shutdown won the race."""
+        try:
+            await asyncio.sleep(
+                max(
+                    0.0,
+                    getattr(self, "_poll_restart_delay", _POLL_RESTART_DELAY_SECONDS),
+                )
+            )
+            if getattr(self, "_running", False) and not getattr(self, "_shutting_down", False):
+                # Release the scheduler slot before starting: if a missing
+                # session makes the new poll task exit immediately, its done
+                # callback must be able to schedule the next delayed attempt.
+                self._poll_restart_task = None
+                self._start_polling()
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self._poll_restart_task is asyncio.current_task():
+                self._poll_restart_task = None
+
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""
         import aiohttp
@@ -1332,18 +1438,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if resp.status == 200:
                         messages = await resp.json()
                         for msg_data in messages:
-                            event = await self._build_message_event(msg_data)
-                            if event:
-                                # Fire-and-forget: a slow bridge /read must not
-                                # delay message dispatch (matches BlueBubbles
-                                # asyncio.create_task pattern for mark_read).
-                                asyncio.create_task(self._send_read_receipt(msg_data))
-                                if event.message_type == MessageType.TEXT:
-                                    self._enqueue_text_event(event)
-                                else:
-                                    await self.handle_message(event)
+                            self._start_inbound_task(msg_data)
             except asyncio.CancelledError:
-                break
+                raise
             except Exception as e:
                 bridge_exit = await self._check_managed_bridge_exit()
                 if bridge_exit:
@@ -1352,7 +1449,71 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Poll error: {e}")
                 await asyncio.sleep(5)
             
-            await asyncio.sleep(1)  # Poll interval
+            await asyncio.sleep(
+                max(0.0, getattr(self, "_poll_interval", _POLL_INTERVAL_SECONDS))
+            )
+
+    def _start_inbound_task(self, data: Dict[str, Any]) -> None:
+        """Start and track ingestion without blocking the bridge poll loop."""
+        self._track_inbound_task(self._ingest_message(data))
+
+    def _track_inbound_task(self, coroutine) -> None:
+        """Start adapter-owned inbound work that disconnect must join."""
+        task = asyncio.create_task(coroutine)
+        # Some focused tests construct the adapter via __new__, so initialize
+        # lazily as well as in __init__.
+        tasks = getattr(self, "_inbound_tasks", None)
+        if tasks is None:
+            tasks = self._inbound_tasks = set()
+        tasks.add(task)
+        task.add_done_callback(self._inbound_task_done)
+
+    def _inbound_task_done(self, task: asyncio.Task) -> None:
+        """Retire an ingestion task and surface otherwise-lost failures."""
+        self._inbound_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "[%s] WhatsApp inbound message ingestion failed: %s",
+                self.name,
+                exc,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+    async def _ingest_message(self, data: Dict[str, Any]) -> None:
+        """Build and dispatch one bridge message in its isolated task."""
+        try:
+            event = await asyncio.wait_for(
+                self._build_message_event(data),
+                timeout=getattr(
+                    self,
+                    "_inbound_event_timeout",
+                    _INBOUND_EVENT_TIMEOUT_SECONDS,
+                ),
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "[%s] WhatsApp inbound event construction timed out after %.1fs "
+                "for message %s",
+                self.name,
+                getattr(
+                    self,
+                    "_inbound_event_timeout",
+                    _INBOUND_EVENT_TIMEOUT_SECONDS,
+                ),
+                data.get("messageId"),
+            )
+            return
+        if not event:
+            return
+        # Fire-and-forget: a slow bridge /read must not delay dispatch.
+        self._track_inbound_task(self._send_read_receipt(data))
+        if event.message_type == MessageType.TEXT:
+            self._enqueue_text_event(event)
+        else:
+            await self.handle_message(event)
 
     async def _send_read_receipt(self, data: Dict[str, Any]) -> None:
         """Mark a policy-accepted inbound message as read via the bridge."""

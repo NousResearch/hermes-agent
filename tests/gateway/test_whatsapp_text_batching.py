@@ -9,6 +9,9 @@ Batch delays are read from ``config.extra`` (config.yaml), not env vars.
 """
 
 import asyncio
+from unittest.mock import AsyncMock
+
+import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
@@ -51,3 +54,17 @@ def test_invalid_config_value_falls_back_to_default():
     assert adapter._text_batch_split_delay_seconds == 10.0
 
 
+@pytest.mark.asyncio
+async def test_disconnect_cancels_and_joins_pending_text_batch():
+    adapter = _make_adapter(text_batch_delay_seconds=60)
+    adapter.handle_message = AsyncMock()
+    adapter._enqueue_text_event(_event("stale after reconnect"))
+    batch_task = next(iter(adapter._pending_text_batch_tasks.values()))
+    await asyncio.sleep(0)
+
+    await adapter.disconnect()
+
+    assert batch_task.done()
+    assert not adapter._pending_text_batch_tasks
+    assert not adapter._pending_text_batches
+    adapter.handle_message.assert_not_awaited()

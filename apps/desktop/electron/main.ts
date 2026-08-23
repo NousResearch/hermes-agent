@@ -14016,6 +14016,27 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   }
 })
 
+// Runtime desktop plugins load their FULL source through this door.
+// `hermes:readFileText` is the *preview* read and silently truncates at
+// TEXT_PREVIEW_MAX_BYTES (512 KiB) — for a plugin that means evaluating half a
+// file. Dedicated generous cap, full read, and a hard EFBIG (via maxBytes)
+// instead of truncation when the source exceeds it.
+const PLUGIN_SOURCE_MAX_BYTES = 16 * 1024 * 1024
+
+ipcMain.handle('hermes:readPluginSource', async (_event: unknown, filePath: unknown) => {
+  const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
+    maxBytes: PLUGIN_SOURCE_MAX_BYTES,
+    purpose: 'Plugin source'
+  })
+
+  return {
+    byteSize: stat.size,
+    path: resolvedPath,
+    text: await fs.promises.readFile(resolvedPath, 'utf8'),
+    truncated: false
+  }
+})
+
 ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
   const properties = options?.directories ? ['openDirectory'] : ['openFile']
 

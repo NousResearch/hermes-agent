@@ -297,12 +297,37 @@ function dropOriginRecord(origin: string, except: DiskPlugin): void {
   dropPlugin(origin)
 }
 
-async function loadDiskPlugin(entry: DiskPlugin): Promise<void> {
+/** A plugin source that could not be read in FULL. Evaluating a truncated
+ *  file is never acceptable — half a module can still parse. */
+class PluginSourceOversizeError extends Error {}
+
+/** Read a plugin entry file in full. Prefers the dedicated readPluginSource
+ *  IPC (16 MiB cap, no truncation). Older shells predate it and only offer
+ *  the preview read, which silently truncates at 512 KiB — there the read
+ *  fails loudly instead of handing a partial file to the evaluator. */
+async function readPluginSourceText(file: string): Promise<string> {
   const desktop = window.hermesDesktop!
+
+  if (desktop.readPluginSource) {
+    return (await desktop.readPluginSource(file)).text
+  }
+
+  const result = await desktop.readFileText(file)
+
+  if (result.truncated) {
+    throw new PluginSourceOversizeError(
+      'plugin.js exceeds this shell\'s 512 KiB read limit — update Hermes Desktop to load larger plugins'
+    )
+  }
+
+  return result.text
+}
+
+async function loadDiskPlugin(entry: DiskPlugin): Promise<void> {
   const prevId = entry.id
 
   try {
-    const { text } = await desktop.readFileText(entry.file)
+    const text = await readPluginSourceText(entry.file)
 
     const id = await loadRuntimePlugin(text, entry.origin, {
       defaultEnabled: entry.defaultEnabled,
@@ -324,8 +349,23 @@ async function loadDiskPlugin(entry: DiskPlugin): Promise<void> {
     if (id && id !== entry.origin) {
       dropOriginRecord(entry.origin, entry)
     }
-  } catch {
-    // File vanished mid-read — the next scan reconciles.
+  } catch (error) {
+    // An oversize source is a REAL failure the user must see (the silent
+    // shape was the bug: a truncated file evaluated as a syntax error, or
+    // worse, as half a plugin). Everything else is a file vanishing
+    // mid-read — the next scan reconciles, stay quiet.
+    if (error instanceof PluginSourceOversizeError) {
+      console.error(`[plugins] ${entry.origin}: ${error.message}`)
+      notifyError(error, `Plugin "${entry.origin}" failed to load`)
+      publishPlugin({
+        id: entry.origin,
+        name: entry.origin,
+        kind: 'disk',
+        file: entry.file,
+        status: 'error',
+        error: error.message
+      })
+    }
   }
 }
 

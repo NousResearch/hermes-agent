@@ -196,6 +196,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     set: maxMb => ipcRenderer.invoke('hermes:data-url-read-max:set', maxMb)
   },
   readFileText: filePath => ipcRenderer.invoke('hermes:readFileText', filePath),
+  readPluginSource: (filePath: string) => ipcRenderer.invoke('hermes:readPluginSource', filePath),
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
   selectSavePath: options => ipcRenderer.invoke('hermes:selectSavePath', options),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),

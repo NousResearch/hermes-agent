@@ -18,7 +18,8 @@ vi.mock('@/hermes', async importActual => ({
 const desktopPluginsRoot = vi.fn<() => Promise<string>>()
 const agentPluginsRoot = vi.fn<() => Promise<string>>()
 const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
-const readFileText = vi.fn<(path: string) => Promise<{ text: string }>>()
+const readFileText = vi.fn<(path: string) => Promise<{ text: string; truncated?: boolean }>>()
+const readPluginSource = vi.fn<(path: string) => Promise<{ text: string; truncated?: boolean }>>()
 const watchDirectory = vi.fn<(path: string) => Promise<{ id: string }>>()
 const watchPreviewFile = vi.fn<(path: string) => Promise<{ id: string }>>()
 const onPreviewFileChanged = vi.fn()
@@ -28,6 +29,7 @@ beforeEach(() => {
   agentPluginsRoot.mockReset()
   readDir.mockReset()
   readFileText.mockReset()
+  readPluginSource.mockReset()
   watchDirectory.mockReset()
   watchPreviewFile.mockReset()
   onPreviewFileChanged.mockReset()
@@ -176,6 +178,127 @@ describe('watchRuntimePlugins dir watch (#66899)', () => {
     expect(watchDirectory).toHaveBeenCalledWith('/local/.hermes/plugins')
     expect(watchDirectory).not.toHaveBeenCalledWith('/remote/box/.hermes/desktop-plugins')
     expect(getStatus).not.toHaveBeenCalled()
+  })
+})
+
+describe('plugin source reads (512 KiB preview-cap bug)', () => {
+  const blobToDataUrl = () => {
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    return () => {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+    }
+  }
+
+  it('loads the full source via readPluginSource when the shell offers it', async () => {
+    ;(window.hermesDesktop as unknown as { readPluginSource: unknown }).readPluginSource = readPluginSource
+    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+    agentPluginsRoot.mockResolvedValue('')
+    readDir.mockResolvedValue({
+      entries: [{ isDirectory: true, name: 'big', path: '/local/.hermes/desktop-plugins/big' }]
+    })
+    // The existence probe still uses the preview read (metadata is enough
+    // there) — it may report truncation without failing the scan.
+    readFileText.mockResolvedValue({ text: '// first 512 KiB only', truncated: true })
+
+    const register = vi.fn()
+
+    ;(globalThis as unknown as { __bigRegister: unknown }).__bigRegister = register
+    readPluginSource.mockResolvedValue({
+      text: 'export default { id: "big", register: globalThis.__bigRegister }'
+    })
+    watchPreviewFile.mockResolvedValue({ id: 'w-big' })
+
+    const restore = blobToDataUrl()
+
+    try {
+      await discoverRuntimePlugins()
+
+      // The EVALUATED source came from the full read, not the truncated preview.
+      expect(readPluginSource).toHaveBeenCalledWith('/local/.hermes/desktop-plugins/big/plugin.js')
+      expect(register).toHaveBeenCalledTimes(1)
+      expect($pluginRecords.get().big).toMatchObject({ kind: 'disk', status: 'loaded' })
+    } finally {
+      restore()
+      delete (globalThis as unknown as { __bigRegister?: unknown }).__bigRegister
+    }
+  })
+
+  it('older shell without readPluginSource: a truncated preview read fails LOUDLY, never evaluates', async () => {
+    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+    agentPluginsRoot.mockResolvedValue('')
+    readDir.mockResolvedValue({
+      entries: [{ isDirectory: true, name: 'huge', path: '/local/.hermes/desktop-plugins/huge' }]
+    })
+    // 512 KiB window of a larger file — parses fine, but is NOT the plugin.
+    readFileText.mockResolvedValue({
+      text: 'export default { id: "huge", register: () => { throw new Error("must never evaluate") } }',
+      truncated: true
+    })
+    watchPreviewFile.mockResolvedValue({ id: 'w-huge' })
+
+    const restore = blobToDataUrl()
+
+    try {
+      await discoverRuntimePlugins()
+
+      // No live plugin — an error inventory row names the folder instead.
+      expect($pluginRecords.get().huge).toMatchObject({
+        kind: 'disk',
+        status: 'error',
+        file: '/local/.hermes/desktop-plugins/huge/plugin.js'
+      })
+      expect($pluginRecords.get().huge.error).toMatch(/512 KiB/)
+    } finally {
+      restore()
+    }
+  })
+
+  it('older shell, small plugin (not truncated): still loads through readFileText', async () => {
+    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+    agentPluginsRoot.mockResolvedValue('')
+    readDir.mockResolvedValue({
+      entries: [{ isDirectory: true, name: 'small', path: '/local/.hermes/desktop-plugins/small' }]
+    })
+
+    const register = vi.fn()
+
+    ;(globalThis as unknown as { __smallRegister: unknown }).__smallRegister = register
+    readFileText.mockResolvedValue({
+      text: 'export default { id: "small", register: globalThis.__smallRegister }'
+    })
+    watchPreviewFile.mockResolvedValue({ id: 'w-small' })
+
+    const restore = blobToDataUrl()
+
+    try {
+      await discoverRuntimePlugins()
+
+      expect(register).toHaveBeenCalledTimes(1)
+      expect($pluginRecords.get().small).toMatchObject({ kind: 'disk', status: 'loaded' })
+    } finally {
+      restore()
+      delete (globalThis as unknown as { __smallRegister?: unknown }).__smallRegister
+    }
   })
 })
 

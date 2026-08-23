@@ -571,6 +571,24 @@ def test_operation_budget_bounds_provider_traversal_and_preserves_later_context(
     assert len(warnings) == 1
 
 
+def test_memory_manager_module_identity_survives_fresh_agent_fixture():
+    """A fresh-agent fixture must not strand this module's imported class.
+
+    ``test_empty_tool_name_loop_dampening.agent_env`` deliberately imports a
+    fresh ``agent.*`` tree.  Its teardown must restore the tree because this
+    module imported ``MemoryManager`` during collection; otherwise the
+    aggregate-budget test patches a different module object than the class it
+    exercises and a provider exception drops its context.
+    """
+    import agent.memory_manager as current_memory_manager
+
+    assert current_memory_manager.MemoryManager is MemoryManager
+    assert (
+        MemoryManager._normalize_prefetch_result.__globals__
+        is current_memory_manager.__dict__
+    )
+
+
 def test_operation_observation_batch_budget_is_aggregate_across_providers(
     monkeypatch, caplog
 ):

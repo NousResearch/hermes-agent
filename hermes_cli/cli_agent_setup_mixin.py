@@ -176,9 +176,13 @@ def apply_per_provider_output_cap(agent, runtime: dict) -> None:
     ``max_output_tokens``, with ``max_tokens`` accepted as an alias) is a
     fallback only — it applies when the documented global keys
     (``HERMES_MAX_TOKENS`` / ``model.max_tokens``) left ``agent.max_tokens``
-    unset, so the global key always wins.
+    unset, so the global key always wins. A present-but-invalid global value
+    (zero/negative) does not suppress the provider cap: both layers validate
+    with ``> 0``, so a malformed global setting falls through to a valid
+    per-provider cap rather than disabling output caps entirely.
     """
-    if getattr(agent, "max_tokens", None) is not None:
+    _current = getattr(agent, "max_tokens", None)
+    if isinstance(_current, int) and _current > 0:
         return
     for _key in ("max_output_tokens", "max_tokens"):
         _value = runtime.get(_key)

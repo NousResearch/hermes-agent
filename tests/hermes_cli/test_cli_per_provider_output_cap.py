@@ -72,6 +72,12 @@ class TestApplyPerProviderOutputCap:
             apply_cap(cli, {"max_output_tokens": bad})
             assert cli.max_tokens is None, repr(bad)
 
+    def test_malformed_global_falls_through_to_cap(self, apply_cap):
+        """A zero/negative global max_tokens must not suppress the cap."""
+        cli = FakeHermesCLI(max_tokens=-1)
+        apply_cap(cli, {"max_output_tokens": 16384})
+        assert cli.max_tokens == 16384
+
     def test_accepts_max_tokens_alias(self, apply_cap):
         cli = FakeHermesCLI(max_tokens=None)
         apply_cap(cli, {"max_tokens": 4096})

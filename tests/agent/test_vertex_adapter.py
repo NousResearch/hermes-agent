@@ -123,10 +123,60 @@ def test_has_vertex_credentials_via_adc_without_project(vertex_adapter, monkeypa
     assert vertex_adapter.has_vertex_credentials() is True
 
 
-def test_has_adc_available_detects_gce_without_network(vertex_adapter, monkeypatch):
+def test_has_adc_available_via_gce_signal(vertex_adapter, monkeypatch):
+    # Named for what it actually asserts: `_on_gce` is stubbed here, so this
+    # covers the GCE *branch*, not the no-network property. That property is
+    # covered by test_on_gce_reads_dmi_product_name below.
     monkeypatch.setattr(vertex_adapter.os.path, "exists", lambda _p: False)
     monkeypatch.setattr(vertex_adapter, "_on_gce", lambda: True)
     assert vertex_adapter.has_adc_available() is True
+
+
+def test_adc_path_honours_cloudsdk_config(vertex_adapter, monkeypatch):
+    """CLOUDSDK_CONFIG relocates gcloud's config dir and must win.
+
+    Mirrors google.auth._cloud_sdk.get_config_path(), which checks this first
+    on every platform. CI images and devcontainers set it routinely, so missing
+    it means probing a path where the credential is not.
+    """
+    monkeypatch.setenv("CLOUDSDK_CONFIG", "/custom/gcloud/root")
+    assert vertex_adapter._adc_well_known_path() == (
+        "/custom/gcloud/root/application_default_credentials.json"
+    )
+
+
+def test_adc_path_posix_default(vertex_adapter, monkeypatch):
+    monkeypatch.delenv("CLOUDSDK_CONFIG", raising=False)
+    monkeypatch.setattr(vertex_adapter.os, "name", "posix")
+    monkeypatch.setattr(vertex_adapter.os.path, "expanduser", lambda _p: "/home/u")
+    assert vertex_adapter._adc_well_known_path() == (
+        "/home/u/.config/gcloud/application_default_credentials.json"
+    )
+
+
+def test_adc_path_windows_uses_appdata(vertex_adapter, monkeypatch):
+    monkeypatch.delenv("CLOUDSDK_CONFIG", raising=False)
+    monkeypatch.setattr(vertex_adapter.os, "name", "nt")
+    monkeypatch.setenv("APPDATA", "C:\\Users\\u\\AppData\\Roaming")
+    assert vertex_adapter._adc_well_known_path().endswith(
+        "application_default_credentials.json"
+    )
+    assert "gcloud" in vertex_adapter._adc_well_known_path()
+
+
+def test_adc_path_windows_falls_back_to_system_drive(vertex_adapter, monkeypatch):
+    """google-auth covers APPDATA being unset; so must we.
+
+    Without this branch the path would be built from an empty base, silently
+    probing a bare relative `gcloud/...` instead of the real location.
+    """
+    monkeypatch.delenv("CLOUDSDK_CONFIG", raising=False)
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.setattr(vertex_adapter.os, "name", "nt")
+    monkeypatch.setenv("SystemDrive", "D:")
+    path = vertex_adapter._adc_well_known_path()
+    assert path.startswith("D:")
+    assert "gcloud" in path
 
 
 def test_has_adc_available_detects_well_known_file(vertex_adapter, monkeypatch):

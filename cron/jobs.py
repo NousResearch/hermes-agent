@@ -1028,6 +1028,35 @@ def get_persisted_error_recovery_stats() -> Dict[str, Any]:
     }
 
 
+def _cron_next_run_matches_expr(
+    schedule: Dict[str, Any],
+    next_run_dt: datetime,
+) -> bool:
+    """Whether ``next_run_dt`` is an occurrence of the schedule's current expr.
+
+    A direct ``jobs.json`` edit can change ``schedule.expr`` while leaving the
+    stored ``next_run_at`` computed under the *old* expression (#93049). The
+    stored instant is stale exactly when it is not an occurrence of the
+    current expression. Validation is best-effort: anything that cannot be
+    checked (non-cron kind, missing expr, croniter unavailable, malformed
+    input) reports a match so the fire path keeps its existing semantics.
+    """
+    if schedule.get("kind") != "cron":
+        return True
+    expr = schedule.get("expr")
+    if not expr or not _ensure_croniter() or croniter is None:
+        return True
+    try:
+        # The last occurrence at-or-before the stored instant: base croniter
+        # a second past it so an exact occurrence is included, then compare
+        # at second granularity (croniter returns second-precision datetimes).
+        base = next_run_dt + timedelta(seconds=1)
+        prev = croniter(str(expr), base).get_prev(datetime)
+        return abs((prev - next_run_dt).total_seconds()) < 1.0
+    except Exception:
+        return True
+
+
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
     """
     Compute the next run time for a schedule.
@@ -3405,6 +3434,35 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             break
 
             if next_run_dt <= now:
+
+                # Stale-schedule guard (#93049): a direct jobs.json edit that
+                # changed schedule.expr leaves next_run_at computed under the
+                # old expression, so the job would fire at an instant the
+                # current expression excludes. Both the within-grace fire and
+                # the catch-up "run once now" below inherit that wrong instant,
+                # so re-anchor before either can fire. Recomputation uses the
+                # current expression, so this converges — it cannot defer
+                # forever.
+                if kind == "cron" and not _cron_next_run_matches_expr(
+                    schedule, next_run_dt
+                ):
+                    new_next = compute_next_run(schedule, now.isoformat())
+                    logger.info(
+                        "Job '%s' next_run_at %s does not match its current "
+                        "cron expression %r (direct jobs.json edit?); "
+                        "re-anchoring to %s without firing.",
+                        job.get("name", job.get("id", "?")),
+                        next_run,
+                        schedule.get("expr"),
+                        new_next,
+                    )
+                    if new_next:
+                        for rj in raw_jobs:
+                            if rj["id"] == job["id"]:
+                                rj["next_run_at"] = new_next
+                                needs_save = True
+                                break
+                    continue
 
                 # For recurring jobs, check if the scheduled time is stale
                 # (gateway was down and missed the window). Fast-forward to

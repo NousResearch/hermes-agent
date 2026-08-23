@@ -124,7 +124,11 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
         return None
     if not handle:
         handle = "hermes" if profile == "default" else profile
-    if not _HANDLE_RE.match(handle) or not _HANDLE_RE.match(profile):
+    if (
+        not _HANDLE_RE.match(handle)
+        or not _HANDLE_RE.match(profile)
+        or not _HANDLE_RE.match(connection_id)
+    ):
         return None
     out = {
         "profile": profile,
@@ -486,22 +490,28 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
     interpreter.
     """
     reply_path = str(relay_root(root) / REPLIES_DIR / f"{envelope['id']}.json")
-    label = f"@{envelope['target_handle']} on {envelope['target_connection']}"
+    label = (
+        f"@{envelope.get('target_handle', '')} "
+        f"on {envelope.get('target_connection', '')}"
+    )
+    # Encode label with !r so roster fields cannot break out of the generated
+    # python -c source (quotes, parens, or extra statements in connection_id).
     code = (
         "import json,os,sys,time\n"
         f"p = {reply_path!r}\n"
+        f"label = {label!r}\n"
         f"deadline = time.time() + {REPLY_WAIT_SECONDS}\n"
         "while time.time() < deadline:\n"
         "    if os.path.exists(p):\n"
         "        d = json.load(open(p, encoding='utf-8'))\n"
         "        if d.get('error'):\n"
-        f"            print('Delivery to {label} failed: ' + d['error'])\n"
+        "            print('Delivery to ' + label + ' failed: ' + d['error'])\n"
         "            sys.exit(1)\n"
-        f"        print('Reply from {label}:')\n"
+        "        print('Reply from ' + label + ':')\n"
         "        print(d.get('reply') or '(empty reply)')\n"
         "        sys.exit(0)\n"
         "    time.sleep(2)\n"
-        f"print('No reply from {label} within {REPLY_WAIT_SECONDS}s. The message may "
+        f"print('No reply from ' + label + ' within {REPLY_WAIT_SECONDS}s. The message may "
         "still be delivered when the Desktop reconnects; do not resend blindly.')\n"
         "sys.exit(1)\n"
     )

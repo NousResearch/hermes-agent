@@ -151,6 +151,56 @@ def test_waiter_command_quotes_and_targets_reply_file(root):
     assert "rm -rf" not in cmd  # sanity: single quoted -c payload
 
 
+def test_roster_rejects_connection_id_outside_handle_charset(root):
+    bad = [
+        {"profile": "researcher", "handle": "researcher", "connection_id": "vps'); print(1)"},
+        {"profile": "researcher", "handle": "researcher", "connection_id": "foo'bar"},
+        {"profile": "researcher", "handle": "researcher", "connection_id": "ssh vps"},
+        {"profile": "researcher", "handle": "researcher", "connection_id": "a" * 65},
+    ]
+    assert bot_relay.write_remote_roster(root, bad) == 0
+    good = {
+        "profile": "researcher",
+        "handle": "researcher",
+        "connection_id": "ssh-vps",
+    }
+    assert bot_relay.write_remote_roster(root, [good]) == 1
+
+
+def test_waiter_command_repr_encodes_hostile_connection_id(root):
+    import ast
+    import shlex
+
+    inj = "x'); open(r'/tmp/pwned','w').write('pwned'); print('x"
+    env = {
+        "id": "c" * 32,
+        "target_handle": "researcher",
+        "target_connection": inj,
+    }
+    cmd = bot_relay.waiter_command(root, env)
+    parts = shlex.split(cmd)
+    code = parts[parts.index("-c") + 1]
+    compile(code, "<waiter>", "exec")
+    tree = ast.parse(code)
+    opens = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "open"
+    ]
+    # Only json.load(open(p, ...)) is a real open(); the payload must stay data.
+    assert len(opens) == 1
+
+    # A quote in the id used to SyntaxError the waiter. It must compile.
+    quoted = bot_relay.waiter_command(
+        root,
+        {"id": "a" * 32, "target_handle": "h", "target_connection": "foo'bar"},
+    )
+    qcode = shlex.split(quoted)[shlex.split(quoted).index("-c") + 1]
+    compile(qcode, "<waiter-quote>", "exec")
+
+
 # ── message_agent integration: relay route + legacy-SOUL gate fix ───────────
 
 import textwrap

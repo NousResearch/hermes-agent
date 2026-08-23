@@ -144,3 +144,97 @@ describe('ConfigField searchable routing', () => {
     expect(onChange).toHaveBeenCalledWith('')
   })
 })
+
+describe('SearchableSelect rich options', () => {
+  it('shows the selected option label on the trigger', () => {
+    render(
+      <SearchableSelect onChange={vi.fn()} options={[{ value: 'openrouter', label: 'OpenRouter' }]} value="openrouter" />
+    )
+
+    expect(screen.getByRole('combobox').textContent).toContain('OpenRouter')
+  })
+
+  it('falls back to the raw value when the selection is not in the options', () => {
+    // Mirrors withActive / missing-saved-provider: an out-of-catalog model
+    // still renders its id instead of a blank trigger.
+    render(<SearchableSelect onChange={vi.fn()} options={['hermes-4']} value="hermes-4-mini" />)
+
+    expect(screen.getByRole('combobox').textContent).toContain('hermes-4-mini')
+  })
+
+  it('round-trips a cased, slashed value through selection', () => {
+    const onChange = vi.fn()
+
+    render(
+      <SearchableSelect
+        onChange={onChange}
+        options={[{ value: 'anthropic/claude-opus-4.8', label: 'Claude Opus 4.8' }]}
+        placeholder="Search…"
+        value=""
+      />
+    )
+
+    fireEvent.click(screen.getByRole('combobox'))
+    fireEvent.click(screen.getByText('Claude Opus 4.8'))
+
+    expect(onChange).toHaveBeenCalledWith('anthropic/claude-opus-4.8')
+  })
+
+  it('does not re-emit when the current value is re-picked (Radix no-op parity)', () => {
+    const onChange = vi.fn()
+
+    render(
+      <SearchableSelect onChange={onChange} options={[{ value: 'nous', label: 'Nous' }]} placeholder="Search…" value="nous" />
+    )
+
+    fireEvent.click(screen.getByRole('combobox'))
+    fireEvent.click(screen.getByRole('option', { name: 'Nous' }))
+
+    expect(onChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('SearchableSelect keywords', () => {
+  it('folds item keywords into the filter score', () => {
+    render(
+      <SearchableSelect
+        onChange={vi.fn()}
+        options={[{ value: 'openrouter', label: 'OpenRouter', keywords: ['OpenRouter'] }]}
+        placeholder="Search…"
+        value=""
+      />
+    )
+
+    fireEvent.click(screen.getByRole('combobox'))
+    fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'openrouter' } })
+
+    expect(screen.getByText('OpenRouter')).toBeTruthy()
+  })
+
+  it('keeps an opaque id findable via its alias haystack', () => {
+    render(
+      <SearchableSelect
+        onChange={vi.fn()}
+        options={[{ value: 'k3', keywords: ['k3 kimi-k3 kimi'] }]}
+        placeholder="Search…"
+        value=""
+      />
+    )
+
+    fireEvent.click(screen.getByRole('combobox'))
+    fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'kimi' } })
+
+    // 'k3' alone scores 0 against 'kimi'; only the folded keywords keep it listed.
+    expect(screen.getByText('k3')).toBeTruthy()
+  })
+})
+
+describe('SearchableSelect className passthrough', () => {
+  it('merges the extra class onto the trigger', () => {
+    const { container } = render(
+      <SearchableSelect className="min-w-60" onChange={vi.fn()} options={['hermes-4']} value="" />
+    )
+
+    expect(container.querySelector('[data-slot="searchable-select-trigger"]')?.className).toContain('min-w-60')
+  })
+})

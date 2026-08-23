@@ -28,6 +28,15 @@ export function rankSearchOption(option: string, search: string): number {
   return 0
 }
 
+/** A single selectable entry. `label` overrides the raw `value` for display;
+ *  `keywords` are extra search haystack beyond the value (e.g. a model id's
+ *  aliases), folded into the same rankSearchOption scorer. */
+export interface SearchableSelectOption {
+  value: string
+  label?: string
+  keywords?: string[]
+}
+
 /**
  * Searchable select for large option lists (e.g. ~590 IANA timezones).
  * Built on Popover + cmdk Command — the same stack as Shadcn's Combobox.
@@ -44,40 +53,60 @@ export function SearchableSelect({
   options,
   placeholder = 'Search…',
   emptyMessage = 'No results found.',
-  clearLabel
+  clearLabel,
+  className,
+  ariaLabel
 }: {
   value: string
   onChange: (value: string) => void
-  options: string[]
+  options: readonly (string | SearchableSelectOption)[]
   placeholder?: string
   emptyMessage?: string
   /** When set, prepends a "clear" item that sets the value to ''.
    *  Matches the existing <Select> pattern of EMPTY_SELECT_VALUE + "(none)". */
   clearLabel?: string
+  /** Extra classes merged onto the trigger (e.g. min-w-* sizing). */
+  className?: string
+  /** Accessible name for the trigger, matching SelectTrigger's aria-label. */
+  ariaLabel?: string
 }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
 
   const handleSelect = useCallback(
     (selected: string) => {
-      onChange(selected)
+      // Radix's <Select> ignores re-picking the current value (no
+      // onValueChange), and the converted pickers rely on that: a MoA slot's
+      // provider re-selected unchanged must not schedule another autosave.
+      if (selected !== value) {
+        onChange(selected)
+      }
       setOpen(false)
     },
-    [onChange]
+    [onChange, value]
   )
 
-  const displayValue = value !== '' && value !== undefined ? value : placeholder
+  // Plain strings normalize to {value, label: value}. A selected value missing
+  // from the list (e.g. a saved model the provider no longer reports) falls
+  // back to the raw value so the trigger never renders as a blank box.
+  const normalizedOptions: SearchableSelectOption[] = options.map(option =>
+    typeof option === 'string' ? { value: option, label: option } : option
+  )
+  const selectedOption = normalizedOptions.find(option => option.value === value)
+  const displayValue = !value ? placeholder : (selectedOption?.label ?? value)
 
   return (
     <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger asChild>
         <button
           aria-expanded={open}
+          aria-label={ariaLabel}
           aria-haspopup="listbox"
           className={cn(
             controlVariants(),
             'flex items-center justify-between gap-2 whitespace-nowrap',
-            !value && 'text-muted-foreground'
+            !value && 'text-muted-foreground',
+            className
           )}
           data-slot="searchable-select-trigger"
           ref={triggerRef}
@@ -93,7 +122,11 @@ export function SearchableSelect({
           "Africa/A…". The popover keeps its own width and only grows to cover a
           trigger wider than that. */}
       <PopoverContent align="start" className="min-w-(--radix-popover-trigger-width) p-0">
-        <Command filter={rankSearchOption}>
+        <Command
+          filter={(item, search, keywords) =>
+            rankSearchOption(keywords?.length ? `${item} ${keywords.join(' ')}` : item, search)
+          }
+        >
           <CommandInput autoFocus placeholder={placeholder} />
           <CommandList>
             <CommandEmpty>{emptyMessage}</CommandEmpty>
@@ -104,10 +137,18 @@ export function SearchableSelect({
                   {clearLabel}
                 </CommandItem>
               )}
-              {options.map(option => (
-                <CommandItem key={option} onSelect={() => handleSelect(option)} value={option}>
-                  <Codicon className={cn('mr-2 size-4', option === value ? 'opacity-100' : 'opacity-0')} name="check" />
-                  {option}
+              {normalizedOptions.map(option => (
+                <CommandItem
+                  key={option.value}
+                  keywords={option.keywords}
+                  onSelect={() => handleSelect(option.value)}
+                  value={option.value}
+                >
+                  <Codicon
+                    className={cn('mr-2 size-4', option.value === value ? 'opacity-100' : 'opacity-0')}
+                    name="check"
+                  />
+                  {option.label ?? option.value}
                 </CommandItem>
               ))}
             </CommandGroup>

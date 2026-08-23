@@ -127,7 +127,7 @@ def test_upstream_candidate_applies_downstream_delta_in_staging(tmp_path: Path, 
     downstream_revision = _commit(downstream, "Ares patch")
 
     (upstream / "upstream.txt").write_text("new Hermes feature\n", encoding="utf-8")
-    upstream_revision = _commit(upstream, "upstream update")
+    upstream_revision = _commit(upstream, "upstream change")
 
     runtime = _runtime(tmp_path)
     monkeypatch.setattr(runtime, "_build_runtime", lambda source, *, desktop: None)
@@ -163,7 +163,7 @@ def test_update_activates_only_the_verified_upstream_candidate(tmp_path: Path, m
     _commit(downstream, "Ares patch")
 
     (upstream / "upstream.txt").write_text("new Hermes feature\n", encoding="utf-8")
-    _commit(upstream, "upstream update")
+    _commit(upstream, "upstream change")
 
     runtime = _runtime(tmp_path)
     runtime._write_config(
@@ -197,7 +197,7 @@ def test_upstream_candidate_conflict_never_publishes_a_release(tmp_path: Path, m
     downstream_revision = _commit(downstream, "Ares patch")
 
     (upstream / "shared.txt").write_text("Hermes change\n", encoding="utf-8")
-    upstream_revision = _commit(upstream, "upstream update")
+    upstream_revision = _commit(upstream, "upstream change")
 
     runtime = _runtime(tmp_path)
     monkeypatch.setattr(runtime, "_build_runtime", lambda source, *, desktop: None)

@@ -127,7 +127,8 @@ class TestHealthyTurnStillRuns:
             cli._maybe_continue_goal_after_turn()
 
         assert cli._pending_input.empty()
-        assert mgr.state.status == "done"
+        assert mgr.state.status == "active"
+        assert mgr.state.outcome == "WAITING_FOR_AUTHORITY"
 
 
 class TestInterruptFlagLifecycle:

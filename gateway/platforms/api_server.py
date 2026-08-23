@@ -5028,6 +5028,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     run_id,
                     "completed",
                     session_id=effective_session_id,
+                    # The reply text, so a caller that lost the stream can still
+                    # read it from GET /v1/runs/{run_id} for _RUN_STATUS_TTL.
+                    # POST /v1/runs has always recorded output here; this route
+                    # put the text only on the SSE queue, so a client whose
+                    # socket died — a sleeping laptop, a dropped WiFi link —
+                    # could see the run reach "completed" and still have no way
+                    # to learn what the agent said. That also made a partial
+                    # answer from an interrupted turn indistinguishable from a
+                    # clean one, and unrecoverable either way.
+                    output=final_response,
                     usage=usage,
                     last_event="run.completed",
                     **({"pending_steer": pending_steer} if pending_steer else {}),

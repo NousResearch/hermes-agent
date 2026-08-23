@@ -891,3 +891,128 @@ async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
         assert resp.status == 400, await resp.text()
         assert (await resp.json())["error"]["code"] == "unsupported_session_field"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
+    adapter, session_db
+):
+    """A caller whose socket died must still be able to read what the agent said.
+
+    The session-stream route put the reply only on the SSE queue, so a client
+    that lost its connection saw the run reach "completed" with no way to learn
+    the text — indistinguishable from, and as useless as, a run that produced
+    nothing. POST /v1/runs has always recorded `output`; this pins the same for
+    this route, which is what makes GET /v1/runs/{run_id} a recovery path.
+    """
+    session_id = session_db.create_session("recover-stream-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            allow_finish.set()
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("partial ")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "the answer worth keeping", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    with patch.object(
+        adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)
+    ), patch.object(
+        adapter, "_read_json_body", return_value=({"message": "stream please"}, None)
+    ), patch.object(
+        adapter, "_create_agent", side_effect=lambda **kw: FakeAgent(kw["stream_delta_callback"])
+    ), patch(
+        "gateway.platforms.api_server.web.StreamResponse",
+        return_value=DisconnectingStreamResponse(),
+    ):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        allow_finish.set()
+        await handler_task
+
+    record = adapter._run_statuses[run_id]
+    assert record["status"] == "completed"
+    # The whole point: the text survived the dead socket.
+    assert record.get("output") == "the answer worth keeping"
+
+    # And it is reachable through the documented read path, not just the dict.
+    get_request = MagicMock()
+    get_request.headers = {}
+    get_request.match_info = {"run_id": run_id}
+    response = await adapter._handle_get_run(get_request)
+    assert response.status == 200
+    assert "the answer worth keeping" in response.text
+
+
+@pytest.mark.asyncio
+async def test_both_run_routes_record_output(adapter):
+    """Structural guard against the asymmetry coming back.
+
+    The two routes that mint run ids must both persist the reply text. A future
+    edit that drops `output=` from either one silently removes the recovery
+    path, and no behavioural test of the *other* route would notice.
+    """
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "gateway"
+        / "platforms"
+        / "api_server.py"
+    ).read_text(encoding="utf-8")
+
+    for name, anchor in (
+        ("session stream", "async def _handle_session_chat_stream"),
+        ("/v1/runs", "async def _handle_runs"),
+    ):
+        start = src.index(anchor)
+        # Anchor on the terminal STATUS WRITE, not on the string "completed" —
+        # the SSE payload carries a `"completed": True` key that would match a
+        # naive search and hide a missing output=.
+        cursor = start
+        window = None
+        while True:
+            call_at = src.find("_set_run_status(", cursor)
+            assert call_at != -1, f"{name}: no terminal _set_run_status found"
+            candidate = src[call_at:call_at + 2000]  # generous: the call may carry comments
+            if '"completed",' in candidate[:400]:
+                window = candidate
+                break
+            cursor = call_at + 1
+
+        assert "output=" in window, f"{name} no longer records the reply text"

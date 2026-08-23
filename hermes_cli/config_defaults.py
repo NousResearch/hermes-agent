@@ -2317,17 +2317,6 @@ DEFAULT_CONFIG = {
         },
     },
 
-    # Bot Mode (desktop-managed multi-agent) settings.
-    # Section defined here for the per-profile turn lock (#93091); other
-    # Bot Mode knobs may merge into this section from parallel work.
-    "bot_mode": {
-        # How long a second delivery into an already-busy target profile
-        # queues behind the current turn before failing with a structured
-        # 'target_busy' error. Deliveries are serialized per profile with a
-        # cross-process file lock so two turns never race one Bot Chat.
-        "turn_wait_seconds": 120,
-    },
-
     # Mattermost platform settings (gateway mode)
     "mattermost": {
         "require_mention": True,       # Require @mention to respond in channels
@@ -2728,6 +2717,11 @@ DEFAULT_CONFIG = {
         # confusing zombie message. 0 disables drain-time expiry (the 6h
         # stale-artifact sweep still applies).
         "envelope_ttl_seconds": 900,
+        # How long a second delivery into an already-busy target profile
+        # queues behind the current turn before failing with a structured
+        # 'target_busy' error. Deliveries are serialized per profile with a
+        # cross-process file lock so two turns never race one Bot Chat.
+        "turn_wait_seconds": 120,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

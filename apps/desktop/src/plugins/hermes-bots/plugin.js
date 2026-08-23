@@ -316,6 +316,10 @@ const $botsHomeFronted = atom(false)
 
 let botsHomeClose = null
 let suppressBotsHomeReopen = false
+// Latched while a re-front attempt has not yet been answered with visibility.
+// Cleared the moment the home is actually fronted, and whenever the tab is
+// retired — a fresh open starts the budget over. See openBotsHomeWorkspace.
+let botsHomeRefrontTried = false
 
 function saveSelectedRosterBot(bot) {
   const key = botRosterKey(bot)
@@ -13122,6 +13126,10 @@ function closeBotsHomeWorkspace() {
   const close = botsHomeClose
   botsHomeClose = null
   suppressBotsHomeReopen = true
+  // Retiring the tab ends the current attempt's budget: the next open is a
+  // new surface, and it gets its own re-front chance. The re-front path sets
+  // the latch again AFTER calling us, so this cannot erase its own attempt.
+  botsHomeRefrontTried = false
 
   try {
     close()
@@ -13209,10 +13217,27 @@ function openBotsHomeWorkspace(explicit = false) {
   // and each of those either legitimately claims the center or cleared it.
   if (botsHomeClose) {
     if (botsHomeVisible()) {
+      botsHomeRefrontTried = false
+
+      return true
+    }
+
+    // A re-front is a close + re-open, so it REMOUNTS the whole Bots view.
+    // That is affordable once, against the backgrounded-tab case above. It is
+    // not affordable per signal: the shell does not always answer a reveal
+    // with the active slot (revealTreePane returns early for a pane in
+    // $hiddenTreePanes without activating it; a minimized zone and a pane the
+    // tree never adopted are never visible either). Pinned in one of those
+    // states the old code re-fronted on every passive pass — sidebar flips,
+    // focus churn and group changes all reach here — and the view strobed.
+    // One attempt proves whether this shell will front the tab; if it will
+    // not, keep the surface and wait for a signal that changes the answer.
+    if (botsHomeRefrontTried && !explicit) {
       return true
     }
 
     closeBotsHomeWorkspace()
+    botsHomeRefrontTried = true
   }
 
   try {
@@ -13229,6 +13254,15 @@ function openBotsHomeWorkspace(explicit = false) {
         }
       }
     })
+
+    // The reveal has already either granted the tab its zone's active slot or
+    // refused it, so settle the re-front budget on that answer directly rather
+    // than waiting for a visibility notification to schedule another pass. A
+    // computed store stays silent when the value does not change, so on the
+    // shells that refuse, no such pass is coming.
+    if (botsHomeVisible()) {
+      botsHomeRefrontTried = false
+    }
 
     return typeof botsHomeClose === 'function'
   } catch {

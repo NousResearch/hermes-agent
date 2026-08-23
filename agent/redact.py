@@ -402,6 +402,20 @@ _PYTHON_REPR_ENV_SUFFIXES = (
     "_CREDENTIAL",
     "_CREDENTIALS",
 )
+# Casefolded credential suffixes for mixed/camel-case key names
+# (``UserPassword``, ``sessionToken``, ``clientApiKey``). Suffix-only so
+# ``token_count`` / ``password_policy`` metadata keys never match. Widened per
+# OpenHands/software-agent-sdk#4508.
+_PYTHON_REPR_CREDENTIAL_SUFFIXES = (
+    "apikey",
+    "api_key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "credentials",
+)
 _PYTHON_REPR_FIELD_RE = re.compile(
     r"'(?P<key>[A-Za-z_][A-Za-z0-9_]*)'(?P<sep>\s*:\s*)"
     r"(?:"
@@ -568,10 +582,19 @@ def _mask_token(token: str) -> str:
 
 
 def _is_python_repr_secret_key(key: str) -> bool:
-    """Return True for exact secret keys or uppercase env credential suffixes."""
-    if key.casefold() in _PYTHON_REPR_SECRET_KEYS:
+    """Return True for exact secret keys or credential-suffixed key names."""
+    folded = key.casefold()
+    if folded in _PYTHON_REPR_SECRET_KEYS:
         return True
-    return key.isupper() and key.endswith(_PYTHON_REPR_ENV_SUFFIXES)
+    if key.isupper() and key.endswith(_PYTHON_REPR_ENV_SUFFIXES):
+        return True
+    # Mixed/camel-case keys ending in a credential word (``UserPassword``,
+    # ``sessionToken``, ``clientApiKey``) — the exact-set and uppercase-suffix
+    # rules above miss these. Suffix-only matching keeps metadata names like
+    # ``TOKEN_COUNT`` / ``PASSWORD_POLICY`` / ``SECRET_NAME`` untouched.
+    # Class widened per OpenHands/software-agent-sdk#4508 (their dict-entry
+    # redaction was uppercase-only and leaked mixed-case keys).
+    return folded.endswith(_PYTHON_REPR_CREDENTIAL_SUFFIXES)
 
 
 def _redact_python_repr_fields(text: str) -> str:

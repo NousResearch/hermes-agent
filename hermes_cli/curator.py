@@ -299,7 +299,7 @@ def _cmd_pin(args) -> int:
         print(
             f"curator: could not pin '{args.skill}' — the skill is not "
             "curation-eligible (protected built-in or external). "
-            f"`hermes curator status` shows why a skill is unmanaged."
+            "`hermes curator list-unmanaged` shows which skills the curator tracks."
         )
         return 1
     print(f"curator: pinned '{args.skill}' (will bypass auto-transitions)")
@@ -314,7 +314,12 @@ def _cmd_unpin(args) -> int:
             "there's nothing to unpin (curator only tracks agent-created skills)"
         )
         return 1
-    skill_usage.set_pinned(args.skill, False)
+    if not skill_usage.set_pinned(args.skill, False):
+        print(
+            f"curator: could not unpin '{args.skill}' — the skill is not "
+            "curation-eligible (protected built-in or external)."
+        )
+        return 1
     print(f"curator: unpinned '{args.skill}'")
     return 0
 

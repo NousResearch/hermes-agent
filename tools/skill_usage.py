@@ -1303,9 +1303,16 @@ def curated_report() -> List[Dict[str, Any]]:
     names = set(list_agent_created_skill_names())
     # Issue #92993: a successfully pinned skill must be visible in the report
     # even when it lacks the created_by marker (eligible-but-unmanaged), or
-    # its pin silently vanishes from `curator status`.
+    # its pin silently vanishes from `curator status`. The local-dir guard
+    # keeps stale records for deleted skill dirs from rendering as ghost rows;
+    # `curator unpin` is the cleanup path for those.
     for name, rec in data.items():
-        if isinstance(rec, dict) and rec.get("pinned") and is_curation_eligible(name):
+        if (
+            isinstance(rec, dict)
+            and rec.get("pinned")
+            and is_curation_eligible(name)
+            and _find_skill_dir(name) is not None
+        ):
             names.add(name)
     for name in sorted(names):
         raw = data.get(name)

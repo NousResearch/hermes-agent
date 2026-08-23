@@ -142,21 +142,23 @@ def test_pinned_eligible_unmanaged_skill_visible_in_status(pin_env):
         rc = cli._cmd_pin(_Args("legacy-skill"))
     out = buf.getvalue()
 
-    # The pin itself should succeed for an eligible skill...
-    if rc == 0:
-        rec = usage.get_record("legacy-skill")
-        assert rec.get("pinned") is True, "eligible skill pin wrote nothing despite rc=0"
+    # The pin MUST succeed for an eligible skill — unconditional, so a
+    # regression that flips pin to failure fails here instead of silently
+    # skipping the visibility assertions below.
+    assert rc == 0, f"eligible-skill pin must succeed (got rc={rc}): {out.strip()}"
+    rec = usage.get_record("legacy-skill")
+    assert rec.get("pinned") is True, "eligible skill pin wrote nothing despite rc=0"
 
-        # ...and then status MUST show it. This is the visibility half.
-        buf2 = io.StringIO()
-        with redirect_stdout(buf2):
-            status_rc = cli._cmd_status(Namespace())
-        assert status_rc == 0
-        status = buf2.getvalue()
-        assert "legacy-skill" in status and "pinned" in status.lower(), (
-            "pin landed on disk but the skill is absent from `curator status` "
-            "— the invisible-pin defect."
-        )
+    # ...and then status MUST show it. This is the visibility half.
+    buf2 = io.StringIO()
+    with redirect_stdout(buf2):
+        status_rc = cli._cmd_status(Namespace())
+    assert status_rc == 0
+    status = buf2.getvalue()
+    assert "legacy-skill" in status and "pinned" in status.lower(), (
+        "pin landed on disk but the skill is absent from `curator status` "
+        "— the invisible-pin defect."
+    )
 
 
 # ---------------------------------------------------------------------------

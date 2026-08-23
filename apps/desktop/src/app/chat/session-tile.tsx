@@ -256,6 +256,7 @@ function TileChat({
 export function SessionTilePane({ storedSessionId }: { storedSessionId: string }) {
   const tiles = useStore($sessionTiles)
   const tile = tiles.find(t => t.storedSessionId === storedSessionId)
+  const ownerRoute = tile?.ownerRoute
   const runtimeId = tile?.runtimeId ?? null
   const gatewayOpen = useStore($gatewayState) === 'open'
   const delegateRevision = useStore($sessionTileDelegateRevision)
@@ -287,7 +288,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
         return
       }
 
-      void resolveStoredSession(storedSessionId)
+      void resolveStoredSession(storedSessionId, ownerRoute)
         .then(resolved => {
           if (cancelled || resolved || remaining <= 0) {
             return
@@ -307,7 +308,7 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
         window.clearTimeout(timer)
       }
     }
-  }, [hasMessages, runtimeId, storedSessionId])
+  }, [hasMessages, ownerRoute, runtimeId, storedSessionId])
 
   // Same gating as the primary's route resume (use-route-resume): never fire
   // session.resume before the gateway is OPEN. Persisted tiles mount at boot

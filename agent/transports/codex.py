@@ -567,8 +567,17 @@ class ResponsesApiTransport(ProviderTransport):
         # request is issued (openai==2.24.0).  Reported for the
         # ``openai-codex`` / ``gpt-5.5`` combo on chatgpt.com/backend-api/codex
         # (#32892) when the agent runs without external tools registered.
+        # Function-level import: agent.model_metadata is imported lazily
+        # because provider plugins import this transport during
+        # model_metadata's own module init (circular otherwise).
+        from agent.model_metadata import (
+            strip_codex_context_variant_suffix as _strip_ctx_variant,
+        )
         kwargs = {
-            "model": model,
+            # ``-900k`` large-context picker variants are Hermes-side aliases
+            # (gpt-5.6-sol-900k etc.) — the Codex/OpenAI backend only knows
+            # the base slug, so strip the suffix before it hits the wire.
+            "model": _strip_ctx_variant(model),
             "instructions": instructions,
             "input": _chat_messages_to_responses_input(
                 payload_messages,

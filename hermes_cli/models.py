@@ -178,8 +178,8 @@ def _codex_curated_models() -> list[str]:
     This keeps the gateway /model picker in sync with the CLI `hermes model`
     flow without maintaining a separate static list.
     """
-    from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _add_forward_compat_models
-    return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
+    from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _finalize_codex_models
+    return _finalize_codex_models(list(DEFAULT_CODEX_MODELS))
 
 
 # Static fallback for xAI when the models.dev disk cache is empty (fresh

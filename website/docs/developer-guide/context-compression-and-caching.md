@@ -192,6 +192,22 @@ To keep the 85% autoraise but hide only the one-time notice:
 hermes config set compression.codex_gpt55_autoraise_notice false
 ```
 
+### Codex large-context `-900k` picker variants (opt-in)
+
+The ChatGPT Codex backend *advertises* a 272K window for the gpt-5.4 and
+gpt-5.6 (Sol/Terra/Luna) families, but actually accepts ~911K input tokens
+for ChatGPT-subscription accounts (live-verified Aug 2026). Hermes keeps the
+**advertised 272K as the default** for the base slugs — a bigger window means
+more tokens per request and much faster subscription-usage burn, so the large
+window is strictly opt-in.
+
+To use the large window, pick the explicit `-900k` variant in `/model` (e.g.
+`gpt-5.6-sol-900k`, `gpt-5.6-terra-900k`, `gpt-5.6-luna-900k`,
+`gpt-5.4-900k`). These are Hermes-side aliases: the suffix is stripped before
+the model id is sent to the backend, and pricing/usage accounting treats them
+as the base model. Slugs that genuinely enforce 272K (gpt-5.5, gpt-5.4-mini)
+have no `-900k` variant.
+
 ### Codex app-server thread compaction
 
 Codex app-server sessions (`api_mode: codex_app_server` — the codex CLI/agent

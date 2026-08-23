@@ -2418,9 +2418,18 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
 # ≥11K margin under the observed ceiling and matches the compaction point
 # Codex's own client config documents for the 1M window.
 #
-# Applied ONLY when the resolved value (live probe or fallback table) is
-# exactly the known-stale 272,000 advertisement — if OpenAI moves the
-# advertised number in either direction (the gpt-5.6 family shifted
+# OPT-IN ONLY (Aug 2026 policy, Teknium): the large window is exposed via
+# explicit ``-900k`` picker variants (e.g. ``gpt-5.6-sol-900k``) — the base
+# slugs keep the advertised 272K so the cheaper limit is the default. A
+# week of the 900K default burned through subscription usage for people
+# who never asked for it. The variant suffix is a Hermes-side alias: it is
+# stripped before the model id hits the wire (see
+# ``strip_codex_context_variant_suffix`` callers in agent/transports/codex.py
+# and agent/auxiliary_client.py).
+#
+# The bump is applied ONLY when the resolved value (live probe or fallback
+# table) is exactly the known-stale 272,000 advertisement — if OpenAI moves
+# the advertised number in either direction (the gpt-5.6 family shifted
 # 272K → 372K → 272K during July 2026), the catalog is trusted again and
 # this table is inert. ``gpt-5.6`` is a FAMILY PREFIX (sol/terra/luna and
 # dated snapshots; ``-pro`` slugs are not routable on Codex OAuth — the
@@ -2438,14 +2447,63 @@ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
 # The advertised value the verified-above table is allowed to override.
 _CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000
 
+# Hermes-side picker suffix that opts a Codex slug into the live-verified
+# large window. Never sent on the wire.
+CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"
 
-def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
-    """Return the live-verified Codex cap for a slug, or ``None``.
 
-    Exact slugs first, then family prefixes (``<key>``, ``<key>-``,
-    ``<key>.``) so dated snapshots of a verified family inherit the bump.
+def is_codex_context_variant(model: Optional[str]) -> bool:
+    """True when the model id carries the Hermes ``-900k`` opt-in suffix."""
+    return (model or "").strip().lower().endswith(CODEX_CONTEXT_VARIANT_SUFFIX)
+
+
+def strip_codex_context_variant_suffix(model: Optional[str]) -> str:
+    """Return the wire-safe slug with any ``-900k`` opt-in suffix removed.
+
+    The suffix is a Hermes picker alias (``gpt-5.6-sol-900k``); the Codex
+    backend only knows the base slug. Case-insensitive; non-variant ids are
+    returned unchanged.
+    """
+    raw = (model or "").strip()
+    if raw.lower().endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
+        return raw[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
+    return raw
+
+
+def has_codex_context_variant(model_bare: str) -> bool:
+    """True when a Codex BASE slug has a live-verified ``-900k`` variant.
+
+    Used by the model pickers to decide which base slugs get a synthetic
+    ``<slug>-900k`` entry. Exact table first, then family prefixes —
+    mirrors ``_verified_codex_ctx_for_slug`` minus the suffix requirement.
     """
     slug = (model_bare or "").strip().lower()
+    if not slug or slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
+        return False
+    if slug in _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT:
+        return True
+    for key in _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES:
+        if slug == key or slug.startswith(key + "-") or slug.startswith(key + "."):
+            return True
+    return False
+
+
+def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
+    """Return the live-verified Codex cap for an OPTED-IN slug, or ``None``.
+
+    The large window is opt-in: only ``-900k``-suffixed picker variants
+    (e.g. ``gpt-5.6-sol-900k``) resolve to the verified cap. Base slugs
+    keep the advertised 272K so the cheaper default limit applies unless
+    the user explicitly selects the large-context variant.
+
+    After stripping the suffix: exact slugs first, then family prefixes
+    (``<key>``, ``<key>-``, ``<key>.``) so dated snapshots of a verified
+    family inherit the bump.
+    """
+    slug = (model_bare or "").strip().lower()
+    if not slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
+        return None
+    slug = slug[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
     if not slug:
         return None
     exact = _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT.get(slug)
@@ -2586,8 +2644,9 @@ def _resolve_codex_oauth_context_length_with_source(
     def _apply_verified_bump(ctx: int, source: str) -> Tuple[int, str]:
         """Lift a known-stale 272K advertisement to the live-verified cap.
 
-        Only fires when the resolved value is EXACTLY the stale 272,000
-        advertisement for a slug we have probed above it (see
+        Only fires for explicit ``-900k`` picker variants (opt-in), and only
+        when the resolved value is EXACTLY the stale 272,000 advertisement
+        for a slug we have probed above it (see
         ``_verified_codex_ctx_for_slug``). Any other advertised value —
         higher or lower — is trusted as a real server-side change.
         """
@@ -2600,19 +2659,23 @@ def _resolve_codex_oauth_context_length_with_source(
             return bumped, source
         return ctx, source
 
+    # ``-900k`` variants are Hermes picker aliases — the Codex catalog only
+    # knows the base slug, so resolve against the stripped id.
+    lookup_bare = strip_codex_context_variant_suffix(model_bare)
+
     if access_token:
         live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)
         live_source = "live" if fresh_probe else "memory"
-        if model_bare in live:
-            return _apply_verified_bump(live[model_bare], live_source)
+        if lookup_bare in live:
+            return _apply_verified_bump(live[lookup_bare], live_source)
         # Case-insensitive match in case casing drifts
-        model_lower = model_bare.lower()
+        model_lower = lookup_bare.lower()
         for slug, ctx in live.items():
             if slug.lower() == model_lower:
                 return _apply_verified_bump(ctx, live_source)
 
     # Fallback: longest-key-first substring match over hardcoded defaults.
-    model_lower = model_bare.lower()
+    model_lower = lookup_bare.lower()
     for slug, ctx in sorted(
         _CODEX_OAUTH_CONTEXT_FALLBACK.items(), key=lambda x: len(x[0]), reverse=True
     ):

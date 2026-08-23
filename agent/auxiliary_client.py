@@ -161,7 +161,11 @@ def aux_probe_mode():
         _aux_probe_state.active = prev
 
 from agent.credential_pool import load_pool
-from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
+from agent.model_metadata import (
+    MINIMUM_CONTEXT_LENGTH,
+    get_model_context_length,
+    strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
+)
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
@@ -1531,7 +1535,10 @@ class _CodexCompletionsAdapter:
         )
 
         resp_kwargs: Dict[str, Any] = {
-            "model": model,
+            # Strip the Hermes-side ``-900k`` large-context picker suffix —
+            # the Codex backend only knows the base slug (mirrors the main
+            # transport in agent/transports/codex.py::build_kwargs).
+            "model": _strip_codex_ctx_variant(model),
             "instructions": instructions,
             "input": input_items or [{"role": "user", "content": ""}],
             "store": False,

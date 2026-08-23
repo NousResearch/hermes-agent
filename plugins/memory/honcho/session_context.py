@@ -104,7 +104,8 @@ class SessionContextMixin:
             if session.honcho_session_id not in self._sessions_cache:
                 return
             ctx = self._authed_call(
-                "session summary fetch", lambda: self._sdk_session(session.honcho_session_id).context(summary=True),
+                "session summary fetch",
+                lambda: self._sdk_session(session.honcho_session_id).context(summary=True, tokens=self._context_tokens),
             )
             if ctx.summary and getattr(ctx.summary, "content", None):
                 result["summary"] = ctx.summary.content
@@ -161,7 +162,8 @@ class SessionContextMixin:
             ctx = self._authed_call(
                 "session context fetch",
                 lambda: self._sdk_session(session.honcho_session_id).context(
-                    summary=True, peer_target=target_peer_id or observer_peer_id, peer_perspective=observer_peer_id,
+                    summary=True, tokens=self._context_tokens,
+                    peer_target=target_peer_id or observer_peer_id, peer_perspective=observer_peer_id,
                 ),
             )
             result: dict[str, Any] = {}

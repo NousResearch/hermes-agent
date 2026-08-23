@@ -199,6 +199,11 @@ def collect_runtime_inventory() -> UpdatePlan:
                 except (TypeError, ValueError):
                     sock_pid = None
                 if sock_pid is not None:
+                    if sock_pid in seen_pids:
+                        # One multiplex gateway can answer identify for
+                        # several profile homes — one runtime record per
+                        # process, not per home.
+                        continue
                     seen_pids.add(sock_pid)
                     declared = identity.get("supervisor")
                     supervisor = (

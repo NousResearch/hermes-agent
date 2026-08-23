@@ -50,7 +50,10 @@ def test_short_home_binds_in_home(tmp_path: Path):
     # system temp root directly.
     import tempfile
 
-    short_root = Path(tempfile.mkdtemp(prefix="hgw-", dir="/tmp"))
+    try:
+        short_root = Path(tempfile.mkdtemp(prefix="hgw-", dir="/tmp"))
+    except OSError:
+        pytest.skip("/tmp not writable on this host")
     try:
         short_home = short_root / ".hermes"
         short_home.mkdir()
@@ -335,6 +338,39 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
     assert fleet[0]["pid"] == os.getpid()
     assert fleet[0]["state"] == "stale"
     assert "source" not in fleet[0]
+
+
+def test_runtime_inventory_dedupes_same_pid_across_homes(tmp_path: Path, monkeypatch):
+    """One multiplex gateway answering identify for two profile homes must
+    yield exactly ONE runtime record (reviewer point on #92447)."""
+    import hermes_cli.update_inventory as ui
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    profiles_root = tmp_path / "profiles"
+    (profiles_root / "coder").mkdir(parents=True)
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles._get_default_hermes_home", lambda: home
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles._get_profiles_root", lambda: profiles_root
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway._get_service_pids", lambda all_profiles=False: set()
+    )
+    monkeypatch.setattr(
+        "hermes_cli.gateway.find_profile_gateway_processes", lambda: []
+    )
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway",
+        lambda h, **kw: _fake_identity(777, "SHA777"),
+    )
+
+    plan = ui.collect_runtime_inventory()
+    gws = [r for r in plan.runtimes if r.kind == "gateway"]
+    assert len(gws) == 1, [r.__dict__ for r in gws]
+    assert gws[0].pid == 777
 
 
 def test_runtime_inventory_prefers_socket_supervisor(tmp_path: Path, monkeypatch):

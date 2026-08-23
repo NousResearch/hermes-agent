@@ -31,6 +31,11 @@ Transport:
 Never a TCP port. Filesystem/pipe ACLs are the auth boundary — the same
 trust model as ``gateway_state.json`` today.
 
+v1 wire contract: ONE request per connection — a single JSON line in, a
+single JSON line out, then the server closes. Clients must not rely on
+keep-alive or pipelining. Verb handlers may touch disk (they run in an
+executor server-side) but must stay fast; the client budget is small.
+
 Consumers (``hermes update --plan`` inventory, the post-update fleet version
 matrix) PREFER the socket when it answers and fall back to the existing
 state-file/scan layer when it doesn't — old gateways mid-upgrade and crashed
@@ -271,9 +276,16 @@ class GatewayControlServer:
         with contextlib.suppress(OSError):
             if bind_path.exists():
                 bind_path.unlink()
-        self._server = await asyncio.start_unix_server(
-            self._handle_connection, path=str(bind_path)
-        )
+        # Bind under a restrictive umask so the socket is never
+        # world-connectable, even for the instant before an explicit chmod
+        # could run. Restore the process umask immediately after.
+        old_umask = os.umask(0o177)
+        try:
+            self._server = await asyncio.start_unix_server(
+                self._handle_connection, path=str(bind_path)
+            )
+        finally:
+            os.umask(old_umask)
         with contextlib.suppress(OSError):
             os.chmod(bind_path, 0o600)
         self._bind_path = bind_path
@@ -379,7 +391,14 @@ class GatewayControlServer:
             )
             if not raw or len(raw) > _MAX_REQUEST_BYTES:
                 return
-            writer.write(self.handle_request_line(raw.rstrip(b"\n")))
+            # Handlers read state files from disk; keep that off the
+            # gateway's event loop (the same loop drives every platform
+            # adapter), so a fast-polling consumer can't stall heartbeats.
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None, self.handle_request_line, raw.rstrip(b"\n")
+            )
+            writer.write(response)
             await writer.drain()
         except (asyncio.TimeoutError, ConnectionError, OSError):
             pass

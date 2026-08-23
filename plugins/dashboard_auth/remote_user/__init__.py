@@ -45,6 +45,23 @@ Operator obligations: bind the dashboard to an interface the configured
 proxies can reach, configure an allowlist of ONLY those proxy addresses, and
 terminate TLS at the proxy. This provider is not appropriate for a dashboard
 that any client can reach over a network outside those trusted proxies.
+
+Proxy best practices (see the web-dashboard docs for Apache + nginx examples):
+
+  * The header name is configurable (``HERMES_DASHBOARD_REMOTE_USER_HEADER``,
+    default ``X-Remote-User``). The nginx ecosystem often calls it
+    ``X-Forwarded-User`` — set it to whatever your proxy emits.
+  * NEVER derive identity from ``X-Forwarded-For``: it is user-controllable
+    until it reaches a trusted proxy. This provider therefore decides trust
+    from the actual socket peer (``request.client.host``), not from any
+    forwarded header.
+  * The proxy must OVERWRITE (not append) the identity header — strip any
+    inbound value a client could have set, then set it from the authenticated
+    user (Apache: ``RequestHeader unset X-Remote-User`` then ``set ...`` from
+    ``expr=%{REMOTE_USER}``; nginx: ``proxy_set_header X-Remote-User
+    $remote_user``).
+  * ``remote_user`` mirrors the app-level trusted-proxy validation used by
+    projects such as Keycloak (``--proxy-trusted-addresses=``).
 """
 from __future__ import annotations
 

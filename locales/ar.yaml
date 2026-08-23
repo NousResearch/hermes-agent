@@ -515,7 +515,8 @@ gateway:
   api_non_retryable_trying_fallback: ⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...
   api_max_retries_trying_fallback: ⚠️ Max retries ({max_retries}) exhausted — trying fallback...
   tool_guardrail_halted: '⚠️ Tool guardrail halted {tool}: {code}'
-  empty_response_retry: ⚠️ Empty response from model — retrying ({n}/3)
+  empty_response_retry: ⚠️ Empty response from model — retrying ({n}/{max_retries}) in {wait_seconds}s{budget_note}
+  empty_response_high_cost_note: ' — high-cost request, reduced retry budget'
   empty_response_switching_fallback: ⚠️ Model returning empty responses — switching to fallback provider...
   empty_response_reasoning_only: ⚠️ Model produced reasoning but no visible response after all retries. Returning empty.
   empty_response_no_content: ❌ Model returned no content after all retries and fallback attempts.

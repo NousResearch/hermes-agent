@@ -8,6 +8,8 @@ sanitizing), and end-to-end through the real ``gated_auth_middleware``.
 
 from __future__ import annotations
 
+import contextlib
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +17,8 @@ import pytest
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import (
     DashboardAuthProvider,
+    ProviderError,
+    Session,
     clear_providers,
     list_request_auth_providers,
     register_provider,
@@ -231,6 +235,71 @@ def _run_gate(req):
     return resp, called
 
 
+class _BaseReqProvider(DashboardAuthProvider):
+    """Minimal supports_request_auth provider (implements the abstract surface)."""
+
+    supports_session = False
+    supports_request_auth = True
+
+    def start_login(self, *, redirect_uri):
+        raise NotImplementedError
+
+    def complete_login(self, **kwargs):
+        raise NotImplementedError
+
+    def verify_session(self, *, access_token):
+        return None
+
+    def refresh_session(self, *, refresh_token):
+        raise NotImplementedError
+
+    def revoke_session(self, *, refresh_token):
+        return None
+
+
+class _DeclineReqProvider(_BaseReqProvider):
+    name = "decline-req"
+    display_name = "Decline Request Auth"
+
+    def verify_request_auth(self, *, request):
+        return None
+
+
+class _AcceptReqProvider(_BaseReqProvider):
+    name = "accept-req"
+    display_name = "Accept Request Auth"
+
+    def verify_request_auth(self, *, request):
+        return Session(
+            user_id="accepted", email="", display_name="accepted", org_id="",
+            provider=self.name, expires_at=int(time.time()) + 3600,
+            access_token="", refresh_token="",
+        )
+
+
+class _BoomReqProvider(_BaseReqProvider):
+    name = "boom-req"
+    display_name = "Boom Request Auth"
+
+    def verify_request_auth(self, *, request):
+        raise ProviderError("backing store down")
+
+
+@contextlib.contextmanager
+def _gated_app(*providers):
+    """Register providers + flip the gate on, restoring state afterwards."""
+    clear_providers()
+    for provider in providers:
+        register_provider(provider)
+    prev = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.auth_required = True
+    try:
+        yield
+    finally:
+        clear_providers()
+        web_server.app.state.auth_required = prev
+
+
 @pytest.fixture
 def request_auth_gate():
     clear_providers()
@@ -276,3 +345,23 @@ class TestGateIntegration:
         )
         assert called == []
         assert resp.status_code == 302
+
+
+class TestStackingAndFailClosed:
+    def test_provider_outage_surfaces_503(self):
+        with _gated_app(_BoomReqProvider()):
+            resp, called = _run_gate(_make_request())
+            assert resp.status_code == 503
+            assert called == []  # never reached the handler
+
+    def test_first_declining_provider_falls_through(self):
+        with _gated_app(_DeclineReqProvider(), _AcceptReqProvider()):
+            resp, called = _run_gate(_make_request(**{"X-Remote-User": "x"}))
+            assert resp.status_code == 200
+            assert called == [1]
+
+    def test_decline_only_is_denied(self):
+        with _gated_app(_DeclineReqProvider()):
+            resp, called = _run_gate(_make_request(**{"X-Remote-User": "x"}))
+            assert called == []
+            assert resp.status_code == 302

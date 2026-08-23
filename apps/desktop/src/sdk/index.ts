@@ -735,11 +735,13 @@ export const host = {
     // local open dials exactly as before (openGatewayForProfile), never the
     // registry-secondary path.
     const localConnectionId = activeGatewayConnectionId()
+
     const ownerRoute =
       explicitRoute ??
       (options.workspaceMode === 'bots' && profile && localConnectionId
         ? { connectionId: localConnectionId, mode: 'local' as const, profile: targetProfile }
         : null)
+
     const expectHistory = options.expectHistory ?? false
 
     if (options.workspaceMode === 'bots') {

@@ -310,6 +310,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const requestGateway = useCallback(
     <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
       const routingSessionId = $focusedStoredSessionId.get() ?? selectedStoredSessionIdRef.current
+
       const owner =
         (routingSessionId ? sessionTileOwnerRoute(routingSessionId) : undefined) ??
         rememberedSessionProfile($sessions.get(), routingSessionId, $activeGatewayProfile.get())

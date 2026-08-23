@@ -45,7 +45,10 @@ test('findPythonForRoot preference order includes .venv before venv (context for
 
   assert.notEqual(venvIdx, -1, 'expected findPythonForRoot to probe .venv')
   assert.notEqual(plainIdx, -1, 'expected findPythonForRoot to probe venv')
-  assert.ok(venvIdx < plainIdx, '.venv is probed before venv — this ordering is what the hardcoded venvRoot below disagrees with')
+  assert.ok(
+    venvIdx < plainIdx,
+    '.venv is probed before venv — this ordering is what the hardcoded venvRoot below disagrees with'
+  )
 })
 
 // Fixed: createPythonBackend derives venvRoot from the selected interpreter
@@ -103,5 +106,9 @@ test('dual-venv root: site-packages must come from the venv that owns the select
   const venvRoot = coherentVenvRootForPython(selected, '/repo')
 
   assert.equal(venvRoot, '/repo/.venv')
-  assert.notEqual(venvRoot, '/repo/venv', 'pairing a .venv interpreter with venv/ site-packages is the crash from the live repro')
+  assert.notEqual(
+    venvRoot,
+    '/repo/venv',
+    'pairing a .venv interpreter with venv/ site-packages is the crash from the live repro'
+  )
 })

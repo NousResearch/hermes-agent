@@ -41,6 +41,14 @@ function loadOpenPath({ openSession, request }) {
         return request(method, params)
       }
     },
+    // Owner-shape helpers (plugin scope): local bots carry no route, so the
+    // harness resolves everything onto the ambient host.request — the exact
+    // legacy single-connection behavior these tests pin.
+    botOwner: owner => (typeof owner === 'string'
+      ? { bot: { name: owner }, key: owner, name: owner, route: null }
+      : { bot: owner, key: owner?.name, name: owner?.name, route: owner?.route || null }),
+    backendTargetProfile: (route, name) => route?.targetProfile || name,
+    requestForBot: (_bot, method, params) => context.host.request(method, params),
     window: { setTimeout: callback => callback() }
   }
   const section = source
@@ -109,8 +117,10 @@ test('the open path never reads or writes a stored pointer', () => {
   assert.doesNotMatch(section, /preferred_session_ids/, 'no id-verification RPC on the canonical path')
 })
 
-test('openBotCanonicalChat takes only the bot name — identity needs nothing else', () => {
-  assert.match(source, /async function openBotCanonicalChat\(name\) \{/)
+test('openBotCanonicalChat takes only the bot owner — identity needs nothing else', () => {
+  // The owner is the bot's name (local) or its roster row carrying the
+  // immutable connection route (remote). Still no pins, no session ids.
+  assert.match(source, /async function openBotCanonicalChat\(owner\) \{/)
 })
 
 // ── 2. no registry row → create ─────────────────────────────────────────────

@@ -192,6 +192,16 @@ export const $activeGatewayProfile = atom<string>('default')
 // Profile for the NEXT new chat (chosen via the new-chat picker). null = primary
 // / default, so single-profile users are unaffected.
 export const $newChatProfile = atom<string | null>(null)
+export interface AgentProfileRoute {
+  connectionId: string
+  mode?: 'local' | 'remote'
+  profile: string
+  targetProfile?: string
+}
+
+// A draft remembers the source it was created for. The active gateway may
+// change before the first Send; the draft's owner must not change with it.
+export const $newChatRoute = atom<AgentProfileRoute | null>(null)
 
 // Bumped whenever the open session should be dropped for a fresh new-session
 // draft: a profile switch/create (below), or deleting the project that owns the
@@ -500,6 +510,7 @@ export function selectProfile(name: string): void {
   const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
   $showAllProfiles.set(false)
   $newChatProfile.set(target)
+  $newChatRoute.set(null)
 
   if (switching) {
     requestFreshSession()
@@ -517,8 +528,30 @@ export function selectProfile(name: string): void {
 export function newSessionInProfile(name: string): void {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
+  $newChatRoute.set(null)
   requestFreshSession()
   void ensureGatewayProfile(target)
+}
+
+/** Start a draft owned by a specific registry agent. Foreground activation is
+ * only a presentation step; the route stays attached to the draft for the
+ * eventual session.create request. */
+export function newSessionInAgent(route: AgentProfileRoute): void {
+  const captured = {
+    ...route,
+    connectionId: route.connectionId.trim(),
+    profile: normalizeProfileKey(route.profile),
+    ...(route.targetProfile ? { targetProfile: normalizeProfileKey(route.targetProfile) } : {})
+  }
+
+  if (!captured.connectionId) {
+    throw new Error('Agent profile route is missing connectionId')
+  }
+
+  $newChatProfile.set(captured.profile)
+  $newChatRoute.set(captured)
+  requestFreshSession()
+  void ensureGatewayAgent(captured.connectionId, captured.profile)
 }
 
 export function setShowAllProfiles(value: boolean): void {

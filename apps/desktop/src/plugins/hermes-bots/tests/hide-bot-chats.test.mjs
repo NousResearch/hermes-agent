@@ -28,6 +28,9 @@ function loadCreate() {
       }
     },
     saveBotMeta: () => {},
+    backendTargetProfile: (route, name) => route?.targetProfile || name,
+    botOwner: name => ({ bot: { name }, key: name, name, route: null }),
+    requestForBot: (_bot, method, params) => context.host.request(method, params),
     window: { setTimeout: cb => cb() }
   }
   const section = source.slice(start, end).concat('\nglobalThis.__c = { createCanonicalChat };\n')
@@ -62,6 +65,12 @@ test('hideOwnedBotSessions sweeps room member sessions by id', async () => {
         return {}
       }
     },
+    $botMeta: { get: () => ({}) },
+    $lastRoster: { get: () => [] },
+    backendTargetProfile: (route, name) => route?.targetProfile || name,
+    botConnectionRoute: () => null,
+    botMetaKey: bot => bot.name,
+    requestForBot: (_bot, method, params) => context.host.request(method, params),
     $groupChats: {
       get: () => ({
         Core: { sessions: { alpha: 'room-core-a', beta: 'room-core-b' } },
@@ -90,6 +99,115 @@ test('hideOwnedBotSessions never consults stored canonical pointers', () => {
   const section = source.slice(start, end)
   assert.doesNotMatch(section, /botMeta/)
   assert.doesNotMatch(section, /profiles\.list/)
+})
+
+test('remote group member sessions derive their immutable owner from persisted room members', async () => {
+  const start = source.indexOf('function hideOwnedBotSessions()')
+  const end = source.indexOf('/** Fetch server-side avatars', start)
+  const ambient = []
+  const routed = []
+  const owner = {
+    name: 'worker',
+    sourceScoped: true,
+    route: {
+      connectionId: 'source-a',
+      mode: 'remote',
+      profile: 'worker',
+      targetProfile: 'backend-worker'
+    }
+  }
+  const context = {
+    host: { request: async (method, params) => ambient.push({ method, params }) },
+    $botMeta: { get: () => ({}) },
+    $lastRoster: { get: () => [] },
+    $groupChats: {
+      get: () => ({
+        Core: {
+          sessions: { 'source-a::worker': 'remote-room-1' },
+          members: [owner]
+        }
+      })
+    },
+    groupMemberKey: member => `${member.route.connectionId}::${member.name}`,
+    requestForBot: async (bot, method, params) => routed.push({ bot, method, params }),
+    sweepBotProfileSessions: async () => undefined
+  }
+  const section = source.slice(start, end).concat('\nglobalThis.__h = { hideOwnedBotSessions };\n')
+  vm.runInNewContext(section, context, { filename: 'h-remote.js' })
+
+  await context.__h.hideOwnedBotSessions()
+
+  assert.equal(ambient.some(call => call.method === 'session.set_hidden'), false)
+  assert.equal(routed.length, 1)
+  assert.equal(routed[0].bot.route.connectionId, 'source-a')
+  assert.equal(routed[0].bot.route.targetProfile, 'backend-worker')
+  assert.equal(routed[0].params.session_id, 'remote-room-1')
+})
+
+test('same session id on two remote group owners never hides an ambient collision', async () => {
+  const start = source.indexOf('function hideOwnedBotSessions()')
+  const end = source.indexOf('/** Fetch server-side avatars', start)
+  const ambient = []
+  const routed = []
+  const owner = connectionId => ({
+    name: 'worker',
+    sourceScoped: true,
+    route: { connectionId, mode: 'remote', profile: 'worker', targetProfile: 'backend-worker' }
+  })
+  const ownerA = owner('source-a')
+  const ownerB = owner('source-b')
+  const context = {
+    host: { request: async (method, params) => ambient.push({ method, params }) },
+    $botMeta: { get: () => ({}) },
+    $lastRoster: { get: () => [] },
+    $groupChats: {
+      get: () => ({
+        A: { sessions: { 'source-a::worker': 'same-id' }, sessionOwners: { 'source-a::worker': ownerA } },
+        B: { sessions: { 'source-b::worker': 'same-id' }, sessionOwners: { 'source-b::worker': ownerB } }
+      })
+    },
+    groupMemberKey: member => `${member.route.connectionId}::${member.name}`,
+    requestForBot: async (bot, method, params) => routed.push({ bot, method, params }),
+    sweepBotProfileSessions: async () => undefined
+  }
+  const section = source.slice(start, end).concat('\nglobalThis.__h = { hideOwnedBotSessions };\n')
+  vm.runInNewContext(section, context, { filename: 'h-collision.js' })
+
+  await context.__h.hideOwnedBotSessions()
+
+  assert.equal(ambient.some(call => call.method === 'session.set_hidden'), false)
+  assert.deepEqual(routed.map(call => call.bot.route.connectionId).sort(), ['source-a', 'source-b'])
+  assert.ok(routed.every(call => call.params.session_id === 'same-id'))
+})
+
+test('malformed persisted owner for a source-qualified group session fails closed', async () => {
+  const start = source.indexOf('function hideOwnedBotSessions()')
+  const end = source.indexOf('/** Fetch server-side avatars', start)
+  const ambient = []
+  const routed = []
+  const context = {
+    host: { request: async (method, params) => ambient.push({ method, params }) },
+    $botMeta: { get: () => ({}) },
+    $lastRoster: { get: () => [] },
+    $groupChats: {
+      get: () => ({
+        LegacyRemote: {
+          sessions: { 'source-a::worker': 'same-id' },
+          sessionOwners: { 'source-a::worker': { name: 'worker' } }
+        }
+      })
+    },
+    groupMemberKey: member => member?.name,
+    requestForBot: async (bot, method, params) => routed.push({ bot, method, params }),
+    sweepBotProfileSessions: async () => undefined
+  }
+  const section = source.slice(start, end).concat('\nglobalThis.__h = { hideOwnedBotSessions };\n')
+  vm.runInNewContext(section, context, { filename: 'h-malformed-owner.js' })
+
+  await context.__h.hideOwnedBotSessions()
+
+  assert.equal(ambient.some(call => call.method === 'session.set_hidden'), false)
+  assert.equal(routed.length, 0)
 })
 
 test('sweepBotProfileSessions hides Bot-Mode-titled rows per roster bot, and only those', async () => {
@@ -156,6 +274,10 @@ test('the canonical-chat adoption scan lists with include_hidden', () => {
   // The one session.list consumer that must see the always-hidden rows:
   // findExistingCanonicalChat (the registry lookup) — canonical Bot Chats
   // are born hidden, so a visible-only scan would miss the very row that IS
-  // the bot's identity.
-  assert.match(source, /include_hidden: true\s*\}\)\s*\} catch \(error\) \{[\s\S]{0,400}?const rows = res\?\.sessions \?\? \[\]\s*return rows\.find\(row => isCanonicalBotChatHistory\(row\)\)/)
+  // the bot's identity. The lookup rides the bot's own source (requestForBot)
+  // and fails CLOSED: a thrown lookup never falls through to minting.
+  assert.match(
+    source,
+    /requestForBot\(bot, 'session\.list', \{\s*profile: backendTargetProfile\(route, name\),\s*title: CANONICAL_CHAT_TITLE,[\s\S]{0,200}?include_hidden: true\s*\}\)\s*\} catch \(error\) \{[\s\S]{0,400}?const rows = res\?\.sessions \?\? \[\]\s*return rows\.find\(row => isCanonicalBotChatHistory\(row\)\)/
+  )
 })

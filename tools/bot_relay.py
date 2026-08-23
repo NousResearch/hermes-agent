@@ -249,19 +249,31 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
 
 
 def write_reply(
-    root: Path | str, envelope_id: str, *, reply: str = "", error: str = ""
+    root: Path | str, envelope_id: str, *, reply: str = "", error: str = "", reason: str = ""
 ) -> Path:
-    """Persist the relayed reply (or delivery error) for the waiter."""
+    """Persist the relayed reply (or delivery error) for the waiter.
+
+    ``reason`` is an optional typed failure code (see
+    ``tools.bot_failure_reasons``); when omitted and ``error`` is non-empty
+    it is classified from the error text.
+    """
     base = _ensure_dirs(root)
     safe = str(envelope_id or "").strip()
     if not re.match(r"^[0-9a-f]{32}$", safe):
         raise ValueError(f"invalid envelope id: {envelope_id!r}")
+    err = str(error or "")
+    code = str(reason or "")
+    if not code and err:
+        from tools.bot_failure_reasons import classify_agent_error
+
+        code = classify_agent_error(err)
     path = base / REPLIES_DIR / f"{safe}.json"
     payload = {
         "id": safe,
         "at": int(time.time()),
         "reply": str(reply or ""),
-        "error": str(error or ""),
+        "error": err,
+        "reason": code,
     }
     fd, tmp = tempfile.mkstemp(dir=str(base / REPLIES_DIR), prefix=".rep-", suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:

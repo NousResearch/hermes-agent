@@ -138,7 +138,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Write a relayed reply (or delivery error) for a sender-side waiter.
 
-    Params: ``id`` (envelope id), ``reply`` and/or ``error``.
+    Params: ``id`` (envelope id), ``reply`` and/or ``error``, optional
+    ``reason`` (typed failure code, see ``tools.bot_failure_reasons``).
     """
     envelope_id = str(params.get("id") or "").strip()
     if not envelope_id:
@@ -156,6 +157,7 @@ def _(rid, params: dict) -> dict:
             envelope_id,
             reply=str(params.get("reply") or ""),
             error=str(params.get("error") or ""),
+            reason=str(params.get("reason") or ""),
         )
         return _ok(rid, {"ok": True})
     except ValueError as e:

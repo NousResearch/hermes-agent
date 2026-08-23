@@ -227,7 +227,9 @@ def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
 
 
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
-    payload: dict[str, Any] = {"error": message}
+    from tools.bot_failure_reasons import classify_agent_error
+
+    payload: dict[str, Any] = {"error": message, "reason": classify_agent_error(message)}
     if roster is not None:
         payload["teammates"] = roster
     if peers is not None:

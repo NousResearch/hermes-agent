@@ -129,6 +129,21 @@ def test_write_reply_validates_envelope_id(root):
     assert data["reply"] == "pong" and not data["error"]
 
 
+def test_write_reply_reason_passthrough_and_classification(root):
+    # explicit reason is persisted verbatim
+    path = bot_relay.write_reply(root, "c" * 32, error="boom", reason="delivery_timeout")
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert data["reason"] == "delivery_timeout" and data["error"] == "boom"
+    # no reason given → classified from error text
+    path = bot_relay.write_reply(root, "d" * 32, error="Error code: 429 - rate limit")
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert data["reason"] == "provider_rate_limit"
+    # success reply carries an empty reason
+    path = bot_relay.write_reply(root, "e" * 32, reply="ok")
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert data["reason"] == "" and data["reply"] == "ok"
+
+
 def test_waiter_command_quotes_and_targets_reply_file(root):
     env = {"id": "b" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
     cmd = bot_relay.waiter_command(root, env)

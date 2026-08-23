@@ -314,6 +314,29 @@ def test_interactive_auth_add_accepts_non_registry_configured_provider(
     assert payload["credential_pool"]["private-groq"][0]["access_token"] == "private-key"
 
 
+def test_interactive_auth_add_normalizes_display_name_to_provider_key(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    _write_groq_provider_config(
+        tmp_path, provider_key="groq-cloud", name="Groq Enterprise"
+    )
+
+    from hermes_cli import auth_commands
+
+    answers = iter(["Groq Enterprise", "primary"])
+    monkeypatch.setattr(auth_commands, "line_input", lambda _prompt: next(answers))
+    monkeypatch.setattr(auth_commands, "masked_secret_prompt", lambda _prompt: "gsk-test")
+
+    auth_commands._interactive_add()
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    assert "custom:groq-enterprise" not in payload["credential_pool"]
+    assert payload["credential_pool"]["groq-cloud"][0]["access_token"] == "gsk-test"
+
+
 def test_auth_add_explicit_custom_provider_keeps_prefixed_pool_key(
     tmp_path, monkeypatch
 ):

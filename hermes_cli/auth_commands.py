@@ -104,7 +104,7 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
         if normalized_provider_key and normalized_provider_key == normalized:
             return normalized_provider_key
         if _normalize_custom_pool_name(display_name) == normalized:
-            return pool_key
+            return normalized_provider_key or pool_key
     return None
 
 

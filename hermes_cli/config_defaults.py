@@ -1267,11 +1267,14 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
             # Aggregate INPUT-token budget for one review fork (issue #93057).
-            # The fork compacts an oversized snapshot in memory before further
-            # provider calls; this caps the SUM of input tokens replayed
-            # across the whole review tool loop (iterations are separately
-            # capped at 16). The loop stops before the provider call that
-            # would cross the budget. 0 or a negative value = unlimited.
+            # The fork's FIRST request replays the full snapshot as a warm
+            # prompt-cache read (compaction is deferred until the first
+            # provider response arrives); after that it compacts an oversized
+            # snapshot in memory before further provider calls. This caps the
+            # SUM of input tokens replayed across the whole review tool loop
+            # (iterations are separately capped at 16). The loop stops before
+            # the provider call that would cross the budget. 0 or a negative
+            # value = unlimited.
             "max_input_tokens": 600000,
         },
         "moa_reference": {

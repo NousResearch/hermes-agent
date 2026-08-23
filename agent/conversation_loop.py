@@ -42,6 +42,7 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_metadata import append_message
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
+    _review_fork_first_request_pending,
     build_turn_context,
     compose_user_api_content,
     reanchor_current_turn_user_idx,
@@ -2674,6 +2675,7 @@ def run_conversation(
         )()
         if (
             agent.compression_enabled
+            and not _review_fork_first_request_pending(agent)
             and len(messages) > 1
             and compression_attempts < max_compression_attempts
             and not _preflight_compression_blocked

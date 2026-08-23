@@ -175,6 +175,56 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def _write_profile_skill(profile_home: Path, name: str) -> None:
+    skill_dir = profile_home / "skills" / "test"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+
+
+def test_create_task_rejects_skill_unavailable_to_assignee_before_insert(
+    kanban_home,
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="missing-skill.*coder"):
+            kb.create_task(
+                conn,
+                title="invalid skill",
+                assignee="coder",
+                skills=["missing-skill"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_create_task_accepts_profile_skill_and_preserves_none_empty_semantics(
+    kanban_home,
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    _write_profile_skill(profile_home, "profile-skill")
+
+    with kb.connect() as conn:
+        profile_task = kb.create_task(
+            conn,
+            title="profile skill",
+            assignee="coder",
+            skills=["profile-skill"],
+        )
+        none_task = kb.create_task(conn, title="default skills", assignee="coder")
+        empty_task = kb.create_task(
+            conn, title="no extra skills", assignee="coder", skills=[]
+        )
+
+        assert kb.get_task(conn, profile_task).skills == ["profile-skill"]
+        assert kb.get_task(conn, none_task).skills is None
+        assert kb.get_task(conn, empty_task).skills == []
+
+
 
 # ---------------------------------------------------------------------------
 # Links + dependency resolution

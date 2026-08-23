@@ -90,10 +90,7 @@ test('resolvedConnectionId identifies local and migrated remote descriptors', ()
 
   const ambiguousLocal: ConnectionRegistry = {
     ...registry,
-    connections: [
-      ...registry.connections,
-      { id: 'local-copy', kind: 'local', label: 'Local copy' }
-    ]
+    connections: [...registry.connections, { id: 'local-copy', kind: 'local', label: 'Local copy' }]
   }
 
   assert.equal(resolvedConnectionId(ambiguousLocal, { mode: 'local' }), null)
@@ -283,14 +280,8 @@ test('resolvedConnectionId reuses the exact URL envelope and rejects weak or dup
   )
 
   // Post-dial URL-only shapes do not contain enough proof to choose a source.
-  assert.equal(
-    resolvedConnectionId(registry, { baseUrl: sharedUrl, mode: 'remote', remoteKind: 'url' }),
-    null
-  )
-  assert.equal(
-    resolvedConnectionId(registry, { baseUrl: sharedUrl, mode: 'remote', remoteKind: 'cloud' }),
-    null
-  )
+  assert.equal(resolvedConnectionId(registry, { baseUrl: sharedUrl, mode: 'remote', remoteKind: 'url' }), null)
+  assert.equal(resolvedConnectionId(registry, { baseUrl: sharedUrl, mode: 'remote', remoteKind: 'cloud' }), null)
 
   // Even a complete envelope fails closed when two registrations are exact twins.
   const duplicate: ConnectionRegistry = {
@@ -395,10 +386,7 @@ test('resolvedConnectionId keeps same-host SSH routes distinct by port, key, pat
     connections: [...registry.connections, { ...base, id: 'ssh-base-copy', label: 'SSH base copy' }]
   }
 
-  assert.equal(
-    resolvedConnectionId(duplicate, { mode: 'remote', remoteKind: 'ssh', ssh: base }),
-    null
-  )
+  assert.equal(resolvedConnectionId(duplicate, { mode: 'remote', remoteKind: 'ssh', ssh: base }), null)
   assert.equal(
     resolvedConnectionId(
       { ...duplicate, connections: [...duplicate.connections].reverse() },

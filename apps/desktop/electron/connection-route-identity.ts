@@ -6,12 +6,7 @@
  * but must never reconstruct a stronger identity from post-dial metadata.
  */
 
-import {
-  normalizeRemoteBaseUrl,
-  normalizeRemoteHeaders,
-  normalizeSshConfig,
-  normAuthMode
-} from './connection-config'
+import { normalizeRemoteBaseUrl, normalizeRemoteHeaders, normalizeSshConfig, normAuthMode } from './connection-config'
 import type { ConnectionRegistry, RegistryConnection } from './connection-registry'
 
 interface SshRouteConfig {

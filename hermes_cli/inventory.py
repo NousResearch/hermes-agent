@@ -683,9 +683,29 @@ def _anthropic_oauth_credentials_present() -> bool:
         if hermes_creds.get("accessToken"):
             return True
         cc_creds = read_claude_code_credentials() or {}
-        return bool(cc_creds.get("accessToken"))
+        if cc_creds.get("accessToken"):
+            return True
     except Exception:
         return False
+    # Pool-only OAuth entries (auth.json credential_pool.anthropic) are the
+    # canonical location for wired tokens and equally deliberate — the
+    # discovery side accepts them via pool.has_credentials(), so the filter
+    # must too or those rows are built and then silently dropped. Read-only
+    # dict access (no load_pool) so a picker open never mutates auth.json.
+    try:
+        from agent.credential_pool import AUTH_TYPE_OAUTH
+        from hermes_cli.auth import read_credential_pool
+
+        for entry in read_credential_pool("anthropic"):
+            if (
+                isinstance(entry, dict)
+                and entry.get("auth_type") == AUTH_TYPE_OAUTH
+                and str(entry.get("access_token") or "").strip()
+            ):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:

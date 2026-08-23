@@ -196,7 +196,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, groupSpeakerLabel, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, $lastRoster, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -1148,7 +1148,7 @@ test('closing an older selected group does not clear the newer selection', () =>
 })
 
 test('source contract: active group styling suppresses bot styling', () => {
-  assert.match(pluginSource, /const isActive = !activeGroup && !bot\.remoteSource && bot\.name === focusedProfile/)
+  assert.match(pluginSource, /function botRowOwnsWorkspace\([\s\S]*?if \(activeGroup\) \{\s*return false/)
   assert.match(pluginSource, /active && 'bg-\(--ui-row-active-background\)'/)
   assert.match(pluginSource, /active: groupChatName === row\.name/)
 })
@@ -1261,10 +1261,10 @@ test('disband: a running room leaves an epoch-bumped empty tombstone so in-fligh
     'disbanded name is immediately reusable — tombstone does not hold it')
 })
 
-test('source contract: workspace header offers disband behind a ConfirmDialog', () => {
+test('source contract: workspace deletion stays behind a ConfirmDialog', () => {
   assert.match(pluginSource, /function disbandGroupChat\(/)
-  assert.match(pluginSource, /Disband group chat\?/)
-  assert.match(pluginSource, /title: `Disband the \$\{group\} group chat`/)
+  assert.match(pluginSource, /title: 'Delete group chat\?'/)
+  assert.match(pluginSource, /await disbandGroupChat\(deletingGroup\.name, deletingGroup\.members\)/)
 })
 
 test('default profile speaks as Hermes in room transcripts, not @default', () => {
@@ -1278,6 +1278,43 @@ test('default profile speaks as Hermes in room transcripts, not @default', () =>
   assert.equal(you, 'Hermes (you): hi')
   const plain = gc.formatGroupChatLine({ from: { kind: 'member', name: 'builder' }, text: 'yo' }, 'research')
   assert.equal(plain, 'builder: yo')
+})
+
+test('speaker labels honor friendly identity: Bot Mode title, then display_name, never a stale Hermes', () => {
+  const gc = load(() => '(pass)')
+
+  // A renamed default (core display_name via `hermes profile rename`) must
+  // read as its new name — the community report was "Lucy" still showing
+  // "Hermes is thinking…" in group rooms.
+  gc.$lastRoster.set([{ name: 'default', display_name: 'Lucy' }])
+  assert.equal(gc.groupSpeakerLabel('default'), 'Lucy')
+  assert.equal(
+    gc.formatGroupChatLine({ from: { kind: 'member', name: 'default' }, text: 'hi' }, 'builder'),
+    'Lucy: hi'
+  )
+
+  // A Bot Mode title outranks display_name (same precedence as displayName).
+  gc.$botMeta.set({ default: { title: 'Moxie' } })
+  assert.equal(gc.groupSpeakerLabel('default'), 'Moxie')
+
+  // Secondary profiles get their title too — the thinking line names the
+  // renamed bot, not the raw profile slug.
+  gc.$botMeta.set({ research: { title: 'Radar' } })
+  gc.$lastRoster.set([])
+  assert.equal(gc.groupSpeakerLabel('research'), 'Radar')
+
+  // Untitled rows keep today's behavior: default → Hermes, others verbatim.
+  gc.$botMeta.set({})
+  assert.equal(gc.groupSpeakerLabel('default'), 'Hermes')
+  assert.equal(gc.groupSpeakerLabel('builder'), 'builder')
+})
+
+test('speaker labels never borrow a remote row\u2019s display_name for a local speaker', () => {
+  const gc = load(() => '(pass)')
+  // Only a remote/thin row named default exists — its display_name belongs
+  // to that connection, not to the active gateway's default.
+  gc.$lastRoster.set([{ name: 'default', display_name: 'HomelabBot', remoteSource: true }])
+  assert.equal(gc.groupSpeakerLabel('default'), 'Hermes')
 })
 
 test('turn prompt addresses the default profile as @hermes', () => {
@@ -1328,9 +1365,10 @@ test('source contract: room messages carry the speaker avatar via the roster app
   assert.match(workspace, /image && !isBackfilledFacePng\(image\)/)
   assert.match(workspace, /jsx\(BotFace, \{\s*shape,\s*color,\s*image: photo \? image : null,\s*size: 24,\s*name: entry\.from\.name/)
 
-  // Header shows the member faces (capped) with a names tooltip.
-  assert.match(workspace, /members\.slice\(0, 6\)\.map\(/)
-  assert.match(workspace, /title: members\.map\(b => displayName\(b, botRosterMeta\(b, allMeta\)\)\)\.join\(', '\)/)
+  // Header stays quiet: member avatars belong to messages, while the header
+  // exposes a concise count instead of an overlapping face stack.
+  assert.doesNotMatch(workspace, /members\.slice\(0, 6\)\.map\(/)
+  assert.match(workspace, /children: members\.length > 0 && availableMembers < members\.length \? availabilityLabel : `\$\{members\.length\} bots`/)
 })
 
 test('stranded harvest: a timed-out turn whose reply landed late posts into the room and clears the marker', async () => {
@@ -1829,4 +1867,74 @@ test('source contract: approval card renders the command and routes approval.res
   assert.match(pluginSource, /'approval\.respond'/)
   assert.match(pluginSource, /kind: 'approval'/)
   assert.match(pluginSource, /wants to run a command/)
+})
+
+test('durableGroupChatRooms excludes tombstoned rooms — the remote-merge persist path\'s own durable-map builder, independent of updateGroupChat\'s inline one', () => {
+  const gc = load(() => '(pass)')
+
+  const durable = gc.durableGroupChatRooms({
+    Live: { tombstone: true, log: [], watermarks: {}, epoch: 4, running: false },
+    Keep: { log: [{ from: { kind: 'user' }, text: 'hi', at: 1 }], watermarks: {}, members: [] }
+  })
+
+  assert.ok(!('Live' in durable), 'tombstone excluded from the remote-merge persist path too')
+  assert.ok('Keep' in durable, 'real room still persisted')
+})
+
+test('durableGroupChatRooms carries roomId — omitting it drops the durable id on the next cold hydrate', () => {
+  const gc = load(() => '(pass)')
+
+  const durable = gc.durableGroupChatRooms({
+    Team: {
+      log: [{ from: { kind: 'user' }, text: 'hi', at: 1 }],
+      watermarks: {},
+      members: [],
+      roomId: 'room-abc123'
+    },
+    Legacy: {
+      log: [{ from: { kind: 'user' }, text: 'hi', at: 1 }],
+      watermarks: {},
+      members: []
+    }
+  })
+
+  assert.equal(durable.Team.roomId, 'room-abc123', 'immutable room identity must survive the remote-merge persist path')
+  assert.equal(durable.Legacy.roomId, null, 'a room with no roomId persists an explicit null, not undefined')
+})
+
+test('remote-merge reachability: a disband tombstone that survives a merge (gateway has not received the delete yet) is never written to storage', async () => {
+  const gc = load(() => '(pass)')
+
+  // Simulate a drive still mid-turn at disband time, exactly like the
+  // sibling disband test above — this room is a live tombstone in $groupChats.
+  gc.$groupChats.set({
+    Live: { tombstone: true, log: [], watermarks: {}, epoch: 4, running: false }
+  })
+
+  // The remote gateway has NOT yet received the delete (plausible now that
+  // sync fans out to every reachable default-profile gateway independently)
+  // — its snapshot still carries a live copy of the room under the same
+  // display name.
+  const merged = gc.mergeRemoteGroupChatSnapshotIntoRooms(
+    {
+      rooms: {
+        Live: {
+          log: [{ from: { kind: 'member', name: 'research' }, text: 'still going', at: 1 }],
+          members: [{ name: 'research' }]
+        }
+      }
+    },
+    gc.$groupChats.get()
+  )
+
+  // The merge spreads `...existing` before its explicit field overrides,
+  // none of which touch `tombstone` — so the flag survives into the merged
+  // room. This is the reachability step: without it, durableGroupChatRooms
+  // would never even see a tombstoned room from this path.
+  assert.equal(merged.Live.tombstone, true, 'tombstone forwarded by the merge (reachability precondition)')
+
+  await gc.persistGroupChatRooms(merged)
+
+  const durable = gc.storageWrites.get('group-chats')
+  assert.ok(durable && !('Live' in durable), 'merged tombstone must not resurrect as a persisted room')
 })

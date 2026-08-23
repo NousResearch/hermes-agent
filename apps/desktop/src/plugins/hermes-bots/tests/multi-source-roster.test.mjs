@@ -230,24 +230,27 @@ test('default rows use source identity without borrowing another source title', 
   const { __botRosterKey: key, __botRosterMeta: metaFor, __displayName: name } = runtime()
   const remote = {
     name: 'default',
-    connectionId: 'personal',
+    connectionId: 'other',
     connectionLabel: 'Personal',
     remoteSource: true,
     sourceScoped: true
   }
-  const active = { ...remote, remoteSource: undefined }
-  const metadata = { default: { title: 'Active workspace' } }
+  const active = { ...remote, connectionId: 'personal', remoteSource: undefined }
+  const metadata = {
+    default: { title: 'Legacy local only' },
+    'personal::default': { title: 'Active workspace' }
+  }
 
-  assert.equal(metaFor(remote, metadata), null)
+  assert.equal(metaFor(remote, metadata), undefined)
   assert.equal(name(remote, metaFor(remote, metadata)), 'Personal')
-  assert.equal(key(remote), 'personal::default')
+  assert.equal(key(remote), 'other::default')
 
   // The ACTIVE gateway's own default is the user's main agent — annotation
   // (sourceScoped + connection fields) must NOT rename it to a connection
   // label. Titled: the title wins. Untitled: it stays "Hermes". Regression:
   // remote-gateway desktops showed the main agent as an IP-derived label
   // with no shortname (Aug 17 2026 report).
-  assert.equal(name(active, metadata.default), 'Active workspace')
+  assert.equal(name(active, metadata['personal::default']), 'Active workspace')
   assert.equal(name(active, undefined), 'Hermes')
 })
 
@@ -264,7 +267,14 @@ test('filterBots: matches the source device name for remote rows', () => {
   const { __filterBots: filterBots } = runtime()
   const roster = [
     { name: 'research' },
-    { name: 'research', remoteSource: true, connectionLabel: 'Homelab', handle: 'research-homelab' }
+    {
+      name: 'research',
+      connectionId: 'homelab',
+      connectionLabel: 'Homelab',
+      handle: 'research-homelab',
+      remoteSource: true,
+      sourceScoped: true
+    }
   ]
 
   const hits = filterBots(roster, {}, 'homelab')
@@ -650,4 +660,13 @@ test('resolveRosterMentions: @hermes in this chat is not a handoff to yourself',
 
   assert.equal(hits.length, 1)
   assert.equal(hits[0].connectionId, 'mac-mini')
+})
+
+test('source contract: active roster queries use the SDK ambient owner route', () => {
+  assert.doesNotMatch(source, /activeBotRoute/)
+  assert.equal(
+    source.match(/requestForBot\(activeBot, 'profiles\.list', \{\}\)/g)?.length,
+    2,
+    'roster hydration and the session sweep must both use the upstream ambient-owner route'
+  )
 })

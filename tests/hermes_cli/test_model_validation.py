@@ -1,5 +1,6 @@
 """Tests for provider-aware `/model` validation in hermes_cli.models."""
 
+import pytest
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.models import (
@@ -502,6 +503,35 @@ class TestValidateCodexAutoCorrection:
         assert result["recognized"] is True
         assert result.get("corrected_model") is None
         assert result["message"] is None
+
+
+class TestValidateCodex900kVariants:
+    """`-900k` is a Hermes picker convention: valid variants come from the
+    catalog; ineligible aliases are hard-rejected BEFORE the hidden-slug
+    soft-accept (#92797 review)."""
+
+    _CATALOG = ["gpt-5.6-sol", "gpt-5.6-sol-900k", "gpt-5.5", "gpt-5.4-mini"]
+
+    def test_catalog_listed_variant_accepted(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
+            result = validate_requested_model("gpt-5.6-sol-900k", "openai-codex")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+
+    @pytest.mark.parametrize("alias", ["gpt-5.5-900k", "gpt-5.4-mini-900k", "gpt-5.6-sol-pro-900k"])
+    def test_ineligible_900k_alias_rejected_not_soft_accepted(self, alias):
+        with patch("hermes_cli.models.provider_model_ids", return_value=self._CATALOG):
+            result = validate_requested_model(alias, "openai-codex")
+        assert result["accepted"] is False
+        assert result["persist"] is False
+        assert "272K" in result["message"]
+
+    def test_valid_variant_missing_from_catalog_still_accepted(self):
+        """A verified variant not yet in the (possibly stale) catalog is
+        accepted via the eligibility predicate, not the soft-accept."""
+        with patch("hermes_cli.models.provider_model_ids", return_value=["gpt-5.6-sol"]):
+            result = validate_requested_model("gpt-5.6-sol-900k", "openai-codex")
+        assert result["accepted"] is True
 
 
 # -- probe_api_models — Cloudflare UA mitigation --------------------------------

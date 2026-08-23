@@ -887,50 +887,55 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid, 4009, "session busy — /interrupt the current turn before /undo"
             )
-        db = _get_db()
-        if db is None:
-            return _db_unavailable_error(rid, code=5008)
-        session_key = session.get("session_key", "")
-        if not session_key:
-            return _err(rid, 4001, "no session key for undo")
-        # Parse the optional count argument (e.g. "/undo 3" → 3).
-        n = 1
-        arg_str = (arg or "").strip()
-        if arg_str:
-            try:
-                n = int(arg_str.split()[0])
-            except (ValueError, IndexError):
-                return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
-        if n < 1:
+        # _session_db, not _get_db(): every read and write below is scoped by
+        # session id, and a profile session (app-global remote mode) keeps its
+        # rows in its own profile's state.db. Against the launch handle
+        # list_recent_user_messages finds nothing, so /undo fails closed with
+        # 4018 for the whole session instead of rewinding anything.
+        with _session_db(session) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5008)
+            session_key = session.get("session_key", "")
+            if not session_key:
+                return _err(rid, 4001, "no session key for undo")
+            # Parse the optional count argument (e.g. "/undo 3" → 3).
             n = 1
-        try:
-            recents = db.list_recent_user_messages(session_key, limit=max(n, 10))
-        except Exception as e:
-            return _err(rid, 5008, f"undo: failed to load history: {e}")
-        if not recents:
-            return _err(rid, 4018, "no user messages to undo")
-        # recents[0] is the most-recent user turn; pick the Nth-from-last.
-        # If N exceeds the number of user turns, back up to the oldest.
-        target_idx = min(n - 1, len(recents) - 1)
-        target_id = recents[target_idx]["id"]
-        try:
-            result = db.rewind_to_message(session_key, target_id)
-        except ValueError as e:
-            return _err(rid, 4004, f"undo: {e}")
-        except Exception as e:
-            return _err(rid, 5008, f"undo: {e}")
-        # Reload the active-only transcript into the in-memory session
-        # history so subsequent turns see the truncated view.
-        # repair_alternation: this reload feeds LIVE REPLAY — session["history"]
-        # is the working conversation for subsequent turns, and a rewind that
-        # lands on a durable user;user pair would otherwise re-fire the
-        # pre-request repair on every request from here on.
-        try:
-            active = db.get_messages_as_conversation(
-                session_key, repair_alternation=True, include_row_ids=True
-            )
-        except Exception:
-            active = []
+            arg_str = (arg or "").strip()
+            if arg_str:
+                try:
+                    n = int(arg_str.split()[0])
+                except (ValueError, IndexError):
+                    return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
+            if n < 1:
+                n = 1
+            try:
+                recents = db.list_recent_user_messages(session_key, limit=max(n, 10))
+            except Exception as e:
+                return _err(rid, 5008, f"undo: failed to load history: {e}")
+            if not recents:
+                return _err(rid, 4018, "no user messages to undo")
+            # recents[0] is the most-recent user turn; pick the Nth-from-last.
+            # If N exceeds the number of user turns, back up to the oldest.
+            target_idx = min(n - 1, len(recents) - 1)
+            target_id = recents[target_idx]["id"]
+            try:
+                result = db.rewind_to_message(session_key, target_id)
+            except ValueError as e:
+                return _err(rid, 4004, f"undo: {e}")
+            except Exception as e:
+                return _err(rid, 5008, f"undo: {e}")
+            # Reload the active-only transcript into the in-memory session
+            # history so subsequent turns see the truncated view.
+            # repair_alternation: this reload feeds LIVE REPLAY — session["history"]
+            # is the working conversation for subsequent turns, and a rewind that
+            # lands on a durable user;user pair would otherwise re-fire the
+            # pre-request repair on every request from here on.
+            try:
+                active = db.get_messages_as_conversation(
+                    session_key, repair_alternation=True, include_row_ids=True
+                )
+            except Exception:
+                active = []
         with session["history_lock"]:
             session["history"] = list(active)
             session["history_version"] = int(session.get("history_version", 0)) + 1
@@ -1747,6 +1752,11 @@ def _(rid, params: dict) -> dict:
                             if params.get("continuity") is not None
                             else None
                         ),
+                        # Optional delivery target — notably 'bot-chat[:name]'
+                        # (canonical Bot Chat injection) from the Desktop Bot
+                        # Mode cronjob dialog. Omitted/empty keeps the
+                        # cronjob() default.
+                        deliver=(str(params.get("deliver") or "").strip() or None),
                     )
                 ),
             )

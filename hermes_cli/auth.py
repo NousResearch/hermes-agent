@@ -484,6 +484,16 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("OPENCODE_GO_API_KEY",),
         base_url_env_var="OPENCODE_GO_BASE_URL",
     ),
+    "opencode-free": ProviderConfig(
+        id="opencode-free",
+        name="OpenCode Free",
+        auth_type="api_key",
+        inference_base_url="https://opencode.ai/zen/v1",
+        # Deliberately NO api_key_env_vars: the free tier is served
+        # anonymously (any unrecognized bearer is a 401), so there is no
+        # secret to configure. Select via `hermes model` / `/model free`.
+        api_key_env_vars=(),
+    ),
     "kilocode": ProviderConfig(
         id="kilocode",
         name="Kilo Code",
@@ -733,8 +743,8 @@ ZAI_ENDPOINTS = [
     # (id, base_url, probe_models, label)
     ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
     ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
-    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
+    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.3", "glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
+    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.3", "glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
 ]
 
 
@@ -1955,6 +1965,23 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
             if has_usable_secret(os.getenv(env_var, "")):
                 return True
 
+    # AWS SDK providers (Bedrock) have auth_type="aws_sdk" and empty
+    # api_key_env_vars, so the loop above never sees them. A user who sets
+    # AWS_BEARER_TOKEN_BEDROCK (or an access-key pair) in .env has configured
+    # the provider exactly as explicitly as pasting ANTHROPIC_API_KEY —
+    # without this check the desktop picker's explicit_only filter hides
+    # Bedrock even though list_authenticated_providers builds its row.
+    # Only check explicit env credentials here (NOT boto3's full chain):
+    # ambient sources like EC2 IMDS / SSO profiles must not auto-surface.
+    if pconfig and pconfig.auth_type == "aws_sdk":
+        if has_usable_secret(os.getenv("AWS_BEARER_TOKEN_BEDROCK", "")):
+            return True
+        if (
+            has_usable_secret(os.getenv("AWS_ACCESS_KEY_ID", ""))
+            and has_usable_secret(os.getenv("AWS_SECRET_ACCESS_KEY", ""))
+        ):
+            return True
+
     # 4. Check persisted credential-pool entries that came from EXPLICIT flows
     # the user initiated inside Hermes (manual add / device-code / PKCE), plus
     # env-backed pool entries. This intentionally excludes ambient borrowed
@@ -1981,6 +2008,39 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
                 return True
     except Exception:
         pass
+
+    # 5. OAuth-token / cloud-SDK providers (Vertex AI, Bedrock) have NO API-key
+    # env var to detect in step 3 and mint short-lived tokens from ADC / a
+    # service account / the AWS SDK chain. The user "explicitly configures"
+    # them by writing non-secret routing settings into config.yaml
+    # (``vertex.project_id`` / a credentials path, ``bedrock.region``) rather
+    # than by pasting a key — so without this branch such a provider is only
+    # ever "explicitly configured" while it is the *current* provider, and it
+    # silently vanishes from explicit-only pickers (desktop chat model menu)
+    # otherwise. Treat the presence of that deliberate config as explicit.
+    #
+    # NOTE: this uses has_explicit_vertex_config(), NOT has_vertex_credentials()
+    # — the latter also counts an ambient GOOGLE_APPLICATION_CREDENTIALS path
+    # (commonly set globally for unrelated GCP work), which would mark Vertex
+    # explicit for users who never set Hermes up for it. Only Hermes-scoped
+    # signals (VERTEX_PROJECT_ID / vertex.project_id / VERTEX_CREDENTIALS_PATH)
+    # count here.
+    try:
+        if normalized in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"):
+            from agent.vertex_adapter import has_explicit_vertex_config
+
+            if has_explicit_vertex_config():
+                return True
+        elif normalized == "bedrock":
+            from hermes_cli.config import load_config as _load_cfg
+
+            bedrock_cfg = _load_cfg().get("bedrock")
+            if isinstance(bedrock_cfg, dict) and str(
+                bedrock_cfg.get("region") or ""
+            ).strip():
+                return True
+    except Exception as exc:
+        logger.debug("Failed checking keyless provider explicit config for %s: %s", provider_id, exc)
 
     return False
 
@@ -2112,6 +2172,7 @@ def resolve_provider(
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
+        "free": "opencode-free", "opencode_free": "opencode-free",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
@@ -7085,6 +7146,25 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
 
+    # Keyless providers (opencode-free) are served anonymously: no credential
+    # exists, so every install counts as configured/logged in. Derived from
+    # the HermesOverlay keyless flag — the same source the provider catalog
+    # and GUI contract tests use.
+    try:
+        from hermes_cli.providers import HERMES_OVERLAYS
+        _overlay = HERMES_OVERLAYS.get(provider_id)
+    except Exception:
+        _overlay = None
+    if _overlay is not None and getattr(_overlay, "keyless", False):
+        return {
+            "configured": True,
+            "provider": provider_id,
+            "name": pconfig.name,
+            "key_source": "keyless",
+            "base_url": pconfig.inference_base_url,
+            "logged_in": True,
+        }
+
     api_key = ""
     key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
@@ -7663,16 +7743,22 @@ def _prompt_model_selection(
                     if sale is not None:
                         any_on_sale = True
                         pct, was_prompt_raw, was_out_raw = sale
-                        was_inp = (
-                            _format_price_per_mtok(was_prompt_raw)
-                            if was_prompt_raw != ""
-                            else "?"
-                        )
-                        was_out = (
-                            _format_price_per_mtok(was_out_raw)
-                            if was_out_raw != ""
-                            else "?"
-                        )
+                        # Natively-free models (no gateway original) carry
+                        # empty was_* raws — leave them empty so the row
+                        # shows bare "-100%" with no "was ?/?" suffix.
+                        if was_prompt_raw == "" and was_out_raw == "":
+                            was_inp = was_out = ""
+                        else:
+                            was_inp = (
+                                _format_price_per_mtok(was_prompt_raw)
+                                if was_prompt_raw != ""
+                                else "?"
+                            )
+                            was_out = (
+                                _format_price_per_mtok(was_out_raw)
+                                if was_out_raw != ""
+                                else "?"
+                            )
             else:
                 inp, out, cache = "", "", ""
             _price_cache[mid] = (inp, out, cache, pct, was_inp, was_out)
@@ -7709,7 +7795,8 @@ def _prompt_model_selection(
         segs = [*name_segs, (price_part, None)]
         if on_sale:
             segs.append((f"  -{pct}%", "yellow"))
-            segs.append((f"  was {was_inp}/{was_out}", "dim"))
+            if was_inp or was_out:
+                segs.append((f"  was {was_inp}/{was_out}", "dim"))
         if mid == current_model:
             segs.append(("  ← currently in use", None))
         return segs

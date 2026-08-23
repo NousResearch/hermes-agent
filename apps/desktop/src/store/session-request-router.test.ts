@@ -60,6 +60,11 @@ function installDesktop(): void {
     getConnection: vi.fn(async (profile: null | string) =>
       profile ? { port: 5151, profile, token: 'secondary-token' } : { port: 4242, token: 'primary-token' }
     ),
+    getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+      port: connectionId === 'source-a' ? 6161 : 6262,
+      profile,
+      token: `${connectionId}-token`
+    })),
     touchBackend: vi.fn(async () => undefined)
   }
 }
@@ -139,6 +144,76 @@ describe('sessionRpcNeedsProfileRoute', () => {
 })
 
 describe('requestForSessionProfile', () => {
+  it('keeps concurrent same-name requests pinned while foreground activation changes', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    await ensureGatewayForProfile('other')
+
+    const desktop = (
+      window as unknown as {
+        hermesDesktop: { getConnectionFor: ReturnType<typeof vi.fn> }
+      }
+    ).hermesDesktop
+
+    const ambient = vi.fn(async () => ({ ambient: true }))
+
+    const routeA = {
+      connectionId: 'source-a',
+      profile: 'default',
+      targetProfile: 'backend-a'
+    }
+
+    const routeB = {
+      connectionId: 'source-b',
+      profile: 'default',
+      targetProfile: 'backend-b'
+    }
+
+    const fromA = requestForSessionProfile(routeA, ambient as never, 'session.resume', {
+      profile: 'default',
+      session_id: 'stored-a'
+    })
+
+    routeA.connectionId = 'source-b'
+    routeA.targetProfile = 'mutated-after-dispatch'
+    await ensureGatewayForProfile('default')
+
+    const fromB = requestForSessionProfile(routeB, ambient as never, 'session.resume', {
+      profile: 'default',
+      session_id: 'stored-b'
+    })
+
+    await Promise.all([fromA, fromB])
+
+    expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: 'source-a', profile: 'default' })
+    expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: 'source-b', profile: 'default' })
+    expect(secondaryGateways).toHaveLength(3)
+    expect(secondaryGateways[1].request).toHaveBeenCalledWith('session.resume', {
+      profile: 'backend-a',
+      session_id: 'stored-a'
+    })
+    expect(secondaryGateways[2].request).toHaveBeenCalledWith('session.resume', {
+      profile: 'backend-b',
+      session_id: 'stored-b'
+    })
+    expect(ambient).not.toHaveBeenCalled()
+  })
+
+  it('rejects an explicit route without a connection instead of using ambient state', async () => {
+    const ambient = vi.fn(async () => ({ ambient: true }))
+
+    await expect(
+      requestForSessionProfile(
+        { connectionId: '', profile: 'default', targetProfile: 'backend-default' },
+        ambient as never,
+        'session.resume',
+        { session_id: 'stored-a' }
+      )
+    ).rejects.toThrow(/missing connectionId/i)
+    expect(ambient).not.toHaveBeenCalled()
+  })
+
   it("dispatches on the owning profile's own socket when the active route moved off it (#89206)", async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')
@@ -194,6 +269,35 @@ describe('requestForSessionProfile', () => {
     expect(secondaryGateways[0].request).toHaveBeenCalledWith(
       'prompt.submit',
       { session_id: 'stored-loki-chat', text: 'hi' },
+      1_800_000,
+      controller.signal
+    )
+  })
+
+  it('forwards timeout and abort signal onto the owning connection socket', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    const ambient = vi.fn(async () => ({ ambient: true }))
+    const controller = new AbortController()
+
+    await requestForSessionProfile(
+      {
+        connectionId: 'source-a',
+        profile: 'default',
+        targetProfile: 'backend-default'
+      },
+      ambient as never,
+      'prompt.submit',
+      { profile: 'default', session_id: 'stored-remote-chat', text: 'hi' },
+      1_800_000,
+      controller.signal
+    )
+
+    expect(ambient).not.toHaveBeenCalled()
+    expect(secondaryGateways[0].request).toHaveBeenCalledWith(
+      'prompt.submit',
+      { profile: 'backend-default', session_id: 'stored-remote-chat', text: 'hi' },
       1_800_000,
       controller.signal
     )

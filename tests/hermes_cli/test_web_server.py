@@ -604,6 +604,30 @@ class TestWebServerEndpoints:
             db.close()
         assert len(writable_opens) == 1
 
+    def test_generic_corruption_does_not_trigger_writable_heal(
+        self, tmp_path, monkeypatch
+    ):
+        """Unscoped SQLITE_CORRUPT must not escalate a dashboard read to writes."""
+        import sqlite3
+
+        import hermes_state
+        from hermes_cli import web_server
+
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"not-empty")
+        opens = []
+
+        def corrupt_open(*_args, **kwargs):
+            opens.append(kwargs.get("read_only", False))
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        monkeypatch.setattr(hermes_state, "SessionDB", corrupt_open)
+
+        with pytest.raises(sqlite3.DatabaseError, match="disk image is malformed"):
+            web_server._open_session_db_at_path(db_path, read_only=True)
+
+        assert opens == [True]
+
     def test_get_sessions_zero_byte_store_returns_empty_list(self):
         from hermes_constants import get_hermes_home
 
@@ -1206,6 +1230,36 @@ class TestWebServerEndpoints:
         assert check_data["can_apply"] is False
         assert check_data["update_command"] == "pkg upgrade hermes-agent"
         assert "Termux APT" in check_data["message"]
+
+    def test_update_status_recovers_completed_result_after_dashboard_restart(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+
+        action_id = "c" * 32
+        (tmp_path / "hermes-update.log").write_text(
+            "=== hermes-update started 2026-08-17 11:19:34 ===\n"
+            "pulling updates...\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "update.log").write_text(
+            "=== hermes update started 2026-08-17T11:19:35 ===\n"
+            "✓ Update complete!\n"
+            f"=== hermes-update completed {action_id} ===\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path)
+        monkeypatch.setattr(web_server, "_ACTION_PROCS", {})
+        monkeypatch.setattr(web_server, "_ACTION_RESULTS", {})
+        monkeypatch.setattr(web_server, "_ACTION_COMMANDS", {})
+        monkeypatch.setattr(web_server, "_ACTION_IDS", {})
+
+        status = self.client.get("/api/actions/hermes-update/status?lines=2000")
+
+        assert status.status_code == 200
+        data = status.json()
+        assert data["running"] is False
+        assert data["exit_code"] == 0
+        assert data["action_id"] == action_id
+        assert f"=== hermes-update completed {action_id} ===" in data["lines"]
 
     def test_update_hermes_spawns_with_action_id(self, monkeypatch):
         import hermes_cli.web_server as web_server

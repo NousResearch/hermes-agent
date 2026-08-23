@@ -82,11 +82,18 @@ test('resolvedConnectionId identifies local and migrated remote descriptors', ()
     resolvedConnectionId(registry, {
       baseUrl: 'http://127.0.0.1:49152',
       mode: 'remote',
-      remoteHost: 'root@work-host',
+      remoteHost: 'ROOT@WORK-HOST',
       remoteKind: 'ssh'
     }),
     work?.id
   )
+
+  const ambiguousLocal: ConnectionRegistry = {
+    ...registry,
+    connections: [...registry.connections, { id: 'local-copy', kind: 'local', label: 'Local copy' }]
+  }
+
+  assert.equal(resolvedConnectionId(ambiguousLocal, { mode: 'local' }), null)
 })
 
 test('resolvedConnectionId does not guess an unregistered remote', () => {
@@ -105,6 +112,288 @@ test('agentHandle bare when unique, @name-device shape when duplicated', () => {
   assert.equal(agentHandle('research', 'Homelab', true), 'research-homelab')
   assert.equal(agentHandle('research', 'Work Laptop', true), 'research-work-laptop')
   assert.equal(agentHandle('', 'Homelab', false), 'default')
+})
+
+test('resolvedConnectionId accepts only a current exact descriptor id and never falls back', () => {
+  const registry: ConnectionRegistry = {
+    version: REGISTRY_VERSION,
+    primary: 'remote-a',
+    launchMode: 'primary',
+    lastUsed: 'remote-a',
+    connections: [
+      { id: LOCAL_CONNECTION_ID, kind: 'local', label: 'This device' },
+      {
+        id: 'remote-a',
+        kind: 'remote',
+        label: 'Remote A',
+        url: 'https://shared.example',
+        authMode: 'token',
+        token: { encoding: 'safeStorage', value: 'token-a' },
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-a' } }
+      },
+      {
+        id: 'remote-b',
+        kind: 'remote',
+        label: 'Remote B',
+        url: 'https://shared.example',
+        authMode: 'oauth',
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-b' } }
+      }
+    ]
+  }
+
+  assert.equal(
+    resolvedConnectionId(registry, {
+      authMode: 'token',
+      baseUrl: 'https://shared.example',
+      connectionId: 'remote-b',
+      headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-a' } },
+      mode: 'remote',
+      remoteKind: 'url',
+      token: { encoding: 'safeStorage', value: 'token-a' }
+    }),
+    'remote-b'
+  )
+
+  const inferableRemoteA = {
+    authMode: 'token',
+    baseUrl: 'https://shared.example',
+    headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-a' } },
+    mode: 'remote' as const,
+    remoteKind: 'url' as const,
+    token: { encoding: 'safeStorage', value: 'token-a' }
+  }
+
+  // Only true absence enters compatibility inference. Every explicitly
+  // present invalid value remains unresolved even though the remaining
+  // envelope uniquely identifies remote-a.
+  assert.equal(resolvedConnectionId(registry, inferableRemoteA), 'remote-a')
+
+  for (const connectionId of ['', '   ', null, undefined, 42, {}, 'unknown-source', 'retired-source']) {
+    assert.equal(resolvedConnectionId(registry, { ...inferableRemoteA, connectionId }), null)
+  }
+
+  // Registry order is never authority for either an exact current id or a
+  // rejected explicit claim.
+  const reordered = { ...registry, connections: [...registry.connections].reverse() }
+
+  assert.equal(
+    resolvedConnectionId(reordered, {
+      ...inferableRemoteA,
+      connectionId: 'remote-b'
+    }),
+    'remote-b'
+  )
+  assert.equal(resolvedConnectionId(reordered, { ...inferableRemoteA, connectionId: 'retired-source' }), null)
+})
+
+test('resolvedConnectionId reuses the exact URL envelope and rejects weak or duplicate matches', () => {
+  const sharedUrl = 'https://shared.example/gateway'
+
+  const registry: ConnectionRegistry = {
+    version: REGISTRY_VERSION,
+    primary: 'remote-token',
+    launchMode: 'primary',
+    lastUsed: 'remote-token',
+    connections: [
+      { id: LOCAL_CONNECTION_ID, kind: 'local', label: 'This device' },
+      {
+        id: 'remote-token',
+        kind: 'remote',
+        label: 'Token remote',
+        url: sharedUrl,
+        authMode: 'token',
+        token: { encoding: 'safeStorage', value: 'token-a' },
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-a' } }
+      },
+      {
+        id: 'remote-oauth',
+        kind: 'remote',
+        label: 'OAuth remote',
+        url: `${sharedUrl}/`,
+        authMode: 'oauth',
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-b' } }
+      },
+      {
+        id: 'cloud-nous',
+        kind: 'cloud',
+        label: 'Nous cloud',
+        url: sharedUrl,
+        authMode: 'oauth',
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-cloud' } },
+        org: 'nous'
+      },
+      {
+        id: 'cloud-labs',
+        kind: 'cloud',
+        label: 'Labs cloud',
+        url: sharedUrl,
+        authMode: 'oauth',
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-cloud' } },
+        org: 'labs'
+      }
+    ]
+  }
+
+  assert.equal(
+    resolvedConnectionId(registry, {
+      authMode: 'token',
+      baseUrl: sharedUrl,
+      headers: { 'cf-access-client-id': { encoding: 'safeStorage', value: 'header-a' } },
+      mode: 'remote',
+      remoteKind: 'url',
+      token: { encoding: 'safeStorage', value: 'token-a' }
+    }),
+    'remote-token'
+  )
+  assert.equal(
+    resolvedConnectionId(registry, {
+      authMode: 'oauth',
+      baseUrl: sharedUrl,
+      headers: { 'CF-ACCESS-CLIENT-ID': { encoding: 'safeStorage', value: 'header-b' } },
+      mode: 'remote',
+      remoteKind: 'url'
+    }),
+    'remote-oauth'
+  )
+  assert.equal(
+    resolvedConnectionId(registry, {
+      authMode: 'oauth',
+      baseUrl: sharedUrl,
+      headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-cloud' } },
+      mode: 'remote',
+      org: 'nous',
+      remoteKind: 'cloud'
+    }),
+    'cloud-nous'
+  )
+  assert.equal(
+    resolvedConnectionId(registry, {
+      authMode: 'oauth',
+      baseUrl: sharedUrl,
+      headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-cloud' } },
+      mode: 'remote',
+      org: 'labs',
+      remoteKind: 'cloud'
+    }),
+    'cloud-labs'
+  )
+
+  // Post-dial URL-only shapes do not contain enough proof to choose a source.
+  assert.equal(resolvedConnectionId(registry, { baseUrl: sharedUrl, mode: 'remote', remoteKind: 'url' }), null)
+  assert.equal(resolvedConnectionId(registry, { baseUrl: sharedUrl, mode: 'remote', remoteKind: 'cloud' }), null)
+
+  // Even a complete envelope fails closed when two registrations are exact twins.
+  const duplicate: ConnectionRegistry = {
+    ...registry,
+    connections: [
+      ...registry.connections,
+      { ...registry.connections.find(connection => connection.id === 'remote-token')!, id: 'remote-token-copy' }
+    ]
+  }
+
+  assert.equal(
+    resolvedConnectionId(duplicate, {
+      authMode: 'token',
+      baseUrl: sharedUrl,
+      headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-a' } },
+      mode: 'remote',
+      remoteKind: 'url',
+      token: { encoding: 'safeStorage', value: 'token-a' }
+    }),
+    null
+  )
+  assert.equal(
+    resolvedConnectionId(
+      { ...duplicate, connections: [...duplicate.connections].reverse() },
+      {
+        authMode: 'token',
+        baseUrl: sharedUrl,
+        headers: { 'CF-Access-Client-Id': { encoding: 'safeStorage', value: 'header-a' } },
+        mode: 'remote',
+        remoteKind: 'url',
+        token: { encoding: 'safeStorage', value: 'token-a' }
+      }
+    ),
+    null
+  )
+})
+
+test('resolvedConnectionId keeps same-host SSH routes distinct by port, key, path, and profile', () => {
+  const base = {
+    host: 'work-host',
+    keyPath: '/keys/a',
+    kind: 'ssh' as const,
+    remoteHermesPath: '/srv/hermes',
+    remoteProfile: 'alpha',
+    user: 'root'
+  }
+
+  const registry: ConnectionRegistry = {
+    version: REGISTRY_VERSION,
+    primary: 'ssh-base',
+    launchMode: 'primary',
+    lastUsed: 'ssh-base',
+    connections: [
+      { id: LOCAL_CONNECTION_ID, kind: 'local', label: 'This device' },
+      { ...base, id: 'ssh-base', label: 'SSH base' },
+      { ...base, id: 'ssh-port', label: 'SSH port', port: 2222 },
+      { ...base, id: 'ssh-key', keyPath: '/keys/b', label: 'SSH key' },
+      { ...base, id: 'ssh-path', label: 'SSH path', remoteHermesPath: '/opt/hermes' },
+      { ...base, id: 'ssh-profile', label: 'SSH profile', remoteProfile: 'beta' }
+    ]
+  }
+
+  const resolve = (ssh: NonNullable<Parameters<typeof resolvedConnectionId>[1]['ssh']>) =>
+    resolvedConnectionId(registry, { mode: 'remote', remoteKind: 'ssh', ssh })
+
+  assert.equal(resolve(base), 'ssh-base')
+  assert.equal(resolve({ ...base, port: 2222 }), 'ssh-port')
+  assert.equal(resolve({ ...base, keyPath: '/keys/b' }), 'ssh-key')
+  assert.equal(resolve({ ...base, remoteHermesPath: '/opt/hermes' }), 'ssh-path')
+  assert.equal(resolve({ ...base, remoteProfile: 'beta' }), 'ssh-profile')
+  assert.equal(
+    resolvedConnectionId(registry, {
+      connectionId: 'ssh-port',
+      mode: 'remote',
+      remoteKind: 'ssh',
+      ssh: { ...base, port: 9999 }
+    }),
+    'ssh-port'
+  )
+
+  // user@host is a transport hint, not a registry identity, when variants coexist.
+  assert.equal(
+    resolvedConnectionId(registry, {
+      mode: 'remote',
+      remoteHost: 'ROOT@WORK-HOST',
+      remoteKind: 'ssh'
+    }),
+    null
+  )
+  assert.equal(
+    resolvedConnectionId(registry, {
+      mode: 'remote',
+      remoteHost: 'ROOT@WORK-HOST',
+      remoteKind: 'ssh',
+      ssh: undefined
+    }),
+    null
+  )
+
+  const duplicate: ConnectionRegistry = {
+    ...registry,
+    connections: [...registry.connections, { ...base, id: 'ssh-base-copy', label: 'SSH base copy' }]
+  }
+
+  assert.equal(resolvedConnectionId(duplicate, { mode: 'remote', remoteKind: 'ssh', ssh: base }), null)
+  assert.equal(
+    resolvedConnectionId(
+      { ...duplicate, connections: [...duplicate.connections].reverse() },
+      { mode: 'remote', remoteKind: 'ssh', ssh: base }
+    ),
+    null
+  )
 })
 
 test('connectionIdForLabel suffixes on collision and never mints "local"', () => {

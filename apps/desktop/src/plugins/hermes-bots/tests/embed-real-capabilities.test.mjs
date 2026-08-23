@@ -18,12 +18,18 @@ test('resolves optional Capabilities components from the SDK namespace', () => {
 test('AdvancedProfileConfig embeds ToolsetConfigPanel per toolset, scoped to the bot profile', () => {
   // Rendered only when the SDK export exists (older builds: just the toggle).
   assert.match(source, /ToolsetConfigPanel\s*\n?\s*\?\s*jsx\('div'/)
-  assert.match(source, /jsx\(ToolsetConfigPanel, \{ toolset: tset\.name, profile: bot \}\)/)
+  assert.match(source, /jsx\(ToolsetConfigPanel, \{ toolset: tset\.name, profile: backendScope \}\)/)
 })
 
 test('AdvancedProfileConfig embeds the real McpTab with a live gateway + profile, feature-detected', () => {
   assert.match(source, /McpTab && typeof host\.getGateway === 'function'/)
-  assert.match(source, /jsx\(McpTab, \{ gateway: host\.getGateway\(\), profile: bot \}\)/)
+  assert.match(source, /jsx\(McpTab, \{ gateway: host\.getGateway\(\), profile: backendScope \}\)/)
+})
+
+test('AdvancedProfileConfig scopes SkillsView to the connection and backend target profile', () => {
+  assert.match(source, /const botRoute = botConnectionRoute\(bot\)/)
+  assert.match(source, /fixedProfile: backendProfile/)
+  assert.match(source, /fixedConnection: botRoute\.connectionId/)
 })
 
 test('older-build fallback: the checkbox MCP list + inline McpSetupButton is still present', () => {

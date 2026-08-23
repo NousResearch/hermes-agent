@@ -8,7 +8,7 @@ import tomllib
 
 import pytest
 
-from ares_runtime.local_runtime import AresLocalPaths, AresLocalRuntime, AresLocalRuntimeError, _parser
+from ares_runtime.local_runtime import AresLocalPaths, AresLocalRuntime, AresLocalRuntimeError, _desktop_launch_arguments, _parser
 
 
 def _runtime(tmp_path: Path) -> AresLocalRuntime:
@@ -215,6 +215,18 @@ def test_upstream_candidate_conflict_never_publishes_a_release(tmp_path: Path, m
     assert not runtime.paths.releases_dir.exists() or not any(runtime.paths.releases_dir.iterdir())
 
 
+def test_desktop_launch_uses_xwayland_only_when_available() -> None:
+    executable = Path("/tmp/Ares")
+
+    assert _desktop_launch_arguments(executable, platform="linux", environment={"XDG_SESSION_TYPE": "wayland", "DISPLAY": ":0"}) == [
+        str(executable),
+        "--ozone-platform=x11",
+    ]
+    assert _desktop_launch_arguments(executable, platform="linux", environment={"XDG_SESSION_TYPE": "wayland"}) == [str(executable)]
+    assert _desktop_launch_arguments(executable, platform="linux", environment={"DISPLAY": ":0"}) == [str(executable)]
+    assert _desktop_launch_arguments(executable, platform="darwin", environment={"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}) == [str(executable)]
+
+
 def test_launcher_resolves_the_selected_runtime_dynamically(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     runtime._install_launcher()
@@ -222,8 +234,49 @@ def test_launcher_resolves_the_selected_runtime_dynamically(tmp_path: Path) -> N
     launcher = runtime.paths.launcher_path.read_text(encoding="utf-8")
 
     assert str(runtime.paths.current_link) in launcher
+    assert "cd \"$runtime_root\"" in launcher
     assert "-m ares_runtime.local_runtime" in launcher
     assert "Coding" not in launcher
+
+
+def test_setup_handoff_failure_restores_pointer_and_launcher(tmp_path: Path, monkeypatch) -> None:
+    runtime = _runtime(tmp_path)
+    old_revision = "a" * 40
+    new_revision = "b" * 40
+    old_source = _release(runtime, old_revision)
+    _release(runtime, new_revision)
+    runtime._activate(old_revision)
+    source = tmp_path / "candidate"
+    source.mkdir()
+
+    def git_output(_source: Path, *args: str) -> str:
+        if args == ("rev-parse", "--is-inside-work-tree"):
+            return "true"
+        if args == ("rev-parse", "HEAD"):
+            return new_revision
+        if args == ("remote", "get-url", "origin"):
+            return str(source)
+        if args == ("symbolic-ref", "--quiet", "--short", "HEAD"):
+            return "main"
+        raise AssertionError(args)
+
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(runtime, "_git_output", git_output)
+    monkeypatch.setattr(runtime, "_materialize", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime, "_seed_agent_home", lambda *_args: False)
+    monkeypatch.setattr(runtime, "_provision_context_governor_key", lambda *_args: None)
+    monkeypatch.setattr(runtime, "_write_config", lambda **_kwargs: None)
+    monkeypatch.setattr(runtime, "_install_gateway_unit", lambda: None)
+    monkeypatch.setattr(runtime, "_handoff_gateway", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("handoff failed")))
+    monkeypatch.setattr(runtime, "_systemctl", lambda *args, **_kwargs: calls.append(args) or True)
+
+    with pytest.raises(RuntimeError, match="handoff failed"):
+        runtime.setup(source, desktop=False, gateway=True, seed_from=tmp_path / "seed")
+
+    assert runtime.active_release() == (old_revision, old_source.resolve())
+    assert "cd \"$runtime_root\"" in runtime.paths.launcher_path.read_text(encoding="utf-8")
+    assert ("enable", "ares-gateway.service") in calls
+    assert ("restart", "ares-gateway.service") in calls
 
 
 def test_gateway_unit_uses_the_explicit_foreground_action(tmp_path: Path) -> None:
@@ -279,6 +332,16 @@ def test_ares_runtime_is_included_in_the_noneditable_distribution() -> None:
     data = tomllib.loads(project.read_text(encoding="utf-8"))
 
     assert "ares_runtime" in data["tool"]["setuptools"]["packages"]["find"]["include"]
+
+
+def test_runtime_builder_uses_editable_python_and_managed_node() -> None:
+    source = Path(__file__).parents[2] / "ares_runtime" / "local_runtime.py"
+    implementation = source.read_text(encoding="utf-8")
+
+    assert "--no-editable" not in implementation
+    assert "from hermes_cli.managed_uv import ensure_uv" in implementation
+    assert "self._managed_npm()" in implementation
+    assert '[npm, "ci", "--include=dev"]' in implementation
 
 
 def test_chat_command_leaves_hermes_options_for_the_runtime() -> None:

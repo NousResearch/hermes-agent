@@ -186,25 +186,24 @@ test('activity: a hidden bot accumulates unread silently but never toasts, even 
 
 // ── source shape ─────────────────────────────────────────────────────────────
 
-test('shape: roster list filters through isBotHidden unless the show-hidden toggle is on', () => {
+test('shape: visible and hidden bots render through separate recoverable sections', () => {
   assert.match(
     pluginSource,
-    /const visibleRoster = showHidden \? roster : roster\.filter\(bot => !isBotHidden\(bot, allMeta\)\)/
+    /const visibleRoster = roster\.filter\(bot => !isBotHidden\(bot, allMeta\)\)/
   )
-  assert.match(pluginSource, /const filteredRoster = filterBots\(visibleRoster, allMeta, query\)/)
+  assert.match(pluginSource, /const matchingHiddenBots = rowKindFilter === 'groups' \? \[\] : filteredHiddenBots/)
 })
 
-test('shape: header eye toggle renders only when at least one bot is hidden', () => {
-  assert.match(pluginSource, /hiddenBots\.length\s*\n?\s*\? jsx\(Tip, \{/)
-  assert.match(pluginSource, /onClick: \(\) => \$showHiddenBots\.set\(!showHidden\)/)
+test('shape: Hidden section renders only when recovery is relevant', () => {
+  assert.match(pluginSource, /const showHiddenSection = hiddenBots\.length > 0/)
+  assert.match(pluginSource, /onClick: \(\) => \$showHiddenBots\.set\(!hiddenExpanded\)/)
 })
 
-test('shape: revealed hidden rows are dimmed and flagged with the eye-closed glyph', () => {
+test('shape: revealed hidden rows are flagged and can be restored', () => {
   const botRow = pluginSource.slice(pluginSource.indexOf('function BotRow('), pluginSource.indexOf('// ── model picker'))
-  assert.match(botRow, /meta\?\.hidden && 'opacity-60'/)
   assert.match(botRow, /name: 'eye-closed'/)
-  assert.match(botRow, /children: meta\?\.hidden \? 'Unhide Bot' : 'Hide Bot'/)
-  assert.match(botRow, /saveBotMeta\(bot\.name, \{ hidden: !hidden \}\)/)
+  assert.match(botRow, /children: hidden \? 'Unhide' : 'Hide'/)
+  assert.match(botRow, /saveBotMeta\(bot, \{ hidden: !hidden \}\)/)
 })
 
 test('shape: hiding never filters mentions, group flows, or the meta/activity sweeps', () => {
@@ -213,11 +212,11 @@ test('shape: hiding never filters mentions, group flows, or the meta/activity sw
   // which is derived from the unfiltered roster, not visibleRoster.
   assert.match(pluginSource, /const activeSourceRoster = roster\.filter\(bot => !bot\.remoteSource\)/)
   assert.match(pluginSource, /mergeServerMeta\(activeSourceRoster, data\?\.fetchedAt \|\| 0\)/)
-  assert.match(pluginSource, /trackInboundActivity\(activeSourceRoster\)/)
+  assert.match(pluginSource, /trackInboundActivity\(roster\)/)
   // Mention resolution never consults the hidden flag.
   const mentions = pluginSource.slice(
     pluginSource.indexOf('function resolveRosterMentions('),
-    pluginSource.indexOf('const REMOTE_DM_TIMEOUT_MS')
+    pluginSource.indexOf('/** Source-qualified identity for a roster row')
   )
   assert.doesNotMatch(mentions, /hidden/i)
 })

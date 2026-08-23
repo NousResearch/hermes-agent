@@ -2,6 +2,7 @@ import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import { isNewChatRoute } from '@/app/routes'
 import { type SessionResumeRequest, setResumeExhaustedSessionId } from '@/store/session'
+import type { SessionProfileRoute } from '@/store/session-request-router'
 import { markSelectionRestore } from '@/store/session-states'
 
 interface RouteResumeOptions {
@@ -12,7 +13,7 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals
   // routedSessionId the window would otherwise latch on the loader forever, so
@@ -177,7 +178,15 @@ export function useRouteResume({
         }
 
         bootResumeRef.current = false
-        void resumeSession(routedSessionId, true)
+
+        const ownerRoute =
+          sessionResumeRequest?.sessionId === routedSessionId ? sessionResumeRequest.ownerRoute : undefined
+
+        if (ownerRoute) {
+          void resumeSession(routedSessionId, true, ownerRoute)
+        } else {
+          void resumeSession(routedSessionId, true)
+        }
       }
 
       return

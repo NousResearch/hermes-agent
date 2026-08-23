@@ -126,6 +126,7 @@ import {
   setCurrentCwd
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
+import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
@@ -370,6 +371,7 @@ export function ChatSidebar({
   const sortOrderIds = useStore($sidebarSessionRankIds)
   const agentsGrouped = grouping === 'project'
   const pinnedSessionIds = useStore($pinnedSessionIds)
+  const unconfirmedPinWrites = useStore($unconfirmedPinWrites)
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const cronOpen = useStore($sidebarCronOpen)
@@ -561,15 +563,17 @@ export function ChatSidebar({
 
   // Local pin ids first (hand-picked order), then server-flagged pins the
   // local set doesn't know about — a backend `pinned=1` row must never be
-  // invisible just because localStorage is cold or was clobbered (#85969).
+  // invisible just because localStorage is cold or was clobbered (#85969) —
+  // minus the rows whose flag our own in-flight pin write already contradicts.
   const pinnedSessions = useMemo(
     () =>
-      resolvePinnedSessions(pinnedSessionIds, sessionByAnyId, [
-        ...visibleSessions,
-        ...cronSessions,
-        ...messagingSessions
-      ]),
-    [pinnedSessionIds, sessionByAnyId, visibleSessions, cronSessions, messagingSessions]
+      resolvePinnedSessions(
+        pinnedSessionIds,
+        sessionByAnyId,
+        [...visibleSessions, ...cronSessions, ...messagingSessions],
+        unconfirmedPinWrites
+      ),
+    [pinnedSessionIds, sessionByAnyId, visibleSessions, cronSessions, messagingSessions, unconfirmedPinWrites]
   )
 
   // Every id a pin is reachable under: the raw stored ids, plus BOTH identities

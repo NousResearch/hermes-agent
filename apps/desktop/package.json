@@ -1,14 +1,10 @@
 {
   "name": "hermes",
-  "productName": "Hermes",
+  "productName": "Ares",
   "private": true,
   "version": "0.17.0",
-  "description": "Native desktop shell for Hermes Agent.",
+  "description": "Native desktop shell for Ares.",
   "author": "Nous Research",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/NousResearch/hermes-agent.git"
-  },
   "type": "module",
   "main": "dist/electron-main.mjs",
   "engines": {
@@ -66,14 +62,12 @@
     "test:find-in-page-native": "electron electron/find-in-page-native-fixture",
     "test": "vitest run",
     "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174",
+    "check:test:ui": "npm run test:ui",
     "check:test:desktop:platforms": "npm run test:desktop:platforms",
-    "check:test:plugins": "node --test src/plugins/*/tests/*.test.mjs",
-    "check:test:ui:shard-1of3": "node scripts/run-ui-shard.mjs",
-    "check:test:ui:shard-2of3": "node scripts/run-ui-shard.mjs",
-    "check:test:ui:shard-3of3": "node scripts/run-ui-shard.mjs",
     "check:test:desktop:all": "npm run test:desktop:all",
+    "check:test:plugins": "node --test src/plugins/*/tests/*.test.mjs",
     "check:lint": "npm run typecheck && npm run lint",
-    "check": "npm run check:lint && npm run test:ui && npm run test:desktop:platforms && npm run test:desktop:all",
+    "check": "npm run check:lint && npm run test:ui && npm run test:desktop:platforms && npm run test:desktop:all && npm run check:test:plugins",
     "test:e2e": "npm run build && playwright test e2e/",
     "test:e2e:visual": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list",
     "test:e2e:update-snapshots": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots",
@@ -189,18 +183,18 @@
   },
   "build": {
     "electronVersion": "40.10.2",
-    "appId": "com.nousresearch.hermes",
-    "productName": "Hermes",
-    "executableName": "Hermes",
+    "appId": "com.recursiveintell.ares",
+    "productName": "Ares",
+    "executableName": "Ares",
     "protocols": [
       {
-        "name": "Hermes Protocol",
+        "name": "Ares Protocol",
         "schemes": [
-          "hermes"
+          "ares"
         ]
       }
     ],
-    "artifactName": "Hermes-${version}-${os}-${arch}.${ext}",
+    "artifactName": "Ares-${version}-${os}-${arch}.${ext}",
     "icon": "assets/icon",
     "directories": {
       "output": "release"
@@ -236,12 +230,12 @@
       "entitlements": "electron/entitlements.mac.plist",
       "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "CFBundleDisplayName": "Hermes",
-        "CFBundleExecutable": "Hermes",
-        "CFBundleName": "Hermes",
-        "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
-        "NSCameraUsageDescription": "Hermes uses the camera when a plugin or feature you enable requests it.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
+        "CFBundleDisplayName": "Ares",
+        "CFBundleExecutable": "Ares",
+        "CFBundleName": "Ares",
+        "NSAudioCaptureUsageDescription": "Ares uses audio capture for voice conversations.",
+        "NSCameraUsageDescription": "Ares uses the camera when a plugin or feature you enable requests it.",
+        "NSMicrophoneUsageDescription": "Ares uses the microphone for voice input and voice conversations."
       },
       "gatekeeperAssess": false,
       "hardenedRuntime": true,
@@ -251,7 +245,7 @@
       ]
     },
     "dmg": {
-      "title": "Install Hermes",
+      "title": "Install Ares",
       "backgroundColor": "#f5f5f7",
       "iconSize": 96,
       "window": {
@@ -273,7 +267,7 @@
       ]
     },
     "win": {
-      "legalTrademarks": "Hermes",
+      "legalTrademarks": "Ares",
       "target": [
         "nsis",
         "msi"
@@ -283,7 +277,7 @@
     "linux": {
       "category": "Development",
       "maintainer": "Nous Research <support@nousresearch.com>",
-      "synopsis": "Native desktop shell for Hermes Agent.",
+      "synopsis": "Native desktop shell for Ares.",
       "target": [
         "AppImage",
         "deb",
@@ -294,9 +288,13 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
+      "shortcutName": "Ares",
+      "uninstallDisplayName": "Ares",
       "warningsAsErrors": false
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RecursiveIntell/Ares.git"
   }
 }

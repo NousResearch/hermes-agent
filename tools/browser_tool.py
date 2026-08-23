@@ -4711,26 +4711,47 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 ),
             }, ensure_ascii=False)
 
-        # Convert screenshot to base64 at full resolution.
-        _screenshot_bytes = screenshot_path.read_bytes()
-        _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
-        data_url = f"data:image/png;base64,{_screenshot_b64}"
+        # NOTE: the full-resolution base64 encode is deliberately deferred.
+        # The native fast path below sizes its own history-reuse embed via
+        # _resize_image_for_vision (stat-based quick estimate — no full-res
+        # encode when oversized), and only the aux-LLM fallback path needs
+        # the one-shot full-res data URL.
 
         # Fast path: when native image routing is in effect for the active main
         # model, attach the screenshot directly instead of describing it through
         # an auxiliary vision LLM. The model inspects the pixels on its next
         # turn — no aux call, no information loss. Consistent with vision_analyze.
         from tools.vision_tools import (
+            _EMBED_MAX_DIMENSION,
+            _EMBED_TARGET_BYTES,
             _build_native_vision_tool_result,
+            _resize_image_for_vision,
             _should_use_native_vision_fast_path,
         )
 
         if _should_use_native_vision_fast_path():
+            # History-reuse cap (#92699): this embed is baked into the tool
+            # result and re-sent on every later turn, exactly like
+            # vision_analyze's native path — apply the same proactive resize
+            # so full-res screenshots can't enter immutable history uncapped.
+            # The helper's internal stat/dimension quick-estimate skips the
+            # resize (and encodes directly) when the screenshot is already
+            # under both caps, so no full-res base64 is built just to be
+            # thrown away. Fail-open: without Pillow it falls back to the
+            # raw bytes and the compressor's keep-newest pass still retires
+            # stale embeds.
+            data_url = _resize_image_for_vision(
+                screenshot_path,
+                mime_type="image/png",
+                max_base64_bytes=_EMBED_TARGET_BYTES,
+                max_dimension=_EMBED_MAX_DIMENSION,
+                force_jpeg=True,
+            )
             native_result = _build_native_vision_tool_result(
                 image_url=str(screenshot_path),
                 question=question,
                 image_data_url=data_url,
-                image_size_bytes=len(_screenshot_bytes),
+                image_size_bytes=screenshot_path.stat().st_size,
             )
             meta = native_result.setdefault("meta", {})
             meta["screenshot_path"] = str(screenshot_path)
@@ -4752,6 +4773,13 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             f"or CAPTCHAs, describe what type they are and what action might be needed. "
             f"Focus on answering the user's specific question."
         )
+
+        # Aux-LLM path: one-shot analysis, not baked into history — encode at
+        # full resolution here (the pre-existing 5 MB oversize guard below
+        # still applies).
+        _screenshot_bytes = screenshot_path.read_bytes()
+        _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
+        data_url = f"data:image/png;base64,{_screenshot_b64}"
 
         # Use the centralized LLM router
         vision_model = _get_vision_model()
@@ -5390,64 +5418,145 @@ if __name__ == "__main__":
 # Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
+from tools.browser_extension_router import (
+    extension_controller_available,
+    routed_browser_handler,
+)
 
 _BROWSER_SCHEMA_MAP = {s["name"]: s for s in BROWSER_TOOL_SCHEMAS}
+
+
+def _browser_router_kw(kw: dict) -> dict:
+    """Identity kwargs forwarded to the extension router wrapper."""
+    return {
+        "task_id": kw.get("task_id"),
+        "session_id": kw.get("session_id"),
+    }
+
+
+def check_browser_routed_requirements(action: str = "browser_snapshot") -> bool:
+    """Availability gate for tools that can use either browser backend."""
+    return check_browser_requirements() or extension_controller_available(action)
+
+
+def check_browser_navigate_requirements() -> bool:
+    return check_browser_routed_requirements("browser_navigate")
+
+
+def check_browser_snapshot_requirements() -> bool:
+    return check_browser_routed_requirements("browser_snapshot")
+
+
+def check_browser_click_requirements() -> bool:
+    return check_browser_routed_requirements("browser_click")
+
+
+def check_browser_type_requirements() -> bool:
+    return check_browser_routed_requirements("browser_type")
+
+
+def check_browser_scroll_requirements() -> bool:
+    return check_browser_routed_requirements("browser_scroll")
+
+
+def check_browser_back_requirements() -> bool:
+    return check_browser_routed_requirements("browser_back")
+
+
+def check_browser_press_requirements() -> bool:
+    return check_browser_routed_requirements("browser_press")
+
 
 registry.register(
     name="browser_navigate",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_navigate"],
-    handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_navigate",
+        args,
+        fallback=lambda: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_navigate_requirements,
     emoji="🌐",
 )
 registry.register(
     name="browser_snapshot",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_snapshot"],
-    handler=lambda args, **kw: browser_snapshot(
-        full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_snapshot",
+        args,
+        fallback=lambda: browser_snapshot(
+            full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_snapshot_requirements,
     emoji="📸",
 )
 registry.register(
     name="browser_click",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_click"],
-    handler=lambda args, **kw: browser_click(ref=args.get("ref", ""), task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_click",
+        args,
+        fallback=lambda: browser_click(ref=args.get("ref", ""), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_click_requirements,
     emoji="👆",
 )
 registry.register(
     name="browser_type",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_type"],
-    handler=lambda args, **kw: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_type",
+        args,
+        fallback=lambda: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_type_requirements,
     emoji="⌨️",
 )
 registry.register(
     name="browser_scroll",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_scroll"],
-    handler=lambda args, **kw: browser_scroll(direction=args.get("direction", "down"), task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_scroll",
+        args,
+        fallback=lambda: browser_scroll(direction=args.get("direction", "down"), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_scroll_requirements,
     emoji="📜",
 )
 registry.register(
     name="browser_back",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_back"],
-    handler=lambda args, **kw: browser_back(task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_back",
+        args,
+        fallback=lambda: browser_back(task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_back_requirements,
     emoji="◀️",
 )
 registry.register(
     name="browser_press",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_press"],
-    handler=lambda args, **kw: browser_press(key=args.get("key", ""), task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_press",
+        args,
+        fallback=lambda: browser_press(key=args.get("key", ""), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
+    check_fn=check_browser_press_requirements,
     emoji="⌨️",
 )
 
@@ -5455,7 +5564,12 @@ registry.register(
     name="browser_get_images",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_get_images"],
-    handler=lambda args, **kw: browser_get_images(task_id=kw.get("task_id")),
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_get_images",
+        args,
+        fallback=lambda: browser_get_images(task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
     check_fn=check_browser_requirements,
     emoji="🖼️",
 )
@@ -5463,7 +5577,12 @@ registry.register(
     name="browser_vision",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
-    handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_vision",
+        args,
+        fallback=lambda: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
     check_fn=check_browser_vision_requirements,
     emoji="👁️",
 )
@@ -5471,7 +5590,12 @@ registry.register(
     name="browser_console",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_console"],
-    handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_console",
+        args,
+        fallback=lambda: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
+        **_browser_router_kw(kw),
+    ),
     check_fn=check_browser_requirements,
     emoji="🖥️",
 )

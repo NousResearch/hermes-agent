@@ -70,6 +70,11 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
+import {
+  $profileRemoteOverrides,
+  openRemoteOverrideDialog,
+  refreshProfileRemoteOverrides
+} from '@/store/profile-remote-override'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -78,6 +83,7 @@ import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
 
+import { ProfileRemoteOverrideDialog } from './profile-remote-override-dialog'
 import { useProfilePrewarm } from './use-profile-prewarm'
 import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-active'
 
@@ -124,6 +130,7 @@ export function ProfileRail() {
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
+  const remoteOverrides = useStore($profileRemoteOverrides)
   const multipleConnections = useStore($hasMultipleConnections)
   const navigate = useNavigate()
 
@@ -223,6 +230,16 @@ export function ProfileRail() {
   // wiring.
   useProfileRailRefreshOnActive()
 
+  // Which profiles carry a per-profile remote override (connection.json
+  // profiles.<name>) — refreshed whenever the profile list changes so the
+  // rail's "remote" badge tracks create/rename/override edits.
+  const profileNames = profiles.map(profile => profile.name)
+  const profileNamesKey = profileNames.join('\u0000')
+
+  useEffect(() => {
+    void refreshProfileRemoteOverrides(profileNamesKey ? profileNamesKey.split('\u0000') : [])
+  }, [profileNamesKey])
+
   // Open the create dialog when the `profile.create` hotkey fires (the dialog
   // state lives here, so the global keybind bumps a request atom we watch).
   const createRequest = useStore($profileCreateRequest)
@@ -305,11 +322,13 @@ export function ProfileRail() {
                       color={resolveProfileColor(profile.name, colors)}
                       key={profile.name}
                       label={profileLabel(profile)}
+                      onConnectRemote={() => openRemoteOverrideDialog(profile.name)}
                       onDelete={() => setPendingDelete(profile)}
                       onEditSoul={() => setPendingSoul(profile.name)}
                       onRecolor={color => setProfileColor(profile.name, color)}
                       onRename={() => setPendingRename(profile)}
                       onSelect={() => selectProfile(profile.name)}
+                      remoteHost={remoteOverrides[normalizeProfileKey(profile.name)]?.host ?? null}
                     />
                   ))}
                 </div>
@@ -368,6 +387,8 @@ export function ProfileRail() {
       />
 
       <EditSoulDialog onClose={() => setPendingSoul(null)} profileName={pendingSoul} />
+
+      <ProfileRemoteOverrideDialog profileNames={profileNames} />
     </div>
   )
 }
@@ -618,7 +639,11 @@ interface ProfileSquareProps {
   onRecolor: (color: null | string) => void
   onRename: () => void
   onEditSoul: () => void
+  onConnectRemote: () => void
   onDelete: () => void
+  // hostname[:port] of this profile's remote override, or null when the
+  // profile runs locally. Drives the "remote" badge on the square.
+  remoteHost: null | string
 }
 
 // Hold this long without moving (a drag would have started first) to open the
@@ -636,11 +661,13 @@ function ProfileSquare({
   active,
   color,
   label,
+  onConnectRemote,
   onDelete,
   onEditSoul,
   onRecolor,
   onRename,
-  onSelect
+  onSelect,
+  remoteHost
 }: ProfileSquareProps) {
   const { t } = useI18n()
   const p = t.profiles
@@ -693,7 +720,7 @@ function ProfileSquare({
                 <TooltipTrigger asChild>
                   <button
                     className={cn(
-                      'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                      'relative grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
                       active ? 'opacity-100' : 'opacity-55',
                       isDragging && 'z-10 cursor-grabbing opacity-100'
                     )}
@@ -710,7 +737,7 @@ function ProfileSquare({
                     type="button"
                     {...attributes}
                     {...listeners}
-                    aria-label={label}
+                    aria-label={remoteHost ? `${label} — ${p.remoteOverride.badge(remoteHost)}` : label}
                     aria-pressed={active}
                     // Hold-to-recolor rides alongside the dnd pointer listener (call
                     // it first so drag tracking still arms), then a timer opens the
@@ -748,11 +775,23 @@ function ProfileSquare({
                     onPointerUp={clearPress}
                   >
                     {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                    {/* The "remote" badge: a tiny globe pinned to the corner of an
+                        overridden profile's square, so which profiles leave this
+                        machine is visible at a glance (#91349). */}
+                    {remoteHost && (
+                      <span
+                        aria-hidden="true"
+                        className="absolute -right-0.5 -top-0.5 grid size-2 place-items-center rounded-full bg-(--ui-panel-background)"
+                        data-slot="profile-remote-badge"
+                      >
+                        <Codicon name="globe" size="0.5rem" />
+                      </span>
+                    )}
                   </button>
                 </TooltipTrigger>
               </ContextMenuTrigger>
             </PopoverAnchor>
-            <TooltipContent>{label}</TooltipContent>
+            <TooltipContent>{remoteHost ? `${label} · ${p.remoteOverride.badge(remoteHost)}` : label}</TooltipContent>
           </Tooltip>
         </TooltipProvider>
 
@@ -782,6 +821,10 @@ function ProfileSquare({
           <ContextMenuItem onSelect={() => void runExportProfileFlow(label)}>
             <Codicon name="package" size="0.875rem" />
             <span>{p.exportProfile}</span>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={onConnectRemote}>
+            <Codicon name="globe" size="0.875rem" />
+            <span>{remoteHost ? p.remoteOverride.badge(remoteHost) : p.remoteOverride.menuItem}</span>
           </ContextMenuItem>
           <ContextMenuItem
             className="text-destructive focus:text-destructive"

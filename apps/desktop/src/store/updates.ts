@@ -587,6 +587,27 @@ function completedAfterRestart(
   return !!actionId && status.lines.some(line => line === `=== hermes-update completed ${actionId} ===`)
 }
 
+/** Whether the durable update receipt attached to the status proves the
+ *  outcome of THIS apply (#91277 bullet 3). Only a finished receipt whose
+ *  run started at-or-after we kicked the update off counts — an older
+ *  receipt describes a previous update, and a still-running one proves
+ *  nothing yet. The 60s slack absorbs client/backend clock skew. */
+function receiptProvesOutcome(status: Awaited<ReturnType<typeof getActionStatus>>, applyStartedAtMs: number): boolean {
+  const receipt = status.receipt
+
+  if (!receipt || !receipt.finished_at || !receipt.started_at) {
+    return false
+  }
+
+  if (receipt.outcome !== 'success' && receipt.outcome !== 'partial' && receipt.outcome !== 'failed') {
+    return false
+  }
+
+  const startedMs = Date.parse(receipt.started_at)
+
+  return Number.isFinite(startedMs) && startedMs >= applyStartedAtMs - 60_000
+}
+
 function legacyBackendReachedTarget(
   status: BackendUpdateCheckResponse,
   targetSha: string | undefined,
@@ -623,6 +644,7 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       : undefined
 
     const started = await updateHermes()
+    const applyStartedAtMs = Date.now()
 
     if (!started.ok) {
       const message = (started as { message?: string }).message || translateNow('updates.applyStatus.notAvailable')
@@ -684,6 +706,14 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 
       if (last.exit_code === 0 || (last.exit_code === null && completedAfterRestart(last, started.action_id))) {
         return finishBackendApply(true)
+      }
+
+      // #91277 bullet 3: the backend now attaches the durable update
+      // receipt to the status. A receipt whose run STARTED after we kicked
+      // this update off is authoritative — read its outcome instead of
+      // inferring from log markers or timing out across the restart gap.
+      if (last.exit_code === null && receiptProvesOutcome(last, applyStartedAtMs)) {
+        return finishBackendApply(last.receipt!.outcome === 'success')
       }
 
       if (!started.action_id && last.exit_code === null) {

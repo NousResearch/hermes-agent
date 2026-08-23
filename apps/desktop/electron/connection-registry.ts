@@ -35,6 +35,7 @@ import {
   normalizeSshConfig,
   normAuthMode
 } from './connection-config'
+import { matchingConnectionId, type StoredRoute } from './connection-route-identity'
 
 export const REGISTRY_VERSION = 2
 
@@ -183,24 +184,61 @@ export interface RegistryLocalRoute {
   poolKey: string
 }
 
+export interface ResolvedConnectionSshDescriptor {
+  host?: string
+  keyPath?: string
+  port?: number
+  remoteHermesPath?: string
+  remoteProfile?: string
+  user?: string
+}
+
 export interface ResolvedConnectionDescriptor {
+  authMode?: unknown
   baseUrl?: string
+  /** Property presence means this descriptor claims registry qualification.
+   * Invalid or retired claims fail closed; only descriptors with no such
+   * property may enter the legacy compatibility resolver. */
+  connectionId?: unknown
+  headers?: Record<string, unknown>
   mode?: 'local' | 'remote'
+  org?: unknown
   remoteHost?: string
   remoteKind?: 'cloud' | 'ssh' | 'url'
+  ssh?: ResolvedConnectionSshDescriptor
+  token?: unknown
 }
 
 /**
  * Recover registry identity for a descriptor resolved through the legacy v1
- * profile path. Registry-scoped routes already carry `connectionId`; this
- * bridge keeps migrated per-profile remotes truthful until v1 is retired.
+ * profile path. Registry-scoped routes already carry `connectionId`; that
+ * exact identity is authoritative only while it names a current registry
+ * entry. Only genuinely unqualified descriptors may use compatibility
+ * inference, which keeps migrated per-profile remotes truthful until v1 is
+ * retired without letting malformed qualification fall through to a weaker
+ * endpoint-shaped identity.
  */
 export function resolvedConnectionId(
   registry: ConnectionRegistry,
   descriptor: ResolvedConnectionDescriptor
 ): null | string {
+  if (Object.prototype.hasOwnProperty.call(descriptor, 'connectionId')) {
+    const explicitConnectionId = descriptor.connectionId
+
+    // Presence is authoritative even when the value is unusable. Never turn
+    // a malformed, blank, unknown, or retired registry claim into permission
+    // to infer a different source from mutable endpoint metadata.
+    if (typeof explicitConnectionId !== 'string' || !explicitConnectionId.trim()) {
+      return null
+    }
+
+    return registry.connections.some(connection => connection.id === explicitConnectionId) ? explicitConnectionId : null
+  }
+
   if (descriptor.mode === 'local') {
-    return registry.connections.find(connection => connection.kind === 'local')?.id ?? null
+    const localConnections = registry.connections.filter(connection => connection.kind === 'local')
+
+    return localConnections.length === 1 ? localConnections[0].id : null
   }
 
   if (descriptor.mode !== 'remote') {
@@ -208,52 +246,109 @@ export function resolvedConnectionId(
   }
 
   if (descriptor.remoteKind === 'ssh') {
-    const remoteHost = String(descriptor.remoteHost || '')
-      .trim()
-      .toLowerCase()
+    if (Object.prototype.hasOwnProperty.call(descriptor, 'ssh')) {
+      if (!descriptor.ssh || typeof descriptor.ssh !== 'object') {
+        return null
+      }
 
-    if (!remoteHost) {
+      return matchingConnectionId(registry, { ...descriptor.ssh, kind: 'ssh' }, 'unique') ?? null
+    }
+
+    // Old descriptors expose only user@host after the tunnel has discarded
+    // port/key/path/profile. That weak shape is compatible only when exactly
+    // one registered SSH source even shares the target, and the defaulted
+    // route still satisfies the canonical #88922 full-envelope matcher.
+    const ssh = normalizeSshConfig({ mode: 'ssh', host: descriptor.remoteHost })
+
+    if (!ssh) {
       return null
     }
 
-    return (
-      registry.connections.find(connection => {
-        if (connection.kind !== 'ssh') {
-          return false
-        }
+    const target = normalizedSshTarget(ssh)
 
-        const host = String(connection.host || '')
-          .trim()
-          .toLowerCase()
-
-        const target = connection.user ? `${String(connection.user).trim().toLowerCase()}@${host}` : host
-
-        return target === remoteHost
-      })?.id ?? null
+    const coarseMatches = registry.connections.filter(
+      connection => connection.kind === 'ssh' && normalizedSshTarget(connection) === target
     )
+
+    if (!target || coarseMatches.length !== 1) {
+      return null
+    }
+
+    return matchingConnectionId(registry, { kind: 'ssh', ...ssh }, 'unique') ?? null
   }
 
-  let baseUrl = ''
+  const kind = descriptor.remoteKind === 'cloud' ? 'cloud' : descriptor.remoteKind === 'url' ? 'remote' : null
+
+  if (!kind) {
+    return null
+  }
+
+  let url = ''
 
   try {
-    baseUrl = normalizeRemoteBaseUrl(descriptor.baseUrl)
+    url = normalizeRemoteBaseUrl(descriptor.baseUrl)
   } catch {
     return null
   }
 
-  return (
-    registry.connections.find(connection => {
-      if (connection.kind !== 'cloud' && connection.kind !== 'remote') {
+  const authMode = normAuthMode(descriptor.authMode)
+
+  const route: StoredRoute = {
+    authMode,
+    headers: descriptor.headers,
+    kind,
+    org: descriptor.org,
+    token: descriptor.token,
+    url
+  }
+
+  const hasExactEnvelope =
+    Object.prototype.hasOwnProperty.call(descriptor, 'authMode') &&
+    Object.prototype.hasOwnProperty.call(descriptor, 'headers') &&
+    (authMode === 'oauth' || Object.prototype.hasOwnProperty.call(descriptor, 'token')) &&
+    (kind === 'remote' || Object.prototype.hasOwnProperty.call(descriptor, 'org'))
+
+  if (!hasExactEnvelope) {
+    // A URL alone cannot choose among legal registrations that differ by auth,
+    // headers, Cloud organization, or account. Require one coarse candidate
+    // before the same full-envelope matcher is allowed to accept the legacy
+    // defaults; otherwise zero/multiple candidates fail closed.
+    const coarseMatches = registry.connections.filter(connection => {
+      if (connection.kind !== kind) {
         return false
       }
 
       try {
-        return normalizeRemoteBaseUrl(connection.url) === baseUrl
+        return normalizeRemoteBaseUrl(connection.url) === url
       } catch {
         return false
       }
-    })?.id ?? null
-  )
+    })
+
+    if (coarseMatches.length !== 1) {
+      return null
+    }
+  }
+
+  return matchingConnectionId(registry, route, 'unique') ?? null
+}
+
+function normalizedSshTarget(route: { host?: unknown; port?: unknown; user?: unknown }): null | string {
+  const ssh = normalizeSshConfig({ ...route, mode: 'ssh' })
+
+  if (!ssh) {
+    return null
+  }
+
+  const host = String(ssh.host || '')
+    .trim()
+    .toLowerCase()
+
+  const user = String(ssh.user || '')
+    .trim()
+    .toLowerCase()
+
+  return user ? `${user}@${host}` : host
 }
 
 /**
@@ -333,6 +428,8 @@ export interface RosterAgent {
   connectionKind: ConnectionKind
   connectionLabel: string
   profile: string
+  /** Backend profile when the registry route maps the Desktop profile name. */
+  targetProfile?: string
   /** Bare profile name, or `<profile>-<label-slug>` when the profile name
    * exists on more than one registered source (the @name-device rule). */
   handle: string
@@ -486,6 +583,7 @@ export function buildAgentRoster(
       connectionKind: connection.kind,
       connectionLabel: connection.label,
       profile,
+      targetProfile: connection.remoteProfile || profile,
       handle: agentHandle(profile, connection.label, (counts.get(profile) || 0) > 1)
     })
   }

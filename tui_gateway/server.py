@@ -35,6 +35,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
+from agent.compaction_display import project_compaction_message_for_display
 from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
@@ -274,6 +275,14 @@ _LONG_HANDLERS = frozenset(
         "profiles.get_asset",
         "profiles.list",
         "profiles.set_asset",
+        # Bot-relay RPCs: roster.sync/outbox.drain/reply are cheap file I/O,
+        # but bot_relay.deliver runs a FULL one-turn agent conversation
+        # (subprocess, up to 600s) — all four stay off the WS reader thread
+        # so a slow relay delivery can never block prompt.submit.
+        "bot_relay.roster.sync",
+        "bot_relay.outbox.drain",
+        "bot_relay.deliver",
+        "bot_relay.reply",
         # image.generate is a multi-second remote API round-trip.
         "image.generate",
         "projects.discover_repos",
@@ -1469,6 +1478,18 @@ def _transfer_db_to_agent(agent, db) -> bool:
         return False
     try:
         if getattr(agent, "_session_db", None) is not db:
+            return False
+        # Defense in depth (#91610): the shared launch handle must never
+        # transfer. Identity alone passes for it — a launch-profile agent IS
+        # holding that handle — and ownership would make session.close() tear
+        # down the process-wide database every other session shares. Refuse it
+        # explicitly even if a caller invokes the transfer incorrectly; the
+        # caller's own `owns_db` gate is the first line of defense.
+        if db is _get_db():
+            logger.warning(
+                "Refused transfer of the shared launch SessionDB to a session "
+                "agent — the caller's owns_db gate should have prevented this."
+            )
             return False
         agent._owns_session_db = True
         return True
@@ -3432,6 +3453,8 @@ def _set_session_context(
         # it instead of falling back to the gateway launch dir.
         resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
         source = _resolve_session_platform()
+        browser_control_principal = ""
+        browser_control_transport_family = ""
         # Derive the live conversation id so terminal/execute_code subprocesses
         # can read HERMES_SESSION_ID. Without this, set_session_vars leaves the
         # session-id contextvar as "" (explicitly empty), and the subprocess-env
@@ -3449,11 +3472,22 @@ def _set_session_context(
                     session_id = (
                         getattr(sess.get("agent"), "session_id", None) or session_key
                     )
+                    transport = sess.get("transport")
+                    identity = getattr(transport, "auth_identity", None)
+                    if _methods_browser_control._is_authenticated_identity(identity):
+                        browser_control_principal = (
+                            _methods_browser_control._principal_digest(identity)
+                        )
+                        browser_control_transport_family = (
+                            _methods_browser_control._CLOUD_TRANSPORT_FAMILY
+                        )
                     break
         return set_session_vars(
             session_key=session_key,
             session_id=session_id,
             source=source,
+            browser_control_principal=browser_control_principal,
+            browser_control_transport_family=browser_control_transport_family,
             cwd=resolved,
             ui_session_id=ui_session_id,
             cron_session="",
@@ -7673,6 +7707,9 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
     for m in history:
         if not isinstance(m, dict):
             continue
+        m = project_compaction_message_for_display(m)
+        if m is None:
+            continue
         role = m.get("role")
         if role not in {"user", "assistant", "tool", "system"}:
             continue
@@ -7885,7 +7922,9 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
-def _fail_inflight_turn(session: dict, error: Any) -> None:
+def _fail_inflight_turn(
+    session: dict, error: Any, error_surface: Optional[dict] = None
+) -> None:
     """Mark the in-flight turn terminal-error but keep it replayable.
 
     Normal completion clears ``inflight_turn`` because the response is now in
@@ -7909,6 +7948,13 @@ def _fail_inflight_turn(session: dict, error: Any) -> None:
     turn["error"] = message or "turn failed"
     turn["status"] = "error"
     turn["recoverable"] = True
+    if error_surface:
+        # Structured {layer, code, retryable} descriptor — replayed to
+        # resuming clients via the resume snapshot so a reconnect renders the
+        # same layered error card the live frame carried.
+        turn["error_surface"] = dict(error_surface)
+    else:
+        turn.pop("error_surface", None)
     turn["streaming"] = False
     turn["updated_at"] = now
     session["inflight_turn"] = turn
@@ -8468,10 +8514,15 @@ def _inflight_snapshot(session: dict) -> dict | None:
         snapshot["error"] = error
         snapshot["status"] = str(turn.get("status") or "error")
         snapshot["recoverable"] = bool(turn.get("recoverable"))
+        surface = turn.get("error_surface")
+        if isinstance(surface, dict) and surface:
+            snapshot["error_surface"] = surface
     return snapshot
 
 
-def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
+def _emit_terminal_turn_error(
+    sid: str, session: dict, error: Any, error_surface: Optional[dict] = None
+) -> None:
     """Close a failed turn with a terminal ``message.complete`` frame.
 
     Emits the same ``status: "error"`` frame shape the returned-error path in
@@ -8479,15 +8530,33 @@ def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
     uniform), and retains the failed turn via ``_fail_inflight_turn`` so a
     client that missed this frame (disconnect window) can recover it from
     ``session.resume``'s ``inflight`` payload.
+
+    ``error_surface`` lets callers that already know the failing layer (e.g.
+    agent-init failures = local runtime) pass it explicitly; exception
+    callers leave it None and the classifier derives it here.
     """
+    agent = session.get("agent")
+    # Classify the failure into a {layer, code, retryable} descriptor so the
+    # desktop can say "Provider error" / "Gateway error" with matching
+    # recovery actions instead of a generic toast. Never raises (advisory).
+    if error_surface is None and isinstance(error, BaseException):
+        try:
+            from agent.error_surface import build_error_surface_from_exception
+
+            error_surface = build_error_surface_from_exception(
+                error,
+                provider=str(getattr(agent, "provider", "") or ""),
+                model=str(getattr(agent, "model", "") or ""),
+            )
+        except Exception:
+            error_surface = None
     with session["history_lock"]:
-        _fail_inflight_turn(session, error)
+        _fail_inflight_turn(session, error, error_surface=error_surface)
         turn = session.get("inflight_turn") or {}
         message = str(turn.get("error") or "turn failed")
         partial = str(turn.get("assistant") or "")
         cols = int(session.get("cols", 80))
     text = partial or f"Error: {message}"
-    agent = session.get("agent")
     payload = {
         "text": text,
         "usage": _get_usage(agent) if agent is not None else {},
@@ -8495,6 +8564,8 @@ def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
         "error": message,
         "recoverable": True,
     }
+    if error_surface:
+        payload["error_surface"] = error_surface
     if partial:
         payload["partial"] = True
     try:
@@ -11216,6 +11287,25 @@ def _run_prompt_submit(
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
+            # Structured layer descriptor ({layer, code, retryable}) so
+            # clients can name WHICH part of the stack failed (provider /
+            # streaming / auth / gateway / …) and offer layer-appropriate
+            # recovery actions instead of sniffing the message string.
+            # Advisory: older clients ignore it, absence falls back to
+            # string heuristics on newer clients. Computed before the retain
+            # below so resume replay carries the same descriptor.
+            _error_surface = None
+            if status == "error":
+                try:
+                    from agent.error_surface import build_error_surface_from_result
+
+                    _error_surface = build_error_surface_from_result(
+                        result,
+                        provider=str(getattr(agent, "provider", "") or ""),
+                        model=str(getattr(agent, "model", "") or ""),
+                    )
+                except Exception:
+                    _error_surface = None
             with session["history_lock"]:
                 if status == "error":
                     # Returned-error result (provider 4xx, budget, etc.): retain
@@ -11225,6 +11315,7 @@ def _run_prompt_submit(
                     _fail_inflight_turn(
                         session,
                         result.get("error") if isinstance(result, dict) else raw,
+                        error_surface=_error_surface,
                     )
                     turn_error_retained = True
                 else:
@@ -11234,6 +11325,8 @@ def _run_prompt_submit(
                     (result.get("error") if isinstance(result, dict) else "") or raw
                 )
                 payload["recoverable"] = True
+                if _error_surface:
+                    payload["error_surface"] = _error_surface
             _retire_turn_marker(session, marker_key)
             _emit("message.complete", sid, payload)
 
@@ -13889,14 +13982,17 @@ def _format_live_usage_output(session: dict) -> str:
 def _format_live_history_output(session: dict) -> str:
     with session["history_lock"]:
         history = list(session.get("history", []))
-    db = _get_db()
-    if db is not None and session.get("session_key"):
-        try:
-            history = db.get_messages_as_conversation(
-                session["session_key"], include_ancestors=True, include_row_ids=True
-            )
-        except Exception:
-            pass
+    # _session_db, not _get_db(): a profile session's transcript lives in its
+    # own profile's state.db, and this read is scoped by session id — through
+    # the launch handle it comes back empty and /history renders nothing.
+    with _session_db(session) as db:
+        if db is not None and session.get("session_key"):
+            try:
+                history = db.get_messages_as_conversation(
+                    session["session_key"], include_ancestors=True, include_row_ids=True
+                )
+            except Exception:
+                pass
     messages = _history_to_messages(history)
     if not messages:
         return "No conversation history yet."
@@ -13929,16 +14025,18 @@ def _format_live_prompt_output(session: dict) -> str:
 
 def _format_live_context_output(session: dict) -> str:
     messages = []
-    db = _get_db()
-    if db is not None and session.get("session_key"):
-        try:
-            messages = _history_to_messages(
-                db.get_messages_as_conversation(
-                    session["session_key"], include_ancestors=True, include_row_ids=True
+    # Same session-scoped read as /history — resolve it against the db that
+    # owns this session's rows, not the launch profile's handle.
+    with _session_db(session) as db:
+        if db is not None and session.get("session_key"):
+            try:
+                messages = _history_to_messages(
+                    db.get_messages_as_conversation(
+                        session["session_key"], include_ancestors=True, include_row_ids=True
+                    )
                 )
-            )
-        except Exception:
-            messages = []
+            except Exception:
+                messages = []
     if not messages:
         with session["history_lock"]:
             messages = _history_to_messages(list(session.get("history", [])))
@@ -15612,6 +15710,8 @@ def _mcp_summarize_server(name, cfg):  # noqa: E402
 # Imported at the end of this module so every global the handlers close
 # over already exists; register() rebinds them onto this namespace.
 from . import (  # noqa: E402
+    methods_browser_control as _methods_browser_control,
+    methods_bot_relay as _methods_bot_relay,
     methods_complete as _methods_complete,
     methods_config as _methods_config,
     methods_images as _methods_images,
@@ -15622,6 +15722,7 @@ from . import (  # noqa: E402
 )
 
 for _m in (
+    _methods_browser_control,
     _methods_session,
     _methods_prompt,
     _methods_config,
@@ -15629,6 +15730,7 @@ for _m in (
     _methods_tools,
     _methods_profiles,
     _methods_images,
+    _methods_bot_relay,
 ):
     _m.register(sys.modules[__name__])
 del _m

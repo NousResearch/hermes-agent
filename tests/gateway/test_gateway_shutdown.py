@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -145,6 +146,26 @@ async def test_gateway_stop_settles_completion_batch_before_adapter_disconnect()
     assert await asyncio.wait_for(pending, timeout=1.0) is False
     assert call_order == ["batch_cancel_start", "batch_cancel_done", "disconnect"]
     assert runner._completion_notification_batch_flush_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_planned_service_exit_issues_no_restart_of_its_own(monkeypatch):
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    runner._restart_requested = True
+    runner._restart_via_service = True
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail(
+            f"planned service exit must not spawn a restart helper: {args}"
+        ),
+    )
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
 
 
 @pytest.mark.asyncio

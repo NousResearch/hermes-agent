@@ -22,7 +22,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Iterator, Mapping, Sequence
 
 
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -33,6 +33,24 @@ _DEFAULT_UPSTREAM_BRANCH = "main"
 
 class AresLocalRuntimeError(RuntimeError):
     """Raised when the explicit local-runtime contract is not satisfied."""
+
+
+def _desktop_launch_arguments(
+    executable: Path,
+    *,
+    platform: str,
+    environment: Mapping[str, str],
+) -> list[str]:
+    """Prefer XWayland only when Electron would otherwise hide its window."""
+
+    arguments = [str(executable)]
+    is_wayland = environment.get("XDG_SESSION_TYPE", "").strip().lower() == "wayland" or bool(
+        environment.get("WAYLAND_DISPLAY", "").strip()
+    )
+    has_xwayland = bool(environment.get("DISPLAY", "").strip())
+    if platform == "linux" and is_wayland and has_xwayland:
+        arguments.append("--ozone-platform=x11")
+    return arguments
 
 
 @dataclass(frozen=True)
@@ -279,12 +297,22 @@ class AresLocalRuntime:
             self._atomic_link(self.paths.previous_link, current[1])
         self._atomic_link(self.paths.current_link, target)
 
-    @staticmethod
-    def _build_environment(source: Path) -> dict[str, str]:
+    def _build_environment(self, source: Path) -> dict[str, str]:
+        """Return a clean build environment scoped to this Ares installation."""
+
         environment = os.environ.copy()
         for name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT"):
             environment.pop(name, None)
+        # Candidate builds must be profile-isolated and must resolve the Node
+        # version that the Ares runtime owns, never an ambient system Node.
+        environment["HERMES_HOME"] = str(self.paths.agent_home)
         environment["UV_PROJECT_ENVIRONMENT"] = str(source / ".venv")
+        node_dirs = [self.paths.agent_home / "node" / "bin", self.paths.agent_home / "node"]
+        existing_path = environment.get("PATH", "")
+        environment["PATH"] = os.pathsep.join(
+            [str(directory) for directory in node_dirs if directory.is_dir()]
+            + ([existing_path] if existing_path else [])
+        )
         return environment
 
     def _agent_environment(self) -> dict[str, str]:
@@ -292,7 +320,23 @@ class AresLocalRuntime:
 
         environment = os.environ.copy()
         environment["HERMES_HOME"] = str(self.paths.agent_home)
+        environment["ARES_MANAGED_RUNTIME"] = "1"
         return environment
+
+    def _managed_npm(self) -> str | None:
+        """Resolve npm from Ares's private managed Node installation."""
+
+        from hermes_constants import (
+            bootstrap_hermes_managed_node,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        token = set_hermes_home_override(self.paths.agent_home)
+        try:
+            return bootstrap_hermes_managed_node()
+        finally:
+            reset_hermes_home_override(token)
 
     def _seed_agent_home(self, source_home: Path) -> bool:
         """Create an independent Ares home from the useful Hermes settings once.
@@ -383,12 +427,17 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
         )
 
     def _build_runtime(self, source: Path, *, desktop: bool) -> None:
-        uv = shutil.which("uv")
-        if uv is None:
+        from hermes_cli.managed_uv import ensure_uv
+
+        uv = ensure_uv()
+        if not uv:
             raise AresLocalRuntimeError("`uv` is required to build the stable Ares runtime")
         environment = self._build_environment(source)
         self._run(
-            [uv, "sync", "--locked", "--extra", "all", "--no-dev", "--no-editable"],
+            # Current Hermes intentionally rejects wheel/non-editable installs.
+            # Ares retains immutable source beside the venv, so its supported
+            # editable install remains release-safe and reproducible.
+            [str(uv), "sync", "--locked", "--extra", "all", "--no-dev"],
             cwd=source,
             env=environment,
         )
@@ -401,11 +450,16 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             env=self._build_environment(source),
         )
         if desktop:
-            npm = shutil.which("npm")
+            npm = self._managed_npm()
             if npm is None:
-                raise AresLocalRuntimeError("`npm` is required to build the Ares Desktop application")
-            self._run([npm, "ci"], cwd=source, env=self._build_environment(source))
-            self._run([npm, "run", "pack"], cwd=source / "apps" / "desktop", env=self._build_environment(source))
+                raise AresLocalRuntimeError(
+                    "Ares could not provision its managed npm for the Desktop build"
+                )
+            desktop_environment = self._build_environment(source)
+            # The Desktop build requires workspace dev dependencies even when
+            # the Python runtime deliberately excludes development extras.
+            self._run([npm, "ci", "--include=dev"], cwd=source, env=desktop_environment)
+            self._run([npm, "run", "pack"], cwd=source / "apps" / "desktop", env=desktop_environment)
             if self._desktop_binary(source) is None:
                 raise AresLocalRuntimeError("Ares Desktop build completed without an executable")
 
@@ -618,6 +672,7 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             "  printf '%s\\n' 'Ares runtime is not installed; run ares setup from the Ares checkout.' >&2\n"
             "  exit 1\n"
             "fi\n"
+            "cd \"$runtime_root\"\n"
             "exec \"$python\" -m ares_runtime.local_runtime \"$@\"\n"
         )
         temporary = self.paths.launcher_path.with_name(f".{self.paths.launcher_path.name}.{uuid.uuid4().hex}")
@@ -745,6 +800,12 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
                 except Exception:
                     if old_active is not None:
                         self._atomic_link(self.paths.current_link, old_active[1])
+                        # The launcher resolves through `current`; regenerate it
+                        # before reviving the prior gateway, otherwise a failed
+                        # candidate can strand rollback on its new wrapper.
+                        self._install_launcher()
+                        self._systemctl("enable", "ares-gateway.service", required=False)
+                        self._systemctl("restart", "ares-gateway.service", required=False)
                     else:
                         self.paths.current_link.unlink(missing_ok=True)
                     raise
@@ -996,7 +1057,12 @@ else:
         environment["HERMES_DESKTOP_HERMES_ROOT"] = str(source)
         environment["HERMES_DESKTOP_PYTHON"] = str(self._python_for(source))
         environment["HERMES_DESKTOP_APP_NAME"] = "Ares"
-        subprocess.Popen([str(executable)], cwd=source, env=environment, start_new_session=True)
+        subprocess.Popen(
+            _desktop_launch_arguments(executable, platform=sys.platform, environment=environment),
+            cwd=source,
+            env=environment,
+            start_new_session=True,
+        )
         print(f"Ares Desktop started from stable release {revision}")
 
 

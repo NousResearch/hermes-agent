@@ -418,13 +418,25 @@ def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dic
         from pathlib import Path
 
         from tools.vision_tools import (
+            _EMBED_MAX_DIMENSION,
+            _EMBED_TARGET_BYTES,
             _resize_image_for_vision,
             _should_use_native_vision_fast_path,
         )
 
         if not _should_use_native_vision_fast_path():
             return None
-        data_url = _resize_image_for_vision(Path(path))
+        # History-reuse cap (#92699): this data URL bakes into the tool
+        # result and is re-sent on every later turn — same policy as the
+        # vision_analyze / browser_vision native embeds (256 KB / 1568 px,
+        # JPEG quality ladder instead of PNG dimension-halving).
+        data_url = _resize_image_for_vision(
+            Path(path),
+            mime_type="image/png",
+            max_base64_bytes=_EMBED_TARGET_BYTES,
+            max_dimension=_EMBED_MAX_DIMENSION,
+            force_jpeg=True,
+        )
         text = json.dumps(result, ensure_ascii=False)
         return {
             "_multimodal": True,

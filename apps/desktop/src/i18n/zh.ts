@@ -3020,6 +3020,7 @@ export const zh: Translations = {
       gateway: '网关',
       gatewayReady: '就绪',
       gatewayNeedsSetup: '需要设置',
+      gatewayUnavailable: '推理不可用',
       gatewayChecking: '检查中',
       gatewayConnecting: '连接中',
       gatewayOffline: '离线',

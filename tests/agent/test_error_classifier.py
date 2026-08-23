@@ -273,6 +273,35 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_fallback is True
 
+    def test_anthropic_429_usage_limit_without_reset_is_billing(self):
+        e = MockAPIError(
+            "usage limit reached",
+            status_code=429,
+            body={
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "Your account has reached its usage limit.",
+                }
+            },
+        )
+
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-5")
+
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_anthropic_429_usage_limit_with_reset_stays_rate_limit(self):
+        e = MockAPIError(
+            "usage limit reached; resets at 2026-08-24T10:00:00Z",
+            status_code=429,
+        )
+
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-5")
+
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     def test_alibaba_rate_increased_too_quickly(self):
         """Alibaba/DashScope returns a unique throttling message.
 

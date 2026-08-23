@@ -2435,6 +2435,7 @@ export const zhHant = defineLocale({
       gateway: '閘道',
       gatewayReady: '就緒',
       gatewayNeedsSetup: '需要設定',
+      gatewayUnavailable: '推論不可用',
       gatewayChecking: '檢查中',
       gatewayConnecting: '連線中',
       gatewayOffline: '離線',

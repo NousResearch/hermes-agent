@@ -2421,6 +2421,7 @@ export interface Translations {
       gateway: string
       gatewayReady: string
       gatewayNeedsSetup: string
+      gatewayUnavailable: string
       gatewayChecking: string
       gatewayConnecting: string
       gatewayOffline: string

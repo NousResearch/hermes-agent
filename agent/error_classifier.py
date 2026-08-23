@@ -1338,6 +1338,26 @@ def _classify_by_status(
                 should_fallback=True,
                 error_context=ctx,
             )
+        # Account/subscription usage exhaustion is a quota wall, not a
+        # request-rate throttle. Anthropic returns this as 429, so the generic
+        # branch below used to retry it and Desktop rendered a provider error
+        # instead of the billing/quota recovery. Preserve periodic quotas when
+        # the response supplies an explicit reset/retry signal.
+        has_usage_limit = (
+            error_code.lower() == "usage_limit_reached"
+            or "usage limit" in error_msg
+            or "usage_limit_reached" in error_msg
+        )
+        has_transient_signal = any(
+            p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS
+        )
+        if has_usage_limit and not has_transient_signal:
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,

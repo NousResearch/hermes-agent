@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { evaluateRuntimeReadiness, fetchRuntimeReadinessSignals, interpretRuntimeReadiness } from './runtime-readiness'
+import {
+  evaluateRuntimeReadiness,
+  fetchRuntimeReadinessSignals,
+  interpretRuntimeReadiness,
+  runtimeReadinessDisplay
+} from './runtime-readiness'
 
 describe('interpretRuntimeReadiness', () => {
   it('prefers runtime_check when both signals exist', () => {
@@ -107,5 +112,29 @@ describe('evaluateRuntimeReadiness', () => {
     const result = await evaluateRuntimeReadiness(requestGateway, { requestedProvider: 'nous' })
 
     expect(result.ready).toBe(true)
+  })
+})
+
+describe('runtimeReadinessDisplay', () => {
+  it('does not call configured credentials setup when runtime resolution fails', () => {
+    expect(
+      runtimeReadinessDisplay({
+        checksDisagree: true,
+        ready: false,
+        reason: 'Anthropic cannot serve the selected model.',
+        source: 'runtime_check'
+      })
+    ).toBe('unavailable')
+  })
+
+  it('keeps needs-setup for an authoritative unconfigured result', () => {
+    expect(
+      runtimeReadinessDisplay({
+        checksDisagree: false,
+        ready: false,
+        reason: 'No provider configured.',
+        source: 'setup_status'
+      })
+    ).toBe('needs_setup')
   })
 })

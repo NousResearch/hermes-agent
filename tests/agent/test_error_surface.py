@@ -179,6 +179,25 @@ def test_exception_with_status_code_routes_through_classifier():
     assert surface["code"] in ("rate_limit", "upstream_rate_limit")
 
 
+def test_anthropic_usage_limit_routes_to_billing_recovery():
+    class FakeAPIError(Exception):
+        status_code = 429
+
+    surface = build_error_surface_from_exception(
+        FakeAPIError("usage limit reached"),
+        provider="anthropic",
+        model="claude-opus-5",
+    )
+
+    assert surface == {
+        "layer": LAYER_BILLING,
+        "code": "billing",
+        "retryable": False,
+        "provider": "anthropic",
+        "model": "claude-opus-5",
+    }
+
+
 def test_exception_auth_status_routes_to_auth_layer():
     class FakeAuthError(Exception):
         status_code = 401

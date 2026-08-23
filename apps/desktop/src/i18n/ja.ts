@@ -2523,6 +2523,7 @@ export const ja = defineLocale({
       gateway: 'ゲートウェイ',
       gatewayReady: '準備完了',
       gatewayNeedsSetup: '設定が必要',
+      gatewayUnavailable: '推論を利用できません',
       gatewayChecking: '確認中',
       gatewayConnecting: '接続中',
       gatewayOffline: 'オフライン',

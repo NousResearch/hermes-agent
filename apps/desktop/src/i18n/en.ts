@@ -2855,6 +2855,7 @@ export const en: Translations = {
       gateway: 'Gateway',
       gatewayReady: 'ready',
       gatewayNeedsSetup: 'needs setup',
+      gatewayUnavailable: 'inference unavailable',
       gatewayChecking: 'checking',
       gatewayConnecting: 'connecting',
       gatewayOffline: 'offline',

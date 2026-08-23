@@ -33,6 +33,7 @@ from gateway.platforms.api_server import (
     _IdempotencyCache,
     _derive_chat_session_id,
     _hermes_version,
+    _parse_search_rewrite_content,
     _redact_api_error_text,
     _request_agent_overrides,
     check_api_server_requirements,
@@ -309,6 +310,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/api/model/options", adapter._handle_model_options)
+    app.router.add_post("/v1/search/rewrite", adapter._handle_search_rewrite)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
@@ -761,6 +763,165 @@ class TestHealthDetailedEndpoint:
         with patch("tools.process_registry.process_registry.completion_queue.qsize", return_value=0), \
              patch("tools.async_delegation.active_count", return_value=0):
             assert adapter._readiness_work_counts() == (4, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# /v1/search/rewrite endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestSearchRewriteEndpoint:
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            ('```json\n{"query":"RAFT occlusion"}\n```', "RAFT occlusion"),
+            ("query: Hindsight memory", "Hindsight memory"),
+            ('{"query":"  C-MAY   Ethiopia  "}', "C-MAY Ethiopia"),
+        ],
+    )
+    def test_parses_inexpensive_model_output_defensively(self, content, expected):
+        assert _parse_search_rewrite_content(content) == expected
+
+    @pytest.mark.asyncio
+    async def test_requires_api_auth(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/v1/search/rewrite",
+                json={"query": "electric tuk tuk", "provider": "nvidia", "model": "openai/gpt-oss-20b"},
+            )
+        assert response.status == 401
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("payload", "field"),
+        [
+            ({"provider": "nvidia", "model": "openai/gpt-oss-20b"}, "query"),
+            ({"query": "find this", "model": "openai/gpt-oss-20b"}, "provider"),
+            ({"query": "find this", "provider": "nvidia"}, "model"),
+        ],
+    )
+    async def test_rejects_missing_required_fields(self, adapter, payload, field):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/v1/search/rewrite", json=payload)
+            body = await response.json()
+        assert response.status == 400
+        assert field in body["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_runs_a_bare_provider_completion_and_returns_usage(self, adapter):
+        completion = types.SimpleNamespace(
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(
+                        content='{"query":"tuk-tuk électrique Ethiopie"}'
+                    )
+                )
+            ],
+            usage=types.SimpleNamespace(
+                prompt_tokens=91,
+                completion_tokens=12,
+                total_tokens=103,
+            ),
+        )
+        create = AsyncMock(return_value=completion)
+        client_mock = types.SimpleNamespace(
+            chat=types.SimpleNamespace(
+                completions=types.SimpleNamespace(create=create)
+            )
+        )
+        app = _create_app(adapter)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(client_mock, "openai/gpt-oss-20b"),
+        ) as resolve:
+            async with TestClient(TestServer(app)) as client:
+                response = await client.post(
+                    "/v1/search/rewrite",
+                    json={
+                        "query": "retrouve le projet de tuk-tuk en Ethiopie",
+                        "provider": "nvidia",
+                        "model": "openai/gpt-oss-20b",
+                    },
+                )
+                body = await response.json()
+
+        assert response.status == 200
+        assert body == {
+            "query": "tuk-tuk électrique Ethiopie",
+            "provider": "nvidia",
+            "model": "openai/gpt-oss-20b",
+            "usage": {
+                "input_tokens": 91,
+                "output_tokens": 12,
+                "total_tokens": 103,
+            },
+        }
+        resolve.assert_called_once_with(
+            "nvidia",
+            model="openai/gpt-oss-20b",
+            async_mode=True,
+        )
+        kwargs = create.call_args.kwargs
+        assert kwargs["model"] == "openai/gpt-oss-20b"
+        assert kwargs["temperature"] == 0
+        assert kwargs["max_tokens"] == 400
+        assert kwargs["extra_body"] == {"reasoning_effort": "low"}
+        assert len(kwargs["messages"]) == 2
+        assert "tools" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_rejects_unavailable_provider_without_fallback(self, adapter):
+        app = _create_app(adapter)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                response = await client.post(
+                    "/v1/search/rewrite",
+                    json={"query": "find it", "provider": "missing", "model": "cheap-model"},
+                )
+                body = await response.json()
+        assert response.status == 400
+        assert body["error"]["code"] == "search_rewrite_provider_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_redacts_provider_errors(self, adapter):
+        secret = "sk-proj-super-secret-value-1234567890"
+        create = AsyncMock(side_effect=RuntimeError(f"provider rejected {secret}"))
+        client_mock = types.SimpleNamespace(
+            chat=types.SimpleNamespace(
+                completions=types.SimpleNamespace(create=create)
+            )
+        )
+        app = _create_app(adapter)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(client_mock, "model"),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                response = await client.post(
+                    "/v1/search/rewrite",
+                    json={"query": "find it", "provider": "provider", "model": "model"},
+                )
+                raw_body = await response.text()
+        assert response.status == 502
+        assert secret not in raw_body
+        assert "search_rewrite_failed" in raw_body
+
+    @pytest.mark.asyncio
+    async def test_rejects_overlong_query_before_provider_call(self, adapter):
+        app = _create_app(adapter)
+        with patch("agent.auxiliary_client.resolve_provider_client") as resolve:
+            async with TestClient(TestServer(app)) as client:
+                response = await client.post(
+                    "/v1/search/rewrite",
+                    json={"query": "x" * 501, "provider": "nvidia", "model": "model"},
+                )
+        assert response.status == 400
+        resolve.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

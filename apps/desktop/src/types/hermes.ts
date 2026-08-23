@@ -1224,12 +1224,28 @@ export interface ActionResponse {
   already_running?: boolean
 }
 
+export interface UpdateReceiptSummary {
+  outcome: 'running' | 'success' | 'partial' | 'failed' | 'refused' | string
+  started_at: string | null
+  finished_at: string | null
+  pre_sha: string | null
+  post_sha: string | null
+  post_version: string | null
+  fleet_states: string[]
+}
+
 export interface ActionStatusResponse {
   exit_code: number | null
   lines: string[]
   name: string
   pid: number | null
   running: boolean
+  /** hermes-update only: durable completion identity recovered from update.log. */
+  action_id?: string
+  /** hermes-update only: summary of the durable update receipt (#91277 bullet 3) —
+   *  the authoritative outcome record, present even when the dashboard
+   *  restarted itself mid-action and lost its in-memory registries. */
+  receipt?: UpdateReceiptSummary
 }
 
 export interface BackendUpdateCommit {

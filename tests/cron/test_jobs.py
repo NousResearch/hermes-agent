@@ -1189,6 +1189,50 @@ class TestLateEnvRepointScopesStore:
 # UTF-8 BOM on jobs.json (Windows Notepad / PowerShell 5.1)
 # =========================================================================
 
+class TestJobsJsonShapes:
+    def test_load_jobs_normalizes_id_keyed_jobs_mapping(self, tmp_cron_dir):
+        import json
+        from cron.jobs import JOBS_FILE
+
+        job_a = {
+            "id": "cron1234abcd",
+            "name": "daily briefing",
+            "enabled": True,
+            "prompt": "Summarize overnight incidents",
+            "schedule": {"kind": "interval", "minutes": 1440, "display": "every 24h"},
+        }
+        job_b = {
+            "id": "cron5678efgh",
+            "name": "disabled cleanup",
+            "enabled": False,
+            "prompt": "Clean stale scratch files",
+            "schedule": {"kind": "once", "run_at": "2030-01-15T14:00:00+00:00"},
+        }
+        payload = {
+            "jobs": {
+                job_a["id"]: job_a,
+                job_b["id"]: job_b,
+            },
+            "updated_at": "2026-08-23T00:00:00+00:00",
+        }
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = load_jobs()
+        assert isinstance(loaded, list)
+        assert {job["id"] for job in loaded} == {job_a["id"], job_b["id"]}
+
+        listed = {job["id"]: job for job in list_jobs(include_disabled=True)}
+        assert set(listed) == {job_a["id"], job_b["id"]}
+        for expected in (job_a, job_b):
+            actual = listed[expected["id"]]
+            assert actual["id"] == expected["id"]
+            assert actual["name"] == expected["name"]
+            assert actual["prompt"] == expected["prompt"]
+            assert actual["schedule"] == expected["schedule"]
+            assert actual["enabled"] is expected["enabled"]
+
+
 class TestJobsJsonUtf8Bom:
     """jobs.json readers must accept a leading UTF-8 BOM.
 

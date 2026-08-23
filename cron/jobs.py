@@ -1342,6 +1342,8 @@ def load_jobs() -> List[Dict[str, Any]]:
     # down the whole cron subsystem.
     if isinstance(data, dict):
         jobs = data.get("jobs", [])
+        if isinstance(jobs, dict):
+            jobs = list(jobs.values())
         if _strict_retry and jobs:
             # Hit control-character corruption — rewrite with proper escaping.
             save_jobs(jobs)

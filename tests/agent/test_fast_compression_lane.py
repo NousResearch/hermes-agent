@@ -219,6 +219,39 @@ def test_uncertified_effective_primary_route_does_not_receive_fast_cap():
     assert "reasoning" not in request.get("extra_body", {})
 
 
+def test_boolean_cap_drift_stays_uncapped_and_preserves_existing_reasoning():
+    from agent.auxiliary_client import call_llm
+
+    config = {
+        "provider": "ollama",
+        "model": "qwen3:8b",
+        "reasoning_effort": "none",
+        "max_output_tokens": True,
+    }
+    client = MagicMock()
+    client.base_url = "http://127.0.0.1:11434/v1"
+    response = object()
+    client.chat.completions.create.return_value = response
+
+    with (
+        patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
+        patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "server-selected-model"),
+        ),
+        patch("agent.auxiliary_client._validate_llm_response", return_value=response),
+    ):
+        assert call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summary request"}],
+        ) is response
+
+    request = client.chat.completions.create.call_args.kwargs
+    assert "max_tokens" not in request
+    assert "max_completion_tokens" not in request
+    assert request["extra_body"]["reasoning"] == {"enabled": False}
+
+
 def test_bedrock_converse_ttfp_waits_for_the_nonstreaming_response():
     from agent.auxiliary_client import BedrockAuxiliaryClient, call_llm
 

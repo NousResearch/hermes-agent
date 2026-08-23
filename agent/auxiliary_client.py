@@ -8515,8 +8515,9 @@ def _compression_config_claims_fast_lane(config: Dict[str, Any]) -> bool:
     provider = str(config.get("provider") or "").strip().lower()
     model = str(config.get("model") or "").strip().lower()
     effort = str(config.get("reasoning_effort") or "").strip().lower()
+    raw_cap = config.get("max_output_tokens")
     try:
-        cap = int(config.get("max_output_tokens") or 0)
+        cap = 0 if isinstance(raw_cap, bool) else int(raw_cap or 0)
     except (TypeError, ValueError):
         cap = 0
     return (

@@ -673,8 +673,12 @@ DANGEROUS_PATTERNS = [
     # `git restore <pathspec>` and `git checkout -- <pathspec>` overwrite the working tree like `reset --hard`; the reflog
     # holds commits, not unstaged edits. restore is safe only with `--staged` alone (index only); checkout discards only
     # with a pathspec (`--`, a bare `.`) or `-f`/`--force`, so `git checkout <branch>` / `-b` stay ungated.
-    (r'\bgit\s+restore\b(?:(?![^\n;|&`]*--staged)|(?=[^\n;|&`]*--worktree))', "git restore (discards uncommitted working-tree changes)"),
-    (r'\bgit\s+checkout\b(?:[^\n;|&`]*?\s--\s|[^\n;|&`]*?\s--force\b|[^\n;|&`]*?\s-f\b|\s+\.(?:\s|$))', "git checkout with pathspec or --force (discards uncommitted working-tree changes)"),
+    # `--staged`/`--worktree` must be their own tokens, or a path containing the text (`./--staged`) suppresses the prompt.
+    # `--pathspec-from-file` and `--ours`/`--theirs` overwrite without spelling `--`; `git switch --discard-changes`
+    # (`-f`/`--force`) is where an agent steered off `checkout -f` goes next.
+    (r'\bgit\s+restore\b(?:(?![^\n;|&`]*\s--staged\b)|(?=[^\n;|&`]*\s--worktree\b))', "git restore (discards uncommitted working-tree changes)"),
+    (r'\bgit\s+checkout\b(?:[^\n;|&`]*?\s--\s|[^\n;|&`]*?\s(?:--force|--pathspec-from-file|--ours|--theirs)\b|[^\n;|&`]*?\s-f\b|\s+\.(?:\s|$))', "git checkout with pathspec or --force (discards uncommitted working-tree changes)"),
+    (r'\bgit\s+switch\b[^\n;|&`]*?\s(?:--discard-changes|--force|-f)\b', "git switch --discard-changes (discards uncommitted working-tree changes)"),
     # chmod +x then immediate run: the script content may hold dangerous commands individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
     # Sudo stdin/askpass/shell/list-privs flags. The agent has no TTY, so sudo invocations that succeed

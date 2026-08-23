@@ -503,7 +503,8 @@ const GROUP_ACTIVITY_LABELS = {
   failed: 'hit an error',
   cancelled: 'turn interrupted by a newer message',
   settled: 'turn settled',
-  delivered: 'delivered a late reply'
+  delivered: 'delivered a late reply',
+  held: 'is held (stopped by you) — @mention it or say resume to release'
 }
 
 const GROUP_ACTIVITY_GLYPHS = {
@@ -515,7 +516,8 @@ const GROUP_ACTIVITY_GLYPHS = {
   failed: 'error',
   cancelled: 'close',
   settled: 'check-all',
-  delivered: 'mail-read'
+  delivered: 'mail-read',
+  held: 'debug-pause'
 }
 
 /** Text tone for an activity row: quiet for pass/cancel/settle, accent for
@@ -6313,6 +6315,10 @@ function updateGroupChat(group, mutate, { sync = true } = {}) {
         // with the pre-turn message baseline. Survives reloads so finished
         // work is still harvested after a window restart.
         stranded: room.stranded || {},
+        // #93129: sticky per-member stop holds. Watermarks persist, so holds
+        // must too — otherwise a window restart silently releases a bot the
+        // user explicitly stopped.
+        holds: room.holds || {},
         // Source-qualified member descriptors keep the room whole when the
         // active connection changes and today's local members become remote.
         members: Array.isArray(room.members) ? room.members : [],
@@ -7097,6 +7103,80 @@ function isDuplicateGroupAppend(lastEntry, from, text, thread, now = Date.now())
 
 // --- end room-turn decision helpers ---
 
+// --- member-hold helpers (#93129) — pure, vm-sliced by tests ---
+
+/** #93129: classify a USER room message's effect on member holds. Only user
+ *  sends ever reach this (bot replies are appended by the round loop, never
+ *  through sendToGroupChat), so a bot saying "stopped working on it" can
+ *  never set a hold. Conservative on purpose: any standalone stop/halt/pause
+ *  word next to a mention holds those members — "don't stop @x" therefore
+ *  also holds, which errs toward the bot staying quiet until re-addressed
+ *  (a wrongly-held bot is one mention away from release; a wrongly-running
+ *  one keeps doing work it was told to stop). A non-stop direct mention
+ *  releases the mentioned members — the user addressing a bot directly
+ *  overrides its hold. */
+function classifyGroupHoldDirective(text, mentionedKeys, everyone) {
+  const value = String(text || '')
+  const mentioned = [...(mentionedKeys || [])]
+  const stop = /\b(stop|halt|pause)\b/i.test(value)
+  const resume = /\b(resume|continue|go|proceed)\b/i.test(value)
+
+  if (stop) {
+    return { hold: mentioned, release: [], releaseAll: false }
+  }
+
+  if (resume) {
+    return { hold: [], release: mentioned, releaseAll: Boolean(everyone) }
+  }
+
+  return { hold: [], release: mentioned, releaseAll: false }
+}
+
+/** #93129: next holds map after one user message. Holds are keyed by
+ *  memberKey at ROOM scope (not thread scope): every main-composer send
+ *  mints a NEW thread, so a thread-scoped hold would never block the next
+ *  send's turns and the stop would not stick. Returns the same object when
+ *  nothing changed. */
+function applyGroupHoldDirective(holds, mentions, text, stamp) {
+  const prior = holds && typeof holds === 'object' ? holds : {}
+  const action = classifyGroupHoldDirective(text, mentions?.mentioned || [], Boolean(mentions?.everyone))
+
+  if (action.releaseAll) {
+    return Object.keys(prior).length ? {} : prior
+  }
+
+  let next = prior
+
+  for (const key of action.hold) {
+    if (next === prior) {
+      next = { ...prior }
+    }
+
+    next[key] = { at: stamp?.at || Date.now(), byMessageId: stamp?.byMessageId || null, thread: stamp?.thread || null }
+  }
+
+  for (const key of action.release) {
+    if (Object.prototype.hasOwnProperty.call(next, key)) {
+      if (next === prior) {
+        next = { ...prior }
+      }
+
+      delete next[key]
+    }
+  }
+
+  return next
+}
+
+/** #93129: a held member's skip must consume its delta exactly once —
+ *  advance the watermark past the current log so the same entries never
+ *  re-trigger the skip. Null = nothing to consume (no write, no spin). */
+function heldMemberWatermarkAdvance(seen, logLength) {
+  return logLength > (seen || 0) ? logLength : null
+}
+
+// --- end member-hold helpers ---
+
 /** Drive one bounded round-robin turn for ONE THREAD. Serial — one member at
  *  a time. A newer user send bumps the room epoch; this loop notices at the
  *  next member boundary, bails, and the newest send's own loop takes over.
@@ -7156,6 +7236,35 @@ async function runGroupChatRounds(group, members, thread) {
         const delta = room.log.slice(seen).filter(e => groupThreadOf(e) === thread)
 
         if (!delta.length) {
+          continue
+        }
+
+        // #93129: a member the user told to stop is HELD — no turn until an
+        // explicit release (resume / @all resume / a direct non-stop
+        // mention). Consume the delta exactly once (watermark past the
+        // current log) so the same entries never re-trigger this skip, and
+        // surface WHY the bot is silent in the activity feed the first time.
+        const heldEntry = (room.holds || {})[memberKey]
+
+        if (heldEntry) {
+          const advance = heldMemberWatermarkAdvance(seen, room.log.length)
+
+          updateGroupChat(group, r => {
+            if (advance !== null) {
+              r.watermarks[markKey] = advance
+            }
+
+            if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
+              r.holds = { ...r.holds, [memberKey]: { ...r.holds[memberKey], noted: true } }
+            }
+
+            return r
+          })
+
+          if (!heldEntry.noted) {
+            recordGroupActivity(group, { kind: 'held', member: member.name, thread })
+          }
+
           continue
         }
 
@@ -7320,13 +7429,23 @@ function sendToGroupChat(group, members, text, thread, images) {
     room.members = durableGroupChatMembers(members)
     return room
   })
-  appendGroupChatEntry(group, { kind: 'user', name: 'You' }, trimmed, target, attached)
+  const sent = appendGroupChatEntry(group, { kind: 'user', name: 'You' }, trimmed, target, attached)
 
   const wasRunning = ($groupChats.get()[group] || {}).running === true
 
   updateGroupChat(group, room => {
     room.epoch = (room.epoch || 0) + 1
     room.running = true
+    // #93129: user text is the ONLY input that changes member holds. An
+    // explicit "stop @member" sets a sticky hold; "@member resume" (or
+    // @all resume, or any direct non-stop mention of the held member)
+    // releases it. Bot replies never flow through this function.
+    room.holds = applyGroupHoldDirective(
+      room.holds,
+      parseGroupChatMentions(trimmed, members),
+      trimmed,
+      { at: sent?.at, byMessageId: sent?.id, thread: target }
+    )
     return room
   })
 
@@ -14177,6 +14296,10 @@ export default {
                   sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
                   sessionOwners: room.sessionOwners && typeof room.sessionOwners === 'object' ? room.sessionOwners : {},
                   stranded: room.stranded && typeof room.stranded === 'object' ? room.stranded : {},
+                  // #93129: rehydrate sticky stop holds with the same shape
+                  // guard as the other maps — a held bot stays held across
+                  // window restarts until explicitly released.
+                  holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,

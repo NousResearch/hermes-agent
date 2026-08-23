@@ -871,6 +871,7 @@ catalog: CatalogTranslations
         overlayShapes: Record<'ellipse' | 'strip', string>
         overlayColor: string
         overlayColorTheme: string
+        overlayFeather: string
         overlayWidth: string
         overlayHeight: string
         overlayPosition: string

@@ -1087,6 +1087,7 @@ export const en: Translations = {
         overlayShapes: { ellipse: 'Ellipse', strip: 'Vertical strip' },
         overlayColor: 'Mask color',
         overlayColorTheme: 'Follow theme',
+        overlayFeather: 'Mask feather',
         overlayWidth: 'Mask width',
         overlayHeight: 'Mask height',
         overlayPosition: 'Mask position',

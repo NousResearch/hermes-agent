@@ -277,21 +277,40 @@ def read_latest_receipt() -> Optional[dict[str, Any]]:
 # Fleet version verification
 # ---------------------------------------------------------------------------
 
-def collect_fleet_versions() -> list[dict[str, Any]]:
+def collect_fleet_versions(
+    *, pre_restart_pids: Optional[list[int]] = None
+) -> list[dict[str, Any]]:
     """Snapshot every profile's gateway code identity vs. the current tree.
 
     Returns one entry per profile home that has a ``gateway_state.json``
-    with a live PID::
+    describing a gateway that is live — or that SHOULD be live::
 
         {"profile": str, "pid": int, "code_sha": str|None,
-         "code_version": str|None, "state": "current"|"stale"|"unknown"}
+         "code_version": str|None, "state": "current"|"stale"|"unknown"|"down"}
 
     ``stale``   — gateway stamped a code_sha that differs from the updated
                   checkout's HEAD (it is still serving pre-update modules).
     ``unknown`` — gateway predates the code-identity stamp (started before
                   this feature landed) or identity could not be resolved.
+    ``down``    — the gateway was ALIVE when this update started
+                  (``pre_restart_pids``), its runtime status still says
+                  running, but the PID is dead and no successor rewrote the
+                  record: the restart phase stopped it and nothing came
+                  back. Without this row a killed-and-never-replaced gateway
+                  produced NO entry at all and the matrix passed silently
+                  (Phase-1 verification gap, #88848/#74973 class).
+
+    Rollout safety: ``down`` requires membership in ``pre_restart_pids`` —
+    a stale state file from a long-dead gateway (machine reboot, manual
+    kill weeks ago) must NOT fail every future update. Callers that don't
+    have a pre-restart snapshot (``None``/empty) get the historical
+    behavior: dead PIDs are skipped.
     Never raises; a probe failure yields an empty list.
     """
+    # Runtime-status states that mean "this record does not describe a
+    # gateway that should be running now" — no down row for these.
+    _NOT_EXPECTED_STATES = {"stopped", "startup_failed"}
+    _pre_restart = {int(p) for p in (pre_restart_pids or []) if isinstance(p, int)}
     results: list[dict[str, Any]] = []
     try:
         from hermes_cli.build_info import get_code_identity
@@ -364,6 +383,28 @@ def collect_fleet_versions() -> list[dict[str, Any]]:
             except (TypeError, ValueError):
                 continue
             if not _pid_exists(pid):
+                # Dead PID: a DOWN row only when this exact pid was alive at
+                # update start AND the record still claims a running state —
+                # "the restart phase stopped it and nothing came back."
+                # Everything else (clean stop, startup failure, stale record
+                # from a long-dead gateway) keeps the historical no-row
+                # behavior so the feature's rollout can't false-positive.
+                gw_state = record.get("gateway_state")
+                if (
+                    pid in _pre_restart
+                    and isinstance(gw_state, str)
+                    and gw_state
+                    and gw_state not in _NOT_EXPECTED_STATES
+                ):
+                    results.append(
+                        {
+                            "profile": profile,
+                            "pid": pid,
+                            "code_sha": None,
+                            "code_version": record.get("code_version"),
+                            "state": "down",
+                        }
+                    )
                 continue
             code_sha = record.get("code_sha")
             if not code_sha or not expected_sha:
@@ -390,15 +431,17 @@ def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
     """Print the post-update fleet version matrix.
 
     Returns True when at least one gateway is provably stale (still
-    serving pre-update code), so the caller can escalate. ``unknown``
-    entries are reported but do NOT fail the update: gateways started
-    before the code-identity stamp existed have no sha to compare, and
-    failing on them would turn this feature's own rollout into a
+    serving pre-update code) OR provably down (was running, killed by the
+    restart phase, nothing came back), so the caller can escalate.
+    ``unknown`` entries are reported but do NOT fail the update: gateways
+    started before the code-identity stamp existed have no sha to compare,
+    and failing on them would turn this feature's own rollout into a
     false-positive storm.
     """
     if not fleet:
         return False
     any_stale = False
+    any_down = False
     print()
     print("Fleet version check:")
     for entry in fleet:
@@ -412,14 +455,23 @@ def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
         elif state == "stale":
             any_stale = True
             print(f"  ✗ {profile} (pid {pid}) @ {short} — STALE (pre-update code)")
+        elif state == "down":
+            any_down = True
+            print(
+                f"  ✗ {profile} — DOWN (gateway was running before the "
+                f"update; pid {pid} is gone and nothing replaced it)"
+            )
         else:
             print(
                 f"  ? {profile} (pid {pid}) — version unknown "
                 "(gateway predates version stamping; restart to enable)"
             )
-    if any_stale:
+    if any_stale or any_down:
         print()
-        print("  ⚠ Stale gateways keep serving pre-update code until restarted:")
+        if any_stale:
+            print("  ⚠ Stale gateways keep serving pre-update code until restarted:")
+        if any_down:
+            print("  ⚠ Down gateways stopped serving messaging entirely — restart them:")
         print("      hermes gateway restart                # active profile")
         print("      hermes -p <profile> gateway restart   # named profile")
-    return any_stale
+    return any_stale or any_down

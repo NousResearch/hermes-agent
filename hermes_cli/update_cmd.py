@@ -8129,7 +8129,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # were running) — nothing to settle.
             if restarted_services or killed_pids:
                 _time.sleep(2.0)
-            _fleet_snapshot = collect_fleet_versions()
+            # Pass the pre-restart PID snapshot so a gateway the restart
+            # phase stopped WITHOUT a verified replacement shows as a DOWN
+            # row (exit 1) instead of silently producing no row at all.
+            _fleet_snapshot = collect_fleet_versions(
+                pre_restart_pids=_pre_restart_gateway_pids
+            )
             if print_fleet_version_matrix(_fleet_snapshot):
                 gateway_fleet_restart_incomplete = True
         except Exception as _fleet_exc:

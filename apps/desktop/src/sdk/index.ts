@@ -755,6 +755,18 @@ export const host = {
 
     if (ownerRoute) {
       setSessionOwnerHint(storedSessionId, ownerRoute)
+    } else if (profile) {
+      // Local plugin-owned opens (Bot Mode without a cross-connection route)
+      // still carry an explicit owning profile. Record it: hidden sessions
+      // (canonical Bot Chats) have no sidebar row, so this hint is the only
+      // durable owner record the session-RPC router can consult — without it
+      // a later prompt.submit resolves to the ACTIVE profile's backend and
+      // 4001s while the bot's own backend is healthy.
+      const connectionId = activeGatewayConnectionId()
+
+      if (connectionId) {
+        setSessionOwnerHint(storedSessionId, { connectionId, mode: 'local', profile: targetProfile })
+      }
     }
 
     // Bounded to 2 attempts (never more): a cold profile backend can lose the

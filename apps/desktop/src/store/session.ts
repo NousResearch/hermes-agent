@@ -135,6 +135,21 @@ export function rememberedSessionProfile(
     if (owner) {
       return owner
     }
+
+    // Hidden / plugin-owned sessions (Bot Mode's canonical "Bot Chat" rows are
+    // born hidden) never appear in the sidebar list, so the row lookup above
+    // misses for them whenever the aggregator page replaced the in-memory row.
+    // Falling straight through to the ACTIVE profile routed their session RPCs
+    // at a backend that never owned the session — prompt.submit answered 4001
+    // "session not found" while the bot's own backend sat healthy. The open
+    // path records an owner hint for exactly this; honor it before falling
+    // back to the active profile.
+    const hint = getSessionOwnerHint(sessionId)
+    const hinted = (hint?.targetProfile ?? hint?.profile)?.trim()
+
+    if (hinted) {
+      return hinted
+    }
   }
 
   return (activeProfile ?? '').trim() || 'default'

@@ -82,6 +82,7 @@ vi.mock('@/store/gateway', async () => {
 
   return {
     $gateway: atom(null),
+    activeGatewayConnectionId: vi.fn(() => 'local'),
     ensureGatewayForAgent: vi.fn(),
     openGatewayForAgent: vi.fn(),
     openGatewayForProfile: vi.fn(),

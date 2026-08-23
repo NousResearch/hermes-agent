@@ -5140,6 +5140,85 @@ def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
         print("    launchctl kickstart -k gui/$UID/<label>   # macOS (or user/$UID)")
 
 
+def _restart_launchd_gateway_after_update(
+    *, supervision_verify: bool = True
+) -> tuple[list, list]:
+    """Restart the invoking profile's launchd gateway after an update.
+
+    #74973 (salvage #75021 by @jeff-mettel): the restart used to be gated on
+    ``launchctl list <label>`` exiting 0. A *booted-out* job — plist present,
+    definition deregistered from launchd (crashed helper, manual bootout,
+    failed prior update) — fails that check, so the whole branch silently
+    skipped: no restart, no message, ``KeepAlive`` unable to revive a
+    definition launchd no longer knows, and the update still printed
+    "Update complete!". ``launchctl list`` is also session-scoped and can
+    exit non-zero while the job is alive in its gui/user domain, so it is
+    not a reliable classifier at all.
+
+    The fix performs NO list-based classification: when the plist exists,
+    ``launchd_restart()`` always runs — it drains a live PID, kickstarts
+    with ``-k``, and owns the bootout/bootstrap/kickstart ladder for the
+    genuinely unloaded state. Every failure path is loud and names the
+    manual recovery command.
+
+    Returns ``(restarted_labels, failed_labels)``. With
+    ``supervision_verify`` (the update path), success additionally requires
+    launchd reporting a fresh supervised PID (#88848 — "the call returned"
+    is not "the gateway is supervised").
+    """
+    from hermes_cli.gateway import (
+        get_launchd_label,
+        get_launchd_plist_path,
+        launchd_restart,
+        wait_for_launchd_gateway_supervision,
+    )
+
+    current_label = get_launchd_label()
+    try:
+        if not get_launchd_plist_path().exists():
+            return [], []  # not a launchd install — nothing to do or warn
+        try:
+            launchd_restart()
+        except subprocess.CalledProcessError as e:
+            stderr = (getattr(e, "stderr", "") or "").strip()
+            print(
+                f"  ⚠ Gateway restart failed: {stderr}\n"
+                "    The gateway may be DOWN on pre-update code. "
+                "Recover manually: hermes gateway restart"
+            )
+            return [], [current_label]
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        # A plist exists, so a gateway is SUPPOSED to be supervised here —
+        # a broken/missing/wedged launchctl is not proof nothing needs
+        # restarting. The old code `pass`ed here (#74973's second silent
+        # variant); count it and tell the operator.
+        print(
+            "  ⚠ Could not restart the gateway "
+            f"({e.__class__.__name__}: {e}).\n"
+            "    Recover manually: hermes gateway restart"
+        )
+        return [], [current_label]
+
+    if not supervision_verify:
+        return [current_label], []
+
+    # launchd_restart() returning is only "restart REQUESTED" — the
+    # self-restart branch hands work to the running gateway, a plist reload
+    # to a detached helper; both asynchronous. A helper that dies before its
+    # first bootstrap (#88848), or a bootstrap that exits 0 without
+    # registering (measured on macOS 26.6.1), otherwise reaches "Update
+    # complete!" with nothing supervising the gateway. Verified
+    # domain-agnostically (a domain locate fails on macOS-26 hosts whose
+    # per-user domains reject service management).
+    if wait_for_launchd_gateway_supervision(label=current_label):
+        return [current_label], []
+    print(
+        f"  ✗ {current_label} restarted but launchd is not supervising it.\n"
+        "    Check logs, then: hermes gateway restart"
+    )
+    return [], [current_label]
+
+
 def _restart_macos_launchd_gateways(
     restarted_services: list,
     failed_or_stale_units: list,
@@ -5175,54 +5254,12 @@ def _restart_macos_launchd_gateways(
     )
 
     # --- Current profile: unchanged single-service path ---------------------
-    # Gate order and predicate mirror the pre-fleet inline block exactly:
-    # plist first (no plist → zero launchctl calls), then the domain-agnostic
-    # `launchctl list` registration check — NOT a domain locate, which fails
-    # on macOS-26 hosts whose per-user domains reject service management
-    # even though launchd_restart() owns that fallback. Gate errors skip
-    # silently (best-effort, as before); only launchd_restart() itself
-    # failing counts toward the incomplete-update warning.
+    _restarted, _failed = _restart_launchd_gateway_after_update(
+        supervision_verify=True
+    )
+    restarted_services.extend(_restarted)
+    failed_or_stale_units.extend(_failed)
     current_label = get_launchd_label()
-    try:
-        if get_launchd_plist_path().exists() and _launchd_service_registered(
-            current_label
-        ):
-            try:
-                launchd_restart()
-            except subprocess.CalledProcessError as e:
-                stderr = (getattr(e, "stderr", "") or "").strip()
-                print(f"  ⚠ Gateway restart failed: {stderr}")
-                failed_or_stale_units.append(current_label)
-            else:
-                # Siblings below are only counted as restarted once launchd
-                # reports a fresh supervised pid; the invoking profile was
-                # counted on "launchd_restart() did not raise" alone. That is
-                # not the same claim: launchd_restart() returns as soon as the
-                # restart has been REQUESTED -- the self-restart branch hands
-                # the work to the running gateway and returns immediately, and
-                # a plist reload is handed to a detached helper. Both are
-                # asynchronous, so a helper that dies before its first
-                # bootstrap (#88848), or a `launchctl bootstrap` that exits 0
-                # without registering (measured on macOS 26.6.1), both reached
-                # "Update complete!" with nothing supervising the gateway.
-                #
-                # Verified domain-agnostically, NOT via
-                # _wait_for_launchd_service_pid: that needs an explicit domain,
-                # and the gate above deliberately avoids a domain locate
-                # because it fails on macOS-26 hosts whose per-user domains
-                # reject service management even though launchd_restart() owns
-                # that fallback.
-                if wait_for_launchd_gateway_supervision(label=current_label):
-                    restarted_services.append(current_label)
-                else:
-                    failed_or_stale_units.append(current_label)
-                    print(
-                        f"  ✗ {current_label} restarted but launchd is not "
-                        "supervising it.\n"
-                        "    Check logs, then: hermes gateway restart"
-                    )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
 
     # --- Sibling profiles ---------------------------------------------------
     for label in launchd_gateway_labels_for_install():

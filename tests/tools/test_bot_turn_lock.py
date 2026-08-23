@@ -250,8 +250,25 @@ def test_relay_deliver_returns_target_busy_error(tmp_path, monkeypatch):
 
     spawned = {}
 
-    def _fake_run(argv, **kwargs):  # pragma: no cover — must not be reached
-        spawned["argv"] = argv
+    # Deterministic spawn detection: sentinel argv from the exact factory the
+    # deliver handler uses. A global subprocess.run patch also intercepts
+    # unrelated gateway-init calls (git rev-parse / ls-remote in CI), so
+    # never fuzzy-match argv — mark the delivery command itself.
+    monkeypatch.setattr(
+        bot_relay, "local_delivery_command", lambda prof, tmp: ["__delivery__", prof]
+    )
+
+    def _fake_run(argv, **kwargs):
+        argv = list(argv or [])
+        if argv and argv[0] == "__delivery__":
+            spawned["argv"] = argv
+
+        class _Done:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Done()
 
     monkeypatch.setattr("subprocess.run", _fake_run)
 

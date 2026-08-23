@@ -295,7 +295,13 @@ def _cmd_pin(args) -> int:
             "(only agent-created skills participate in curation)"
         )
         return 1
-    skill_usage.set_pinned(args.skill, True)
+    if not skill_usage.set_pinned(args.skill, True):
+        print(
+            f"curator: could not pin '{args.skill}' — the skill is not "
+            "curation-eligible (protected built-in or external). "
+            f"`hermes curator status` shows why a skill is unmanaged."
+        )
+        return 1
     print(f"curator: pinned '{args.skill}' (will bypass auto-transitions)")
     return 0
 

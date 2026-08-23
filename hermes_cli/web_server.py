@@ -5147,6 +5147,42 @@ async def transcribe_audio_upload(
     }
 
 
+@app.get("/api/audio/voice-config")
+async def get_client_voice_config(profile: Optional[str] = None):
+    """The active profile's STT/TTS config for CLIENT-DIRECT voice.
+
+    Lets the desktop cut the audio relay hop: mic audio goes straight to the
+    profile's STT provider and reply text is synthesized on the client with
+    the profile's TTS provider — the desktop↔gateway link carries only text.
+    Providers that can only run on this host (local whisper, edge-tts,
+    command/plugin providers) resolve to ``{"mode": "relay"}`` and the
+    desktop keeps using the /api/audio/* relay endpoints.
+
+    Same trust boundary as every profile-scoped route: the caller is an
+    authenticated client that can already drive the agent. Keys in the
+    response are held in client memory only, never persisted client-side.
+    Gate: ``voice.client_direct`` in config.yaml (default true).
+    """
+    from tools.voice_client_config import resolve_client_voice_config
+
+    def _resolve_scoped():
+        # Home-only contextvar scope, same rationale as transcribe above:
+        # resolution reads config/.env only and must not hold the process-
+        # global skills lock across the (cheap, but still I/O) resolution.
+        with _config_profile_scope(profile):
+            return resolve_client_voice_config()
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, _resolve_scoped)
+    except Exception:
+        _log.exception("Client voice-config resolution failed")
+        fallback = {"mode": "relay", "reason": "resolution error"}
+        return {"ok": True, "stt": fallback, "tts": dict(fallback)}
+
+    return {"ok": True, **result}
+
+
 def _elevenlabs_voice_label(voice: Dict[str, Any]) -> str:
     name = str(voice.get("name") or voice.get("voice_id") or "Voice").strip()
     category = str(voice.get("category") or "").strip()

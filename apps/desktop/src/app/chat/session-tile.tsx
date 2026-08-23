@@ -34,6 +34,7 @@ import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
+import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -110,8 +111,18 @@ function buildTileView(storedSessionId: string): SessionView {
 // tiles have no pin/delete affordance, and transcription needs no per-tile state.
 const noop = () => undefined
 
-const tileTranscribeAudio = async (audio: Blob) =>
-  (await transcribeAudio(await blobToDataUrl(audio), audio.type)).transcript
+const tileTranscribeAudio = async (audio: Blob) => {
+  // Client-direct first (profile's own STT provider, no gateway audio hop);
+  // relay when the provider is not client-callable. Same ladder as the main
+  // composer's transcribeVoiceAudio.
+  const direct = await transcribeAudioClientDirect(audio)
+
+  if (direct !== null) {
+    return direct
+  }
+
+  return (await transcribeAudio(await blobToDataUrl(audio), audio.type)).transcript
+}
 
 function TileChat({
   runtimeId,

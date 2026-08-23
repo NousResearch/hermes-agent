@@ -12,6 +12,7 @@ import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { normalize } from '@/lib/text'
+import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { clearClarifyRequest } from '@/store/clarify'
 import {
   $composerAttachments,
@@ -624,6 +625,18 @@ export function usePromptActions({
     async (audio: Blob) => {
       if (!sttEnabled) {
         throw new Error(copy.sttDisabled)
+      }
+
+      // Client-direct first: mic audio goes straight to the profile's STT
+      // provider (config + key fetched from the connected gateway), cutting
+      // the desktop→gateway audio hop. `null` = provider not client-callable
+      // (local whisper, command providers, older backend) → relay unchanged.
+      // Provider REJECTIONS surface — re-running the same request through
+      // the relay would fail identically, just slower.
+      const direct = await transcribeAudioClientDirect(audio)
+
+      if (direct !== null) {
+        return direct
       }
 
       const dataUrl = await blobToDataUrl(audio)

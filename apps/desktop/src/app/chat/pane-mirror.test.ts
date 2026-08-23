@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { contributesToWorkspace } from '@/components/pane-shell/workspace-scope'
 import { registry } from '@/contrib/registry'
 
 import { paneMirror } from './pane-mirror'
@@ -76,5 +77,25 @@ describe('paneMirror workspace scope', () => {
       workspaceMode: undefined,
       workspaceOwnerKey: undefined
     })
+  })
+
+  it('keeps an unscoped Browser tile visible in Bot Mode', () => {
+    const mirror = setup({})
+    mirror.source.set([{ id: 'url:browser' }])
+
+    const pane = mirror.contribution('url:browser')
+
+    expect(contributesToWorkspace(pane, 'sessions')).toBe(true)
+    expect(contributesToWorkspace(pane, 'bots', 'bot:connection-a::default')).toBe(true)
+  })
+
+  it('hides a Sessions-only Browser tile from Bot Mode', () => {
+    const mirror = setup({ workspaceMode: 'sessions' })
+    mirror.source.set([{ id: 'url:browser' }])
+
+    const pane = mirror.contribution('url:browser')
+
+    expect(contributesToWorkspace(pane, 'sessions')).toBe(true)
+    expect(contributesToWorkspace(pane, 'bots', 'bot:connection-a::default')).toBe(false)
   })
 })

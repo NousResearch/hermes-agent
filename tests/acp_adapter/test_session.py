@@ -391,6 +391,21 @@ class TestPersistence:
         assert restored is not None
         assert manager.last_restore_error(sid) is None
 
+    def test_restore_error_registry_is_bounded(self, manager):
+        """The failure registry evicts oldest entries beyond the cap, so
+        long-lived processes with many failed session ids can't grow it
+        without bound; a repeated failure re-ranks that id as newest."""
+        cap = manager._RESTORE_ERRORS_MAX
+        for i in range(cap + 10):
+            manager._record_restore_error(f"sid-{i}", "boom")
+        assert len(manager._restore_errors) == cap
+        assert manager.last_restore_error("sid-9") is None  # oldest evicted
+        assert manager.last_restore_error(f"sid-{cap + 9}") == "boom"
+        # A repeat failure refreshes recency instead of duplicating the entry.
+        manager._record_restore_error("sid-10", "boom again")
+        assert len(manager._restore_errors) == cap
+        assert next(reversed(manager._restore_errors)) == "sid-10"
+
 
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""

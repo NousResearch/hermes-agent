@@ -159,6 +159,11 @@ class SessionManager:
     Sessions are held in-memory for fast access **and** persisted to the shared
     SessionDB so they survive restarts and are searchable via ``session_search``."""
 
+    # Cap on the failed-restore reason registry (see __init__); ~2× the
+    # largest plausible live-session population, far above what any one
+    # editor connection can hold open.
+    _RESTORE_ERRORS_MAX = 128
+
     def __init__(self, agent_factory=None, db=None):
         """``agent_factory``: AIAgent-like factory (tests); default builds a real AIAgent from
         the runtime provider config. ``db``: SessionDB; default lazily opens ``~/.hermes/state.db``."""
@@ -173,6 +178,10 @@ class SessionManager:
         # Fail-loud (robustness): records WHY a recent `_restore` of a session
         # failed (e.g. "No LLM provider configured"), so the server can surface
         # the real reason to the client instead of a generic "session not found".
+        # Bounded (oldest evicted beyond _RESTORE_ERRORS_MAX): entries are
+        # cleared on successful restore or removal, but a session that keeps
+        # failing and is never removed would otherwise pin one string per
+        # session id for process lifetime.
         self._restore_errors: Dict[str, str] = {}
 
     # ---- public API ---------------------------------------------------------
@@ -206,6 +215,14 @@ class SessionManager:
         "session not found". Cleared on a successful restore.
         """
         return self._restore_errors.get(session_id)
+
+    def _record_restore_error(self, session_id: str, reason: str) -> None:
+        """Record *reason* for *session_id*, evicting oldest beyond the cap."""
+        # Re-insert so a repeatedly failing session counts as newest.
+        self._restore_errors.pop(session_id, None)
+        self._restore_errors[session_id] = reason
+        while len(self._restore_errors) > self._RESTORE_ERRORS_MAX:
+            self._restore_errors.pop(next(iter(self._restore_errors)))
 
     def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
         """Deep-copy a session's history into a new session."""
@@ -461,7 +478,7 @@ class SessionManager:
             # Fail loud (robustness): record the real reason so the server can tell the client why the
             # session can't run, instead of returning a bare None that surfaces as "session not found".
             reason = str(exc).strip() or exc.__class__.__name__
-            self._restore_errors[session_id] = reason
+            self._record_restore_error(session_id, reason)
             logger.warning("Failed to recreate agent for ACP session %s: %s", session_id, reason, exc_info=True)
             return None
         # Successful restore — clear any stale failure record.

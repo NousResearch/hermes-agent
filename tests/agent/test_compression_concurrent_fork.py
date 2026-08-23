@@ -36,6 +36,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1188,74 +1189,190 @@ def test_real_lock_api_internal_errors_fail_closed_skips_compression(
 
 
 
-def test_review_fork_disables_compression_to_prevent_stale_parent_fork(tmp_path: Path) -> None:
-    """The background-review fork must set ``compression_enabled = False``
-    so it can never compress the parent it shares a session_id with
-    (issue #38727).
+def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> None:
+    """An oversized review snapshot compacts in memory without mutating the parent.
 
-    The per-session compression lock only serialises a SAME-WINDOW concurrent
-    race. It does NOT stop a stale parent from being compressed again in a
-    LATER turn: if ``review_agent`` had won the race, its new child session is
-    never adopted by the gateway (the fork is single-lifecycle and dies right
-    after one ``run_conversation``), so the foreground path would start the
-    next turn from the stale parent and compress it AGAIN — leaving the same
-    parent with two sibling children.
+    Regression for #93057: the fork historically pinned ``compression_enabled =
+    False`` because it shares the parent's session_id (issue #38727). That
+    left the review's private snapshot unbounded — every follow-up request in
+    the review tool loop replayed the whole snapshot (350k-384k input tokens
+    per request in production). The fix detaches the fork's compressor from
+    the parent's SessionDB/session_id and enables in-memory-only compaction.
 
-    The fix makes the review fork never trigger compression at all. Both
-    compression trigger sites in ``agent/conversation_loop.py`` gate on
-    ``agent.compression_enabled`` BEFORE calling ``_compress_context``:
-      • preflight (``if agent.compression_enabled and len(messages) > ...``)
-      • mid-loop  (``if agent.compression_enabled and _compressor.should_compress(...)``)
-    so a fork with the flag cleared never reaches the rotation path.
-
-    This test pins the contract at the source: ``_run_review_in_thread``
-    must set ``review_agent.compression_enabled = False`` on the fork it
-    builds. It calls the real worker synchronously with
-    ``AIAgent.run_conversation`` patched (so no LLM call happens) and
-    captures the constructed review agent to assert the flag.
+    This test drives the REAL ``_run_review_in_thread`` + ``run_conversation``
+    with a threshold-crossing snapshot and asserts:
+      • compression actually fired (a real threshold crossing, not just
+        construction-time flag state);
+      • the outbound provider request carries the compaction summary and none
+        of the middle snapshot turns;
+      • the fork keeps the parent's session_id (prompt-cache parity) but its
+        agent-level AND compressor-level session bindings are detached;
+      • the parent's durable transcript, session row, and child-session graph
+        are byte-for-byte unchanged after the compaction ran.
     """
     import agent.background_review as br
 
-    captured = {}
-
-    def _fake_run_conversation(self, *_a, **_k):
-        captured["compression_enabled"] = self.compression_enabled
-        captured["session_id"] = self.session_id
-        return {"final_response": "", "messages": []}
-
-    parent_sid = "REVIEW_FORK_FLAG_TEST"
+    parent_sid = "REVIEW_FORK_IN_MEMORY_COMPACTION_93057"
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session(parent_sid, source="discord")
+    db.append_message(parent_sid, role="user", content="durable parent turn")
+    durable_before = db.get_messages(parent_sid)
+    session_row_before = tuple(
+        db._conn.execute(
+            "SELECT id, parent_session_id, ended_at, end_reason FROM sessions WHERE id = ?",
+            (parent_sid,),
+        ).fetchone()
+    )
     parent = _build_agent_with_db(db, parent_sid)
+    parent._cached_system_prompt = "stable parent prompt"
 
-    # The worker does a local ``from run_agent import AIAgent``; patching
-    # the class method covers that import path.
-    from run_agent import AIAgent
+    snapshot = [
+        {
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": f"review turn {i} " + "x" * 200,
+        }
+        for i in range(24)
+    ]
 
-    with patch.object(AIAgent, "run_conversation", _fake_run_conversation):
-        br._run_review_in_thread(
-            parent,
-            [{"role": "user", "content": "hi"}],
-            "review this conversation",
+    captured = {}
+
+    def _final_response():
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    index=0,
+                    message=SimpleNamespace(
+                        role="assistant",
+                        content="review complete",
+                        tool_calls=None,
+                        reasoning_content=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100, completion_tokens=10, total_tokens=110
+            ),
+            model="test/model",
         )
 
-    assert captured, (
-        "_run_review_in_thread never reached run_conversation — the spawn path "
-        "changed; update this test to capture the review AIAgent."
-    )
-    assert captured["session_id"] == parent_sid, (
-        "Review fork should inherit the parent's session_id (shared id is the "
-        "whole reason compression must be disabled)."
-    )
-    assert captured["compression_enabled"] is False, (
-        "FIX REGRESSION: background-review fork did NOT disable compression. "
-        "It shares the parent's session_id, so an enabled fork can rotate the "
-        "parent into an orphan child (issue #38727). The trigger gates in "
-        "conversation_loop.py only short-circuit when compression_enabled is "
-        "False — this flag MUST be cleared on the review fork."
-    )
-    db.close()
+    # The worker does a local ``from run_agent import AIAgent``; patching the
+    # class method covers that import path.
+    from run_agent import AIAgent
+
+    real_run_conversation = AIAgent.run_conversation
+
+    def _run_threshold_crossing_review(self, *args, **kwargs):
+        captured["compression_enabled"] = self.compression_enabled
+        captured["compression_in_place"] = self.compression_in_place
+        captured["session_id"] = self.session_id
+        captured["session_db"] = self._session_db
+        captured["input_budget"] = getattr(
+            self, "_review_input_token_budget", "missing"
+        )
+        captured["compressor_session_db"] = getattr(
+            self.context_compressor, "_session_db", "missing"
+        )
+        captured["compressor_session_id"] = getattr(
+            self.context_compressor, "_session_id", "missing"
+        )
+        # Stub the fork's compressor so compaction output is deterministic
+        # and no aux-LLM call happens; the trigger/commit paths stay real.
+        self.context_compressor.threshold_tokens = 1
+        self.context_compressor.protect_first_n = 1
+        self.context_compressor.protect_last_n = 1
+        self.context_compressor.compress = MagicMock(
+            return_value=[
+                {"role": "user", "content": "[CONTEXT COMPACTION] review summary"},
+                {"role": "assistant", "content": "summary acknowledged"},
+            ]
+        )
+        self.context_compressor.should_compress = MagicMock(
+            side_effect=lambda _tokens: True
+        )
+        self.context_compressor.should_compress_info = MagicMock(
+            return_value=(True, "over threshold")
+        )
+        self.context_compressor.should_compress_preflight = MagicMock(
+            return_value=True
+        )
+        self.context_compressor.should_defer_preflight_to_real_usage = MagicMock(
+            return_value=False
+        )
+        self.context_compressor.get_active_compression_failure_cooldown = MagicMock(
+            return_value=None
+        )
+        self.context_compressor.select_context = MagicMock(return_value=None)
+        self._compression_feasibility_checked = True
+        self.client = MagicMock()
+        self.client.chat.completions.create.side_effect = [_final_response()]
+        self._disable_streaming = True
+        self._use_prompt_caching = False
+
+        result = real_run_conversation(self, *args, **kwargs)
+        captured["compression_calls"] = self.context_compressor.compress.call_count
+        captured["create_calls"] = self.client.chat.completions.create.call_count
+        last_call = self.client.chat.completions.create.call_args
+        captured["outbound"] = (
+            last_call.kwargs.get("messages") if last_call else None
+        )
+        return result
+
+    try:
+        with patch.object(AIAgent, "run_conversation", _run_threshold_crossing_review):
+            br._run_review_in_thread(parent, snapshot, "review this conversation")
+
+        assert captured["compression_calls"] >= 1, (
+            "FIX REGRESSION: the review fork did not compact its oversized "
+            "snapshot. compression_enabled was historically set False on the "
+            "fork, which removed the only bound on the replayed snapshot "
+            "(issue #93057)."
+        )
+        assert captured["create_calls"] >= 1
+        outbound_contents = [
+            str(m.get("content", "")) for m in captured["outbound"]
+        ]
+        assert any(
+            "[CONTEXT COMPACTION] review summary" in text
+            for text in outbound_contents
+        ), f"outbound request did not contain the compaction summary: {outbound_contents!r}"
+        assert not any("review turn 12" in text for text in outbound_contents), (
+            "outbound request still replays the middle of the snapshot — "
+            "the review replayed an unbounded transcript despite compaction"
+        )
+        assert captured["session_id"] == parent_sid, (
+            "Review fork should inherit the parent's session_id for "
+            "prompt-cache parity."
+        )
+        assert captured["session_db"] is None, (
+            "Review fork must keep its agent-level SessionDB detached "
+            "(_session_db=None) so compaction can never persist."
+        )
+        assert captured["compressor_session_db"] is None, (
+            "Review fork's compressor must be detached from the parent "
+            "SessionDB, otherwise durable cooldown/streak writes land on "
+            "the parent's row (issue #93057)."
+        )
+        assert captured["compressor_session_id"] == ""
+        assert captured["compression_enabled"] is True
+        assert captured["compression_in_place"] is True
+        assert isinstance(captured["input_budget"], int) and captured["input_budget"] > 0
+
+        # Parent session must be byte-for-byte unchanged after the review
+        # compacted its private snapshot.
+        assert parent.session_id == parent_sid
+        assert db.get_messages(parent_sid) == durable_before
+        session_row_after = tuple(
+            db._conn.execute(
+                "SELECT id, parent_session_id, ended_at, end_reason FROM sessions WHERE id = ?",
+                (parent_sid,),
+            ).fetchone()
+        )
+        assert session_row_after == session_row_before
+        assert _count_children(db, parent_sid) == 0
+    finally:
+        db.close()
 
 
 # ── Lease-refresher bounded-failure tolerance (salvage follow-up, #54465) ────

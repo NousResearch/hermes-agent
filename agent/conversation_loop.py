@@ -120,6 +120,26 @@ RUN_BUDGET_WRAPUP_NOTICE = (
 )
 
 
+def _review_input_budget_exhausted(agent: Any) -> bool:
+    """True when a detached review fork has replayed its aggregate input budget.
+
+    Only forks carrying an explicit ``_review_input_token_budget`` (the
+    background-review path, #93057) are gated; every other agent returns
+    False and is unaffected. ``session_input_tokens`` accumulates from
+    provider usage after each response, so the check fires at the top of the
+    NEXT tool-loop iteration — the budget-crossing request is admitted and
+    completes (its tool writes land), then the loop stops before any further
+    provider call. This caps the review's total replayed input, complementing
+    the per-request bound provided by detached in-memory compaction and the
+    ``_REVIEW_MAX_ITERATIONS`` iteration cap.
+    """
+    budget = getattr(agent, "_review_input_token_budget", None)
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
+        return False
+    used = getattr(agent, "session_input_tokens", 0)
+    return isinstance(used, int) and not isinstance(used, bool) and used >= budget
+
+
 def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) -> bool:
     """Inject the one-time wall-clock wrap-up notice when past 80% of budget.
 
@@ -2013,6 +2033,21 @@ def run_conversation(
             _turn_exit_reason = "interrupted_by_user"
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
+            break
+
+        # Aggregate input budget for detached auxiliary forks (background
+        # review, #93057): compaction bounds each request; this bounds the
+        # review as a whole. Fires between iterations — the budget-crossing
+        # request completed (its tool writes landed), and the tool loop stops
+        # before the next provider call, mirroring the iteration-budget exit.
+        if _review_input_budget_exhausted(agent):
+            _turn_exit_reason = "review_input_budget_exhausted"
+            if not agent.quiet_mode:
+                agent._safe_print(
+                    f"\n⏹️  Review input budget exhausted "
+                    f"({int(agent.session_input_tokens):,} tokens) — stopping "
+                    f"the review tool loop before the next provider call."
+                )
             break
         
         api_call_count += 1

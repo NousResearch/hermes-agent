@@ -17,7 +17,7 @@ class StaleVirtualEnvTest(unittest.TestCase):
         """Run the function with a mocked uv/env and capture the subprocess call."""
         captured = []
 
-        def fake_quarantine(cmd, *, env=None, scripts_dir=None):
+        def fake_quarantine(cmd, *, env=None, scripts_dir=None, strict_quarantine=False):
             captured.append((list(cmd), dict(env or {}), scripts_dir))
             return None
 

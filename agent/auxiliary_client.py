@@ -2377,7 +2377,7 @@ class _BedrockCompletionsAdapter:
                 "stream); caller downgrades to non-streaming.",
                 model,
             )
-        return call_converse(
+        response = call_converse(
             region=self._region,
             model=model,
             messages=messages,
@@ -2395,6 +2395,11 @@ class _BedrockCompletionsAdapter:
             top_p=kwargs.get("top_p"),
             stop_sequences=stop,
         )
+        # Converse is a complete-response API in this shim. Mark provider
+        # progress only after the response returns so TTFP reflects real
+        # Bedrock latency rather than dispatch/setup activity.
+        _notify_aux_provider_response()
+        return response
 
 
 class _BedrockChatShim:
@@ -9803,6 +9808,18 @@ def _call_llm_impl(
         if fast_compression_lane is not None and max_tokens is None
         else None
     )
+    if (
+        task == "compression"
+        and fast_compression_lane is not None
+        and not fast_compression_lane.certified_non_reasoning
+        and _compression_config_claims_fast_lane(
+            _get_auxiliary_task_config("compression")
+        )
+    ):
+        # A concrete fast-only route was requested but Hermes resolved a
+        # different provider/model. Its non-reasoning control is no safer to
+        # inherit than its cap. Auto/inherited config never enters this branch.
+        effective_extra_body.pop("reasoning", None)
     _set_relay_auxiliary_route(
         request_provider,
         final_model,

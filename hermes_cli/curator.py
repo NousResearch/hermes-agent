@@ -302,6 +302,19 @@ def _cmd_pin(args) -> int:
             "`hermes curator list-unmanaged` shows which skills the curator tracks."
         )
         return 1
+    if not skill_usage.is_curator_managed(args.skill):
+        # Unmanaged (pre-marker) skills are never touched by auto-transitions,
+        # so "will bypass auto-transitions" overstates what this pin does. The
+        # pin IS recorded (and now visible in `curator status`, #92993) but
+        # only becomes protective once the skill is adopted. Say so, and point
+        # at the handover command (#93002).
+        print(
+            f"curator: pinned '{args.skill}' (recorded; this skill is unmanaged "
+            "— auto-transitions never consider it. Run "
+            f"`hermes curator adopt {args.skill}` to put it under curator "
+            "management)"
+        )
+        return 0
     print(f"curator: pinned '{args.skill}' (will bypass auto-transitions)")
     return 0
 
@@ -320,6 +333,12 @@ def _cmd_unpin(args) -> int:
             "curation-eligible (protected built-in or external)."
         )
         return 1
+    if not skill_usage.is_curator_managed(args.skill):
+        print(
+            f"curator: unpinned '{args.skill}' (recorded; this skill is "
+            "unmanaged — it was never under auto-transitions to begin with)"
+        )
+        return 0
     print(f"curator: unpinned '{args.skill}'")
     return 0
 

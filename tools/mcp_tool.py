@@ -1073,6 +1073,26 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     return resolved_command, resolved_env
 
 
+def _npx_bin_candidates(bin_dir: str, name: str, *, windows: Optional[bool] = None) -> list:
+    """Launcher paths to try for *name* inside an npx cache's ``.bin``, in order.
+
+    On Windows that directory holds three siblings per bin — the extensionless
+    sh script, ``<name>.cmd`` and ``<name>.ps1``. Spawning the sh one from a
+    Windows process fails, and ``os.access(X_OK)`` there is effectively an
+    existence check, so it cannot tell them apart. Select by extension instead,
+    the same precedence ``hermes_constants._candidate_node_command_names``
+    already uses for npm/npx/node; when no launcher exists the caller falls
+    back to npx rather than spawning something that will not run.
+
+    ``windows`` is injectable so the platform branch is testable without
+    monkeypatching ``os.name`` (which breaks path handling process-wide).
+    """
+    is_windows = os.name == "nt" if windows is None else windows
+    if is_windows:
+        return [os.path.join(bin_dir, name + ext) for ext in (".cmd", ".exe")]
+    return [os.path.join(bin_dir, name)]
+
+
 def _npx_cached_bin(args: list) -> Optional[tuple]:
     """Resolve ``npx -y <pkg>`` to the already-installed binary, or None.
 
@@ -1101,6 +1121,12 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
     while rest and rest[0] in ("-y", "--yes"):
         rest.pop(0)
     if not rest:
+        return None
+
+    # `npx pkg -y` (flag AFTER the spec) is an unusual shape: those args are
+    # forwarded verbatim to the resolved binary, which would hand the server a
+    # flag npx would have eaten. Leave anything like that to npx.
+    if any(str(a) in ("-y", "--yes") for a in rest[1:]):
         return None
 
     spec = str(rest[0])
@@ -1150,9 +1176,10 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
             # guess. Let npx decide.
             continue
 
-        candidate = os.path.join(npx_root, entry, "node_modules", ".bin", names[0])
-        if os.path.exists(candidate) and os.access(candidate, os.X_OK):
-            return candidate, rest[1:]
+        bin_dir = os.path.join(npx_root, entry, "node_modules", ".bin")
+        for candidate in _npx_bin_candidates(bin_dir, names[0]):
+            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                return candidate, rest[1:]
 
     return None
 

@@ -154,7 +154,55 @@ def test_swap_happens_after_the_osv_call_in_source():
 
     src = _P(__file__).resolve().parents[2] / "tools" / "mcp_tool.py"
     text = src.read_text(encoding="utf-8")
-    osv_at = text.index("check_package_for_malware, command, args")
-    swap_at = text.index("cached = _npx_cached_bin(args)")
+    osv_needle = "check_package_for_malware, command, args"
+    swap_needle = "cached = _npx_cached_bin(args)"
+    # Report a rename explicitly: a bare .index() ValueError here reads like a
+    # broken test rather than "someone renamed the thing this guards".
+    assert osv_needle in text, (
+        f"cannot find the OSV preflight call ({osv_needle!r}) — it was renamed; "
+        "update this guard and re-verify the swap still happens after it"
+    )
+    assert swap_needle in text, (
+        f"cannot find the npx swap ({swap_needle!r}) — it was renamed; update "
+        "this guard and re-verify it still happens after the OSV preflight"
+    )
 
-    assert osv_at < swap_at, "the npx swap must not precede the OSV malware preflight"
+    assert text.index(osv_needle) < text.index(swap_needle), (
+        "the npx swap now precedes the OSV malware preflight, which silently "
+        "disables it: _infer_ecosystem keys off the command basename being "
+        "npx/uvx/pipx, so a rewritten command yields no ecosystem and "
+        "check_package_for_malware returns None"
+    )
+
+
+def test_windows_selects_launchers_never_the_sh_script():
+    """On Windows the extensionless sh script must never be chosen.
+
+    npm lays down three siblings per bin — `<name>`, `<name>.cmd`,
+    `<name>.ps1` — and spawning the sh one from a Windows process fails, while
+    `os.access(X_OK)` there is effectively an existence check and cannot tell
+    them apart. Tested through the injectable helper rather than by patching
+    `os.name`, which breaks path handling process-wide (it took pytest's own
+    traceback formatting down when I tried).
+    """
+    from tools.mcp_tool import _npx_bin_candidates
+
+    win = _npx_bin_candidates("/c/bin", "mcp-linear", windows=True)
+    assert win == ["/c/bin/mcp-linear.cmd", "/c/bin/mcp-linear.exe"]
+    assert not any(c.endswith("mcp-linear") for c in win), "sh script must not be a candidate"
+
+    assert _npx_bin_candidates("/bin", "mcp-linear", windows=False) == ["/bin/mcp-linear"]
+
+
+def test_posix_resolution_uses_the_helper(tmp_path):
+    """The resolver honours the helper's ordering (POSIX path end-to-end)."""
+    target = _cache(tmp_path, package="mcp-linear", bin_field={"mcp-linear": "i.js"})
+
+    assert _npx_cached_bin(["-y", "mcp-linear"]) == (str(target), [])
+
+
+def test_flag_after_the_spec_is_left_to_npx(tmp_path):
+    """`npx pkg -y` would forward -y to the server; that shape stays with npx."""
+    _cache(tmp_path, package="mcp-linear", bin_field={"mcp-linear": "i.js"})
+
+    assert _npx_cached_bin(["mcp-linear", "-y"]) is None

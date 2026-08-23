@@ -3826,6 +3826,14 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     # that reuses the id re-arms that id first.
     seen_assistant_call_ids: set = set()
     outstanding_call_ids: set = set()
+    # Variant → full variant-set of the tool_call it belongs to, so answering
+    # or deduping one variant consumes its siblings too. A Codex/Responses
+    # tool_call registers BOTH ``id`` (fc_...) and ``call_id`` (call_...)
+    # (#55626/#58168); tracking only the coalesced id here made a result
+    # keyed on the OTHER variant look like it answered no outstanding call,
+    # so this pass deleted the very result step 2's variant-aware matching
+    # had just preserved (issue #93251 — whole parallel batches vanished).
+    dedup_id_siblings: Dict[str, set] = {}
     deduped: List[Dict[str, Any]] = []
     removed_dupes = 0
     for msg in messages:
@@ -3833,13 +3841,14 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         if role == "assistant" and msg.get("tool_calls"):
             kept_tcs = []
             for tc in msg.get("tool_calls") or []:
-                cid = _ra().AIAgent._get_tool_call_id_static(tc)
-                if cid and cid in seen_assistant_call_ids:
+                variants = _tool_call_id_variants(tc)
+                if variants and variants & seen_assistant_call_ids:
                     removed_dupes += 1
                     continue
-                if cid:
+                for cid in variants:
                     seen_assistant_call_ids.add(cid)
                     outstanding_call_ids.add(cid)
+                    dedup_id_siblings[cid] = variants
                 kept_tcs.append(tc)
             if kept_tcs:
                 msg = {**msg, "tool_calls": kept_tcs}
@@ -3852,11 +3861,13 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 removed_dupes += 1
                 continue
             if cid:
-                # Answered: this id is no longer outstanding, so a second
-                # result replaying it is still caught above.
-                outstanding_call_ids.discard(cid)
-                # A reused id must be re-armable by the next assistant call.
-                seen_assistant_call_ids.discard(cid)
+                # Answered: consume EVERY variant of the matched call so a
+                # second result replaying either sibling is still caught
+                # above, and the ids are re-armable by the next assistant
+                # call that reuses them.
+                for sibling in dedup_id_siblings.get(cid, {cid}):
+                    outstanding_call_ids.discard(sibling)
+                    seen_assistant_call_ids.discard(sibling)
             deduped.append(msg)
         else:
             deduped.append(msg)

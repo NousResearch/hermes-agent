@@ -654,3 +654,84 @@ def test_repair_keeps_both_results_for_two_codex_calls_mixed_keys():
 
     assert repairs == 0
     assert [m["content"] for m in messages if m.get("role") == "tool"] == ["r1", "r2"]
+
+
+def test_sanitize_dedup_pass_keeps_batch_results_keyed_on_divergent_id():
+    """The step-3 dedup pass must not delete real results whose tool_call_id
+    matches the non-coalesced id variant.
+
+    A parallel batch of Codex/Responses-style tool_calls carries divergent
+    ``id`` (fc_...) and ``call_id`` (call_...). Step 2's variant-aware
+    matching preserves results keyed on either variant, but the dedup pass
+    tracked only the coalesced (call_id||id) value in
+    ``outstanding_call_ids`` — so every result keyed on ``id`` looked like it
+    answered no outstanding call and was deleted wholesale. Whole parallel
+    batches vanished with no stub at all (#93251, #55626 class).
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": f"fc_{i}", "call_id": f"call_{i}", "type": "function",
+             "function": {"name": "terminal", "arguments": "{}"}}
+            for i in range(4)
+        ]},
+    ] + [
+        {"role": "tool", "tool_call_id": f"fc_{i}", "content": f"REAL {i}"}
+        for i in range(4)
+    ]
+
+    out = sanitize_api_messages(messages)
+
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_msgs] == [
+        "REAL 0", "REAL 1", "REAL 2", "REAL 3",
+    ], "real batch results must survive the dedup pass"
+    assert not any("Result unavailable" in m["content"] for m in tool_msgs)
+
+
+def test_sanitize_dedup_pass_still_drops_result_replayed_on_sibling_id():
+    """Variant-aware dedup must still drop a SECOND result for an
+    already-answered call even when the replay uses the OTHER id variant
+    (strict providers 400 on duplicate tool_call_id)."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "fc_1", "call_id": "call_1", "type": "function",
+             "function": {"name": "f", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "fc_1", "content": "first"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "sibling replay"},
+    ]
+
+    out = sanitize_api_messages(messages)
+
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_msgs] == ["first"]
+
+
+def test_sanitize_dedup_pass_rearms_constant_llamacpp_id():
+    """llama.cpp emits one constant id for every call; a fresh assistant call
+    re-arms the id so the second round's result still survives (#58327
+    outstanding-call semantics must be preserved by the variant-set change)."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_K", "type": "function",
+             "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_K", "content": "round1"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_K", "type": "function",
+             "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_K", "content": "round2"},
+    ]
+
+    out = sanitize_api_messages(messages)
+
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_msgs] == ["round1", "round2"]

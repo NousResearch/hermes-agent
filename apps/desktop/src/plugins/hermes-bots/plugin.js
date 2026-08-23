@@ -10210,7 +10210,117 @@ function scheduleLabel(schedule) {
   return schedule || ''
 }
 
-function RoutineRow({ job, owner }) {
+/** Absolute + relative rendering of a cron timestamp, or null when the job
+ *  has never carried one (a job that has not run yet has no `last_run_at`). */
+function routineTimestamp(value) {
+  const ms = value ? new Date(value).getTime() : Number.NaN
+  return Number.isFinite(ms) ? `${relativeTime(ms)} · ${new Date(ms).toLocaleString()}` : null
+}
+
+/** The facts `cron.manage list` already sends with every job, as label/value
+ *  rows. Pure so the detail contract is testable without a renderer, and so
+ *  the dialog cannot invent a field the gateway never sent: an absent value
+ *  drops its row instead of rendering "undefined". */
+function routineDetailRows(job) {
+  const paused = job?.enabled === false || job?.state === 'paused'
+  const label = scheduleLabel(job?.schedule)
+  const raw = String(job?.schedule || '').trim()
+
+  return [
+    ['Status', paused ? 'Paused' : 'Active'],
+    ['Schedule', label],
+    // `scheduleLabel` humanizes "every 1440m" and cron expressions; keep the
+    // raw string when it says something the label dropped.
+    ['Schedule (raw)', raw && raw !== label ? raw : null],
+    ['Repeat', job?.repeat],
+    ['Next run', paused ? null : routineTimestamp(job?.next_run_at)],
+    ['Last run', routineTimestamp(job?.last_run_at)],
+    ['Last result', job?.last_status],
+    ['Delivers to', job?.deliver],
+    ['Model', job?.model],
+    ['Working directory', job?.workdir]
+  ]
+    .filter(([, value]) => typeof value === 'string' && value.trim())
+    .map(([name, value]) => ({ label: name, value: value.trim() }))
+}
+
+/** Why a job is not doing what the user expects. The row only ever showed
+ *  "paused"; the scheduler's own reason and the last fire/delivery failures
+ *  had no surface in Bot Mode at all. */
+function routineDetailIssue(job) {
+  const reasons = [job?.last_fire_error, job?.last_delivery_error, job?.paused_reason]
+  const first = reasons.find(value => typeof value === 'string' && value.trim())
+
+  return first ? first.trim() : null
+}
+
+/** Read-only inspector for one cronjob, rendered from the list payload the
+ *  pane already holds — no extra RPC, and no second mutation path beside the
+ *  row's own switch and delete. */
+function RoutineDetailDialog({ job, onClose, open }) {
+  const rows = job ? routineDetailRows(job) : []
+  const issue = job ? routineDetailIssue(job) : null
+  const instruction = String(job?.prompt_preview || '').trim()
+
+  return jsx(Dialog, {
+    open: Boolean(open && job),
+    onOpenChange: value => {
+      if (!value) {
+        onClose()
+      }
+    },
+    children: jsxs(DialogContent, {
+      className: 'max-w-md',
+      children: [
+        jsxs(DialogHeader, {
+          children: [
+            jsx(DialogTitle, { className: 'truncate', children: routineTitle(job) }),
+            jsx(DialogDescription, { children: 'What this cronjob runs, and when it runs next.' })
+          ]
+        }),
+        jsxs('div', {
+          className: 'grid gap-3.5',
+          children: [
+            issue
+              ? jsx('div', {
+                  className:
+                    'rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs leading-5 text-(--ui-accent)',
+                  children: issue
+                })
+              : null,
+            jsx('div', {
+              className: 'grid gap-1.5',
+              children: rows.map(row =>
+                jsxs('div', {
+                  className: 'flex items-baseline justify-between gap-3 text-xs',
+                  children: [
+                    jsx('span', { className: 'shrink-0 text-(--ui-text-tertiary)', children: row.label }),
+                    jsx('span', { className: 'min-w-0 truncate text-right', children: row.value })
+                  ]
+                }, row.label)
+              )
+            }),
+            instruction
+              ? labeled(
+                  'Instruction',
+                  jsx('div', {
+                    className:
+                      'max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs leading-5 text-(--ui-text-secondary)',
+                    children: instruction
+                  })
+                )
+              : null
+          ]
+        }),
+        jsx(DialogFooter, {
+          children: jsx(Button, { variant: 'secondary', onClick: onClose, children: 'Close' })
+        })
+      ]
+    })
+  })
+}
+
+function RoutineRow({ job, onOpen, owner }) {
   const profile = typeof owner === 'string' ? owner : owner?.name
   const [busy, setBusy] = useState(false)
   // Optimistic overlay: null = trust server state. Set immediately on
@@ -10255,13 +10365,24 @@ function RoutineRow({ job, owner }) {
       jsxs('div', {
         className: 'flex items-center gap-2',
         children: [
-          jsx('span', {
-            'aria-hidden': true,
-            className: cn('size-1.5 shrink-0 rounded-full', active ? 'bg-emerald-500' : 'bg-(--ui-text-quaternary)')
-          }),
-          jsx('span', {
-            className: cn('min-w-0 flex-1 truncate text-xs font-medium', !active && 'text-(--ui-text-tertiary)'),
-            children: routineTitle(job)
+          // The row's own button, not a click handler on the card: the switch
+          // and delete control are siblings, so opening the details can never
+          // swallow a toggle (and a nested button would be invalid markup).
+          jsxs('button', {
+            type: 'button',
+            title: 'Cronjob details',
+            className: 'flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-foreground',
+            onClick: () => onOpen?.(job),
+            children: [
+              jsx('span', {
+                'aria-hidden': true,
+                className: cn('size-1.5 shrink-0 rounded-full', active ? 'bg-emerald-500' : 'bg-(--ui-text-quaternary)')
+              }),
+              jsx('span', {
+                className: cn('min-w-0 flex-1 truncate text-xs font-medium', !active && 'text-(--ui-text-tertiary)'),
+                children: routineTitle(job)
+              })
+            ]
           }),
           jsx(Switch, {
             checked: active,
@@ -10731,6 +10852,10 @@ function RoutinesPane() {
   const { data, error, isLoading, refetch } = useRoutines(owner)
   const [createOpen, setCreateOpen] = useState(false)
   const [createOwner, setCreateOwner] = useState(null)
+  // Hold the id, not the record: the 20s poll replaces every job object, and
+  // an open inspector must follow the live row (next run, pause, last error)
+  // instead of freezing the snapshot that was on screen when it opened.
+  const [detailJobId, setDetailJobId] = useState(null)
   const createTarget = owner ? routineCreateTarget(createOwner, bot) : null
 
   const openCreate = () => {
@@ -10754,6 +10879,7 @@ function RoutinesPane() {
     $lastJobs.set(view.live)
   }
   const jobs = view.jobs
+  const detailJob = detailJobId ? jobs.find(job => job.job_id === detailJobId) || null : null
   const staleNotice = error && !view.live && view.all.length
     ? 'Could not refresh cronjobs. Showing the last list we had.'
     : null
@@ -10857,9 +10983,16 @@ function RoutinesPane() {
               className: 'min-h-0 flex-1',
               children: jsx('div', {
                 className: 'grid gap-1.5 px-2.5 py-2',
-                children: jobs.map(job => jsx(RoutineRow, { job, owner }, job.job_id))
+                children: jobs.map(job =>
+                  jsx(RoutineRow, { job, onOpen: opened => setDetailJobId(opened.job_id), owner }, job.job_id)
+                )
               })
             }),
+      jsx(RoutineDetailDialog, {
+        job: detailJob,
+        open: Boolean(detailJob),
+        onClose: () => setDetailJobId(null)
+      }),
       jsx(CreateRoutineDialog, {
         bot: createTarget,
         open: createOpen,

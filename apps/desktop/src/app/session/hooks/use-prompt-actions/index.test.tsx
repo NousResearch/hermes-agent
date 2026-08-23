@@ -4715,14 +4715,24 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
     const QUEUED_RUNTIME_ID = 'rt-queued-c-recovered'
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     const stateWrites: { sessionId: string; storedSessionId: null | string | undefined }[] = []
+    // Load-bearing shape (per #91357 review): foreground B must actually NEED
+    // routed recovery — no active runtime and an empty ownership cache — so the
+    // formerly broken foreground-recovery branch is genuinely reachable. With a
+    // pre-bound B this fixture passed even on the broken head.
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: FOREGROUND_STORED_ID }
-    const activeSessionIdRef: MutableRefObject<string | null> = { current: FOREGROUND_RUNTIME_ID }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
 
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
-      current: new Map([[FOREGROUND_STORED_ID, FOREGROUND_RUNTIME_ID]])
+      current: new Map()
     }
 
-    const resumeStoredSession = vi.fn(async () => undefined)
+    // A high-level resume of B FULLY publishes B's runtime + ownership cache:
+    // if the explicit-target guard ever regresses, the submit would adopt B's
+    // recovered runtime and the assertions below catch the mis-delivery.
+    const resumeStoredSession = vi.fn(async () => {
+      activeSessionIdRef.current = FOREGROUND_RUNTIME_ID
+      runtimeIdByStoredSessionIdRef.current.set(FOREGROUND_STORED_ID, FOREGROUND_RUNTIME_ID)
+    })
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       calls.push({ method, params })
@@ -4739,7 +4749,7 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
     let handle: HarnessHandle | null = null
     render(
       <Harness
-        activeSessionId={FOREGROUND_RUNTIME_ID}
+        activeSessionId={null}
         activeSessionIdRef={activeSessionIdRef}
         getRoutedStoredSessionId={() => FOREGROUND_STORED_ID}
         getRouteToken={() => `/${FOREGROUND_STORED_ID}::`}
@@ -4763,6 +4773,7 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
         storedSessionId: QUEUED_STORED_ID
       })
     ).toBe(true)
+    // No high-level resume of B: the explicit queue target C is authoritative.
     expect(resumeStoredSession).not.toHaveBeenCalled()
     expect(calls).toEqual([
       {
@@ -4774,10 +4785,12 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
         params: { session_id: QUEUED_RUNTIME_ID, text: 'queued prompt for C', queued: true }
       }
     ])
+    // No prompt or state write ever touches B, and no foreground
+    // selection/cache mutation leaks out of the background drain.
     expect(stateWrites.some(write => write.sessionId === FOREGROUND_RUNTIME_ID)).toBe(false)
     expect(selectedStoredSessionIdRef.current).toBe(FOREGROUND_STORED_ID)
-    expect(activeSessionIdRef.current).toBe(FOREGROUND_RUNTIME_ID)
-    expect(runtimeIdByStoredSessionIdRef.current).toEqual(new Map([[FOREGROUND_STORED_ID, FOREGROUND_RUNTIME_ID]]))
+    expect(activeSessionIdRef.current).toBeNull()
+    expect(runtimeIdByStoredSessionIdRef.current).toEqual(new Map())
   })
 
   it('still aborts when the user genuinely moves to a different chat mid-submit', async () => {

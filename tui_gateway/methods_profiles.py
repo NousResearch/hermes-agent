@@ -60,7 +60,29 @@ def _(rid, params: dict) -> dict:
             return text[:80] + "..."
         return text
 
-    def _canonical_session_row(profile_path):
+    def _open_profile_session_db(profile_path):
+        """Read-only attach for roster previews, or None.
+
+        A writable ``SessionDB()`` waits up to 20s of write-lock patience and
+        runs schema init. The Bots roster polls ``profiles.list`` every 5s
+        while a profile's live backend holds the writer — that used to stall
+        the RPC past the desktop timeout and leave the sidebar on an
+        infinite spinner. ``read_only=True`` is the cross-profile inspect
+        path (no write lock, no DDL) SessionDB already documents for this.
+        """
+        try:
+            from pathlib import Path
+
+            db_path = Path(profile_path) / "state.db"
+            if not db_path.exists():
+                return None
+            from hermes_state import SessionDB
+
+            return SessionDB(db_path=db_path, read_only=True)
+        except Exception:
+            return None
+
+    def _canonical_session_row(db, profile_path):
         """Summary of the profile's canonical "Bot Chat" registry row, or None.
 
         The canonical chat's identity is the NAME: the session titled exactly
@@ -79,71 +101,97 @@ def _(rid, params: dict) -> dict:
         while ``resolved_id`` names the live tip. Best-effort: any failure
         degrades to None rather than failing the whole profiles.list call.
         """
+        if db is None:
+            return None
         try:
-            from pathlib import Path
-
-            db_path = Path(profile_path) / "state.db"
-            if not db_path.exists():
-                return None
-            from hermes_state import SessionDB
-
             deny = frozenset({"kanban", "tool"})
-            db = SessionDB(db_path=db_path)
+            row = db.get_session_by_title("Bot Chat")
+            if not row:
+                return None
+            session_id = str(row.get("id") or "").strip()
+            if not session_id:
+                return None
+            if (row.get("source") or "").strip().lower() in deny:
+                return None
+            if row.get("archived"):
+                # An archived canonical row usually means the user deliberately
+                # retired it — report absent. But the ws-orphan reaper / older
+                # agent cleanup can archive it by accident (#92687): resurrect
+                # those. Judge recoverability READ-ONLY first so the writable
+                # open (20s write-lock patience, the very stall this refactor
+                # removes from the 5s poll) is paid only in the rare
+                # accidental-archive case, then run the real predicate through
+                # unarchive_recoverable_session on a short-lived writable handle.
+                if not _resurrect_recoverable_canonical(db, profile_path, session_id):
+                    return None
             try:
-                row = db.get_session_by_title("Bot Chat")
-                if not row:
-                    return None
-                session_id = str(row.get("id") or "").strip()
-                if not session_id:
-                    return None
-                if (row.get("source") or "").strip().lower() in deny:
-                    return None
-                if row.get("archived"):
-                    # An archived canonical row usually means the user
-                    # deliberately retired it — report absent. But the
-                    # ws-orphan reaper / older agent cleanup can archive it
-                    # by accident (end_reason ws_orphan_reap / agent_close):
-                    # the canonical chat is identity-scoped (the bot's
-                    # forever conversation), so an accidental archive is
-                    # user-visible amnesia. Resurrect those — un-archive and
-                    # keep resolving — reusing the same recoverable-reason
-                    # set as gateway stale-route recovery (#92687).
-                    if not db.unarchive_recoverable_session(session_id):
-                        return None
-                try:
-                    tip = db.resolve_resume_session_id(session_id) or session_id
-                except Exception:
-                    tip = session_id
-                tip_row = db.get_session(tip) or row
-                preview = ""
-                try:
-                    preview = _latest_message_preview(db, tip)
-                except Exception:
-                    pass
-                return {
-                    "id": session_id,
-                    "resolved_id": tip,
-                    "root_title": row.get("title") or "",
-                    "title": tip_row.get("title") or "",
-                    "preview": preview,
-                    "started_at": tip_row.get("started_at") or row.get("started_at") or 0,
-                    "last_active": (
-                        tip_row.get("last_activity_at")
-                        or tip_row.get("started_at")
-                        or row.get("started_at")
-                        or 0
-                    ),
-                    "message_count": tip_row.get("message_count") or 0,
-                }
-            finally:
-                try:
-                    db.close()
-                except Exception:
-                    pass
+                tip = db.resolve_resume_session_id(session_id) or session_id
+            except Exception:
+                tip = session_id
+            tip_row = db.get_session(tip) or row
+            preview = ""
+            try:
+                preview = _latest_message_preview(db, tip)
+            except Exception:
+                pass
+            return {
+                "id": session_id,
+                "resolved_id": tip,
+                "root_title": row.get("title") or "",
+                "title": tip_row.get("title") or "",
+                "preview": preview,
+                "started_at": tip_row.get("started_at") or row.get("started_at") or 0,
+                "last_active": (
+                    tip_row.get("last_activity_at")
+                    or tip_row.get("started_at")
+                    or row.get("started_at")
+                    or 0
+                ),
+                "message_count": tip_row.get("message_count") or 0,
+            }
         except Exception:
             return None
 
-    def _latest_profile_session_rows(profile_path):
+    def _resurrect_recoverable_canonical(db, profile_path, session_id):
+        """Un-archive an accidentally archived canonical row (#92687), or False.
+
+        The roster's inspect connection is READ-ONLY (the whole point of
+        _open_profile_session_db), so the resurrect write happens on a
+        short-lived writable SessionDB opened only when the read-only
+        recoverability pre-check passes. The 20s write-lock patience is thus
+        paid only when there is a real resurrect to perform — never on the
+        5s-poll fast path.
+        """
+        try:
+            row = db.get_session(session_id)
+            if not row or not row.get("archived"):
+                return False
+            tip = row
+            try:
+                tip_id = db.resolve_resume_session_id(session_id) or session_id
+                if tip_id != session_id:
+                    tip = db.get_session(tip_id) or row
+            except Exception:
+                pass
+            from hermes_state import SessionDB
+
+            if (tip.get("end_reason") or "") not in SessionDB.RECOVERABLE_END_REASONS:
+                return False
+
+            from pathlib import Path
+
+            wdb = SessionDB(db_path=Path(profile_path) / "state.db")
+            try:
+                return bool(wdb.unarchive_recoverable_session(session_id))
+            finally:
+                try:
+                    wdb.close()
+                except Exception:
+                    pass
+        except Exception:
+            return False
+
+    def _latest_profile_session_rows(db):
         """(newest human-facing session, newest worker session) for a profile.
 
         First element mirrors session.list's deny-list (drops ``tool``
@@ -157,61 +205,49 @@ def _(rid, params: dict) -> dict:
         (missing state.db, locked db, older schema) degrades to (None, None)
         rather than failing the whole profiles.list call.
         """
+        if db is None:
+            return None, None
         try:
-            from pathlib import Path
-
-            db_path = Path(profile_path) / "state.db"
-            if not db_path.exists():
-                return None, None
-            from hermes_state import SessionDB
-
             deny = frozenset({"kanban", "tool"})
-            db = SessionDB(db_path=db_path)
-            try:
-                human = None
-                worker = None
-                for s in db.list_sessions_rich(
-                    source=None, limit=20, order_by_last_active=True, compact_rows=True
-                ):
-                    src = (s.get("source") or "").strip().lower()
-                    if src in deny:
-                        if worker is None:
-                            worker = {
-                                "id": s["id"],
-                                "source": src,
-                                "title": s.get("title") or "",
-                                "last_active": s.get("last_active") or s.get("started_at") or 0,
-                            }
-                        continue
-                    if human is not None:
-                        continue
-                    row = {
-                        "id": s["id"],
-                        "title": s.get("title") or "",
-                        "preview": s.get("preview") or "",
-                        "started_at": s.get("started_at") or 0,
-                        "last_active": s.get("last_active") or s.get("started_at") or 0,
-                        "message_count": s.get("message_count") or 0,
-                    }
-                    # Roster surfaces want "where the conversation IS", not
-                    # where it began: override the shared first-message
-                    # preview with the newest user/assistant text. Best-
-                    # effort — any failure keeps the first-message preview.
-                    try:
-                        latest = _latest_message_preview(db, s["id"])
-                        if latest:
-                            row["preview"] = latest
-                    except Exception:
-                        pass
-                    human = row
-                    if worker is not None:
-                        break
-                return human, worker
-            finally:
+            human = None
+            worker = None
+            for s in db.list_sessions_rich(
+                source=None, limit=20, order_by_last_active=True, compact_rows=True
+            ):
+                src = (s.get("source") or "").strip().lower()
+                if src in deny:
+                    if worker is None:
+                        worker = {
+                            "id": s["id"],
+                            "source": src,
+                            "title": s.get("title") or "",
+                            "last_active": s.get("last_active") or s.get("started_at") or 0,
+                        }
+                    continue
+                if human is not None:
+                    continue
+                row = {
+                    "id": s["id"],
+                    "title": s.get("title") or "",
+                    "preview": s.get("preview") or "",
+                    "started_at": s.get("started_at") or 0,
+                    "last_active": s.get("last_active") or s.get("started_at") or 0,
+                    "message_count": s.get("message_count") or 0,
+                }
+                # Roster surfaces want "where the conversation IS", not
+                # where it began: override the shared first-message
+                # preview with the newest user/assistant text. Best-
+                # effort — any failure keeps the first-message preview.
                 try:
-                    db.close()
+                    latest = _latest_message_preview(db, s["id"])
+                    if latest:
+                        row["preview"] = latest
                 except Exception:
                     pass
+                human = row
+                if worker is not None:
+                    break
+            return human, worker
         except Exception:
             return None, None
 
@@ -232,16 +268,24 @@ def _(rid, params: dict) -> dict:
                 "skill_count": getattr(p, "skill_count", 0) or 0,
             }
             if include_sessions:
-                last_row, worker_row = _latest_profile_session_rows(p.path)
-                row["last_session"] = last_row
-                # Freshest kanban/tool worker (or None) — lets rosters count
-                # a profile as active while its worker runs (#90268). Older
-                # clients ignore the extra field.
-                row["worker_session"] = worker_row
-                # The profile's canonical "Bot Chat" registry row (or None) —
-                # identity is the NAME, resolved server-side on every listing
-                # so no client ever needs to carry a session pointer.
-                row["canonical_session"] = _canonical_session_row(p.path)
+                db = _open_profile_session_db(p.path)
+                try:
+                    last_row, worker_row = _latest_profile_session_rows(db)
+                    row["last_session"] = last_row
+                    # Freshest kanban/tool worker (or None) — lets rosters count
+                    # a profile as active while its worker runs (#90268). Older
+                    # clients ignore the extra field.
+                    row["worker_session"] = worker_row
+                    # The profile's canonical "Bot Chat" registry row (or None) —
+                    # identity is the NAME, resolved server-side on every listing
+                    # so no client ever needs to carry a session pointer.
+                    row["canonical_session"] = _canonical_session_row(db, p.path)
+                finally:
+                    if db is not None:
+                        try:
+                            db.close()
+                        except Exception:
+                            pass
 
             # Client-agnostic UI metadata (avatars, accent colors, pinned
             # order, …) — stored server-side in profile.yaml so every

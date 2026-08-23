@@ -272,6 +272,18 @@ _API_CALL_MODULES = frozenset({
     "chat_completion_helpers",
 })
 
+# Maximum total outer-loop exceptions tolerated within one user turn before
+# the loop gives up (#92450). The turn budget is unlimited by default
+# (``max_iterations = sys.maxsize``), so the historical "near the limit"
+# guard no longer stops a turn whose outer loop keeps raising: permanent
+# failures spun at ~64 retries/s, pegged a core, and overwrote the rotated
+# agent.log history (days of diagnostic context) within minutes. The inner
+# retry/fallback machinery owns transient API recovery and terminates on its
+# own; only exceptions that ESCAPE it reach this bound, so the cap can be
+# small. Still scaled down by a tiny explicit ``max_iterations`` so a
+# manually bounded budget keeps governing.
+_MAX_OUTER_LOOP_ERRORS = 8
+
 
 def _is_interpreter_shutdown_error(exc: Exception) -> bool:
     """Check if *exc* is a fatal interpreter-shutdown failure.
@@ -1918,6 +1930,8 @@ def run_conversation(
     failed = False
     codex_ack_continuations = 0
     length_continue_retries = 0
+    # Total outer-loop exceptions this turn (#92450) — see _MAX_OUTER_LOOP_ERRORS.
+    _outer_error_count = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
@@ -8353,6 +8367,11 @@ def run_conversation(
                 break
             
         except Exception as e:
+            # Count every escaped exception against the per-turn bound before
+            # classification — permanent failures must terminate even when the
+            # turn budget is unlimited (#92450).
+            _outer_error_count += 1
+
             # Phase-aware error classification. The huge outer try/except spans
             # both the actual API request and all local post-processing of the
             # returned assistant message. Deterministic local bugs (e.g.
@@ -8478,14 +8497,23 @@ def run_conversation(
 
             # If we're near the limit, break to avoid infinite loops.
             # Local processing errors are deterministic — stop immediately
-            # rather than retrying until the budget is exhausted.
+            # rather than retrying until the budget is exhausted. Repeated
+            # outer-loop errors stop after a small per-turn cap: with
+            # max_iterations now unlimited by default, a permanent failure
+            # would otherwise spin forever and overwrite the rotated log
+            # history within minutes (#92450).
+            _outer_error_cap = min(_MAX_OUTER_LOOP_ERRORS, max(1, agent.max_iterations))
             if (
                 _is_local_processing_error
                 or api_call_count >= agent.max_iterations - 1
+                or _outer_error_count >= _outer_error_cap
             ):
                 if _is_local_processing_error:
                     _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
                     final_response = f"I apologize, but I encountered an error while processing the model response: {error_msg}"
+                elif _outer_error_count >= _outer_error_cap:
+                    _turn_exit_reason = f"repeated_outer_errors({error_msg[:80]})"
+                    final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
                 else:
                     _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
                     final_response = f"I apologize, but I encountered repeated errors: {error_msg}"

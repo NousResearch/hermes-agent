@@ -297,12 +297,16 @@ def prefetch(self, query: str, *, session_id: str = ""):
 `source_kind`, `schema`, `version`, `provider`, and the opaque JSON-safe
 `payload` are the only core envelope fields. Providers may leave `provider`
 empty; Hermes binds it to the registered provider name and rejects a mismatch.
-Hermes accepts at most `MAX_MEMORY_OBSERVATIONS` envelopes per operation. Each
-payload is recursively limited to JSON values, bounded strings, collection
-sizes, nesting depth, and encoded bytes; malformed or oversized envelopes are
-dropped while that provider's formatted context is retained. A provider
-exception keeps the existing fail-isolated behavior and may omit that
-provider's context, as it did for string prefetch failures.
+Hermes accepts at most `MAX_MEMORY_OBSERVATIONS` envelopes per operation and
+enforces `MAX_MEMORY_OBSERVATION_BATCH_BYTES` across the complete merged
+operation, not separately per provider. Both limits keep the deterministic
+provider-ordered prefix; Hermes emits one actionable warning when either limit
+drops remaining observations. Each payload is recursively limited to JSON
+values, bounded strings, collection sizes, nesting depth, and encoded bytes;
+malformed or oversized envelopes are dropped while that provider's formatted
+context is retained. A provider exception keeps the existing fail-isolated
+behavior and may omit that provider's context, as it did for string prefetch
+failures.
 
 The `memory_prefetch` plugin hook is an opt-in, observer-only boundary. It is
 queued asynchronously only when a prefetch produced at least one valid

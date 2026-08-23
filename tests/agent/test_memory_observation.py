@@ -102,6 +102,18 @@ def _disable_hook(monkeypatch):
     monkeypatch.setattr(plugins, "iter_hook_callbacks", lambda _name: ())
 
 
+def _stub_direct_prefetch(monkeypatch):
+    """Keep fixture fan-out tests off the external timeout transport path."""
+    direct_calls = []
+
+    def prefetch_provider(_manager, provider, query, *, session_id=""):
+        direct_calls.append(provider.name)
+        return provider.prefetch(query, session_id=session_id)
+
+    monkeypatch.setattr(MemoryManager, "_prefetch_provider", prefetch_provider)
+    return direct_calls
+
+
 def test_memory_prefetch_is_registered_as_an_observer_hook():
     from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
 
@@ -139,6 +151,7 @@ def test_legacy_string_context_and_injected_bytes_are_unchanged(monkeypatch):
 def test_structured_context_merge_and_minimal_operation_event(monkeypatch):
     events = []
     _capture_hook(monkeypatch, events)
+    _stub_direct_prefetch(monkeypatch)
     manager = MemoryManager()
     first = StructuredMemoryProvider(
         name="builtin",
@@ -196,6 +209,7 @@ def test_structured_context_merge_and_minimal_operation_event(monkeypatch):
 def test_mixed_legacy_and_structured_context_keeps_legacy_bytes_out_of_hook(monkeypatch):
     events = []
     _capture_hook(monkeypatch, events)
+    _stub_direct_prefetch(monkeypatch)
     legacy_context = "legacy raw recall that must not cross the hook"
     legacy = FakeMemoryProvider(name="builtin")
     legacy._prefetch_result = legacy_context
@@ -463,6 +477,7 @@ def test_operation_observation_count_budget_keeps_ordered_prefix_and_context(
 ):
     events = []
     _capture_hook(monkeypatch, events)
+    _stub_direct_prefetch(monkeypatch)
     first_count = MAX_MEMORY_OBSERVATIONS // 2 + 1
     first = StructuredMemoryProvider(
         name="builtin",
@@ -513,6 +528,7 @@ def test_operation_budget_bounds_provider_traversal_and_preserves_later_context(
     monkeypatch, caplog
 ):
     _disable_hook(monkeypatch)
+    _stub_direct_prefetch(monkeypatch)
     first_observations = GuardedObservationTuple(
         (
             _observation({"index": index})
@@ -562,6 +578,7 @@ def test_operation_observation_batch_budget_is_aggregate_across_providers(
 
     events = []
     _capture_hook(monkeypatch, events)
+    direct_calls = _stub_direct_prefetch(monkeypatch)
     # Four bounded strings make each envelope large enough that one fits while
     # two exceed this deliberately small operation-level budget.
     large_payload = {"parts": ["x" * 3500] * 4}
@@ -598,6 +615,7 @@ def test_operation_observation_batch_budget_is_aggregate_across_providers(
     assert result.context == "first provider context\n\nsecond provider context"
     assert [item.provider for item in result.observations] == ["builtin"]
     assert second_observations.accessed_indices == [0]
+    assert direct_calls == ["builtin", "external"]
     warnings = [
         record
         for record in caplog.records
@@ -615,6 +633,7 @@ def test_malformed_observation_keeps_each_provider_context_and_result_tuple(
 ):
     events = []
     _capture_hook(monkeypatch, events)
+    _stub_direct_prefetch(monkeypatch)
     manager = MemoryManager()
     manager.add_provider(
         StructuredMemoryProvider(

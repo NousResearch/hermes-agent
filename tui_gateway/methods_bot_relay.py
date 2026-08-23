@@ -110,9 +110,9 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4092, f"no profile '{profile}' on this gateway")
 
         fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(message)
         try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(message)
             proc = subprocess.run(
                 local_delivery_command(resolved, tmp),
                 capture_output=True,

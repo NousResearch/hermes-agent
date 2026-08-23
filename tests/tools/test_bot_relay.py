@@ -288,3 +288,40 @@ def test_capability_fingerprint_changes_with_relay_roster(tmp_path):
     ])
     after = bot_mode_probe.capability_fingerprint(home)
     assert before != after  # eternal Bot Chats refresh once on roster change
+
+
+# ── stale artifact sweep (housekeeping contract) ─────────────────────────────
+
+
+def test_cleanup_bot_relay_artifacts_sweeps_stale_plaintext(tmp_path, monkeypatch):
+    import os as _os
+    import time as _time
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    target = {"profile": "scout", "handle": "scout", "connection_id": "cloud-1",
+              "connection_label": "", "title": "", "description": ""}
+    stale_env = bot_relay.enqueue_envelope(
+        tmp_path, target=target, message="old secret",
+        sender_profile="default", sender_handle="hermes",
+    )
+    fresh_env = bot_relay.enqueue_envelope(
+        tmp_path, target=target, message="new secret",
+        sender_profile="default", sender_handle="hermes",
+    )
+    base = bot_relay.relay_root(tmp_path)
+    stale_reply = bot_relay.write_reply(tmp_path, stale_env["id"], reply="done")
+    old = _time.time() - bot_relay.STALE_AFTER_SECONDS - 1
+    _os.utime(base / bot_relay.OUTBOX_DIR / f"{stale_env['id']}.json", (old, old))
+    _os.utime(stale_reply, (old, old))
+
+    removed = bot_relay.cleanup_bot_relay_artifacts()
+
+    assert removed == 2
+    assert not (base / bot_relay.OUTBOX_DIR / f"{stale_env['id']}.json").exists()
+    assert not stale_reply.exists()
+    assert (base / bot_relay.OUTBOX_DIR / f"{fresh_env['id']}.json").exists()
+
+
+def test_cleanup_bot_relay_artifacts_missing_dir_is_zero(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "nope"))
+    assert bot_relay.cleanup_bot_relay_artifacts() == 0

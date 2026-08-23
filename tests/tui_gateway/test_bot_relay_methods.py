@@ -105,3 +105,36 @@ def test_reply_roundtrip_and_id_validation(home):
 
     err = srv._methods["bot_relay.reply"](2, {"id": "../evil"})
     assert "error" in err
+
+
+def test_deliver_write_failure_still_removes_tempfile(home, monkeypatch, tmp_path):
+    """A failed payload write must not leak the relay DM tempfile."""
+    import glob
+    import os
+    import tempfile as _tempfile
+
+    made = []
+    real_mkstemp = _tempfile.mkstemp
+
+    def _tracking_mkstemp(*args, **kwargs):
+        kwargs["dir"] = str(tmp_path)
+        fd, path = real_mkstemp(*args, **kwargs)
+        made.append(path)
+        return fd, path
+
+    class _BrokenWriter:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def write(self, content):
+            raise OSError("disk full")
+
+    monkeypatch.setattr("tempfile.mkstemp", _tracking_mkstemp)
+    monkeypatch.setattr("os.fdopen", lambda *a, **k: _BrokenWriter())
+    err = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "x"})
+    assert "error" in err
+    assert made, "mkstemp was never reached"
+    assert not glob.glob(str(tmp_path / "hermes-relay-dm-*")), "tempfile leaked"

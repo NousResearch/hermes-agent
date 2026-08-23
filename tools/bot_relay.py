@@ -270,18 +270,44 @@ def write_reply(
     return path
 
 
-def _sweep_stale(base: Path) -> None:
-    cutoff = time.time() - STALE_AFTER_SECONDS
+def _sweep_stale(base: Path, *, now: float | None = None) -> int:
+    cutoff = (time.time() if now is None else now) - STALE_AFTER_SECONDS
+    removed = 0
     for sub in (CLAIMED_DIR, REPLIES_DIR, OUTBOX_DIR):
         try:
             for path in (base / sub).glob("*.json"):
                 try:
                     if path.stat().st_mtime < cutoff:
                         path.unlink()
+                        removed += 1
                 except OSError:
                     continue
         except OSError:
             continue
+    return removed
+
+
+def cleanup_bot_relay_artifacts(max_age_hours: float | None = None) -> int:
+    """Sweep stale relay artifacts (envelopes/replies hold DM plaintext).
+
+    ``_sweep_stale`` otherwise runs only when the Desktop drains the outbox
+    (``claim_pending_envelopes``) — if the Desktop never reconnects, queued
+    plaintext envelopes would sit on disk forever. Same contract as the
+    ``cleanup_*_cache`` helpers so the gateway housekeeping loop can call it
+    hourly. ``max_age_hours`` is accepted for signature compatibility but the
+    relay's own ``STALE_AFTER_SECONDS`` governs staleness.
+    """
+    del max_age_hours  # relay staleness is governed by STALE_AFTER_SECONDS
+    try:
+        home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+        root = home.parent.parent if home.parent.name == "profiles" else home
+        base = relay_root(root)
+        if not base.is_dir():
+            return 0
+        return _sweep_stale(base)
+    except Exception:
+        logger.debug("bot_relay artifact sweep failed", exc_info=True)
+        return 0
 
 
 # ── waiter (runs on the sender gateway via terminal background process) ─────

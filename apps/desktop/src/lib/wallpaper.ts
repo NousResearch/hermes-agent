@@ -22,6 +22,7 @@ export interface WallpaperPreferences {
   opacity: number
   overlay: number
   overlayColor: string
+  overlayFeather: number
   overlayHeight: number
   overlayShape: WallpaperMaskShape
   overlayWidth: number
@@ -40,6 +41,7 @@ export const DEFAULT_WALLPAPER_PREFERENCES: WallpaperPreferences = {
   opacity: 42,
   overlay: 48,
   overlayColor: '',
+  overlayFeather: 50,
   overlayHeight: 145,
   overlayShape: 'ellipse',
   overlayWidth: 68,
@@ -61,6 +63,33 @@ function boundedNumber(value: unknown, fallback: number, min: number, max: numbe
   }
 
   return Math.min(max, Math.max(min, Math.round(number)))
+}
+
+const MASK_FEATHER_SAMPLE_COUNT = 12
+
+// Blend linear progress with smootherstep so the fade stays gradual through
+// the middle while still easing into fully opaque and fully transparent ends.
+// Dense samples avoid visible slope changes on large, low-contrast masks.
+const MASK_FEATHER_CURVE = Array.from({ length: MASK_FEATHER_SAMPLE_COUNT + 1 }, (_, index) => {
+  const offset = index / MASK_FEATHER_SAMPLE_COUNT
+  const smootherstep = offset ** 3 * (offset * (offset * 6 - 15) + 10)
+
+  return { offset, opacity: 1 - (offset + smootherstep) / 2 }
+})
+
+function gradientPosition(value: number): string {
+  return `${Number(value.toFixed(2))}%`
+}
+
+function featheredMaskStops(start: number, end: number, fadeIn = false): string {
+  const distance = end - start
+
+  return MASK_FEATHER_CURVE.map(({ offset, opacity }) => {
+    const alpha = Number((fadeIn ? 1 - opacity : opacity).toFixed(3))
+    const color = alpha === 0 ? 'transparent' : alpha === 1 ? '#000' : `rgba(0, 0, 0, ${alpha})`
+
+    return `${color} ${gradientPosition(start + distance * offset)}`
+  }).join(', ')
 }
 
 function sanitizedColor(value: unknown): string {
@@ -99,6 +128,7 @@ export function sanitizeWallpaperPreferences(value: unknown): WallpaperPreferenc
     opacity: boundedNumber(record.opacity, DEFAULT_WALLPAPER_PREFERENCES.opacity, 0, 100),
     overlay: boundedNumber(record.overlay, DEFAULT_WALLPAPER_PREFERENCES.overlay, 0, 100),
     overlayColor: sanitizedColor(record.overlayColor),
+    overlayFeather: boundedNumber(record.overlayFeather, DEFAULT_WALLPAPER_PREFERENCES.overlayFeather, 0, 100),
     overlayHeight: boundedNumber(record.overlayHeight, DEFAULT_WALLPAPER_PREFERENCES.overlayHeight, 40, 200),
     overlayShape,
     overlayWidth: boundedNumber(record.overlayWidth, DEFAULT_WALLPAPER_PREFERENCES.overlayWidth, 30, 140),
@@ -134,18 +164,39 @@ export function wallpaperMaskImage(
   overlayShape: WallpaperMaskShape,
   overlayX: number,
   overlayWidth: number,
-  overlayHeight: number
+  overlayHeight: number,
+  overlayFeather: number = DEFAULT_WALLPAPER_PREFERENCES.overlayFeather
 ): string {
   const position = boundedNumber(overlayX, DEFAULT_WALLPAPER_PREFERENCES.overlayX, 0, 100)
   const width = boundedNumber(overlayWidth, DEFAULT_WALLPAPER_PREFERENCES.overlayWidth, 30, 140)
   const height = boundedNumber(overlayHeight, DEFAULT_WALLPAPER_PREFERENCES.overlayHeight, 40, 200)
+  const feather = boundedNumber(overlayFeather, DEFAULT_WALLPAPER_PREFERENCES.overlayFeather, 0, 100)
+  // Give commonly used mid-range values a wider fade without changing the
+  // hard-edge and maximum-feather endpoints of the control.
+  const effectiveFeather = feather * (1.4 - feather / 250)
 
   if (overlayShape === 'strip') {
     const outerHalf = width / 2
-    const innerHalf = width * 0.32
+    const featherWidth = width * 0.36 * (effectiveFeather / 100)
+    const innerHalf = Math.max(0, outerHalf - featherWidth)
+    const leftOuter = position - outerHalf
+    const leftInner = position - innerHalf
+    const rightInner = position + innerHalf
+    const rightOuter = position + outerHalf
 
-    return `linear-gradient(90deg, transparent ${position - outerHalf}%, #000 ${position - innerHalf}%, #000 ${position + innerHalf}%, transparent ${position + outerHalf}%)`
+    if (feather === 0) {
+      return `linear-gradient(90deg, transparent ${gradientPosition(leftOuter)}, #000 ${gradientPosition(leftOuter)}, #000 ${gradientPosition(rightOuter)}, transparent ${gradientPosition(rightOuter)})`
+    }
+
+    return `linear-gradient(90deg, ${featheredMaskStops(leftOuter, leftInner, true)}, ${featheredMaskStops(rightInner, rightOuter)})`
   }
 
-  return `radial-gradient(ellipse ${width}% ${height}% at ${position}% 50%, #000 0%, #000 28%, transparent 78%)`
+  const featherStart = Math.max(0, 53 - effectiveFeather / 2)
+  const featherEnd = Math.min(100, 53 + effectiveFeather / 2)
+
+  if (feather === 0) {
+    return `radial-gradient(ellipse ${width}% ${height}% at ${position}% 50%, #000 0%, #000 53%, transparent 53%)`
+  }
+
+  return `radial-gradient(ellipse ${width}% ${height}% at ${position}% 50%, #000 0%, ${featheredMaskStops(featherStart, featherEnd)})`
 }

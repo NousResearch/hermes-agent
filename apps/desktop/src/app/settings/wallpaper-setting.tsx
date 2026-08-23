@@ -237,7 +237,8 @@ export function WallpaperSetting({ profileName }: { profileName: string }) {
     state.preferences.overlayShape,
     state.preferences.overlayX,
     state.preferences.overlayWidth,
-    state.preferences.overlayHeight
+    state.preferences.overlayHeight,
+    state.preferences.overlayFeather
   )
 
   const modeOptions = WALLPAPER_MODES.map(id => ({ id, label: copy.modes[id] }))
@@ -566,6 +567,16 @@ export function WallpaperSetting({ profileName }: { profileName: string }) {
                   step={2}
                   value={state.preferences.overlay}
                   valueLabel={`${state.preferences.overlay}%`}
+                />
+                <WallpaperSlider
+                  disabled={busy || !state.preferences.enabled}
+                  label={copy.overlayFeather}
+                  max={100}
+                  min={0}
+                  onChange={overlayFeather => setWallpaperPreferences({ overlayFeather })}
+                  step={2}
+                  value={state.preferences.overlayFeather}
+                  valueLabel={`${state.preferences.overlayFeather}%`}
                 />
                 <div>
                   <WallpaperSlider

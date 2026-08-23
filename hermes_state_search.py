@@ -33,6 +33,59 @@ from hermes_state_common import (
 # keep that logger identity so log filtering/capture behavior is unchanged.
 logger = logging.getLogger("hermes_state")
 
+
+try:  # POSIX-only; used for cross-process FTS rebuild serialization
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    _HAS_FCNTL = False
+
+_FTS_REBUILD_LOCK_TIMEOUT = 30.0
+
+
+def _acquire_fts_rebuild_lock(db_path) -> Optional[int]:
+    """Exclusive flock on <db_path>.fts_rebuild.lock. Returns fd or None."""
+    if not _HAS_FCNTL:
+        return None
+    try:
+        lock_path = f"{db_path}.fts_rebuild.lock"
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            pass
+        deadline = time.monotonic() + _FTS_REBUILD_LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except OSError:
+                if time.monotonic() >= deadline:
+                    logger.warning(
+                        "FTS rebuild lock held by another process beyond "
+                        "%ds timeout; proceeding (SQLite writer lock is the "
+                        "final backstop)", int(_FTS_REBUILD_LOCK_TIMEOUT))
+                    os.close(fd)
+                    return None
+                time.sleep(0.1)
+    except OSError as exc:
+        logger.warning("FTS rebuild lock unavailable (%s); proceeding", exc)
+        return None
+
+
+def _release_fts_rebuild_lock(fd: int) -> None:
+    if not _HAS_FCNTL:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
 # Characters FTS5's query grammar rejects outside a quoted phrase. Anything
 # missing from this set reaches MATCH raw and raises, which the execute site
 # swallows into zero results — the failure this strip step exists to prevent.
@@ -2404,21 +2457,30 @@ class SessionSearchMixin:
         Returns the number of FTS indexes that were rebuilt.
         """
         rebuilt = 0
-        with self._lock:
-            for tbl in self._FTS_TABLES:
-                if not self._fts_table_exists(tbl):
-                    continue
-                try:
-                    self._conn.execute(
-                        f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')"
-                    )
-                    self._conn.commit()
-                    rebuilt += 1
-                except sqlite3.OperationalError as exc:
-                    self._conn.rollback()
-                    logger.warning(
-                        "FTS rebuild failed for %s: %s", tbl, exc
-                    )
+        lock_fd = None
+        if _HAS_FCNTL:
+            db_path = getattr(self, "db_path", None)
+            if db_path is not None:
+                lock_fd = _acquire_fts_rebuild_lock(db_path)
+        try:
+            with self._lock:
+                for tbl in self._FTS_TABLES:
+                    if not self._fts_table_exists(tbl):
+                        continue
+                    try:
+                        self._conn.execute(
+                            f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')"
+                        )
+                        self._conn.commit()
+                        rebuilt += 1
+                    except sqlite3.OperationalError as exc:
+                        self._conn.rollback()
+                        logger.warning(
+                            "FTS rebuild failed for %s: %s", tbl, exc
+                        )
+        finally:
+            if lock_fd is not None:
+                _release_fts_rebuild_lock(lock_fd)
         return rebuilt
 
     def _merge_fts_incrementally(

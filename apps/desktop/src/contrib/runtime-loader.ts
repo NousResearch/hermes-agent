@@ -472,6 +472,7 @@ async function scanDiskPlugins(): Promise<void> {
 
         if (!(await loadDiskPlugin(record))) {
           disk.delete(file)
+
           continue
         }
 

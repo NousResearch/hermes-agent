@@ -102,6 +102,30 @@ describe('scanDiskPlugins (#66899)', () => {
     expect(readFileText).not.toHaveBeenCalled()
   })
 
+  it('a DIRECTORY named plugin.js is not a plugin entry (metadata walk rejects it)', async () => {
+    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+    agentPluginsRoot.mockResolvedValue('')
+    readDir.mockImplementation(async dir => {
+      if (dir === '/local/.hermes/desktop-plugins') {
+        return { entries: [{ isDirectory: true, name: 'odd', path: '/local/.hermes/desktop-plugins/odd' }] }
+      }
+
+      if (dir === '/local/.hermes/desktop-plugins/odd') {
+        // A folder literally named plugin.js — must resolve to "no entry".
+        return {
+          entries: [{ isDirectory: true, name: 'plugin.js', path: '/local/.hermes/desktop-plugins/odd/plugin.js' }]
+        }
+      }
+
+      return { entries: [] }
+    })
+
+    await discoverRuntimePlugins()
+
+    expect(readFileText).not.toHaveBeenCalled()
+    expect($pluginRecords.get().odd).toBeUndefined()
+  })
+
   it('still scans the standalone root when agentPluginsRoot is absent (older shell)', async () => {
     delete (window.hermesDesktop as unknown as { agentPluginsRoot?: unknown }).agentPluginsRoot
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')

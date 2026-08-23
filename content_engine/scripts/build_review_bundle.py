@@ -469,7 +469,7 @@ def _summary_pane(sections: list[tuple[str, list[dict]]], indexed: list[tuple[in
         slug = it.get("slug") or it.get("id", "")
         action_cell = (
             f"<code>!approve-idea {_esc(slug)}</code><br><code>!reject-idea {_esc(slug)}</code>"
-            if it["group"] == IDEAS_GROUP else
+            if it["group"] == IDEAS_GROUP or str(it["group"]).endswith("IDEAS") else
             f"<code>!approve {_esc(slug)}</code><br><code>!reject {_esc(slug)}</code>"
         )
         rows.append(

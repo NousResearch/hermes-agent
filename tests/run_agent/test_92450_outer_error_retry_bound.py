@@ -103,9 +103,9 @@ class TestOuterErrorRetryBound:
             result = loop_agent.run_conversation("hello")
 
         # The bound path returns an apology as final_response with
-        # failed=False (same contract as the legacy near-limit exit), so the
+        # failed=True (the turn did not complete successfully), so the
         # meaningful assertions are: bounded call count + dedicated exit
-        # reason + apology text.
+        # reason + apology text + failed flag.
         assert result["api_calls"] <= 8, (
             "The loop must give up within the per-turn error bound instead "
             "of retrying an unlimited-budget failure forever."
@@ -114,6 +114,8 @@ class TestOuterErrorRetryBound:
             f"unexpected exit reason: {result['turn_exit_reason']}"
         )
         assert "repeated errors" in (result["final_response"] or "")
+        assert result["failed"] is True
+        assert result["completed"] is False
 
     def test_recovery_after_failures_completes_normally(self, loop_agent):
         """Early escaping failures followed by success must NOT trip the new

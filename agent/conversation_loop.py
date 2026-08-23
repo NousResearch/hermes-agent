@@ -8512,14 +8512,18 @@ def run_conversation(
                     _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
                     final_response = f"I apologize, but I encountered an error while processing the model response: {error_msg}"
                 elif _outer_error_count >= _outer_error_cap:
+                    failed = True
                     _turn_exit_reason = f"repeated_outer_errors({error_msg[:80]})"
                     final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
                 else:
                     _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
                     final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
-                # Append as assistant so the history stays valid for
-                # session resume (avoids consecutive user messages).
-                append_message(messages, {"role": "assistant", "content": final_response})
+                # Don't append the assistant message here — a thinking-prefill
+                # or interim assistant may already be the tail, and appending
+                # would create assistant→assistant.  finalize_turn handles
+                # this case safely (lines 341-353: appends only when
+                # _tail_role != "assistant"), matching the pattern at other
+                # break sites that set final_response without appending.
                 break
     
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn

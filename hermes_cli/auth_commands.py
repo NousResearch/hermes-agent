@@ -60,7 +60,7 @@ def _get_custom_provider_names() -> list:
 
 
 def _resolve_custom_provider_input(raw: str) -> str | None:
-    """If raw input matches a custom_providers entry name (case-insensitive), return its pool key."""
+    """Resolve legacy names and keyed providers to their credential-pool ID."""
     normalized = (raw or "").strip().lower().replace(" ", "-")
     if not normalized:
         return None
@@ -68,9 +68,13 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
     if normalized.startswith(CUSTOM_POOL_PREFIX):
         return normalized
     for display_name, pool_key, provider_key in _get_custom_provider_names():
+        # ``providers:`` entries already have a durable runtime slug. Keep
+        # credentials under that slug instead of leaking the legacy
+        # ``custom:`` compatibility identity into auth.json and discovery.
+        normalized_provider_key = provider_key.strip().lower()
+        if normalized_provider_key and normalized_provider_key == normalized:
+            return normalized_provider_key
         if _normalize_custom_pool_name(display_name) == normalized:
-            return pool_key
-        if provider_key and provider_key.strip().lower() == normalized:
             return pool_key
     return None
 
@@ -86,6 +90,45 @@ def _normalize_provider(provider: str) -> str:
     if custom_key:
         return custom_key
     return normalized
+
+
+def _migrate_legacy_custom_pool_key(provider: str) -> None:
+    """Move a keyed provider's old ``custom:`` pool into its runtime slug."""
+    legacy_key = f"{CUSTOM_POOL_PREFIX}{provider}"
+    with auth_mod._auth_store_lock():
+        auth_store = auth_mod._load_auth_store()
+        credential_pool = auth_store.get("credential_pool")
+        if not isinstance(credential_pool, dict):
+            return
+        legacy_entries = credential_pool.get(legacy_key)
+        if not isinstance(legacy_entries, list) or not legacy_entries:
+            return
+
+        current_entries = credential_pool.get(provider)
+        merged = list(current_entries) if isinstance(current_entries, list) else []
+        known_ids = {
+            entry.get("id")
+            for entry in merged
+            if isinstance(entry, dict) and entry.get("id")
+        }
+        for entry in legacy_entries:
+            entry_id = entry.get("id") if isinstance(entry, dict) else None
+            if entry_id and entry_id in known_ids:
+                continue
+            merged.append(entry)
+            if entry_id:
+                known_ids.add(entry_id)
+
+        credential_pool[provider] = merged
+        del credential_pool[legacy_key]
+        auth_mod._save_auth_store(auth_store)
+
+    try:
+        from hermes_cli.models import clear_provider_models_cache
+
+        clear_provider_models_cache(legacy_key)
+    except Exception:
+        pass
 
 
 def _provider_base_url(provider: str) -> str:
@@ -164,8 +207,16 @@ def _format_exhausted_status(entry) -> str:
 
 def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
-    if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
+    configured_provider = _resolve_custom_provider_input(provider) == provider
+    if (
+        provider not in PROVIDER_REGISTRY
+        and provider != "openrouter"
+        and not provider.startswith(CUSTOM_POOL_PREFIX)
+        and not configured_provider
+    ):
         raise SystemExit(f"Unknown provider: {provider}")
+    if configured_provider and not provider.startswith(CUSTOM_POOL_PREFIX):
+        _migrate_legacy_custom_pool_key(provider)
 
     requested_type = str(getattr(args, "auth_type", "") or "").strip().lower()
     if requested_type in {AUTH_TYPE_API_KEY, "api-key"}:

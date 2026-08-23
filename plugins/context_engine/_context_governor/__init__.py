@@ -31,6 +31,11 @@ from plugins.context_engine._context_governor.key_state import (
 
 logger = logging.getLogger(__name__)
 
+# Provenance is authenticated receipt metadata rather than prompt-visible
+# context. Keep it bounded, but admit observed 900K–1M-token sessions whose
+# manifests can exceed the historical 128 KiB and 1 MiB defaults.
+DEFAULT_MAX_PROVENANCE_BYTES = 16 * 1024 * 1024
+
 
 class ContextGovernorActivationError(RuntimeError):
     """The configured governor cannot provide its certified V2 contract."""
@@ -189,7 +194,7 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
             # supposed to save; the Rust owner enforces them before issuing a
             # receipt.
             "max_lineage_generation": 32,
-            "max_provenance_bytes": 131072,
+            "max_provenance_bytes": DEFAULT_MAX_PROVENANCE_BYTES,
             "min_net_savings_tokens": 128,
         }
         # Override from config if available

@@ -13,7 +13,10 @@ import pytest
 
 from agent.context_engine import ContextEngine
 from plugins.context_engine import load_context_engine
-from plugins.context_engine._context_governor import ContextGovernorEngine
+from plugins.context_engine._context_governor import (
+    DEFAULT_MAX_PROVENANCE_BYTES,
+    ContextGovernorEngine,
+)
 
 
 def _bind_fixture(engine):
@@ -41,6 +44,16 @@ def test_ares_governor_is_discoverable_as_a_context_engine():
     # Discovery is intentionally separate from activation. A default local
     # install without a certified binary/key pair must not be selected.
     assert engine.is_available() is False
+
+
+def test_default_provenance_budget_is_large_but_still_bounded():
+    """Large initial transcripts reach admission without an unbounded policy."""
+    with patch("hermes_cli.config.load_config", return_value={}):
+        engine = ContextGovernorEngine(binary="/tmp/context-governor")
+
+    assert engine._policy["max_provenance_bytes"] == DEFAULT_MAX_PROVENANCE_BYTES
+    assert DEFAULT_MAX_PROVENANCE_BYTES == 16 * 1024 * 1024
+    assert DEFAULT_MAX_PROVENANCE_BYTES < 64 * 1024 * 1024
 
 
 def test_ares_governor_rejects_an_arbitrary_configured_key_path():

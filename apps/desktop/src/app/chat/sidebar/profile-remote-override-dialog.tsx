@@ -152,7 +152,11 @@ export function ProfileRemoteOverrideDialog({ profileNames }: { profileNames: st
         ...(allowPlainText ? { allowPlainTextToken: true } : {})
       })
 
-      notify({ kind: 'success', title: p.savedTitle, message: p.savedMessage(profile, remoteHostLabel(trimmedUrl) || trimmedUrl) })
+      notify({
+        kind: 'success',
+        title: p.savedTitle,
+        message: p.savedMessage(profile, remoteHostLabel(trimmedUrl) || trimmedUrl)
+      })
       await refreshProfileRemoteOverrides(profileNames)
       closeRemoteOverrideDialog()
     } catch (err) {

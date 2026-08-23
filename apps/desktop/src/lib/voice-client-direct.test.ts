@@ -65,7 +65,7 @@ describe('fetchVoiceClientConfig', () => {
     expect(request.connectionId).toBe('gw-remote')
   })
 
-  it('a scope switch never reuses another scope\'s credentials', async () => {
+  it("a scope switch never reuses another scope's credentials", async () => {
     const api = mockDesktopApi({ ok: true, stt: directStt, tts: relay })
     setApiRequestProfile('alpha')
     await fetchVoiceClientConfig()
@@ -237,7 +237,10 @@ describe('synthesizeSpeechClientDirect', () => {
   })
 
   it('throws on provider rejection', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('quota exceeded', { status: 429 })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('quota exceeded', { status: 429 }))
+    )
 
     await expect(synthesizeSpeechClientDirect(openaiTts, 'Hi.')).rejects.toThrow(/openai TTS error.*429/)
   })

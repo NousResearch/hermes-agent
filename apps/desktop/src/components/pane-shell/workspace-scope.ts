@@ -35,8 +35,7 @@ export interface WorkspaceSessionRoute {
 
 /** What the shared `+` / session.newTab command means in this workspace. */
 export type WorkspaceNewSessionTarget =
-  | { kind: 'blocked'; message: string }
-  | { kind: 'route'; route: WorkspaceSessionRoute }
+  { kind: 'blocked'; message: string } | { kind: 'route'; route: WorkspaceSessionRoute }
 
 /** Sessions uses its established ambient behavior (`null`). Bots publishes an
  *  exact route or a concise reason that a generic session is unavailable. */
@@ -189,10 +188,7 @@ export function rememberActivePane(ownerKey: string, paneId: string): void {
  * panes. A remembered pane that has since been removed must not restore: the
  * fallback is the first eligible pane, or null when none are eligible.
  */
-export function resolveRememberedActivePane(
-  ownerKey: string,
-  eligiblePaneIds: readonly string[]
-): string | null {
+export function resolveRememberedActivePane(ownerKey: string, eligiblePaneIds: readonly string[]): string | null {
   const remembered = rememberedActivePanes.get(ownerKey)
 
   if (remembered != null && eligiblePaneIds.includes(remembered)) {

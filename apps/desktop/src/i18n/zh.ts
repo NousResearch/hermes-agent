@@ -2013,8 +2013,7 @@ export const zh: Translations = {
       tokenPlaceholder: '粘贴远程会话令牌',
       tokenSavedHint: '已保存令牌。留空以保留现有令牌。',
       plainTextOptIn: '这台电脑没有安全密钥存储，令牌将以未加密方式保存到磁盘。仍然保存。',
-      collisionWarning: (label: string) =>
-        `设置中已存在名为“${label}”的网关。此配置档案连接是独立的，不会更改它。`,
+      collisionWarning: (label: string) => `设置中已存在名为“${label}”的网关。此配置档案连接是独立的，不会更改它。`,
       confirmTitle: '将此配置档案连接到远程主机？',
       confirmNote: (profile: string, host: string) =>
         `${profile} 中的新对话将在 ${host} 上运行。命令和文件读取都发生在那台电脑上，而不是这台。请只连接你信任的主机。`,

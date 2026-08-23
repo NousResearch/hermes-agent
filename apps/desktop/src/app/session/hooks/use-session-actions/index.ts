@@ -634,12 +634,9 @@ export function useSessionActions({
 
         if (!stored) {
           const closeCreated = capturedRoute
-            ? requestGatewayForAgent(
-                capturedRoute.connectionId,
-                capturedRoute.profile,
-                'session.close',
-                { session_id: created.session_id }
-              )
+            ? requestGatewayForAgent(capturedRoute.connectionId, capturedRoute.profile, 'session.close', {
+                session_id: created.session_id
+              })
             : requestGateway('session.close', { session_id: created.session_id })
 
           await closeCreated.catch(() => undefined)

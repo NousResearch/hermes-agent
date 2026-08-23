@@ -23,7 +23,11 @@ function render(ui: ReactNode) {
   act(() => root!.render(ui))
 }
 
-function register(id: string, title: string, scope: { workspaceMode?: 'sessions' | 'bots'; workspaceOwnerKey?: string } = {}) {
+function register(
+  id: string,
+  title: string,
+  scope: { workspaceMode?: 'sessions' | 'bots'; workspaceOwnerKey?: string } = {}
+) {
   disposers.push(
     registry.register({
       area: 'panes',

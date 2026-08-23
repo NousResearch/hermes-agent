@@ -1819,8 +1819,7 @@ export const en: Translations = {
       menuItem: 'Connect to a remote host…',
       badge: (host: string) => `Runs on ${host}`,
       title: (profile: string) => `Connect ${profile} to a remote host`,
-      description:
-        'Sessions in this profile will run on the remote Hermes you point it at, instead of this computer.',
+      description: 'Sessions in this profile will run on the remote Hermes you point it at, instead of this computer.',
       urlLabel: 'Remote address',
       urlPlaceholder: 'https://hermes.example.com',
       urlInvalid: 'Enter a full address starting with http:// or https://',

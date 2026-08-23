@@ -70,9 +70,7 @@ describe('workspace scope', () => {
     expect($workspaceNewSessionTarget.get()).toEqual({ kind: 'route', route })
 
     // Equivalent route objects are a semantic no-op, not a new render signal.
-    expect(
-      setWorkspaceScope('bots', 'bot:connection-a::writer', { kind: 'route', route: { ...route } })
-    ).toBe(false)
+    expect(setWorkspaceScope('bots', 'bot:connection-a::writer', { kind: 'route', route: { ...route } })).toBe(false)
 
     setWorkspaceScope('sessions')
     expect($workspaceNewSessionTarget.get()).toBeNull()
@@ -141,9 +139,10 @@ describe('filterContributionsForWorkspace', () => {
       'global-1',
       'bot:alpha'
     ])
-    expect(
-      filterContributionsForWorkspace(contributions, 'sessions', null).map(c => c.id)
-    ).toEqual(['global-1', 'sessions-only'])
+    expect(filterContributionsForWorkspace(contributions, 'sessions', null).map(c => c.id)).toEqual([
+      'global-1',
+      'sessions-only'
+    ])
   })
 
   it('returns the original array reference on a no-op', () => {

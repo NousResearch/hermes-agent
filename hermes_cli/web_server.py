@@ -1211,8 +1211,8 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "dashboard": "display",
     "code_execution": "agent",
     "prompt_caching": "agent",
-    # bot_mode currently surfaces a single field (envelope_ttl_seconds) —
-    # fold it into agent until the section grows.
+    # bot_mode holds a couple of relay tuning knobs — keep it folded into the
+    # agent tab rather than spawning a tiny standalone category.
     "bot_mode": "agent",
     "goals": "agent",
     "updates": "general",

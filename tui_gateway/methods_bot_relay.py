@@ -94,7 +94,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4090, "profile and message required")
     try:
         from tools.bot_mode_dm import MESSAGE_MAX_CHARS
-        from tools.bot_relay import local_delivery_command
+        from tools.bot_relay import acquire_turn_lock, local_delivery_command
 
         if len(message) > MESSAGE_MAX_CHARS + 200:  # + attribution headroom
             return _err(rid, 4091, "message too long")
@@ -113,12 +113,19 @@ def _(rid, params: dict) -> dict:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(message)
-            proc = subprocess.run(
-                local_delivery_command(resolved, tmp),
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
+            # Per-profile turn lock (#93091): serialize with any other
+            # delivery turn into this profile (relay or local message_agent).
+            # The lock covers only the turn execution window. Worst-case
+            # handler hold is lock wait (bot_mode.turn_wait_seconds, default
+            # 120s) + the 600s turn timeout below — clients calling
+            # bot_relay.deliver must tolerate ~720s before assuming failure.
+            with acquire_turn_lock(root, resolved):
+                proc = subprocess.run(
+                    local_delivery_command(resolved, tmp),
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                )
         finally:
             try:
                 os.unlink(tmp)
@@ -131,6 +138,9 @@ def _(rid, params: dict) -> dict:
     except subprocess.TimeoutExpired:
         return _err(rid, 5093, "delivery turn timed out")
     except Exception as e:
+        # 'target_busy' extends the #93091 item-1 structured refusal enum.
+        if getattr(e, "reason", "") == "target_busy":
+            return _err(rid, 5096, str(e))
         return _err(rid, 5094, str(e))
 
 

@@ -85,7 +85,20 @@ function linkifyProseChunk(chunk: string, cwd?: string): string {
     })
   }
 
-  return linked.replace(/\u0000(\d+)\u0000/g, (_match, index: string) => protectedSpans[Number(index)])
+  // Restore masked spans. Masks can nest (a bold span wrapping an inline-code
+  // span: `**\`hermes update\`**`), so a single replace pass would leave the
+  // inner placeholder behind — the restored outer text still contains
+  // \u0000N\u0000, which renders as the U+FFFD replacement character on
+  // screen. Loop until no placeholder remains.
+  let restored = linked
+  for (let guard = 0; guard < protectedSpans.length + 1; guard += 1) {
+    const next = restored.replace(/\u0000(\d+)\u0000/g, (_match, index: string) => protectedSpans[Number(index)] ?? '')
+    if (next === restored) {
+      break
+    }
+    restored = next
+  }
+  return restored
 }
 
 /** Resolve a relative path (`./`, `../`, plain segments) against `cwd`. */

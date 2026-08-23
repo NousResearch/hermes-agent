@@ -45,6 +45,7 @@ import logging
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -420,8 +421,21 @@ def _try_relay_delivery(
 
 
 def _dm_dir() -> Path:
-    path = Path(tempfile.gettempdir()) / _DM_DIR_NAME
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    uid_getter = getattr(os, "getuid", None)
+    uid = uid_getter() if callable(uid_getter) else None
+    dirname = f"{_DM_DIR_NAME}-{uid}" if uid is not None else _DM_DIR_NAME
+    path = Path(tempfile.gettempdir()) / dirname
+    path.mkdir(mode=0o700, exist_ok=True)
+
+    # Shared POSIX temp roots need a per-user directory. Fail closed if an
+    # attacker pre-created the expected path or replaced it with a symlink.
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise PermissionError(f"DM temp path is not a directory: {path}")
+    if uid is not None and info.st_uid != uid:
+        raise PermissionError(f"DM temp directory is owned by another user: {path}")
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        path.chmod(0o700)
     return path
 
 

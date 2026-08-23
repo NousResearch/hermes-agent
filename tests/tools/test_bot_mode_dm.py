@@ -6,6 +6,7 @@ deliver from anywhere else even if a schema leaks.
 """
 
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -549,8 +550,8 @@ def test_write_dm_file_unlinks_partial_file_on_write_exception(tmp_path, monkeyp
 
 
 def test_sweeper_removes_only_stale_dm_files(tmp_path, monkeypatch):
-    dm_dir = tmp_path / bot_mode_dm._DM_DIR_NAME
-    dm_dir.mkdir()
+    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
+    dm_dir = bot_mode_dm._dm_dir()
     legacy_stale = tmp_path / "hermes-dm-stale.txt"
     stale = dm_dir / "dm-stale.txt"
     fresh = dm_dir / "dm-fresh.txt"
@@ -559,15 +560,47 @@ def test_sweeper_removes_only_stale_dm_files(tmp_path, monkeypatch):
         path.write_text("secret", encoding="utf-8")
     now = time.time()
     old = now - bot_mode_dm._DM_STALE_SECONDS - 1
-    import os
-
     os.utime(legacy_stale, (old, old))
     os.utime(stale, (old, old))
-    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
-
     bot_mode_dm._sweep_stale_dm_files(now=now)
 
     assert not legacy_stale.exists()
     assert not stale.exists()
     assert fresh.exists()
     assert unrelated.exists()
+
+
+def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    dm_dir = bot_mode_dm._dm_dir()
+
+    if hasattr(os, "getuid"):
+        assert dm_dir.name == f"{bot_mode_dm._DM_DIR_NAME}-{os.getuid()}"
+    else:
+        assert dm_dir.name == bot_mode_dm._DM_DIR_NAME
+    assert dm_dir.stat().st_mode & 0o777 == 0o700
+
+
+def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
+    uid = os.getuid() if hasattr(os, "getuid") else None
+    dirname = f"{bot_mode_dm._DM_DIR_NAME}-{uid}" if uid is not None else bot_mode_dm._DM_DIR_NAME
+    dm_dir = tmp_path / dirname
+    dm_dir.mkdir(mode=0o500)
+    dm_dir.chmod(0o500)
+
+    assert bot_mode_dm._dm_dir() == dm_dir
+    assert dm_dir.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership contract")
+def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
+    target = tmp_path / "attacker-controlled"
+    target.mkdir()
+    expected = tmp_path / f"{bot_mode_dm._DM_DIR_NAME}-{os.getuid()}"
+    expected.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    with pytest.raises(PermissionError, match="not a directory"):
+        bot_mode_dm._dm_dir()

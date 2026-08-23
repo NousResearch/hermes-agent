@@ -215,8 +215,17 @@ def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkey
     ]
 
 
-def test_sequential_tool_interrupt_reports_hard_cancel_reason(tmp_path, monkeypatch):
+def test_sequential_tool_interrupt_hides_lifecycle_cancel_detail(tmp_path, monkeypatch):
+    from agent.subagent_lifecycle import (
+        SubagentLaunchRequest,
+        SubagentLifecycleService,
+        SubagentState,
+    )
+
     agent = _make_agent(tmp_path)
+    agent._subagent_id = "sa-lifecycle-cancel-output"
+    agent._delegate_role = "leaf"
+    agent._delegate_depth = 1
     first_started = threading.Event()
     release_first = threading.Event()
     terminal_events: list[dict] = []
@@ -226,14 +235,34 @@ def test_sequential_tool_interrupt_reports_hard_cancel_reason(tmp_path, monkeypa
         release_first.wait()
         return "late result"
 
-    def _interrupt():
-        assert first_started.wait(timeout=5)
-        agent.hard_interrupt("superseded by a new live turn")
-
-    interrupter = threading.Thread(target=_interrupt, daemon=True)
-    interrupter.start()
     messages: list[dict] = []
+
+    def _run_child(*_args, **_kwargs):
+        execute_tool_calls_sequential(
+            agent,
+            SimpleNamespace(tool_calls=[_tool_call("hung")]),
+            messages,
+            "task",
+        )
+        return {
+            "status": "interrupted",
+            "summary": None,
+            "api_calls": 0,
+            "duration_seconds": 0,
+        }
+
     monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "30")
+    monkeypatch.setattr(
+        "tools.delegate_tool._build_child_preserving_parent_tools",
+        lambda **_kwargs: agent,
+    )
+    monkeypatch.setattr("tools.delegate_tool._run_child_lifecycle", _run_child)
+    lifecycle = SubagentLifecycleService(
+        lambda: SimpleNamespace(
+            session_id="parent-lifecycle-cancel-output",
+            enabled_toolsets=["file"],
+        )
+    )
 
     try:
         with (
@@ -243,18 +272,20 @@ def test_sequential_tool_interrupt_reports_hard_cancel_reason(tmp_path, monkeypa
                 side_effect=lambda *_args, **kwargs: terminal_events.append(kwargs),
             ),
         ):
-            execute_tool_calls_sequential(
-                agent,
-                SimpleNamespace(tool_calls=[_tool_call("hung")]),
-                messages,
-                "task",
-            )
+            handle = lifecycle.launch(SubagentLaunchRequest(goal="cancel output test"))
+            assert first_started.wait(timeout=5)
+            assert lifecycle.cancel(
+                handle,
+                reason="PRIVATE_LIFECYCLE_REASON_DO_NOT_COPY",
+            ).accepted
+            assert lifecycle.wait(handle, timeout_seconds=5).state is SubagentState.CANCELLED
     finally:
         release_first.set()
-        interrupter.join(timeout=2)
 
-    assert "superseded by a new live turn" in messages[0]["content"]
+    assert "subagent cancellation requested" in messages[0]["content"]
+    assert "PRIVATE_LIFECYCLE_REASON_DO_NOT_COPY" not in messages[0]["content"]
     assert "user interrupt" not in messages[0]["content"]
+    assert "PRIVATE_LIFECYCLE_REASON_DO_NOT_COPY" not in terminal_events[0]["error_message"]
     assert terminal_events[0]["error_type"] == "tool_interrupted"
 
 

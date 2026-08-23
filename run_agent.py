@@ -3263,7 +3263,13 @@ class AIAgent:
                 logging.warning(f"Failed to save session log: {e}")
 
 
-    def interrupt(self, message: Optional[str] = None, *, hard_cancel: bool = False) -> None:
+    def interrupt(
+        self,
+        message: Optional[str] = None,
+        *,
+        hard_cancel: bool = False,
+        tool_reason: Optional[str] = None,
+    ) -> None:
         """
         Request the agent to interrupt its current tool-calling loop.
         
@@ -3279,6 +3285,8 @@ class AIAgent:
             hard_cancel: Mark this as an explicit stop rather than a redirect or
                          incoming-message interrupt. Compression may honor this
                          atomic signal even while ordinary interrupts are masked.
+            tool_reason: Trusted fixed category safe to expose in tool output.
+                         Arbitrary diagnostic or caller text belongs in message.
         
         Example (CLI):
             # In a separate input thread:
@@ -3318,7 +3326,7 @@ class AIAgent:
         # ordinary interrupts may carry the user's full next message, which
         # must not be copied into tool output.
         tool_interrupt_reason = (
-            (message or "explicit stop requested")
+            (tool_reason or "explicit stop requested")
             if hard_cancel
             else ("user sent a new message" if message else "user interrupt")
         )
@@ -3405,7 +3413,11 @@ class AIAgent:
         for child in children_copy:
             try:
                 if hard_cancel:
-                    request_hard_interrupt(child, message)
+                    request_hard_interrupt(
+                        child,
+                        message,
+                        tool_reason=tool_interrupt_reason,
+                    )
                 else:
                     child.interrupt(message)
             except Exception as e:
@@ -3413,7 +3425,12 @@ class AIAgent:
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
 
-    def hard_interrupt(self, message: Optional[str] = None) -> None:
+    def hard_interrupt(
+        self,
+        message: Optional[str] = None,
+        *,
+        tool_reason: Optional[str] = None,
+    ) -> None:
         """Request an explicit stop while preserving ``interrupt()`` ABI.
 
         Frontends can feature-detect this method and fall back to the legacy
@@ -3422,7 +3439,12 @@ class AIAgent:
         # Deliberately bypass dynamic dispatch: subclasses written against the
         # legacy interrupt(message=None) ABI may override interrupt without the
         # newer keyword-only hard_cancel argument.
-        AIAgent.interrupt(self, message, hard_cancel=True)
+        AIAgent.interrupt(
+            self,
+            message,
+            hard_cancel=True,
+            tool_reason=tool_reason,
+        )
 
     def clear_interrupt(self, *, preserve_redirect: bool = False) -> bool:
         """Clear the interrupt request and per-thread tool signal.

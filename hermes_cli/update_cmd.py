@@ -6652,6 +6652,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Use official managed_python_env() isolation so third-party
             # UV_PYTHON_INSTALL_DIR (e.g. WorkBuddy) cannot hijack uv; then
             # point VIRTUAL_ENV at this install's venv.
+            from hermes_cli.managed_uv import managed_python_env
+
             uv_env = managed_python_env()
             uv_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
             if _m()._is_termux_env(uv_env):

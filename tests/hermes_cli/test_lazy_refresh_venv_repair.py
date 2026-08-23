@@ -232,10 +232,17 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
     with pytest.raises(RestoreReached):
         m._cmd_update_impl(args, gateway_mode=False)
 
+    # The repair env is now built via managed_python_env (#83914): third-party
+    # UV vars are stripped, managed pins set, then VIRTUAL_ENV re-pointed at
+    # the install's venv. Assert the CONTRACT, not the raw environ copy.
+    from hermes_cli.managed_uv import managed_python_env
+
+    expected_env = managed_python_env()
+    expected_env["VIRTUAL_ENV"] = str(tmp_path / "venv")
     assert refresh_calls == [
         (
             ["uv", "pip"],
-            {**m.os.environ, "VIRTUAL_ENV": str(tmp_path / "venv")},
+            expected_env,
             snapshot,
         )
     ]
@@ -243,7 +250,7 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
         (
             tool_snapshot,
             ["uv", "pip"],
-            {**m.os.environ, "VIRTUAL_ENV": str(tmp_path / "venv")},
+            expected_env,
         )
     ]
 

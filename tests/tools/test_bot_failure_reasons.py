@@ -60,6 +60,14 @@ def test_closed_vocabulary_contains_every_code():
         ("missing config: no provider block in config.yaml", fr.MISSING_CONFIG),
         ("model 'gpt-9' not found", fr.MODEL_UNAVAILABLE),
         ("The model `foo-bar` does not exist", fr.MODEL_UNAVAILABLE),
+        ("model_not_found", fr.MODEL_UNAVAILABLE),
+        ("status: 401 unauthorized", fr.PROVIDER_AUTH_OR_ACCESS),
+        ("upstream server error", fr.PROVIDER_SERVER_ERROR),
+        # bare numbers WITHOUT a status-code context must not classify —
+        # they feed AUTO_RETRYABLE and a misfire could auto-retry a
+        # permanent local failure (review finding on #93101).
+        ("gate check failed: error at line 502 of module", fr.UNKNOWN),
+        ("took 429 ms to fail", fr.UNKNOWN),
         ("something inexplicable happened", fr.UNKNOWN),
         ("", fr.UNKNOWN),
         (None, fr.UNKNOWN),

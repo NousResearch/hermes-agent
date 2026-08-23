@@ -76,21 +76,32 @@ _RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
             r"authentication_error|invalid api key"
-            r"|(?:error code:?\s*|status(?:\s*code)?:?\s*|\b)(?:401|403)\b",
+            r"|(?:error code:?\s*|status(?:\s*code)?:?\s*|http\s*)(?:401|403)\b",
             re.IGNORECASE,
         ),
         PROVIDER_AUTH_OR_ACCESS,
     ),
     (
-        re.compile(r"\b402\b|out of funds|quota|balance", re.IGNORECASE),
+        re.compile(
+            r"(?:error code:?\s*|status(?:\s*code)?:?\s*|http\s*)402\b"
+            r"|out of funds|quota|balance",
+            re.IGNORECASE,
+        ),
         PROVIDER_QUOTA_LIMIT,
     ),
     (
-        re.compile(r"\b429\b|rate.?limit", re.IGNORECASE),
+        re.compile(
+            r"(?:error code:?\s*|status(?:\s*code)?:?\s*|http\s*)429\b|rate.?limit",
+            re.IGNORECASE,
+        ),
         PROVIDER_RATE_LIMIT,
     ),
     (
-        re.compile(r"\b5\d{2}\b|server error|overloaded", re.IGNORECASE),
+        re.compile(
+            r"(?:error code:?\s*|status(?:\s*code)?:?\s*|http\s*)5\d{2}\b"
+            r"|server error|overloaded",
+            re.IGNORECASE,
+        ),
         PROVIDER_SERVER_ERROR,
     ),
     (

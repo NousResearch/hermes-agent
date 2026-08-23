@@ -608,6 +608,7 @@ export const zh: Translations = {
         overlayShapes: { ellipse: '椭圆', strip: '竖条' },
         overlayColor: '遮罩颜色',
         overlayColorTheme: '跟随主题',
+        overlayFeather: '遮罩羽化',
         overlayWidth: '遮罩宽度',
         overlayHeight: '遮罩高度',
         overlayPosition: '遮罩位置',

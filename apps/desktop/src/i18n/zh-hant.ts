@@ -434,6 +434,7 @@ export const zhHant = defineLocale({
         overlayShapes: { ellipse: '橢圓', strip: '直條' },
         overlayColor: '遮罩顏色',
         overlayColorTheme: '跟隨主題',
+        overlayFeather: '遮罩羽化',
         overlayWidth: '遮罩寬度',
         overlayHeight: '遮罩高度',
         overlayPosition: '遮罩位置',

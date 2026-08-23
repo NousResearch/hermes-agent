@@ -502,6 +502,7 @@ export const ar = defineLocale({
         overlayShapes: { ellipse: 'بيضاوي', strip: 'شريط عمودي' },
         overlayColor: 'لون القناع',
         overlayColorTheme: 'اتبع السمة',
+        overlayFeather: 'تنعيم حواف القناع',
         overlayWidth: 'عرض القناع',
         overlayHeight: 'ارتفاع القناع',
         overlayPosition: 'موضع القناع',

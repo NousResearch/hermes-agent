@@ -1086,6 +1086,13 @@ def _consume_codex_event_stream(
     collected_output_items: List[Any] = []
     collected_text_deltas: List[str] = []
     has_tool_calls = False
+    # Function calls announced via output_item.added but not yet confirmed by
+    # output_item.done, keyed by item id.  Some OpenAI-compatible backends omit
+    # per-item done events on a successful completion (upstream evidence:
+    # anomalyco/opencode#37159); these are settled from accumulated stream
+    # state at the terminal event so the tool call executes instead of being
+    # silently dropped.
+    pending_function_calls: Dict[str, Dict[str, Any]] = {}
     first_delta_fired = False
     active_message_phase: str | None = None
     commentary_text_deltas: List[str] = []
@@ -1143,6 +1150,12 @@ def _consume_codex_event_stream(
                 active_message_phase = None
             if "function_call" in str(item_type):
                 has_tool_calls = True
+                item_id = str(_item_field(item, "id", ""))
+                if item_id:
+                    pending_function_calls[item_id] = {
+                        "item": item,
+                        "arguments": "",
+                    }
             continue
 
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
@@ -1181,7 +1194,24 @@ def _consume_codex_event_stream(
 
         if "function_call" in event_type:
             has_tool_calls = True
-            # fall through — function_call items still get added on output_item.done
+            # Accumulate streamed argument deltas for calls announced via
+            # output_item.added, so a stream that completes without per-item
+            # done events can still be settled from accumulated state.
+            if "delta" in event_type:
+                delta_args = _event_field(event, "delta", "")
+                pending = pending_function_calls.get(str(_event_field(event, "item_id", "")))
+                if pending is not None and delta_args:
+                    pending["arguments"] += delta_args
+                continue
+            if event_type.endswith("function_call_arguments.done"):
+                done_args = _event_field(event, "arguments", "")
+                pending = pending_function_calls.get(str(_event_field(event, "item_id", "")))
+                if pending is not None and done_args:
+                    # Per-item arguments.done is authoritative for the
+                    # accumulated string when the item itself never lands.
+                    pending["arguments"] = done_args
+                continue
+            # other function_call frames fall through — function_call items still get added on output_item.done
 
         if "reasoning" in event_type and "delta" in event_type:
             reasoning_text = _event_field(event, "delta", "")
@@ -1207,6 +1237,9 @@ def _consume_codex_event_stream(
             done_item = _event_field(event, "item")
             if done_item is not None:
                 collected_output_items.append(done_item)
+                # Confirmed by the authoritative per-item done event; remove
+                # from pending so it is not settled twice.
+                pending_function_calls.pop(str(_item_field(done_item, "id", "")), None)
                 done_phase = _item_field(done_item, "phase", None)
                 done_phase = done_phase.strip().lower() if isinstance(done_phase, str) else None
                 if done_phase == "commentary" and on_commentary_message is not None:
@@ -1278,6 +1311,23 @@ def _consume_codex_event_stream(
         )]
     else:
         output = []
+
+    # Settle function calls that were announced via output_item.added and
+    # streamed argument deltas but never confirmed by output_item.done: some
+    # OpenAI-compatible backends omit per-item done events on a successful
+    # completion (anomalyco/opencode#37159).  Done items stay authoritative;
+    # this only fills the gap so the call executes instead of vanishing.
+    if pending_function_calls and terminal_status == "completed":
+        for pending in pending_function_calls.values():
+            item = pending["item"]
+            output.append(SimpleNamespace(
+                type="function_call",
+                id=_item_field(item, "id", None),
+                call_id=_item_field(item, "call_id", None),
+                name=_item_field(item, "name", None),
+                arguments=pending["arguments"],
+                status="completed",
+            ))
 
     # If the stream ended without any terminal event AND produced no usable
     # content (no items, no text deltas), surface that as a RuntimeError so

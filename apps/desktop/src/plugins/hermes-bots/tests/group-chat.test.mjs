@@ -1148,7 +1148,7 @@ test('closing an older selected group does not clear the newer selection', () =>
 })
 
 test('source contract: active group styling suppresses bot styling', () => {
-  assert.match(pluginSource, /const isActive = !activeGroup && isActiveRosterBot\(bot, focusedOwner\)/)
+  assert.match(pluginSource, /function botRowOwnsWorkspace\([\s\S]*?if \(activeGroup\) \{\s*return false/)
   assert.match(pluginSource, /active && 'bg-\(--ui-row-active-background\)'/)
   assert.match(pluginSource, /active: groupChatName === row\.name/)
 })
@@ -1261,10 +1261,10 @@ test('disband: a running room leaves an epoch-bumped empty tombstone so in-fligh
     'disbanded name is immediately reusable — tombstone does not hold it')
 })
 
-test('source contract: workspace header offers disband behind a ConfirmDialog', () => {
+test('source contract: workspace deletion stays behind a ConfirmDialog', () => {
   assert.match(pluginSource, /function disbandGroupChat\(/)
-  assert.match(pluginSource, /Disband group chat\?/)
-  assert.match(pluginSource, /title: `Disband the \$\{group\} group chat`/)
+  assert.match(pluginSource, /title: 'Delete group chat\?'/)
+  assert.match(pluginSource, /await disbandGroupChat\(deletingGroup\.name, deletingGroup\.members\)/)
 })
 
 test('default profile speaks as Hermes in room transcripts, not @default', () => {
@@ -1328,9 +1328,10 @@ test('source contract: room messages carry the speaker avatar via the roster app
   assert.match(workspace, /image && !isBackfilledFacePng\(image\)/)
   assert.match(workspace, /jsx\(BotFace, \{\s*shape,\s*color,\s*image: photo \? image : null,\s*size: 24,\s*name: entry\.from\.name/)
 
-  // Header shows the member faces (capped) with a names tooltip.
-  assert.match(workspace, /members\.slice\(0, 6\)\.map\(/)
-  assert.match(workspace, /title: members\.map\(b => displayName\(b, botRosterMeta\(b, allMeta\)\)\)\.join\(', '\)/)
+  // Header stays quiet: member avatars belong to messages, while the header
+  // exposes a concise count instead of an overlapping face stack.
+  assert.doesNotMatch(workspace, /members\.slice\(0, 6\)\.map\(/)
+  assert.match(workspace, /children: members\.length > 0 && availableMembers < members\.length \? availabilityLabel : `\$\{members\.length\} bots`/)
 })
 
 test('stranded harvest: a timed-out turn whose reply landed late posts into the room and clears the marker', async () => {

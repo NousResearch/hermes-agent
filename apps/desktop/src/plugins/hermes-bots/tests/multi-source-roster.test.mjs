@@ -661,3 +661,12 @@ test('resolveRosterMentions: @hermes in this chat is not a handoff to yourself',
   assert.equal(hits.length, 1)
   assert.equal(hits[0].connectionId, 'mac-mini')
 })
+
+test('source contract: active roster queries use the SDK ambient owner route', () => {
+  assert.doesNotMatch(source, /activeBotRoute/)
+  assert.equal(
+    source.match(/requestForBot\(activeBot, 'profiles\.list', \{\}\)/g)?.length,
+    2,
+    'roster hydration and the session sweep must both use the upstream ambient-owner route'
+  )
+})

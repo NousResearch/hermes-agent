@@ -205,7 +205,7 @@ test('render: BotRow tolerates a fresh bot with no sessions yet', () => {
   assert.doesNotMatch(text, /No conversations yet/)
 })
 
-test('render: a remote bot keeps its identity while gateway details stay in the tooltip', () => {
+test('render: a remote default uses its gateway identity without repeating it', () => {
   const r = renderRuntime()
   const tree = r.__BotRow({
     bot: {
@@ -217,14 +217,13 @@ test('render: a remote bot keeps its identity while gateway details stay in the 
     },
     onEdit: () => undefined
   })
-  const name = findNode(tree, node => node.type === 'span' && textOf(node) === 'Hermes')
+  const name = findNode(tree, node => node.type === 'span' && textOf(node) === 'Studio over SSH')
   const button = findNode(tree, node => node.type === 'button' && node.props?.['aria-label'])
 
   assert.ok(name)
   assert.ok(button)
-  assert.match(button.props['aria-label'], /Hermes/)
   assert.match(button.props['aria-label'], /Studio over SSH/)
-  assert.doesNotMatch(textOf(button), /Studio over SSH/)
+  assert.equal((textOf(button).match(/Studio over SSH/g) || []).length, 1)
 })
 
 test('render: BotRow previews the pinned canonical chat, not an unrelated latest session', () => {

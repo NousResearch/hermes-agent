@@ -156,7 +156,7 @@ function trackInboundActivity(roster) {
 
     // Activity in the exact bot owner the user is currently looking at is
     // already visible — never badge the open chat or its same-named twin.
-    if ($selectedRosterKey.get() === key) {
+    if ($selectedBot.get() === key) {
       continue
     }
 
@@ -164,7 +164,7 @@ function trackInboundActivity(roster) {
 
     // Roster-hidden bots stay quiet: the unread flag above accumulates
     // silently (unhiding reveals the badge) but a hidden bot never toasts.
-    if (isBotHidden(bot, $botMeta.get())) {
+    if (botRosterMeta(bot, $botMeta.get())?.hidden) {
       continue
     }
 
@@ -226,9 +226,9 @@ let botsHomeClose = null
 let suppressBotsHomeReopen = false
 
 function saveSelectedRosterBot(bot) {
-  const key = botSelectionKey(bot)
+  const key = botRosterKey(bot)
 
-  $selectedBot.set(key)
+  $selectedBot.set(botSelectionKey(bot))
   $selectedRosterKey.set(key)
 
   try {
@@ -239,7 +239,7 @@ function saveSelectedRosterBot(bot) {
 }
 
 function clearSelectedRosterBot(bot) {
-  clearSelectedRosterKey(botSelectionKey(bot))
+  clearSelectedRosterKey(botRosterKey(bot))
 }
 
 /** Drop the persisted selection when it is exactly this key — the caller has
@@ -1918,12 +1918,8 @@ async function sweepBotProfileSessions() {
     // back to the active gateway's own profile list (local bots; remote
     // sources get covered by the next sweep once the roster cache exists).
     try {
-      const route = await activeBotRoute()
-      const res = await requestForBot(
-        route ? { name: route.profile, sourceScoped: true, route } : { name: 'default' },
-        'profiles.list',
-        {}
-      )
+      const activeBot = { name: String(host.state.profile?.get?.() || 'default').trim() || 'default' }
+      const res = await requestForBot(activeBot, 'profiles.list', {})
       roster = Array.isArray(res?.profiles) ? res.profiles : []
     } catch {
       return
@@ -4224,7 +4220,16 @@ function useRoster() {
       if (typeof host.agents === 'function') {
         try {
           const union = await host.agents()
-          return { ...mergeMultiSourceRoster(local, union, activeConnectionId, $lastRoster.get()), fetchedAt: issuedAt }
+          const previous = $lastRoster.get().filter(row => !row?.ghost)
+          const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
+          const sources = Array.isArray(union?.sources) ? union.sources : []
+
+          return {
+            ...merged,
+            profiles: (merged?.profiles || []).map(row => annotateBotSource(row, sources)),
+            sources,
+            fetchedAt: issuedAt
+          }
         } catch {
           /* older build or roster failure — single-source list stands */
         }
@@ -4300,7 +4305,6 @@ function cachedUnionRoster() {
 function mergeMultiSourceRoster(local, union, activeConnectionId, previous = []) {
   const localProfiles = Array.isArray(local?.profiles) ? local.profiles : []
   const agents = Array.isArray(union?.agents) ? union.agents : []
-  const sources = Array.isArray(union?.sources) ? union.sources : []
   // A live id of null/'' means the window is on the unscoped local backend
   // (legacy hosts reported null for mode:'local'; the SDK now reports
   // 'local'). Do NOT fall back to registry primary when the third argument
@@ -4446,10 +4450,7 @@ function mergeMultiSourceRoster(local, union, activeConnectionId, previous = [])
       const name = String(row?.name || '').trim()
       const key = `${connectionId}::${name || 'default'}`
 
-      // Ghost owners are presentation-only placeholders. Re-adopting one as
-      // a cached remote row would keep it alive after the selection changes
-      // and let an identity without its durable handle leak into shared state.
-      if (row?.ghost || !row?.remoteSource || !connectionId || !name || present.has(key)) {
+      if (!row?.remoteSource || !connectionId || !name || present.has(key)) {
         continue
       }
 
@@ -4464,7 +4465,7 @@ function mergeMultiSourceRoster(local, union, activeConnectionId, previous = [])
     }
   }
 
-  return { ...local, profiles: profiles.map(row => annotateBotSource(row, sources)), sources }
+  return { ...local, profiles }
 }
 
 /** The @handle users tag a bot with. Multi-source rosters precompute the
@@ -5333,7 +5334,7 @@ async function ensureBotMetadata(bot) {
  *  resolves a canonical-chat id. */
 async function openRosterBot(bot) {
   const generation = ++botOpenGeneration
-  const key = botSelectionKey(bot)
+  const key = botRosterKey(bot)
   const meta = botRosterMeta(bot, $botMeta.get())
   // Keep the currently visible group as a fallback until this explicit action
   // has actually fronted a new owner; a failed home open must not steal the
@@ -7333,7 +7334,7 @@ function botRowOwnsWorkspace(
   }
 
   if (botsHomeFronted || !botChatFocused) {
-    return selectedRosterKey === botSelectionKey(bot)
+    return selectedRosterKey === botRosterKey(bot)
   }
 
   return isActiveRosterBot(bot, focusedOwner)
@@ -12458,22 +12459,17 @@ function BotsHomeView() {
                   children: description
                 })
               : null,
-            unavailable || !bot.remoteSource
-              ? jsx('p', {
-                  className: cn(
-                    'mt-4 max-w-lg text-xs leading-5',
-                    unavailable ? 'text-amber-700 dark:text-amber-300' : 'text-(--ui-text-tertiary)'
-                  ),
-                  children: unavailable
-                    ? sourceRemoved
-                      ? `${gateway} was removed. Choose another bot from the sidebar.`
-                      : `${gateway} is unavailable. Retry when it is back online.`
-                    : 'Open this bot’s continuous chat. Its background work keeps running when you switch away.'
-                })
-              : jsx('p', {
-                  className: 'mt-4 max-w-lg text-xs leading-5 text-(--ui-text-tertiary)',
-                  children: `This bot lives on ${gateway}. Mention it from any Bot Chat to send it a message.`
-                }),
+            jsx('p', {
+              className: cn(
+                'mt-4 max-w-lg text-xs leading-5',
+                unavailable ? 'text-amber-700 dark:text-amber-300' : 'text-(--ui-text-tertiary)'
+              ),
+              children: unavailable
+                ? sourceRemoved
+                  ? `${gateway} was removed. Choose another bot from the sidebar.`
+                  : `${gateway} is unavailable. Retry when it is back online.`
+                : 'Open this bot’s continuous chat. Its background work keeps running when you switch away.'
+            }),
             unavailable && !sourceRemoved
               ? jsx(Button, {
                   variant: 'secondary',
@@ -12482,15 +12478,13 @@ function BotsHomeView() {
                   onClick: retrySource,
                   children: 'Retry'
                 })
-              : bot.remoteSource
-                ? null
-                : jsx(Button, {
-                    variant: 'secondary',
-                    size: 'sm',
-                    className: 'mt-5',
-                    onClick: () => void openRosterBot(bot),
-                    children: 'Open chat'
-                  })
+              : jsx(Button, {
+                  variant: 'secondary',
+                  size: 'sm',
+                  className: 'mt-5',
+                  onClick: () => void openRosterBot(bot),
+                  children: 'Open chat'
+                })
           ]
         })
       })
@@ -13338,22 +13332,28 @@ function BotsPane() {
             className: 'flex min-w-0 items-center gap-1 px-2.5 pb-1.5',
             children: [
               showRosterSearch
-                ? jsx(SearchField, {
-                    'aria-label': 'Search bots and group chats',
-                    containerClassName: cn(
-                      'min-w-0 flex-1',
-                      query ? 'opacity-100!' : 'opacity-50 focus-within:opacity-100'
-                    ),
-                    inputClassName:
-                      'w-full text-[0.75rem] placeholder:text-(--ui-text-tertiary)',
-                    placeholder: 'Search bots and group chats…',
-                    value: query,
-                    onChange: setQuery
-                  })
-                : jsx('span', { className: 'min-w-0 flex-1' }),
+                ? jsx(
+                    SearchField,
+                    {
+                      'aria-label': 'Search bots and group chats',
+                      containerClassName: cn(
+                        'min-w-0 flex-1',
+                        query ? 'opacity-100!' : 'opacity-50 focus-within:opacity-100'
+                      ),
+                      inputClassName:
+                        'w-full text-[0.75rem] placeholder:text-(--ui-text-tertiary)',
+                      placeholder: 'Search bots and group chats…',
+                      value: query,
+                      onChange: setQuery
+                    },
+                    'roster-search'
+                  )
+                : jsx('span', { className: 'min-w-0 flex-1' }, 'roster-search-spacer'),
               showRosterFilters
-                ? jsxs(DropdownMenu, {
-                    children: [
+                ? jsxs(
+                    DropdownMenu,
+                    {
+                      children: [
                       jsx(Tip, {
                         label: activeFilterCount ? `Filters (${activeFilterCount} active)` : 'Filter roster',
                         children: jsx(DropdownMenuTrigger, {
@@ -13466,8 +13466,10 @@ function BotsPane() {
                             : null
                         ]
                       })
-                    ]
-                  })
+                      ]
+                    },
+                    'roster-filters'
+                  )
                 : null
             ]
           })
@@ -13554,10 +13556,12 @@ function BotsPane() {
                               row.kind === 'group' ? renderGroupRow(row) : renderBotRow(row.bot)
                             )),
                         showHiddenSection
-                          ? jsxs('div', {
-                              ref: hiddenSectionRef,
-                              className: 'mt-1 border-t border-(--ui-stroke-tertiary) pt-1',
-                              children: [
+                          ? jsxs(
+                              'div',
+                              {
+                                ref: hiddenSectionRef,
+                                className: 'mt-1 border-t border-(--ui-stroke-tertiary) pt-1',
+                                children: [
                                 hasRosterConstraint
                                   ? jsxs('div', {
                                       className:
@@ -13596,8 +13600,10 @@ function BotsPane() {
                                         children: 'No hidden bots match these filters.'
                                       })
                                   : null
-                              ]
-                            })
+                                ]
+                              },
+                              'hidden-section'
+                            )
                           : null
                       ]
                     })

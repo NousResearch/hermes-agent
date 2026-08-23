@@ -127,7 +127,6 @@ globalThis.__home = {
   ghostRosterOwner,
   rosterWithSelectedOwner,
   reconcileRosterSelection,
-  saveRosterPreference,
   saveSelectedRosterBot,
   clearSelectedRosterBot,
   clearSelectedRosterKey,
@@ -197,7 +196,7 @@ test('selection persists the source-qualified key, not the bare profile name', (
   assertNothingRouted(t, 'saving a selection')
 })
 
-test('a remote selection never redirects the bare-name consumers at a local twin', () => {
+test('a remote selection keeps the exact-owner selection distinct from a local twin', () => {
   const t = load()
   t.setPluginCtx({ storage: { set: () => undefined } })
 
@@ -210,8 +209,8 @@ test('a remote selection never redirects the bare-name consumers at a local twin
   assert.equal(t.$selectedRosterKey.get(), 'mac-mini::default')
   assert.equal(
     t.$selectedBot.get(),
-    'default',
-    'the Cronjobs/slash-guard name tracker keeps its LOCAL owner — a remote row must not claim it'
+    'mac-mini::default',
+    'the shared selection follows the same exact owner as the roster workspace'
   )
 })
 
@@ -331,10 +330,7 @@ test('a hidden bot is not auto-selected', () => {
   const sources = [{ connectionId: 'local', kind: 'local', label: 'This device', reachable: true }]
   const roster = [{ connectionId: 'local', name: 'hidden-one' }, { connectionId: 'local', name: 'writer' }]
 
-  // Hidden is a source-qualified Desktop preference, so hide the exact row.
-  t.saveRosterPreference(roster[0], 'hidden', true)
-
-  t.reconcileRosterSelection(roster, sources, {})
+  t.reconcileRosterSelection(roster, sources, { 'hidden-one': { hidden: true } })
 
   assert.equal(
     t.$selectedRosterKey.get(),

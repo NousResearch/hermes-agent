@@ -48,6 +48,7 @@ function loadOpenPath({ openSession, request }) {
       ? { bot: { name: owner }, key: owner, name: owner, route: null }
       : { bot: owner, key: owner?.name, name: owner?.name, route: owner?.route || null }),
     backendTargetProfile: (route, name) => route?.targetProfile || name,
+    botWorkspaceOwnerKey: bot => `bot:${bot?.connectionId ? `${bot.connectionId}::` : ''}${bot?.name || 'default'}`,
     requestForBot: (_bot, method, params) => context.host.request(method, params),
     window: { setTimeout: callback => callback() }
   }

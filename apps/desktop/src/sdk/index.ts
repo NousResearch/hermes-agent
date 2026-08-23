@@ -142,6 +142,7 @@ const $focusedSessionOwner = computed(
   [$focusedStoredSessionId, $sessions, $activeGatewayProfile, $connection],
   (focused, sessions, activeProfile, connection): PluginFocusedSessionOwner | null => {
     const activeConnectionId = String(connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')).trim()
+
     const fallback = {
       connectionId: activeConnectionId,
       profile: normalizeProfileKey(activeProfile)

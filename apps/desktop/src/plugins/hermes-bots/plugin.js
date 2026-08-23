@@ -4190,7 +4190,6 @@ function useRoster() {
       // come from the ACTIVE gateway's profiles.list — the canonical Bot
       // Chat is resolved server-side by NAME (the "Bot Chat" registry row),
       // so the roster never sends session pointers.
-      const route = await activeBotRoute()
       // Refresh the alias identity index alongside the roster: alias routes
       // (Desktop profile → remote backend root) are what let a backend row
       // keep its configured friendly identity after activation (#89131).
@@ -4203,9 +4202,9 @@ function useRoster() {
           /* keep the previous alias index */
         }
       }
-      const activeBot = route
-        ? { name: route.profile, sourceScoped: true, route }
-        : { name: String(host.state.profile?.get?.() || 'default').trim() || 'default' }
+      // Owner routing is ambient in the SDK now (post-#92731): requestForBot
+      // resolves the active owner itself, no captured route needed here.
+      const activeBot = { name: String(host.state.profile?.get?.() || 'default').trim() || 'default' }
       const local = await requestForBot(activeBot, 'profiles.list', {})
       // Newer backends inject the teammate-messaging protocol into every
       // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not

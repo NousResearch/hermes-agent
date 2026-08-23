@@ -409,4 +409,6 @@ def test_profiles_list_does_not_wait_out_write_lock(home):
     assert elapsed < 3.0, elapsed
     row = _row(rows, "default")
     assert row["name"] == "default"
-    assert "canonical_session" in row
+    canonical = row["canonical_session"]
+    assert canonical is not None, "WAL readers must still resolve Bot Chat under a live writer"
+    assert "hello from bot" in canonical["preview"]

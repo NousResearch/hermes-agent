@@ -858,6 +858,14 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
         and "reasoning_details" in msg
         and ("unrecognized" in msg or "unknown" in msg or "invalid" in msg)
     ):
+        # The keyword net is deliberately broad: a 400 that merely mentions
+        # reasoning_details plus one of these words routes here even when the
+        # real problem was elsewhere. Recovery is harmless either way (retry
+        # omits the field), but log it so one-round-trip misroutes stay visible.
+        logger.warning(
+            "400 mentions reasoning_details + unrecognized/unknown/invalid "
+            "(strict-proxy shape) — routing to thinking_signature strip-and-retry"
+        )
         return _v(_R.thinking_signature, should_compress=False)
     # Anthropic long-context tier gate (429 "extra usage" + "long context").
     if status == 429 and "extra usage" in msg and "long context" in msg:

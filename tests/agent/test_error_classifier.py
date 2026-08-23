@@ -2112,3 +2112,60 @@ class TestAuthErrorNamesOffRouteEndpoint:
         for base_url in ("", "https://api.anthropic.com/v1"):
             result = classify_api_error(e, provider="anthropic", model="claude", base_url=base_url)
             assert result.message == "API keys are not supported by this endpoint.", base_url
+
+
+class TestUnrecognizedReasoningDetailsSelfHeal:
+    """Strict proxies (Palantir Foundry, ...) 400 on the echoed
+    ``reasoning_details`` field. Must route to the thinking_signature
+    strip-and-retry path instead of hard-aborting as format_error.
+    See PR #93035."""
+
+    def test_foundry_unrecognized_property_shape_self_heals(self):
+        """Exact Foundry wire shape (lowercase keywords)."""
+        e = MockAPIError(
+            "400 INVALID_ARGUMENT unsafeParams "
+            "{unrecognizedProperty=reasoning_details} Request contained an unrecognized field",
+            status_code=400,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+
+    def test_capitalized_unknown_field_variant_self_heals(self):
+        """Capitalized proxy variants must match too — regression for the
+        case-sensitive first cut."""
+        e = MockAPIError(
+            "Unknown field: reasoning_details",
+            status_code=400,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+
+    def test_capitalized_unrecognized_argument_variant_self_heals(self):
+        e = MockAPIError(
+            "Unrecognized request argument supplied: reasoning_details",
+            status_code=400,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+
+    def test_mention_without_keywords_stays_non_retryable(self):
+        """Negative control: a 400 that mentions reasoning_details but none of
+        the keyword markers keeps failing fast."""
+        e = MockAPIError(
+            "reasoning_details failed validation",
+            status_code=400,
+        )
+        result = classify_api_error(e)
+        assert result.reason != FailoverReason.thinking_signature
+
+    def test_other_400_without_reasoning_details_untouched(self):
+        e = MockAPIError(
+            "invalid_request_error: bad tool schema",
+            status_code=400,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False

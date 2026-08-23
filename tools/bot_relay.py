@@ -588,15 +588,17 @@ def acquire_turn_lock(
     """Hold ``profile``'s cross-process turn lock for the ``with`` body.
 
     Non-blocking flock probe + short-sleep retry loop up to the budget
-    (``bot_mode.turn_wait_seconds`` unless ``timeout_seconds`` is given), so
-    waiters acquire roughly in arrival order without ever deadlocking.
-    Raises :class:`TurnBusyError` when the budget is exhausted. On platforms
-    without ``fcntl`` (Windows) the lock degrades to a no-op — those
-    installs never had this race path in production.
+    (``bot_mode.turn_wait_seconds`` unless ``timeout_seconds`` is given).
+    No ordering guarantee among waiters — whichever probe lands first after
+    release wins — but every waiter is bounded by the budget, so no
+    deadlock. Raises :class:`TurnBusyError` when the budget is exhausted.
+    On platforms without ``fcntl`` (Windows) the lock degrades to a no-op —
+    those installs never had this race path in production.
     """
     try:
         import fcntl
     except ImportError:  # pragma: no cover — Windows
+        logger.debug("bot turn lock disabled: fcntl unavailable on this platform")
         yield turn_lock_path(root, profile)
         return
 

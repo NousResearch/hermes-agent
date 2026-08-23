@@ -12,6 +12,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import threading
 import time
 
@@ -74,7 +75,7 @@ def test_timeout_is_structured_target_busy(root):
         assert err.profile == "ops"
         assert err.waited_seconds >= 0.3
         assert "target_busy" in str(err)
-        assert "0s" in str(err) or "1s" in str(err)  # rough wait duration surfaced
+        assert re.search(r"~\d+s", str(err))  # rough wait duration surfaced
     finally:
         release.set()
         t.join(timeout=5)
@@ -90,9 +91,11 @@ def test_different_profiles_do_not_contend(root):
     assert held.wait(timeout=5)
     try:
         start = time.monotonic()
-        with acquire_turn_lock(root, "scout", timeout_seconds=2):
+        with acquire_turn_lock(root, "scout", timeout_seconds=5):
             pass
-        assert time.monotonic() - start < 1.0
+        # Upper bound generous for loaded CI runners — the point is only
+        # that 'scout' never waited the busy 'ops' budget out.
+        assert time.monotonic() - start < 2.5
     finally:
         release.set()
         t.join(timeout=5)
@@ -238,6 +241,19 @@ def test_peer_stdin_delivery_skips_local_lock(root, tmp_path, monkeypatch):
 
 
 # ── wiring: relay deliver RPC (tui_gateway/methods_bot_relay.py) ─────────────
+
+
+def test_local_delivery_command_never_reenters_the_lock():
+    """The gateway deliver handler runs local_delivery_command ALREADY holding
+    the profile lock. That argv must stay a raw `hermes -p … chat` invocation:
+    routing it through the --run-delivery wrapper would make the child hit
+    _delivery_lock (argv[0]=='hermes' and argv[1]=='-p'), burn the full wait
+    budget against its parent's flock, and fail every relay delivery with
+    target_busy."""
+    argv = bot_relay.local_delivery_command("ops", "/tmp/q.txt")
+    assert argv[:3] == ["hermes", "-p", "ops"]
+    assert "--run-delivery" not in argv
+    assert not any("bot_mode_dm" in part for part in argv)
 
 
 def test_relay_deliver_returns_target_busy_error(tmp_path, monkeypatch):

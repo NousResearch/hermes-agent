@@ -115,7 +115,10 @@ def _(rid, params: dict) -> dict:
                 f.write(message)
             # Per-profile turn lock (#93091): serialize with any other
             # delivery turn into this profile (relay or local message_agent).
-            # The lock covers only the turn execution window.
+            # The lock covers only the turn execution window. Worst-case
+            # handler hold is lock wait (bot_mode.turn_wait_seconds, default
+            # 120s) + the 600s turn timeout below — clients calling
+            # bot_relay.deliver must tolerate ~720s before assuming failure.
             with acquire_turn_lock(root, resolved):
                 proc = subprocess.run(
                     local_delivery_command(resolved, tmp),

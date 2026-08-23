@@ -15,7 +15,7 @@ vi.mock('@/hermes', () => ({
 
 import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $sessions } from '@/store/session'
+import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 
 import { $unconfirmedPinWrites, resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
 
@@ -33,6 +33,8 @@ beforeAll(() => {
 
 beforeEach(() => {
   $sessions.set([])
+  $cronSessions.set([])
+  $messagingSessions.set([])
   $pinnedSessionIds.set([])
   // The mirror/pending/unconfirmed maps are module-global, so one test's
   // bookkeeping would otherwise suppress the next test's PATCH (or fence out
@@ -43,6 +45,8 @@ beforeEach(() => {
 
 afterEach(() => {
   $sessions.set([])
+  $cronSessions.set([])
+  $messagingSessions.set([])
   $pinnedSessionIds.set([])
 })
 
@@ -103,6 +107,32 @@ describe('watchSessionPins', () => {
 })
 
 describe('watchSessionPins remote pull', () => {
+  it('adopts and durably unpins a backend-only messaging pin', async () => {
+    $messagingSessions.set([row('photon-pin', { pinned: true, profile: 'messages', source: 'photon' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual(['photon-pin'])
+    patch.mockClear()
+
+    $pinnedSessionIds.set([])
+    await flush()
+
+    expect(patch).toHaveBeenCalledWith('photon-pin', false, 'messages')
+  })
+
+  it('adopts and durably unpins a backend-only cron pin', async () => {
+    $cronSessions.set([row('cron-pin', { pinned: true, profile: 'jobs', source: 'cron' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual(['cron-pin'])
+    patch.mockClear()
+
+    $pinnedSessionIds.set([])
+    await flush()
+
+    expect(patch).toHaveBeenCalledWith('cron-pin', false, 'jobs')
+  })
+
   it('adopts a pin another app made', async () => {
     $sessions.set([row('remote', { pinned: true })])
     await flush()

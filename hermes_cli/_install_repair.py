@@ -185,13 +185,35 @@ def _load_console_script_names(root: Path) -> list[str]:
         return []
 
 
-def _quarantine_running_hermes_exe(scripts_dir: Path) -> list[tuple[Path, Path]]:
+class ShimQuarantineError(RuntimeError):
+    """A live shim could not be renamed aside — the venv is contended (#87331).
+
+    Raised BEFORE the install command runs. Callers (early-pass recovery,
+    core-marker recovery) catch it like any install failure: the
+    update-incomplete marker survives and a later launch retries once the
+    holder exits — the contended venv is never mutated.
+    """
+
+    def __init__(self, failed_shims: list[str]):
+        self.failed_shims = list(failed_shims)
+        super().__init__(
+            "could not quarantine live shim(s): " + ", ".join(self.failed_shims)
+        )
+
+
+def _quarantine_running_hermes_exe(
+    scripts_dir: Path, *, failed_out: list[str] | None = None
+) -> list[tuple[Path, Path]]:
     """Rename live hermes*.exe shims aside so the installer can rewrite them.
 
     Windows blocks REPLACE on a running .exe but allows RENAME. Best-effort:
     silently skips anything that cannot be renamed. Returns (original,
     quarantined) pairs. stdlib-only — the console-script set comes from
     pyproject ``[project.scripts]`` (fallback: the well-known trio).
+
+    ``failed_out``: when provided, names of shims that could not be renamed
+    are appended so the caller can refuse instead of mutating a contended
+    venv (#87331 fail-closed).
     """
     if not _is_windows():
         return []
@@ -211,7 +233,8 @@ def _quarantine_running_hermes_exe(scripts_dir: Path) -> list[tuple[Path, Path]]
             os.rename(shim, quarantined)
             moved.append((shim, quarantined))
         except OSError:
-            pass
+            if failed_out is not None:
+                failed_out.append(shim.name)
     return moved
 
 
@@ -229,11 +252,24 @@ def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
 def _run_install_cmd(cmd: list[str], *, env: dict | None, root: Path) -> None:
     """Run an install command with quarantine protection for venv shims.
 
+    Fail-closed (#87331): when any live shim cannot be renamed aside, the
+    venv is contended and the installer would die partway on the same locks
+    — raise :class:`ShimQuarantineError` WITHOUT running it. The caller's
+    marker-keeping failure handling turns that into "retry next launch".
+
     Raises CalledProcessError on install failure (callers implement the
     per-extra fallback ladder).
     """
     scripts_dir = _venv_scripts_dir(root) if _is_windows() else None
-    moved = _quarantine_running_hermes_exe(scripts_dir) if scripts_dir else []
+    failed: list[str] = []
+    moved = (
+        _quarantine_running_hermes_exe(scripts_dir, failed_out=failed)
+        if scripts_dir
+        else []
+    )
+    if failed:
+        _restore_quarantined_exes(moved)
+        raise ShimQuarantineError(failed)
     try:
         subprocess.run(cmd, cwd=root, check=True, env=env)
     finally:

@@ -11935,6 +11935,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         model_config_patch: Optional[Dict[str, Any]] = None,
         watermark: Optional[int] = None,
         lock_holder: Optional[str] = None,
+        tail_count: int = 0,
     ) -> int:
         """Non-destructive in-place compaction for a single durable session id.
 
@@ -11973,6 +11974,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         held by that holder and unexpired — a compression whose lease was
         reclaimed (crash cleanup, TTL expiry, competing writer) fails the
         commit instead of clobbering the winner's transcript.
+
+        *tail_count* (default 0) names how many of the LAST rows of
+        *compacted_messages* are the verbatim carried-forward tail the
+        compressor protected rather than summarized (#86366). Those rows'
+        ORIGINALS — which this call archives as a side effect of the blanket
+        soft-archive — are superseded byte-identical duplicates, not
+        "summarized away" content, so they are stamped rewind-style
+        (``active=0, compacted=0``, hidden from search_messages) instead of
+        ``compacted=1``. Without this the tail originals satisfy the recall
+        filter alongside their live clones and session_search returns every
+        carried-forward message once per compaction. Callers that cannot know
+        their tail shape keep the historical archive-everything behavior.
 
         ``message_count`` is set to the ACTIVE count after commit, matching
         what the live load returns. ``model_config_patch`` is merged into the
@@ -12033,13 +12046,42 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # rewind/undo's active=0+compacted=0, which means "user took it
             # back"). search_messages includes compacted=1 rows by default so
             # the pre-compaction transcript stays discoverable; live-context
-            # loads (active=1 only) still exclude them. Tail originals are
-            # archived too — their clones (below) carry the live copy.
-            conn.execute(
-                "UPDATE messages SET active = 0, compacted = 1 "
-                "WHERE session_id = ? AND active = 1",
-                (session_id,),
-            )
+            # loads (active=1 only) still exclude them. Tail originals whose
+            # verbatim clones ride inside *compacted_messages* (tail_count)
+            # are superseded duplicates instead (#86366): they get the
+            # rewind-style flags so they stop matching the recall filter.
+            # Rewind-target ids: the originals of the carried-forward tail
+            # rows (tail_count), captured BEFORE any flag flips. Named apart
+            # from the watermark `tail_ids` below on purpose — the two are
+            # different sets (#86366).
+            rewind_tail_ids: Optional[list[int]] = None
+            if tail_count > 0:
+                tail_rows = conn.execute(
+                    "SELECT id FROM messages "
+                    "WHERE session_id = ? AND active = 1 ORDER BY id DESC LIMIT ?",
+                    (session_id, int(tail_count)),
+                ).fetchall()
+                rewind_tail_ids = [int(row["id"]) for row in tail_rows]
+
+            if rewind_tail_ids:
+                placeholders = ",".join("?" for _ in rewind_tail_ids)
+                conn.execute(
+                    "UPDATE messages SET active = 0, compacted = 0 "
+                    f"WHERE session_id = ? AND id IN ({placeholders})",
+                    [session_id, *rewind_tail_ids],
+                )
+                conn.execute(
+                    "UPDATE messages SET active = 0, compacted = 1 "
+                    "WHERE session_id = ? AND active = 1 "
+                    f"AND id NOT IN ({placeholders})",
+                    [session_id, *rewind_tail_ids],
+                )
+            else:
+                conn.execute(
+                    "UPDATE messages SET active = 0, compacted = 1 "
+                    "WHERE session_id = ? AND active = 1",
+                    (session_id,),
+                )
             inserted, tool_calls_total = self._insert_message_rows(
                 conn, session_id, compacted_messages
             )

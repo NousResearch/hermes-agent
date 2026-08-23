@@ -4594,6 +4594,15 @@ def compress_context(
                         PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY,
                     )
 
+                    # Tail rows carry the _compaction_tail tag from compress()
+                    # (#86366): their originals must be archived as
+                    # superseded duplicates (rewind-style), not compacted=1.
+                    _tail_count = sum(
+                        1
+                        for m in reversed(compressed)
+                        if isinstance(m, dict)
+                        and m.pop("_compaction_tail", None)
+                    )
                     agent._session_db.archive_and_compact(
                         agent.session_id,
                         compressed,
@@ -4602,6 +4611,7 @@ def compress_context(
                         },
                         watermark=_commit_watermark,
                         lock_holder=_lock_holder,
+                        tail_count=_tail_count,
                     )
                     split_status = "in_place_committed"
                     # Post-commit contract (#98450, mirrors

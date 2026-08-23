@@ -2996,6 +2996,64 @@ class GatewaySlashCommandsMixin:
             f"any memory/skill updates will be reported when done."
         )
 
+    async def _handle_review_command(self, event: "MessageEvent") -> str:
+        """Handle /review — spawn an independent reviewer subagent.
+
+        Snapshots the last 10 chat messages from the session's cached agent,
+        wraps them (plus any argument text) in a reviewer briefing, and
+        dispatches a full-privilege background subagent on the async
+        delegation rail. The completed review re-enters this session as a
+        normal async-delegation completion turn.
+
+        The approval session-key contextvar is only bound during agent
+        turns, so it is bound explicitly here — without it the completion
+        event would carry no gateway route and never re-enter this chat.
+        """
+        args = (event.get_command_args() or "").strip()
+        quick_key = self._session_key_for_source(event.source) if event.source else None
+        if not quick_key:
+            return "Review unavailable (no session)."
+        if quick_key in self._running_agents:
+            return "Agent is running — wait for the turn to finish, then /review."
+
+        agent = None
+        cache_lock = getattr(self, "_agent_cache_lock", None)
+        if cache_lock is not None:
+            with cache_lock:
+                cached = self._agent_cache.get(quick_key)
+                agent = cached[0] if isinstance(cached, tuple) else cached if cached else None
+        if agent is None:
+            return "Nothing to review yet — send a message first."
+
+        snapshot = list(getattr(agent, "_session_messages", None) or [])
+
+        from tools.approval import (
+            reset_current_session_key,
+            set_current_session_key,
+        )
+
+        loop = asyncio.get_running_loop()
+
+        def _dispatch():
+            token = set_current_session_key(quick_key)
+            try:
+                from agent.review_engine import start_review
+
+                return start_review(agent, snapshot, args)
+            finally:
+                reset_current_session_key(token)
+
+        try:
+            result = await loop.run_in_executor(None, _dispatch)
+        except ValueError as exc:
+            return str(exc)
+        except Exception as exc:
+            return f"/review failed to start: {exc}"
+
+        from agent.review_engine import format_dispatch_note
+
+        return format_dispatch_note(result, args)
+
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
         """Handle /subgoal for gateway platforms (mirror of CLI handler).
 

@@ -3606,6 +3606,7 @@ def delegate_task(
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
     parent_agent=None,
+    credentials_cfg: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks, or control
@@ -3699,8 +3700,16 @@ def delegate_task(
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
+    #
+    # ``credentials_cfg`` (internal callers only — never model-facing) is a
+    # per-call override shaped like the delegation config section
+    # ({provider, model, base_url, api_key, api_mode}); the /review engine
+    # uses it to route its reviewer subagent onto ``auxiliary.review``
+    # without touching the global delegation pin.
     try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
+        creds = _resolve_delegation_credentials(
+            credentials_cfg if credentials_cfg else cfg, parent_agent
+        )
     except ValueError as exc:
         return tool_error(str(exc))
 

@@ -13970,12 +13970,57 @@ _LIVE_SESSION_DIRECT_COMMANDS = frozenset(
         "models",
         "prompt",
         "rename",
+        "review",
         "status",
         "usage",
     }
 )
 
 _ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
+
+
+def _format_live_review_output(session: Optional[dict], arg: str) -> str:
+    """Dispatch /review against the live TUI/desktop session's agent.
+
+    Spawns the reviewer subagent on the async delegation rail; the TUI
+    notification poller already drains async-delegation completions for the
+    owning session, so the finished review re-enters this chat as a normal
+    completion turn. The dispatch stamps the parent agent's durable
+    session_id as the completion's session_key (the delegate_task CLI-path
+    fallback), which is exactly what ``_session_owns_notification_event``
+    matches against.
+    """
+    if session is None:
+        return "Nothing to review yet — send a message first."
+    if _session_uses_compute_host(session):
+        return (
+            "/review runs on the local agent only for now — this session's "
+            "agent lives on a remote compute host."
+        )
+    agent = session.get("agent")
+    if agent is None:
+        return "Nothing to review yet — send a message first."
+    if session.get("running"):
+        return "session busy — wait for the current turn to finish, then /review"
+
+    history_lock = session.get("history_lock")
+    if history_lock is not None:
+        with history_lock:
+            snapshot = list(session.get("history", []))
+    else:
+        snapshot = list(session.get("history", []))
+    if not snapshot:
+        snapshot = list(getattr(agent, "_session_messages", None) or [])
+
+    try:
+        from agent.review_engine import format_dispatch_note, start_review
+
+        result = start_review(agent, snapshot, arg or "")
+    except ValueError as exc:
+        return str(exc)
+    except Exception as exc:
+        return f"/review failed to start: {exc}"
+    return format_dispatch_note(result, arg or "")
 
 
 def _format_live_usage_output(session: dict) -> str:
@@ -14183,6 +14228,8 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
         if session is None:
             return "(._.) No active agent -- send a message first."
         return _format_live_usage_output(session)
+    if name == "review":
+        return _format_live_review_output(session, arg)
     if name == "history":
         if session is None:
             return "No conversation history yet."

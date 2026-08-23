@@ -12314,6 +12314,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_heartbeat_command(cmd_original)
         elif canonical == "refine":
             self._handle_refine_command(cmd_original)
+        elif canonical == "review":
+            self._handle_review_command(cmd_original)
         elif canonical == "loop":
             self._handle_loop_command(cmd_original)
         elif canonical == "moa":

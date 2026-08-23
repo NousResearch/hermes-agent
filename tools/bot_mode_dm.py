@@ -40,6 +40,7 @@ the same wake shape every Bot Mode agent already knows.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -517,18 +518,41 @@ def _unlink_dm_file(path: str) -> None:
         pass
 
 
+def _delivery_lock(argv: list[str], *, stdin_file: bool):
+    """Per-profile turn lock context for a LOCAL teammate delivery (#93091).
+
+    Local deliveries (``hermes -p <profile> chat …``) collide with relay
+    deliveries into the same profile — both run a Bot Chat turn on this
+    install — so the turn window is serialized on the shared cross-process
+    lock in ``tools.bot_relay``. Peer transports (stdin mode) run on the
+    remote gateway; their turn is locked THERE by its own deliver path.
+    """
+    if stdin_file or len(argv) < 3 or argv[0] != "hermes" or argv[1] != "-p":
+        return contextlib.nullcontext()
+    from tools.bot_relay import acquire_turn_lock
+
+    home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
+    return acquire_turn_lock(_hermes_root(home), argv[2])
+
+
 def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
-    """Run one DM transport and remove its plaintext file after consumption."""
+    """Run one DM transport and remove its plaintext file after consumption.
+
+    The turn execution window (not the enqueue) holds the target profile's
+    cross-process lock, so two deliveries into one profile queue instead of
+    racing; a bounded wait ends in a structured 'target_busy' refusal.
+    """
     try:
-        if stdin_file:
-            # Keep the file open until the transport exits; cleanup occurs
-            # after subprocess.run returns, not merely after stdin reaches EOF.
-            with open(dm_file, "r", encoding="utf-8") as stream:
-                return subprocess.run(argv, stdin=stream, check=False).returncode
-        return subprocess.run(
-            [*argv, "--query-file", dm_file],
-            check=False,
-        ).returncode
+        with _delivery_lock(argv, stdin_file=stdin_file):
+            if stdin_file:
+                # Keep the file open until the transport exits; cleanup occurs
+                # after subprocess.run returns, not merely after stdin reaches EOF.
+                with open(dm_file, "r", encoding="utf-8") as stream:
+                    return subprocess.run(argv, stdin=stream, check=False).returncode
+            return subprocess.run(
+                [*argv, "--query-file", dm_file],
+                check=False,
+            ).returncode
     finally:
         _unlink_dm_file(dm_file)
 
@@ -639,6 +663,14 @@ def _delivery_main(args: list[str]) -> int:
     try:
         return _run_delivery(args[3:], dm_file, stdin_file=stdin_file)
     except Exception as exc:
+        # 'target_busy' extends the #93091 item-1 structured refusal enum:
+        # the queued delivery gave up after its bounded wait — surface the
+        # structured payload on stdout so the completion notification carries
+        # it back to the sending agent.
+        reason = getattr(exc, "reason", "")
+        if reason == "target_busy":
+            print(json.dumps({"error": str(exc), "reason": "target_busy"}))
+            return 1
         print(
             f"message_agent delivery failed: {type(exc).__name__}: {exc}",
             file=sys.stderr,

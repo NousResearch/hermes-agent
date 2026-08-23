@@ -1093,56 +1093,56 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
 def _profile_skill_names(profile: str) -> set[str]:
     """Return skills resolvable from a specific profile's catalog."""
     from agent.skill_utils import (
+        get_disabled_skill_names,
+        get_project_skills_dirs,
+        get_scan_ordered_skills_dirs,
         is_excluded_skill_path,
-        parse_frontmatter,
-        skill_matches_platform,
+        iter_project_skill_files,
         iter_skill_index_files,
+        parse_frontmatter,
+        skill_matches_environment,
+        skill_matches_platform,
     )
     from hermes_cli.profiles import get_profile_dir
 
     profile_home = get_profile_dir(profile)
-    skill_roots = [profile_home / "skills"]
-    disabled: set[str] = set()
-    config_path = profile_home / "config.yaml"
-    if config_path.is_file():
-        try:
-            import yaml
-
-            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            skills_config = config.get("skills", {})
-            disabled.update(str(name) for name in skills_config.get("disabled", []) or [])
-            platform_disabled = skills_config.get("platform_disabled", {}) or {}
-            if isinstance(platform_disabled, dict):
-                disabled.update(str(name) for name in platform_disabled.get(sys.platform, []) or [])
-            configured = skills_config.get("external_dirs", [])
-            if isinstance(configured, str):
-                configured = [configured]
-            skill_roots.extend(
-                Path(os.path.expandvars(os.path.expanduser(str(root))))
-                for root in configured
-                if str(root).strip()
+    previous_home = os.environ.get("HERMES_HOME")
+    os.environ["HERMES_HOME"] = str(profile_home)
+    try:
+        disabled = get_disabled_skill_names(platform=sys.platform)
+        project_dirs = set(get_project_skills_dirs())
+        skill_roots = get_scan_ordered_skills_dirs()
+        names: set[str] = set()
+        for root in skill_roots:
+            if not root.is_dir():
+                continue
+            files = (
+                iter_project_skill_files(root)
+                if root in project_dirs
+                else iter_skill_index_files(root, "SKILL.md")
             )
-        except Exception:
-            pass
-
-    names: set[str] = set()
-    for root in skill_roots:
-        if not root.is_dir():
-            continue
-        for skill_md in iter_skill_index_files(root, "SKILL.md"):
-            if is_excluded_skill_path(skill_md, root=root):
-                continue
-            try:
-                frontmatter, _ = parse_frontmatter(
-                    skill_md.read_text(encoding="utf-8-sig", errors="replace")
-                )
-            except Exception:
-                continue
-            if skill_matches_platform(frontmatter):
+            for skill_md in files:
+                if is_excluded_skill_path(skill_md, root=root):
+                    continue
+                try:
+                    frontmatter, _ = parse_frontmatter(
+                        skill_md.read_text(encoding="utf-8-sig", errors="replace")
+                    )
+                except Exception:
+                    continue
+                if not skill_matches_platform(frontmatter):
+                    continue
+                if not skill_matches_environment(frontmatter):
+                    continue
                 name = str(frontmatter.get("name") or skill_md.parent.name).strip()
                 if name and name not in disabled:
                     names.add(name)
-    return names
+        return names
+    finally:
+        if previous_home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = previous_home
 
 
 def _resolve_project_link(

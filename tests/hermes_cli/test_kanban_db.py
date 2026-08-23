@@ -225,6 +225,38 @@ def test_create_task_accepts_profile_skill_and_preserves_none_empty_semantics(
         assert kb.get_task(conn, empty_task).skills == []
 
 
+def test_create_task_resolves_profile_relative_external_skill_dir(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    _write_profile_skill(profile_home / "external", "external-skill")
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  external_dirs: [external]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="profile external skill", assignee="coder", skills=["external-skill"]
+        )
+
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id).skills == ["external-skill"]
+
+
+def test_create_task_rejects_serialized_disabled_skill_list(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    _write_profile_skill(profile_home, "disabled-skill")
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  disabled: '[\"disabled-skill\"]'\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="disabled-skill"):
+            kb.create_task(
+                conn, title="disabled skill", assignee="coder", skills=["disabled-skill"]
+            )
+
+
 
 # ---------------------------------------------------------------------------
 # Links + dependency resolution

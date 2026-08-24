@@ -274,27 +274,60 @@ def _profile_key_for_respawn(
     return "profile:default"
 
 
+def _normalized_home_for_compare(home: str) -> str:
+    """Resolve *home* for install-identity comparison (#94030).
+
+    Same normalization ``_profile_key_for_respawn`` applies to ``home:``
+    keys, so symlinked / differently-spelled roots compare equal.
+    """
+    try:
+        return os.path.normcase(str(Path(home).resolve()))
+    except (OSError, RuntimeError, ValueError):
+        return os.path.normcase(home)
+
+
 def _filter_dashboard_respawn_candidates(
     candidates: list[tuple[int, list[str], str | None]],
+    *,
+    own_home: str | None = None,
 ) -> list[list[str]]:
     """Select which killed manual backends to respawn after ``hermes update``.
 
-    Each candidate is ``(pid, argv, hermes_home)``.
+    Each candidate is ``(pid, argv, hermes_home)``.  *own_home* is the
+    updating install's home; it defaults to this process's
+    ``get_hermes_home()`` and exists as a parameter so tests can pin it.
 
-    Rules (#78821):
+    Rules (#78821, #94030):
     1. Never resurrect Desktop ephemeral ``serve|dashboard --port 0``
        backends — Desktop (``HERMES_DESKTOP_CHILD_PID``) owns their
        lifecycle.  These are also the PPID-1 orphans that previously
        multiplied across updates because ``--port 0`` always binds a
        fresh free port.
-    2. Dedupe by normalized cmdline (identical argv → one respawn).
-    3. Cap at most one managed backend per profile / ``HERMES_HOME``.
+    2. Never replay a backend from a **foreign** ``HERMES_HOME``.  The
+       respawn below is argv-only (no ``env=`` replay), so a foreign
+       backend would come back running on the *updating* install's home
+       and steal the foreign install's fixed port, leaving its own
+       supervisor (launchd/systemd/...) to crash-loop on ``EADDRINUSE``
+       (#94030).  A foreign install's backend is owned by that install's
+       supervisor/user.  An unreadable home (``None``) stays eligible —
+       keep the pre-#94030 behaviour when we cannot tell.
+    3. Dedupe by normalized cmdline (identical argv → one respawn).
+    4. Cap at most one managed backend per profile / ``HERMES_HOME``.
 
     Intentionally does **not** blanket-skip every PPID-1 process: a prior
     ``hermes update`` respawn detaches with ``start_new_session=True``, so
     fixed-port manual backends are reparented to init and must still be
     eligible for the next update's #40449 restart.
     """
+    if own_home is None:
+        try:
+            from hermes_constants import get_hermes_home
+
+            own_home = str(get_hermes_home())
+        except Exception:
+            own_home = ""
+    own_key = _normalized_home_for_compare(own_home) if own_home else ""
+
     selected: list[list[str]] = []
     seen_cmdlines: set[tuple[str, ...]] = set()
     seen_profiles: set[str] = set()
@@ -303,6 +336,8 @@ def _filter_dashboard_respawn_candidates(
         if not argv:
             continue
         if _is_ephemeral_port_zero_backend(argv):
+            continue
+        if own_key and hermes_home and _normalized_home_for_compare(hermes_home) != own_key:
             continue
         norm = _normalize_dashboard_cmdline(argv)
         if norm in seen_cmdlines:

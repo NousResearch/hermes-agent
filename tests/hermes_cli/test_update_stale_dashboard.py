@@ -633,10 +633,13 @@ class TestFilterDashboardRespawnCandidates:
         home = "/tmp/hermes-home-a"
         a = ["hermes", "dashboard", "--port", "8300"]
         b = ["hermes", "dashboard", "--port", "8301"]
-        out = _filter_dashboard_respawn_candidates([
-            (1, a, home),
-            (2, b, home),
-        ])
+        out = _filter_dashboard_respawn_candidates(
+            [
+                (1, a, home),
+                (2, b, home),
+            ],
+            own_home=home,
+        )
         assert out == [a]
 
     def test_profile_flag_and_profiles_home_share_cap(self):
@@ -656,22 +659,108 @@ class TestFilterDashboardRespawnCandidates:
         a = ["hermes", "--profile", "default", "dashboard", "--port", "8300"]
         b = ["hermes", "dashboard", "--port", "8301"]
         home = "/home/u/.hermes"
-        out = _filter_dashboard_respawn_candidates([
-            (1, a, home),
-            (2, b, home),
-        ])
+        out = _filter_dashboard_respawn_candidates(
+            [
+                (1, a, home),
+                (2, b, home),
+            ],
+            own_home=home,
+        )
         assert out == [a]
 
-    def test_distinct_dot_hermes_homes_do_not_share_cap(self):
+    def test_foreign_home_backend_is_not_replayed(self):
+        """A backend from another HERMES_HOME is never respawned (#94030).
+
+        Its supervisor/user owns its lifecycle; an argv-only replay would
+        run on the updating install's home and steal the foreign install's
+        fixed port.  Supersedes the old "distinct homes don't share a cap"
+        pin — a foreign home is no longer replayed at all.
+        """
         from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
 
         a = ["hermes", "dashboard", "--port", "8300"]
         b = ["hermes", "dashboard", "--port", "8301"]
-        out = _filter_dashboard_respawn_candidates([
-            (1, a, "/home/u/.hermes"),
-            (2, b, "/work/project/.hermes"),
+        out = _filter_dashboard_respawn_candidates(
+            [
+                (1, a, "/home/u/.hermes"),
+                (2, b, "/work/project/.hermes"),
+            ],
+            own_home="/home/u/.hermes",
+        )
+        assert out == [a]
+
+    def test_skips_sidecar_fixed_port_serve_on_foreign_home(self):
+        """The reported case: launchd-supervised sidecar serve, fixed port."""
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        argv = [
+            "/Users/u/.hermes-sidecar/hermes-agent/venv/bin/python",
+            "-m", "hermes_cli.main",
+            "serve", "--host", "127.0.0.1", "--port", "9118", "--skip-build",
+        ]
+        out = _filter_dashboard_respawn_candidates(
+            [(15364, argv, "/Users/u/.hermes-lifeos")],
+            own_home="/Users/u/.hermes",
+        )
+        assert out == []
+
+    def test_matching_hermes_home_is_kept(self):
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        argv = ["hermes", "serve", "--host", "127.0.0.1", "--port", "9118"]
+        out = _filter_dashboard_respawn_candidates(
+            [(15364, argv, "/Users/u/.hermes")],
+            own_home="/Users/u/.hermes",
+        )
+        assert out == [argv]
+
+    def test_symlinked_hermes_home_compares_equal(self, tmp_path):
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        real = tmp_path / "real-home"
+        real.mkdir()
+        link = tmp_path / "linked-home"
+        try:
+            link.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+        argv = ["hermes", "serve", "--port", "9118"]
+        out = _filter_dashboard_respawn_candidates(
+            [(15364, argv, str(real))],
+            own_home=str(link),
+        )
+        assert out == [argv]
+
+    def test_unknown_home_stays_eligible(self):
+        """Unreadable HERMES_HOME (env probe failed) keeps pre-#94030 behaviour."""
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        argv = ["hermes", "dashboard", "--port", "8300"]
+        out = _filter_dashboard_respawn_candidates(
+            [(1, argv, None)],
+            own_home="/home/u/.hermes",
+        )
+        assert out == [argv]
+
+    def test_own_home_defaults_to_get_hermes_home(self, monkeypatch):
+        from pathlib import Path
+
+        import hermes_constants
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        monkeypatch.setattr(
+            hermes_constants, "get_hermes_home", lambda: Path("/home/u/.hermes")
+        )
+        argv = ["hermes", "serve", "--port", "9118"]
+        foreign = _filter_dashboard_respawn_candidates([
+            (1, argv, "/Users/u/.hermes-lifeos"),
         ])
-        assert out == [a, b]
+        assert foreign == []
+        own = _filter_dashboard_respawn_candidates([
+            (1, argv, "/home/u/.hermes"),
+        ])
+        assert own == [argv]
 
     def test_keeps_fixed_port_serve(self):
         from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates

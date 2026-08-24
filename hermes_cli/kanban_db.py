@@ -1090,12 +1090,21 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
-def _profile_skill_names(profile: str) -> set[str]:
-    """Return skills resolvable from a specific profile's catalog."""
+def _profile_skill_names(
+    profile: str, *, project_workspace: Optional[Path] = None
+) -> set[str]:
+    """Return the skills resolvable from a specific profile's catalog.
+
+    This deliberately scans the profile's own skill roots rather than the
+    process-global active profile.  Kanban rows are shared across profiles,
+    so validating against the caller's catalog would allow a task to refer to
+    a skill unavailable when its assigned worker starts.
+    """
     from agent.skill_utils import (
         get_disabled_skill_names,
         get_project_skills_dirs,
-        get_scan_ordered_skills_dirs,
+        get_external_skills_dirs,
+        get_skills_dir,
         is_excluded_skill_path,
         iter_project_skill_files,
         iter_skill_index_files,
@@ -1110,8 +1119,19 @@ def _profile_skill_names(profile: str) -> set[str]:
     os.environ["HERMES_HOME"] = str(profile_home)
     try:
         disabled = get_disabled_skill_names(platform=sys.platform)
-        project_dirs = set(get_project_skills_dirs())
-        skill_roots = get_scan_ordered_skills_dirs()
+        project_dirs = set()
+        if project_workspace is not None:
+            previous_cwd = os.environ.get("TERMINAL_CWD")
+            os.environ["TERMINAL_CWD"] = str(project_workspace)
+            try:
+                project_dirs = set(get_project_skills_dirs())
+            finally:
+                if previous_cwd is None:
+                    os.environ.pop("TERMINAL_CWD", None)
+                else:
+                    os.environ["TERMINAL_CWD"] = previous_cwd
+        skill_roots = list(project_dirs)
+        skill_roots.extend([get_skills_dir(), *get_external_skills_dirs()])
         names: set[str] = set()
         for root in skill_roots:
             if not root.is_dir():
@@ -1269,6 +1289,39 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
             "capabilities (e.g. `web`, `browser`, `terminal`)."
         )
     return cleaned
+def _skill_validation_workspace(
+    workspace_kind: str,
+    workspace_path: Optional[str],
+    *,
+    board: Optional[str],
+    project_repo: Optional[str],
+) -> Optional[Path]:
+    """Return the worker cwd when it is safely derivable before insertion.
+
+    Project-local skills must never be resolved from the creator's cwd.  A
+    concrete absolute ``dir`` path is already the worker workspace; a
+    project-linked worktree can use its known repository anchor.  For other
+    workspace shapes, project discovery is deliberately omitted until runtime
+    rather than guessing from this process's cwd.
+    """
+    if workspace_path:
+        candidate = Path(workspace_path).expanduser()
+        if candidate.is_absolute():
+            return candidate
+        return None
+    if workspace_kind == "worktree" and project_repo:
+        return Path(project_repo) / ".worktrees" / "__kanban_skill_validation__"
+    if workspace_kind == "worktree":
+        try:
+            metadata = read_board_metadata(board if board else get_current_board())
+            default_workdir = metadata.get("default_workdir")
+            if default_workdir:
+                candidate = Path(default_workdir).expanduser()
+                if candidate.is_absolute():
+                    return candidate
+        except Exception:
+            pass
+    return None
 
 
 def create_task(
@@ -1331,7 +1384,15 @@ def create_task(
             from hermes_cli.profiles import get_active_profile_name
 
             profile = get_active_profile_name()
-        available_skills = _profile_skill_names(profile)
+        available_skills = _profile_skill_names(
+            profile,
+            project_workspace=_skill_validation_workspace(
+                workspace_kind,
+                workspace_path,
+                board=board,
+                project_repo=project_repo,
+            ),
+        )
         unavailable = [name for name in skills_list if name not in available_skills]
         if unavailable:
             raise ValueError(
@@ -1341,8 +1402,11 @@ def create_task(
                 "Install or enable the skill in that profile before creating the task."
             )
 
-    # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
-    # race may insert twice, the next lookup stabilises on the newest.
+    # Idempotency check — return an existing task instead of a duplicate.
+    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
+    # and to avoid holding a write lock during the lookup. Race is
+    # acceptable: two concurrent creators with the same key might both
+    # insert, at which point both rows exist but the next lookup stabilises.
     if idempotency_key:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "

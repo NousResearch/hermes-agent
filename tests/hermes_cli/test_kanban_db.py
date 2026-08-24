@@ -257,6 +257,71 @@ def test_create_task_rejects_serialized_disabled_skill_list(kanban_home):
             )
 
 
+def _write_project_skill(repo: Path, name: str) -> None:
+    skill_dir = repo / ".agents" / "skills" / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Project skill.\n---\n",
+        encoding="utf-8",
+    )
+
+
+def test_create_task_resolves_project_skill_from_dir_workspace(
+    kanban_home, monkeypatch, tmp_path
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    workspace = tmp_path / "worker-project"
+    _init_git_repo(workspace)
+    _write_project_skill(workspace, "worker-only")
+    creator = tmp_path / "creator-cwd"
+    creator.mkdir()
+    monkeypatch.chdir(creator)
+    (profile_home / "config.yaml").write_text(
+        f"skills:\n  trusted_project_dirs: [{workspace}]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="worker project skill",
+            assignee="coder",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+            skills=["worker-only"],
+        )
+
+    assert task_id
+
+
+def test_create_task_rejects_skill_only_in_creator_cwd(
+    kanban_home, monkeypatch, tmp_path
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    creator = tmp_path / "creator-project"
+    _init_git_repo(creator)
+    _write_project_skill(creator, "creator-only")
+    workspace = tmp_path / "worker-project"
+    _init_git_repo(workspace)
+    monkeypatch.chdir(creator)
+    (profile_home / "config.yaml").write_text(
+        f"skills:\n  trusted_project_dirs: [{creator}]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="creator-only.*coder"):
+            kb.create_task(
+                conn,
+                title="creator project skill",
+                assignee="coder",
+                workspace_kind="dir",
+                workspace_path=str(workspace),
+                skills=["creator-only"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
 
 # ---------------------------------------------------------------------------
 # Links + dependency resolution

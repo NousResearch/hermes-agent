@@ -690,6 +690,53 @@ fi
 # causing Permission denied on terminal, file, and browser tools.
 chmod 755 /root
 
+# 8c. claudish thinking-block SDK patch (2026-08-24 incident)
+# claudish (192.168.0.46) started emitting Anthropic-style thinking
+# content blocks WITHOUT the required `signature` field. The Anthropic
+# SDK's streaming accumulate_event() then leaves event.content_block as
+# a plain dict and crashes on .model_dump() -> every LLM cron failed
+# 7/7 retries (inbox-poll, pr-review). Fix: sitecustomize module that
+# retypes dict thinking blocks into proper ThinkingBlock instances
+# before accumulation. Idempotent: skips if .pth already present.
+SP_DIR="/opt/hermes/.venv/lib/python3.13/site-packages"
+if [ ! -f "$SP_DIR/zz_claudish_thinking_patch.pth" ]; then
+    cat > "$SP_DIR/zz_claudish_thinking_patch.py" <<'ZCEOF'
+"""claudish/GLM emits thinking content blocks without the required signature
+field; the Anthropic SDK then leaves event.content_block as a plain dict and
+accumulate_event() crashes on .model_dump(). Retype them properly.
+
+Loaded via zz_claudish_thinking_patch.pth in site-packages.
+Operator patch 2026-08-24 (po-2026): incident inbox-poll/pr-review 7/7
+AttributeError after claudish .46 started emitting signature-less thinking.
+"""
+import anthropic.lib.streaming._messages as _am
+from anthropic.types import ThinkingBlock
+
+if getattr(_am.accumulate_event, "__name__", "") != "_retyped_accumulate":
+    _orig_accumulate = _am.accumulate_event
+
+    def _retyped_accumulate(*args, **kwargs):
+        ev = kwargs.get("event") if "event" in kwargs else (args[0] if args else None)
+        cb = getattr(ev, "content_block", None)
+        if isinstance(cb, dict) and cb.get("type") == "thinking":
+            try:
+                ev.content_block = ThinkingBlock(
+                    type="thinking",
+                    thinking=cb.get("thinking") or "",
+                    signature=cb.get("signature") or "",
+                )
+            except Exception:
+                pass
+        return _orig_accumulate(*args, **kwargs)
+
+    _am.accumulate_event = _retyped_accumulate
+ZCEOF
+    echo "import zz_claudish_thinking_patch" > "$SP_DIR/zz_claudish_thinking_patch.pth"
+    echo "  -> claudish thinking patch installed (sitecustomize)"
+else
+    echo "  -> claudish thinking patch already present"
+fi
+
 # 9. Verify everything
 echo ""
 echo "=== VERIFICATION ==="

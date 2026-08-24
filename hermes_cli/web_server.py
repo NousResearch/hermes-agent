@@ -19312,8 +19312,42 @@ def start_server(
             except Exception:
                 pass
 
+            # Name the exact reason the gate engaged. When the bind itself is
+            # loopback the ONLY trigger is dashboard.public_url — an operator
+            # (or a stale config.yaml entry) declared external exposure. Say
+            # so explicitly, print the offending URL, and give the two exits:
+            # configure auth, or remove public_url to restore local-only mode.
+            if host in _LOOPBACK_HOST_VALUES:
+                _public_url_for_msg = ""
+                try:
+                    from hermes_cli.dashboard_auth.prefix import (
+                        resolve_public_url as _rpu,
+                    )
+
+                    _public_url_for_msg = _rpu()
+                except Exception:
+                    pass
+                _gate_reason = (
+                    f"dashboard.public_url is set to "
+                    f"{_public_url_for_msg or '<a non-loopback URL>'} — an "
+                    f"operator-declared external URL engages the auth gate "
+                    f"even on a loopback bind"
+                )
+                _local_only_hint = (
+                    "If this dashboard should be LOCAL-ONLY (no reverse "
+                    "proxy), remove dashboard.public_url from config.yaml "
+                    "(and unset HERMES_DASHBOARD_PUBLIC_URL) to restore the "
+                    "unauthenticated loopback mode.\n"
+                )
+            else:
+                _gate_reason = (
+                    f"the auth gate engages on non-loopback binds ({host})"
+                )
+                _local_only_hint = ""
+
             _fix_hint = (
-                "Configure an auth provider before exposing the dashboard:\n"
+                _local_only_hint
+                + "Configure an auth provider before exposing the dashboard:\n"
                 "  • Password: set dashboard.basic_auth.username + "
                 "password_hash in config.yaml\n"
                 "    (hash with: python -c \"from "
@@ -19354,18 +19388,16 @@ def start_server(
                 pass
             if skip_reasons:
                 raise SystemExit(
-                    f"Refusing to bind dashboard to {host} — the auth gate "
-                    f"engages on non-loopback binds, but no auth providers "
-                    f"are registered.\n\n"
+                    f"Refusing to bind dashboard to {host} — {_gate_reason}, "
+                    f"but no auth providers are registered.\n\n"
                     f"Bundled providers reported these issues:\n"
                     + "\n".join(skip_reasons)
                     + "\n\n"
                     + _fix_hint
                 )
             raise SystemExit(
-                f"Refusing to bind dashboard to {host} — the auth gate is "
-                f"required by the bind or configured public URL, but no auth "
-                f"providers are registered.\n\n" + _fix_hint
+                f"Refusing to bind dashboard to {host} — {_gate_reason}, "
+                f"but no auth providers are registered.\n\n" + _fix_hint
             )
         _log.info(
             "Dashboard binding to %s with auth gate enabled. Providers: %s",

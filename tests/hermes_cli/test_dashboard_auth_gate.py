@@ -315,3 +315,72 @@ def test_start_server_loopback_public_url_without_provider_fails_closed(monkeypa
     assert web_server.app.state.auth_required is True
 
 
+def test_loopback_public_url_fail_closed_message_is_actionable(monkeypatch):
+    """The refusal must name public_url, print its value, and give both exits.
+
+    Upgrade compatibility: an operator with a stale dashboard.public_url and
+    no auth provider must not face a mystery-locked dashboard — the error
+    text IS the mitigation.
+    """
+    from hermes_cli.dashboard_auth import clear_providers
+
+    monkeypatch.setenv(
+        "HERMES_DASHBOARD_PUBLIC_URL",
+        "https://dashboard.example.test:9443",
+    )
+    clear_providers()
+    _stub_uvicorn_run(monkeypatch)
+    _restore_app_state_after_test(
+        monkeypatch,
+        "auth_required",
+        "bound_host",
+        "bound_port",
+        "trusted_public_hosts",
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        web_server.start_server(
+            host="127.0.0.1", port=9119,
+            open_browser=False, allow_public=False,
+        )
+    msg = str(exc.value)
+    # Names the trigger and its value.
+    assert "dashboard.public_url" in msg
+    assert "https://dashboard.example.test:9443" in msg
+    # Exit 1: configure auth.
+    assert "basic_auth" in msg
+    assert "hermes dashboard register" in msg
+    # Exit 2: remove public_url to restore local-only mode.
+    assert "remove dashboard.public_url" in msg
+    assert "LOCAL-ONLY" in msg
+
+
+@pytest.mark.parametrize("host,public_url,expected", [
+    # Loopback bind, no public URL → local token mode, no gate.
+    ("127.0.0.1", None, False),
+    ("localhost", None, False),
+    ("::1", None, False),
+    # Loopback bind + non-loopback public URL → gate engages.
+    ("127.0.0.1", "https://dash.example.test", True),
+    ("::1", "https://dash.example.test:8443", True),
+    # Loopback bind + loopback public URL → still local-only.
+    ("127.0.0.1", "http://localhost:9119", False),
+    ("127.0.0.1", "http://127.0.0.1:9119", False),
+    # Non-loopback bind → always gated, public URL irrelevant.
+    ("0.0.0.0", None, True),
+    ("192.168.1.5", None, True),
+    ("0.0.0.0", "http://localhost:9119", True),
+])
+def test_should_require_dashboard_auth_truth_table(
+    monkeypatch, host, public_url, expected
+):
+    from hermes_cli.web_server import should_require_dashboard_auth
+
+    if public_url is None:
+        monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+        monkeypatch.setattr(
+            web_server, "_dashboard_public_hosts", lambda: frozenset()
+        )
+    else:
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", public_url)
+    assert should_require_dashboard_auth(host) is expected

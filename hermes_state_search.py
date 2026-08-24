@@ -27,64 +27,12 @@ from hermes_state_common import (
     SCHEMA_VERSION,
     _FTS_CJK_TRIGGERS,
     escape_like as _escape_like,
+    fts_rebuild_admission,
 )
 
 # Moved methods logged under the "hermes_state" logger before the split;
 # keep that logger identity so log filtering/capture behavior is unchanged.
 logger = logging.getLogger("hermes_state")
-
-
-try:  # POSIX-only; used for cross-process FTS rebuild serialization
-    import fcntl
-    _HAS_FCNTL = True
-except ImportError:  # pragma: no cover - non-POSIX fallback
-    _HAS_FCNTL = False
-
-_FTS_REBUILD_LOCK_TIMEOUT = 30.0
-
-
-def _acquire_fts_rebuild_lock(db_path) -> Optional[int]:
-    """Exclusive flock on <db_path>.fts_rebuild.lock. Returns fd or None."""
-    if not _HAS_FCNTL:
-        return None
-    try:
-        lock_path = f"{db_path}.fts_rebuild.lock"
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return fd
-        except OSError:
-            pass
-        deadline = time.monotonic() + _FTS_REBUILD_LOCK_TIMEOUT
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return fd
-            except OSError:
-                if time.monotonic() >= deadline:
-                    logger.warning(
-                        "FTS rebuild lock held by another process beyond "
-                        "%ds timeout; proceeding (SQLite writer lock is the "
-                        "final backstop)", int(_FTS_REBUILD_LOCK_TIMEOUT))
-                    os.close(fd)
-                    return None
-                time.sleep(0.1)
-    except OSError as exc:
-        logger.warning("FTS rebuild lock unavailable (%s); proceeding", exc)
-        return None
-
-
-def _release_fts_rebuild_lock(fd: int) -> None:
-    if not _HAS_FCNTL:
-        return
-    try:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-    except OSError:
-        pass
-    try:
-        os.close(fd)
-    except OSError:
-        pass
 
 # Characters FTS5's query grammar rejects outside a quoted phrase. Anything
 # missing from this set reaches MATCH raw and raises, which the execute site
@@ -2453,16 +2401,26 @@ class SessionSearchMixin:
         merges existing segments), ``rebuild`` discards and recreates the
         index data entirely.
 
+        A full structural rebuild must never run concurrently in two
+        processes sharing one state.db — that interleaving has structurally
+        corrupted the database in production (PR #93200) — so this admits
+        through the cross-process ``fts_rebuild_admission`` authority and
+        FAILS CLOSED: if another process holds the rebuild lock beyond the
+        bounded wait, this call defers (returns 0) rather than racing it.
+        Callers already treat 0 as "rebuild made no progress" and fall back
+        to the stale-FTS breadcrumb path, which retries at next startup.
+
         Safe to call when FTS tables don't exist (skips them).
         Returns the number of FTS indexes that were rebuilt.
         """
         rebuilt = 0
-        lock_fd = None
-        if _HAS_FCNTL:
-            db_path = getattr(self, "db_path", None)
-            if db_path is not None:
-                lock_fd = _acquire_fts_rebuild_lock(db_path)
-        try:
+        with fts_rebuild_admission(getattr(self, "db_path", None)) as admitted:
+            if not admitted:
+                logger.warning(
+                    "Deferred in-place FTS rebuild: another process holds "
+                    "the rebuild authority for this state.db."
+                )
+                return 0
             with self._lock:
                 for tbl in self._FTS_TABLES:
                     if not self._fts_table_exists(tbl):
@@ -2478,9 +2436,6 @@ class SessionSearchMixin:
                         logger.warning(
                             "FTS rebuild failed for %s: %s", tbl, exc
                         )
-        finally:
-            if lock_fd is not None:
-                _release_fts_rebuild_lock(lock_fd)
         return rebuilt
 
     def _merge_fts_incrementally(

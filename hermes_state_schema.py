@@ -28,6 +28,7 @@ from hermes_state_common import (
     _FTS_CJK_TRIGGERS,
     _FTS_TRIGGERS,
     _ephemeral_child_sql,
+    fts_rebuild_admission,
 )
 
 # Moved methods logged under the "hermes_state" logger before the split;
@@ -377,6 +378,24 @@ class SessionSchemaMixin:
                 foreign_holders,
             )
             return False
+        # Full structural rebuild: admit through the single cross-process
+        # authority (fail closed). Losing the race means another process is
+        # already performing this exact recovery; the stale breadcrumb stays
+        # set, so this process simply keeps FTS detached and retries later.
+        with fts_rebuild_admission(getattr(self, "db_path", None)) as admitted:
+            if not admitted:
+                logger.warning(
+                    "Deferred stale state.db FTS rebuild: another process "
+                    "holds the rebuild authority; canonical writes and LIKE "
+                    "search remain available."
+                )
+                return False
+            return self._recover_stale_fts_locked(cursor, legacy=legacy)
+
+    def _recover_stale_fts_locked(
+        self, cursor: sqlite3.Cursor, *, legacy: bool
+    ) -> bool:
+        """Body of :meth:`_recover_stale_fts`; caller holds rebuild authority."""
         try:
             trigram_status = self._fts_table_probe(cursor, "messages_fts_trigram")
         except sqlite3.DatabaseError:
@@ -1264,8 +1283,11 @@ class SessionSchemaMixin:
                     )
                     self._trigram_available = trigram_enabled
                     if triggers_need_repair:
-                        self._rebuild_legacy_fts_indexes(
-                            cursor, include_trigram=trigram_enabled
+                        self._run_admitted_startup_rebuild(
+                            cursor,
+                            lambda: self._rebuild_legacy_fts_indexes(
+                                cursor, include_trigram=trigram_enabled
+                            ),
                         )
             else:
                 triggers_need_repair = (
@@ -1284,9 +1306,12 @@ class SessionSchemaMixin:
                     )
                     self._trigram_available = trigram_enabled
                     if triggers_need_repair:
-                        self._rebuild_fts_indexes(
+                        self._run_admitted_startup_rebuild(
                             cursor,
-                            include_trigram=trigram_enabled,
+                            lambda: self._rebuild_fts_indexes(
+                                cursor,
+                                include_trigram=trigram_enabled,
+                            ),
                         )
                     # CJK-bigram index (cjk_unicode61). Strictly additive to
                     # the surfaces above and gated on the loadable tokenizer:
@@ -1298,6 +1323,45 @@ class SessionSchemaMixin:
                 self._migrate_broad_fts_update_triggers(cursor)
 
         self._conn.commit()
+
+    def _run_admitted_startup_rebuild(self, cursor, rebuild_fn) -> None:
+        """Run a full trigger-repair FTS rebuild under cross-process admission.
+
+        ``_init_schema`` reaches here when the sync triggers were missing and
+        the DDL just recreated them, so the index has a gap of unknown extent
+        and must be rebuilt in full. Two processes opening the same DB after
+        an update commonly hit this path simultaneously — the exact
+        concurrent-rebuild interleaving that structurally corrupted state.db
+        in production (PR #93200) — so the rebuild admits through
+        ``fts_rebuild_admission`` and FAILS CLOSED.
+
+        On deferral (another process holds the rebuild authority) the
+        just-repaired triggers are dropped again and the durable stale
+        breadcrumb is persisted, mirroring ``_enter_fts_fail_open``'s
+        ordering contract: triggers must never be live over an index with an
+        unrebuilt gap. FTS stays detached for this instance; the winner's
+        rebuild — or ``_recover_stale_fts`` at the next startup — restores
+        the index and triggers atomically.
+        """
+        with fts_rebuild_admission(getattr(self, "db_path", None)) as admitted:
+            if admitted:
+                rebuild_fn()
+                return
+        logger.warning(
+            "Deferred startup FTS rebuild: another process holds the "
+            "rebuild authority for this state.db; detaching FTS sync "
+            "until the stale-index recovery path rebuilds it."
+        )
+        cursor.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, '1') "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (FTS_STALE_KEY,),
+        )
+        self._drop_all_fts_triggers(cursor)
+        self._fts_stale = True
+        self._fts_enabled = False
+        self._trigram_available = False
+        self._fts_cjk_available = False
 
     def _backfill_gateway_metadata_from_sessions_json(
         self, cursor: sqlite3.Cursor

@@ -973,16 +973,6 @@ export function useSessionActions({
               sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
               dropSessionState(cachedRuntimeId)
             } else {
-              // session.activate is the ordering barrier for reconnect recovery:
-              // it atomically rebinds a running turn before returning. If the
-              // turn is already terminal, this post-barrier REST read sees its
-              // durable final row; if it is still running, later deltas/finish
-              // events arrive on the newly attached transport and the
-              // concurrent-overlay step below preserves them.
-              const persistedTranscriptPromise = shouldRefreshPersistedTranscript
-                ? getLatestSessionMessages(storedSessionId, sessionRestScope).catch(() => null)
-                : null
-
               const pendingApproval = restorePendingApproval(activated, cachedRuntimeId)
 
               const pendingClarifyState = restorePendingClarifyFromSnapshot(
@@ -1039,6 +1029,49 @@ export function useSessionActions({
                 typeof activated.turn_started_at === 'number' && activated.turn_started_at > 0
                   ? activated.turn_started_at * 1000
                   : null
+
+              // Settle the activation snapshot before transcript hydration.
+              // Once the attached transport reports a later terminal event,
+              // that live state is authoritative and must not be overwritten
+              // by the older `running` value after the REST request resolves.
+              const activatedLivenessState = updateSessionState(
+                cachedRuntimeId,
+                state => ({
+                  ...state,
+                  ...(runtimeInfo ?? {}),
+                  busy: running,
+                  awaitingResponse: running && !pendingClarify,
+                  // Resumed onto an already-running turn — that IS backend
+                  // proof the turn is live (no message.start will replay).
+                  turnLive: state.turnLive || running,
+                  needsInput:
+                    pendingApproval ||
+                    Boolean(pendingClarify) ||
+                    (clarifyAuthoritativelyAbsent ? false : state.needsInput),
+                  // Adopting someone else's turn: we'll stream its reply
+                  // without ever having received its prompt, so the settle
+                  // path must not take the "I saw it all" shortcut.
+                  adoptedRunningTurn: state.adoptedRunningTurn || running,
+                  turnStartedAt: running ? (activatedTurnStartedAt ?? state.turnStartedAt ?? Date.now()) : null
+                }),
+                storedSessionId
+              )
+
+              busyRef.current = running
+              setBusy(running)
+              setAwaitingResponse(running && !pendingClarify)
+              syncSessionStateToView(cachedRuntimeId, activatedLivenessState)
+
+              // session.activate is the ordering barrier for reconnect recovery:
+              // it atomically rebinds a running turn before returning. If the
+              // turn is already terminal, this post-barrier REST read sees its
+              // durable final row; if it is still running, later deltas/finish
+              // events arrive on the newly attached transport. Hydration below
+              // reconciles only messages, so those events also retain liveness
+              // authority while the request is pending.
+              const persistedTranscriptPromise = shouldRefreshPersistedTranscript
+                ? getLatestSessionMessages(storedSessionId, sessionRestScope).catch(() => null)
+                : null
 
               // The persisted REST transcript is the display authority: a live
               // runtime may carry only the agent's compressed context projection,
@@ -1124,22 +1157,7 @@ export function useSessionActions({
                 cachedRuntimeId,
                 state => ({
                   ...state,
-                  ...(runtimeInfo ?? {}),
                   messages: visibleActivatedMessages,
-                  busy: running,
-                  awaitingResponse: running,
-                  // Resumed onto an already-running turn — that IS backend
-                  // proof the turn is live (no message.start will replay).
-                  turnLive: state.turnLive || running,
-                  needsInput:
-                    pendingApproval ||
-                    Boolean(pendingClarify) ||
-                    (clarifyAuthoritativelyAbsent ? false : state.needsInput),
-                  // Adopting someone else's turn: we'll stream its reply
-                  // without ever having received its prompt, so the settle
-                  // path must not take the "I saw it all" shortcut.
-                  adoptedRunningTurn: state.adoptedRunningTurn || running,
-                  turnStartedAt: running ? (activatedTurnStartedAt ?? state.turnStartedAt ?? Date.now()) : null,
                   ...(pendingClarifyProjection
                     ? {
                         awaitingResponse: false,
@@ -1149,16 +1167,13 @@ export function useSessionActions({
                     : {}),
                   ...(clearedClarifyProjection
                     ? {
-                        streamId: running ? (clearedClarifyProjection.streamId ?? state.streamId) : null
+                        streamId: state.busy ? (clearedClarifyProjection.streamId ?? state.streamId) : null
                       }
                     : {})
                 }),
                 storedSessionId
               )
 
-              busyRef.current = running
-              setBusy(running)
-              setAwaitingResponse(running && !pendingClarify)
               syncSessionStateToView(cachedRuntimeId, activatedState)
               // Cache backend transcript truth only. The pending/running bit and
               // any synthetic clarify row are a live resume projection and must

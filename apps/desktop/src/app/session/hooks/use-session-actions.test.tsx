@@ -2066,21 +2066,43 @@ describe('resumeSession warm-cache mapping integrity', () => {
     }
 
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
-      current: new Map([['stored-warm', 'runtime-warm']])
+      current: new Map([
+        ['stored-warm', 'runtime-warm'],
+        ['stored-legacy', 'runtime-legacy']
+      ])
     }
 
     const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
-      current: new Map([['runtime-warm', clientState('stored-warm')]])
+      current: new Map([
+        ['runtime-warm', clientState('stored-warm')],
+        ['runtime-legacy', clientState('stored-legacy')]
+      ])
     }
 
     // Same-name rows without a source tag are not authoritative for an
     // explicit owner. Metadata must be re-read from the captured connection.
-    setSessions([storedSession({ id: 'stored-warm', profile: 'default' })])
+    setSessions([
+      storedSession({ id: 'stored-warm', profile: 'default' }),
+      storedSession({ id: 'stored-legacy', profile: 'default' })
+    ])
     vi.mocked(getSession).mockImplementation(async id => storedSession({ id, profile: 'default' }))
     vi.mocked(getLatestSessionMessages).mockImplementation(async id => ({ messages: [], session_id: id }) as never)
     vi.mocked(requestGatewayForAgent).mockImplementation(async (_connectionId, _profile, method, params) => {
       if (method === 'session.activate') {
-        throw new Error('Method not found')
+        if (params?.session_id === 'runtime-legacy') {
+          throw new Error('Method not found')
+        }
+
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-warm',
+          running: false,
+          session_id: 'runtime-warm',
+          session_key: 'stored-warm'
+        } as never
       }
 
       if (method === 'session.usage') {
@@ -2116,6 +2138,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await waitFor(() => expect(resume).not.toBeNull())
 
     await resume!('stored-warm', true, ownerRoute)
+    await resume!('stored-legacy', true, ownerRoute)
     await resume!('stored-cold', true, ownerRoute)
     await resume!('stored-cold', true, {
       connectionId: 'source-b',
@@ -2144,7 +2167,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       expect.objectContaining({ session_id: 'runtime-warm' })
     )
     expect(requestGatewayForAgent).toHaveBeenCalledWith('source-a', 'default', 'session.usage', {
-      session_id: 'runtime-warm'
+      session_id: 'runtime-legacy'
     })
     expect(requestGatewayForAgent).toHaveBeenCalledWith(
       'source-a',
@@ -2704,6 +2727,130 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
     expect(JSON.stringify(resumedState?.messages)).toContain('complete answer persisted during disconnect')
     expect(JSON.stringify(resumedState?.messages)).not.toContain('partial before disconnect')
+  })
+
+  it('keeps a terminal live state when a running reconnect finishes during transcript hydration', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.busy = true
+    state.awaitingResponse = true
+    state.turnLive = true
+    state.turnStartedAt = 1_700_000_123_000
+    state.messages = [
+      {
+        id: 'cached-user',
+        role: 'user',
+        parts: [{ type: 'text', text: 'long running prompt' }]
+      },
+      {
+        id: 'assistant-stream-rt-A',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'partial before terminal event' }],
+        pending: true
+      }
+    ]
+    state.streamId = 'assistant-stream-rt-A'
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: 2,
+          messages: [],
+          messages_omitted: true,
+          running: true,
+          turn_started_at: 1_700_000_123,
+          inflight: {
+            user: 'long running prompt',
+            assistant: 'partial before terminal event',
+            streaming: true
+          },
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-A', true)
+
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledTimes(1))
+    expect(sessionStateByRuntimeIdRef.current.get('rt-A')).toMatchObject({
+      awaitingResponse: true,
+      busy: true,
+      turnLive: true
+    })
+
+    // The rebound transport delivers the terminal state while REST is still
+    // pending. Settle the same stream row the real terminal event owns; the
+    // later durable hydration may reconcile messages but cannot revive it.
+    const liveTerminalState = sessionStateByRuntimeIdRef.current.get('rt-A')!
+    sessionStateByRuntimeIdRef.current.set('rt-A', {
+      ...liveTerminalState,
+      adoptedRunningTurn: false,
+      awaitingResponse: false,
+      busy: false,
+      messages: liveTerminalState.messages.map(message =>
+        message.id === 'assistant-stream-rt-A'
+          ? {
+              ...message,
+              parts: [{ type: 'text' as const, text: 'complete durable answer' }],
+              pending: false
+            }
+          : message
+      ),
+      streamId: null,
+      turnLive: false,
+      turnStartedAt: null
+    })
+
+    await act(async () => {
+      persisted.resolve({
+        messages: [
+          { content: 'long running prompt', role: 'user', timestamp: 1 },
+          { content: 'complete durable answer', role: 'assistant', timestamp: 2 }
+        ],
+        session_id: 'stored-A'
+      } as never)
+      await resumePromise
+    })
+
+    expect(JSON.stringify(resumedState?.messages)).toContain('complete durable answer')
+    expect(JSON.stringify(resumedState?.messages)).not.toContain('partial before terminal event')
+    expect(resumedState).toMatchObject({
+      adoptedRunningTurn: false,
+      awaitingResponse: false,
+      busy: false,
+      turnLive: false,
+      turnStartedAt: null
+    })
   })
 
   it('preserves cached image attachments through an idle persisted transcript refresh', async () => {

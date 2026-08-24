@@ -41,6 +41,7 @@ class FakeWebSocket extends EventTarget {
 
   lastRequest(): { id: string; method: string; params: Record<string, unknown> } {
     const last = this.sent[this.sent.length - 1]
+
     return JSON.parse(last ?? '{}')
   }
 }
@@ -54,6 +55,7 @@ const makeClient = () => {
     heartbeatDeadlineMs: 0,
     connectTimeoutMs: 1000
   })
+
   return client
 }
 

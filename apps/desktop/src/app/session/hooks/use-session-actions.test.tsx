@@ -947,7 +947,9 @@ describe('resumeSession failure recovery', () => {
     })
     expect(request.questions).toHaveLength(2)
     expect(
-      state?.messages.flatMap(message => message.parts).filter(part => part.type === 'tool-call' && part.toolName === 'clarify')
+      state?.messages
+        .flatMap(message => message.parts)
+        .filter(part => part.type === 'tool-call' && part.toolName === 'clarify')
     ).toHaveLength(1)
     expect(state?.messages.filter(message => message.pending)).toHaveLength(1)
     expect(state?.streamId).toBe(state?.messages.find(message => message.pending)?.id)

@@ -499,6 +499,7 @@ export class JsonRpcGatewayClient {
 
     try {
       const entries = Object.entries(this.getSeqWatermarks())
+
       // One RPC per known session keeps params flat; sessions are few (<20).
       const results = await Promise.allSettled(
         entries.map(([sid, lastSeen]) =>

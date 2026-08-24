@@ -75,9 +75,11 @@ function isIdempotentMethod(method) {
 }
 
 function isTransientTransportError(error) {
-  if (!error) return false
-  if (TRANSIENT_CODES.has(error.code)) return true
+  if (!error) {return false}
+
+  if (TRANSIENT_CODES.has(error.code)) {return true}
   const msg = String(error.message || '')
+
   return msg.includes('socket hang up') || msg.includes('read ECONNRESET')
 }
 
@@ -91,12 +93,14 @@ function isTransientTransportError(error) {
  *                     flushed, so a `false` here proves nothing went out.
  */
 function shouldRetryRequest(error, method, requestState: any = {}) {
-  if (!isTransientTransportError(error)) return false
-  if (isIdempotentMethod(method)) return true
+  if (!isTransientTransportError(error)) {return false}
+
+  if (isIdempotentMethod(method)) {return true}
 
   // Non-idempotent: only when the request provably never reached the server.
-  if (NEVER_SENT_CODES.has(error && error.code)) return true
-  if (requestState.bodySent === false) return true
+  if (NEVER_SENT_CODES.has(error && error.code)) {return true}
+
+  if (requestState.bodySent === false) {return true}
 
   // Ambiguous (reset/hang-up after the body was flushed): the server may have
   // processed it. Surface the error rather than risk a double submit.
@@ -117,19 +121,25 @@ async function withRetry(makeAttempt, options: any = {}) {
   const delayFn = options.delayFn || (attempt => new Promise(r => setTimeout(r, Math.min(200 * Math.pow(2, attempt), 2000))))
 
   let lastError
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const requestState = { bodySent: false }
+
     try {
       return await makeAttempt(requestState)
     } catch (error) {
       lastError = error
+
       if (attempt < maxRetries && shouldRetryRequest(error, method, requestState)) {
         await delayFn(attempt)
+
         continue
       }
+
       throw error
     }
   }
+
   throw lastError
 }
 

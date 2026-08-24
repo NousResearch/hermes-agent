@@ -29,6 +29,7 @@ import {
 function errWithCode(code: string, message = code): NodeJS.ErrnoException {
   const e: NodeJS.ErrnoException = new Error(message)
   e.code = code
+
   return e
 }
 
@@ -41,6 +42,7 @@ describe('isTransientTransportError', () => {
     for (const code of ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN']) {
       expect(isTransientTransportError(errWithCode(code))).toBe(true)
     }
+
     expect(isTransientTransportError(new Error('socket hang up'))).toBe(true)
     expect(isTransientTransportError(new Error('read ECONNRESET'))).toBe(true)
   })
@@ -114,14 +116,18 @@ describe('withRetry', () => {
 
   it('retries a GET through transient failures and resolves', async () => {
     let attempts = 0
+
     const result = await withRetry(
       () => {
         attempts += 1
-        if (attempts < 3) return Promise.reject(errWithCode('ECONNRESET'))
+
+        if (attempts < 3) {return Promise.reject(errWithCode('ECONNRESET'))}
+
         return Promise.resolve('ok')
       },
       { method: 'GET', ...noDelay }
     )
+
     expect(result).toBe('ok')
     expect(attempts).toBe(3)
   })
@@ -134,7 +140,9 @@ describe('withRetry', () => {
         seen.push(state.bodySent)
         state.bodySent = true
         attempts += 1
-        if (attempts < 2) return Promise.reject(errWithCode('ECONNREFUSED'))
+
+        if (attempts < 2) {return Promise.reject(errWithCode('ECONNREFUSED'))}
+
         return Promise.resolve(null)
       },
       { method: 'POST', ...noDelay }
@@ -149,6 +157,7 @@ describe('withRetry', () => {
         (state: any) => {
           attempts += 1
           state.bodySent = true
+
           return Promise.reject(errWithCode('ECONNRESET', 'read ECONNRESET'))
         },
         { method: 'POST', ...noDelay }
@@ -163,6 +172,7 @@ describe('withRetry', () => {
       withRetry(
         () => {
           attempts += 1
+
           return Promise.reject(errWithCode('ECONNREFUSED'))
         },
         { method: 'POST', maxRetries: 2, ...noDelay }
@@ -177,6 +187,7 @@ describe('withRetry', () => {
       withRetry(
         () => {
           attempts += 1
+
           return Promise.reject(errWithCode('ECONNRESET'))
         },
         { method: 'GET', maxRetries: 2, ...noDelay }
@@ -191,6 +202,7 @@ describe('withRetry', () => {
       withRetry(
         () => {
           attempts += 1
+
           return Promise.reject(new Error('500: internal'))
         },
         { method: 'GET', ...noDelay }
@@ -223,6 +235,7 @@ function bareJsonGet(url: string): Promise<any> {
       res.on('data', c => chunks.push(c))
       res.on('end', () => resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))))
     })
+
     req.on('error', reject)
     req.end()
   })
@@ -247,20 +260,26 @@ describe('live: GET burst against a server that resets keep-alive sockets', () =
     // destroyed instead of a response — the observable client-side effect of
     // a backend killing idle keep-alive sockets mid-burst.
     let hits = 0
+
     const server = http.createServer((req, res) => {
       hits += 1
+
       if (hits % 2 === 1) {
         req.socket.destroy()
+
         return
       }
+
       res.setHeader('content-type', 'application/json')
       res.end(JSON.stringify({ n: hits }))
     })
+
     const base = await listen(server)
 
     try {
       // BASE (pre-PR, single attempt): the burst surfaces raw transport errors.
       let baseFailures = 0
+
       for (let i = 0; i < 6; i++) {
         try {
           await bareJsonGet(`${base}/api/sessions`)
@@ -269,6 +288,7 @@ describe('live: GET burst against a server that resets keep-alive sockets', () =
           expect(isTransientTransportError(error)).toBe(true)
         }
       }
+
       expect(baseFailures).toBeGreaterThan(0)
 
       // HEAD (retry policy): the same burst fully succeeds. Sequential so the
@@ -289,6 +309,7 @@ describe('live: POST reset after server-side processing', () => {
     // The server fully receives and "processes" the POST (counter increments),
     // then RSTs the socket before responding — the dangerous ambiguous case.
     let posts = 0
+
     const server = http.createServer((req, res) => {
       const chunks: Buffer[] = []
       req.on('data', c => chunks.push(c))
@@ -298,6 +319,7 @@ describe('live: POST reset after server-side processing', () => {
         void res
       })
     })
+
     const base = await listen(server)
 
     const postOnce = () =>
@@ -305,6 +327,7 @@ describe('live: POST reset after server-side processing', () => {
         (state: any) =>
           new Promise((resolve, reject) => {
             const body = Buffer.from(JSON.stringify({ prompt: 'hello' }))
+
             const req = http.request(
               new URL(`${base}/api/prompt`),
               {
@@ -317,6 +340,7 @@ describe('live: POST reset after server-side processing', () => {
                 res.on('end', () => resolve(null))
               }
             )
+
             req.on('error', reject)
             state.bodySent = true
             req.write(body)
@@ -337,10 +361,12 @@ describe('live: POST reset after server-side processing', () => {
     // Companion proof that the verb gate (not luck) is what kept posts === 1:
     // the same reset-after-processing server sees multiple hits under GET.
     let gets = 0
+
     const server = http.createServer(req => {
       gets += 1
       req.socket.resetAndDestroy()
     })
+
     const base = await listen(server)
 
     try {

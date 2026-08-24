@@ -624,17 +624,15 @@ export function useSessionActions({
         // occupied (openTab path for "New session in Home").
         const capturedRoute = options?.route === undefined ? $newChatRoute.get() : options.route
         const workspaceScope = options?.workspaceScope ?? { workspaceMode: 'sessions' }
+
         const cwd =
-          options?.cwd === null
-            ? ''
-            : typeof options?.cwd === 'string'
-              ? options.cwd.trim()
-              : resolveNewSessionCwd()
+          options?.cwd === null ? '' : typeof options?.cwd === 'string' ? options.cwd.trim() : resolveNewSessionCwd()
 
         const params = {
           ...(await desktopSessionCreateParams(cwd, capturedRoute)),
           ...(workspaceScope.workspaceMode === 'bots' ? { hidden: true } : {})
         }
+
         const created = capturedRoute
           ? await requestGatewayForAgent<SessionCreateResponse>(
               capturedRoute.connectionId,

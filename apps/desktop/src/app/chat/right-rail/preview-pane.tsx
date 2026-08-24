@@ -18,12 +18,7 @@ import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import {
-  $previewServerRestart,
-  failPreviewServerRestart,
-  noteBrowserPage,
-  type PreviewTarget
-} from '@/store/preview'
+import { $previewServerRestart, failPreviewServerRestart, noteBrowserPage, type PreviewTarget } from '@/store/preview'
 
 import { ArtifactPreview } from './preview-artifact'
 import { PreviewBrowserBar } from './preview-browser-bar'

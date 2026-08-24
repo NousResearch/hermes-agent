@@ -42,6 +42,7 @@ export function startWorkspaceSession({
   const target = explicitTarget || resolveNewSessionCwd()
 
   startFreshSessionDraft(target ? { workspaceTarget: target } : undefined)
+
   if (!target) {
     return
   }

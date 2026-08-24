@@ -92,7 +92,11 @@ const RUNTIME_SESSION_ID = 'rt-new-001'
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'openNewSessionTile' | 'removeSession' | 'selectSidebarItem' | 'startFreshSessionDraft'
+  | 'createBackendSessionForSend'
+  | 'openNewSessionTile'
+  | 'removeSession'
+  | 'selectSidebarItem'
+  | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -2827,6 +2831,7 @@ describe('openNewSessionTile workspace target', () => {
     ])
 
     let createParams: Record<string, unknown> | undefined
+
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'session.create') {
         createParams = params

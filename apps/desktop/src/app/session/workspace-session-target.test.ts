@@ -89,6 +89,7 @@ describe('startWorkspaceSession', () => {
 
     const requestGateway = vi.fn()
     const activeSessionIdRef = { current: null }
+
     const startFreshSessionDraft = vi.fn((options?: { workspaceTarget: NewChatWorkspaceTarget }) => {
       setNewChatWorkspaceTarget(options?.workspaceTarget)
       setCurrentCwd(options?.workspaceTarget || '')

@@ -289,6 +289,20 @@ def test_gateway_unit_uses_the_explicit_foreground_action(tmp_path: Path) -> Non
     assert "TimeoutStopSec=210" in unit
 
 
+def test_source_cleanliness_reports_dirty_and_clean_git_releases(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    source = _repository(tmp_path / "release")
+    (source / "tracked.txt").write_text("clean\n", encoding="utf-8")
+    _commit(source, "initial")
+
+    assert runtime._source_cleanliness(source) == (True, "clean")
+
+    (source / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+    clean, detail = runtime._source_cleanliness(source)
+    assert clean is False
+    assert detail == "dirty (1 path(s))"
+
+
 def test_systemd_environment_preserves_an_existing_session_bus(monkeypatch) -> None:
     monkeypatch.setenv("XDG_RUNTIME_DIR", "/existing/runtime")
     monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/existing/runtime/bus")

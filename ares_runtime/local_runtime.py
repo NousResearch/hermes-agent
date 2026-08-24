@@ -873,6 +873,23 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
                     raise AresLocalRuntimeError("Ares gateway did not remain active after rollback")
             return previous[0]
 
+    @staticmethod
+    def _source_cleanliness(source: Path) -> tuple[bool, str]:
+        """Return whether the selected release source has a clean Git tree."""
+        probe = subprocess.run(
+            ["git", "-C", str(source), "status", "--short"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if probe.returncode:
+            return False, "could not inspect selected release Git state"
+        changed = [line for line in probe.stdout.splitlines() if line.strip()]
+        if not changed:
+            return True, "clean"
+        return False, f"dirty ({len(changed)} path(s))"
+
     def doctor(self) -> list[tuple[str, bool, str]]:
         checks: list[tuple[str, bool, str]] = []
         try:
@@ -883,6 +900,8 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             return checks
         python = self._python_for(source)
         checks.append(("stable Python", python.is_file(), str(python)))
+        clean, cleanliness = self._source_cleanliness(source)
+        checks.append(("selected release tree", clean, cleanliness))
         if python.is_file():
             probe = subprocess.run(
                 [python, "-c", "import ares_runtime.local_runtime; import hermes_cli.main"],
@@ -895,6 +914,24 @@ if (config or {}).get('context', {}).get('engine') == 'ri-context-governor':
             checks.append(
                 ("Ares runtime imports", probe.returncode == 0, (probe.stderr or "ok").strip())
             )
+            try:
+                from hermes_cli.sqlite_runtime import probe_sqlite_runtime
+
+                sqlite = probe_sqlite_runtime(python)
+                if sqlite is None:
+                    checks.append(("SQLite runtime", False, "could not probe selected interpreter"))
+                elif sqlite.wal_reset_vulnerable:
+                    checks.append(
+                        (
+                            "SQLite runtime",
+                            False,
+                            f"vulnerable SQLite {sqlite.sqlite_version_string}",
+                        )
+                    )
+                else:
+                    checks.append(("SQLite runtime", True, sqlite.sqlite_version_string))
+            except Exception as exc:
+                checks.append(("SQLite runtime", False, f"probe failed: {type(exc).__name__}"))
         context_probe = """
 from pathlib import Path
 import json
@@ -921,6 +958,48 @@ else:
             checks.append(("Context Governor strict probe", True, probe.stdout.strip()))
         except AresLocalRuntimeError as exc:
             checks.append(("Context Governor strict probe", False, str(exc)))
+        mcp_probe = """
+import json
+from hermes_cli.config import load_config_readonly
+from tools.mcp_tool import probe_mcp_server_tools
+
+config = load_config_readonly() or {}
+servers = config.get('mcp_servers') or {}
+enabled = sorted(
+    name for name, value in servers.items()
+    if isinstance(value, dict) and value.get('enabled', True) is not False
+)
+probed = probe_mcp_server_tools()
+missing = [name for name in enabled if name not in probed]
+print(json.dumps({'enabled': enabled, 'probed': sorted(probed), 'missing': missing}))
+"""
+        try:
+            probe = subprocess.run(
+                [python, "-c", mcp_probe],
+                cwd=source,
+                env=self._agent_environment(),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=150,
+                check=False,
+            )
+            if probe.returncode:
+                checks.append(("MCP readiness", False, "bounded probe failed"))
+            else:
+                result = json.loads(probe.stdout)
+                missing = result.get("missing") or []
+                checks.append(
+                    (
+                        "MCP readiness",
+                        not missing,
+                        "all enabled servers responded" if not missing else f"unavailable: {', '.join(missing)}",
+                    )
+                )
+        except subprocess.TimeoutExpired:
+            checks.append(("MCP readiness", False, "bounded probe timed out"))
+        except Exception as exc:
+            checks.append(("MCP readiness", False, f"probe failed: {type(exc).__name__}"))
         gateway_active = self._systemctl("is-active", "--quiet", "ares-gateway.service", required=False)
         checks.append(("Ares gateway", gateway_active, "active" if gateway_active else "inactive"))
         return checks

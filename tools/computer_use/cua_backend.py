@@ -2207,6 +2207,12 @@ class _CuaDriverSession:
         "list_windows",
     })
 
+    # Set when an MCP call timed out (#74799): a timed-out session is
+    # wedged for all later calls, so it is torn down and recreated before
+    # the next non-lifecycle call_tool. Class-level default so tests that
+    # bypass __init__ see a healthy (non-suspect) session.
+    _timeout_suspect = False
+
     @classmethod
     def _transport_replay_is_safe(cls, name: str) -> bool:
         return name in cls._TRANSPORT_REPLAY_SAFE_TOOLS
@@ -2233,7 +2239,53 @@ class _CuaDriverSession:
             "isError": True,
         }
 
+    @staticmethod
+    def _timeout_outcome(name: str, exc: Exception) -> Dict[str, Any]:
+        """Fail-closed result for an MCP call that hit its deadline (#74799).
+
+        The action MAY have taken effect on the remote screen before the
+        response was lost — the same effect_disposition=unknown principle as
+        ``_unknown_transport_outcome`` — so the timed-out call is never
+        silently replayed here; the caller decides after taking fresh state.
+        """
+        message = (
+            f"cua-driver MCP call {name} timed out; the action outcome is "
+            "unknown and may still have taken effect on the remote screen. "
+            "The session has been marked suspect and will be recreated before "
+            "the next computer-use call. Take fresh state before deciding "
+            "whether to act again."
+        )
+        return {
+            "data": message,
+            "images": [],
+            "image_mime_types": [],
+            "structuredContent": {
+                "ok": False,
+                "code": "timeout_outcome_unknown",
+                "message": message,
+                "operation": name,
+                "next_step": "fresh_state",
+                "detail": str(exc),
+            },
+            "isError": True,
+        }
+
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        # A prior MCP timeout (#74799) marks the session suspect: it may be
+        # wedged for every later call. Recreate it before this call so a
+        # single timeout never poisons the rest of the computer-use session.
+        # Healthy sessions (flag clear) are never restarted here.
+        if self._timeout_suspect and name not in self._LIFECYCLE_CALLS:
+            logger.warning(
+                "cua-driver session suspect after earlier MCP timeout; "
+                "recreating before %s",
+                name,
+            )
+            with self._lock:
+                self._restart_session_locked()
+            self._timeout_suspect = False
+            self._restore_declared_session_after_transport_reset(timeout)
+
         # A prior session may have died (MCP drop / driver crash): its
         # lifecycle coro reset _started to False in its finally (#55048).
         if not self._started and name not in self._LIFECYCLE_CALLS:
@@ -2250,6 +2302,18 @@ class _CuaDriverSession:
                 timeout=timeout,
             )
         except Exception as e:
+            if isinstance(e, concurrent.futures.TimeoutError):
+                # MCP deadline hit (#74799): the session is suspect and must
+                # be recreated before the next call. Fail closed — the action
+                # may have taken effect on the remote screen, so never replay
+                # it here; surface the uncertainty instead (#74799).
+                self._timeout_suspect = True
+                logger.warning(
+                    "cua-driver MCP timed out on %s; marking session suspect "
+                    "for recreation before the next call",
+                    name,
+                )
+                return self._timeout_outcome(name, e)
             if self._is_transient_daemon_error(e):
                 if not self._transport_replay_is_safe(name):
                     self._notify_transport_reset()

@@ -245,6 +245,29 @@ def test_create_task_accepts_categorized_profile_skill(kanban_home):
     assert kb.get_task(conn, task_id).skills == ["category:sample"]
 
 
+def test_create_task_rejects_disabled_categorized_profile_skill(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "skills" / "category" / "sample" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: sample\ndescription: Categorized test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  disabled: [category:sample]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="category:sample"):
+            kb.create_task(
+                conn,
+                title="disabled categorized profile skill",
+                assignee="coder",
+                skills=["category:sample"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
 def test_create_task_accepts_enabled_profile_plugin_skill(kanban_home, monkeypatch):
     profile_home = kanban_home / "profiles" / "coder"
     profile_home.mkdir(parents=True)
@@ -270,6 +293,105 @@ def test_create_task_accepts_enabled_profile_plugin_skill(kanban_home, monkeypat
         )
 
     assert kb.get_task(conn, task_id).skills == ["enabled-plugin:plugin-skill"]
+
+
+def test_create_task_accepts_plugin_skill_when_only_namespace_is_disabled(
+    kanban_home, monkeypatch
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  disabled: [enabled-plugin]\n", encoding="utf-8"
+    )
+    plugin_module = types.SimpleNamespace(
+        discover_plugins=lambda: None,
+        get_plugin_manager=lambda: types.SimpleNamespace(
+            list_plugin_skill_metadata=lambda: [
+                {"name": "enabled-plugin:plugin-skill", "frontmatter": {}}
+            ]
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", plugin_module)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="namespace-only disabled plugin skill",
+            assignee="coder",
+            skills=["enabled-plugin:plugin-skill"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["enabled-plugin:plugin-skill"]
+
+
+def test_create_task_accepts_bare_skill_from_overlapping_external_roots(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "external" / "category" / "sample" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: sample\ndescription: Overlapping-root test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  external_dirs: [external, external/category]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="overlapping external roots",
+            assignee="coder",
+            skills=["sample"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["sample"]
+
+
+def test_create_task_rejects_ambiguous_bare_profile_skill_without_insert(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    _write_profile_skill(profile_home / "external-one", "duplicate-skill")
+    _write_profile_skill(profile_home / "external-two", "duplicate-skill")
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  external_dirs: [external-one, external-two]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="duplicate-skill"):
+            kb.create_task(
+                conn,
+                title="ambiguous bare skill",
+                assignee="coder",
+                skills=["duplicate-skill"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_create_task_rejects_ambiguous_qualified_profile_skill_without_insert(
+    kanban_home,
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    for external_dir in ("external-one", "external-two"):
+        skill_dir = profile_home / external_dir / "category" / "sample"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: sample\ndescription: Categorized test skill.\n---\n\n# Test\n",
+            encoding="utf-8",
+        )
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  external_dirs: [external-one, external-two]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="category:sample"):
+            kb.create_task(
+                conn,
+                title="ambiguous qualified skill",
+                assignee="coder",
+                skills=["category:sample"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
 
 def test_create_task_rejects_unavailable_plugin_skill_without_insert(

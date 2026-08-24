@@ -1142,6 +1142,12 @@ def _profile_skill_names(
             skill_roots = list(project_dirs)
             skill_roots.extend([get_skills_dir(), *get_external_skills_dirs()])
             names: set[str] = set()
+            # ``skill_view`` refuses ambiguous bare identifiers, except that a
+            # trusted project-tier match intentionally overrides non-project
+            # matches.  Keep candidates until the complete scan is finished so
+            # validation does not advertise a name the worker cannot resolve.
+            bare_candidates: dict[str, list[tuple[bool, Path]]] = {}
+            qualified_candidates: dict[str, list[tuple[bool, Path]]] = {}
             for root in skill_roots:
                 if not root.is_dir():
                     continue
@@ -1165,7 +1171,13 @@ def _profile_skill_names(
                         continue
                     name = str(frontmatter.get("name") or skill_md.parent.name).strip()
                     if name and name not in disabled:
-                        names.add(name)
+                        try:
+                            candidate_path = skill_md.resolve()
+                        except Exception:
+                            candidate_path = skill_md
+                        bare_candidates.setdefault(name, []).append(
+                            (root in project_dirs, candidate_path)
+                        )
                         # ``skill_view`` also accepts the qualified local form
                         # ``category:name`` for the direct
                         # ``<root>/<category>/<name>/SKILL.md`` layout. Keep
@@ -1180,7 +1192,15 @@ def _profile_skill_names(
                             and relative_parts[-1] == "SKILL.md"
                         ):
                             category, directory_name, _ = relative_parts
-                            names.add(f"{category}:{directory_name}")
+                            qualified_name = f"{category}:{directory_name}"
+                            if qualified_name not in disabled:
+                                try:
+                                    candidate_path = skill_md.resolve()
+                                except Exception:
+                                    candidate_path = skill_md
+                                qualified_candidates.setdefault(qualified_name, []).append(
+                                    (root in project_dirs, candidate_path)
+                                )
 
             # Plugin skills are registered only after the profile's enabled plugin
             # set has been discovered.  Use the manager scoped to this profile's
@@ -1204,13 +1224,33 @@ def _profile_skill_names(
                     if qualified_name in disabled:
                         continue
                     namespace, _, bare_name = qualified_name.partition(":")
-                    if bare_name in disabled or namespace in disabled:
+                    if bare_name in disabled:
                         continue
                     names.add(qualified_name)
             except Exception:
                 # A broken or unavailable plugin must not hide ordinary profile
                 # and project skills from validation.
                 pass
+            for name, candidates in qualified_candidates.items():
+                # Match skill_view's project-tier precedence and collision
+                # refusal for the categorized local fallback path.
+                unique_candidates = list(dict.fromkeys(candidates))
+                project_candidates = [candidate for candidate in unique_candidates if candidate[0]]
+                winning = project_candidates or unique_candidates
+                if len(winning) == 1:
+                    names.add(name)
+            for name, candidates in bare_candidates.items():
+                # Deduplicate overlapping roots by the resolved SKILL.md path,
+                # matching runtime candidate collection before collision rules.
+                unique_candidates = list(dict.fromkeys(candidates))
+                project_candidates = [
+                    candidate for candidate in unique_candidates if candidate[0]
+                ]
+                # Project skills have precedence over local/external skills,
+                # but ambiguity within the winning tier remains unavailable.
+                winning = project_candidates or unique_candidates
+                if len(winning) == 1:
+                    names.add(name)
             return names
         finally:
             if previous_cwd is None:

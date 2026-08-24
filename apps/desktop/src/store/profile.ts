@@ -639,17 +639,17 @@ export function selectProfile(name: string): void {
 }
 
 // Route a profile pick at the source the user is LOOKING at. $profiles is the
-// active gateway's list, so a pick made while a registry source is live names
-// one of THAT source's profiles. Sending it through the profile-only path
-// resolves the descriptor with a bare name (getConnection(profile)), which the
-// main process answers against the primary — so picking "researcher" on a
-// remote source opened a local backend of the same name and dropped the user
-// back home, making the pick look like it never took. A null connection id
-// means the primary is live, which is exactly the legacy path.
+// active gateway's list, so a pick made while a remote registry source is live
+// names one of THAT source's profiles and must keep its connection id. The
+// primary and explicit "local" source stay on the legacy profile-only path so
+// the main process can resolve a per-profile remote override before falling
+// back to a local backend.
 function activateOnCurrentSource(target: string): Promise<void> {
   const connectionId = activeGatewayConnectionId()
 
-  return connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
+  return connectionId && connectionId !== 'local'
+    ? ensureGatewayAgent(connectionId, target)
+    : ensureGatewayProfile(target)
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse

@@ -1248,15 +1248,21 @@ export function upsertOptimisticSession(
   preview: string | null = null,
   parentSessionId: string | null = null,
   lastActive?: number,
-  ownerRoute?: SessionProfileRoute
+  owner?: null | SessionProfileRoute
 ) {
   const now = lastActive ?? Date.now() / 1000
-  // Stamp the profile/source the session was just created on so the scoped
-  // sidebar shows the new row immediately instead of filtering it out as
-  // "default" until the aggregator re-fetches. The active gateway is only a
-  // presentation detail: a concurrent source switch can move it before this
-  // optimistic row is inserted.
-  const profileKey = normalizeProfileKey(ownerRoute?.profile ?? $activeGatewayProfile.get())
+  // Stamp the profile the session was just created on so the scoped sidebar
+  // shows the new row immediately instead of filtering it out as "default"
+  // until the aggregator re-fetches. An explicitly routed create ($newChatRoute
+  // / a tile's route) names its EXACT owner: the backend profile that route
+  // serves, on that route's connection. The live gateway's profile is only the
+  // owner for an unrouted create — in All-profiles / Bot routing the ambient
+  // profile stays on `default` while the session lives on another backend (and
+  // a concurrent source switch can move the active gateway before this row is
+  // inserted), so a row stamped `default` then misroutes every session-scoped
+  // RPC that resolves its owner off the row ("session not found" on turn two).
+  const profileKey = normalizeProfileKey(owner ? owner.targetProfile || owner.profile : $activeGatewayProfile.get())
+  const connectionId = owner?.connectionId.trim() || ''
 
   const session: SessionInfo = {
     // Seed cwd so the grouped sidebar can place the new row in its repo/worktree
@@ -1279,11 +1285,11 @@ export function upsertOptimisticSession(
     started_at: now,
     title,
     tool_call_count: 0,
-    ...(ownerRoute?.connectionId.trim() ? { connection_id: ownerRoute.connectionId.trim() } : {})
+    ...(connectionId ? { connection_id: connectionId } : {})
   }
 
-  if (ownerRoute) {
-    setSessionOwnerHint(id, ownerRoute)
+  if (owner) {
+    setSessionOwnerHint(id, owner)
   }
 
   setSessions(prev => [session, ...prev.filter(s => s.id !== id)])

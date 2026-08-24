@@ -79,6 +79,7 @@ import {
   setResumeExhaustedSessionId,
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
+  setSessionOwnerHint,
   setSessionStartedAt,
   setTurnStartedAt,
   setWorkspaceCwdOwner,
@@ -487,6 +488,19 @@ export function useSessionActions({
 
         const stored = created.stored_session_id ?? null
 
+        // Record the EXACT owner the moment a routed create returns a stored
+        // id — before the drift check, the optimistic row, navigation, or any
+        // session-scoped RPC can resolve this session's owner. The route is
+        // the only authority: in All-profiles / Bot routing the ambient
+        // $activeGatewayProfile stays on `default` while the session lives on
+        // `capturedRoute` (e.g. local::omar). Without this hint the optimistic
+        // row (stamped from ambient) was the only owner record, so the first
+        // turn ran on omar and every later session-scoped RPC resolved the row
+        // as `default` and 4001'd "session not found".
+        if (stored && capturedRoute) {
+          setSessionOwnerHint(stored, capturedRoute)
+        }
+
         // Only a genuine move to a DIFFERENT chat mid-create should orphan the
         // session we just minted. The active runtime ref is deliberately not a
         // prong: background gateway events retarget it while other sessions
@@ -505,7 +519,17 @@ export function useSessionActions({
 
         if (drift) {
           console.warn('[submit-drift-abort]', drift, { phase: 'mid-create' })
-          await requestGateway('session.close', { session_id: created.session_id }).catch(() => undefined)
+
+          // Close on the backend that minted the session: the ambient socket
+          // is a different machine/profile for a routed create and would
+          // 4001 while the orphan lives on (and later ws-orphan-reaps) there.
+          const closeCreated = capturedRoute
+            ? requestGatewayForAgent(capturedRoute.connectionId, capturedRoute.profile, 'session.close', {
+                session_id: created.session_id
+              })
+            : requestGateway('session.close', { session_id: created.session_id })
+
+          await closeCreated.catch(() => undefined)
 
           return null
         }
@@ -521,7 +545,9 @@ export function useSessionActions({
           // reads meaningfully while the turn is in flight, instead of flashing
           // "Untitled session" until the turn persists and auto-title runs. The
           // server later returns its own preview/title and supersedes this.
-          upsertOptimisticSession(created, stored, null, preview?.trim() || null)
+          // The row carries the create route's exact owner (backend profile +
+          // connection), never the ambient profile — see upsertOptimisticSession.
+          upsertOptimisticSession(created, stored, null, preview?.trim() || null, null, undefined, capturedRoute)
           navigate(sessionRoute(stored), { replace: true })
           // Other windows (e.g. the main window when this is the pop-out) can't
           // see this session until they re-pull the shared list.
@@ -648,12 +674,18 @@ export function useSessionActions({
 
         createdThisRun.add(stored)
 
+        // Same ownership transition as createBackendSessionForSend: the route
+        // that minted the session is its exact owner from this moment on.
+        if (capturedRoute) {
+          setSessionOwnerHint(stored, capturedRoute)
+        }
+
         // Seed the per-runtime cache so the tile renders immediately without a
         // redundant resume. Only add the row to the SIDEBAR when `listed` — an
         // unlisted (draft) tab stays out of the session list until its first
         // turn persists and a refresh surfaces it.
         if (listed) {
-          upsertOptimisticSession(created, stored, null, null)
+          upsertOptimisticSession(created, stored, null, null, null, undefined, capturedRoute)
         }
 
         // A tile lives in its OWN worktree, so it must not run the full

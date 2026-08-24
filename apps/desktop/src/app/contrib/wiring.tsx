@@ -72,6 +72,7 @@ import {
   $selectedStoredSessionId,
   $sessionResumeRequest,
   $sessions,
+  getSessionOwnerHint,
   knownSessionOwner,
   sessionMatchesStoredId,
   sessionPinId,
@@ -153,7 +154,7 @@ import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
-import { findStoredIdForRuntimeId, resolveRoutingSessionId } from './wiring-routing'
+import { findStoredIdForRuntimeId, resolveRoutingSessionId, resolveSessionRpcOwner } from './wiring-routing'
 
 // Overlay views the controller mounts over the shell — lazy, load on demand.
 // The workspace-route full-page views (skills/messaging/artifacts) are the
@@ -319,11 +320,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Session-scoped RPCs route to the backend that OWNS the session — its
   // profile's own local gateway — never to whatever is "active" (active is
   // presentation only). Resolve the owner from, in order: the tile's persisted
-  // route (bot chats carry an exact connectionId+profile), the known session
-  // owner (row or open-time hint), then a cross-profile REST probe that
-  // stamps ownership for a hidden/unlisted session. Only a request with NO
-  // session at all (a fresh draft, global chrome) falls to the ambient socket.
-  // The probe result is cached as an owner hint so the next call is sync.
+  // route (bot chats carry an exact connectionId+profile), the exact UNIQUE
+  // session owner hint (stamped the moment a routed session.create returns,
+  // or at plugin open time), the session row's profile, then a cross-profile
+  // REST probe that stamps ownership for a hidden/unlisted session. The hint
+  // outranks the row: a row is presentation state that can be stamped from
+  // the AMBIENT profile and carries no connection, so a fresh chat created on
+  // local::omar while `default` stayed active ran turn one on omar and then
+  // 4001'd on turn two when the row's `default` won the route. Only a request
+  // with NO session at all (a fresh draft, global chrome) falls to the ambient
+  // socket. The probe result is cached as an owner hint so the next call is
+  // sync — see resolveSessionRpcOwner for the ladder.
   const requestGateway = useCallback(
     async <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
       // Route each RPC by the session IT targets, not by whatever tile is
@@ -356,9 +363,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           undefined
       })
 
-      let owner: SessionOwnerScope =
-        (routingSessionId ? sessionTileOwnerRoute(routingSessionId) : undefined) ??
-        knownSessionOwner($sessions.get(), routingSessionId)
+      let owner: SessionOwnerScope = resolveSessionRpcOwner({
+        routingSessionId,
+        sessionOwnerHint: storedSessionId => getSessionOwnerHint(storedSessionId),
+        sessionRowOwner: storedSessionId => knownSessionOwner($sessions.get(), storedSessionId),
+        tileOwnerRoute: sessionTileOwnerRoute
+      })
 
       if (!owner && routingSessionId) {
         // Unknown owner for a REAL session: probe across profiles (REST, not the

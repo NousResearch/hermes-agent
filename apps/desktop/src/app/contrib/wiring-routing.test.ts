@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { findStoredIdForRuntimeId, resolveRoutingSessionId } from './wiring-routing'
+import { findStoredIdForRuntimeId, resolveRoutingSessionId, resolveSessionRpcOwner } from './wiring-routing'
 
 describe('findStoredIdForRuntimeId', () => {
   it('reverse-resolves a runtime id to its stored id', () => {
@@ -74,5 +74,67 @@ describe('resolveRoutingSessionId', () => {
         storedIdForRuntime: never
       })
     ).toBeNull()
+  })
+})
+
+describe('resolveSessionRpcOwner', () => {
+  const none = () => undefined
+  const omar = { connectionId: 'local', mode: 'local' as const, profile: 'omar' }
+  const homelab = { connectionId: 'homelab', mode: 'remote' as const, profile: 'worker', targetProfile: 'w' }
+
+  it('returns undefined for an RPC with no session (ambient chrome)', () => {
+    expect(
+      resolveSessionRpcOwner({
+        routingSessionId: null,
+        sessionOwnerHint: none,
+        sessionRowOwner: none,
+        tileOwnerRoute: none
+      })
+    ).toBeUndefined()
+  })
+
+  it('prefers the persisted tile owner route over the hint and the row', () => {
+    const owner = resolveSessionRpcOwner({
+      routingSessionId: 'stored-bot',
+      sessionOwnerHint: () => omar,
+      sessionRowOwner: () => 'default',
+      tileOwnerRoute: () => homelab
+    })
+
+    expect(owner).toEqual(homelab)
+  })
+
+  it('prefers the exact unique owner hint over the session row profile', () => {
+    // The row is presentation state: an optimistic row minted while the
+    // ambient profile stayed `default` reads `default` even though the create
+    // ran on local::omar. The hint recorded at create time is exact.
+    const owner = resolveSessionRpcOwner({
+      routingSessionId: 'stored-omar',
+      sessionOwnerHint: id => (id === 'stored-omar' ? omar : undefined),
+      sessionRowOwner: () => 'default',
+      tileOwnerRoute: none
+    })
+
+    expect(owner).toEqual(omar)
+  })
+
+  it('falls back to the session row profile, then to undefined for the probe', () => {
+    expect(
+      resolveSessionRpcOwner({
+        routingSessionId: 'stored-1',
+        sessionOwnerHint: none,
+        sessionRowOwner: () => 'coder',
+        tileOwnerRoute: none
+      })
+    ).toBe('coder')
+
+    expect(
+      resolveSessionRpcOwner({
+        routingSessionId: 'stored-1',
+        sessionOwnerHint: none,
+        sessionRowOwner: () => '  ',
+        tileOwnerRoute: none
+      })
+    ).toBeUndefined()
   })
 })

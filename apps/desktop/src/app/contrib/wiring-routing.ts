@@ -48,3 +48,57 @@ export function resolveRoutingSessionId(args: {
 
   return focusedStoredSessionId ?? selectedStoredSessionId
 }
+
+/** The owner shapes the ladder below can return: an exact route (connection +
+ *  profile), a bare profile name, or undefined (unknown — probe, never
+ *  "active"). Structural twin of store/session-request-router's
+ *  SessionOwnerScope, kept local so this module stays import-free. */
+export interface SessionRpcOwnerRoute {
+  connectionId: string
+  mode?: 'local' | 'remote'
+  profile: string
+  targetProfile?: string
+}
+
+/**
+ * The SYNC owner a session-scoped RPC routes to, resolved in this order:
+ *
+ *   1. the persisted tile owner route (a bot chat / split tile records the
+ *      exact connectionId + profile it was opened with, survives relaunch);
+ *   2. the exact, UNIQUE session owner hint (recorded the moment a routed
+ *      session.create returns, or at plugin open time) — the only durable
+ *      exact owner a fresh main-pane chat or a hidden session has;
+ *   3. the session row's owner — an EXACT route when the row is
+ *      connection-tagged (optimistic row from a routed create, or the
+ *      unified list splice), else its bare profile (the cross-profile
+ *      aggregator tags rows, but a bare profile loses the connection and
+ *      can lag the create);
+ *   4. undefined → the caller runs the cross-profile probe.
+ *
+ * The hint outranks the row because the row is presentation state that can
+ * be stamped from the AMBIENT profile (an optimistic row minted while
+ * All-profiles / Bot routing left `default` active), and because it carries
+ * no connection: a fresh chat created on `local::omar` whose row read
+ * `default` ran its first turn on omar and then 4001'd "session not found"
+ * on the second, when the row's `default` owner won the route.
+ */
+export function resolveSessionRpcOwner(args: {
+  routingSessionId: null | string
+  tileOwnerRoute: (storedSessionId: string) => SessionRpcOwnerRoute | undefined
+  sessionOwnerHint: (storedSessionId: string) => SessionRpcOwnerRoute | undefined
+  sessionRowOwner: (storedSessionId: string) => null | SessionRpcOwnerRoute | string | undefined
+}): SessionRpcOwnerRoute | string | undefined {
+  const { routingSessionId, sessionOwnerHint, sessionRowOwner, tileOwnerRoute } = args
+
+  if (!routingSessionId) {
+    return undefined
+  }
+
+  const fromRow = sessionRowOwner(routingSessionId)
+
+  return (
+    tileOwnerRoute(routingSessionId) ??
+    sessionOwnerHint(routingSessionId) ??
+    (typeof fromRow === 'string' ? fromRow.trim() || undefined : (fromRow ?? undefined))
+  )
+}

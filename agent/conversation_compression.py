@@ -1554,10 +1554,12 @@ class _CompressionActivityHeartbeat:
 def _direct_messages_for_pre_compress_memory(messages: Any) -> list[dict[str, Any]]:
     """Return direct user/assistant evidence safe for memory checkpointing.
 
-    Compression summaries are derivative context, not new source evidence. Tool
-    rows, system messages, and assistant tool-call wrappers are likewise omitted
-    so memory providers receive one normalized host contract instead of having
-    to infer Hermes transcript internals independently.
+    Compression summaries are derivative context, not new source evidence.
+    Tool rows and system messages are likewise omitted so memory providers
+    receive one normalized host contract instead of having to infer Hermes
+    transcript internals independently. Assistant messages that carry both
+    prose and ``tool_calls`` keep their prose (the ``tool_calls`` payload is
+    stripped); pure tool-call wrappers without prose are dropped.
     """
     # Deferred import: context_compressor imports turn_context, which imports
     # this module — a module-level import here would close that cycle
@@ -1574,7 +1576,13 @@ def _direct_messages_for_pre_compress_memory(messages: Any) -> list[dict[str, An
         if message.get(COMPRESSED_SUMMARY_METADATA_KEY):
             continue
         if role == "assistant" and message.get("tool_calls"):
-            continue
+            content = message.get("content")
+            has_prose = bool(
+                content.strip() if isinstance(content, str) else content
+            )
+            if not has_prose:
+                continue
+            message = {k: v for k, v in message.items() if k != "tool_calls"}
         direct_messages.append(message)
     return direct_messages
 

@@ -4392,11 +4392,12 @@ class GatewaySlashCommandsMixin:
                 runtime_kwargs["platform"] = platform_key
             runtime_kwargs["gateway_session_key"] = session_key
 
-            # The manual compression helper loads the memory provider (see
-            # skip_memory=False below) but still runs outside the live
-            # session's fully initialized prompt environment, and
-            # _compress_context may persist its cached system prompt. Restore
-            # the exact live-session prompt so provider blocks are retained.
+            # The manual compression helper runs outside the live session's
+            # fully initialized prompt environment (it loads the memory
+            # provider only when compression.checkpoint_required demands it),
+            # and _compress_context may persist its cached system prompt.
+            # Restore the exact live-session prompt so provider blocks are
+            # retained.
             session_row = None
             get_session = getattr(self._session_db, "get_session", None)
             if callable(get_session):
@@ -4412,18 +4413,26 @@ class GatewaySlashCommandsMixin:
                         exc_info=True,
                     )
 
+            # This agent performs a lossy rewrite. When the operator enabled
+            # compression.checkpoint_required, the memory provider must be
+            # loaded so _compress_context() can create the required
+            # pre-compression checkpoint; otherwise keep the historical fast
+            # path (no provider init, no best-effort hook) for this helper.
+            from hermes_cli.config import load_config as _load_cfg
+            from utils import is_truthy_value as _is_truthy
+
+            _checkpoint_required = _is_truthy(
+                ((_load_cfg() or {}).get("compression") or {}).get(
+                    "checkpoint_required"
+                ),
+                default=False,
+            )
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,
                 max_iterations=4,
                 quiet_mode=True,
-                # This agent performs the same lossy rewrite as normal
-                # compression, so it loads the memory provider unconditionally
-                # (normal compression never skips it either): best-effort
-                # on_pre_compress runs for manual compression too, and when
-                # compression.checkpoint_required is enabled the required
-                # pre-compression checkpoint can be created.
-                skip_memory=False,
+                skip_memory=not _checkpoint_required,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
                 session_db=getattr(self._session_db, "_db", self._session_db),

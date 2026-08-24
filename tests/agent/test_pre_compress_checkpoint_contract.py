@@ -69,7 +69,7 @@ def test_direct_messages_filter_keeps_only_direct_source_evidence():
         {"role": "system", "content": "system prompt"},
         {"role": "user", "content": "durable user decision"},
         {"role": "assistant", "content": "direct assistant answer"},
-        {"role": "assistant", "content": "call", "tool_calls": [{"id": "t1"}]},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "t1"}]},
         {"role": "tool", "content": "tool output", "tool_call_id": "t1"},
         {
             "role": "assistant",
@@ -85,6 +85,29 @@ def test_direct_messages_filter_keeps_only_direct_source_evidence():
         "durable user decision",
         "direct assistant answer",
     ]
+
+
+def test_direct_messages_filter_keeps_prose_of_tool_call_messages():
+    """Assistant prose next to tool_calls is evidence; the payload is not."""
+    messages = [
+        {"role": "user", "content": "please scan the network"},
+        {
+            "role": "assistant",
+            "content": "Scanning now — the last sweep found 26 hosts.",
+            "tool_calls": [{"id": "t1", "function": {"name": "terminal"}}],
+        },
+        {"role": "assistant", "content": "   ", "tool_calls": [{"id": "t2"}]},
+    ]
+
+    direct = _direct_messages_for_pre_compress_memory(messages)
+
+    assert [m["content"] for m in direct] == [
+        "please scan the network",
+        "Scanning now — the last sweep found 26 hosts.",
+    ]
+    assert all("tool_calls" not in m for m in direct)
+    # The original message list is not mutated.
+    assert messages[1]["tool_calls"]
 
 
 def test_manager_advertises_checkpoint_capability_only_with_capable_provider():
@@ -182,3 +205,37 @@ def test_compressed_summary_marker_survives_restart_via_resume_history(tmp_path)
 
     plain = reopened.get_messages_as_conversation("s1")
     assert all("_compressed_summary" not in m for m in plain)
+
+
+def test_compressed_summary_column_is_added_to_legacy_databases(tmp_path):
+    """Pre-upgrade databases gain the marker column via declarative reconcile.
+
+    ``_init_schema()`` diffs live columns against SCHEMA_SQL on every
+    writable open and ADDs whatever is missing, so a database created
+    before this feature must accept marker writes after a plain reopen.
+    """
+    import sqlite3
+
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    SessionDB(db_path)
+
+    # Simulate a pre-upgrade database: the marker column does not exist.
+    conn = sqlite3.connect(db_path)
+    conn.execute("ALTER TABLE messages DROP COLUMN _compressed_summary")
+    conn.commit()
+    legacy_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(messages)")
+    }
+    conn.close()
+    assert "_compressed_summary" not in legacy_cols
+
+    upgraded = SessionDB(db_path)
+    upgraded.create_session("legacy", source="cli")
+    upgraded.append_message(
+        "legacy", "assistant", "derivative summary", _compressed_summary=True
+    )
+
+    model_history, _display = upgraded.get_resume_conversations("legacy")
+    assert model_history[-1].get("_compressed_summary") is True

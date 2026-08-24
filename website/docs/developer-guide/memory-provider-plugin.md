@@ -166,11 +166,19 @@ uncompressed transcript is preserved, the compaction attempt errors with
 recovers. With the gate off (default), nothing changes for existing providers.
 
 What your provider receives in both modes is normalized direct evidence:
-user/assistant text rows only — tool results, system messages, assistant
-tool-call wrappers, and prior compaction summaries are filtered host-side.
-Prior summaries are recognized via a persistent `_compressed_summary` message
-marker that survives process restarts, so a resumed session never feeds
-derivative summaries back into your archive.
+user/assistant text rows only — tool results, system messages, the
+`tool_calls` payload of assistant messages (their prose is kept), and prior
+compaction summaries are filtered host-side. Prior summaries are recognized
+via a persistent `_compressed_summary` message marker that survives process
+restarts, so a resumed session never feeds derivative summaries back into
+your archive.
+
+**Checkpoints must be idempotent.** After a fail-closed block, the next
+compaction attempt calls `on_pre_compress()` again with the same transcript —
+and a transcript that grew only slightly produces largely overlapping
+evidence. Key your archive writes by content (for example a transcript
+digest) and upsert, so retries and overlaps deduplicate instead of
+accumulating duplicate archives.
 
 Contract tests: `tests/agent/test_pre_compress_checkpoint_contract.py`.
 

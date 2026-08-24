@@ -3453,6 +3453,7 @@ run_stage_body() {
             check_python
             check_git
             check_node
+            check_cxx_compiler
             check_network_prerequisites
             install_system_packages
             ;;
@@ -3595,6 +3596,7 @@ main() {
     check_python
     check_git
     check_node
+    check_cxx_compiler
     check_network_prerequisites
     install_system_packages
 

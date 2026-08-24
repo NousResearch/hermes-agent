@@ -9,8 +9,10 @@ module-level constants live in hermes_state_common.
 """
 
 import logging
+import contextlib
 import json
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
@@ -305,6 +307,74 @@ class SessionPortabilityMixin:
             messages = self.get_messages(session["id"])
             results.append({**session, "messages": messages})
         return results
+
+    def adopt_session_lineage_from(
+        self,
+        donor_db: Any,  # a full SessionDB (mixin cannot import it — cycle)
+        session_id: str,
+        *,
+        retire_donor: bool = True,
+    ) -> Dict[str, Any]:
+        """Adopt *session_id*'s full compression lineage from *donor_db* into
+        this store.
+
+        The stranded-bot-session heal (#93091 follow-up to #93296): before the
+        desktop routed session RPCs by their target session, a profile bot's
+        turns executed on whichever backend held window focus — usually the
+        default one — so the bot's canonical session rows and messages
+        accumulated in the DEFAULT profile's state.db. Once routing was fixed,
+        the profile backend correctly received the RPCs but had no such
+        session, so the same chat 4001'd for the opposite reason. This method
+        moves the conversation to where routing now looks for it.
+
+        Composition of existing primitives (no new import/export machinery):
+        ``donor_db.export_session_lineage()`` -> ``self.import_sessions()``.
+        Import semantics apply unchanged: gateway routing, handoff, and live
+        activity fields are reset; already-present ids are skipped
+        (idempotent re-adoption after a partial run).
+
+        When ``retire_donor`` is True and at least one segment was imported
+        (or every segment already exists here), the donor rows are ARCHIVED —
+        never deleted — with ``end_reason='adopted_by_profile'`` so the
+        default profile's list stops advertising a conversation that now
+        lives elsewhere, while the bytes stay recoverable. The archive is
+        deliberately NOT in the recoverable set (agent_close/ws_orphan_reap):
+        canonical-lookup resurrection must not undo an adoption.
+
+        Returns the ``import_sessions`` result dict, plus ``adopted`` (bool)
+        and ``donor_retired`` (bool).
+        """
+        payload = donor_db.export_session_lineage(session_id)
+        if not payload:
+            return {
+                "ok": False,
+                "adopted": False,
+                "donor_retired": False,
+                "error": f"session {session_id!r} not found in donor store",
+            }
+
+        segments = payload.get("segments") or [payload]
+        result = self.import_sessions([dict(seg) for seg in segments])
+        imported = int(result.get("imported") or 0)
+        skipped = int(result.get("skipped") or 0)
+        adopted = result.get("ok", False) and (imported + skipped) == len(segments)
+
+        donor_retired = False
+        if adopted and retire_donor:
+            for seg in segments:
+                seg_id = seg.get("id")
+                if not seg_id:
+                    continue
+                with contextlib.suppress(Exception):
+                    # First end_reason wins in end_session(); reopen first so
+                    # the adoption boundary is stamped even on ended segments
+                    # (e.g. 'compression' parents).
+                    donor_db.reopen_session(seg_id)
+                    donor_db.end_session(seg_id, "adopted_by_profile")
+                    donor_db.set_session_archived(seg_id, True)
+            donor_retired = True
+
+        return {**result, "adopted": adopted, "donor_retired": donor_retired}
 
     @staticmethod
     def _import_text_or_none(value: Any, field: str) -> Optional[str]:

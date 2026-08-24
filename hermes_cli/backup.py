@@ -259,6 +259,15 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             # copy data from outside HERMES_HOME; never archive the output zip into itself.
             if _should_exclude(rel) or fpath.is_symlink():
                 continue
+            # Sockets, FIFOs and device nodes are runtime state that zipfile.write() cannot archive —
+            # it raises OSError on them (e.g. the gateway control socket), which marks the whole backup
+            # incomplete. Skip them the way symlinks are skipped. A failed stat must NOT skip the file
+            # silently: leave it for the archive phase, which reports the failure as a warning.
+            try:
+                if not stat.S_ISREG(fpath.stat().st_mode):
+                    continue
+            except OSError:
+                pass
             with suppress(OSError, ValueError):
                 if fpath.resolve() == out_path.resolve():
                     continue

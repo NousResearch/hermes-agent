@@ -70,6 +70,40 @@ def is_auto_retryable(reason: str) -> bool:
     return reason in AUTO_RETRYABLE
 
 
+# ── retry session policy (#93091 item 5) ─────────────────────────────────────
+#
+# Maintainer ruling (2026-08-23, #93091): a retried bot turn NEVER mints a
+# fresh session. Transient classes resume the session as-is. context_overflow
+# runs context compression — the one sanctioned context mutation, already in
+# the agent core — on the same session and retries against the compacted
+# context. Everything else (auth/quota/config/model/unknown) is not
+# auto-retried at all: surface the typed reason and stop.
+
+#: Retry actions returned by :func:`retry_action`.
+RETRY_RESUME = "resume"
+RETRY_COMPRESS_THEN_RESUME = "compress_then_resume"
+RETRY_NONE = "none"
+
+
+def retry_action(reason: str) -> str:
+    """Map a failure reason to the bot-turn retry action.
+
+    - transient (:data:`AUTO_RETRYABLE`) → ``'resume'``: retry the same
+      session unchanged, bounded by the caller's backoff ladder.
+    - :data:`CONTEXT_OVERFLOW` → ``'compress_then_resume'``: run context
+      compression on the session, then retry the same session. Resending
+      the identical overflowing context would fail identically, and a
+      fresh-session escape hatch is explicitly not wanted.
+    - anything else → ``'none'``: never auto-retry auth/quota/config
+      failures; a retry cannot fix them and only burns quota.
+    """
+    if reason in AUTO_RETRYABLE:
+        return RETRY_RESUME
+    if reason == CONTEXT_OVERFLOW:
+        return RETRY_COMPRESS_THEN_RESUME
+    return RETRY_NONE
+
+
 # Ordered (pattern, code) rules — first match wins. See module docstring for
 # the precedence rationale (auth beats quota by design).
 _RULES: tuple[tuple[re.Pattern[str], str], ...] = (

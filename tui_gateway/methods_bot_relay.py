@@ -117,8 +117,9 @@ def _(rid, params: dict) -> dict:
             # delivery turn into this profile (relay or local message_agent).
             # The lock covers only the turn execution window. Worst-case
             # handler hold is lock wait (bot_mode.turn_wait_seconds, default
-            # 120s) + the 600s turn timeout below — clients calling
-            # bot_relay.deliver must tolerate ~720s before assuming failure.
+            # 120s) + the 600s turn timeout below — doubled when the retry
+            # policy grants one bounded re-run — so clients calling
+            # bot_relay.deliver must tolerate ~1320s before assuming failure.
             with acquire_turn_lock(root, resolved):
                 proc = subprocess.run(
                     local_delivery_command(resolved, tmp),
@@ -126,14 +127,43 @@ def _(rid, params: dict) -> dict:
                     text=True,
                     timeout=600,
                 )
+                if proc.returncode != 0:
+                    # Retry session policy (#93091 item 5): transient classes
+                    # re-run the SAME session once; context_overflow also
+                    # re-runs the same session — the retried turn's pre-API
+                    # compaction pass (agent/conversation_loop.py) compacts
+                    # the over-threshold Bot Chat transcript first, which is
+                    # the sanctioned compression lever (no fresh session is
+                    # ever minted). Auth/quota/config classes never retry.
+                    from tools.bot_failure_reasons import (
+                        RETRY_NONE,
+                        classify_agent_error,
+                        retry_action,
+                    )
+
+                    first_detail = (proc.stderr or proc.stdout or "").strip()[-500:]
+                    if retry_action(classify_agent_error(first_detail)) != RETRY_NONE:
+                        proc = subprocess.run(
+                            local_delivery_command(resolved, tmp),
+                            capture_output=True,
+                            text=True,
+                            timeout=600,
+                        )
         finally:
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
         if proc.returncode != 0:
+            from tools.bot_failure_reasons import classify_agent_error
+
             detail = (proc.stderr or proc.stdout or "").strip()[-500:]
-            return _err(rid, 5092, f"delivery turn failed: {detail or proc.returncode}")
+            return _err(
+                rid,
+                5092,
+                f"delivery turn failed: {detail or proc.returncode}",
+                data={"reason": classify_agent_error(detail)},
+            )
         return _ok(rid, {"reply": (proc.stdout or "").strip()})
     except subprocess.TimeoutExpired:
         return _err(rid, 5093, "delivery turn timed out")

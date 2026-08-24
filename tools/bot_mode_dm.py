@@ -541,6 +541,14 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
     The turn execution window (not the enqueue) holds the target profile's
     cross-process lock, so two deliveries into one profile queue instead of
     racing; a bounded wait ends in a structured 'target_busy' refusal.
+
+    Local (query-file) turns get one policy-gated retry (#93091 item 5):
+    transient failures re-run the same session; a context_overflow re-run
+    lets the retried turn's pre-API compaction pass compact the Bot Chat
+    transcript first (agent/conversation_loop.py) — the sanctioned
+    compression lever; no fresh session is ever minted. Auth/quota/config
+    failures never retry. Peer transports (stdin mode) retry on their own
+    gateway's deliver path, not here.
     """
     try:
         with _delivery_lock(argv, stdin_file=stdin_file):
@@ -549,10 +557,36 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool) -> int:
                 # after subprocess.run returns, not merely after stdin reaches EOF.
                 with open(dm_file, "r", encoding="utf-8") as stream:
                     return subprocess.run(argv, stdin=stream, check=False).returncode
-            return subprocess.run(
+            proc = subprocess.run(
                 [*argv, "--query-file", dm_file],
                 check=False,
-            ).returncode
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode != 0:
+                from tools.bot_failure_reasons import (
+                    RETRY_NONE,
+                    classify_agent_error,
+                    retry_action,
+                )
+
+                detail = (proc.stderr or proc.stdout or "").strip()[-500:]
+                if retry_action(classify_agent_error(detail)) != RETRY_NONE:
+                    proc = subprocess.run(
+                        [*argv, "--query-file", dm_file],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+            # Re-emit the transport's streams: stdout is the reply text the
+            # completion notification carries back to the sending agent.
+            if proc.stdout:
+                sys.stdout.write(proc.stdout)
+                sys.stdout.flush()
+            if proc.stderr:
+                sys.stderr.write(proc.stderr)
+                sys.stderr.flush()
+            return proc.returncode
     finally:
         _unlink_dm_file(dm_file)
 

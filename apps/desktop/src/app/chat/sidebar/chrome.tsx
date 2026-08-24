@@ -39,7 +39,12 @@ const rowPadTrail = 'pr-2'
 const rowGap = 'gap-1.5'
 const rowLead = 'grid size-3.5 shrink-0 place-items-center'
 const rowInset = cn(rowPadX, rowGap, 'flex h-full min-w-0 items-center self-stretch py-0.5')
-const rowLabel = 'min-w-0 truncate text-[0.8125rem] leading-none text-(--ui-text-secondary)'
+// `truncate` is overflow:hidden. `leading-none` (line-height: 1) makes the
+// line box equal the em-square, so glyph ink that sticks out — Segoe UI on
+// Windows is ~1.33em — gets shaved. 1.35 leaves room; the shell still owns
+// row height, so the extra leading just centers.
+export const SIDEBAR_TRUNCATED_LEADING = 'leading-[1.35]' as const
+const rowLabel = cn('min-w-0 truncate text-[0.8125rem] text-(--ui-text-secondary)', SIDEBAR_TRUNCATED_LEADING)
 
 /** Inbox-style card (workspace + age, title + preview, model + size). */
 export const SIDEBAR_ROW_CARD_MIN_H = 'min-h-[3.375rem]' as const

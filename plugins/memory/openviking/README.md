@@ -96,8 +96,10 @@ Hermes sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
 and `mode=create`. It creates peer-scoped memory files under explicit-uid
 `viking://user/<user>/peers/${OPENVIKING_AGENT}/memories/...` URIs, where
 `<user>` is resolved client-side from `/api/v1/system/status` (server-asserted
-current user, `default` fallback) — explicit-uid URIs are canonical and work
-under every OpenViking auth mode and version; the `viking://~` alias only
+current user). Hermes caches a confirmed user only for the active connection.
+If the probe fails, Hermes uses the configured user, or `default`, for that
+operation and retries the probe later. Explicit-uid URIs are canonical and
+work under every OpenViking auth mode and version; the `viking://~` alias only
 expands for USER/ADMIN roles, not the default dev mode.
 Explicit remembers do not depend on session commit extraction.
 

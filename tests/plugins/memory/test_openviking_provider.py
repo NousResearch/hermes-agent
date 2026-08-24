@@ -1346,6 +1346,8 @@ def _mock_session_start_reads(
         request_params = dict(params or {})
         uri = request_params.get("uri", "")
         calls.append((path, request_params, kwargs.get("timeout")))
+        if path == "/api/v1/system/status":
+            return {"status": "ok", "result": {"user": "default"}}
         response = responses.get((path, uri), "")
         if isinstance(response, Exception):
             raise response
@@ -1437,6 +1439,8 @@ def test_prefetch_reinjects_after_in_place_compression_same_session():
 
     def fake_get(path, params=None, **kwargs):
         uri = (params or {}).get("uri", "")
+        if path == "/api/v1/system/status":
+            return {"status": "ok", "result": {"user": "default"}}
         if uri == "viking://user/default/memories/profile.md":
             return {"result": next(profiles)}
         return {"result": []}

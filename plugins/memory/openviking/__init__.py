@@ -105,12 +105,12 @@ _PREFERENCES_SUFFIX = "memories/preferences"
 _ENTITIES_SUFFIX = "memories/entities"
 
 
-def _resolve_user_space(client) -> str:
+def _resolve_user_space(client) -> Optional[str]:
     """Server-asserted current user for explicit-uid URIs.
 
-    Falls back to ``"default"`` (the trusted-mode default user, identical to
-    the on-disk layout ``viking/default/user/default/...``) when the probe
-    fails or reports no user.
+    Return ``None`` when the probe fails or reports no user. Callers can use a
+    configured fallback for that operation, but must not cache an unverified
+    identity because a later probe can succeed.
     """
     try:
         status = client.get("/api/v1/system/status")
@@ -120,9 +120,11 @@ def _resolve_user_space(client) -> str:
             return user
     except Exception:
         logger.debug(
-            "OpenViking user-space probe failed; using 'default'", exc_info=True
+            "OpenViking user-space probe failed; using configured fallback for "
+            "this operation and retrying later",
+            exc_info=True,
         )
-    return "default"
+    return None
 
 
 def _user_scoped_uri(user_space: str, suffix: str) -> str:
@@ -2268,9 +2270,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._agent = ""
         self._session_id = ""
         self._turn_count = 0
-        # Server-asserted user space for explicit-uid URIs (#91995); resolved
-        # lazily from /api/v1/system/status on first use.
-        self._user_space_cache: Optional[str] = None
+        # Server-asserted user space for explicit-uid URIs (#91995). Bind the
+        # cached value to the client object that supplied it: /reload can swap
+        # endpoint, credentials, and identity on this provider instance, and
+        # an in-flight probe from the old client must not populate the new
+        # connection's cache.
+        self._user_space_cache: Optional[tuple[Any, str]] = None
         self._hermes_home = ""
         self._run_id = uuid.uuid4().hex
         self._run_lock_file: Optional[Any] = None
@@ -3906,13 +3911,29 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return f"{head}{marker}{tail}" if tail else _head_only()
 
     def _user_space(self, client=None) -> str:
-        """Resolve (and cache) the server-asserted user space for URIs."""
-        if getattr(self, "_user_space_cache", None) is None:
-            active = client or getattr(self, "_client", None)
-            self._user_space_cache = (
-                _resolve_user_space(active) if active is not None else "default"
-            )
-        return self._user_space_cache
+        """Resolve the user space, caching only a confirmed client identity."""
+        active = client if client is not None else getattr(self, "_client", None)
+        cached = getattr(self, "_user_space_cache", None)
+        if active is not None and cached is not None and cached[0] is active:
+            return cached[1]
+
+        if active is not None:
+            resolved = _resolve_user_space(active)
+            if resolved:
+                # The probe can overlap a config reload. Only publish it when
+                # this is still the provider's active client. Old in-flight
+                # work can use its resolved value without contaminating the
+                # replacement client's cache.
+                if active is getattr(self, "_client", None):
+                    self._user_space_cache = (active, resolved)
+                return resolved
+
+        configured = str(
+            getattr(active, "_user", "")
+            or getattr(self, "_user", "")
+            or "default"
+        ).strip()
+        return configured or "default"
 
     def _user_scoped_uri(self, suffix: str, client=None) -> str:
         return _user_scoped_uri(self._user_space(client), suffix)

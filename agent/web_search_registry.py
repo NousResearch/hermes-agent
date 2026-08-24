@@ -140,15 +140,29 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
 
 
 def _keyless_tier_enabled() -> bool:
-    """Read ``web.keyless_fallback`` from config.yaml (default: enabled)."""
+    """Read the authoritative anonymous-egress policy from config.yaml.
+
+    A valid config with no explicit setting retains the fresh-install default
+    (enabled).  Invalid/unavailable policy state fails closed: inability to
+    establish the user's opt-out state is not permission to send queries or
+    URLs to anonymous third-party endpoints.
+    """
     try:
         from hermes_cli.config import load_config
 
-        web_cfg = load_config().get("web") or {}
-        return bool(web_cfg.get("keyless_fallback", True))
+        config = load_config()
+        if not isinstance(config, dict):
+            return False
+        web_cfg = config.get("web")
+        if web_cfg is None:
+            return True
+        if not isinstance(web_cfg, dict):
+            return False
+        value = web_cfg.get("keyless_fallback", True)
+        return value if isinstance(value, bool) else False
     except Exception as exc:  # noqa: BLE001 — config layer optional
         logger.debug("keyless_fallback config read failed: %s", exc)
-        return True
+        return False
 
 
 def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Optional[str] = None) -> Optional[str]:

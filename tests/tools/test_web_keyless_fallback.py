@@ -213,6 +213,31 @@ class TestProviderRouting:
         assert out["success"] is False
         assert "PARALLEL_API_KEY" in out["error"]
 
+    def test_keyless_disabled_overrides_explicit_free_tier(self, monkeypatch):
+        """The global switch is an egress gate, not an auto-mode preference."""
+        monkeypatch.setattr(registry, "_keyless_tier_enabled", lambda: False)
+        monkeypatch.setattr(keyless_mcp, "provider_tier", lambda _name: "free")
+        provider = ParallelWebSearchProvider()
+
+        with patch.object(keyless_mcp, "search_with_failover") as keyless:
+            out = provider.search("must stay local")
+
+        keyless.assert_not_called()
+        assert out["success"] is False
+        assert "PARALLEL_API_KEY" in out["error"]
+
+    @pytest.mark.parametrize(
+        "vendor", ["exa", "parallel", "tavily", "firecrawl", "keenable"]
+    )
+    def test_global_disable_blocks_every_explicit_free_vendor(
+        self, monkeypatch, vendor
+    ):
+        monkeypatch.setattr(keyless_mcp, "keyless_enabled", lambda: False)
+        monkeypatch.setattr(keyless_mcp, "provider_tier", lambda _name: "free")
+
+        assert keyless_mcp.use_keyless(vendor, "") is False
+        assert keyless_mcp.use_keyless(vendor, "configured-key") is False
+
     def test_is_available_stays_false_keyless(self):
         # Keyless tier must NOT leak into is_available() (legacy walk order).
         assert ParallelWebSearchProvider().is_available() is False
@@ -225,6 +250,7 @@ class TestProviderRouting:
             "agent.web_search_provider.get_provider_env",
             lambda name: "sk-real" if name == "PARALLEL_API_KEY" else "",
         )
+        monkeypatch.setattr(keyless_mcp, "keyless_enabled", lambda: True)
         monkeypatch.setattr(keyless_mcp, "provider_tier", lambda name: "free")
         provider = ParallelWebSearchProvider()
         with patch.object(
@@ -258,8 +284,16 @@ class TestProviderRouting:
         assert keyless_mcp.provider_tier("parallel") == "auto"  # invalid → auto
         assert keyless_mcp.provider_tier("keenable") == "auto"  # unset → auto
 
+    def test_keyless_enabled_fails_closed_when_policy_helper_raises(self, monkeypatch):
+        def _unavailable():
+            raise RuntimeError("config authority unavailable")
+
+        monkeypatch.setattr(registry, "_keyless_tier_enabled", _unavailable)
+        assert keyless_mcp.keyless_enabled() is False
+
     @pytest.mark.asyncio
     async def test_parallel_keyless_extract(self, monkeypatch):
+        monkeypatch.setattr(keyless_mcp, "keyless_enabled", lambda: True)
         monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == "parallel")
         provider = ParallelWebSearchProvider()
         with patch.dict(
@@ -269,6 +303,40 @@ class TestProviderRouting:
             out = await provider.extract(["https://a"])
         assert out[0]["content"] == "c"
 
+
+class TestKeylessPolicyConfig:
+    @pytest.mark.parametrize("config", [{}, {"web": {}}, {"web": None}])
+    def test_valid_absent_setting_keeps_fresh_install_default(self, monkeypatch, config):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        assert registry._keyless_tier_enabled() is True
+
+    def test_explicit_false_disables(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"web": {"keyless_fallback": False}},
+        )
+        assert registry._keyless_tier_enabled() is False
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            None,
+            [],
+            {"web": "invalid"},
+            {"web": {"keyless_fallback": "false"}},
+            {"web": {"keyless_fallback": 1}},
+        ],
+    )
+    def test_malformed_policy_state_fails_closed(self, monkeypatch, config):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        assert registry._keyless_tier_enabled() is False
+
+    def test_config_read_failure_fails_closed(self, monkeypatch):
+        def _unreadable():
+            raise OSError("permission denied")
+
+        monkeypatch.setattr("hermes_cli.config.load_config", _unreadable)
+        assert registry._keyless_tier_enabled() is False
 
 # ---------------------------------------------------------------------------
 # Registry + _get_backend resolution order

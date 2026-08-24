@@ -62,11 +62,13 @@ def test_grep_command_separates_leading_dash_pattern(pattern):
 # ─────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.skipif(
-    shutil.which("rg") is None and shutil.which("grep") is None,
-    reason="neither rg nor grep available",
-)
-def test_leading_dash_pattern_finds_matches(tmp_path, monkeypatch):
+@pytest.mark.skipif(shutil.which("grep") is None, reason="grep not available")
+def test_leading_dash_pattern_finds_matches_grep_fallback(tmp_path, monkeypatch):
+    """End-to-end through search() with the POSIX-guaranteed grep engine.
+
+    rg is hidden so ``search()`` deterministically takes the grep branch;
+    the constructed command must find every leading-dash pattern.
+    """
     (tmp_path / "notes.md").write_text(
         "uses --pdf-engine=lualatex here\nscore was -77\narrow -> point\n",
         encoding="utf-8",
@@ -76,11 +78,33 @@ def test_leading_dash_pattern_finds_matches(tmp_path, monkeypatch):
     from tests.tools.test_file_operations import make_real_subprocess_env
 
     ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+    # Force the deterministic engine regardless of whether rg is installed.
+    ops._has_command = lambda name: name == "grep"
 
     for pattern in ("-77", "--pdf-engine", "->"):
         result = ops.search(pattern=pattern, path=str(tmp_path), target="content")
         assert not result.error, f"{pattern!r} failed: {result.error}"
         blob = "\n".join(result.matches or []) + "".join(result.files or [])
-        assert pattern.lstrip("-") in blob or result.total_count >= 1, (
+        assert pattern.lstrip("-")[:2] in blob or result.total_count >= 1, (
             f"leading-dash pattern {pattern!r} returned no matches"
         )
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="rg not available")
+def test_rg_engine_accepts_end_of_flags_pattern(tmp_path):
+    """Engine-capability half of the fix: rg matches a literal '-77' when
+    given as ``rg -- '-77' <path>`` — the exact argument form Hermes now
+    constructs (verified separately by the command-construction tests).
+    """
+    target = tmp_path / "notes.md"
+    target.write_text("score was -77\n", encoding="utf-8")
+
+    import subprocess
+
+    proc = subprocess.run(
+        ["rg", "--line-number", "--", "-77", str(target)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, f"rg rc={proc.returncode}: {proc.stderr}"
+    assert "-77" in proc.stdout

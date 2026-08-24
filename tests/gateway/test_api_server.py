@@ -1476,14 +1476,30 @@ class TestResponsesEndpoint:
 
     @pytest.mark.asyncio
     async def test_batch_preserves_reasoning_output_item(self, adapter):
-        """Non-streaming Responses output must not discard stored reasoning."""
+        """Non-streaming Responses aggregates turn reasoning into one item."""
         result = {
             "final_response": "answer",
-            "messages": [{
-                "role": "assistant",
-                "content": "answer",
-                "reasoning_content": "check facts",
-            }],
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "check facts",
+                    "tool_calls": [{
+                        "id": "call_lookup",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_lookup",
+                    "content": "facts",
+                },
+                {
+                    "role": "assistant",
+                    "content": "answer",
+                    "reasoning": "form answer",
+                },
+            ],
             "session_id": "responses-batch-reasoning-session",
         }
         app = _create_app(adapter)
@@ -1504,10 +1520,14 @@ class TestResponsesEndpoint:
                 payload = await resp.json()
 
         assert [item["type"] for item in payload["output"]] == [
-            "reasoning", "message"
+            "function_call", "function_call_output", "reasoning", "message"
         ]
-        assert payload["output"][0]["summary"] == [
-            {"type": "summary_text", "text": "check facts"}
+        reasoning_items = [
+            item for item in payload["output"] if item["type"] == "reasoning"
+        ]
+        assert len(reasoning_items) == 1
+        assert reasoning_items[0]["summary"] == [
+            {"type": "summary_text", "text": "check facts\n\nform answer"}
         ]
 
 
@@ -1910,7 +1930,8 @@ class TestResponsesStreaming:
 
         async def _agent_coro():
             # Feed partial reasoning and answer deltas into the stream queue...
-            stream_q.put_nowait(("__reasoning__", "partial thought"))
+            stream_q.put_nowait(("__reasoning__", "partial "))
+            stream_q.put_nowait(("__reasoning__", "thought"))
             stream_q.put_nowait("partial output")
             # ...then give the drain loop a moment to pick it up before
             # raising CancelledError to simulate a server-side cancel.
@@ -1952,13 +1973,15 @@ class TestResponsesStreaming:
             for part in item.get("content", [])
         )
         assert "partial output" in output_text
-        reasoning_text = "".join(
-            part.get("text", "")
+        reasoning_items = [
+            item
             for item in stored["response"].get("output", [])
             if item.get("type") == "reasoning"
-            for part in item.get("content", [])
-        )
-        assert reasoning_text == "partial thought"
+        ]
+        assert len(reasoning_items) == 1
+        assert reasoning_items[0]["content"] == [
+            {"type": "reasoning_text", "text": "partial thought"}
+        ]
 
     @pytest.mark.asyncio
     async def test_stream_client_disconnect_persists_incomplete_snapshot(self, adapter):

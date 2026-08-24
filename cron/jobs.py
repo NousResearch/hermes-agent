@@ -523,14 +523,6 @@ NO_AGENT_WITHOUT_SCRIPT_ERROR = (
 )
 
 
-def job_no_agent_without_script(job: Dict[str, Any]) -> bool:
-    """True when a job record claims ``no_agent`` but has no usable script.
-
-    The script IS the job in no_agent mode, so this shape can never run.
-    """
-    return bool(job.get("no_agent")) and not _coerce_job_text(job.get("script")).strip()
-
-
 def job_payload_is_empty(job: Dict[str, Any]) -> bool:
     """True when a job record has nothing runnable at all.
 
@@ -545,7 +537,7 @@ def job_payload_is_empty(job: Dict[str, Any]) -> bool:
     if _normalize_skill_list(job.get("skill"), job.get("skills")):
         return False
     # Only flag if at least one payload field is explicitly present in the record
-    if "prompt" in job or "script" in job or "skills" in job:
+    if "prompt" in job or "script" in job or "skill" in job or "skills" in job:
         return True
     return False
 
@@ -1917,10 +1909,7 @@ def _validate_job_mode_invariants(
             "based on source changes. Use a plain no_agent script job instead."
         )
     if no_agent and not script:
-        raise ValueError(
-            "no_agent=True requires a script — with no agent and no script "
-            "there is nothing for the job to run."
-        )
+        raise ValueError(NO_AGENT_WITHOUT_SCRIPT_ERROR)
 
 
 def create_job(

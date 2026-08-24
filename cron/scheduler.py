@@ -5225,13 +5225,13 @@ def run_job(
     # otherwise wake the LLM with an empty instruction on every fire. Pause
     # the job so it stops being scheduled, and never construct the agent.
     # ---------------------------------------------------------------
-    from cron.jobs import job_payload_is_empty
+    from cron.jobs import EMPTY_PAYLOAD_ERROR, job_payload_is_empty
 
     if job_payload_is_empty(job):
         return _block_and_pause_job(
             job_id,
             job_name,
-            "Cron job has nothing to run: prompt is blank and no script or skills are set",
+            EMPTY_PAYLOAD_ERROR,
         )
 
     # ---------------------------------------------------------------

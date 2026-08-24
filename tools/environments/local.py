@@ -1931,6 +1931,9 @@ class LocalEnvironment(BaseEnvironment):
                     members keep their SIGTERM grace window; only escapees
                     (own setsid sessions) are force-killed.  psutil's
                     identity-aware Process means recycled PIDs are skipped.
+
+                    POSIX-only: reached solely from the non-_IS_WINDOWS
+                    branch above (the win32 path returns earlier).
                     """
                     for child in descendants:
                         try:

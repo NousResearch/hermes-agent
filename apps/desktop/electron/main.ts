@@ -250,6 +250,7 @@ import {
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
+  findRemoteOwnerProfileForSession,
   mergeProfileSessionWindow,
   type RegistrySessionSource,
   spliceRegistrySessionRows
@@ -13483,10 +13484,21 @@ async function interceptSessionRequestForRemote(request) {
   //  - global remote mode: ONE backend serves every profile via ?profile=, so
   //    route there and KEEP the profile param so it opens the right state.db.
   if (/^\/api\/sessions\/[^/]+(\/messages)?$/.test(pathname)) {
-    const profile = (searchParams.get('profile') || request.profile || '').trim()
+    let profile = (searchParams.get('profile') || request.profile || '').trim()
 
     if (!profile) {
-      return undefined
+      // No explicit owner hint (#85834). The list endpoints above already know
+      // which remote profile owns each row (remoteSessionList tags s.profile),
+      // but a caller without a hint used to fall straight through to the LOCAL
+      // backend and 404 on its state.db even though the session lives on a
+      // remote. Consult the same remote lists to find the owner; only fall
+      // through when the id is genuinely unknown remotely.
+      const sessionId = decodeURIComponent(pathname.split('/')[3] || '')
+      profile = (await remoteOwnerProfileForSession(sessionId)) || ''
+
+      if (!profile) {
+        return undefined
+      }
     }
 
     // Preserve every non-profile query param (limit/offset/order pagination —
@@ -13543,6 +13555,39 @@ async function remoteSessionList(profile, searchParams) {
   }
 
   return { ...(data as any), sessions: rowsOf(data) }
+}
+
+// #85834: find which remote profile owns a session id when the caller gave no
+// profile hint (pure lookup lives in profile-session-routing.ts). Results are
+// memoized briefly so a burst of hint-less reads (transcript + messages)
+// costs one sweep across the configured remotes.
+const remoteOwnerBySessionId = new Map<string, { at: number; profile: null | string }>()
+const REMOTE_OWNER_CACHE_TTL_MS = 30_000
+
+async function remoteOwnerProfileForSession(sessionId: string) {
+  if (!sessionId) {
+    return null
+  }
+
+  const remoteProfiles = configuredRemoteProfileNames()
+
+  if (remoteProfiles.length === 0) {
+    return null
+  }
+
+  const cached = remoteOwnerBySessionId.get(sessionId)
+
+  if (cached && Date.now() - cached.at < REMOTE_OWNER_CACHE_TTL_MS) {
+    return cached.profile
+  }
+
+  const owner = await findRemoteOwnerProfileForSession(sessionId, remoteProfiles, (profile, params) =>
+    remoteSessionList(profile, params)
+  ).catch(() => null)
+
+  remoteOwnerBySessionId.set(sessionId, { at: Date.now(), profile: owner })
+
+  return owner
 }
 
 // Resolve one /api/profiles/sessions slice with remote profiles spliced in —

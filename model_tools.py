@@ -1228,6 +1228,9 @@ def _bump_validation_block_count(key: Tuple[Any, ...]) -> int:
     try:
         count = _validation_block_counts.get(key, 0) + 1
         _validation_block_counts[key] = count
+        # LRU: a re-hit key moves to the tail so the FIFO eviction below
+        # drops long-idle keys first (OrderedDict keeps insertion order).
+        _validation_block_counts.move_to_end(key)
         while len(_validation_block_counts) > _VALIDATION_BLOCK_COUNTS_CAP:
             _validation_block_counts.popitem(last=False)
         return count
@@ -1294,17 +1297,15 @@ def validate_required_tool_args(
                     missing.append(req)
 
     # 2) Conditional rules: use the resolved ToolCallGuardrailConfig when given,
-    #    otherwise fall back to bundled defaults (keeps direct-call tests simple).
+    #    otherwise fall back to the bundled defaults (keeps direct-call tests simple).
+    #    Both paths consume the same dataclass so defaults stay single-sourced.
     if tlg is not None:
         cond_map = getattr(tlg, "conditional_required", None) or {}
     else:
-        cond_map = {}
         try:
-            from hermes_cli.config_defaults import DEFAULT_CONFIG
+            from agent.tool_guardrails import ToolCallGuardrailConfig
 
-            cond_map = (
-                (DEFAULT_CONFIG.get("tool_loop_guardrails") or {}).get("conditional_required") or {}
-            )
+            cond_map = ToolCallGuardrailConfig().conditional_required or {}
         except Exception:
             cond_map = {}
 
@@ -1351,16 +1352,19 @@ def validate_required_tool_args(
     # Escalate when the exact same malformed call shape is repeated within one
     # turn: blocked calls are excluded from failure-loop accounting, so without
     # this a weak model could re-emit the identical call forever with no hard
-    # stop. The count is keyed per (session, turn, tool, missing-set).
+    # stop. The count is keyed per (session, turn, tool, missing-set) — only
+    # tracked when both session and turn are known, so call paths without that
+    # context (e.g. MCP servers) never collide on a shared global key.
     try:
-        key = (session_id, turn_id, tool_name, tuple(sorted(missing)))
-        repeat = _bump_validation_block_count(key)
-        if repeat >= 3:
-            msg += (
-                f" This is the {_ordinal(repeat)} time this exact call was blocked this turn — "
-                "stop retrying this shape. Read the tool schema, fix the arguments, "
-                "or switch to an alternative tool."
-            )
+        if session_id and turn_id:
+            key = (session_id, turn_id, tool_name, tuple(sorted(missing)))
+            repeat = _bump_validation_block_count(key)
+            if repeat >= 3:
+                msg += (
+                    f" This is the {_ordinal(repeat)} time this exact call was blocked this turn — "
+                    "stop retrying this shape. Read the tool schema, fix the arguments, "
+                    "or switch to an alternative tool."
+                )
     except Exception:
         pass
 

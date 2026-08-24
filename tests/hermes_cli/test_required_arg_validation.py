@@ -307,3 +307,12 @@ def test_validate_uses_resolved_guardrail_config():
         tlg=cfg,
     )
     assert m is not None and "custom_field" in m
+
+
+def test_repeat_escalation_requires_session_and_turn_context():
+    """Without session/turn context (e.g. MCP call paths) repeats never escalate,
+    so long-lived processes don't collide on a shared global key."""
+    args = {"action": "create", "name": "x"}
+    for _ in range(3):
+        m = validate_required_tool_args("skill_manage", args, session_id="", turn_id="")
+        assert m is not None and "stop retrying" not in m

@@ -1133,6 +1133,58 @@ function sweepGroupChatMembersForRemovedConnection(connectionId) {
   return changed
 }
 
+/** Hydrate-time pass for rows orphaned BEFORE this build (the poisoned rows
+ *  that made #93492 survive app restarts). Two shapes are annotated, never
+ *  deleted:
+ *  - a descriptor that already lost its connectionId (route unresolvable —
+ *    exactly what a stale row looks like once its connection was deleted);
+ *  - a descriptor whose connectionId is absent from the live registry, when
+ *    the caller could obtain one (liveConnectionIds === null means "registry
+ *    unavailable", which must NOT read as "everything is orphaned").
+ *  Pure on the rooms map; returns { rooms, changed }. */
+function annotateOrphanedGroupChatMembers(rooms, liveConnectionIds = null) {
+  // Duck-typed, not instanceof: callers (and vm-based tests) may hand a Set
+  // constructed in another realm.
+  const live = liveConnectionIds && typeof liveConnectionIds.has === 'function' ? liveConnectionIds : null
+  const next = {}
+  let changed = false
+
+  for (const [name, room] of Object.entries(rooms || {})) {
+    const members = Array.isArray(room?.members) ? room.members : []
+    const orphaned = member => {
+      if (!member || member.sourceMissing) {
+        return false
+      }
+
+      if (!member.sourceScoped && !member.remoteSource) {
+        return false
+      }
+
+      const id = String(member.route?.connectionId || member.connectionId || '').trim()
+
+      if (!id) {
+        // Route unresolvable: this is the row shape that threw on render.
+        return true
+      }
+
+      return live ? !live.has(id) : false
+    }
+
+    if (!members.some(orphaned)) {
+      next[name] = room
+      continue
+    }
+
+    changed = true
+    next[name] = {
+      ...room,
+      members: members.map(member => (orphaned(member) ? markOrphanedGroupMemberDescriptor(member) : member))
+    }
+  }
+
+  return { rooms: next, changed }
+}
+
 function groupChatSyncConnectionId() {
   return String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || '')
 }
@@ -14735,6 +14787,35 @@ export default {
             }
 
             $groupChats.set({ ...rooms, ...$groupChats.get() })
+
+            // #93492: annotate rows orphaned before this build (their
+            // connection was deleted while an older Desktop ran, so no
+            // 'removed' push ever swept them). Registry read is
+            // feature-detected; when unavailable only the unresolvable-route
+            // shape (lost connectionId) is annotated.
+            try {
+              const registry =
+                typeof window !== 'undefined'
+                  ? await Promise.resolve(window.hermesDesktop?.connections?.list?.()).catch(() => null)
+                  : null
+              const liveIds = Array.isArray(registry?.connections)
+                ? new Set(registry.connections.map(connection => String(connection?.id || '').trim()).filter(Boolean))
+                : null
+              const annotated = annotateOrphanedGroupChatMembers($groupChats.get(), liveIds)
+
+              if (annotated.changed) {
+                // Per-room updateGroupChat keeps the durable record's full
+                // shape (sessionOwners, holds) in storage; sync:false —
+                // the scheduleGroupChatServerSync below publishes once.
+                for (const [roomName, room] of Object.entries(annotated.rooms)) {
+                  if (room !== $groupChats.get()[roomName]) {
+                    updateGroupChat(roomName, () => room, { sync: false })
+                  }
+                }
+              }
+            } catch {
+              /* registry unavailable — the lost-connectionId shape is still safe to render */
+            }
           }
 
           // Receive before publish. A fresh Desktop with no local room cache

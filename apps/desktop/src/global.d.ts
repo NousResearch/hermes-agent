@@ -91,10 +91,12 @@ declare global {
       // bar — so it mounts the real composer rather than a lookalike. Main
       // owns the window; `onChanged` keeps every window's toggle truthful.
       hud?: {
+        nativeDrag: boolean
         open: (request?: { sessionId?: null | string; profile?: null | string }) => Promise<{ ok: boolean }>
         close: () => Promise<{ ok: boolean }>
         setIgnoreMouse: (ignore: boolean) => void
         moveBy: (delta: { x: number; y: number; width: number; height: number }) => void
+        setWorkspaceTransfer?: (transferring: boolean) => void
         setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void
         resetLayout: () => Promise<{ ok: boolean }>
         setFrost: (showing: boolean) => Promise<{ ok: boolean }>

@@ -96,3 +96,33 @@ export function hudInputPolicy(platform: string, env: NodeJS.ProcessEnv, argv: r
 
   return linuxBackend(env, argv) === 'x11' ? 'solid' : 'click-through'
 }
+
+/**
+ * Whether the renderer needs a native compositor drag region for the HUD.
+ *
+ * Native Wayland cannot honour app-driven window positions, so it needs
+ * `-webkit-app-region: drag`. X11 can use the renderer's `moveBy` path and
+ * must not install that region: it consumes the pointer stream needed by the
+ * renderer's immediate Ctrl+primary-button drag.
+ */
+export function hudUsesNativeDrag(platform: string, env: NodeJS.ProcessEnv, argv: readonly string[]): boolean {
+  return platform === 'linux' && hudInputPolicy(platform, env, argv) === 'click-through'
+}
+
+/**
+ * Whether a renderer-driven HUD move needs the X11 workspace-transfer bridge.
+ *
+ * While the pointer is grabbed the window is made temporarily visible on all
+ * desktops. Releasing the grab clears that flag; Chromium's X11 backend then
+ * reads `_NET_CURRENT_DESKTOP` and sends `_NET_WM_DESKTOP` for that desktop,
+ * which gives KWin the same "hold window + switch desktop" behaviour as a
+ * native titlebar drag. Native Wayland already delegates movement to the
+ * compositor and must stay out of this path.
+ */
+export function hudUsesWorkspaceTransfer(
+  platform: string,
+  env: NodeJS.ProcessEnv,
+  argv: readonly string[]
+): boolean {
+  return platform === 'linux' && hudInputPolicy(platform, env, argv) === 'solid'
+}

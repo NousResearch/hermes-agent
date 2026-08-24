@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { hudInputPolicy } from './hud-input-policy'
+import { hudInputPolicy, hudUsesNativeDrag, hudUsesWorkspaceTransfer } from './hud-input-policy'
 
 const X11_SESSION = { DISPLAY: ':0', XDG_SESSION_TYPE: 'x11' }
 const WAYLAND_SESSION = { WAYLAND_DISPLAY: 'wayland-0', XDG_SESSION_TYPE: 'wayland' }
@@ -70,4 +70,22 @@ test('a backend nobody recognises follows the session, not a silent X11 default'
   assert.equal(hudInputPolicy('linux', X11_SESSION, ['--ozone-platform=headless']), 'solid')
   assert.equal(hudInputPolicy('linux', WAYLAND_SESSION, ['--ozone-platform=headless']), 'click-through')
   assert.equal(hudInputPolicy('linux', {}, []), 'solid')
+})
+
+test('only a native Wayland HUD gets a compositor drag region', () => {
+  assert.equal(hudUsesNativeDrag('darwin', WAYLAND_SESSION, []), false)
+  assert.equal(hudUsesNativeDrag('win32', WAYLAND_SESSION, []), false)
+  assert.equal(hudUsesNativeDrag('linux', X11_SESSION, []), false)
+  assert.equal(hudUsesNativeDrag('linux', WAYLAND_SESSION, []), true)
+  assert.equal(hudUsesNativeDrag('linux', WAYLAND_SESSION, ['--ozone-platform=x11']), false)
+  assert.equal(hudUsesNativeDrag('linux', X11_SESSION, ['--ozone-platform=wayland']), true)
+})
+
+test('only a renderer-driven Linux HUD needs temporary all-workspace visibility', () => {
+  assert.equal(hudUsesWorkspaceTransfer('darwin', X11_SESSION, []), false)
+  assert.equal(hudUsesWorkspaceTransfer('win32', X11_SESSION, []), false)
+  assert.equal(hudUsesWorkspaceTransfer('linux', X11_SESSION, []), true)
+  assert.equal(hudUsesWorkspaceTransfer('linux', WAYLAND_SESSION, []), false)
+  assert.equal(hudUsesWorkspaceTransfer('linux', WAYLAND_SESSION, ['--ozone-platform=x11']), true)
+  assert.equal(hudUsesWorkspaceTransfer('linux', X11_SESSION, ['--ozone-platform=wayland']), false)
 })

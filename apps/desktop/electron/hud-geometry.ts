@@ -38,6 +38,37 @@ export interface HudBoundsWindow {
   setResizable(resizable: boolean): void
 }
 
+export interface HudResizeBounds {
+  height: number
+  width: number
+  x: number
+  y: number
+}
+
+/** Validate renderer-provided resize geometry before it reaches native APIs. */
+export function normalizeHudResizeBounds(value: unknown): HudResizeBounds | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const candidate = value as Partial<Record<keyof HudResizeBounds, unknown>>
+  const x = Number(candidate.x)
+  const y = Number(candidate.y)
+  const width = Number(candidate.width)
+  const height = Number(candidate.height)
+
+  if (![x, y, width, height].every(Number.isFinite)) {
+    return null
+  }
+
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.max(380, Math.round(width)),
+    height: Math.max(160, Math.round(height))
+  }
+}
+
 /**
  * Apply recovery bounds. The HUD is created non-resizable (a transparent
  * frameless window must not expose a system resize hot-zone), which on

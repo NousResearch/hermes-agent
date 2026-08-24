@@ -3136,22 +3136,22 @@ button[data-slot='aui_msg-reactions'] svg {
   --thread-viewport-height: 100%;
 }
 
-/* `-webkit-app-region: drag` in HUD mode is LINUX ONLY. The window manager
-   takes a draggable region's mouse input whole, so the page never sees the
+/* `-webkit-app-region: drag` in HUD mode is NATIVE WAYLAND ONLY. The window
+   manager takes a draggable region's mouse input whole, so the page never sees the
    cursor arrive there — on macOS/Windows that starves `useHudClickThrough`,
    which decides solidity from exactly those moves, so the press falls through
    to the app behind (every app-region attempt there was therefore unusable,
-   and left the HUD solid over dead space once you left it). On Linux the
+   and left the HUD solid over dead space once you left it). Native Wayland's
    click-through decision is fed by MAIN's cursor poll (`startHudCursorFeed`),
-   not by page events, so a drag region cannot starve it: the bar stays solid,
-   the compositor takes the press, and the window moves natively
-   (xdg_toplevel.move on Wayland, _NET_WM_MOVERESIZE on X11). The composer's
-   interactive surface opts back out with `-webkit-app-region: no-drag` (input
-   element + the global button rule); the rest of the bar is the handle.
-   macOS/Windows keep dragging on `useHudComposerDrag` — press and hold the
-   bar, then move. */
+   not page events, and apps cannot position their own top-level surfaces, so
+   the compositor takes the press and moves the window with xdg_toplevel.move.
+   X11 deliberately keeps the renderer drag path: a Chromium drag region
+   intercepts the pointer stream needed by Ctrl+primary-button drag. The
+   composer's interactive surface opts out with `-webkit-app-region: no-drag`
+   (input element + global button rule); the rest of the bar is the handle.
+   macOS/Windows/X11 use `useHudComposerDrag` — press and hold, then move. */
 
-/* Grip affordance for the Linux drag band: the composer's top padding (pt-4)
+/* Grip affordance for the native Wayland drag band: the top padding (pt-4)
    is the only surface the region owns once the input/buttons are carved out,
    so make it look like a handle — a centered pill, like a mobile grip. */
 .hud-native-drag::before {
@@ -3335,21 +3335,83 @@ button[data-slot='aui_msg-reactions'] svg {
    Both problems were the placement, not the button: on the bar it is already
    on our surface. */
 
-/* The corner resize handle — a hot corner, not a button. The window is created
+/* The resize frame — hot edges/corners, not buttons. The window is created
    non-resizable (the transparent-frameless Windows drag-growth bug), so this
    is the one sanctioned way to change the HUD's size; it drives
    `hermes:hud:set-bounds`, which flips resizable on for the call.
 
-   Deliberately invisible chrome: no glyph, no border — the corner of the bar
-   reads as the affordance, and painting a handle on a surface that lives over
-   other apps would be a stray UI fragment. It opts in to pointer events the
-   same way every other HUD control does (the shell defaults to none). */
+   CanvasTTY grammar: four edge strips + four larger corner targets, each with
+   its native resize cursor and each preserving the opposite edge. Deliberately
+   invisible chrome: no glyph or border over whatever app is below the HUD. */
 [data-hud-shell] [data-hud-resize] {
-  width: 1.25rem;
-  height: 1.25rem;
-  cursor: nwse-resize;
+  position: absolute;
+  z-index: 20;
   pointer-events: auto;
   touch-action: none;
+}
+
+[data-hud-shell] [data-hud-resize='n'] {
+  top: 0;
+  right: 1.25rem;
+  left: 1.25rem;
+  height: 0.625rem;
+  cursor: ns-resize;
+}
+
+[data-hud-shell] [data-hud-resize='e'] {
+  top: 1.25rem;
+  right: 0;
+  bottom: 1.25rem;
+  width: 0.625rem;
+  cursor: ew-resize;
+}
+
+[data-hud-shell] [data-hud-resize='s'] {
+  right: 1.25rem;
+  bottom: 0;
+  left: 1.25rem;
+  height: 0.625rem;
+  cursor: ns-resize;
+}
+
+[data-hud-shell] [data-hud-resize='w'] {
+  top: 1.25rem;
+  bottom: 1.25rem;
+  left: 0;
+  width: 0.625rem;
+  cursor: ew-resize;
+}
+
+[data-hud-shell] [data-hud-resize='ne'],
+[data-hud-shell] [data-hud-resize='se'],
+[data-hud-shell] [data-hud-resize='sw'],
+[data-hud-shell] [data-hud-resize='nw'] {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+[data-hud-shell] [data-hud-resize='ne'] {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+}
+
+[data-hud-shell] [data-hud-resize='se'] {
+  right: 0;
+  bottom: 0;
+  cursor: nwse-resize;
+}
+
+[data-hud-shell] [data-hud-resize='sw'] {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
+}
+
+[data-hud-shell] [data-hud-resize='nw'] {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
 }
 
 /* The composer's drop target is a full-window dashed sheet sized for the app's

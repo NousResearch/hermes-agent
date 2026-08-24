@@ -108,7 +108,13 @@ export function ChatBar({
   onTranscribeAudio
 }: ChatBarProps) {
   const hudMode = useStore($hudMode)
-  const { grabbing: hudGrabbing, onPointerDown: onHudDragPointerDown } = useHudComposerDrag(hudMode)
+  const hudNativeDrag = hudMode && window.hermesDesktop?.hud?.nativeDrag === true
+  const hudX11Drag = hudMode && isLinuxPlatform() && !hudNativeDrag
+
+  const { grabbing: hudGrabbing, onPointerDown: onHudDragPointerDown } = useHudComposerDrag(hudMode && !hudNativeDrag, {
+    controlDrag: hudX11Drag,
+    workspaceTransfer: hudX11Drag
+  })
 
   // Typed stop phrase during an active voice conversation ends it — same
   // semantics as SAYING "stop" (voice-stop-word.ts) or clicking the pill's
@@ -1008,10 +1014,10 @@ export function ChatBar({
           '**:data-ref-text:cursor-default',
           stacked && 'pl-3',
           stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1',
-          // Inside the Linux HUD drag region: a drag region swallows the page's
-          // mouse input whole, so the input must opt back out or it becomes
-          // unclickable. Buttons are covered by the global no-drag rule.
-          hudMode && isLinuxPlatform() && '[-webkit-app-region:no-drag]'
+          // Inside the native Wayland HUD drag region: a drag region swallows
+          // the page's mouse input whole, so the input must opt back out or it
+          // becomes unclickable. Buttons use the global no-drag rule.
+          hudNativeDrag && '[-webkit-app-region:no-drag]'
         )}
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
@@ -1190,11 +1196,11 @@ export function ChatBar({
               'group/composer relative w-full overflow-visible rounded-2xl',
               poppedOut && 'bg-transparent',
               dragging && 'cursor-grabbing select-none touch-none',
-              // Linux HUD: the bar is a native compositor drag handle
-              // (xdg_toplevel.move / _NET_WM_MOVERESIZE). setBounds position
-              // is a no-op on Wayland, so this is the only way to move it
-              // there. pt-4 is the grab band once the input/buttons opt out.
-              hudMode && isLinuxPlatform() && 'hud-native-drag pt-4 [-webkit-app-region:drag]'
+              // Native Wayland HUD: setBounds cannot position a top-level
+              // surface, so the bar must ask the compositor to move it. X11
+              // stays out of app-region mode so the renderer receives its
+              // Ctrl+primary-button drag. pt-4 is the carved-out grab band.
+              hudNativeDrag && 'hud-native-drag pt-4 [-webkit-app-region:drag]'
             )}
             data-drag-active={dragActive ? '' : undefined}
             data-hud-grabbing={hudGrabbing ? '' : undefined}
@@ -1206,7 +1212,8 @@ export function ChatBar({
             onDragLeave={handleDragLeave}
             onDragOver={handleDragOver}
             onDrop={handleDrop}
-            onPointerDown={hudMode ? onHudDragPointerDown : popoutAllowed ? onComposerGesturePointerDown : undefined}
+            onPointerDown={!hudMode && popoutAllowed ? onComposerGesturePointerDown : undefined}
+            onPointerDownCapture={hudMode ? onHudDragPointerDown : undefined}
             onSubmit={e => {
               e.preventDefault()
 

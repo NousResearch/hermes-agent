@@ -11897,7 +11897,7 @@ function spawnHudWindow(sessionId, profile) {
     // interprets pointer capture near the edge as a resize gesture, so the
     // window grows a few px every drag (worse at >100% DPI scaling). The
     // composer drag calls setPosition, which must move the window, not resize
-    // it. Resizing is done by the renderer's corner handle through
+    // it. Resizing is done by the renderer's edge/corner handles through
     // `hermes:hud:set-bounds`, which flips resizable on for the call — the
     // same pattern the pet overlay uses for its wheel-scale.
     resizable: false,
@@ -11931,14 +11931,17 @@ function spawnHudWindow(sessionId, profile) {
   win.setAlwaysOnTop(true, IS_MAC ? 'floating' : 'screen-saver')
   win.setHiddenInMissionControl?.(true)
 
-  try {
-    win.setVisibleOnAllWorkspaces(
-      true,
-      IS_MAC ? { visibleOnFullScreen: true, skipTransformProcessType: true } : undefined
-    )
-  } catch {
-    // Not supported everywhere — best effort.
+  if (IS_MAC) {
+    try {
+      win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
+    } catch {
+      // Not supported everywhere — best effort.
+    }
   }
+
+  // Linux intentionally starts on ONE virtual desktop. During a renderer
+  // grab, hermes:hud:workspace-transfer temporarily makes the X11 window
+  // sticky; releasing it assigns the HUD to KDE's then-current desktop.
 
   // Streaming into a window that is ALWAYS blurred (the user is in another
   // app) is the entire feature, so it gets the same stream-aware unthrottling

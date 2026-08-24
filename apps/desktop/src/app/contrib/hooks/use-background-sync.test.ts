@@ -3,7 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $changeEventsAvailable, notifySessionsChanged, resetLiveSync } from '@/store/live-sync'
-import { $activeSessionId, $selectedStoredSessionId, setBusy, setMessagingSessions, setSessions } from '@/store/session'
+import {
+  $activeSessionId,
+  $selectedStoredSessionId,
+  setBusy,
+  setMessagingSessions,
+  setSessionOwnerHint,
+  setSessions
+} from '@/store/session'
 import {
   $attentionSessionIds,
   $stalledSessionIds,
@@ -31,13 +38,13 @@ const { getLatestSessionMessages } = await import('@/hermes')
 const ACTIVE_RUNTIME_ID = 'runtime-active'
 const ACTIVE_STORED_ID = 'stored-active'
 
-function transcript(answer: string) {
+function transcript(answer: string, sessionId = ACTIVE_STORED_ID) {
   return {
     messages: [
       { content: 'question', role: 'user', timestamp: 1 },
       { content: answer, role: 'assistant', timestamp: 2 }
     ],
-    session_id: ACTIVE_STORED_ID
+    session_id: sessionId
   }
 }
 
@@ -140,11 +147,58 @@ describe('active transcript refresh', () => {
     vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('answer') as never)
   })
 
+  it('refreshes a hidden session through its unique complete owner route', async () => {
+    const hiddenStoredSessionId = 'hidden-bot-chat'
+    const ownerRoute = {
+      connectionId: 'ssh-bot-owner',
+      mode: 'remote' as const,
+      profile: 'bot-route',
+      targetProfile: 'bot-profile'
+    }
+    $changeEventsAvailable.set(true)
+    $activeSessionId.set(ACTIVE_RUNTIME_ID)
+    $selectedStoredSessionId.set(hiddenStoredSessionId)
+    setSessionOwnerHint(hiddenStoredSessionId, ownerRoute)
+    const fixture = makeRefresh(resolveActiveTranscriptSession)
+    fixture.selectedStoredSessionIdRef.current = hiddenStoredSessionId
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(
+      transcript('hidden external answer', hiddenStoredSessionId) as never
+    )
+
+    renderSync(fixture.refresh, { activeStoredSessionId: hiddenStoredSessionId })
+
+    act(() => notifySessionsChanged())
+
+    await waitFor(() =>
+      expect(getLatestSessionMessages).toHaveBeenCalledWith(hiddenStoredSessionId, {
+        connectionId: ownerRoute.connectionId,
+        profile: ownerRoute.targetProfile
+      })
+    )
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
+      text: 'hidden external answer'
+    })
+  })
+
   it('refreshes a local/Desktop session when sessions.changed ticks', async () => {
     $changeEventsAvailable.set(true)
     $activeSessionId.set(ACTIVE_RUNTIME_ID)
     $selectedStoredSessionId.set(ACTIVE_STORED_ID)
-    setSessions([{ id: ACTIVE_STORED_ID, profile: 'desktop-profile', source: 'desktop' } as never])
+    setSessionOwnerHint(ACTIVE_STORED_ID, {
+      connectionId: 'stale-owner',
+      mode: 'remote',
+      profile: 'wrong-profile',
+      targetProfile: 'wrong-target'
+    })
+    setSessions([
+      {
+        connectionId: 'future-visible-owner',
+        id: ACTIVE_STORED_ID,
+        profile: 'desktop-profile',
+        source: 'desktop',
+        targetProfile: 'must-not-rewrite-visible-row'
+      } as never
+    ])
     const fixture = makeRefresh(resolveActiveTranscriptSession)
     vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('external answer') as never)
 
@@ -157,6 +211,7 @@ describe('active transcript refresh', () => {
         text: 'external answer'
       })
     )
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(ACTIVE_STORED_ID, 'desktop-profile')
   })
 
   it('does not add a periodic transcript poll to local/Desktop sessions', async () => {
@@ -239,6 +294,12 @@ describe('active transcript refresh', () => {
 
 describe('reconcileActiveTranscript', () => {
   it('resolves and hydrates a messaging session from the messaging sessions store', async () => {
+    setSessionOwnerHint(ACTIVE_STORED_ID, {
+      connectionId: 'stale-messaging-owner',
+      mode: 'remote',
+      profile: 'wrong-profile',
+      targetProfile: 'wrong-target'
+    })
     setMessagingSessions([{ id: ACTIVE_STORED_ID, profile: 'messaging-profile', source: 'telegram' } as never])
     const fixture = makeRefresh(resolveActiveTranscriptSession)
     vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('telegram answer') as never)
@@ -248,6 +309,85 @@ describe('reconcileActiveTranscript', () => {
     expect(getLatestSessionMessages).toHaveBeenCalledWith(ACTIVE_STORED_ID, 'messaging-profile')
     expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
       text: 'telegram answer'
+    })
+  })
+
+  it('fails closed when a hidden session id has multiple owner hints', async () => {
+    const ambiguousStoredSessionId = 'ambiguous-hidden-chat'
+    setSessionOwnerHint(ambiguousStoredSessionId, {
+      connectionId: 'owner-a',
+      mode: 'remote',
+      profile: 'bot'
+    })
+    setSessionOwnerHint(ambiguousStoredSessionId, {
+      connectionId: 'owner-b',
+      mode: 'remote',
+      profile: 'bot'
+    })
+    const fixture = makeRefresh(resolveActiveTranscriptSession)
+    fixture.selectedStoredSessionIdRef.current = ambiguousStoredSessionId
+
+    await fixture.refresh()
+
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(fixture.updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('uses the presentation profile when a hidden owner has no target profile', async () => {
+    const hiddenStoredSessionId = 'hidden-no-target'
+    setSessionOwnerHint(hiddenStoredSessionId, {
+      connectionId: 'owner-no-target',
+      mode: 'remote',
+      profile: 'presentation-profile'
+    })
+    const fixture = makeRefresh(resolveActiveTranscriptSession)
+    fixture.selectedStoredSessionIdRef.current = hiddenStoredSessionId
+
+    await fixture.refresh()
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(hiddenStoredSessionId, {
+      connectionId: 'owner-no-target',
+      profile: 'presentation-profile'
+    })
+  })
+
+  it('reads and publishes only the active hidden owner when another owner coexists', async () => {
+    const ownerAStoredSessionId = 'owner-a-chat'
+    const ownerBStoredSessionId = 'owner-b-hidden-chat'
+    const ownerBRoute = {
+      connectionId: 'owner-b',
+      mode: 'remote' as const,
+      profile: 'bot-route',
+      targetProfile: 'bot-b'
+    }
+    setSessions([{ id: ownerAStoredSessionId, profile: 'bot-a', source: 'desktop' } as never])
+    setSessionOwnerHint(ownerAStoredSessionId, {
+      connectionId: 'owner-a',
+      mode: 'remote',
+      profile: 'bot-route',
+      targetProfile: 'bot-a'
+    })
+    setSessionOwnerHint(ownerBStoredSessionId, ownerBRoute)
+    const fixture = makeRefresh(resolveActiveTranscriptSession)
+    fixture.selectedStoredSessionIdRef.current = ownerBStoredSessionId
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(
+      transcript('owner B answer', ownerBStoredSessionId) as never
+    )
+
+    await fixture.refresh()
+
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(ownerBStoredSessionId, {
+      connectionId: ownerBRoute.connectionId,
+      profile: ownerBRoute.targetProfile
+    })
+    expect(fixture.updateSessionState).toHaveBeenCalledWith(
+      ACTIVE_RUNTIME_ID,
+      expect.any(Function),
+      ownerBStoredSessionId
+    )
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
+      text: 'owner B answer'
     })
   })
 

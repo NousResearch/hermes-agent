@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
-import { getLatestSessionMessages } from '@/hermes'
+import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import { preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
@@ -16,9 +16,11 @@ import {
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
+  getSessionOwnerHint,
   sessionMatchesStoredId,
   setCurrentCwd
 } from '@/store/session'
+import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
   publishSessionState,
@@ -30,15 +32,23 @@ import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
 
 interface ActiveTranscriptSession {
+  ownerRoute?: SessionProfileRoute
   profile?: string | null
 }
 
-/** Resolve an active transcript from either local recents or messaging slices. */
+/** Resolve an active transcript from visible rows or its unique hidden owner. */
 export function resolveActiveTranscriptSession(storedSessionId: string): ActiveTranscriptSession | undefined {
-  return (
+  const visible =
     $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
     $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-  )
+
+  if (visible) {
+    return { profile: visible.profile }
+  }
+
+  const ownerRoute = getSessionOwnerHint(storedSessionId)
+
+  return ownerRoute ? { ownerRoute, profile: ownerRoute.profile } : undefined
 }
 
 export interface ActiveTranscriptRefreshDeps {
@@ -82,7 +92,13 @@ export async function reconcileActiveTranscript({
   requestSequenceRef.current = requestId
 
   try {
-    const latest = await getLatestSessionMessages(storedSessionId, stored.profile)
+    const profileScope: ProfileScope = stored.ownerRoute
+      ? {
+          connectionId: stored.ownerRoute.connectionId,
+          profile: stored.ownerRoute.targetProfile ?? stored.ownerRoute.profile
+        }
+      : stored.profile
+    const latest = await getLatestSessionMessages(storedSessionId, profileScope)
 
     if (
       requestId !== requestSequenceRef.current ||
@@ -93,7 +109,15 @@ export async function reconcileActiveTranscript({
       return
     }
 
-    const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
+    const signatureKey = stored.ownerRoute
+      ? JSON.stringify([
+          stored.ownerRoute.connectionId,
+          stored.ownerRoute.profile,
+          stored.ownerRoute.targetProfile ?? '',
+          stored.ownerRoute.mode ?? '',
+          storedSessionId
+        ])
+      : `${stored.profile ?? 'default'}:${storedSessionId}`
     const signature = sessionMessagesSignature(latest.messages)
 
     if (signatureRef.current.get(signatureKey) === signature) {

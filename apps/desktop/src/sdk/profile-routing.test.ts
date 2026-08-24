@@ -714,6 +714,51 @@ describe('profile-aware plugin session opens', () => {
     expect($gatewaySwapTarget.get()).toBeNull()
   })
 
+  it('forces a resume on an explicit bot switch even when a cached transcript looks healthy (#93604)', async () => {
+    // Bot-switch shape from the field: the previous visit left a non-empty
+    // snapshot in the session-states cache, so the surface passes every
+    // health check while painting STALE messages. The heuristic alone skips
+    // the resume; the explicit-navigation caller must be able to force it.
+    $activeGatewayProfile.set('hyoseob')
+    setMockAtom($selectedStoredSessionId, 'bot-chat')
+    setMockAtom($activeSessionId, 'runtime-stale-snapshot')
+    setMockAtom($messages, [{ id: 'stale-history', parts: [], role: 'assistant' }] as never)
+
+    const opening = host.openSession('bot-chat', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: true,
+      forceResume: true,
+      hydrationTimeoutMs: 1_000
+    })
+
+    await Promise.resolve()
+    expect(requestSessionResume).toHaveBeenCalledWith('bot-chat', undefined)
+
+    await opening
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
+  it('still trusts a healthy surface when the caller does not force a resume', async () => {
+    $activeGatewayProfile.set('hyoseob')
+    setMockAtom($selectedStoredSessionId, 'bot-chat')
+    setMockAtom($activeSessionId, 'runtime-live')
+    setMockAtom($messages, [{ id: 'live-history', parts: [], role: 'assistant' }] as never)
+
+    const opening = host.openSession('bot-chat', {
+      profile: 'hyoseob',
+      awaitHydration: true,
+      expectHistory: true,
+      hydrationTimeoutMs: 1_000
+    })
+
+    await Promise.resolve()
+    expect(requestSessionResume).not.toHaveBeenCalled()
+
+    await opening
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
   it('resolves a history-bearing wake on transcript paint without waiting for the runtime (paint-first)', async () => {
     vi.mocked(openGatewayForProfile).mockImplementationOnce(async () => undefined)
 

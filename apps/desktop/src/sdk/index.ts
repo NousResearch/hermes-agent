@@ -316,6 +316,15 @@ let openSessionGeneration = 0
 export interface PluginOpenSessionOptions {
   awaitHydration?: boolean
   expectHistory?: boolean
+  /** Always request a sequenced session.resume after the open, even when the
+   *  surface already looks healthy. The healthy check trusts any non-empty
+   *  cached transcript, so an explicit bot-switch re-open can paint a STALE
+   *  snapshot kept by the session-states cache and skip the refresh entirely
+   *  (#93604 — Bot Chat shows old messages until app restart). Resume is
+   *  cheap and idempotent (the route-resume effect consumes redundant
+   *  requests as no-ops), so callers who know the user explicitly navigated
+   *  here set this to guarantee freshness. Only honored with awaitHydration. */
+  forceResume?: boolean
   hydrationTimeoutMs?: number
   intent?: OpenSessionIntent
   keepAllProfilesScope?: boolean
@@ -910,7 +919,12 @@ export const host = {
             Boolean($activeSessionId.get()) &&
             (!expectHistory || $messages.get().length > 0)
 
-          if (options.awaitHydration && !surfaceHealthy) {
+          // surfaceHealthy trusts ANY non-empty cached transcript, so it
+          // cannot distinguish a fresh transcript from a stale snapshot the
+          // session-states cache kept across a bot switch (#93604). Callers
+          // that represent an explicit user navigation pass forceResume to
+          // skip the heuristic entirely; the resume is idempotent either way.
+          if (options.awaitHydration && (options.forceResume || !surfaceHealthy)) {
             requestSessionResume(storedSessionId, ownerRoute || undefined)
           }
 

@@ -5641,12 +5641,20 @@ async function openStoredBotChat(owner, storedId, summary) {
   // asks the SDK layer to retry that same wait internally, BEFORE it arms the
   // core stranded-session overlay: a plugin-side retry can't do this because
   // only host.openSession sees the resume-exhausted latch that overlay reads.
+  //
+  // forceResume: an explicit bot switch must never trust a cached transcript.
+  // The SDK's surface-health check passes whenever ANY non-empty transcript is
+  // painted, including a stale snapshot the session-states cache kept from the
+  // previous time this bot was open — which left the pane showing old messages
+  // until an app restart (hermes-agent#93604). A resume is cheap and
+  // idempotent, so on this explicit user navigation we always request one.
   await host.openSession(storedId, {
     ...(route ? { route } : {}),
     profile: name,
     intent: 'tab',
     awaitHydration: true,
     expectHistory,
+    forceResume: true,
     keepAllProfilesScope: true,
     workspaceMode: 'bots',
     workspaceOwnerKey: ownerKey,

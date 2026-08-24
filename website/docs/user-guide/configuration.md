@@ -2608,9 +2608,14 @@ dashboard:
   drain_auth:                 # Drain-control service-credential gate (dashboard_auth/drain plugin)
     scope: "drain"            # capability label on the verified principal
     min_secret_chars: 43      # entropy bar (url-safe-b64 chars; 43 ≈ 256 bits)
+  ws_ping_interval: 20.0      # Non-loopback WebSocket keepalive ping interval (seconds)
+  ws_ping_timeout: 20.0       # Non-loopback WebSocket keepalive pong timeout (seconds)
+  ws_orphan_reap_grace_s: 20.0 # Grace before a WS-detached session is reaped (seconds)
 ```
 
 - `theme` — dashboard visual theme.
 - `show_token_analytics` — off by default. The Analytics page and token/cost figures are a **local lower-bound estimate** (they exclude auxiliary calls, retries, fallbacks, and cache writes), so they can read far below the provider bill. Set `true` only if you understand they're not billing.
 - `public_url` — when set, this is the complete authority (scheme + host + optional path prefix) the OAuth `redirect_uri` is built from. Set it for deploys behind reverse proxies that don't reliably forward `X-Forwarded-*` headers. Leave empty to use proxy-header reconstruction.
 - `oauth` / `basic_auth` / `drain_auth` — auth provider config read by the bundled dashboard-auth plugins. The drain secret itself is **not** set here; it's provisioned via the `HERMES_DASHBOARD_DRAIN_SECRET` env var. See [Web Dashboard](/user-guide/features/web-dashboard) for full auth setup.
+- `ws_ping_interval` / `ws_ping_timeout` — WebSocket keepalive tuning for non-loopback binds (loopback connections never ping). Raise these on high-latency links (Tailscale, distant SSH tunnels) where the 20 s defaults can manufacture spurious 1006 disconnects.
+- `ws_orphan_reap_grace_s` — how long a WS-detached session waits before the orphan reaper collects it. Raise alongside the keepalive values if clients reconnect slowly. (`HERMES_TUI_WS_ORPHAN_REAP_GRACE_S` remains as an internal override.)

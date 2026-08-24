@@ -54,6 +54,8 @@ class _DummyCLI:
         self.session_id = "session-123"
         self.system_prompt = "base prompt"
         self.preloaded_skills = []
+        self.enabled_toolsets = []
+        self.disabled_toolsets = []
 
     def show_banner(self):
         return None

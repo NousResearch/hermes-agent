@@ -218,6 +218,12 @@ def get_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_
     skip_tool_search_assembly returns raw schemas for every enabled tool — only
     the tool_search bridge should use it (it reads the real, uncollapsed catalog).
     """
+    global _last_resolved_tool_names
+    if enabled_toolsets is not None and not enabled_toolsets:
+        # Deny-all precedes caching and dispatcher-worker tool injection.
+        _last_resolved_tool_names = []
+        return []
+
     def compute():
         return _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
                                          skip_tool_search_assembly=skip_tool_search_assembly)
@@ -244,7 +250,6 @@ def get_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_
                     _tool_defs_cache.pop(next(iter(_tool_defs_cache)))
                 _tool_defs_cache[cache_key] = cached = result
     else:
-        global _last_resolved_tool_names
         _last_resolved_tool_names = [t["function"]["name"] for t in cached]
     # Always a shallow copy: run_agent appends memory/LCM schemas to its list; a
     # shared list would accumulate duplicate names (HTTP 400 from DeepSeek/Kimi/MiMo).
@@ -901,6 +906,6 @@ def check_toolset_requirements() -> Dict[str, bool]:
     return registry.check_toolset_requirements()
 
 
-def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[dict]]:
+def check_tool_availability(quiet: bool = False, toolsets: Optional[set[str]] = None) -> Tuple[List[str], List[dict]]:
     """(available_toolsets, unavailable_info)."""
-    return registry.check_tool_availability(quiet=quiet)
+    return registry.check_tool_availability(quiet=quiet, toolsets=toolsets)

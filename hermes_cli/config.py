@@ -1912,6 +1912,13 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         return data if want_deepcopy else cached_copy
 
 
+def platform_toolsets_explicitly_empty(config: dict, platform: str) -> bool:
+    """Whether a platform is explicitly configured with no toolsets."""
+    platforms = config.get("platform_toolsets") if isinstance(config, dict) else None
+    toolsets = platforms.get(platform) if isinstance(platforms, dict) else None
+    return isinstance(toolsets, list) and not toolsets
+
+
 def read_raw_config() -> Dict[str, Any]:
     """Read config.yaml as-is (no defaults merged, no migration); ``{}`` if missing/unparseable.
     Cached on (mtime_ns, size); returns a deepcopy since callers mutate before ``save_config()``."""

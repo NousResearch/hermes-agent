@@ -571,10 +571,7 @@ from rich.text import Text as _RichText
 
 # Agent/tool systems load lazily: bare startup only needs the prompt.
 def get_tool_definitions(*args, **kwargs):
-    from hermes_cli.mcp_startup import wait_for_mcp_discovery
-    from model_tools import get_tool_definitions as _get_tool_definitions
-
-    wait_for_mcp_discovery()
+    from hermes_cli.tool_resolution import get_cli_tool_definitions as _get_tool_definitions
     return _get_tool_definitions(*args, **kwargs)
 
 
@@ -3087,17 +3084,22 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
     def _show_tool_availability_warnings(self):
         """Warn about tools disabled by missing API keys (not system deps)."""
+        if self.enabled_toolsets is not None and not self.enabled_toolsets:
+            return
         try:
-            from model_tools import check_tool_availability
+            from model_tools import check_tool_availability, get_toolset_for_tool, _select_tool_names
 
-            available, unavailable = check_tool_availability()
-            api_key_missing = [u for u in unavailable if u["missing_vars"]]
+            selected_tools = _select_tool_names(self.enabled_toolsets, self.disabled_toolsets, quiet_mode=True)
+            selected = {toolset for tool in selected_tools if (toolset := get_toolset_for_tool(tool))}
+            _, unavailable = check_tool_availability(toolsets=selected)
+            api_key_missing = [u for u in unavailable if u.get("missing_vars", u.get("env_vars", []))]
 
             if api_key_missing:
                 self._console_print()
                 self._console_print("[yellow]⚠️  Some tools disabled (missing API keys):[/]")
                 for item in api_key_missing:
-                    self._console_print(f"   [dim]• {item['name']}[/] [dim italic]({', '.join(item['missing_vars'])})[/]")
+                    missing = item.get("missing_vars", item.get("env_vars", []))
+                    self._console_print(f"   [dim]• {item['name']}[/] [dim italic]({', '.join(missing)})[/]")
                 self._console_print("[dim]   Run 'hermes setup' to configure[/]")
         except Exception:
             pass
@@ -4220,24 +4222,8 @@ def _install_single_query_signal_handlers(cli):
 
 def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
     """Resolve the toolset list (explicit / coding posture / platform default), construct HermesCLI, and start the background skills preload."""
-    toolsets_list = None
-    if isinstance(toolsets, str) and toolsets:
-        toolsets_list = [t.strip() for t in toolsets.split(",")]
-    elif isinstance(toolsets, (list, tuple)) and toolsets:
-        # Fire may pass multiple --toolsets as a tuple
-        toolsets_list = []
-        for t in toolsets:
-            toolsets_list.extend([x.strip() for x in t.split(",")] if isinstance(t, str) else [str(t)])
-    elif not toolsets:
-        # Coding posture inside a code workspace, else the shared platform resolver.
-        try:
-            from agent.coding_context import coding_selection
-            toolsets_list = coding_selection(platform="cli", config=CLI_CONFIG)
-        except Exception:
-            toolsets_list = None
-        if toolsets_list is None:
-            from hermes_cli.tools_config import _get_platform_tools
-            toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
+    from hermes_cli.tool_resolution import resolve_cli_toolsets
+    toolsets_list = resolve_cli_toolsets(toolsets, CLI_CONFIG)
 
     parsed_skills = _parse_skills_argument(skills)
 
@@ -4295,23 +4281,13 @@ def _run_legacy_gateway():
 
 
 def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
-    """Start isolated-worktree creation (+ tool prewarm) in the background.
+    """Start isolated-worktree creation in the background.
 
     Returns a join callable that publishes ``_active_worktree``/TERMINAL_CWD and
     schedules stale-worktree GC, or None when no worktree is wanted.
     """
     if list_tools or list_toolsets or not (worktree or w or CLI_CONFIG.get("worktree", False)):
         return None
-    # Overlap tool discovery with the I/O-bound worktree setup so show_banner() hits a warm
-    # cache (~0.4s). Only on the -w path: plain `hermes` has no I/O wait to hide.
-    def _prewarm_tools() -> None:
-        try:
-            import model_tools as _mt
-            _mt.get_tool_definitions(quiet_mode=True)
-        except Exception:
-            logger.debug("tool prewarm failed", exc_info=True)
-
-    threading.Thread(target=_prewarm_tools, name="tool-prewarm", daemon=True).start()
     _sync_base = CLI_CONFIG.get("worktree_sync", True)
     _wt_result: dict = {}
 
@@ -4446,6 +4422,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    _prefetched_tool_resolution=None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -4504,6 +4481,11 @@ def main(
     query = query or q
     cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
+    # One-shot runs resolve at agent construction; interactive runs consume this at the banner.
+    if not (query or image) or _should_seed_interactive(query, image, quiet, oneshot):
+        from hermes_cli.tool_resolution import start_tool_surface_resolution
+        cli._startup_tool_resolution = _prefetched_tool_resolution or start_tool_surface_resolution(
+            cli.enabled_toolsets, cli.disabled_toolsets)
 
     # Join the background worktree creation before anything consumes TERMINAL_CWD.
     # A requested worktree whose setup failed aborts: never silently run without isolation.

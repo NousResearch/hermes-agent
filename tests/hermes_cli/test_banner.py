@@ -84,3 +84,33 @@ def test_build_welcome_banner_non_moa_unchanged(tmp_path, monkeypatch):
     out = console.export_text()
     assert "claude-opus-4.8" in out
     assert "MoA:" not in out
+
+
+def test_banner_uses_only_the_canonical_callable_surface(tmp_path, monkeypatch):
+    """An empty callable surface renders no tools or skills."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / ".hermes").mkdir()
+
+    with (
+        patch.object(
+            model_tools,
+            "check_tool_availability",
+            side_effect=AssertionError("banner must not rediscover tools"),
+        ),
+        patch.object(banner, "get_available_skills", return_value={"dev": ["demo"]}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
+    ):
+        console = Console(record=True, force_terminal=False, color_system=None, width=160)
+        banner.build_welcome_banner(
+            console=console,
+            model="test-model",
+            cwd="/tmp/project",
+            tools=[],
+            get_toolset_for_tool=lambda _name: None,
+        )
+
+    out = console.export_text()
+    assert "0 tools" in out
+    assert "Skills toolset disabled" in out
+    assert "demo" not in out

@@ -1714,6 +1714,11 @@ def cmd_chat(args):
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
+        # One canonical resolution shared with the banner, overlapping the remaining imports.
+        # One-shot mode resolves at agent construction and needs no cosmetic prefetch.
+        if not (args.query or getattr(args, "image", None) or getattr(args, "worktree", False)):
+            from hermes_cli.tool_resolution import start_cli_tool_resolution
+            kwargs["_prefetched_tool_resolution"] = start_cli_tool_resolution(args.toolsets)
         from cli import main as cli_main
 
         cli_main(**kwargs)

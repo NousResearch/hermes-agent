@@ -30,7 +30,8 @@ def _build_banner_with_skills(skills_by_category, term_width=160):
             console=console,
             model="anthropic/test-model",
             cwd="/tmp/project",
-            tools=[],
+            tools=[{"function": {"name": "skill_view"}}],
+            get_toolset_for_tool=lambda _name: "skills",
         )
         return console.export_text()
 

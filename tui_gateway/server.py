@@ -1821,10 +1821,16 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     session_platform = platform or _resolve_session_platform()
     explicit = [item.strip() for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",") if item.strip()]
     fallback_notice = None
+    cfg = None
     if not explicit:
         with contextlib.suppress(Exception):
+            from hermes_cli.config import load_config, platform_toolsets_explicitly_empty
+            cfg = load_config()
+            if platform_toolsets_explicitly_empty(cfg, "cli"):
+                return []
+        with contextlib.suppress(Exception):
             from agent.coding_context import coding_selection
-            selection = coding_selection(platform=session_platform)
+            selection = coding_selection(platform=session_platform, config=cfg)
             if selection is not None:
                 return sorted({*selection, *_gui_surface_toolsets(session_platform)})
     try:
@@ -1839,7 +1845,8 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     try:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
-        cfg = load_config()
+        if cfg is None:
+            cfg = load_config()
         # include_default_mcp_servers=True is the runtime variant (the agent must be able to call
         # default MCP servers); the config-editing variant would silently drop MCP tools from the TUI.
         # Passing ``False`` here is the config-editing variant — used when we need to persist a toolset list
@@ -1848,7 +1855,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         if fallback_notice is not None:
             _tui_notice(fallback_notice)
-        return sorted(enabled | _gui_surface_toolsets(session_platform)) if enabled else None
+        return sorted(enabled | _gui_surface_toolsets(session_platform)) if enabled else []
     except Exception:
         if fallback_notice is not None:
             _tui_notice("[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets")

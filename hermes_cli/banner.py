@@ -563,110 +563,6 @@ def _short_label(name: str) -> str:
     return name[:25] + "..." if len(name) > 28 else name
 
 
-# === Banner snapshot — warm-launch fast path ===
-# The tool panel needs the full tool registry (~0.5-0.9s cold, the largest chunk of time-to-
-# banner). The list is a pure function of (config.yaml, .env, code checkout, enabled toolsets),
-# so the rendered inputs are snapshotted to disk and replayed when the fingerprint matches. The
-# agent's REAL tool list is still computed fresh at first message; the snapshot only feeds the
-# cosmetic panel, and a background refresh (cli.show_banner) re-verifies it right after render.
-
-_BANNER_SNAPSHOT_VERSION = 1
-
-
-def _banner_snapshot_path() -> Path:
-    return get_hermes_home() / "cache" / "banner_snapshot.json"
-
-
-def banner_snapshot_fingerprint() -> Optional[str]:
-    """Fingerprint the inputs the banner tool panel depends on."""
-    import hashlib
-    def _inputs():
-        from hermes_cli.config import get_config_path
-        return (get_config_path(), get_hermes_home() / ".env")
-    paths = _quiet(_inputs)
-    if paths is None:
-        return None
-    parts = [f"v{_BANNER_SNAPSHOT_VERSION}"]
-    for p in paths:
-        st = _quiet(p.stat)
-        parts.append(f"{p.name}:{st.st_mtime_ns}:{st.st_size}" if st else f"{p.name}:absent")
-    # Code checkout: version + git HEAD when available (post-update change).
-    parts.append(str(VERSION))
-    state = get_git_banner_state()
-    if state:
-        parts.append(str(state.get("local", "")))
-    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
-
-
-def load_banner_snapshot(enabled_toolsets: List[str] = None) -> Optional[Dict[str, Any]]:
-    """Return the stored banner snapshot when its fingerprint is current."""
-    blob = _read_json(_banner_snapshot_path())
-    if blob is None:
-        return None
-    fp = banner_snapshot_fingerprint()
-    if (not fp or blob.get("fingerprint") != fp
-            or blob.get("enabled_toolsets") != sorted(enabled_toolsets or [])
-            or not isinstance(blob.get("tools"), list)
-            or not all(isinstance(blob.get(k), dict)
-                       for k in ("toolset_map", "availability", "skills_by_category"))):
-        return None
-    return blob
-
-
-def save_banner_snapshot(tools: List[dict], enabled_toolsets: List[str], availability: Dict[str, Any],
-                         toolset_map: Dict[str, str]) -> None:
-    """Persist the banner tool panel inputs for next launch (best-effort)."""
-    fp = banner_snapshot_fingerprint()
-    if not fp:
-        return
-    payload = {
-        "fingerprint": fp,
-        "enabled_toolsets": sorted(enabled_toolsets or []),
-        "tools": [{"function": {"name": t["function"]["name"]}}
-                  for t in tools if isinstance(t, dict) and t.get("function", {}).get("name")],
-        "toolset_map": toolset_map,
-        "availability": {
-            "unavailable_toolsets": availability.get("unavailable_toolsets", []),
-            **{k: list(availability.get(k, [])) for k in ("lazy_tools", "disabled_tools")}},
-        "skills_by_category": get_available_skills(),
-    }
-
-    def _write():
-        import tempfile
-        path = _banner_snapshot_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".banner_snap.")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh)
-        os.replace(tmp, path)
-    _quiet(_write)
-
-
-def compute_toolset_availability(enabled_toolsets: List[str] = None) -> Dict[str, Any]:
-    """Compute ``{"unavailable_toolsets", "lazy_tools", "disabled_tools"}`` for the banner.
-
-    Split out so the result can be snapshotted and replayed without importing ``model_tools``.
-    """
-    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
-    enabled_toolsets = enabled_toolsets or []
-    _, unavailable_toolsets = check_tool_availability(quiet=True)
-    # The availability check walks the GLOBAL registry, so it includes toolsets outside this
-    # agent's platform set (e.g. `discord` on a CLI session) which must never surface in
-    # "Available Tools". Restrict to enabled toolsets; an enabled toolset with unmet deps
-    # legitimately shows as disabled/lazy below.
-    _enabled_ts = {str(t) for t in enabled_toolsets}
-    if _enabled_ts:
-        unavailable_toolsets = [
-            item for item in unavailable_toolsets if str(item.get("id", item.get("name", ""))) in _enabled_ts]
-    # Toolsets with a check_fn are lazy-initialized (e.g. honcho): unavailable at banner time
-    # because the check hasn't run yet, but not misconfigured.
-    lazy_tools, disabled_tools = set(), set()
-    for item in unavailable_toolsets:
-        is_lazy = TOOLSET_REQUIREMENTS.get(item.get("name", ""), {}).get("check_fn")
-        (lazy_tools if is_lazy else disabled_tools).update(item.get("tools", []))
-    return {"unavailable_toolsets": unavailable_toolsets, "lazy_tools": sorted(lazy_tools),
-            "disabled_tools": sorted(disabled_tools)}
-
 
 def _mcp_server_line(srv: dict, *, dim: str, text: str) -> str:
     """One banner line for an MCP server status entry."""
@@ -782,8 +678,7 @@ def _banner_left_lines(model: str, cwd: str, session_id, context_length, provide
 
 
 def _banner_tool_lines(
-    tools: list, unavailable_toolsets: list, get_toolset_for_tool, *,
-    lazy_tools: set, disabled_tools: set, accent: str, dim: str, text: str) -> list:
+    tools: list, get_toolset_for_tool, *, accent: str, dim: str, text: str) -> list:
     """"Available Tools" section: up to 8 toolsets, each truncated to ~42 columns."""
     lines = [f"[bold {accent}]Available Tools[/]"]
     toolsets_dict: Dict[str, list] = {}
@@ -791,17 +686,11 @@ def _banner_tool_lines(
         tool_name = tool["function"]["name"]
         toolset = _display_toolset_name(get_toolset_for_tool(tool_name) or "other")
         toolsets_dict.setdefault(toolset, []).append(tool_name)
-    for item in unavailable_toolsets:
-        names = toolsets_dict.setdefault(_display_toolset_name(item.get("id", item.get("name", "unknown"))), [])
-        for tool_name in item.get("tools", []):
-            if tool_name not in names:
-                names.append(tool_name)
 
     def _color_tool(name: Optional[str]) -> str:
         if name is None:  # truncation marker
             return "[dim]...[/]"
-        color = "red" if name in disabled_tools else "yellow" if name in lazy_tools else text
-        return f"[{color}]{name}[/]"
+        return f"[{text}]{name}[/]"
     sorted_toolsets = sorted(toolsets_dict.keys())
     for toolset in sorted_toolsets[:8]:
         tool_names = _truncate_tool_names(sorted(toolsets_dict[toolset]))
@@ -834,18 +723,14 @@ def build_welcome_banner(
     """Build and print a welcome banner with caduceus on left and info on right.
 
     When ``provider == "moa"``, ``model`` is a MoA preset name and the aggregator is rendered.
-    Passing a precomputed ``availability`` together with ``get_toolset_for_tool`` avoids any
-    ``model_tools`` import (banner snapshot replay).
+    Tools are the resolved callable surface, never widened from the global catalog.
+    ``enabled_toolsets`` and ``availability`` are retained for caller compatibility only.
     """
     from rich.panel import Panel
     from rich.table import Table
-    if get_toolset_for_tool is None:
+    if tools and get_toolset_for_tool is None:
         from model_tools import get_toolset_for_tool
     tools = tools or []
-    enabled_toolsets = enabled_toolsets or []
-    if availability is None:
-        availability = compute_toolset_availability(enabled_toolsets)
-    _enabled_ts = {str(t) for t in enabled_toolsets}
     # Resolve skin colors once for the entire banner
     accent = _skin_color("banner_accent", "#FFBF00")
     dim = _skin_color("banner_dim", "#B8860B")
@@ -855,11 +740,10 @@ def build_welcome_banner(
     left_lines = ["", getattr(_bskin, "banner_hero", None) or HERMES_CADUCEUS, ""]
     left_lines += _banner_left_lines(model, cwd, session_id, context_length, provider, accent=accent, dim=dim)
     right_lines = _banner_tool_lines(
-        tools, availability.get("unavailable_toolsets", []), get_toolset_for_tool,
-        lazy_tools=set(availability.get("lazy_tools", [])), disabled_tools=set(availability.get("disabled_tools", [])),
+        tools, get_toolset_for_tool,
         accent=accent, dim=dim, text=text)
     # MCP Servers section (only if configured) — see ``_mcp_configured`` for why the cheap probe.
-    mcp_status = _quiet(_probe_mcp_status, []) if _mcp_configured() else []
+    mcp_status = _quiet(_probe_mcp_status, []) if tools and _mcp_configured() else []
     if mcp_status:
         right_lines += ["", f"[bold {accent}]MCP Servers[/]"]
         right_lines.extend(_mcp_server_line(srv, dim=dim, text=text) for srv in mcp_status)
@@ -867,7 +751,7 @@ def build_welcome_banner(
     # The skills catalog is only reachable when the `skills` toolset is enabled (skill_view /
     # skill_manage). When disabled (Blank Slate) the agent cannot load any skill, so advertising
     # the on-disk catalog would be misleading — reflect the real state.
-    _skills_enabled = (not _enabled_ts) or ("skills" in _enabled_ts)
+    _skills_enabled = any(t["function"]["name"] == "skill_view" for t in tools)
     if not _skills_enabled:
         skills_by_category = {}
     elif skills_by_category is None:

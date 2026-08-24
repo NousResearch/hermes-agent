@@ -289,6 +289,18 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
 # ── Platform / toolset consistency ────────────────────────────────────────────
 
 
+def test_explicit_empty_platform_toolsets_disable_every_recovery_path():
+    """An empty platform policy yields no toolsets."""
+    assert _get_platform_tools(
+        {
+            "platform_toolsets": {"cli": []},
+            "mcp_servers": {"example": {"enabled": True}},
+        },
+        "cli",
+        include_default_mcp_servers=True,
+    ) == set()
+
+
 class TestPlatformToolsetConsistency:
     """Every platform in tools_config.PLATFORMS must have a matching toolset."""
 

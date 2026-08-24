@@ -12,6 +12,8 @@ session's own ``source`` (``session.create``'s ``source: 'desktop'``), so the
 answer is identical on every connection topology.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 import tui_gateway.server as server
@@ -90,9 +92,16 @@ class TestSurfaceResolution:
 class TestResolverPlumbing:
     def test_posture_path_folds_in_the_session_surface(self, no_desktop_env):
         """Focus-mode returns early — the surface toolsets must survive it."""
-        import agent.coding_context as cc
+        from unittest.mock import Mock, call
 
-        no_desktop_env.setattr(cc, "coding_selection", lambda **_: ["coding"])
+        import agent.coding_context as cc
+        import hermes_cli.config as config_mod
+
+        cfg = {"platform_toolsets": {"cli": ["file"]}}
+        load = Mock(return_value=cfg)
+        select = Mock(return_value=["coding"])
+        no_desktop_env.setattr(config_mod, "load_config", load)
+        no_desktop_env.setattr(cc, "coding_selection", select)
 
         assert server._load_enabled_toolsets("desktop") == [
             "coding",
@@ -100,6 +109,10 @@ class TestResolverPlumbing:
             "project",
         ]
         assert server._load_enabled_toolsets("tui") == ["coding", "project"]
+        assert load.call_count == 2
+        assert select.call_args_list == [
+            call(platform="desktop", config=cfg), call(platform="tui", config=cfg),
+        ]
 
     def test_config_path_folds_in_the_session_surface(self, no_desktop_env):
         import agent.coding_context as cc
@@ -117,8 +130,100 @@ class TestResolverPlumbing:
         assert "desktop_ui" in desktop
         assert "desktop_ui" not in tui
 
+    def test_explicit_empty_config_beats_focus_and_gui_surfaces(self, no_desktop_env):
+        import agent.coding_context as cc
+        import hermes_cli.config as config_mod
+
+        no_desktop_env.setattr(cc, "coding_selection", lambda **_: ["coding"])
+        no_desktop_env.setattr(
+            config_mod, "load_config", lambda: {"platform_toolsets": {"cli": []}}
+        )
+
+        assert server._load_enabled_toolsets("desktop") == []
+        assert server._load_enabled_toolsets("tui") == []
+
     def test_explicit_env_pin_still_wins(self, no_desktop_env):
         """HERMES_TUI_TOOLSETS is an operator override; surface can't re-add."""
         no_desktop_env.setenv("HERMES_TUI_TOOLSETS", "web,memory")
 
         assert server._load_enabled_toolsets("desktop") == ["web", "memory"]
+
+
+def test_zero_tool_inspectors_agree_with_the_live_agent(monkeypatch):
+    agent = SimpleNamespace(enabled_toolsets=[], tools=[], model="test-model")
+    session = {"agent": agent, "session_key": "empty-tools", "source": "desktop"}
+    monkeypatch.setitem(server._sessions, "empty-tools", session)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    try:
+        shown = server._methods["tools.show"](
+            "show-empty", {"session_id": "empty-tools"}
+        )
+        listed = server._methods["tools.list"](
+            "list-empty", {"session_id": "empty-tools"}
+        )
+        info = server._session_info(agent, session)
+    finally:
+        server._sessions.pop("empty-tools", None)
+
+    assert shown["result"] == {"sections": [], "total": 0}
+    assert not any(row["enabled"] for row in listed["result"]["toolsets"])
+    assert info["tools"] == {}
+
+
+@pytest.mark.parametrize("selection", [[], (), set()])
+def test_preview_agent_preserves_any_explicit_empty_selection(monkeypatch, selection):
+    agent = SimpleNamespace(
+        enabled_toolsets=selection, disabled_toolsets=["file"],
+        model="test-model", provider="test-provider"
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._ephemeral_preview_agent_kwargs(agent, "empty-preview")
+
+    assert kwargs["enabled_toolsets"] == []
+    assert kwargs["disabled_toolsets"] == ["file"]
+
+
+@pytest.mark.parametrize("selection", [None, [], ["memory"]])
+def test_background_agent_preserves_selection_and_disabled_policy(monkeypatch, selection):
+    agent = SimpleNamespace(enabled_toolsets=selection, disabled_toolsets=["file"], model="test")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda platform: ["terminal"])
+    kwargs = server._background_agent_kwargs(agent, "background")
+    assert kwargs["enabled_toolsets"] == (["terminal"] if selection is None else selection)
+    assert kwargs["disabled_toolsets"] == ["file"]
+
+
+@pytest.mark.parametrize("selection", [None, [], ["terminal", "file", "memory"]])
+def test_toolset_rows_apply_composite_disabled_policy(monkeypatch, selection):
+    agent = SimpleNamespace(enabled_toolsets=selection, disabled_toolsets=["debugging"])
+    monkeypatch.setitem(server._sessions, "disabled-tools", {"agent": agent})
+    for method in ("tools.list", "toolsets.list"):
+        result = server._methods[method]("list", {"session_id": "disabled-tools"})
+        rows = {row["name"]: row for row in result["result"]["toolsets"]}
+        assert not rows["terminal"]["enabled"]
+        assert not rows["file"]["enabled"]
+        assert rows["memory"]["enabled"] is (selection != [])
+
+
+def test_tools_show_forwards_disabled_policy(monkeypatch):
+    import model_tools
+
+    agent = SimpleNamespace(enabled_toolsets=["terminal"], disabled_toolsets=["debugging"])
+    monkeypatch.setitem(server._sessions, "disabled-tools", {"agent": agent})
+    expected = model_tools.get_tool_definitions(
+        enabled_toolsets=agent.enabled_toolsets, disabled_toolsets=agent.disabled_toolsets,
+        quiet_mode=True, skip_tool_search_assembly=True,
+    )
+    result = server._methods["tools.show"]("show", {"session_id": "disabled-tools"})
+    assert result["result"]["total"] == len(expected) == 0
+
+
+def test_real_empty_config_survives_gui_resolution(tmp_path, monkeypatch, no_desktop_env):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("platform_toolsets:\n  cli: []\n", encoding="utf-8")
+    assert server._load_enabled_toolsets("desktop") == []
+    assert server._load_enabled_toolsets("tui") == []

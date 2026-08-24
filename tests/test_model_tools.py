@@ -7,10 +7,20 @@ from unittest.mock import patch
 from model_tools import (
     handle_function_call,
     get_all_tool_names,
+    get_tool_definitions,
     get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
 )
+
+
+def test_explicit_empty_toolsets_cannot_be_widened_by_worker_context(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+    with (
+        patch("model_tools._is_delegated_child_context", return_value=False),
+        patch("model_tools._is_dispatcher_owned_worker", return_value=True),
+    ):
+        assert get_tool_definitions(enabled_toolsets=[], quiet_mode=True) == []
 
 
 # =========================================================================

@@ -108,6 +108,9 @@ case "$MODE" in
     decide() { bash "$SCRIPT_DIR/posix.sh" --self-test-gate --install-root "$G/hermes-agent" "$@" | cut -d: -f1; }
 
     expect "appimage (not under unpacked)"      skew     "$(decide --relaunch-target /opt/Hermes/hermes)"
+    APPIMAGE_PATH="$G/Hermes.AppImage"
+    touch "$APPIMAGE_PATH" && chmod +x "$APPIMAGE_PATH"
+    expect "installed AppImage is relaunchable" relaunch "$(APPIMAGE="$APPIMAGE_PATH" decide --relaunch-target "$APPIMAGE_PATH")"
     expect "sibling-prefix dir not fooled"      skew     "$(decide --relaunch-target "$UNPACKED-evil/hermes")"
     expect "no chrome-sandbox (namespace)"      relaunch "$(decide --relaunch-target "$UNPACKED/hermes")"
 

@@ -4565,7 +4565,13 @@ async function applyUpdatesPosixHandoff(opts: any) {
   // only a binary the rebuild replaced with a launchable sandbox helper —
   // replaying the original launch context (filtered args, cwd, sandbox
   // opt-out) so a deep-link or --no-sandbox launch survives the update.
-  const targetApp = IS_MAC ? runningAppBundle() : process.execPath
+  // AppImages are replaced at their stable APPIMAGE path. process.execPath
+  // points into the temporary mount and cannot be atomically replaced.
+  const targetApp = IS_MAC
+    ? runningAppBundle()
+    : process.platform === 'linux' && process.env.APPIMAGE
+      ? process.env.APPIMAGE
+      : process.execPath
 
   if (targetApp) {
     args.push('--relaunch-target', targetApp)

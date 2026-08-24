@@ -818,6 +818,13 @@ def _rebuild_desktop_after_update(
     See #88251.
     """
     from hermes_cli.update_cmd import _m
+    if (
+        sys.platform == "linux"
+        and os.environ.get("APPIMAGE")
+        and os.environ.get("HERMES_APPIMAGE_UPDATE") == "1"
+    ):
+        print("→ Desktop AppImage update is handled separately")
+        return True
     # The release tree is git-ignored and can vanish mid-update; pre-update presence suffices.
     # Never make people who never used Desktop pay for an Electron build.
     has_desktop_app = had_desktop_app_before_update or _desktop_app_present(desktop_dir)

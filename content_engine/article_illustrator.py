@@ -351,7 +351,10 @@ def illustrate(draft: dict, out_dir: Path, density: str = "per-section",
 
     # Generate each image.
     base_draft = {
-        "brand": "sahil_twitter", "platform": "twitter",
+        # Thread the article's real brand (e.g. sahilblog) so prompt_engine
+        # applies the brand's own BRAND_STYLE_MAP entry instead of collapsing
+        # every article to the sahil_twitter preset (funnel-machine bug).
+        "brand": draft.get("brand") or "sahilblog", "platform": "twitter",
         "context": out.get("context", ""), "kb_snippets": draft.get("kb_snippets", []),
     }
     for entry in chosen:

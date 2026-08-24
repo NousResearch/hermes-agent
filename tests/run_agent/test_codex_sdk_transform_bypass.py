@@ -8,6 +8,7 @@ is held, and no socket kill helps a pre-network hang. Bulk wire-format
 fields are therefore routed through ``extra_body``, which the SDK merges
 into the JSON body *after* the transform.
 """
+
 import sys
 import types
 from types import SimpleNamespace
@@ -136,7 +137,10 @@ class TestRunCodexStreamRoutesPayloadViaExtraBody:
             SimpleNamespace(
                 type="response.completed",
                 response=SimpleNamespace(
-                    id="r1", status="completed", output=[], usage=None,
+                    id="r1",
+                    status="completed",
+                    output=[],
+                    usage=None,
                 ),
             )
         ]

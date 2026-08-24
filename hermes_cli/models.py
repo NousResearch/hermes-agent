@@ -2803,30 +2803,67 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     if colon > 0:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
-        if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
-            if provider_part == "custom":
-                lowered = stripped.lower()
-                for custom_id in sorted(
-                    _configured_custom_provider_ids() - {"custom"},
-                    key=len,
-                    reverse=True,
-                ):
-                    prefix = f"{custom_id.lower()}:"
-                    if lowered.startswith(prefix):
-                        return custom_id, stripped[len(custom_id) + 1 :].strip()
-            # Support custom:name:model triple syntax for named custom
-            # providers.  ``custom:local:qwen`` → ("custom:local", "qwen").
-            # Single colon ``custom:qwen`` → ("custom", "qwen") as before.
-            if provider_part == "custom" and ":" in model_part:
-                second_colon = model_part.find(":")
-                custom_name = model_part[:second_colon].strip()
-                actual_model = model_part[second_colon + 1:].strip()
-                if custom_name and actual_model:
-                    custom_id = f"custom:{custom_name.lower()}"
-                    if custom_id in _configured_custom_provider_ids():
-                        return (custom_id, actual_model)
-                    return ("custom", model_part)
-            return (normalize_provider(provider_part), model_part)
+        if provider_part and model_part:
+            # User-declared providers (``providers:`` and named
+            # ``custom_providers:`` entries in config.yaml) are real routing
+            # targets, but they are not in _KNOWN_PROVIDER_NAMES — only the
+            # bare "custom" bucket is. Without this check, ``myrouter:gpt``
+            # from a client (e.g. an ACP model selector that renders choices
+            # as ``provider:model``) fails the known-name branch below and
+            # the FULL string ``myrouter:gpt`` is returned as the model id,
+            # which the endpoint rejects ("modelCode does not exist").
+            if provider_part not in _KNOWN_PROVIDER_NAMES:
+                try:
+                    from hermes_cli.config import (
+                        get_compatible_custom_providers,
+                        load_config,
+                    )
+                    from hermes_cli.providers import (
+                        resolve_custom_provider,
+                        resolve_user_provider,
+                    )
+
+                    cfg = load_config()
+                    user_providers = (
+                        cfg.get("providers") if isinstance(cfg, dict) else None
+                    )
+                    resolved = resolve_user_provider(
+                        provider_part,
+                        user_providers if isinstance(user_providers, dict) else {},
+                    ) or resolve_custom_provider(
+                        provider_part,
+                        get_compatible_custom_providers(cfg)
+                        if isinstance(cfg, dict)
+                        else [],
+                    )
+                    if resolved is not None:
+                        return (resolved.id, model_part)
+                except Exception:
+                    pass
+            if provider_part in _KNOWN_PROVIDER_NAMES:
+                if provider_part == "custom":
+                    lowered = stripped.lower()
+                    for custom_id in sorted(
+                        _configured_custom_provider_ids() - {"custom"},
+                        key=len,
+                        reverse=True,
+                    ):
+                        prefix = f"{custom_id.lower()}:"
+                        if lowered.startswith(prefix):
+                            return custom_id, stripped[len(custom_id) + 1 :].strip()
+                # Support custom:name:model triple syntax for named custom
+                # providers.  ``custom:local:qwen`` → ("custom:local", "qwen").
+                # Single colon ``custom:qwen`` → ("custom", "qwen") as before.
+                if provider_part == "custom" and ":" in model_part:
+                    second_colon = model_part.find(":")
+                    custom_name = model_part[:second_colon].strip()
+                    actual_model = model_part[second_colon + 1:].strip()
+                    if custom_name and actual_model:
+                        custom_id = f"custom:{custom_name.lower()}"
+                        if custom_id in _configured_custom_provider_ids():
+                            return (custom_id, actual_model)
+                        return ("custom", model_part)
+                return (normalize_provider(provider_part), model_part)
     return (current_provider, stripped)
 
 

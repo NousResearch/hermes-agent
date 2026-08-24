@@ -204,7 +204,7 @@ function load(turnScript, { busyUntilResumeCall, clarifyUntilResumeCall, approva
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
     .concat(
-      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, groupSpeakerLabel, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, $lastRoster, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
+      '\nglobalThis.__gc = { sendToGroupChat, runGroupChatRounds, harvestStrandedGroupReply, resolveGroupResponders, parseGroupChatMentions, rotateGroupSpeakers, isGroupPassText, formatGroupChatLine, groupSpeakerLabel, buildGroupChatTurnPrompt, trimGroupChatLog, groupChatSyncSnapshot, groupChatGatewayJsonSize, mergeGroupChatSyncSnapshots, mergeRemoteGroupChatSnapshotIntoRooms, scheduleGroupChatServerSync, disbandGroupChat, renameGroupChat, updateGroupChat, durableGroupChatRooms, persistGroupChatRooms, ensureGroupChatSession, uniqueGroupChatName, liveGroupChatNames, groupChatNames, openGroupChat, closeGroupChatMainTab, shouldRenderGroupChatInPane, syncGroupClarify, clearGroupClarify, answerGroupClarify, $groupClarify, $groupChats, $groupNeedsYou, $groupChatWorkspace, $groupMainTabsRev, $botMeta, $lastRoster, GROUP_CHAT_MAX_ROUNDS, GROUP_CHAT_MAX_MESSAGES };\n'
     )
   vm.runInNewContext(source, context, { filename: 'plugin.js' })
   const storageWrites = new Map()
@@ -1280,6 +1280,59 @@ test('disband: removes only this membership, room log, workspace, and needs-you 
   assert.ok('Keep' in durable, 'surviving room still persisted')
   assert.equal(durable.Keep.members.length, 1, 'surviving room keeps remote member descriptors')
   assert.equal(durable.Keep.members[0].connectionId, 'remote-1')
+})
+
+test('disband: an empty rendered roster cannot leave a metadata-only group row', async () => {
+  const gc = load(() => '(pass)')
+
+  gc.$botMeta.set({ builder: { groups: ['Remote'], group: 'Remote' } })
+  gc.$groupChats.set({
+    Remote: { log: [], members: [], watermarks: {}, sessions: {}, running: false }
+  })
+
+  await gc.disbandGroupChat('Remote', [])
+
+  assert.equal(gc.$groupChats.get().Remote, undefined, 'room record is deleted')
+  assert.equal(JSON.stringify(gc.$botMeta.get().builder.groups), JSON.stringify([]))
+  assert.equal(gc.$botMeta.get().builder.group, null)
+  assert.equal(
+    JSON.stringify(gc.groupChatNames(gc.$botMeta.get(), gc.$groupChats.get())),
+    JSON.stringify([]),
+    'stale bot metadata cannot reconstruct a deleted zero-member row'
+  )
+})
+
+test('disband: an empty rendered roster recovers the exact source-qualified metadata owner', async () => {
+  const gc = load(() => '(pass)')
+  const remote = {
+    name: 'builder',
+    connectionId: 'remote-1',
+    connectionKind: 'remote',
+    sourceScoped: true,
+    remoteSource: true,
+    route: {
+      connectionId: 'remote-1',
+      mode: 'remote',
+      profile: 'builder',
+      targetProfile: 'builder'
+    }
+  }
+
+  gc.$lastRoster.set([remote])
+  gc.$botMeta.set({
+    builder: { groups: ['Keep'], group: 'Keep' },
+    'remote-1::builder': { groups: ['Remote'], group: 'Remote' }
+  })
+  gc.$groupChats.set({
+    Remote: { log: [], members: [], watermarks: {}, sessions: {}, running: false }
+  })
+
+  await gc.disbandGroupChat('Remote', [])
+
+  assert.equal(JSON.stringify(gc.$botMeta.get()['remote-1::builder'].groups), JSON.stringify([]))
+  assert.equal(gc.$botMeta.get()['remote-1::builder'].group, null)
+  assert.equal(JSON.stringify(gc.$botMeta.get().builder.groups), JSON.stringify(['Keep']))
+  assert.equal(gc.$botMeta.get().builder.group, 'Keep', 'same-named local metadata is untouched')
 })
 
 test('disband: skips source-qualified remote members instead of mutating same-named local metadata', async () => {

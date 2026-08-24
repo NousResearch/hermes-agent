@@ -5963,6 +5963,62 @@ function groupMembershipPatch(meta, group, enabled) {
   return { groups, group: groups[0] || null }
 }
 
+/** Build the exact metadata cleanup for a room disband. The rendered member
+ *  list is only a presentation snapshot and can already be empty on a remote
+ *  connection while bot metadata still names the room. Durable room members
+ *  and the full roster recover source-qualified owners; every remaining
+ *  metadata record is still cleared locally, but an unresolved scoped key is
+ *  never guessed into a server route. */
+function groupDisbandMetadataPlan(group, members, room, roster, metaByName) {
+  const owners = new Map()
+  const patches = new Map()
+
+  const rememberOwner = (owner, required = false) => {
+    if (!owner?.name) {
+      return
+    }
+
+    let key
+    try {
+      key = botMetaKey(owner)
+    } catch {
+      return
+    }
+
+    const meta = metaByName?.[key] || botRosterMeta(owner, metaByName) || {}
+    if (!required && !botGroups(meta).includes(group)) {
+      return
+    }
+
+    if (!owners.has(key)) {
+      owners.set(key, owner)
+    }
+    patches.set(key, groupMembershipPatch(meta, group, false))
+  }
+
+  for (const owner of members || []) {
+    rememberOwner(owner, true)
+  }
+  for (const owner of room?.members || []) {
+    rememberOwner(owner, true)
+  }
+  for (const owner of roster || []) {
+    rememberOwner(owner)
+  }
+
+  // Metadata itself is the final source of a metadata-only `0 bots` row.
+  // Clear every record that names the room even when its exact server owner is
+  // temporarily absent from the roster. Known owners still get a routed
+  // profiles.configure write below; unknown scoped records remain local-only.
+  for (const [key, meta] of Object.entries(metaByName || {})) {
+    if (botGroups(meta).includes(group)) {
+      patches.set(key, groupMembershipPatch(meta, group, false))
+    }
+  }
+
+  return { owners, patches }
+}
+
 /** Group chats that should hold a roster row: every group named in bot meta
  *  (local members) plus every room record that still has stored members or
  *  log — cross-connection rooms whose members can't ride bot-meta. */
@@ -6383,6 +6439,26 @@ async function disbandGroupChat(group, members) {
   // the user just discarded.
   const all = { ...$groupChats.get() }
   const prior = all[group] || {}
+  const metaBefore = $botMeta.get()
+  const cleanup = groupDisbandMetadataPlan(group, members, prior, $lastRoster.get(), metaBefore)
+  let metadataPersistence = Promise.resolve()
+
+  if (cleanup.patches.size) {
+    const nextMeta = { ...metaBefore }
+
+    for (const [key, patch] of cleanup.patches) {
+      nextMeta[key] = { ...(nextMeta[key] || {}), ...patch }
+      noteBotMetaWrite(key)
+    }
+
+    // Paint the deletion before any remote write can stall. This also removes
+    // orphaned legacy metadata that cannot safely be routed to a source.
+    $botMeta.set(nextMeta)
+    metadataPersistence = persistBotMetaSnapshot(
+      nextMeta,
+      botMetaV2Active || Object.keys(nextMeta).some(key => key.includes('::'))
+    )
+  }
 
   delete all[group]
   // Keep a runtime-only tombstone while a drive may still be mid-turn; it
@@ -6434,17 +6510,16 @@ async function disbandGroupChat(group, members) {
     /* storage unavailable — the atom reset above still empties the room */
   }
   scheduleGroupChatServerSync($groupChats.get(), { allowEmpty: true, deletedRooms: [group] })
+  await metadataPersistence
 
-  // Remove this membership last. saveBotMeta never throws (local storage +
-  // best-effort profiles.configure per member), so a flaky gateway can't
-  // strand the disband halfway with the room log already gone.
-  for (const member of members) {
-    if (!member?.name) {
-      continue
+  // Persist the cleanup to every exact owner we can prove. saveBotMeta never
+  // throws (local storage + best-effort profiles.configure per owner), so a
+  // flaky gateway cannot strand the local disband halfway.
+  for (const [key, owner] of cleanup.owners) {
+    const patch = cleanup.patches.get(key)
+    if (patch) {
+      await saveBotMeta(owner, patch)
     }
-
-    const meta = botRosterMeta(member, $botMeta.get()) || {}
-    await saveBotMeta(member, groupMembershipPatch(meta, group, false))
   }
 
   // Converge on server truth: the cached roster still carries the pre-disband

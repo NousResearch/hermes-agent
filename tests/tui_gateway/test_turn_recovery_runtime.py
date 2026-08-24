@@ -22,6 +22,7 @@ class FakeServer:
         self.calls: list[tuple[str, dict]] = []
         self.persisted_sessions: list[str] = []
         self.next_runtime = 1
+        self.resume_tip: str | None = None
         self._methods.update(
             {
                 "session.create": self._create,
@@ -62,7 +63,10 @@ class FakeServer:
 
     def _resume(self, rid, params):
         self.calls.append(("session.resume", dict(params)))
-        stored_id = params["session_id"]
+        # The real gateway's session.resume reports the stored identity as
+        # ``session_key`` and does NOT emit ``stored_session_id``; it may also
+        # follow a compression-continuation chain to a rotated tip.
+        stored_id = self.resume_tip or params["session_id"]
         runtime_id = f"runtime-{self.next_runtime}"
         self.next_runtime += 1
         self._sessions[runtime_id] = {
@@ -72,7 +76,7 @@ class FakeServer:
         }
         return self._ok(
             rid,
-            {"session_id": runtime_id, "stored_session_id": stored_id},
+            {"session_id": runtime_id, "session_key": stored_id},
         )
 
     def _submit(self, rid, params):
@@ -161,6 +165,36 @@ class TestSessionOpen:
             "session.resume",
             {"session_id": first["stored_session_id"], "source": "android"},
         )
+
+    def test_reconnect_rebinds_to_rotated_continuation_tip(self, installed):
+        server, _runtime = installed
+        first = _open(server)
+        server.resume_tip = "stored-rotated-tip"
+
+        second = _result(
+            server._methods["session.open"](
+                "open-rotated", {"mobile_session_id": MOBILE_ID}
+            )
+        )
+
+        assert second["stored_session_id"] == "stored-rotated-tip"
+        assert second["stored_session_id"] != first["stored_session_id"]
+        assert second["binding_version"] == 2
+
+        server.resume_tip = None
+        third = _result(
+            server._methods["session.open"](
+                "open-after-rotation", {"mobile_session_id": MOBILE_ID}
+            )
+        )
+
+        # The rotated tip must be what the next reconnect resumes, otherwise the
+        # phone silently rebinds to the pre-compression parent transcript.
+        assert server.calls[-1] == (
+            "session.resume",
+            {"session_id": "stored-rotated-tip", "source": "android"},
+        )
+        assert third["stored_session_id"] == "stored-rotated-tip"
 
     def test_binding_survives_runtime_reconstruction(self, tmp_path: Path):
         path = tmp_path / "bindings.json"

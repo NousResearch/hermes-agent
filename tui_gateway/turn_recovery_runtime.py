@@ -157,7 +157,18 @@ class TurnRecoveryRuntime:
                 return response
             result = response.get("result") or {}
             runtime_id = result.get("session_id")
-            stored_id = result.get("stored_session_id")
+            # session.create reports the durable identity as ``stored_session_id``;
+            # session.resume reports it as ``session_key`` (and may point at a
+            # rotated compression-continuation tip rather than the id we asked
+            # for). Accept either spelling, then fall back to the live session
+            # record, so a reconnect can never be rejected as "invalid identity".
+            stored_id = result.get("stored_session_id") or result.get("session_key")
+            if not isinstance(stored_id, str) or not stored_id:
+                live = self.server._sessions.get(runtime_id) if isinstance(runtime_id, str) else None
+                if isinstance(live, dict):
+                    candidate = live.get("session_key")
+                    if isinstance(candidate, str) and candidate:
+                        stored_id = candidate
             if not isinstance(runtime_id, str) or not runtime_id or not isinstance(stored_id, str) or not stored_id:
                 return self.server._err(rid, -32603, "session binding returned an invalid identity")
 

@@ -655,7 +655,9 @@ _UPDATE_CRITICAL_MODULES = (
 )
 
 
-def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | None]:
+def _validate_critical_modules_import(
+    root, *, report_runtime_errors: bool = False
+) -> tuple[bool, str | None, str | None]:
     """Import each module in ``_UPDATE_CRITICAL_MODULES`` in a subprocess.
 
     ``_validate_critical_files_syntax`` only *parses* files, so it cannot see
@@ -678,7 +680,10 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
     different Python than the install's own, and probing the wrong
     interpreter would test a tree the user never runs.
 
-    Returns ``(ok, failing_module, error_message)``.
+    Returns ``(ok, failing_module, error_message)``. Generic import-time
+    exceptions remain tolerated by default because they can depend on local
+    config or environment. ``report_runtime_errors=True`` exposes them so a
+    caller can compare two states of the same checkout.
     """
     from hermes_constants import FIRST_PARTY_MODULE_ROOTS
 
@@ -699,8 +704,9 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
         "    except ImportError as exc:\n"
         "        sys.stdout.write(name + '\\n' + str(exc))\n"
         "        raise SystemExit(3)\n"
-        "    except Exception:\n"
-        "        pass\n"  # non-import errors (config/env) aren't update breakage
+        "    except Exception as exc:\n"
+        "        sys.stdout.write(name + '\\n' + str(exc))\n"
+        "        raise SystemExit(4)\n"
         "raise SystemExit(0)\n"
         % (_UPDATE_CRITICAL_MODULES, tuple(sorted(FIRST_PARTY_MODULE_ROOTS)))
     )
@@ -726,8 +732,16 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
     except (OSError, subprocess.SubprocessError):
         # Can't run the probe — don't block the update on our own tooling.
         return True, None, None
-    if result.returncode == 3:
-        parts = (result.stdout or "").split("\n", 1)
+    if result.returncode != 0:
+        if result.returncode == 4 and not report_runtime_errors:
+            # Generic import-time failures can depend on local config or env,
+            # so the ordinary post-update guard keeps its historical tolerance.
+            # Stash restoration opts into reporting them and compares the clean
+            # tree with the restored tree to detect failures introduced by the
+            # user's local changes.
+            return True, None, None
+        output = result.stdout or result.stderr or ""
+        parts = output.split("\n", 1)
         module = parts[0].strip() or "unknown"
         detail = parts[1].strip() if len(parts) > 1 else ""
         return False, module, detail
@@ -2529,6 +2543,9 @@ def _restore_stashed_changes(
             return False
 
     preexisting_untracked = _git_untracked_paths(git_cmd, cwd)
+    clean_import_health = _validate_critical_modules_import(
+        cwd, report_runtime_errors=True
+    )
     print("→ Restoring local changes...")
     restore = subprocess.run(
         git_cmd + ["stash", "apply", stash_ref],
@@ -2604,8 +2621,11 @@ def _restore_stashed_changes(
             syntax_error,
         )
 
-    import_ok, failing_module, import_error = _validate_critical_modules_import(cwd)
-    if not import_ok:
+    restored_import_health = _validate_critical_modules_import(
+        cwd, report_runtime_errors=True
+    )
+    import_ok, failing_module, import_error = restored_import_health
+    if not import_ok and restored_import_health != clean_import_health:
         _reject_unsafe_stash_restore(
             git_cmd,
             cwd,

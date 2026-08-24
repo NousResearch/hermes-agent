@@ -82,6 +82,20 @@ def test_import_guard_ignores_non_import_errors(monkeypatch, tmp_path):
     assert ok is True
 
 
+def test_import_guard_can_report_non_import_errors(monkeypatch, tmp_path):
+    """Stash restore can compare runtime failures before and after apply."""
+    (tmp_path / "consumer.py").write_text("raise RuntimeError('broken config')\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, module, error = hermes_main._validate_critical_modules_import(
+        tmp_path, report_runtime_errors=True
+    )
+
+    assert ok is False
+    assert module == "consumer"
+    assert error == "broken config"
+
+
 def test_import_guard_is_non_fatal_when_probe_cannot_run(monkeypatch, tmp_path):
     """If we can't spawn the probe, don't block the user's update."""
 

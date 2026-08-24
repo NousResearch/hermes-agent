@@ -133,12 +133,15 @@ def _check_token(query_string: str) -> bool:
 
 # ── Connection handler ───────────────────────────────────────────────────
 
-async def _handle_connection(ws: Any, path: str = "/") -> None:
+async def _handle_connection(ws: Any) -> None:
     """Per-connection handler for the websockets server.
 
     Auth → adapter → ``handle_ws`` (the same function the dashboard's
     ``/api/ws`` route calls). Events flow identically.
     """
+    # websockets >=13 passes the path on the ws object, not as a second arg.
+    path = getattr(ws, "path", None) or getattr(getattr(ws, "request", None), "path", "/")
+
     parsed = urlparse(path)
     query_string = parsed.query
 

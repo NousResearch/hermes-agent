@@ -1985,6 +1985,71 @@ BROWSER_ORPHAN_GRACE_SECONDS = max(3600, BROWSER_SESSION_INACTIVITY_TIMEOUT * 20
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
 
+# Session keys flagged suspect after a command timeout (#72205 / #85125 3b).
+# Written by _BrowserSessionBackend.mark_suspect (cheap, lock-free — a single
+# GIL-atomic dict write per the agent.deadline.SuspectableBackend contract);
+# consumed by ensure_healthy() at next use, which recycles the session.
+_suspect_browser_sessions: Dict[str, str] = {}
+
+
+class _BrowserSessionBackend:
+    """``agent.deadline.SuspectableBackend`` adapter for one cached session key.
+
+    The browser "backend" is the module-level ``_active_sessions[key]`` cache
+    entry plus its agent-browser daemon, so the adapter is a thin stateless
+    view keyed by session key rather than a long-lived object.  Browser
+    commands run through raw ``subprocess`` waits (not ``run_bounded_*``), so
+    the timeout path calls ``mark_suspect`` inline; ``ensure_healthy`` runs at
+    the top of ``_get_session_info`` — the single choke point every browser
+    command passes through before reusing a cached session.
+    """
+
+    __slots__ = ("_session_key",)
+
+    def __init__(self, session_key: str) -> None:
+        self._session_key = session_key
+
+    def mark_suspect(self, reason: str) -> None:
+        """Flag the cached session as possibly poisoned.
+
+        MUST stay cheap, non-blocking, and lock-free (SuspectableBackend
+        adopter contract): it runs inline on the timed-out caller's thread.
+        All expensive recycle work is deferred to ``ensure_healthy``.
+        """
+        _suspect_browser_sessions[self._session_key] = reason
+
+    def ensure_healthy(self) -> bool:
+        """Recycle the session when a prior timeout marked it suspect.
+
+        Returns ``True`` when the cached session is safe to reuse, ``False``
+        after tearing down a suspect session (caller creates a fresh one).
+        The flag is popped *before* teardown: ``_cleanup_single_browser_session``
+        issues an agent-browser ``close`` through ``_run_browser_command`` /
+        ``_get_session_info``, and clearing first keeps that re-entrant call
+        from recursing back into another recycle.
+        """
+        reason = _suspect_browser_sessions.pop(self._session_key, None)
+        if reason is None:
+            return True
+        logger.info(
+            "Recycling suspect browser session %s before reuse (%s)",
+            self._session_key, reason,
+        )
+        try:
+            _cleanup_single_browser_session(self._session_key)
+        except Exception:
+            logger.warning(
+                "Teardown of suspect browser session %s failed; a fresh "
+                "session will be created anyway", self._session_key,
+                exc_info=True,
+            )
+        return False
+
+
+def _browser_session_backend(session_key: str) -> _BrowserSessionBackend:
+    """Return the SuspectableBackend adapter for ``session_key``."""
+    return _BrowserSessionBackend(session_key)
+
 # Background cleanup thread state
 _cleanup_thread = None
 _cleanup_running = False
@@ -2714,6 +2779,22 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
         # Check if we already have a session for this task
         existing_session = _active_sessions.get(task_id)
 
+    # Suspect-session recycle (#72205 / #85125 3b): a previous command
+    # timeout marked this cached session suspect via the SuspectableBackend
+    # adapter.  ensure_healthy() tears it down here, at next use, and we fall
+    # through to create a fresh session — the expensive recycle lives on this
+    # path, not on the timeout path (mark must stay cheap).
+    if existing_session is not None and not _browser_session_backend(task_id).ensure_healthy():
+        # Teardown removes the activity entry; the replacement must be
+        # tracked by the inactivity reaper like an initial session.
+        _update_session_activity(task_id)
+        with _cleanup_lock:
+            replacement = _active_sessions.get(task_id)
+        if replacement is not None and replacement is not existing_session:
+            # Another thread already recycled and re-created it.
+            return replacement
+        existing_session = None
+
     if existing_session is not None:
         if not _session_has_expired(existing_session):
             return existing_session
@@ -2798,6 +2879,9 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
         session_info.setdefault("session_key", task_id)
         session_info.setdefault("owner_task_id", _bare_task_id_for_session_key(task_id))
         _active_sessions[task_id] = session_info
+        # A brand-new session is healthy by definition — drop any stale
+        # suspect flag left by a wedged-path eviction of its predecessor.
+        _suspect_browser_sessions.pop(task_id, None)
 
     # Lazy-start the CDP supervisor now that the session exists (if the
     # backend surfaces a CDP URL via override or session_info["cdp_url"]).
@@ -3171,16 +3255,152 @@ def _discard_timed_out_browser_session(
         pid_file = os.path.join(task_socket_dir, f"{session_name}.pid")
         if os.path.isfile(pid_file):
             try:
-                from tools.process_registry import ProcessRegistry
-
                 daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
                 if not _verify_reapable_browser_daemon(daemon_pid, task_socket_dir, session_name):
                     return
-                ProcessRegistry._terminate_host_pid(daemon_pid)
+                # Tree-kill (#68139 / #85125 4c): the daemon spawns Chromium
+                # children; terminating only the daemon PID leaks the whole
+                # Chromium tree.  agent.deadline.kill_process_tree escalates
+                # SIGTERM → SIGKILL across the tree.
+                from agent import deadline as _deadline
+
+                _deadline.kill_process_tree(daemon_pid)
             except (ProcessLookupError, ValueError, PermissionError, OSError):
                 logger.debug("Could not kill timed-out browser daemon for %s", session_name)
                 return
     shutil.rmtree(task_socket_dir, ignore_errors=True)
+
+
+def _read_browser_daemon_pid(task_socket_dir: str, session_name: str) -> Optional[int]:
+    """Read the agent-browser daemon PID for a session (best-effort)."""
+    pid_file = os.path.join(task_socket_dir, f"{session_name}.pid")
+    try:
+        return int(Path(pid_file).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _browser_daemon_responsive(task_socket_dir: str, probe_timeout_s: float = 1.0) -> bool:
+    """Cheap liveness probe: can we connect to the daemon's control socket?
+
+    The agent-browser daemon listens on a unix socket inside the session's
+    socket dir.  A successful connect proves the daemon's accept loop is
+    alive (the timed-out command was wedged on the page/CDP side, not the
+    daemon).  A refused / missing / timed-out connect means the daemon is
+    wedged or dead.  Windows agent-browser uses named pipes, not unix
+    sockets — no probe is possible there, so we conservatively report
+    unresponsive (tree-kill + respawn is the safe recovery).
+    """
+    if os.name == "nt":
+        return False
+    import socket as socket_mod
+
+    if not hasattr(socket_mod, "AF_UNIX"):
+        return False
+    try:
+        entries = os.listdir(task_socket_dir)
+    except OSError:
+        return False
+    sock_paths = [
+        os.path.join(task_socket_dir, e) for e in entries if e.endswith(".sock")
+    ]
+    for sock_path in sock_paths:
+        try:
+            with socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM) as s:
+                s.settimeout(probe_timeout_s)
+                s.connect(sock_path)
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _handle_browser_command_timeout(
+    task_id: str,
+    session_info: Dict[str, Any],
+    task_socket_dir: str,
+) -> None:
+    """Recover session state after a browser command timeout (#72205, #68139).
+
+    The wedged-vs-alive rule:
+
+    * **Cloud / CDP sessions** — there is no local daemon to probe or kill.
+      Replace the stuck client generation immediately (fresh ``session_name``,
+      same ``bb_session_id`` so cloud cleanup still works) — #72206's
+      original behavior, preserved verbatim.
+    * **Local daemon alive** (PID readable, process alive, identity-verified
+      as ours, control socket accepts a connection): the *command* wedged —
+      page hang, stuck navigation — but the daemon itself is fine.  Killing
+      it would be overkill and slow.  Mark the session suspect only; the
+      next use recycles it through ``ensure_healthy`` → clean agent-browser
+      ``close`` → fresh session.
+    * **Local daemon wedged or dead** (no PID, dead PID, failed identity
+      check, or unresponsive socket): the daemon cannot service a clean
+      close, and its Chromium children would leak.  Tree-kill the daemon's
+      process tree via ``agent.deadline.kill_process_tree`` and evict the
+      cache entry now; the next browser call respawns from scratch.
+
+    Both local branches ``mark_suspect`` first — cheap, lock-free — so the
+    poisoned-cache invariant holds even if the eviction below races another
+    thread's replacement (``_discard_timed_out_browser_session`` no-ops on a
+    concurrent replacement; the flag then triggers one harmless no-op
+    teardown at next use).
+    """
+    if session_info.get("bb_session_id") or session_info.get("cdp_url"):
+        _discard_timed_out_browser_session(task_id, session_info, task_socket_dir)
+        return
+
+    _browser_session_backend(task_id).mark_suspect(
+        "browser command timed out; session may be poisoned"
+    )
+
+    session_name = str(session_info.get("session_name") or "")
+    daemon_pid = _read_browser_daemon_pid(task_socket_dir, session_name) if session_name else None
+    daemon_alive = (
+        daemon_pid is not None
+        and _pid_exists(daemon_pid)
+        and _verify_reapable_browser_daemon(daemon_pid, task_socket_dir, session_name)
+        and _browser_daemon_responsive(task_socket_dir)
+    )
+    if daemon_alive:
+        logger.warning(
+            "browser daemon for %s is alive after command timeout; session "
+            "marked suspect and will be recycled at next use", task_id,
+        )
+        return
+
+    logger.warning(
+        "browser daemon for %s is wedged or dead after command timeout; "
+        "tree-killing and evicting the session", task_id,
+    )
+    _discard_timed_out_browser_session(task_id, session_info, task_socket_dir)
+    # The poisoned entry is gone (evicted, or superseded by a concurrent
+    # replacement discard refused to touch) — either way the cache no longer
+    # holds the timed-out session, so drop the flag: it must not poison a
+    # session created later under the same key.
+    _suspect_browser_sessions.pop(task_id, None)
+
+
+def _pid_exists(pid: int) -> bool:
+    """Best-effort 'is this PID alive' check (signal 0 / psutil on Windows)."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import psutil
+
+            return psutil.pid_exists(pid)
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def _run_browser_command(
@@ -3397,7 +3617,7 @@ def _run_browser_command(
             proc.wait()
             stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
             _unlink_command_output_files(stdout_path, stderr_path)
-            _discard_timed_out_browser_session(task_id, session_info, task_socket_dir)
+            _handle_browser_command_timeout(task_id, session_info, task_socket_dir)
             if stderr and stderr.strip():
                 logger.warning(
                     "browser '%s' stderr after timeout: %s",

@@ -71,6 +71,30 @@ def test_cleanly_stopped_gateway_is_not_down(monkeypatch, tmp_path):
         assert ur.collect_fleet_versions(pre_restart_pids=[_DEAD_PID]) == []
 
 
+def test_recycled_pid_is_not_reported_stale(monkeypatch, tmp_path):
+    """A dead gateway's PID reused by an unrelated process (#93258) must not
+    be reported STALE just because *some* process now answers to that PID.
+    """
+    from gateway.status import _get_process_start_time
+
+    reused_pid = os.getpid()
+    wrong_start_time = (_get_process_start_time(reused_pid) or 0) + 12345
+    _setup(
+        monkeypatch,
+        tmp_path,
+        {
+            "pid": reused_pid,
+            "start_time": wrong_start_time,
+            "gateway_state": "running",
+            "code_sha": "OLDSHA",
+            "kind": "hermes-gateway",
+        },
+    )
+    fleet = ur.collect_fleet_versions(pre_restart_pids=[reused_pid])
+    assert len(fleet) == 1
+    assert fleet[0]["state"] == "down"
+
+
 def test_live_gateway_rows_unchanged(monkeypatch, tmp_path):
     """The live-pid path is untouched by the down-state addition."""
     _setup(

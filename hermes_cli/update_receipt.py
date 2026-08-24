@@ -320,7 +320,7 @@ def collect_fleet_versions(
         expected_sha = None
 
     try:
-        from gateway.status import _pid_exists, read_runtime_status
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
         from hermes_cli.profiles import (
             _get_default_hermes_home,
             _get_profiles_root,
@@ -382,13 +382,15 @@ def collect_fleet_versions(
                 pid = int(pid)
             except (TypeError, ValueError):
                 continue
-            if not _pid_exists(pid):
-                # Dead PID: a DOWN row only when this exact pid was alive at
-                # update start AND the record still claims a running state —
-                # "the restart phase stopped it and nothing came back."
-                # Everything else (clean stop, startup failure, stale record
-                # from a long-dead gateway) keeps the historical no-row
-                # behavior so the feature's rollout can't false-positive.
+            if not runtime_status_pid_is_live(record):
+                # Dead PID (or a live PID recycled by an unrelated process
+                # during the update's own churn — #93258): a DOWN row only
+                # when this exact pid was alive at update start AND the
+                # record still claims a running state — "the restart phase
+                # stopped it and nothing came back." Everything else (clean
+                # stop, startup failure, stale record from a long-dead
+                # gateway) keeps the historical no-row behavior so the
+                # feature's rollout can't false-positive.
                 gw_state = record.get("gateway_state")
                 if (
                     pid in _pre_restart

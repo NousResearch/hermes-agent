@@ -90,6 +90,11 @@ interface PaneChrome extends PaneSizing {
    *  the tab and the sidebar row render status/color from the ONE primitive
    *  (self-subscribing — it updates without the strip re-registering). */
   tabLead?: () => React.ReactNode
+  /** Mint another tab of THIS pane's kind — the strip's "+" while this pane is
+   *  active. A Browser tab makes another Browser tab; a pane that is one of a
+   *  kind (a file peek) leaves it absent and the strip falls back to the chat
+   *  "+" if the zone holds session tabs. */
+  newTab?: () => void
   /** This pane's TAB LABEL, when it changes faster than the contribution
    *  should. A session pane whose draft is being typed renames on every
    *  debounce beat; re-registering `title` that often would re-render the

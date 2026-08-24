@@ -48,6 +48,9 @@ export interface PaneMirror<T> {
    *  as `tabLead` — a name that moves faster than re-registration (see
    *  PaneChrome.tabTitle). Falls back to `title`. */
   tabTitle?: (key: string) => ReactNode
+  /** Mint another tile of this kind — the strip's "+" (see PaneChrome.newTab).
+   *  Per tile so a mirror can offer it for some of its tabs and not others. */
+  newTab?: (key: string) => (() => void) | undefined
   render: (key: string) => ReactNode
   /** Wrap the tile's TAB (domain context menu — session verbs). */
   tabWrap?: (key: string, tab: ReactElement) => ReactNode
@@ -102,6 +105,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
             pos: cfg.dir?.(tile) ?? 'right'
           },
           minWidth: cfg.minWidth,
+          newTab: cfg.newTab?.(key),
           // Every mirrored tile is a full workspace surface docked beside main —
           // and closeable, which is what keeps its tab when it lands in a zone of
           // its own (see strip-visibility.ts).

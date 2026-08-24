@@ -270,6 +270,25 @@ export function TreeGroup({
   const active = paneFor(activeId)
   const isEmpty = shown.length === 0
 
+  // What the strip's "+" makes. The pane you are LOOKING AT answers first (a
+  // Browser tab makes another Browser, even stacked into the chat strip), then
+  // the chat "+" for any zone holding session tabs, then any other tenant that
+  // can mint its own kind — that last rung is what keeps the button from
+  // blinking out when you click a file tab sitting beside a Browser.
+  const ownNewTab = (id: string) => {
+    const mint = paneChrome(paneFor(id)).newTab
+
+    return mint ? { label: t.zones.newTab, onSelect: mint } : null
+  }
+
+  const newTab =
+    ownNewTab(activeId) ??
+    (shown.some(isSessionStripPane) && newSessionTabAction
+      ? { label: t.zones.newSessionTab, onSelect: newSessionTabAction }
+      : null) ??
+    shown.map(ownNewTab).find(Boolean) ??
+    null
+
   useEffect(() => {
     if (activeId) {
       rememberActivePane(memoryKey, activeId)
@@ -594,12 +613,13 @@ export function TreeGroup({
               return <Fragment key={paneId}>{chrome.tabWrap ? chrome.tabWrap(tab) : tab}</Fragment>
             })}
 
-            {/* Plain "+" after the last tab of a CHAT strip (the workspace
-                zone, or any zone holding session tabs) — always shown. Creates
-                a new session tab (mirrors ⌘T) via the app-registered action;
-                the pointerdown focuses this zone first, so the tab lands in
-                THIS strip. Hidden when unwired or the zone is minimized. */}
-            {shown.some(isSessionStripPane) && newSessionTabAction && !node.minimized && (
+            {/* Plain "+" after the last tab — it mints another tab of the kind
+                you are LOOKING AT, so a Browser strip makes another Browser
+                and a chat strip makes another session (mirrors ⌘T, via the
+                app-registered action). The pointerdown focuses this zone
+                first, so the tab lands in THIS strip. Hidden when the active
+                pane is one of a kind and the zone holds no session tabs. */}
+            {newTab && !node.minimized && (
               <span
                 // The action docks into the FOCUSED chat zone; clicking a
                 // background strip's "+" must make THAT zone the focused one
@@ -610,8 +630,8 @@ export function TreeGroup({
               >
                 <PaneStripGlyph
                   icon={<Codicon name="add" size="0.8125rem" />}
-                  label={t.zones.newSessionTab}
-                  onSelect={() => newSessionTabAction()}
+                  label={newTab.label}
+                  onSelect={newTab.onSelect}
                 />
               </span>
             )}

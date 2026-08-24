@@ -10,12 +10,22 @@
  * one bar instead of two.
  */
 
+import { useStore } from '@nanostores/react'
+
 import { findGroup } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $layoutTree, revealTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '@/store/layout'
-import { $previewTabs, closeRightRailTab, type PreviewTarget } from '@/store/preview'
+import {
+  $browserPages,
+  $previewTabs,
+  type BrowserPage,
+  closeRightRailTab,
+  forgetBrowserPage,
+  newBrowserTab,
+  type PreviewTarget
+} from '@/store/preview'
 
 import { paneMirror } from './pane-mirror'
 import { PreviewTilePane } from './right-rail/preview'
@@ -26,9 +36,11 @@ function targetFor(tabId: string): PreviewTarget | null {
   return $previewTabs.get().find(tab => tab.id === tabId)?.target ?? null
 }
 
-/** Tab title. A URL is a BROWSER — the tab names the surface, not the page, so
- *  it doesn't rename itself on every navigation. A file names the file; an
- *  artifact is titled rather than located, so its label is the whole name. */
+/** Tab title. A URL tab is titled by the CONTRIBUTION as the surface — see
+ *  `BrowserTabLabel` for the live page name the strip actually renders — so
+ *  navigating doesn't re-register the pane on every hop. A file names the
+ *  file; an artifact is titled rather than located, so its label is the whole
+ *  name. */
 function previewTitle(tabId: string): string {
   const target = targetFor(tabId)
 
@@ -48,6 +60,40 @@ function previewTitle(tabId: string): string {
   const tail = value.split(/[\\/]/).filter(Boolean).at(-1)
 
   return tail || value || 'Preview'
+}
+
+/**
+ * What to call a Browser tab. Its page title, else the host it is on, else
+ * the surface — the ladder every browser walks, and the reason more than one
+ * Browser is usable at all: three tabs reading "Browser" name nothing.
+ *
+ * A page that never set a title reports its own address as one, which is a
+ * worse label than the host it came from, so an address-shaped title falls
+ * through.
+ */
+export function browserTabLabel(target: PreviewTarget, page?: BrowserPage): string {
+  const url = page?.url || target.url
+  const title = page?.title.trim()
+
+  if (title && title !== url) {
+    return title
+  }
+
+  try {
+    return new URL(url).hostname.replace(/^www\./, '') || 'Browser'
+  } catch {
+    // `about:blank` and half-typed addresses have no host to fall back to.
+    return 'Browser'
+  }
+}
+
+/** Live tab label for a Browser: it renames itself as the page navigates,
+ *  without the contribution re-registering (see PaneChrome.tabTitle). */
+function BrowserTabLabel({ tabId }: { tabId: string }) {
+  const pages = useStore($browserPages)
+  const target = targetFor(tabId)
+
+  return target ? browserTabLabel(target, pages[tabId]) : null
 }
 
 /** The tab's lead glyph — the same file/tool icon family the file tree and code
@@ -157,8 +203,13 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   minWidth: '22rem',
   title: previewTitle,
   tabLead: tabId => <PreviewTabLead tabId={tabId} />,
+  tabTitle: tabId => (targetFor(tabId)?.kind === 'url' ? <BrowserTabLabel tabId={tabId} /> : undefined),
+  // A Browser is a vessel, so there can be more of it — a file peek is one of
+  // a kind and leaves the strip's "+" to whatever else the zone holds.
+  newTab: tabId => (targetFor(tabId)?.kind === 'url' ? newBrowserTab : undefined),
   render: tabId => <PreviewTilePane tabId={tabId} />,
   close: tabId => {
+    forgetBrowserPage(tabId)
     forgetPreviewConsole(tabId)
     closeRightRailTab(tabId)
   }

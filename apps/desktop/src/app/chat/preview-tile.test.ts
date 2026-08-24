@@ -12,7 +12,7 @@ import { contributesToWorkspace } from '@/components/pane-shell/workspace-scope'
 import { registry } from '@/contrib/registry'
 import { closeRightRail, openPreview } from '@/store/preview'
 
-import { watchPreviewTiles } from './preview-tile'
+import { browserTabLabel, watchPreviewTiles } from './preview-tile'
 
 beforeAll(() => {
   watchPreviewTiles()
@@ -22,8 +22,10 @@ afterEach(() => {
   closeRightRail()
 })
 
+// By prefix, not by a literal id: a Browser tab's id is minted per tab now
+// that there can be more than one of them.
 function browserPane() {
-  return registry.getArea('panes').find(entry => entry.id === 'preview-tile:url:browser')
+  return registry.getArea('panes').find(entry => entry.id.startsWith('preview-tile:url:'))
 }
 
 describe('preview tiles in Bot Mode', () => {
@@ -39,6 +41,34 @@ describe('preview tiles in Bot Mode', () => {
     expect(pane?.workspaceMode).toBeUndefined()
     expect(contributesToWorkspace(pane, 'sessions')).toBe(true)
     expect(contributesToWorkspace(pane, 'bots', 'bot:connection-a::default')).toBe(true)
+  })
+})
+
+describe('browserTabLabel', () => {
+  const target = { kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' } as const
+
+  it('names the tab after the page', () => {
+    expect(browserTabLabel(target, { title: 'Hacker News', url: 'https://news.ycombinator.com/' })).toBe('Hacker News')
+  })
+
+  // Chromium hands back the address as the title when the page never set one,
+  // which is a worse tab label than the host it came from.
+  it('falls back to the host when the page has no title of its own', () => {
+    expect(browserTabLabel(target, { title: '', url: 'https://www.example.com/a/b' })).toBe('example.com')
+    expect(browserTabLabel(target, { title: 'https://example.com/a', url: 'https://example.com/a' })).toBe(
+      'example.com'
+    )
+  })
+
+  it('falls back to the surface when there is no page and no host', () => {
+    expect(browserTabLabel(target)).toBe('Browser')
+    expect(browserTabLabel(target, { title: '', url: 'about:blank' })).toBe('Browser')
+  })
+
+  // A tab restored from storage has reported nothing yet, so its target is all
+  // there is to name it by.
+  it('names an unreported tab from its target', () => {
+    expect(browserTabLabel({ ...target, url: 'https://github.com/nous' })).toBe('github.com')
   })
 })
 

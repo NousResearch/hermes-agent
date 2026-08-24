@@ -8317,6 +8317,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             if print_fleet_version_matrix(_fleet_snapshot):
                 gateway_fleet_restart_incomplete = True
+            elif not _fleet_snapshot and (restarted_services or killed_pids):
+                # Fleet probe returned zero rows even though the restart
+                # phase touched live gateways.  Every failure path inside
+                # collect_fleet_versions() is swallowed via logger.debug(),
+                # so an empty list is indistinguishable from a healthy fleet
+                # in the current output.  Treat it as verification failure
+                # so the receipt records "partial" and the exit code is 1
+                # (#93406).
+                print(
+                    "\n⚠ Fleet version check returned no rows even though"
+                    " gateways were restarted — verification incomplete."
+                )
+                gateway_fleet_restart_incomplete = True
         except Exception as _fleet_exc:
             logger.debug("Fleet version verification failed: %s", _fleet_exc)
 

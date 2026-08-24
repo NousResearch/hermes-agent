@@ -457,6 +457,17 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
                 print(f"   🚫 Prompt {prompt_index} discarded (no reasoning in any turn)")
                 discarded_no_reasoning += 1
                 completed_in_batch.append(prompt_index)
+                # Write a tombstone row so the content-based resume scan (which
+                # only reads batch_*.jsonl) can see this prompt was already
+                # processed and discarded, not just left unprocessed.
+                with open(batch_output_file, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps({
+                        "prompt_index": prompt_index,
+                        "conversations": result["trajectory"],
+                        "discarded": "no_reasoning",
+                    }, ensure_ascii=False) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
                 continue
             
             # Get and normalize tool stats for consistent schema across all entries
@@ -995,8 +1006,11 @@ class BatchRunner:
         
         # Aggregate all batch statistics and update checkpoint
         total_reasoning_stats = {"total_assistant_turns": 0, "turns_with_reasoning": 0, "turns_without_reasoning": 0}
+        total_discarded_no_reasoning = 0
 
         for batch_result in results:
+            total_discarded_no_reasoning += batch_result.get("discarded_no_reasoning", 0)
+
             # Aggregate tool stats
             for tool_name, stats in batch_result.get("tool_stats", {}).items():
                 if tool_name not in total_tool_stats:
@@ -1043,6 +1057,7 @@ class BatchRunner:
         
         total_entries = 0
         filtered_entries = 0
+        discarded_tombstones = 0
         batch_files_found = 0
         
         # Find ALL batch files in the output directory (handles resume merging old + new)
@@ -1058,8 +1073,16 @@ class BatchRunner:
                         total_entries += 1
                         try:
                             data = json.loads(line)
+
+                            # Discard tombstones exist only so resume can see
+                            # these prompts as done; they carry no full
+                            # trajectory and must not enter the training file.
+                            if data.get("discarded"):
+                                discarded_tombstones += 1
+                                continue
+
                             tool_stats = data.get('tool_stats', {})
-                            
+
                             # Check for invalid tool names (model hallucinations)
                             invalid_tools = [k for k in tool_stats if k not in VALID_TOOLS]
                             
@@ -1076,7 +1099,9 @@ class BatchRunner:
         
         if filtered_entries > 0:
             print(f"⚠️  Filtered {filtered_entries} corrupted entries out of {total_entries} total")
-        print(f"✅ Combined {batch_files_found} batch files into trajectories.jsonl ({total_entries - filtered_entries} entries)")
+        if discarded_tombstones > 0:
+            print(f"ℹ️  Excluded {discarded_tombstones} discarded (no-reasoning) tombstone rows out of {total_entries} total")
+        print(f"✅ Combined {batch_files_found} batch files into trajectories.jsonl ({total_entries - filtered_entries - discarded_tombstones} entries)")
         
         # Save final statistics
         final_stats = {
@@ -1090,6 +1115,7 @@ class BatchRunner:
             "duration_seconds": round(time.time() - start_time, 2),
             "tool_statistics": total_tool_stats,
             "reasoning_statistics": total_reasoning_stats,
+            "discarded_no_reasoning": total_discarded_no_reasoning,
         }
         
         with open(self.stats_file, 'w', encoding='utf-8') as f:

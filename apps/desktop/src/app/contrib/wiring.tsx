@@ -334,8 +334,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       // is already a stored id (several RPCs pass stored ids directly), so use
       // it as-is. Only an RPC with no session_id at all (ambient/config calls)
       // keeps the focused-tile route.
-      const paramSessionId =
-        typeof params?.session_id === 'string' && params.session_id ? params.session_id : undefined
+      const paramSessionId = typeof params?.session_id === 'string' && params.session_id ? params.session_id : undefined
 
       const routingSessionId = resolveRoutingSessionId({
         focusedStoredSessionId: $focusedStoredSessionId.get(),

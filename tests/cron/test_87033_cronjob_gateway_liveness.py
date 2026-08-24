@@ -103,6 +103,58 @@ class TestCreateSurfacesGatewayLiveness:
         assert "warning" not in result
 
 
+class TestListSurfacesGatewayLiveness:
+    """The `list` action has the same silent-inert-job failure mode as
+    create (#87033): an agent inspecting jobs with no gateway running must
+    learn they are not firing, not just see a clean list."""
+
+    def _list_jobs(self) -> dict:
+        from tools.cronjob_tools import cronjob
+
+        return json.loads(cronjob(action="list"))
+
+    def test_list_with_gateway_running_has_no_warning(self, hermes_env):
+        _create_job()  # ensure at least one job exists
+        with patch_liveness(provider="builtin", pids=[12345]):
+            result = self._list_jobs()
+
+        assert result["success"] is True
+        assert result["count"] >= 1
+        assert result["gateway_running"] is True
+        assert "warning" not in result
+
+    def test_list_without_gateway_warns_jobs_inert(self, hermes_env):
+        _create_job()
+        with patch_liveness(provider="builtin", pids=[]):
+            result = self._list_jobs()
+
+        assert result["success"] is True
+        assert result["gateway_running"] is False
+        warning = result.get("warning", "")
+        assert "will NOT fire" in warning, (
+            "the model must be told the listed jobs won't fire (#87033)"
+        )
+        assert "these jobs" in warning
+
+    def test_list_empty_without_gateway_stays_quiet(self, hermes_env):
+        """Nothing scheduled + no gateway → no alarm; there is nothing inert."""
+        with patch_liveness(provider="builtin", pids=[]):
+            result = self._list_jobs()
+
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert "warning" not in result
+
+    def test_list_non_builtin_provider_is_exempt(self, hermes_env):
+        _create_job()
+        with patch_liveness(provider="chronos", pids=[]):
+            result = self._list_jobs()
+
+        assert result["success"] is True
+        assert result["gateway_running"] is True
+        assert "warning" not in result
+
+
 # ---------------------------------------------------------------------------
 
 

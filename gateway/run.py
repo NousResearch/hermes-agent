@@ -558,7 +558,9 @@ def _seed_hygiene_system_prompt(
 ) -> bool:
     """Keep gateway hygiene from rebuilding a live session's system prompt.
 
-    The hygiene helper intentionally skips memory-provider initialization.
+    The hygiene helper loads the memory provider for the pre-compress hook,
+    but it still runs outside the live session's fully initialized prompt
+    environment (hygiene-only platform marker, no platform context files).
     Compression is allowed to persist a system prompt, so letting that helper
     rebuild one would strip external provider blocks from the live session.
     Seed the exact persisted prompt instead.  When no usable prompt can be
@@ -19723,7 +19725,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     model=_hyg_model,
                                     max_iterations=4,
                                     quiet_mode=True,
-                                    skip_memory=True,
+                                    # Hygiene performs the same lossy rewrite
+                                    # as normal compression, so it loads the
+                                    # memory provider unconditionally (normal
+                                    # compression never skips it either):
+                                    # best-effort on_pre_compress runs for
+                                    # hygiene too, and when
+                                    # compression.checkpoint_required is
+                                    # enabled the required checkpoint is
+                                    # created before any transcript mutation.
+                                    skip_memory=False,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
                                     session_db=_hyg_session_db,

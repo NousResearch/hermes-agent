@@ -10513,6 +10513,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         platform_message_id: str = None,
         observed: bool = False,
         effect_disposition: Optional[str] = None,
+        _compressed_summary: bool = False,
         timestamp: Any = None,
         api_content: Optional[str] = None,
         display_kind: Optional[str] = None,
@@ -10588,8 +10589,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind, display_metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -10608,6 +10609,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     codex_message_items_json,
                     platform_message_id,
                     1 if observed else 0,
+                    1 if _compressed_summary else 0,
                     1,
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
                     _scrub_surrogates(display_kind) if isinstance(display_kind, str) else None,
@@ -11019,8 +11021,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind, display_metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -11039,6 +11041,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     codex_message_items_json,
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
+                    1 if msg.get("_compressed_summary") else 0,
                     1,
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
                     _scrub_surrogates(msg.get("display_kind")) if isinstance(msg.get("display_kind"), str) else None,
@@ -11515,6 +11518,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         result = []
         for row in rows:
             msg = dict(row)
+            if msg.pop("_compressed_summary", 0):
+                msg["_compressed_summary"] = True
             if "content" in msg:
                 msg["content"] = self._decode_content(msg["content"])
             if msg.get("tool_calls"):
@@ -11789,7 +11794,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     _CONVERSATION_ROW_COLUMNS = (
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
-        "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
+        "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
+        "_compressed_summary, timestamp, "
         "api_content, display_kind, display_metadata"
     )
 
@@ -11801,6 +11807,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_ancestors: bool,
         repair_alternation: bool,
         include_row_ids: bool = False,
+        include_summary_markers: bool = False,
     ) -> List[Dict[str, Any]]:
         """Decode fetched message rows into the OpenAI conversation format.
 
@@ -11854,6 +11861,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 decoded = self._decode_display_metadata(row["display_metadata"])
                 if decoded is not None:
                     msg["display_metadata"] = decoded
+            if include_summary_markers and row["_compressed_summary"]:
+                msg["_compressed_summary"] = True
             if row["timestamp"]:
                 msg["timestamp"] = row["timestamp"]
             if row["tool_call_id"]:
@@ -12028,6 +12037,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             include_ancestors=False,
             repair_alternation=True,
             include_row_ids=True,
+            # Pre-compress checkpointing: the resumed model history must keep
+            # the summary marker so checkpoint providers can exclude derivative
+            # summaries after a process restart (marker survives restart).
+            include_summary_markers=True,
         )
         display_history = self._rows_to_conversation(
             rows,

@@ -542,6 +542,16 @@ compression:
   # Set to false if you prefer to manage context manually or want errors on overflow
   enabled: true
 
+  # Fail closed before lossy compaction unless an active memory provider that
+  # implements the pre-compress checkpoint contract (API v1) confirms its
+  # durable checkpoint (default: false). With this on and no checkpoint, the
+  # compaction attempt errors with BLOCKED_MISSING_PREREQUISITE and the
+  # uncompressed transcript is preserved for a later retry. Only enable it
+  # with a checkpoint-capable provider configured — see
+  # website/docs/developer-guide/memory-provider-plugin.md
+  # ("Pre-Compress Checkpoints").
+  checkpoint_required: false
+
   # Opt-in compression progress notices on chat platforms (default: false).
   # By design, routine automatic compression is SILENT on human-facing chat
   # gateways (Telegram, Discord, Slack, ...) — it happens in the background

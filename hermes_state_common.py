@@ -446,6 +446,7 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_message_items TEXT,
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
+    _compressed_summary INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     compacted INTEGER NOT NULL DEFAULT 0,
     api_content TEXT,

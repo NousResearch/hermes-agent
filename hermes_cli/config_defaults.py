@@ -743,6 +743,9 @@ DEFAULT_CONFIG = {
 
     "compression": {
         "enabled": True,
+        "checkpoint_required": False, # Fail closed before lossy compaction unless an
+                                      # active memory provider confirms checkpoint API
+                                      # compatibility and completes the checkpoint.
         "progress_notices": False,    # opt-in (#52995): when True, routine compression
                                       # progress statuses (compacting/preflight/pre-API/
                                       # idle/retry) are delivered to chat gateway

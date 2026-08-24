@@ -4392,8 +4392,10 @@ class GatewaySlashCommandsMixin:
                 runtime_kwargs["platform"] = platform_key
             runtime_kwargs["gateway_session_key"] = session_key
 
-            # The manual compression helper skips memory-provider initialization,
-            # but _compress_context may persist its cached system prompt. Restore
+            # The manual compression helper loads the memory provider (see
+            # skip_memory=False below) but still runs outside the live
+            # session's fully initialized prompt environment, and
+            # _compress_context may persist its cached system prompt. Restore
             # the exact live-session prompt so provider blocks are retained.
             session_row = None
             get_session = getattr(self._session_db, "get_session", None)
@@ -4415,7 +4417,13 @@ class GatewaySlashCommandsMixin:
                 model=model,
                 max_iterations=4,
                 quiet_mode=True,
-                skip_memory=True,
+                # This agent performs the same lossy rewrite as normal
+                # compression, so it loads the memory provider unconditionally
+                # (normal compression never skips it either): best-effort
+                # on_pre_compress runs for manual compression too, and when
+                # compression.checkpoint_required is enabled the required
+                # pre-compression checkpoint can be created.
+                skip_memory=False,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
                 session_db=getattr(self._session_db, "_db", self._session_db),

@@ -340,7 +340,10 @@ export function ConnectionsRegistrySection() {
       setOauthConnected(Boolean(result.connected))
 
       if (result.connected) {
-        notify({ title: t.settings.gateway.signedIn, message: t.settings.gateway.connectedTo(authProviderShape.providerLabel) })
+        notify({
+          title: t.settings.gateway.signedIn,
+          message: t.settings.gateway.connectedTo(authProviderShape.providerLabel)
+        })
       } else {
         notify({
           kind: 'warning',

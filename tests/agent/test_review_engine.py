@@ -383,6 +383,88 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# load_workspace_context — reviewer sees the workspace's AGENTS.md et al.
+# ---------------------------------------------------------------------------
+
+def test_load_workspace_context_reads_agents_md(tmp_path, monkeypatch):
+    """Real file I/O through the same loader the main system prompt uses."""
+    import agent.review_engine as engine
+    import tools.delegate_tool as dt
+
+    workspace = tmp_path / "proj"
+    workspace.mkdir()
+    (workspace / "AGENTS.md").write_text(
+        "# Project Rules\nAll fixes must cover sibling call sites.\n"
+    )
+    monkeypatch.setattr(dt, "_resolve_workspace_hint", lambda parent: str(workspace))
+
+    out = engine.load_workspace_context(MagicMock())
+    assert "sibling call sites" in out
+    assert "Project Context" in out
+
+
+def test_load_workspace_context_empty_without_workspace(monkeypatch):
+    import agent.review_engine as engine
+    import tools.delegate_tool as dt
+
+    monkeypatch.setattr(dt, "_resolve_workspace_hint", lambda parent: None)
+    assert engine.load_workspace_context(MagicMock()) == ""
+
+
+def test_briefing_embeds_workspace_context():
+    snap = [{"role": "user", "text": "review my PR"}]
+    ctx_files = "# Project Context\n\nNo hooks without a concrete consumer."
+    _, context = build_review_task(snap, "", None, ctx_files)
+    assert "No hooks without a concrete consumer." in context
+    assert "binding for your review" in context
+
+
+def test_briefing_omits_workspace_block_when_empty():
+    _, context = build_review_task([{"role": "user", "text": "hi"}], "")
+    assert "project context files are reproduced" not in context
+
+
+def test_start_review_threads_workspace_context(monkeypatch, tmp_path):
+    import tools.delegate_tool as dt
+
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "AGENTS.md").write_text("# Rules\nNever break prompt caching.\n")
+    monkeypatch.setattr(dt, "_resolve_workspace_hint", lambda parent: str(workspace))
+
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    built = {}
+
+    def fake_build(**kw):
+        built.update(kw)
+        return fake_child
+
+    monkeypatch.setattr(dt, "_build_child_agent", fake_build)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(
+        dt, "_run_single_child",
+        lambda *a, **k: {
+            "task_index": 0, "status": "completed", "summary": "ok",
+            "api_calls": 1, "duration_seconds": 0.1, "model": "m",
+            "exit_reason": "completed",
+        },
+    )
+    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+
+    result = start_review(_fake_parent(), [
+        {"role": "user", "content": "open a PR"},
+        {"role": "assistant", "content": "PR #4 opened"},
+    ], "")
+    assert result["status"] == "dispatched"
+    assert "Never break prompt caching." in built["context"]
+
+
+# ---------------------------------------------------------------------------
 # Registry sync: `review` must be a first-class slot in every aux-task surface
 # ---------------------------------------------------------------------------
 

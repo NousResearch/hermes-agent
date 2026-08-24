@@ -16,9 +16,10 @@ import asyncio
 import atexit
 import base64
 import binascii
+import copy
 import concurrent.futures
 import functools
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -15154,11 +15155,15 @@ def _profile_attr(info, name: str, default: Any = None) -> Any:
 
 _PROFILE_ROSTER_UI_META_MAX_BYTES = 64 * 1024
 _PROFILE_ROSTER_FIELDS_CACHE_MAX = 256
-_PROFILE_ROSTER_FIELDS_CACHE: Dict[str, tuple] = {}
+_ProfileRosterFingerprint = Optional[Tuple[int, int, int, int]]
+_ProfileRosterSignature = Tuple[_ProfileRosterFingerprint, Tuple[bool, ...]]
+_PROFILE_ROSTER_FIELDS_CACHE: OrderedDict[
+    str, Tuple[_ProfileRosterSignature, Dict[str, Any]]
+] = OrderedDict()
 _PROFILE_ROSTER_FIELDS_CACHE_LOCK = threading.Lock()
 
 
-def _profile_roster_fingerprint(path: Path) -> Optional[Tuple[int, int, int, int]]:
+def _profile_roster_fingerprint(path: Path) -> _ProfileRosterFingerprint:
     try:
         info = path.stat()
         if not stat.S_ISREG(info.st_mode):
@@ -15173,18 +15178,22 @@ def _profile_roster_fields(profile_dir: Path) -> Dict[str, Any]:
     meta_path = profile_dir / "profile.yaml"
     assets = profile_dir / "assets"
     avatar_paths = tuple(assets / f"avatar.{ext}" for ext in ("png", "jpg", "webp"))
-    signature = tuple(
-        _profile_roster_fingerprint(path)
-        for path in (meta_path, *avatar_paths)
+    avatar_presence = tuple(
+        _profile_roster_fingerprint(path) is not None for path in avatar_paths
+    )
+    signature: _ProfileRosterSignature = (
+        _profile_roster_fingerprint(meta_path),
+        avatar_presence,
     )
     cache_key = str(profile_dir)
 
     with _PROFILE_ROSTER_FIELDS_CACHE_LOCK:
         cached = _PROFILE_ROSTER_FIELDS_CACHE.get(cache_key)
         if cached is not None and cached[0] == signature:
-            return dict(cached[1])
+            _PROFILE_ROSTER_FIELDS_CACHE.move_to_end(cache_key)
+            return copy.deepcopy(cached[1])
 
-    fields: Dict[str, Any] = {"has_avatar": False}
+    fields: Dict[str, Any] = {"ui_meta": {}, "has_avatar": False}
 
     try:
         if signature[0] is not None:
@@ -15216,17 +15225,16 @@ def _profile_roster_fields(profile_dir: Path) -> Dict[str, Any]:
     except Exception as exc:
         _log.warning("Unable to read roster metadata from %s: %s", meta_path, exc)
 
-    fields["has_avatar"] = any(item is not None for item in signature[1:])
+    fields["has_avatar"] = any(avatar_presence)
 
     with _PROFILE_ROSTER_FIELDS_CACHE_LOCK:
-        if (
-            cache_key not in _PROFILE_ROSTER_FIELDS_CACHE
-            and len(_PROFILE_ROSTER_FIELDS_CACHE) >= _PROFILE_ROSTER_FIELDS_CACHE_MAX
-        ):
-            oldest = next(iter(_PROFILE_ROSTER_FIELDS_CACHE), None)
-            if oldest is not None:
-                _PROFILE_ROSTER_FIELDS_CACHE.pop(oldest, None)
-        _PROFILE_ROSTER_FIELDS_CACHE[cache_key] = (signature, dict(fields))
+        _PROFILE_ROSTER_FIELDS_CACHE[cache_key] = (
+            signature,
+            copy.deepcopy(fields),
+        )
+        _PROFILE_ROSTER_FIELDS_CACHE.move_to_end(cache_key)
+        while len(_PROFILE_ROSTER_FIELDS_CACHE) > _PROFILE_ROSTER_FIELDS_CACHE_MAX:
+            _PROFILE_ROSTER_FIELDS_CACHE.popitem(last=False)
 
     return fields
 
@@ -15252,7 +15260,7 @@ def _profile_to_dict(info) -> Dict[str, Any]:
     row.update(
         _profile_roster_fields(Path(row["path"]))
         if row["path"]
-        else {"has_avatar": False}
+        else {"ui_meta": {}, "has_avatar": False}
     )
     return row
 
@@ -15268,6 +15276,9 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
     default_home = profiles_mod._get_default_hermes_home()
     if default_home.is_dir():
         model, provider = _safe(lambda: profiles_mod._read_config_model(default_home), (None, None))
+        profile_meta = _safe(lambda: profiles_mod.read_profile_meta(default_home), {})
+        if not isinstance(profile_meta, dict):
+            profile_meta = {}
         profiles.append({
             "name": "default",
             "path": str(default_home),
@@ -15277,9 +15288,9 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             "has_env": (default_home / ".env").exists(),
             "skill_count": _safe(lambda: profiles_mod._count_skills(default_home), 0),
             "gateway_running": _safe(lambda: profiles_mod._check_gateway_running(default_home), False),
-            "description": _safe(lambda: profiles_mod.read_profile_meta(default_home).get("description", ""), ""),
-            "description_auto": _safe(lambda: profiles_mod.read_profile_meta(default_home).get("description_auto", False), False),
-            "display_name": _safe(lambda: profiles_mod.read_profile_meta(default_home).get("display_name", ""), ""),
+            "description": profile_meta.get("description", ""),
+            "description_auto": profile_meta.get("description_auto", False),
+            "display_name": profile_meta.get("display_name", ""),
             "distribution_name": None,
             "distribution_version": None,
             "distribution_source": None,
@@ -15299,6 +15310,9 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
                 continue
             model, provider = _safe(lambda entry=entry_path: profiles_mod._read_config_model(entry), (None, None))
+            profile_meta = _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry), {})
+            if not isinstance(profile_meta, dict):
+                profile_meta = {}
             profiles.append({
                 "name": entry.name,
                 "path": str(entry_path),
@@ -15314,9 +15328,9 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
                     ),
                     False,
                 ),
-                "description": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("description", ""), ""),
-                "description_auto": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("description_auto", False), False),
-                "display_name": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("display_name", ""), ""),
+                "description": profile_meta.get("description", ""),
+                "description_auto": profile_meta.get("description_auto", False),
+                "display_name": profile_meta.get("display_name", ""),
                 "distribution_name": None,
                 "distribution_version": None,
                 "distribution_source": None,

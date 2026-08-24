@@ -5124,11 +5124,14 @@ This compaction should PRIORITISE preserving all information related to the focu
                 with aux_interrupt_protection():
                     response = call_llm(**call_kwargs)
             finally:
+                route_known = bool(_aux_route.get("provider") and _aux_route.get("model"))
                 _aux_provider = _aux_route.get("provider") or self.provider or ""
-                _aux_model = (
-                    _aux_route.get("model") or self.summary_model or self.model or ""
+                _aux_model = _aux_route.get("model") or self.summary_model or self.model or ""
+                _aux_context = (
+                    self.context_length
+                    if route_known and _aux_model == self.model
+                    else None
                 )
-                _aux_context = self.context_length if _aux_model == self.model else None
                 self._record_aux_compression_call(
                     prompt_messages=call_kwargs["messages"],
                     # Current main intentionally omits max_tokens from the aux

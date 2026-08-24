@@ -5322,25 +5322,19 @@ def _call_fallback_candidate_sync(
         )
         effective_timeout = fb_timeout
     destination = _fallback_destination(task, fb_client, fb_model, fb_label)
-    fallback_max_tokens = max_tokens
-    fallback_extra_body = dict(effective_extra_body)
-    if task == "compression" and max_tokens is None:
-        task_config = _get_auxiliary_task_config(task)
-        fallback_entry = _fallback_chain_entry(task, fb_label)
-        fallback_lane = resolve_compression_fast_lane(
-            destination.provider,
-            destination.model,
-            requested_provider=(fallback_entry or {}).get("provider"),
-            requested_model=(fallback_entry or {}).get("model"),
-            route_config=fallback_entry or {},
-        )
-        fallback_max_tokens = fallback_lane.max_tokens
-        if fallback_lane.reasoning_config is not None:
-            fallback_extra_body["reasoning"] = fallback_lane.reasoning_config
-        elif _compression_config_claims_fast_lane(task_config):
-            # A primary-only fast control must not leak to an uncertified
-            # fallback. Inherited/auto reasoning controls retain old behavior.
-            fallback_extra_body.pop("reasoning", None)
+    task_config = _get_auxiliary_task_config(task) if task == "compression" else {}
+    fallback_entry = _fallback_chain_entry(task, fb_label) or {}
+    fallback_max_tokens, fallback_extra_body = _compression_fast_lane_controls(
+        task,
+        actual_provider=destination.provider,
+        actual_model=destination.model,
+        requested_provider=fallback_entry.get("provider"),
+        requested_model=fallback_entry.get("model"),
+        route_config=fallback_entry,
+        leak_guard_config=task_config,
+        max_tokens=max_tokens,
+        extra_body=effective_extra_body,
+    )
     fallback_messages, fallback_tools = _replan_synchronous_cache_sections(
         messages,
         tools,
@@ -5400,21 +5394,17 @@ def _call_fallback_candidate_sync(
                     tools,
                     destination=retry_destination,
                 )
-                retry_max_tokens = max_tokens
-                retry_extra_body = dict(effective_extra_body)
-                if task == "compression" and max_tokens is None:
-                    retry_lane = resolve_compression_fast_lane(
-                        retry_destination.provider,
-                        retry_destination.model,
-                        requested_provider=(fallback_entry or {}).get("provider"),
-                        requested_model=(fallback_entry or {}).get("model"),
-                        route_config=fallback_entry or {},
-                    )
-                    retry_max_tokens = retry_lane.max_tokens
-                    if retry_lane.reasoning_config is not None:
-                        retry_extra_body["reasoning"] = retry_lane.reasoning_config
-                    elif _compression_config_claims_fast_lane(task_config):
-                        retry_extra_body.pop("reasoning", None)
+                retry_max_tokens, retry_extra_body = _compression_fast_lane_controls(
+                    task,
+                    actual_provider=retry_destination.provider,
+                    actual_model=retry_destination.model,
+                    requested_provider=fallback_entry.get("provider"),
+                    requested_model=fallback_entry.get("model"),
+                    route_config=fallback_entry,
+                    leak_guard_config=task_config,
+                    max_tokens=max_tokens,
+                    extra_body=effective_extra_body,
+                )
                 retry_kwargs = _build_call_kwargs(
                     retry_destination.provider,
                     retry_destination.model,
@@ -8528,6 +8518,37 @@ def _compression_config_claims_fast_lane(config: Dict[str, Any]) -> bool:
     )
 
 
+def _compression_fast_lane_controls(
+    task: str | None,
+    *,
+    actual_provider: str,
+    actual_model: str | None,
+    requested_provider: str | None,
+    requested_model: str | None,
+    route_config: Dict[str, Any],
+    leak_guard_config: Dict[str, Any],
+    max_tokens: int | None,
+    extra_body: Dict[str, Any],
+) -> tuple[int | None, Dict[str, Any]]:
+    """Apply the certified compression controls to one resolved route."""
+    body = dict(extra_body)
+    if task != "compression" or max_tokens is not None:
+        return max_tokens, body
+    lane = resolve_compression_fast_lane(
+        actual_provider,
+        actual_model,
+        requested_provider=requested_provider,
+        requested_model=requested_model,
+        route_config=route_config,
+    )
+    if lane.reasoning_config is not None:
+        if "reasoning" not in body:
+            body["reasoning"] = lane.reasoning_config
+    elif _compression_config_claims_fast_lane(leak_guard_config):
+        body.pop("reasoning", None)
+    return lane.max_tokens, body
+
+
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
     """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
     if not task:
@@ -9794,33 +9815,20 @@ def _call_llm_impl(
 
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
-    fast_compression_lane = (
-        resolve_compression_fast_lane(
-            request_provider,
-            final_model,
-            requested_provider=provider,
-            requested_model=model,
-        )
-        if task == "compression"
-        else None
+    compression_config = (
+        _get_auxiliary_task_config("compression") if task == "compression" else {}
     )
-    fast_compression_cap = (
-        fast_compression_lane.max_tokens
-        if fast_compression_lane is not None and max_tokens is None
-        else None
+    fast_compression_cap, effective_extra_body = _compression_fast_lane_controls(
+        task,
+        actual_provider=request_provider,
+        actual_model=final_model,
+        requested_provider=provider,
+        requested_model=model,
+        route_config=compression_config,
+        leak_guard_config=compression_config,
+        max_tokens=max_tokens,
+        extra_body=effective_extra_body,
     )
-    if (
-        task == "compression"
-        and fast_compression_lane is not None
-        and not fast_compression_lane.certified_non_reasoning
-        and _compression_config_claims_fast_lane(
-            _get_auxiliary_task_config("compression")
-        )
-    ):
-        # A concrete fast-only route was requested but Hermes resolved a
-        # different provider/model. Its non-reasoning control is no safer to
-        # inherit than its cap. Auto/inherited config never enters this branch.
-        effective_extra_body.pop("reasoning", None)
     _set_relay_auxiliary_route(
         request_provider,
         final_model,

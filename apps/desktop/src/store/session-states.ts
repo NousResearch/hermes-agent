@@ -1511,6 +1511,25 @@ export function closeSessionTile(storedSessionId: string) {
   }
 }
 
+/** Persist-close every session tile whose pane lives in `paneId`'s group.
+ *
+ * Close All used to only dismiss layout-tree panes. Bot Mode tiles are
+ * stored in the shared `__bots_workspace__` bucket, so a later roster
+ * click or profile swap rehydrated `$sessionTiles` and the closed tabs
+ * came back (#94137). Routing through {@link closeSessionTile} writes that
+ * bucket, so the closed set survives those rehydrations and a restart.
+ */
+export function closeAllOpenSessionTiles(paneId: string): void {
+  const tree = $layoutTree.get()
+  const panes = (tree ? findGroupOfPane(tree, paneId) : null)?.panes ?? []
+
+  for (const id of panes) {
+    if (id.startsWith(TILE_PANE_PREFIX)) {
+      closeSessionTile(id.slice(TILE_PANE_PREFIX.length))
+    }
+  }
+}
+
 /** Drop a DEAD tile — a persisted tile whose session no longer exists on the
  *  backend (resume 404s). Unlike close, it leaves no ⌘⇧T undo (resurrecting it
  *  would just 404 again) and evicts any cached state. This is what clears the

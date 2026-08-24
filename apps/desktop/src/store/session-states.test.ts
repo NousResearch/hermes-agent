@@ -11,6 +11,7 @@ import {
   $sessionTiles,
   blankDraftTile,
   clearAllSessionStates,
+  closeAllOpenSessionTiles,
   focusedSessionNeedsRoute,
   focusOpenSession,
   foregroundSessionScopes,
@@ -325,6 +326,54 @@ describe('SessionTile workspace scope', () => {
       workspaceMode: 'bots',
       workspaceOwnerKey: 'connection-a::default'
     })
+  })
+})
+
+describe('closeAllOpenSessionTiles persists Bot Mode Close All (#94137)', () => {
+  afterEach(() => {
+    $activeGatewayProfile.set('default')
+    $layoutTree.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('drops persisted bot tiles so a roster/profile rehydrate cannot restore them', () => {
+    openSessionTile('chat-a', 'center', 'workspace', undefined, {
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'bot:a'
+    })
+    openSessionTile('chat-b', 'center', 'workspace', undefined, {
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'bot:b'
+    })
+    $layoutTree.set(
+      group(['workspace', tilePane('chat-a'), tilePane('chat-b')], { active: 'workspace', id: 'main' })
+    )
+
+    closeAllOpenSessionTiles('workspace')
+
+    expect($sessionTiles.get()).toEqual([])
+
+    // Profile swap re-reads the shared Bot bucket. Close All must have
+    // emptied it, not only dismissed the tree panes.
+    $activeGatewayProfile.set('other-profile')
+    expect($sessionTiles.get()).toEqual([])
+    $activeGatewayProfile.set('default')
+    expect($sessionTiles.get()).toEqual([])
+  })
+
+  it('leaves session tiles stacked in a different zone open', () => {
+    openSessionTile('keep', 'right', 'workspace')
+    openSessionTile('close-me', 'center', 'workspace')
+    $layoutTree.set(
+      split('row', [
+        group(['workspace', tilePane('close-me')], { active: 'workspace', id: 'main' }),
+        group([tilePane('keep')], { active: tilePane('keep'), id: 'right' })
+      ])
+    )
+
+    closeAllOpenSessionTiles('workspace')
+
+    expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['keep'])
   })
 })
 

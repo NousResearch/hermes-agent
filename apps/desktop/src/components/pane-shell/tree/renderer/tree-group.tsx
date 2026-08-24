@@ -30,6 +30,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
+import { closeAllOpenSessionTiles } from '@/store/session-states'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -149,7 +150,12 @@ function ZoneMenu({
         {paneTabCloseItems(kit, {
           counts: treeTabCloseTargets(targetId),
           onClose: paneId !== undefined ? () => closeTabPane(paneId) : undefined,
-          onCloseAll: () => closeAllTreeTabs(targetId),
+          onCloseAll: () => {
+            // Persist-close session tiles first so Bot Mode cannot
+            // rehydrate them from the shared tile bucket (#94137).
+            closeAllOpenSessionTiles(targetId)
+            closeAllTreeTabs(targetId)
+          },
           onCloseOthers: () => closeOtherTreeTabs(targetId),
           onCloseToRight: () => closeTreeTabsToRight(targetId)
         })}

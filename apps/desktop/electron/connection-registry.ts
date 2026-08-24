@@ -344,9 +344,13 @@ export interface ReuseMatchingPrimarySshBackendOptions {
 }
 
 /**
- * Reuse the already-booted v1 window SSH backend only when its actual dialing
- * identity matches the registry primary. Guards run before either async
- * dependency so secondary profiles and sources never bootstrap the primary.
+ * Reuse the v1 window SSH backend only when its actual dialing identity matches
+ * the registry primary. Resolving that descriptor may boot the primary; a
+ * mismatch returns null without reusing it so the caller continues with its
+ * separately scoped registry backend. A matching descriptor is returned
+ * unchanged and the caller may re-stamp routing fields such as profile and
+ * connectionId. Guards run before either async dependency so secondary
+ * profiles and sources never bootstrap the primary.
  */
 export async function reuseMatchingPrimarySshBackend({
   connectionId,
@@ -363,7 +367,19 @@ export async function reuseMatchingPrimarySshBackend({
     return null
   }
 
-  const sourceFingerprint = String(await effectiveFingerprint(source)).trim()
+  let sourceFingerprint
+
+  try {
+    sourceFingerprint = String(await effectiveFingerprint(source)).trim()
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause)
+
+    throw new Error(
+      `Could not resolve effective SSH config for connection "${source.label}" (${source.id}) via ssh -G: ${detail}`,
+      { cause }
+    )
+  }
+
   const descriptor = await ensurePrimary()
   const activeSsh = descriptor.mode === 'remote' && descriptor.remoteKind === 'ssh' ? descriptor.ssh : null
   const rootProfile = (value: unknown) => String(value || '').trim() || 'default'

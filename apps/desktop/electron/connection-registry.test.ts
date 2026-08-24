@@ -60,6 +60,42 @@ test('labelSlug kebab-cases and never returns empty for non-empty input', () => 
   assert.equal(labelSlug('!!!'), 'connection')
 })
 
+test('registry SSH fingerprint failures name the connection and ssh -G step', async () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'ssh',
+    remote: { mode: 'ssh', host: 'build-host', user: 'alice' },
+    profiles: {}
+  })
+
+  const source = registry.connections.find(connection => connection.id === registry.primary)!
+
+  const cause = new Error('spawn ssh ENOENT')
+
+  source.label = 'Build box'
+
+  await assert.rejects(
+    reuseMatchingPrimarySshBackend({
+      connectionId: registry.primary,
+      effectiveFingerprint: async () => {
+        throw cause
+      },
+      ensurePrimary: async () => ({ mode: 'remote', remoteKind: 'ssh' }),
+      profile: 'default',
+      registry,
+      source
+    }),
+    error => {
+      assert.equal(
+        (error as Error).message,
+        `Could not resolve effective SSH config for connection "Build box" (${source.id}) via ssh -G: spawn ssh ENOENT`
+      )
+      assert.equal((error as Error).cause, cause)
+
+      return true
+    }
+  )
+})
+
 test('matching primary/default SSH route reuses the existing descriptor once', async () => {
   const registry = migrateV1ToRegistry({
     mode: 'ssh',

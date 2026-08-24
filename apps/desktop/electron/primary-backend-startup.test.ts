@@ -70,6 +70,7 @@ test('primary remote descriptor preserves the effective SSH dialing identity', (
   )
 
   assert.equal(connection.ssh, ssh)
+  assert.equal(connection.ssh?.effectiveConfigFingerprint, 'effective-config')
 })
 
 test('primary remote descriptor keeps legacy unregistered routes unqualified', () => {

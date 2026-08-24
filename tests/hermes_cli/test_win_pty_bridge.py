@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 
 import pytest
@@ -70,6 +71,53 @@ class TestWinPtyBridgeUnavailable:
         assert WinPtyBridge is not None
         assert callable(WinPtyBridge.is_available)
 
+    @pytest.mark.asyncio
+    async def test_write_has_nonblocking_async_contract(self):
+        class _FakeProc:
+            pid = 1
+
+            def __init__(self):
+                self.written = []
+
+            def write(self, text):
+                self.written.append(text)
+
+        proc = _FakeProc()
+        bridge = WinPtyBridge(proc)
+
+        assert await bridge.write(b"hello") is True
+        assert proc.written == ["hello"]
+
+    @pytest.mark.asyncio
+    async def test_write_timeout_terminates_conpty_and_reaps_worker(self):
+        class _BlockingProc:
+            pid = 1
+
+            def __init__(self):
+                self.write_started = threading.Event()
+                self.release_write = threading.Event()
+                self.write_finished = threading.Event()
+                self.terminated = threading.Event()
+
+            def write(self, _text):
+                self.write_started.set()
+                self.release_write.wait(timeout=2.0)
+                self.write_finished.set()
+
+            def terminate(self, force=False):
+                assert force is True
+                self.terminated.set()
+                self.release_write.set()
+
+        proc = _BlockingProc()
+        bridge = WinPtyBridge(proc)
+
+        assert await bridge.write(b"blocked", timeout=0.01) is False
+        assert proc.write_started.is_set()
+        assert proc.terminated.is_set()
+        assert proc.write_finished.is_set()
+        assert bridge._closed is True
+
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="non-Windows only")
     def test_spawn_raises_unavailable_off_windows(self):
         with pytest.raises(PtyUnavailableError):
@@ -101,7 +149,8 @@ class TestWinPtyBridgeSpawn:
 @pytest.mark.windows_only
 class TestWinPtyBridgeIO:
 
-    def test_write_sends_to_child_stdin(self):
+    @pytest.mark.asyncio
+    async def test_write_sends_to_child_stdin(self):
         # python -c reads stdin, echoes a marker, exits.  More reliable than
         # ``cat`` (not on Windows) and doesn't depend on a particular shell.
         script = (
@@ -112,7 +161,7 @@ class TestWinPtyBridgeIO:
         )
         bridge = WinPtyBridge.spawn([sys.executable, "-c", script])
         try:
-            bridge.write(b"hello-pty\r\n")
+            assert await bridge.write(b"hello-pty\r\n") is True
             output = _read_until(bridge, b"GOT:hello-pty")
             assert b"GOT:hello-pty" in output
         finally:
@@ -248,4 +297,3 @@ class TestWinPtyBridgeEnv:
             assert b"pty-env-works" in output
         finally:
             bridge.close()
-

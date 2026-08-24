@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import time
 from typing import Optional, Sequence
@@ -21,6 +22,7 @@ __all__ = ["WinPtyBridge", "PtyUnavailableError"]
 _MIN_DIMENSION = 1
 _MAX_COLS = 2000
 _MAX_ROWS = 1000
+_WRITE_SHUTDOWN_GRACE = 1.0
 
 
 def _clamp(value: int, maximum: int) -> int:
@@ -37,7 +39,8 @@ class PtyUnavailableError(RuntimeError):
 
 class WinPtyBridge:
     """pywinpty-backed bridge with the same interface as ``PtyBridge``. ``read`` runs inside
-    ``run_in_executor``; ConPTY has no selectable fd, so it polls with a short sleep."""
+    ``run_in_executor``; ConPTY has no selectable fd, so reads poll and writes run in a worker
+    thread to keep the same non-blocking event-loop contract as the POSIX bridge."""
 
     def __init__(self, proc: "PtyProcess") -> None:  # type: ignore[name-defined]
         self._proc = proc
@@ -92,13 +95,55 @@ class WinPtyBridge:
         # xterm.js tolerates the rare replacement char (the one fidelity tradeoff vs POSIX).
         return data.encode("utf-8", errors="replace")
 
-    def write(self, data: bytes) -> None:
-        if self._closed or not data:
-            return
+    def _write_blocking(self, data: bytes) -> bool:
+        if self._closed:
+            return False
+        if not data:
+            return True
         try:
             self._proc.write(data.decode("utf-8", errors="replace"))  # pywinpty wants text
         except Exception:
-            return
+            return False
+        return True
+
+    async def write(self, data: bytes, *, timeout: float = 10.0) -> bool:
+        """Write off-loop and tear down ConPTY when its input pipe wedges.
+
+        ``wait_for(to_thread(...))`` alone only cancels the asyncio wrapper;
+        the worker remains blocked inside pywinpty. Keep the worker future,
+        force-close the ConPTY on timeout or cancellation, and wait briefly
+        for that close to release the blocked write before returning.
+        """
+        if self._closed:
+            return False
+        if not data:
+            return True
+        loop = asyncio.get_running_loop()
+        write_future = loop.run_in_executor(None, self._write_blocking, data)
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(write_future),
+                timeout=max(0.0, timeout),
+            )
+        except asyncio.TimeoutError:
+            await self._stop_stalled_write(write_future)
+            return False
+        except asyncio.CancelledError:
+            await asyncio.shield(self._stop_stalled_write(write_future))
+            raise
+
+    async def _stop_stalled_write(self, write_future: asyncio.Future) -> None:
+        """Close ConPTY and reap the worker that was blocked in ``write``."""
+        await asyncio.to_thread(self.close)
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(write_future),
+                timeout=_WRITE_SHUTDOWN_GRACE,
+            )
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
 
     def resize(self, cols: int, rows: int) -> None:
         if self._closed:

@@ -10,7 +10,9 @@ Covers:
 """
 
 import json
+import os
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -128,8 +130,73 @@ class TestResolveSessionNameTitle:
 
     def test_title_beats_dirname(self):
         cfg = HonchoClientConfig()
-        result = cfg.resolve_session_name("/some/dir", session_title="my-project")
+        result = cfg.resolve_session_name(
+            "/some/dir",
+            session_title="my-project",
+            session_title_source="user",
+        )
         assert result == "my-project"
+
+    @pytest.mark.parametrize(
+        ("session_strategy", "title_source", "expected"),
+        [
+            ("per-directory", "llm", "dir"),
+            ("per-repo", "derived", "repo-name"),
+            ("global", "llm", "my-workspace"),
+        ],
+    )
+    def test_automatic_title_does_not_override_strategy(
+        self,
+        session_strategy,
+        title_source,
+        expected,
+    ):
+        cfg = HonchoClientConfig(
+            session_strategy=session_strategy,
+            workspace_id="my-workspace",
+        )
+        with patch.object(HonchoClientConfig, "_git_repo_name", return_value="repo-name"):
+            result = cfg.resolve_session_name(
+                "/some/dir",
+                session_title="generated-title",
+                session_title_source=title_source,
+            )
+        assert result == expected
+
+    def test_provider_preserves_strategy_for_automatic_title(self):
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        cfg = HonchoClientConfig(session_strategy="per-repo")
+        provider = HonchoMemoryProvider()
+        with patch.object(HonchoClientConfig, "_git_repo_name", return_value="repo-name"):
+            result = provider._resolve_session_key(
+                cfg,
+                "session-id",
+                session_title="generated-title",
+                session_title_source="llm",
+            )
+        assert result == "repo-name"
+
+    def test_provider_resolves_session_cwd_not_process_cwd(self):
+        """Desktop/gateway backends launch from $HOME; Honcho routing must use
+        the agent's logical workspace (TERMINAL_CWD), not the process cwd."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        home = os.path.expanduser("~")
+        project = os.path.join(home, "code", "myapp")
+        cfg = HonchoClientConfig(
+            session_strategy="per-repo",
+            sessions={home: "home-fallback"},
+        )
+        provider = HonchoMemoryProvider()
+        with patch.dict(os.environ, {"TERMINAL_CWD": project}):
+            with patch.object(
+                HonchoClientConfig,
+                "_git_repo_name",
+                return_value=Path(project).name,
+            ):
+                result = provider._resolve_session_key(cfg, "session-id")
+        assert result == Path(project).name
 
 
     def test_title_sanitized(self):

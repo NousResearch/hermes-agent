@@ -235,6 +235,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         """Resolve the Honcho session key without touching the network."""
         return cfg.resolve_session_name(
             session_title=kwargs.get("session_title"), session_id=session_id,
+            session_title_source=kwargs.get("session_title_source"),
             gateway_session_key=kwargs.get("gateway_session_key"),
         ) or session_id or "hermes-default"
 

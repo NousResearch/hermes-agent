@@ -232,7 +232,7 @@ The Honcho session name determines which conversation bucket memory lands in. Re
 | Priority | Source | Example session name |
 |----------|--------|---------------------|
 | 1 | Manual map (`sessions` config) | `"myproject-main"` |
-| 2 | `/title` command (mid-session rename) | `"refactor-auth"` |
+| 2 | Explicit `/title` command (mid-session rename) | `"refactor-auth"` |
 | 3 | Gateway session key (Telegram, Discord, etc.) | `"agent-main-telegram-dm-8439114563"` |
 | 4 | `per-session` strategy | Hermes session ID (`20260415_a3f2b1`) |
 | 5 | `per-repo` strategy | Git root directory name (`hermes-agent`) |
@@ -240,6 +240,8 @@ The Honcho session name determines which conversation bucket memory lands in. Re
 | 7 | `global` strategy | Workspace name (`hermes`) |
 
 Gateway platforms always resolve via priority 3 (per-chat isolation) regardless of `sessionStrategy`. The strategy setting only affects CLI sessions.
+
+Automatically generated Hermes titles (`derived` or `llm`) are display metadata and do not override `sessionStrategy`. An explicit user `/title` remains an intentional session-name override for non-`per-session` CLI sessions.
 
 If `sessionPeerPrefix` is `true`, the peer name is prepended: `alice-hermes-agent`.
 

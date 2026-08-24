@@ -75,6 +75,79 @@ class TestHelperFunctions(unittest.TestCase):
             "john@example.com"
         )
 
+    def test_mojibake_from_header_parses_instead_of_dropping(self):
+        """A From header with raw unencoded non-ASCII bytes makes the
+        compat32 parser return an email.header.Header object; the adapter
+        must coerce it to str and still parse the message (the sender is
+        then correctly filtered as an automated noreply source) instead of
+        raising TypeError and losing the message (#94236)."""
+        import email as email_lib
+        from email.header import Header
+
+        from plugins.platforms.email.adapter import EmailAdapter, _header_as_str
+
+        # Raw bytes as they arrive over IMAP: unencoded UTF-8 for the
+        # accented name (mojibake surrogates under latin-1), exactly the
+        # reported Udemy/Sendgrid shape.
+        raw = (
+            b'From: "Udemy Instructor: Andr\xc3\xa9s Guzm\xc3\xa1n"'
+            b" <no-reply@e.udemymail.com>\r\n"
+            b"To: user@example.test\r\n"
+            b"Subject: Your course\r\n"
+            b"Message-ID: <mojibake-1@e.udemymail.com>\r\n"
+            b"Content-Type: text/plain; charset=us-ascii\r\n"
+            b"\r\n"
+            b"hello there\r\n"
+        )
+        msg = email_lib.message_from_bytes(raw)
+        from_value = msg.get("From")
+        self.assertIsInstance(from_value, Header)
+
+        adapter = EmailAdapter.__new__(EmailAdapter)
+        adapter._authserv_id = None
+        adapter._skip_attachments = False
+        parsed = adapter._parse_fetched_message(b"40896", raw)
+
+        # no-reply promo sender: correctly skipped as automated (not dropped)
+        self.assertIsNone(parsed)
+
+        # The coercion helper itself: Header → decodable string, str passthrough
+        coerced = _header_as_str(from_value)
+        self.assertIsInstance(coerced, str)
+        self.assertIn("no-reply@e.udemymail.com", coerced)
+        self.assertEqual(_header_as_str("plain"), "plain")
+        self.assertEqual(_header_as_str(None), "")
+
+    def test_mojibake_from_header_legitimate_sender_dispatches(self):
+        """Same Header-object shape but a non-automated sender: the message
+        must parse through to a dispatchable dict (#94236)."""
+        raw = (
+            b'From: "Andr\xc3\xa9s Guzm\xc3\xa1n" <andres@example.test>\r\n'
+            b"To: user@example.test\r\n"
+            b"Subject: =?utf-8?B?TWVyaGFiYQ==?=\r\n"
+            b"Message-ID: <mojibake-2@example.test>\r\n"
+            b"Content-Type: text/plain; charset=us-ascii\r\n"
+            b"\r\n"
+            b"body text\r\n"
+        )
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        adapter = EmailAdapter.__new__(EmailAdapter)
+        adapter._authserv_id = None
+        adapter._skip_attachments = False
+        with patch(
+            "plugins.platforms.email.adapter._verify_sender_authentication",
+            return_value=(True, "test"),
+        ):
+            parsed = adapter._parse_fetched_message(b"40897", raw)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["sender_addr"], "andres@example.test")
+        self.assertIsInstance(parsed["sender_name"], str)
+        self.assertEqual(parsed["subject"], "Merhaba")
+        self.assertIsInstance(parsed["message_id"], str)
+        self.assertIsInstance(parsed["date"], str)
+
 
     def test_strip_html_basic(self):
         from plugins.platforms.email.adapter import _strip_html

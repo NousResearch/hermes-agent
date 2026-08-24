@@ -245,10 +245,15 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "retry",
     "resets at",
     "reset in",
+    "resets in",
+    "reset after",
+    "available in",
     "wait",
     "requests remaining",
     "periodic",
     "window",
+    "per minute",
+    "per second",
 ]
 
 # Payload-too-large patterns detected from message text (no status_code attr).
@@ -1346,17 +1351,37 @@ def _classify_by_status(
         # branch below used to retry it and Desktop rendered a provider error
         # instead of the billing/quota recovery. Preserve periodic quotas when
         # the response supplies an explicit reset/retry signal.
+        #
+        # The check covers the narrow #93419 core (Anthropic's
+        # ``usage_limit_reached``) plus the broader ``_USAGE_LIMIT_PATTERNS``
+        # ("quota", "limit exceeded", "key limit exceeded") so other providers'
+        # hard quota walls also route to billing — but ONLY when the message is
+        # not itself an explicit rate-limit phrase. Without that guard,
+        # "Rate limit exceeded" ("limit exceeded" substring) would wrongly
+        # promote to non-retryable billing. (broadening + guard credit #39441)
         has_usage_limit = (
             error_code.lower() == "usage_limit_reached"
-            or "usage limit" in error_msg
             or "usage_limit_reached" in error_msg
+            or any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+        )
+        # Explicit billing phrases in a 429 body are a hard wall regardless of
+        # usage-limit wording — a provider that wraps "insufficient credits" in
+        # a 429 (rather than 402) was previously retried as a rate limit and
+        # burned the pool. (credit #39441)
+        has_billing = any(p in error_msg for p in _BILLING_PATTERNS)
+        has_explicit_rate_limit = any(
+            p in error_msg for p in _RATE_LIMIT_PATTERNS
         )
         has_transient_signal = _has_usage_limit_transient_signal(
             error_msg,
             body,
             response_headers,
         )
-        if has_usage_limit and not has_transient_signal:
+        if (
+            (has_billing or has_usage_limit)
+            and not has_explicit_rate_limit
+            and not has_transient_signal
+        ):
             return result_fn(
                 FailoverReason.billing,
                 retryable=False,

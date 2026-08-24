@@ -355,6 +355,62 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
 
+    def test_429_generic_quota_wall_is_billing(self):
+        # Broadened from the narrow "usage limit" core to the full
+        # _USAGE_LIMIT_PATTERNS: a bare "quota" / "limit exceeded" 429 with no
+        # reset signal is a hard wall, not a retryable throttle. (credit #39441)
+        for msg in ("Monthly quota reached.", "API key limit exceeded."):
+            e = MockAPIError(msg, status_code=429)
+            result = classify_api_error(e, provider="groq", model="llama-3")
+            assert result.reason == FailoverReason.billing, msg
+            assert result.retryable is False, msg
+
+    def test_429_insufficient_credits_is_billing(self):
+        e = MockAPIError("Insufficient credits remaining.", status_code=429)
+        result = classify_api_error(e, provider="openrouter", model="x")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_429_rate_limit_phrase_never_promotes_to_billing(self):
+        # The exclusion guard: "Rate limit exceeded" contains the
+        # "limit exceeded" usage-limit substring, but an explicit rate-limit
+        # phrase must stay a retryable rate limit. (guard credit #39441)
+        for msg in (
+            "Rate limit exceeded, please slow down.",
+            "Too many requests; rate_limit hit.",
+        ):
+            e = MockAPIError(msg, status_code=429)
+            result = classify_api_error(e, provider="anthropic", model="claude-opus-5")
+            assert result.reason == FailoverReason.rate_limit, msg
+            assert result.retryable is True, msg
+
+    def test_codex_weekly_usage_limit_resets_in_stays_rate_limit(self):
+        # Codex surfaces "Weekly usage limit reached. Resets in 6hr 29min."
+        # "resets in" was NOT a transient signal before, so this wrongly read
+        # as terminal billing. (transient-signal credit #63021)
+        e = MockAPIError(
+            "Weekly usage limit reached. Resets in 6hr 29min.",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5-codex")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "usage limit reached, reset after 3600s",
+            "usage limit reached, available in 42 minutes",
+            "usage limit reached; 20 requests per minute",
+        ],
+    )
+    def test_429_usage_limit_with_extra_transient_phrases_stays_rate_limit(self, phrase):
+        # Additional transient signals. (credit #74785)
+        e = MockAPIError(phrase, status_code=429)
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-5")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     def test_alibaba_rate_increased_too_quickly(self):
         """Alibaba/DashScope returns a unique throttling message.
 

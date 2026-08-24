@@ -96,10 +96,17 @@ describe('openSession', () => {
     $selectedStoredSessionId.set(null)
   })
 
-  it('in-place focuses an existing tile and does not navigate', () => {
+  it('in-place routes a TILE hit into main (#92926) — no more dead click', () => {
     focusOpenSession.mockReturnValue('tile')
     openSession('s1', navigate)
     expect(focusOpenSession).toHaveBeenCalledWith('s1', { workspaceMode: 'sessions' })
+    expect(navigate).toHaveBeenCalledWith('/c/s1')
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  it('tab intent still fronts an existing tile without navigating', () => {
+    focusOpenSession.mockReturnValue('tile')
+    openSession('s1', navigate, 'tab')
     expect(navigate).not.toHaveBeenCalled()
     expect(openSessionTile).not.toHaveBeenCalled()
   })

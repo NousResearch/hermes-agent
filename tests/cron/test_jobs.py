@@ -1291,6 +1291,99 @@ class TestJobsJsonUtf8Bom:
 
 
 
+# =========================================================================
+# ID-keyed jobs map on jobs.json (external tools / hand edits) — #92935
+# =========================================================================
+
+class TestJobsJsonIdKeyedMap:
+    """load_jobs() must flatten an ID-keyed ``jobs`` map to the list contract.
+
+    A store written as ``{"jobs": {"<job_id>": {...}, ...}}`` (external tool
+    or hand edit — Hermes' own save_jobs() only ever writes a list) made
+    load_jobs() return a dict. Every consumer iterates it as a list, so
+    ``list_jobs()`` → ``_normalize_job_record`` → ``dict(<id-string>)`` raised
+    ``ValueError: dictionary update sequence element #0 has length 1; 2 is
+    required`` and took down ``hermes cron list``, the ``cronjob(action=
+    "list")`` tool, and the Dashboard cron view. The values already carry
+    their own ``id`` matching the map key, so flattening is lossless.
+    """
+
+    _ID_KEYED = {
+        "jobs": {
+            "cron1234abcd": {
+                "id": "cron1234abcd",
+                "name": "Example job",
+                "enabled": True,
+                "prompt": "do a thing",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+            },
+            "cron5678efgh": {
+                "id": "cron5678efgh",
+                "name": "Second job",
+                "enabled": True,
+                "prompt": "do another",
+                "schedule": {"kind": "interval", "minutes": 30, "display": "every 30m"},
+            },
+        },
+        "updated_at": "2026-08-23T10:10:12+08:00",
+    }
+
+    def test_load_jobs_flattens_id_keyed_map(self, tmp_cron_dir):
+        """The pre-fix repro: load_jobs() returns a list, not the raw dict."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(self._ID_KEYED), encoding="utf-8")
+
+        loaded = load_jobs()
+        assert isinstance(loaded, list)
+        assert {j["id"] for j in loaded} == {"cron1234abcd", "cron5678efgh"}
+        assert all(isinstance(j, dict) for j in loaded)
+
+    def test_list_jobs_survives_id_keyed_map(self, tmp_cron_dir):
+        """The reported traceback path (hermes cron list / cronjob list tool)."""
+        import json
+        from cron.jobs import JOBS_FILE, list_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(self._ID_KEYED), encoding="utf-8")
+
+        # Pre-fix this raised ValueError from _normalize_job_record(dict(<str>)).
+        jobs = list_jobs(include_disabled=True)
+        assert {j["id"] for j in jobs} == {"cron1234abcd", "cron5678efgh"}
+
+    def test_id_keyed_map_repaired_to_list_on_disk(self, tmp_cron_dir):
+        """Loading rewrites the store into the canonical {"jobs": [...]} form."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(self._ID_KEYED), encoding="utf-8")
+
+        load_jobs()
+
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        assert isinstance(on_disk["jobs"], list)
+        assert {j["id"] for j in on_disk["jobs"]} == {"cron1234abcd", "cron5678efgh"}
+
+        # A second load reads the repaired list unchanged (idempotent).
+        reloaded = load_jobs()
+        assert {j["id"] for j in reloaded} == {"cron1234abcd", "cron5678efgh"}
+
+    def test_empty_id_keyed_map_returns_empty_list(self, tmp_cron_dir):
+        """An empty ``jobs`` map must not crash and yields no jobs."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps({"jobs": {}}), encoding="utf-8")
+
+        assert load_jobs() == []
+
+
+
+
 class TestAdvanceNextRuns:
     """Tests for advance_next_runs() — the batched due-set advance.
 

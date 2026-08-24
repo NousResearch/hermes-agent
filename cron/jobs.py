@@ -1342,12 +1342,30 @@ def load_jobs() -> List[Dict[str, Any]]:
     # down the whole cron subsystem.
     if isinstance(data, dict):
         jobs = data.get("jobs", [])
+        needs_shape_repair = False
         if isinstance(jobs, dict):
+            # ID-keyed map ({"jobs": {"<job_id>": {...}, ...}}) — written by
+            # external tools or hand edits, never by save_jobs(). The public
+            # load_jobs() contract and every CRUD/scheduler consumer expect a
+            # list; iterating the dict would yield bare id strings and blow up
+            # downstream (e.g. _normalize_job_record -> dict(<str>)). The map
+            # values already carry their own "id", so list(values) is
+            # lossless. (_peek_jobs_unlocked() deliberately does NOT flatten —
+            # it returns None on a dict-shaped store so the save path never
+            # merges against an unrepaired baseline; the flatten lives only
+            # here at the load boundary.)
             jobs = list(jobs.values())
-        if _strict_retry and jobs:
-            # Hit control-character corruption — rewrite with proper escaping.
+            needs_shape_repair = True
+        if jobs and (_strict_retry or needs_shape_repair):
+            # Rewrite into the canonical {"jobs": [...]} form: either the parse
+            # hit control-character corruption (_strict_retry) or the store was
+            # an id-keyed map. save_jobs() re-emits the list shape every reader
+            # expects.
             save_jobs(jobs)
-            logger.warning("Auto-repaired jobs.json (had invalid control characters)")
+            if needs_shape_repair:
+                logger.warning("Auto-repaired jobs.json (id-keyed jobs map flattened to list)")
+            else:
+                logger.warning("Auto-repaired jobs.json (had invalid control characters)")
         _record_load_stamp(pre_read_stamp)
         return jobs
     if isinstance(data, list):

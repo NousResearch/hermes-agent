@@ -1,0 +1,30 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Dashboard finish script. Companion to ./run.
+#
+# When HERMES_DASHBOARD is unset (or falsy), ./run exits 0 immediately.
+# Without this finish script, s6-supervise would just restart the run
+# script in a tight loop. By exiting 125 here, we tell s6-supervise
+# "this service has permanently failed; do not restart" — equivalent
+# to `s6-svc -O`. The supervise slot reports as down, matching reality
+# (no dashboard process is running).
+#
+# When HERMES_DASHBOARD IS enabled and the run script later exits or
+# is killed, we want s6-supervise to restart it (the whole point of
+# supervised lifecycle). So we exit non-125 in that case.
+
+# Arguments passed to a finish script: $1=run-exit-code, $2=signal-num,
+# $3=service-dir-name, $4=run-pgid. See servicedir(7).
+
+case "${HERMES_DASHBOARD:-}" in
+    1|true|TRUE|True|yes|YES|Yes)
+        # Dashboard was enabled — let s6-supervise restart on crash by
+        # exiting non-125. (Pass-through any sensible default.)
+        exit 0
+        ;;
+    *)
+        # Dashboard disabled — permanent-failure marker so s6-supervise
+        # leaves the slot in 'down' state and s6-svstat reflects that.
+        exit 125
+        ;;
+esac

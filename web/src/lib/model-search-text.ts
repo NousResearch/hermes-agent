@@ -1,0 +1,31 @@
+/**
+ * Extra tokens used only for model-picker search ranking.
+ *
+ * Wire IDs stay unchanged — some providers report short or brand-less ids
+ * (Kimi Coding's flagship is literally `k3`) that users still search for by
+ * the familiar `kimi-…` naming of sibling models.
+ *
+ * Keep in sync with ui-tui/src/lib/model-search-text.ts and
+ * hermes_cli/model_search.py. Behavioural tests live in the TUI package.
+ */
+const MODEL_SEARCH_ALIASES: Record<string, readonly string[]> = {
+  k3: ["kimi-k3", "kimi"],
+  // OpenCode Zen serves the "Ox Alpha" stealth model under an opaque
+  // preview slug; let users find it by its public codename.
+  "x-preview-f-free": ["ox-alpha", "ox"],
+};
+
+/** Haystack for fuzzy/substring model search; never changes the wire id. */
+export function modelSearchText(model: string): string {
+  const id = model.trim();
+  if (!id) {
+    return model;
+  }
+
+  const aliases = MODEL_SEARCH_ALIASES[id.toLowerCase()];
+  if (!aliases?.length) {
+    return id;
+  }
+
+  return `${id} ${aliases.join(" ")}`;
+}

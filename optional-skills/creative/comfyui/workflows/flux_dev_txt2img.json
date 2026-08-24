@@ -1,0 +1,78 @@
+{
+  "_comment": "Flux Dev text-to-image using the modern sampler chain (BasicScheduler/Guider/SamplerCustomAdvanced). Required: flux1-dev.safetensors (UNET), t5xxl_fp16.safetensors + clip_l.safetensors (CLIP), ae.safetensors (VAE).",
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Prompt"},
+    "inputs": {"text": "a serene mountain landscape at golden hour, photorealistic", "clip": ["11", 0]}
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "_meta": {"title": "VAE Decode"},
+    "inputs": {"samples": ["13", 0], "vae": ["10", 0]}
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "_meta": {"title": "Save Image"},
+    "inputs": {"filename_prefix": "flux_dev", "images": ["8", 0]}
+  },
+  "10": {
+    "class_type": "VAELoader",
+    "_meta": {"title": "VAE"},
+    "inputs": {"vae_name": "ae.safetensors"}
+  },
+  "11": {
+    "class_type": "DualCLIPLoader",
+    "_meta": {"title": "DualCLIPLoader"},
+    "inputs": {
+      "clip_name1": "t5xxl_fp16.safetensors",
+      "clip_name2": "clip_l.safetensors",
+      "type": "flux"
+    }
+  },
+  "12": {
+    "class_type": "UNETLoader",
+    "_meta": {"title": "UNET Loader"},
+    "inputs": {"unet_name": "flux1-dev.safetensors", "weight_dtype": "default"}
+  },
+  "13": {
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {"title": "Sampler Custom"},
+    "inputs": {
+      "noise": ["25", 0],
+      "guider": ["22", 0],
+      "sampler": ["16", 0],
+      "sigmas": ["17", 0],
+      "latent_image": ["27", 0]
+    }
+  },
+  "16": {
+    "class_type": "KSamplerSelect",
+    "_meta": {"title": "Sampler Select"},
+    "inputs": {"sampler_name": "euler"}
+  },
+  "17": {
+    "class_type": "BasicScheduler",
+    "_meta": {"title": "Scheduler"},
+    "inputs": {
+      "scheduler": "simple",
+      "steps": 20,
+      "denoise": 1.0,
+      "model": ["12", 0]
+    }
+  },
+  "22": {
+    "class_type": "BasicGuider",
+    "_meta": {"title": "Guider"},
+    "inputs": {"model": ["12", 0], "conditioning": ["6", 0]}
+  },
+  "25": {
+    "class_type": "RandomNoise",
+    "_meta": {"title": "Noise"},
+    "inputs": {"noise_seed": 42}
+  },
+  "27": {
+    "class_type": "EmptySD3LatentImage",
+    "_meta": {"title": "Latent"},
+    "inputs": {"width": 1024, "height": 1024, "batch_size": 1}
+  }
+}

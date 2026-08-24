@@ -1,0 +1,75 @@
+{
+  "name": "hermes-agent",
+  "version": "1.0.0",
+  "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "ui-tui",
+    "ui-tui/packages/*",
+    "web",
+    "tests-js"
+  ],
+  "scripts": {
+    "postinstall": "echo '\u2705 Node dependencies installed. Run: python run_agent.py --help'",
+    "install:root": "npm install --workspaces=false",
+    "install:web": "npm install --workspace web",
+    "install:tui": "npm install --workspace ui-tui",
+    "install:desktop": "npm install --workspace apps/desktop",
+    "audit:root": "npm audit --workspaces=false",
+    "audit:web": "npm audit --workspace web",
+    "audit:tui": "npm audit --workspace ui-tui",
+    "audit:fix:root": "npm audit fix --workspaces=false",
+    "audit:fix:web": "npm audit fix --workspace web",
+    "audit:fix:tui": "npm audit fix --workspace ui-tui",
+    "check": "npm run --ws check",
+    "fix": "npm run --ws fix"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NousResearch/Hermes-Agent.git"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/NousResearch/Hermes-Agent/issues"
+  },
+  "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "typescript-eslint": "8.64.0",
+    "eslint-plugin-perfectionist": "5.10.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-unused-imports": "4.4.1",
+    "globals": "17.7.0"
+  },
+  "overrides": {
+    "lodash": "4.18.1",
+    "yauzl": "^3.3.1",
+    "protobufjs": "^8.7.1",
+    "brace-expansion": "5.0.9",
+    "mermaid": "11.16.1",
+    "dompurify": "3.4.13",
+    "ip-address": "10.3.1",
+    "nanoid@^3": "3.3.18",
+    "nanoid@^6": "6.0.0",
+    "js-yaml@^4": "4.3.1",
+    "undici@^6": "6.28.0",
+    "undici@^7": "7.29.0",
+    "postcss": "8.5.23",
+    "tar": "7.5.22"
+  },
+  "engines": {
+    "node": "^22.22.0 || ^24.11.0 || >=26.0.0",
+    "npm": "<11.10.0 || >=11.17.0"
+  },
+  "allowScripts": {
+    "unicode-animations": false,
+    "esbuild@0.28.1": true,
+    "node-pty@1.1.0": true,
+    "electron-winstaller@5.4.0": true,
+    "electron@40.10.2": true,
+    "fsevents@2.3.2": true,
+    "fsevents@2.3.3": true,
+    "get-windows@9.3.0": true
+  }
+}

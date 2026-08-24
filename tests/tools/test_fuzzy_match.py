@@ -1,0 +1,717 @@
+"""Tests for the fuzzy matching module."""
+
+from tools.fuzzy_match import IDENTICAL_STRINGS_ERROR, fuzzy_find_and_replace
+
+
+class TestExactMatch:
+    def test_single_replacement(self):
+        content = "hello world"
+        new, count, _, err = fuzzy_find_and_replace(content, "hello", "hi")
+        assert err is None
+        assert count == 1
+        assert new == "hi world"
+
+    def test_whitespace_only_old_string_rejected(self):
+        """A whitespace-only old_string is not a meaningful anchor."""
+        content = "alpha\n   \nbeta\n"
+        new, count, _, err = fuzzy_find_and_replace(content, "   ", "XXX")
+        assert count == 0
+        assert err is not None
+        assert "whitespace" in err
+        assert new == content  # untouched
+
+    def test_empty_old_string_rejected(self):
+        new, count, _, err = fuzzy_find_and_replace("abc", "", "x")
+        assert count == 0
+        assert err is not None
+
+    def test_identical_strings(self):
+        new, count, _, err = fuzzy_find_and_replace("abc", "abc", "abc")
+        assert count == 0
+        assert new == "abc"
+        assert err == IDENTICAL_STRINGS_ERROR
+
+    def test_multiline_exact(self):
+        content = "line1\nline2\nline3"
+        new, count, _, err = fuzzy_find_and_replace(content, "line1\nline2", "replaced")
+        assert err is None
+        assert count == 1
+        assert new == "replaced\nline3"
+
+
+class TestWhitespaceDifference:
+    def test_extra_spaces_match(self):
+        content = "def  foo(  x,  y  ):"
+        new, count, _, err = fuzzy_find_and_replace(content, "def foo( x, y ):", "def bar(x, y):")
+        assert count == 1
+        assert "bar" in new
+
+    def test_boundary_space_preserved_after_match(self):
+        """Regression: whitespace_normalized match ending with a non-space
+        character must NOT consume the word-boundary space that follows.
+        https://github.com/NousResearch/hermes-agent/issues/52491"""
+        # Case 1 — simple word boundary
+        new, count, strategy, err = fuzzy_find_and_replace(
+            "foo   bar baz", "foo bar", "XY",
+        )
+        assert err is None
+        assert count == 1
+        assert strategy == "whitespace_normalized"
+        assert new == "XY baz", f"Boundary space deleted: {new!r}"
+
+    def test_boundary_space_preserved_in_code_edit(self):
+        """Regression: real-world code-edit scenario where the space before
+        the next operator must survive a whitespace-normalized match."""
+        content = "result = compute(a,  b) + tail"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "compute(a, b)", "compute(a, b, c)",
+        )
+        assert err is None
+        assert count == 1
+        assert strategy == "whitespace_normalized"
+        assert new == "result = compute(a, b, c) + tail", f"Boundary space deleted: {new!r}"
+
+    def test_trailing_ws_still_consumed_when_match_ends_with_space(self):
+        """When the normalized match itself ends with whitespace (pattern has
+        trailing space), the expansion must still consume the full whitespace
+        run in the original."""
+        # Use a pattern with trailing space where the boundary is clear:
+        # content has "foo   " then "bar", pattern is "foo " — the match
+        # should cover all 3 original spaces (the trailing ws run).
+        new, count, strategy, err = fuzzy_find_and_replace(
+            "a = foo   + bar", "foo +", "XY",
+        )
+        assert err is None
+        assert count == 1
+        # "foo   +" normalized to "foo +" matches; trailing spaces consumed
+        # Result: "a = XY bar"
+        assert "XY" in new and "bar" in new
+
+
+class TestIndentDifference:
+    def test_different_indentation(self):
+        content = "    def foo():\n        pass"
+        new, count, _, err = fuzzy_find_and_replace(content, "def foo():\n    pass", "def bar():\n    return 1")
+        assert count == 1
+        assert "bar" in new
+
+
+class TestIndentationPreservation:
+    """When a non-exact strategy matches, ``new_string`` should be re-indented
+    so it lands at the file's actual indent depth — not at whatever indent the
+    LLM happened to send in the tool args.  Without this fix the file gets a
+    silently-broken indent level that may even still parse but is logically
+    wrong."""
+
+    def test_unindented_input_reindented_to_match_file(self):
+        # File: 8-space-indented method body inside a class.
+        content = (
+            "class Calculator:\n"
+            "    def add(self, a, b):\n"
+            "        result = a + b\n"
+            "        return result\n"
+        )
+        # LLM sends zero-indent old/new — common bug from frontier models
+        # that "remember" code instead of reading it.
+        old = "result = a + b\nreturn result"
+        new = "result = a + b\nresult *= 2\nreturn result"
+        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None and count == 1
+        assert strategy != "exact"  # must have gone through a fuzzy strategy
+        # Every replaced line should be at 8-space indent.
+        for marker in ("result = a + b", "result *= 2", "return result"):
+            line = next(line for line in out.split("\n") if marker in line)
+            indent = len(line) - len(line.lstrip())
+            assert indent == 8, f"Expected 8-space indent for {marker!r}, got {indent}: {line!r}"
+        # Resulting file must still be valid Python.
+        import ast
+        ast.parse(out)
+
+
+    def test_blank_lines_left_alone(self):
+        # Blank lines in new_string should keep whatever whitespace they
+        # had — we never strip or pad them.
+        content = "    a = 1\n    b = 2\n"
+        old = "a = 1\nb = 2"
+        new = "a = 1\n\nb = 99"
+        out, count, _, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None and count == 1
+        # blank line is preserved (empty), indented lines anchored.
+        lines = out.split("\n")
+        assert lines[0] == "    a = 1"
+        assert lines[1] == ""
+        assert lines[2] == "    b = 99"
+
+
+class TestReplaceAll:
+    def test_multiple_matches_without_flag_errors(self):
+        content = "aaa bbb aaa"
+        new, count, _, err = fuzzy_find_and_replace(content, "aaa", "ccc", replace_all=False)
+        assert count == 0
+        assert "Found 2 matches" in err
+
+    def test_multiple_matches_with_flag(self):
+        content = "aaa bbb aaa"
+        new, count, _, err = fuzzy_find_and_replace(content, "aaa", "ccc", replace_all=True)
+        assert err is None
+        assert count == 2
+        assert new == "ccc bbb ccc"
+
+    def test_self_overlapping_pattern_non_overlapping_matches(self):
+        """Self-overlapping patterns must produce non-overlapping spans.
+
+        Regression: _strategy_exact advanced the scan cursor by 1 instead of
+        len(pattern), so "aa" in "aaaa" matched at offsets 0, 1, 2 (overlapping)
+        instead of 0, 2. _apply_replacements works in reverse order, so the
+        stale offsets corrupted the file. Fix aligns with str.replace().
+        """
+        # replace_all: 2 non-overlapping matches, not 3 overlapping ones.
+        new, count, _, err = fuzzy_find_and_replace("aaaa", "aa", "b", replace_all=True)
+        assert err is None
+        assert count == 2
+        assert new == "bb"
+
+        # single-char pattern still counts every occurrence
+        new, count, _, err = fuzzy_find_and_replace("aaa", "a", "b", replace_all=True)
+        assert err is None
+        assert count == 3
+        assert new == "bbb"
+
+        # embedded in surrounding content — non-matched parts preserved
+        new, count, _, err = fuzzy_find_and_replace(
+            "prefix aaaa suffix", "aa", "b", replace_all=True
+        )
+        assert err is None
+        assert count == 2
+        assert new == "prefix bb suffix"
+
+        # without the flag, the non-overlapping count is reported (2, not 3)
+        new, count, _, err = fuzzy_find_and_replace("aaaa", "aa", "b", replace_all=False)
+        assert count == 0
+        assert "2 matches" in err
+
+
+class TestUnicodeNormalized:
+    """Tests for the unicode_normalized strategy (Bug 5)."""
+
+    def test_em_dash_matched(self):
+        """Em-dash in content should match ASCII '--' in pattern."""
+        content = "return value\u2014fallback"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "return value--fallback", "return value or fallback"
+        )
+        assert count == 1, f"Expected match via unicode_normalized, got err={err}"
+        assert strategy == "unicode_normalized"
+        assert "return value or fallback" in new
+
+
+    def test_ellipsis_preserved(self):
+        """Ellipsis survives when surrounding text changes."""
+        content = "Wait for it\u2026and done"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "Wait for it...and done", "Wait for it...then done"
+        )
+        assert count == 1, f"Expected match, got err={err}"
+        assert new == "Wait for it\u2026then done", f"Got {new!r}"
+
+    def test_mixed_unicode_multiline(self):
+        """Multiple Unicode types in a multi-line block all survive."""
+        content = 'Line 1 \u2014 with dash\nLine 2 \u201cquoted\u201d text\nLine 3 plain'
+        old = 'Line 1 -- with dash\nLine 2 "quoted" text\nLine 3 plain'
+        new_str = 'Line 1 -- with dash\nLine 2 "quoted" text\nLine 3 changed'
+        new, count, strategy, err = fuzzy_find_and_replace(content, old, new_str)
+        assert count == 1, f"Expected match, got err={err}"
+        expected = 'Line 1 \u2014 with dash\nLine 2 \u201cquoted\u201d text\nLine 3 changed'
+        assert new == expected, f"Got {new!r}"
+
+    def test_no_unicode_no_change(self):
+        """When file has no Unicode, replacement is direct (no-op guard)."""
+        content = "plain text here"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "plain text here", "plain text there"
+        )
+        assert count == 1
+        assert new == "plain text there"
+
+
+class TestUnicodeSpaceAndMinusNormalized:
+    """Space-separator family + Unicode minus normalization.
+
+    Port of the anomalyco/opencode#38133 patch-matching corpus: files with
+    typographic spacing (en/em/thin spaces, narrow NBSP, CJK ideographic
+    space) or the Unicode minus sign must match a model's ASCII old_string
+    at the precise unicode_normalized strategy — not fall through to the
+    similarity-based context_aware fallback.
+    """
+
+    def test_unicode_minus_matched_and_preserved(self):
+        content = "offset = value \u2212 1\nprint(offset)\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "offset = value - 1", "offset = delta - 1"
+        )
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        # The untouched minus keeps its Unicode form
+        assert "delta \u2212 1" in new, f"Got {new!r}"
+
+
+    def test_ideographic_space_cjk_line(self):
+        content = "標題\u3000第一章\nbody text\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "標題 第一章", "標題 第二章"
+        )
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        assert "標題\u3000第二章" in new, f"Got {new!r}"
+
+
+class TestBlockAnchorThreshold:
+    """Tests for the raised block_anchor threshold (Bug 4)."""
+
+    def test_high_similarity_matches(self):
+        """A block with >50% middle similarity should match."""
+        content = "def foo():\n    x = 1\n    y = 2\n    return x + y\n"
+        pattern = "def foo():\n    x = 1\n    y = 9\n    return x + y"
+        new, count, strategy, err = fuzzy_find_and_replace(content, pattern, "def foo():\n    return 0\n")
+        # Should match via block_anchor or earlier strategy
+        assert count == 1
+
+    def test_completely_different_middle_does_not_match(self):
+        """A block where only first+last lines match but middle is completely different
+        should NOT match under the raised 0.50 threshold."""
+        content = (
+            "class Foo:\n"
+            "    completely = 'unrelated'\n"
+            "    content = 'here'\n"
+            "    nothing = 'in common'\n"
+            "    pass\n"
+        )
+        # Pattern has same first/last lines but completely different middle
+        pattern = (
+            "class Foo:\n"
+            "    x = 1\n"
+            "    y = 2\n"
+            "    z = 3\n"
+            "    pass"
+        )
+        new, count, strategy, err = fuzzy_find_and_replace(content, pattern, "replaced")
+        # With threshold=0.50, this near-zero-similarity middle should not match
+        assert count == 0, (
+            f"Block with unrelated middle should not match under threshold=0.50, "
+            f"but matched via strategy={strategy}"
+        )
+
+
+class TestStrategyNameSurfaced:
+    """Tests for the strategy name in the 4-tuple return (Bug 6)."""
+
+    def test_exact_strategy_name(self):
+        new, count, strategy, err = fuzzy_find_and_replace("hello", "hello", "world")
+        assert strategy == "exact"
+        assert count == 1
+
+    def test_failed_match_returns_none_strategy(self):
+        new, count, strategy, err = fuzzy_find_and_replace("hello", "xyz", "world")
+        assert count == 0
+        assert strategy is None
+
+
+class TestEscapeDriftGuard:
+    """Tests for the escape-drift guard that catches bash/JSON serialization
+    artifacts where an apostrophe gets prefixed with a spurious backslash
+    in tool-call transport.
+    """
+
+    def test_drift_blocked_apostrophe(self):
+        """File has ', old_string and new_string both have \\' — classic
+        tool-call drift. Guard must block with a helpful error instead of
+        writing \\' literals into source code."""
+        content = "x = \"hello there\"\n"
+        # Simulate transport-corrupted old_string and new_string where an
+        # apostrophe-like context got prefixed with a backslash. The content
+        # itself has no apostrophe, but both strings do — matching via
+        # whitespace/anchor strategies would otherwise succeed.
+        old_string = "x = \"hello there\" # don\\'t edit\n"
+        new_string = "x = \"hi there\" # don\\'t edit\n"
+        # This particular pair won't match anything, so it exits via
+        # no-match path. Build a case where a non-exact strategy DOES match.
+        content = "line\n    x = 1\nline"
+        old_string = "line\n  x = \\'a\\'\nline"
+        new_string = "line\n  x = \\'b\\'\nline"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert count == 0
+        assert err is not None and "Escape-drift" in err
+        assert "backslash" in err.lower()
+        assert new == content  # file untouched
+
+    def test_drift_blocked_double_quote(self):
+        """Same idea but with \\" drift instead of \\'."""
+        content = 'line\n    x = 1\nline'
+        old_string = 'line\n  x = \\"a\\"\nline'
+        new_string = 'line\n  x = \\"b\\"\nline'
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert count == 0
+        assert err is not None and "Escape-drift" in err
+
+    def test_drift_allowed_when_file_genuinely_has_backslash_escapes(self):
+        """If the file already contains \\' (e.g. inside an existing escaped
+        string), the model is legitimately preserving it. Guard must NOT
+        fire."""
+        content = "line\n  x = \\'a\\'\nline"
+        old_string = "line\n  x = \\'a\\'\nline"
+        new_string = "line\n  x = \\'b\\'\nline"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None
+        assert count == 1
+        assert "\\'b\\'" in new
+
+    def test_drift_allowed_on_exact_match(self):
+        """Exact matches bypass the drift guard entirely — if the file
+        really contains the exact bytes old_string specified, it's not
+        drift."""
+        content = "hello \\'world\\'"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "hello \\'world\\'", "hello \\'there\\'"
+        )
+        assert err is None
+        assert count == 1
+        assert strategy == "exact"
+
+
+    def test_no_drift_check_when_new_string_lacks_suspect_chars(self):
+        """Fast-path: if new_string has no \\' or \\", guard must not
+        fire even on fuzzy match."""
+        content = "def foo():\n    pass"  # extra space ignored by line_trimmed
+        old_string = "def foo():\n  pass"
+        new_string = "def bar():\n  return 1"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None
+        assert count == 1
+
+
+class TestFindClosestLines:
+    def setup_method(self):
+        from tools.fuzzy_match import find_closest_lines
+        self.find_closest_lines = find_closest_lines
+
+    def test_finds_similar_line(self):
+        content = "def foo():\n    pass\ndef bar():\n    return 1\n"
+        result = self.find_closest_lines("def baz():", content)
+        assert "def foo" in result or "def bar" in result
+
+
+    def test_includes_line_numbers(self):
+        content = "line1\nline2\ndef foo():\n    pass\n"
+        result = self.find_closest_lines("def foo():", content)
+        # Should include line numbers in format "N| content"
+        assert "|" in result
+
+
+class TestFormatNoMatchHint:
+    """Gating tests for format_no_match_hint — the shared helper that decides
+    whether a 'Did you mean?' snippet should be appended to an error.
+    """
+
+    def setup_method(self):
+        from tools.fuzzy_match import format_no_match_hint
+        self.fmt = format_no_match_hint
+
+    def test_fires_on_could_not_find_with_match(self):
+        """Classic no-match: similar content exists → hint fires."""
+        content = "def foo():\n    pass\ndef bar():\n    pass\n"
+        result = self.fmt(
+            "Could not find a match for old_string in the file",
+            0, "def baz():", content,
+        )
+        assert "Did you mean" in result
+        assert "foo" in result or "bar" in result
+
+
+    def test_silent_on_escape_drift_error(self):
+        """Escape-drift errors are intentional blocks — hint would mislead."""
+        content = "x = 1\n"
+        result = self.fmt(
+            "Escape-drift detected: old_string and new_string contain the literal sequence '\\\\''...",
+            0, "x = \\'1\\'", content,
+        )
+        assert result == ""
+
+    def test_silent_on_identical_strings(self):
+        """old_string == new_string — hint irrelevant."""
+        result = self.fmt(IDENTICAL_STRINGS_ERROR, 0, "foo", "foo bar\n")
+        assert result == ""
+
+    def test_silent_when_match_count_nonzero(self):
+        """If match succeeded, we shouldn't be in the error path — defense in depth."""
+        result = self.fmt(
+            "Could not find a match for old_string in the file",
+            1, "foo", "foo bar\n",
+        )
+        assert result == ""
+
+    def test_silent_on_none_error(self):
+        """No error at all — no hint."""
+        result = self.fmt(None, 0, "foo", "bar\n")
+        assert result == ""
+
+    def test_silent_when_no_similar_content(self):
+        """Even for a valid no-match error, skip hint when nothing similar exists."""
+        result = self.fmt(
+            "Could not find a match for old_string in the file",
+            0, "totally_unique_xyzzy_qux", "abc\nxyz\n",
+        )
+        assert result == ""
+
+
+class TestEscapeNormalizedNewString:
+    """Regression tests for unescaping common sequences in new_string when
+    the matched region of the file contains real control characters.
+
+    Issue #33733: LLMs overwhelmingly represent tabs as the two-character
+    sequence ``\\t`` (backslash + t) in JSON tool-call arguments. When the
+    file already contains real tab bytes (0x09), writing new_string
+    verbatim leaves literal ``\\t`` characters and corrupts the file.
+
+    The fix unescapes ``\\t`` -> tab and ``\\r`` -> CR in new_string when
+    the matched file region actually contains those control characters,
+    regardless of which match strategy fired. ``\\n`` is excluded because
+    newlines serialize correctly through JSON.
+    """
+
+    def test_tab_in_new_string_unescaped_under_escape_normalized(self):
+        """File has real tab, model sends literal \\t in BOTH old and new.
+
+        Match strategy is ``escape_normalized``.
+        """
+        content = "def hello():\n\tprint(\"before\")\n"
+        old_string = "def hello():\n\\tprint(\"before\")\n"
+        new_string = "def hello():\n\\tprint(\"after\")\n"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        assert "\tprint(\"after\")" in new
+        assert "\\t" not in new
+
+    def test_tab_in_new_string_unescaped_under_exact(self):
+        """File has real tab, old_string has real tab too (matches via
+        ``exact``), but new_string still arrives with literal ``\\t``.
+
+        This is the issue's headline reproduction — the previous fix that
+        gated on ``strategy_name == "escape_normalized"`` missed this case.
+        """
+        content = "def hello():\n\tprint(\"before\")\n"
+        old_string = "\tprint(\"before\")"           # real tab
+        new_string = "\\tprint(\"after\")"           # literal backslash + t
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "exact"
+        assert "\tprint(\"after\")" in new
+        assert "\\t" not in new
+
+    def test_carriage_return_in_new_string_unescaped(self):
+        """File has real CR, model sends literal \\r in new_string."""
+        content = "line1\r\nline2\r\n"
+        old_string = "line1\\r\\nline2\\r\\n"
+        new_string = "replaced\\r\\n"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        assert "replaced\r" in new
+
+    def test_newline_in_new_string_NOT_unescaped(self):
+        """``\\n`` is intentionally left alone — newlines serialize correctly
+        through JSON, and unescaping would corrupt source-code escape
+        sequences far more often than help.
+        """
+        content = "line1\nline2\n"
+        old_string = "line1\nline2"
+        new_string = "alpha\\nbeta"                 # literal backslash + n
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        # The literal two-character sequence ``\n`` must survive verbatim.
+        assert "alpha\\nbeta" in new
+        # And there should be no real newline added where ``\\n`` sat.
+        assert "alpha\nbeta" not in new
+
+    def test_mixed_tab_and_newline_only_tab_unescaped(self):
+        """When new_string contains both \\t and \\n, only \\t is converted."""
+        content = "def foo():\n\tpass\n"
+        old_string = "def foo():\n\tpass\n"
+        new_string = "def bar():\\n\\treturn 1\\n"
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        # \t -> real tab
+        assert "\treturn 1" in new
+        assert "\\t" not in new
+        # \n preserved as literal backslash-n
+        assert "\\n" in new
+
+    def test_exact_match_preserves_literal_backslash_t_in_string_literal(self):
+        """If the matched region of the file does NOT contain a real tab,
+        new_string's literal ``\\t`` is preserved — the file genuinely uses
+        a backslash-t sequence (e.g. a Python source line ``sep = "\\t"``).
+        """
+        content = 'sep = "\\t"\n'                   # source contains backslash + t
+        old_string = 'sep = "\\t"\n'
+        new_string = 'sep = "\\tab"\n'              # still backslash + t literal
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "exact"
+        # File still has the literal two-char ``\t`` — no tab byte injected.
+        assert 'sep = "\\tab"' in new
+        assert "\t" not in new
+
+    def test_no_escape_sequences_passthrough(self):
+        """When new_string has no \\t or \\r, the helper is a no-op."""
+        content = "def foo():\n    return 1\n"
+        old_string = "def foo():\n    return 1\n"
+        new_string = "def foo():\n    return 2\n"
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None
+        assert count == 1
+        assert "return 2" in new
+
+
+class TestContextAwareCorrectness:
+    """Strategy 9 must not silently replace half-matching (wrong) blocks."""
+
+    def test_half_garbage_block_does_not_match(self):
+        """A pattern where one line is unrelated must NOT match/corrupt.
+
+        Old behavior: context_aware accepted a block when >=50% of lines were
+        similar, so this 2-line pattern (one real line, one garbage line)
+        matched and silently deleted the real second line.
+        """
+        content = "config_value = 100\nthreshold = 200\n"
+        old = "config_value = 999\ntotally_unrelated_line_here"
+        new = "config_value = 42\ntotally_unrelated_line_here"
+        result, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert count == 0, f"should not match, got strategy={strategy}"
+        assert err is not None
+        assert "threshold = 200" in result  # not destroyed
+
+    def test_replace_all_refuses_similarity_strategy(self):
+        """replace_all must not mass-overwrite approximate (non-exact) blocks."""
+        content = "aX\nbY\naX\nbY\naX\nbY\n"
+        # 'aX\nbZ' never appears exactly; only approximately (bY != bZ).
+        result, count, strategy, err = fuzzy_find_and_replace(
+            content, "aX\nbZ", "QQ\nRR", replace_all=True
+        )
+        assert count == 0, f"should refuse, got strategy={strategy}"
+        assert err is not None
+        assert result == content  # untouched
+
+    def test_all_lines_matching_still_replaces(self):
+        """A block where every line is a close match still applies (unique)."""
+        content = "alpha one\nbeta two\ngamma three\n"
+        old = "alpha one\nbeta 2\ngamma three"  # close on every line
+        new = "alpha one\nbeta TWO\ngamma three"
+        result, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert count == 1, f"err={err}"
+        assert "beta TWO" in result
+
+    def test_no_match_on_large_file_is_fast(self):
+        """The anchor pre-filter keeps a no-match scan from being O(file×pattern)."""
+        import time
+        from tools.fuzzy_match import _strategy_context_aware
+
+        big = "\n".join(f"line {i} content here" for i in range(10000))
+        patt = "\n".join(f"nomatch xyzzy {i}" for i in range(40))
+        start = time.perf_counter()
+        matches = _strategy_context_aware(big, patt)
+        elapsed = time.perf_counter() - start
+        assert matches == []
+        # Was ~5.5s before anchoring; generous ceiling to avoid CI flake.
+        assert elapsed < 2.0, f"context_aware no-match took {elapsed:.2f}s"
+
+
+
+class TestBackslashDoublingDrift:
+    """Regression tests for the backslash-run doubling guard.
+
+    Live failure (Windows, Aug 2026): the model sent old_string/new_string
+    whose backslash runs were JSON-escaped one extra time (file had ``\``
+    where the args had ``\\``). The context_aware strategy matched the
+    region anyway and wrote new_string verbatim, doubling every backslash
+    in a Windows path inside a Python string literal. The guard must block
+    that case while never firing on intentional backslash edits.
+    """
+
+    def setup_method(self):
+        from tools.fuzzy_match import fuzzy_find_and_replace
+        self.replace = fuzzy_find_and_replace
+
+    def _make(self, n_file: int, n_args: int):
+        b = "\\"
+        content = (
+            '    "native `C:' + b * n_file + 'Users' + b * n_file
+            + '<user>' + b * n_file + '...` paths. X "\n    "next line"\n'
+        )
+        old = (
+            '    "native `C:' + b * n_args + 'Users' + b * n_args
+            + '<user>' + b * n_args + '...` paths. X "\n    "next line"'
+        )
+        return content, old
+
+    def test_doubled_backslashes_blocked(self):
+        """old/new with 2x the file's backslash runs must be rejected."""
+        content, old = self._make(n_file=2, n_args=4)
+        new = old + ' # touched'
+        result, count, strategy, err = self.replace(content, old, new)
+        assert count == 0
+        assert err is not None and "twice as long" in err
+        assert result == content  # untouched
+
+    def test_matching_backslashes_apply(self):
+        """Same edit with correct backslash counts applies exactly."""
+        content, old = self._make(n_file=2, n_args=2)
+        new = old.replace("next line", "next line edited")
+        result, count, strategy, err = self.replace(content, old, new)
+        assert count == 1 and err is None
+        assert "next line edited" in result
+
+    def test_intentional_backslash_reduction_exact_match_allowed(self):
+        """Deliberately halving backslashes via an exact match is a real edit."""
+        b = "\\"
+        content = 'x = "a' + b * 4 + 'b"\ny = 1\n'
+        old = 'x = "a' + b * 4 + 'b"'
+        new = 'x = "a' + b * 2 + 'b"'
+        result, count, strategy, err = self.replace(content, old, new)
+        assert count == 1 and err is None
+        assert strategy == "exact"
+
+    def test_model_corrected_new_string_allowed(self):
+        """Doubled old_string but corrected new_string writes the right bytes."""
+        b = "\\"
+        content, old = self._make(n_file=2, n_args=4)
+        new = old.replace(b * 4, b * 2).replace("next line", "corrected")
+        result, count, strategy, err = self.replace(content, old, new)
+        assert count == 1 and err is None
+        assert "corrected" in result
+        # No doubling in the output
+        assert b * 4 not in result
+
+    def test_single_prose_backslash_not_blocked(self):
+        """A lone ``\`` vs ``\\`` in prose is too weak a signal to block."""
+        b = "\\"
+        content = "text with one " + b + " backslash here\nanother line\n"
+        old = "text with one " + b * 2 + " backslash here\nanother line"
+        new = old + " more"
+        result, count, strategy, err = self.replace(content, old, new)
+        assert err is None or "twice" not in err
+
+    def test_quote_drift_guard_still_fires(self):
+        """The pre-existing apostrophe escape-drift guard must keep working."""
+        b = "\\"
+        content = "print('hello world')\nrest = 1\n"
+        old = "print(" + b + "'hello world" + b + "')\nrest = 1"
+        new = "print(" + b + "'hello there" + b + "')\nrest = 1"
+        result, count, strategy, err = self.replace(content, old, new)
+        assert count == 0
+        assert err is not None and "apostrophe" in err

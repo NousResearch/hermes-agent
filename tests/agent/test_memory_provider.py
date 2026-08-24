@@ -1,0 +1,1498 @@
+"""Tests for the memory provider interface, manager, and builtin provider."""
+
+import json
+import threading
+import time
+import pytest
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+from agent.memory_provider import MemoryProvider
+from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+
+# ---------------------------------------------------------------------------
+# Concrete test provider
+# ---------------------------------------------------------------------------
+
+
+class FakeMemoryProvider(MemoryProvider):
+    """Minimal concrete provider for testing."""
+
+    def __init__(self, name="fake", available=True, tools=None):
+        self._name = name
+        self._available = available
+        self._tools = tools or []
+        self.initialized = False
+        self.synced_turns = []
+        self.prefetch_queries = []
+        self.queued_prefetches = []
+        self.turn_starts = []
+        self.session_end_called = False
+        self.pre_compress_called = False
+        self.memory_writes = []
+        self.shutdown_called = False
+        self._prefetch_result = ""
+        self._prompt_block = ""
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def initialize(self, session_id, **kwargs):
+        self.initialized = True
+        self._init_kwargs = {"session_id": session_id, **kwargs}
+
+    def system_prompt_block(self) -> str:
+        return self._prompt_block
+
+    def prefetch(self, query, *, session_id=""):
+        self.prefetch_queries.append(query)
+        return self._prefetch_result
+
+    def queue_prefetch(self, query, *, session_id=""):
+        self.queued_prefetches.append(query)
+
+    def sync_turn(self, user_content, assistant_content, *, session_id=""):
+        self.synced_turns.append((user_content, assistant_content))
+
+    def get_tool_schemas(self):
+        return self._tools
+
+    def handle_tool_call(self, tool_name, args, **kwargs):
+        return json.dumps({"handled": tool_name, "args": args})
+
+    def shutdown(self):
+        self.shutdown_called = True
+
+    def on_turn_start(self, turn_number, message):
+        self.turn_starts.append((turn_number, message))
+
+    def on_session_end(self, messages):
+        self.session_end_called = True
+
+    def on_pre_compress(self, messages):
+        self.pre_compress_called = True
+
+    def on_memory_write(self, action, target, content):
+        self.memory_writes.append((action, target, content))
+
+
+class MetadataMemoryProvider(FakeMemoryProvider):
+    """Provider that opts into write metadata."""
+
+    def on_memory_write(self, action, target, content, metadata=None):
+        self.memory_writes.append((action, target, content, metadata or {}))
+
+
+class MessagesMemoryProvider(FakeMemoryProvider):
+    """Provider that opts into completed-turn message context."""
+
+    def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
+        self.synced_turns.append((user_content, assistant_content, session_id, messages))
+
+
+class BlockingPrefetchProvider(FakeMemoryProvider):
+    """External provider whose prefetch call blocks until released."""
+
+    def __init__(self, name="external"):
+        super().__init__(name=name)
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def prefetch(self, query, *, session_id=""):
+        self.prefetch_queries.append(query)
+        self.started.set()
+        self.release.wait(timeout=5.0)
+        return self._prefetch_result
+
+
+# ---------------------------------------------------------------------------
+# MemoryProvider ABC tests
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryProviderABC:
+    def test_cannot_instantiate_abstract(self):
+        """ABC cannot be instantiated directly."""
+        with pytest.raises(TypeError):
+            MemoryProvider()
+
+    def test_concrete_provider_works(self):
+        """Concrete implementation can be instantiated."""
+        p = FakeMemoryProvider()
+        assert p.name == "fake"
+        assert p.is_available()
+
+    def test_default_optional_hooks_are_noop(self):
+        """Optional hooks have default no-op implementations."""
+        p = FakeMemoryProvider()
+        # These should not raise
+        p.on_turn_start(1, "hello")
+        p.on_session_end([])
+        p.on_pre_compress([])
+        p.on_memory_write("add", "memory", "test")
+        p.queue_prefetch("query")
+        p.sync_turn("user", "assistant")
+        p.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# MemoryManager tests
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryManager:
+    def test_empty_manager(self):
+        mgr = MemoryManager()
+        assert mgr.providers == []
+        assert [p.name for p in mgr.providers] == []
+        assert mgr.get_all_tool_schemas() == []
+        assert mgr.build_system_prompt() == ""
+        assert mgr.prefetch_all("test") == ""
+
+    def test_add_provider(self):
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("test1")
+        mgr.add_provider(p)
+        assert len(mgr.providers) == 1
+        assert [p.name for p in mgr.providers] == ["test1"]
+
+    def test_get_provider_by_name(self):
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("test1")
+        mgr.add_provider(p)
+        assert mgr.get_provider("test1") is p
+        assert mgr.get_provider("nonexistent") is None
+
+
+
+
+
+    @staticmethod
+    def _set_spill_config(monkeypatch, tmp_path, *, max_chars):
+        monkeypatch.setattr(
+            "agent.memory_manager.get_spill_config",
+            lambda: {"enabled": True, "max_chars": max_chars, "preview_head": 12,
+                     "preview_tail": 12, "directory": str(tmp_path)},
+        )
+
+    def test_oversized_external_prefetch_is_spilled(self, tmp_path, monkeypatch):
+        self._set_spill_config(monkeypatch, tmp_path, max_chars=40)
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        provider._prefetch_result = "recalled " * 20
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("what do you remember?", session_id="session-1")
+
+        assert "external memory prefetch output truncated" in result
+        spill_files = list((tmp_path / "session-1").glob("*.txt"))
+        assert len(spill_files) == 1
+        assert spill_files[0].read_text() == provider._prefetch_result + "\n"
+
+    def test_builtin_prefetch_is_not_spilled(self, tmp_path, monkeypatch):
+        self._set_spill_config(monkeypatch, tmp_path, max_chars=10)
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("builtin")
+        provider._prefetch_result = "built-in memory has its own configured limit"
+        mgr.add_provider(provider)
+
+        assert mgr.prefetch_all("what do you remember?", session_id="s") == provider._prefetch_result
+        assert not list(tmp_path.rglob("*.txt"))
+
+    def test_prefetch_merges_results(self):
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin")
+        p1._prefetch_result = "Memory from builtin"
+        p2 = FakeMemoryProvider("external")
+        p2._prefetch_result = "Memory from external"
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+
+        result = mgr.prefetch_all("what do you know?")
+        assert "Memory from builtin" in result
+        assert "Memory from external" in result
+        assert p1.prefetch_queries == ["what do you know?"]
+        assert p2.prefetch_queries == ["what do you know?"]
+
+
+    def test_queue_prefetch_all(self):
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin")
+        p2 = FakeMemoryProvider("external")
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+
+        mgr.queue_prefetch_all("next turn")
+        mgr.flush_pending(timeout=5)
+        assert p1.queued_prefetches == ["next turn"]
+        assert p2.queued_prefetches == ["next turn"]
+
+
+
+
+    def test_sync_failure_doesnt_block_others(self):
+        """If one provider's sync fails, others still run."""
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin")
+        p1.sync_turn = MagicMock(side_effect=RuntimeError("boom"))
+        p2 = FakeMemoryProvider("external")
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+
+        mgr.sync_all("user", "assistant")
+        mgr.flush_pending(timeout=5)
+        # p1 failed but p2 still synced
+        assert p2.synced_turns == [("user", "assistant")]
+
+    def test_sync_all_keeps_legacy_provider_working_when_messages_are_available(self):
+        """New optional turn context is not sent to an old provider signature."""
+        mgr = MemoryManager()
+        legacy_provider = FakeMemoryProvider("legacy")
+        mgr.add_provider(legacy_provider)
+        completed_messages = [
+            {"role": "user", "content": "user"},
+            {"role": "assistant", "content": "assistant"},
+        ]
+
+        mgr.sync_all(
+            "user",
+            "assistant",
+            session_id="legacy-session",
+            messages=completed_messages,
+        )
+        mgr.flush_pending(timeout=5)
+
+        assert legacy_provider.synced_turns == [("user", "assistant")]
+
+    # -- Tool routing -------------------------------------------------------
+
+
+        # Should be handled by p1 (first registered)
+
+
+    def test_tool_routing(self):
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin", tools=[
+            {"name": "builtin_tool", "description": "Builtin", "parameters": {}}
+        ])
+        p2 = FakeMemoryProvider("external", tools=[
+            {"name": "ext_tool", "description": "External", "parameters": {}}
+        ])
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+
+        r1 = json.loads(mgr.handle_tool_call("builtin_tool", {"a": 1}))
+        assert r1["handled"] == "builtin_tool"
+        r2 = json.loads(mgr.handle_tool_call("ext_tool", {"b": 2}))
+        assert r2["handled"] == "ext_tool"
+
+    # -- Lifecycle hooks -----------------------------------------------------
+
+
+
+
+
+
+    # -- Error resilience ---------------------------------------------------
+
+
+    def test_external_prefetch_timeout_skips_stuck_provider(self):
+        mgr = MemoryManager(external_prefetch_timeout=0.01)
+        builtin = FakeMemoryProvider("builtin")
+        builtin._prefetch_result = "builtin memory"
+        external = BlockingPrefetchProvider("hy-memory")
+        external._prefetch_result = "late external memory"
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        started = time.monotonic()
+        result = mgr.prefetch_all("query")
+        elapsed = time.monotonic() - started
+
+        assert result == "builtin memory"
+        assert elapsed < 0.5
+        assert external.started.wait(timeout=1.0)
+        assert external.prefetch_queries == ["query"]
+
+        started = time.monotonic()
+        result = mgr.prefetch_all("query 2")
+        elapsed = time.monotonic() - started
+
+        assert result == "builtin memory"
+        assert elapsed < 0.2
+        assert external.prefetch_queries == ["query"]
+
+        external.release.set()
+
+        deadline = time.monotonic() + 1.0
+        while (
+            external.name in mgr._external_prefetch_threads
+            and mgr._external_prefetch_threads[external.name].is_alive()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+
+        result = mgr.prefetch_all("query 3")
+
+        assert result == "builtin memory\n\nlate external memory"
+        assert external.prefetch_queries == ["query", "query 3"]
+        assert external.name not in mgr._external_prefetch_threads
+
+
+
+class TestPluginMemoryDiscovery:
+    """Memory providers are discovered from plugins/memory/ directory."""
+
+    def test_discover_finds_providers(self):
+        """discover_memory_providers returns available providers."""
+        from plugins.memory import discover_memory_providers
+        providers = discover_memory_providers()
+        names = [name for name, _, _ in providers]
+        assert "holographic" in names  # always available (no external deps)
+
+    def test_load_provider_by_name(self):
+        """load_memory_provider returns a working provider instance."""
+        from plugins.memory import load_memory_provider
+        p = load_memory_provider("holographic")
+        assert p is not None
+        assert p.name == "holographic"
+        assert p.is_available()
+
+    def test_load_nonexistent_returns_none(self):
+        """load_memory_provider returns None for unknown names."""
+        from plugins.memory import load_memory_provider
+        assert load_memory_provider("nonexistent_provider") is None
+
+
+class TestUserInstalledProviderDiscovery:
+    """Memory providers installed to $HERMES_HOME/plugins/ should be found.
+
+    Regression test for issues #4956 and #9099: load_memory_provider() and
+    discover_memory_providers() only scanned the bundled plugins/memory/
+    directory, ignoring user-installed plugins.
+    """
+
+    def _make_user_memory_plugin(self, tmp_path, name="myprovider"):
+        """Create a minimal user memory provider plugin."""
+        plugin_dir = tmp_path / "plugins" / name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "class MyProvider(MemoryProvider):\n"
+            f"    @property\n"
+            f"    def name(self): return {name!r}\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            f"name: {name}\ndescription: Test user provider\n"
+        )
+        return plugin_dir
+
+
+    def test_load_user_plugin(self, tmp_path, monkeypatch):
+        """load_memory_provider() can load from $HERMES_HOME/plugins/."""
+        from plugins.memory import load_memory_provider
+        self._make_user_memory_plugin(tmp_path, "myexternal")
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        p = load_memory_provider("myexternal")
+        assert p is not None
+        assert p.name == "myexternal"
+        assert p.is_available()
+
+    def test_bundled_takes_precedence(self, tmp_path, monkeypatch):
+        """Bundled provider wins when user plugin has the same name."""
+        from plugins.memory import load_memory_provider, discover_memory_providers
+        # Create user plugin named "holographic" (same as bundled)
+        plugin_dir = tmp_path / "plugins" / "holographic"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "class Fake(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self): return 'holographic-FAKE'\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        # Load should return bundled (name "holographic"), not user (name "holographic-FAKE")
+        p = load_memory_provider("holographic")
+        assert p is not None
+        assert p.name == "holographic"  # bundled wins
+
+        # discover should not duplicate
+        providers = discover_memory_providers()
+        holo_count = sum(1 for n, _, _ in providers if n == "holographic")
+        assert holo_count == 1
+
+
+
+
+
+class TestUserInstalledProviderCli:
+    """CLI commands of user-installed providers must be discoverable.
+
+    Mirror of the relative-import regression above:
+    discover_plugin_cli_commands() imports the active provider's cli.py as
+    ``_hermes_user_memory.<name>.cli`` without registering the parent
+    packages, so a cli.py with a relative import could never load.
+    """
+
+    def _make_plugin_with_cli(self, tmp_path, name):
+        plugin_dir = tmp_path / "plugins" / name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "from . import config\n"
+            "class MyProvider(MemoryProvider):\n"
+            "    @property\n"
+            f"    def name(self): return {name!r}\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+            "def register(ctx):\n"
+            "    ctx.register_memory_provider(MyProvider())\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "config.py").write_text("STATUS = 'ok'\n", encoding="utf-8")
+        (plugin_dir / "cli.py").write_text(
+            "from . import config\n"
+            "def register_cli(subparser):\n"
+            "    subparser.add_argument('--status', action='store_true')\n",
+            encoding="utf-8",
+        )
+        return plugin_dir
+
+    def _activate(self, tmp_path, monkeypatch, name):
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_active_memory_provider",
+            lambda: name,
+        )
+
+    def test_cli_discovered_for_user_plugin_with_relative_import(
+        self, tmp_path, monkeypatch
+    ):
+        """discover_plugin_cli_commands() loads a user provider's cli.py."""
+        from plugins.memory import discover_plugin_cli_commands
+        self._make_plugin_with_cli(tmp_path, "extcli")
+        self._activate(tmp_path, monkeypatch, "extcli")
+        commands = discover_plugin_cli_commands()
+        assert len(commands) == 1
+        assert commands[0]["name"] == "extcli"
+        assert callable(commands[0]["setup_fn"])
+
+    def test_provider_load_after_cli_discovery(self, tmp_path, monkeypatch):
+        """The provider still loads after CLI discovery ran first.
+
+        CLI discovery registers a synthetic parent package shell for the
+        relative imports in cli.py; _load_provider_from_dir() must load the
+        real plugin module instead of reusing that shell.
+        """
+        from plugins.memory import discover_plugin_cli_commands, load_memory_provider
+        self._make_plugin_with_cli(tmp_path, "extcliload")
+        self._activate(tmp_path, monkeypatch, "extcliload")
+        assert len(discover_plugin_cli_commands()) == 1
+        p = load_memory_provider("extcliload")
+        assert p is not None
+        assert p.name == "extcliload"
+
+
+class TestEntryPointMemoryProviderDiscovery:
+    """Memory providers installed as Python packages should be discoverable."""
+
+    class FakeEntryPoint:
+        def __init__(self, name, module, exposure="register"):
+            self.name = name
+            self.value = f"{module}:{exposure}"
+            self.group = "hermes_agent.memory_providers"
+            self._module = module
+            self._exposure = exposure
+
+        def load(self):
+            import importlib
+
+            return getattr(importlib.import_module(self._module), self._exposure)
+
+    class FakeEntryPoints(list):
+        def select(self, *, group):
+            return [ep for ep in self if ep.group == group]
+
+    def _make_entrypoint_module(
+        self,
+        tmp_path,
+        module_name="ep_memory_provider",
+        exposure="register",
+        include_skill=False,
+    ):
+        module_file = tmp_path / f"{module_name}.py"
+        register_skill = ""
+        if include_skill:
+            skill_md = tmp_path / "skills" / "maintenance" / "SKILL.md"
+            skill_md.parent.mkdir(parents=True)
+            skill_md.write_text(
+                "---\nname: maintenance\ndescription: Memory maintenance\n---\n\n"
+                "Packaged provider maintenance body.\n"
+            )
+            register_skill = (
+                "    ctx.register_skill(\n"
+                "        'maintenance',\n"
+                "        Path(__file__).parent / 'skills' / 'maintenance' / 'SKILL.md',\n"
+                "    )\n"
+            )
+        module_file.write_text(
+            "from pathlib import Path\n"
+            "from agent.memory_provider import MemoryProvider\n"
+            "class Provider(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self): return 'entrymem'\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+            "def register(ctx):\n"
+            "    ctx.register_memory_provider(Provider())\n"
+            f"{register_skill}"
+            "def make_provider():\n"
+            "    return Provider()\n"
+        )
+        return module_name, exposure
+
+    def test_discover_finds_entry_point_provider(self, tmp_path, monkeypatch):
+        from plugins.memory import discover_memory_providers
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(tmp_path)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+
+        providers = discover_memory_providers()
+
+        assert ("entrymem", "", True) in providers
+
+    @pytest.mark.parametrize("exposure", ["register", "Provider", "make_provider"])
+    def test_load_entry_point_provider(self, tmp_path, monkeypatch, exposure):
+        from plugins.memory import load_memory_provider
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(tmp_path, exposure=exposure)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+
+        provider = load_memory_provider("entrymem")
+
+        assert provider is not None
+        assert provider.name == "entrymem"
+        assert provider.is_available()
+
+    def test_active_entry_point_provider_registers_skill(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(
+            tmp_path,
+            module_name="ep_memory_provider_with_skill",
+            include_skill=True,
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+        monkeypatch.setattr(
+            memory_plugins,
+            "_get_active_memory_provider",
+            lambda: "entrymem",
+        )
+
+        result = json.loads(skill_view("entrymem:maintenance"))
+
+        assert result["success"] is True
+        assert result["name"] == "entrymem:maintenance"
+        assert "Packaged provider maintenance body." in result["content"]
+
+    def test_inactive_entry_point_load_does_not_register_skill(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli.plugins import get_plugin_manager
+        from plugins.memory import load_memory_provider
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(
+            tmp_path,
+            module_name="ep_inactive_memory_provider_with_skill",
+            include_skill=True,
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+        monkeypatch.setattr(
+            memory_plugins,
+            "_get_active_memory_provider",
+            lambda: "other-provider",
+        )
+
+        provider = load_memory_provider("entrymem")
+
+        assert provider is not None
+        assert get_plugin_manager().find_plugin_skill("entrymem:maintenance") is None
+
+    def test_switching_provider_prunes_registered_entry_point_skill(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli.plugins import get_plugin_manager
+        from tools.skills_tool import skill_view
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(
+            tmp_path,
+            module_name="ep_switched_memory_provider_with_skill",
+            include_skill=True,
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+        active = {"name": "entrymem"}
+        monkeypatch.setattr(
+            memory_plugins,
+            "_get_active_memory_provider",
+            lambda: active["name"],
+        )
+
+        loaded = json.loads(skill_view("entrymem:maintenance"))
+        active["name"] = "other-provider"
+        switched = json.loads(skill_view("entrymem:maintenance"))
+
+        assert loaded["success"] is True
+        assert switched["success"] is False
+        assert "not found" in switched["error"].lower()
+        assert get_plugin_manager().find_plugin_skill("entrymem:maintenance") is None
+
+
+# ---------------------------------------------------------------------------
+# Sequential dispatch routing tests
+# ---------------------------------------------------------------------------
+
+
+class TestSequentialDispatchRouting:
+    """Verify that memory provider tools are correctly routed through
+    memory_manager.has_tool() and handle_tool_call().
+
+    This is a regression test for a bug where _execute_tool_calls_sequential
+    in run_agent.py had its own inline dispatch chain that skipped
+    memory_manager.has_tool(), causing all memory provider tools to fall
+    through to the registry and return "Unknown tool". The fix added
+    has_tool() + handle_tool_call() to the sequential path.
+
+    These tests verify the memory_manager contract that both dispatch
+    paths rely on: has_tool() returns True for registered provider tools,
+    and handle_tool_call() routes to the correct provider.
+    """
+
+
+
+    def test_handle_tool_call_routes_to_provider(self):
+        """handle_tool_call dispatches to the correct provider's handler."""
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("hindsight", tools=[
+            {"name": "hindsight_recall", "description": "Recall", "parameters": {}},
+            {"name": "hindsight_retain", "description": "Retain", "parameters": {}},
+        ])
+        mgr.add_provider(provider)
+
+        result = json.loads(mgr.handle_tool_call("hindsight_recall", {"query": "alice"}))
+        assert result["handled"] == "hindsight_recall"
+        assert result["args"] == {"query": "alice"}
+
+
+
+    def test_tool_names_include_all_providers(self):
+        """get_all_tool_names returns tools from all registered providers."""
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin", tools=[
+            {"name": "builtin_tool", "description": "B", "parameters": {}},
+        ])
+        external = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_recall", "description": "E1", "parameters": {}},
+            {"name": "ext_retain", "description": "E2", "parameters": {}},
+        ])
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        names = mgr.get_all_tool_names()
+        assert names == {"builtin_tool", "ext_recall", "ext_retain"}
+
+
+# ---------------------------------------------------------------------------
+# Setup wizard field filtering tests (when clause and default_from)
+# ---------------------------------------------------------------------------
+
+
+class TestSetupFieldFiltering:
+    """Test the 'when' clause and 'default_from' logic used by the
+    memory setup wizard in hermes_cli/memory_setup.py.
+
+    These features are generic — any memory plugin can use them in
+    get_config_schema(). Currently used by the hindsight plugin.
+    """
+
+    def _filter_fields(self, schema, provider_config):
+        """Simulate the setup wizard's field filtering logic.
+
+        Returns list of (key, effective_default) for fields that pass
+        the 'when' filter.
+        """
+        results = []
+        for field in schema:
+            key = field["key"]
+            default = field.get("default")
+
+            # Dynamic default
+            default_from = field.get("default_from")
+            if default_from and isinstance(default_from, dict):
+                ref_field = default_from.get("field", "")
+                ref_map = default_from.get("map", {})
+                ref_value = provider_config.get(ref_field, "")
+                if ref_value and ref_value in ref_map:
+                    default = ref_map[ref_value]
+
+            # When clause
+            when = field.get("when")
+            if when and isinstance(when, dict):
+                if not all(provider_config.get(k) == v for k, v in when.items()):
+                    continue
+
+            results.append((key, default))
+        return results
+
+    def test_when_clause_filters_fields(self):
+        """Fields with 'when' are skipped if the condition doesn't match."""
+        schema = [
+            {"key": "mode", "default": "cloud"},
+            {"key": "api_url", "default": "https://api.example.com", "when": {"mode": "cloud"}},
+            {"key": "api_key", "default": None, "when": {"mode": "cloud"}},
+            {"key": "llm_provider", "default": "openai", "when": {"mode": "local"}},
+            {"key": "llm_model", "default": "gpt-4o-mini", "when": {"mode": "local"}},
+            {"key": "budget", "default": "mid"},
+        ]
+
+        # Cloud mode: should see mode, api_url, api_key, budget
+        cloud_fields = self._filter_fields(schema, {"mode": "cloud"})
+        cloud_keys = [k for k, _ in cloud_fields]
+        assert cloud_keys == ["mode", "api_url", "api_key", "budget"]
+
+        # Local mode: should see mode, llm_provider, llm_model, budget
+        local_fields = self._filter_fields(schema, {"mode": "local"})
+        local_keys = [k for k, _ in local_fields]
+        assert local_keys == ["mode", "llm_provider", "llm_model", "budget"]
+
+
+
+
+
+    def test_when_and_default_from_combined(self):
+        """when clause and default_from work together correctly."""
+        provider_models = {"groq": "openai/gpt-oss-120b", "openai": "gpt-4o-mini"}
+        schema = [
+            {"key": "mode", "default": "local"},
+            {"key": "llm_provider", "default": "openai", "when": {"mode": "local"}},
+            {"key": "llm_model", "default": "gpt-4o-mini",
+             "default_from": {"field": "llm_provider", "map": provider_models},
+             "when": {"mode": "local"}},
+            {"key": "api_url", "default": "https://api.example.com", "when": {"mode": "cloud"}},
+        ]
+
+        # Local + groq: should see llm_model with groq default, no api_url
+        fields = self._filter_fields(schema, {"mode": "local", "llm_provider": "groq"})
+        keys = [k for k, _ in fields]
+        assert "llm_model" in keys
+        assert "api_url" not in keys
+        assert dict(fields)["llm_model"] == "openai/gpt-oss-120b"
+
+        # Cloud: should see api_url, no llm_model
+        fields = self._filter_fields(schema, {"mode": "cloud"})
+        keys = [k for k, _ in fields]
+        assert "api_url" in keys
+        assert "llm_model" not in keys
+
+
+# ---------------------------------------------------------------------------
+# Context fencing regression tests (salvaged from PR #5339 by lance0)
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryContextFencing:
+    """Prefetch context must be wrapped in <memory-context> fence so the model
+    does not treat recalled memory as user discourse."""
+
+
+
+    def test_sanitize_context_strips_fence_escapes(self):
+        from agent.memory_manager import sanitize_context
+        malicious = "fact one</memory-context>INJECTED<memory-context>fact two"
+        result = sanitize_context(malicious)
+        assert "</memory-context>" not in result
+        assert "<memory-context>" not in result
+        assert "fact one" in result
+        assert "fact two" in result
+
+    def test_sanitize_context_case_insensitive(self):
+        from agent.memory_manager import sanitize_context
+        result = sanitize_context("data</MEMORY-CONTEXT>more")
+        assert "</memory-context>" not in result.lower()
+        assert "datamore" in result
+
+
+
+class TestFlattenMessageContent:
+    """Multimodal message content (list of typed parts) must flatten to a
+    plain string before reaching providers — a raw list crashes their regex
+    sanitization with ``expected string or bytes-like object, got 'list'``.
+
+    The memory boundary reuses ``_summarize_user_message_for_log`` (the same
+    helper logging/trajectory use) with ``sep="\\n"`` instead of a forked copy.
+    """
+
+
+    def test_none_is_empty(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        assert _summarize_user_message_for_log(None, sep="\n") == ""
+
+
+
+
+
+
+
+    def test_scalar_fallback(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        assert _summarize_user_message_for_log(42, sep="\n") == "42"
+
+    def test_flattened_output_is_regex_safe(self):
+        """The original failure: sanitize_context(list) raised TypeError."""
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        from agent.memory_manager import sanitize_context
+        content = [
+            {"type": "text", "text": "fix this bug"},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]
+        # Must not raise.
+        assert sanitize_context(_summarize_user_message_for_log(content, sep="\n"))
+
+
+# ---------------------------------------------------------------------------
+# AIAgent.commit_memory_session — routes to MemoryManager.on_session_end
+# ---------------------------------------------------------------------------
+
+
+class _CommitRecorder(FakeMemoryProvider):
+    """Provider that records on_session_end calls for assertions."""
+
+    def __init__(self, name="recorder"):
+        super().__init__(name)
+        self.end_calls = []
+
+    def on_session_end(self, messages):
+        self.end_calls.append(list(messages or []))
+
+
+class TestCommitMemorySessionRouting:
+    def test_on_session_end_fans_out(self):
+        mgr = MemoryManager()
+        builtin = _CommitRecorder("builtin")
+        external = _CommitRecorder("openviking")
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        msgs = [{"role": "user", "content": "hi"}]
+        mgr.on_session_end(msgs)
+
+        assert builtin.end_calls == [msgs]
+        assert external.end_calls == [msgs]
+
+    def test_on_session_end_tolerates_failure(self):
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin")
+        bad = _CommitRecorder("bad-provider")
+        bad.on_session_end = lambda m: (_ for _ in ()).throw(RuntimeError("boom"))
+        mgr.add_provider(builtin)
+        mgr.add_provider(bad)
+
+        mgr.on_session_end([])  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# on_memory_write bridge — must fire from both concurrent AND sequential paths
+# ---------------------------------------------------------------------------
+
+
+class TestOnMemoryWriteBridge:
+    """Verify that MemoryManager.on_memory_write is called when built-in
+    memory writes happen.  This is a regression test for #10174 where the
+    sequential tool execution path (_execute_tool_calls_sequential) was
+    missing the bridge call, so single memory tool calls never notified
+    external memory providers.
+    """
+
+
+
+
+
+
+    def test_memory_manager_tool_injection_deduplicates(self):
+        """Memory manager tools already in self.tools (from plugin registry)
+        must not be appended again.  Duplicate function names cause 400 errors
+        on providers that enforce unique names (e.g. Xiaomi MiMo via Nous Portal).
+
+        Regression test for: duplicate mnemosyne_recall / mnemosyne_remember /
+        mnemosyne_stats in tools array → 400 from Nous Portal.
+        """
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_recall", "description": "Recall", "parameters": {}},
+            {"name": "ext_remember", "description": "Remember", "parameters": {}},
+        ])
+        mgr.add_provider(p)
+
+        # Simulate self.tools already containing one of the plugin tools
+        # (as if it was registered via ctx.register_tool → get_tool_definitions)
+        existing_tools = [
+            {"type": "function", "function": {"name": "ext_recall", "description": "Recall (from registry)", "parameters": {}}},
+            {"type": "function", "function": {"name": "web_search", "description": "Search", "parameters": {}}},
+        ]
+
+        # Apply the same dedup logic from run_agent.py __init__
+        _existing_names = {
+            t.get("function", {}).get("name")
+            for t in existing_tools
+            if isinstance(t, dict)
+        }
+        for _schema in mgr.get_all_tool_schemas():
+            _tname = _schema.get("name", "")
+            if _tname and _tname in _existing_names:
+                continue
+            existing_tools.append({"type": "function", "function": _schema})
+            if _tname:
+                _existing_names.add(_tname)
+
+        # ext_recall should NOT be duplicated; ext_remember should be added
+        tool_names = [t["function"]["name"] for t in existing_tools]
+        assert tool_names.count("ext_recall") == 1, f"ext_recall duplicated: {tool_names}"
+        assert tool_names.count("ext_remember") == 1
+        assert tool_names.count("web_search") == 1
+        assert len(existing_tools) == 3  # web_search + ext_recall + ext_remember
+
+    def test_on_memory_write_tolerates_provider_failure(self):
+        """If a provider's on_memory_write raises, others still get notified."""
+        mgr = MemoryManager()
+        bad = FakeMemoryProvider("builtin")
+        bad.on_memory_write = MagicMock(side_effect=RuntimeError("boom"))
+        good = FakeMemoryProvider("good")
+        mgr.add_provider(bad)
+        mgr.add_provider(good)
+
+        mgr.on_memory_write("add", "user", "test")
+        # Good provider still received the call despite bad provider crashing
+        assert good.memory_writes == [("add", "user", "test")]
+
+
+class TestHonchoCadenceTracking:
+    """Verify Honcho provider cadence gating depends on on_turn_start().
+
+    Bug: _turn_count was never updated because on_turn_start() was not called
+    from run_conversation(). This meant cadence checks always passed (every
+    turn fired both context refresh and dialectic). Fixed by calling
+    on_turn_start(self._user_turn_count, msg) before prefetch_all().
+    """
+
+    def test_turn_count_updates_on_turn_start(self):
+        """on_turn_start sets _turn_count, enabling cadence math."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+        p = HonchoMemoryProvider()
+        assert p._turn_count == 0
+        p.on_turn_start(1, "hello")
+        assert p._turn_count == 1
+        p.on_turn_start(5, "world")
+        assert p._turn_count == 5
+
+    def test_queue_prefetch_respects_dialectic_cadence(self):
+        """With dialecticCadence=3, dialectic should skip turns 2 and 3."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+        p = HonchoMemoryProvider()
+        p._dialectic_cadence = 3
+        p._recall_mode = "context"
+        p._session_key = "test-session"
+        # Simulate a manager that records prefetch calls
+        class FakeManager:
+            def prefetch_context(self, key, query=None):
+                pass
+
+        p._manager = FakeManager()
+
+        # Simulate turn 1: last_dialectic_turn = -999, so (1 - (-999)) >= 3 -> fires
+        p.on_turn_start(1, "turn 1")
+        p._last_dialectic_turn = 1  # simulate it fired
+        p._last_context_turn = 1
+
+        # Simulate turn 2: (2 - 1) = 1 < 3 -> should NOT fire dialectic
+        p.on_turn_start(2, "turn 2")
+        assert (p._turn_count - p._last_dialectic_turn) < p._dialectic_cadence
+
+        # Simulate turn 3: (3 - 1) = 2 < 3 -> should NOT fire dialectic
+        p.on_turn_start(3, "turn 3")
+        assert (p._turn_count - p._last_dialectic_turn) < p._dialectic_cadence
+
+        # Simulate turn 4: (4 - 1) = 3 >= 3 -> should fire dialectic
+        p.on_turn_start(4, "turn 4")
+        assert (p._turn_count - p._last_dialectic_turn) >= p._dialectic_cadence
+
+    def test_injection_frequency_first_turn_with_1indexed(self):
+        """injection_frequency='first-turn' must inject on turn 1 (1-indexed)."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+        p = HonchoMemoryProvider()
+        p._injection_frequency = "first-turn"
+
+        # Turn 1 should inject (not skip)
+        p.on_turn_start(1, "first message")
+        assert p._turn_count == 1
+        # The guard is `_turn_count > 1`, so turn 1 passes through
+        should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
+        assert not should_skip, "First turn (turn 1) should NOT be skipped"
+
+        # Turn 2 should skip
+        p.on_turn_start(2, "second message")
+        should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
+        assert should_skip, "Second turn (turn 2) SHOULD be skipped"
+
+
+class TestMemoryToolToolsetGate:
+    """Issue #5544: memory provider tools must respect platform_toolsets.
+
+    Before the fix, MemoryManager.get_all_tool_schemas() output was appended
+    to AIAgent.tools unconditionally in agent_init.py — bypassing the
+    enabled_toolsets filter. Result: `platform_toolsets: telegram: []`
+    still leaked fact_store and other memory tools into the tool surface,
+    causing 10x latency on local models (Qwen3-30B: 1.7s → 42s) and
+    tool-call loops on small models.
+
+    These tests exercise the shared gate used by agent init and ACP refreshes.
+    The gate condition is:
+
+        disabled_toolsets includes memory → skip injection
+        enabled_toolsets is None        → no filter, inject (backward compat)
+        selected toolsets include memory → user opted in, inject
+        otherwise (incl. [])            → skip injection
+    """
+
+    @staticmethod
+    def _run_memory_injection(enabled_toolsets, memory_manager, disabled_toolsets=None):
+        """Run the shared memory-tool injection helper against a fake agent."""
+        fake_agent = SimpleNamespace(
+            _memory_manager=memory_manager,
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            tools=[],
+            valid_tool_names=set(),
+        )
+        inject_memory_provider_tools(fake_agent)
+        return fake_agent.tools, fake_agent.valid_tool_names
+
+    def _mgr_with_tools(self, *tool_names):
+        """Build a MemoryManager whose providers expose the named tool schemas."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider(
+            "ext",
+            tools=[{"name": n, "description": n, "parameters": {}} for n in tool_names],
+        )
+        mgr.add_provider(p)
+        return mgr
+
+    def test_none_toolsets_injects(self):
+        """enabled_toolsets=None (no filter) injects memory tools — backward compat."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(None, mgr)
+        assert "fact_store" in names
+        assert any(t["function"]["name"] == "fact_store" for t in tools)
+
+    def test_memory_in_toolsets_injects(self):
+        """enabled_toolsets including 'memory' injects memory tools."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(["terminal", "memory", "web"], mgr)
+        assert "fact_store" in names
+
+    def test_composite_toolset_with_memory_injects(self):
+        """Composite toolsets that include memory should inject provider tools."""
+        mgr = self._mgr_with_tools("hindsight_recall")
+        tools, names = self._run_memory_injection(["hermes-acp"], mgr)
+        assert "hindsight_recall" in names
+        assert any(t["function"]["name"] == "hindsight_recall" for t in tools)
+
+    @pytest.mark.parametrize("enabled_toolsets", [None, ["memory"], ["all"], ["hermes-acp"]])
+    def test_disabled_memory_toolset_blocks_injection(self, enabled_toolsets):
+        """An explicit memory disable wins over default or composite enablement."""
+        mgr = self._mgr_with_tools("hindsight_recall")
+        tools, names = self._run_memory_injection(
+            enabled_toolsets,
+            mgr,
+            disabled_toolsets=["memory"],
+        )
+        assert tools == []
+        assert names == set()
+
+    def test_empty_toolsets_blocks_injection(self):
+        """`platform_toolsets: telegram: []` must suppress memory tools. (#5544)"""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection([], mgr)
+        assert tools == []
+        assert names == set()
+
+    def test_toolsets_without_memory_blocks_injection(self):
+        """Toolsets that don't include memory must suppress injection."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(["terminal", "web"], mgr)
+        assert tools == []
+        assert names == set()
+
+    def test_no_memory_manager_no_injection(self):
+        """Gate is moot without a memory manager."""
+        tools, names = self._run_memory_injection(None, None)
+        assert tools == []
+
+    def test_multiple_schemas_all_blocked_together(self):
+        """When the gate is closed, no memory tools leak — not even partially."""
+        mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
+        tools, names = self._run_memory_injection(["terminal"], mgr)
+        assert tools == []
+        assert names == set()
+
+    def test_multiple_schemas_all_injected_when_enabled(self):
+        """When the gate is open, every memory tool schema is injected."""
+        mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
+        tools, names = self._run_memory_injection(None, mgr)
+        assert names == {"fact_store", "memory_search", "memory_add"}
+
+
+class TestContextEngineToolsetGate:
+    """Issue #5544 (sibling): context engine tools follow the same gate.
+
+    `agent.context_compressor.get_tool_schemas()` (e.g. lcm_grep, lcm_describe,
+    lcm_expand) was appended to AIAgent.tools unconditionally. Same blind
+    injection class as the memory bug; same local-model penalty. Gate name:
+    "context_engine" (matches the existing plugin-system convention).
+    """
+
+    @staticmethod
+    def _run_context_engine_injection(enabled_toolsets, compressor):
+        """Simulate the gated context-engine injection block from agent_init.py."""
+        tools = []
+        valid_tool_names = set()
+        engine_tool_names = set()
+
+        if (
+            compressor is not None
+            and tools is not None
+            and (
+                enabled_toolsets is None
+                or "context_engine" in enabled_toolsets
+            )
+        ):
+            _existing = {
+                t.get("function", {}).get("name")
+                for t in tools
+                if isinstance(t, dict)
+            }
+            for _schema in compressor.get_tool_schemas():
+                _tname = _schema.get("name", "")
+                if _tname and _tname in _existing:
+                    continue
+                tools.append({"type": "function", "function": _schema})
+                if _tname:
+                    valid_tool_names.add(_tname)
+                    engine_tool_names.add(_tname)
+                    _existing.add(_tname)
+
+        return tools, valid_tool_names, engine_tool_names
+
+    class _FakeCompressor:
+        def __init__(self, schemas):
+            self._schemas = schemas
+
+        def get_tool_schemas(self):
+            return list(self._schemas)
+
+    def _compressor_with(self, *tool_names):
+        return self._FakeCompressor(
+            [{"name": n, "description": n, "parameters": {}} for n in tool_names]
+        )
+
+    def test_none_toolsets_injects(self):
+        """enabled_toolsets=None injects context-engine tools — backward compat."""
+        c = self._compressor_with("lcm_grep", "lcm_describe", "lcm_expand")
+        tools, names, engine_names = self._run_context_engine_injection(None, c)
+        assert engine_names == {"lcm_grep", "lcm_describe", "lcm_expand"}
+
+    def test_context_engine_in_toolsets_injects(self):
+        """enabled_toolsets including 'context_engine' injects the tools."""
+        c = self._compressor_with("lcm_grep")
+        tools, names, engine_names = self._run_context_engine_injection(
+            ["terminal", "context_engine"], c
+        )
+        assert "lcm_grep" in engine_names
+
+    def test_empty_toolsets_blocks_injection(self):
+        """`platform_toolsets: telegram: []` must suppress context-engine tools."""
+        c = self._compressor_with("lcm_grep")
+        tools, names, engine_names = self._run_context_engine_injection([], c)
+        assert tools == []
+        assert engine_names == set()
+
+    def test_toolsets_without_context_engine_blocks_injection(self):
+        """A toolset list that doesn't name 'context_engine' suppresses injection."""
+        c = self._compressor_with("lcm_grep", "lcm_describe")
+        tools, names, engine_names = self._run_context_engine_injection(
+            ["terminal", "memory"], c
+        )
+        assert tools == []
+        assert engine_names == set()
+
+    def test_no_compressor_no_injection(self):
+        """Gate is moot without a context_compressor."""
+        tools, names, engine_names = self._run_context_engine_injection(None, None)
+        assert tools == []
+
+
+class TestNormalizeToolSchema:
+    """Issue #47707: one malformed tool schema must not poison the request.
+
+    Context engines / memory providers expose schemas via get_tool_schemas().
+    The expected shape is a bare function schema; some providers return an
+    entry already in OpenAI tool form ({"type":"function","function":{...}}).
+    Wrapping that a second time yields a tool whose `function` has no
+    top-level `name`, which strict providers (DeepSeek) reject with HTTP 400
+    `tools[N].function: missing field name` — disabling the entire toolset.
+    """
+
+
+    def test_already_wrapped_schema_is_unwrapped(self):
+        from agent.memory_manager import normalize_tool_schema
+        wrapped = {
+            "type": "function",
+            "function": {"name": "x_grep", "description": "d", "parameters": {}},
+        }
+        out = normalize_tool_schema(wrapped)
+        assert out is not None
+        assert out["name"] == "x_grep"
+        # Must be the inner function schema, not the wrapper.
+        assert "type" not in out or out.get("type") != "function"
+
+
+
+    def test_non_dict_rejected(self):
+        from agent.memory_manager import normalize_tool_schema
+        assert normalize_tool_schema("nope") is None
+        assert normalize_tool_schema(None) is None
+
+
+
+class TestMemoryInjectionRejectsMalformedSchema:
+    """The real inject_memory_provider_tools must skip nameless schemas.
+
+    Without the #47707 fix, an already-wrapped schema is appended as a
+    nameless tool ({"type":"function","function":{"type":"function",...}}),
+    poisoning the whole tool surface. With the fix it is skipped (or, for a
+    well-formed-but-wrapped schema, unwrapped to a valid tool).
+    """
+
+    def _agent_with(self, *schemas):
+        mgr = MemoryManager()
+        mgr.add_provider(FakeMemoryProvider("ext", tools=list(schemas)))
+        return SimpleNamespace(
+            _memory_manager=mgr,
+            enabled_toolsets=None,
+            tools=[],
+            valid_tool_names=set(),
+        )
+
+    def test_already_wrapped_schema_is_unwrapped_not_poisoned(self):
+        agent = self._agent_with(
+            {"type": "function",
+             "function": {"name": "x_grep", "description": "d", "parameters": {}}}
+        )
+        inject_memory_provider_tools(agent)
+        # Exactly one well-formed tool, with a top-level function name.
+        assert len(agent.tools) == 1
+        fn = agent.tools[0]["function"]
+        assert fn["name"] == "x_grep"
+        # No nested double-wrap leaked through.
+        assert fn.get("type") != "function"
+        assert "x_grep" in agent.valid_tool_names
+
+    def test_nameless_schema_is_skipped(self):
+        agent = self._agent_with({"description": "no name at all"})
+        inject_memory_provider_tools(agent)
+        assert agent.tools == []
+        assert agent.valid_tool_names == set()
+
+    def test_good_schema_still_injected_alongside_bad(self):
+        agent = self._agent_with(
+            {"name": "good_tool", "description": "d", "parameters": {}},
+            {"description": "bad, no name"},
+        )
+        inject_memory_provider_tools(agent)
+        names = {t["function"]["name"] for t in agent.tools}
+        assert names == {"good_tool"}
+        assert agent.valid_tool_names == {"good_tool"}
+
+
+class TestTrivialPromptClassifier:
+    """is_trivial_prompt — the shared gate for core prefetch + provider injection."""
+
+    def test_trivial_variants(self):
+        from agent.memory_provider import is_trivial_prompt
+
+        for t in ("hi", "HI!", "hey.", "hello", "yo", "sup~", "thanks :)",
+                  "done???", "ok", "yes.", "k", "", "   ", "/help", "lgtm"):
+            assert is_trivial_prompt(t), f"expected trivial: {t!r}"
+
+    def test_substantive_and_prefix_collisions_pass_through(self):
+        from agent.memory_provider import is_trivial_prompt
+
+        # Words that merely START with a trivial word must not match.
+        for t in ("k8s", "yolo", "hive", "note", "supper", "hind",
+                  "hello world", "ok so what's next", "what's my name",
+                  "hey can you check the logs", "continue the migration plan"):
+            assert not is_trivial_prompt(t), f"expected non-trivial: {t!r}"
+
+
+# ---------------------------------------------------------------------------
+# System-prompt gate parity — #81014
+# ---------------------------------------------------------------------------
+
+
+class TestSystemPromptGateParity:
+    """The memory provider's ``system_prompt_block()`` must be injected only
+    when ``inject_memory_provider_tools`` would actually expose its tools.
+
+    Otherwise the agent receives instructions for tools that don't exist
+    in its tool surface (issue #81014).
+    """
+
+    def _agent_with_provider(
+        self,
+        *,
+        enabled_toolsets=None,
+        disabled_toolsets=None,
+        tools=None,
+        prompt_block="Use mnemosyne_remember to save facts.",
+    ):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("mnemosyne", tools=[
+            {"name": "mnemosyne_remember", "description": "Remember", "parameters": {}},
+        ])
+        provider._prompt_block = prompt_block
+        mgr.add_provider(provider)
+        agent = SimpleNamespace(
+            _memory_manager=mgr,
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            tools=list(tools) if tools is not None else [],
+        )
+        return agent, mgr, provider
+
+    def test_tools_exposed_when_memory_in_enabled_toolsets(self):
+        from agent.memory_manager import memory_provider_tools_exposed
+        agent, _mgr, _p = self._agent_with_provider(enabled_toolsets=["memory"])
+        assert memory_provider_tools_exposed(agent) is True
+
+    def test_tools_hidden_when_memory_in_disabled_toolsets(self):
+        from agent.memory_manager import memory_provider_tools_exposed
+        agent, _mgr, _p = self._agent_with_provider(disabled_toolsets=["memory"])
+        assert memory_provider_tools_exposed(agent) is False
+
+    def test_tools_hidden_when_memory_not_in_enabled_toolsets(self):
+        from agent.memory_manager import memory_provider_tools_exposed
+        agent, _mgr, _p = self._agent_with_provider(enabled_toolsets=["web_search"])
+        assert memory_provider_tools_exposed(agent) is False
+
+    def test_tools_exposed_when_memory_tool_already_present(self):
+        """The built-in "memory" tool is a sufficient opt-in even when the
+        toolset gate says nothing about memory."""
+        from agent.memory_manager import memory_provider_tools_exposed
+        tools = [
+            {"type": "function", "function": {"name": "memory", "description": "x", "parameters": {}}},
+        ]
+        agent, _mgr, _p = self._agent_with_provider(enabled_toolsets=["web_search"], tools=tools)
+        assert memory_provider_tools_exposed(agent) is True
+
+    def test_inject_and_exposed_share_the_same_gate(self):
+        """``inject_memory_provider_tools`` and ``memory_provider_tools_exposed``
+        must agree — both determine whether provider tools are presented to
+        the model (#81014)."""
+        from agent.memory_manager import inject_memory_provider_tools, memory_provider_tools_exposed
+
+        # Disabled toolsets — neither path should add or advertise provider tools.
+        agent, _mgr, _p = self._agent_with_provider(disabled_toolsets=["memory"])
+        assert memory_provider_tools_exposed(agent) is False
+        assert inject_memory_provider_tools(agent) == 0
+
+        # Enabled with "memory" — both paths must add/advertise.
+        agent, _mgr, _p = self._agent_with_provider(
+            enabled_toolsets=["memory"], tools=[]
+        )
+        assert memory_provider_tools_exposed(agent) is True
+        added = inject_memory_provider_tools(agent)
+        assert added == 1
+        names = {t["function"]["name"] for t in agent.tools}
+        assert "mnemosyne_remember" in names

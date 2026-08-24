@@ -1,0 +1,1676 @@
+export interface ConfigFieldSchema {
+  category?: string
+  description?: string
+  options?: unknown[]
+  /** When true, renders a SearchableSelect (Popover + cmdk) instead of the
+   *  closed `<Select>` dropdown. For large option lists like IANA timezones. */
+  searchable?: boolean
+  /** When true, a searchable select prepends a "clear" item that resets the
+   *  value to ''. Matches the existing <Select> EMPTY_SELECT_VALUE pattern. */
+  clearable?: boolean
+  type?: 'boolean' | 'list' | 'number' | 'select' | 'string' | 'text'
+}
+
+export interface ConfigSchemaResponse {
+  category_order?: string[]
+  fields: Record<string, ConfigFieldSchema>
+}
+
+export interface AudioTranscriptionResponse {
+  ok: boolean
+  provider?: string
+  transcript: string
+}
+
+export interface AudioSpeakResponse {
+  ok: boolean
+  data_url: string
+  mime_type: string
+  provider?: string
+}
+
+/** `POST /api/audio/tts-lease` — TTS engine warm-up / release driven by speech toggles. */
+export interface AudioTtsLeaseResponse {
+  ok: boolean
+  lease: string
+  active: boolean
+  /** Live lease holders after this call (null when the backend call itself failed). */
+  leases: null | number
+  /** Warm-up outcome: `loaded` | `cached` | `installed` | `noop` | `error`. */
+  action?: string
+  provider?: string
+  /** Resident local models dropped (release path). */
+  released?: number
+  error?: string
+}
+
+export interface ElevenLabsVoice {
+  label: string
+  name: string
+  voice_id: string
+}
+
+export interface ElevenLabsVoicesResponse {
+  available: boolean
+  voices: ElevenLabsVoice[]
+}
+
+export interface OAuthProviderStatus {
+  error?: string
+  expires_at?: null | string
+  has_refresh_token?: boolean
+  last_refresh?: null | string
+  logged_in: boolean
+  source?: null | string
+  source_label?: null | string
+  token_preview?: null | string
+}
+
+export interface OAuthProvider {
+  cli_command: string
+  /** Shell command that clears an external provider's credentials, run in the
+   *  embedded terminal. Null when Hermes doesn't know how to remove it. */
+  disconnect_command?: null | string
+  disconnect_hint?: null | string
+  disconnectable?: boolean
+  docs_url: string
+  flow: 'device_code' | 'external' | 'pkce'
+  id: string
+  name: string
+  status: OAuthProviderStatus
+}
+
+export interface OAuthProvidersResponse {
+  providers: OAuthProvider[]
+}
+
+export type OAuthStartResponse =
+  | {
+      auth_url: string
+      expires_in: number
+      flow: 'pkce'
+      session_id: string
+    }
+  | {
+      expires_in: number
+      flow: 'device_code'
+      poll_interval: number
+      session_id: string
+      user_code: string
+      verification_url: string
+    }
+
+export interface OAuthSubmitResponse {
+  message?: string
+  ok: boolean
+  status: 'approved' | 'error'
+}
+
+export interface OAuthPollResponse {
+  error_message?: null | string
+  expires_at?: null | number
+  session_id: string
+  status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
+}
+
+export interface MemoryProviderOAuthStatus {
+  auth: 'apikey' | 'oauth' | null
+  connected: boolean
+  detail: string
+  state: 'connected' | 'error' | 'idle' | 'pending'
+}
+
+export interface EnvVarInfo {
+  advanced: boolean
+  category: string
+  // True when this var is a messaging-platform credential owned by a card on
+  // the dedicated Messaging page. The Keys page hides these to avoid
+  // duplicating the richer channel-configuration UI.
+  channel_managed?: boolean
+  description: string
+  is_password: boolean
+  is_set: boolean
+  // Backend-derived provider grouping hints (from the unified provider catalog
+  // in hermes_cli/provider_catalog.py). When present, the Keys tab groups by
+  // this provider identity — the SAME one `hermes model` uses — instead of
+  // desktop-only env-var prefix guesses. Empty for non-provider env vars.
+  provider?: string
+  provider_label?: string
+  redacted_value: null | string
+  tools: string[]
+  url: null | string
+}
+
+export type MemoryProviderFieldKind = 'bool' | 'json' | 'number' | 'secret' | 'select' | 'text'
+
+export interface MemoryProviderFieldOption {
+  description: string
+  label: string
+  value: string
+}
+
+export interface MemoryProviderField {
+  description: string
+  group: string
+  info?: string
+  inline: boolean
+  is_set: boolean
+  key: string
+  kind: MemoryProviderFieldKind
+  label: string
+  options: MemoryProviderFieldOption[]
+  placeholder: string
+  value: string
+}
+
+export interface MemoryProviderConfig {
+  docs_url: string
+  fields: MemoryProviderField[]
+  label: string
+  name: string
+}
+
+export interface CustomEndpoint {
+  api_key_preview?: null | string
+  base_url: string
+  context_length?: null | number
+  discover_models: boolean
+  has_api_key: boolean
+  id: string
+  is_current?: boolean
+  model: string
+  models: string[]
+  name: string
+  source?: string
+}
+
+export interface CustomEndpointsResponse {
+  current: {
+    base_url: string
+    model: string
+    provider: string
+  }
+  endpoints: CustomEndpoint[]
+  id?: string
+  ok?: boolean
+}
+
+export interface CustomEndpointUpdate {
+  api_key?: string
+  base_url: string
+  context_length?: number
+  discover_models?: boolean
+  id?: string
+  make_default?: boolean
+  model: string
+  models?: string[]
+  name: string
+}
+
+export interface CustomEndpointValidationResponse {
+  message: string
+  models: string[]
+  ok: boolean
+  reachable: boolean
+}
+
+export interface MessagingEnvVarInfo {
+  advanced: boolean
+  description: string
+  is_password: boolean
+  is_set: boolean
+  key: string
+  prompt: string
+  redacted_value: null | string
+  required: boolean
+  url: null | string
+}
+
+export interface MessagingHomeChannel {
+  chat_id: string
+  name: string
+  platform: string
+  thread_id?: string
+}
+
+export interface MessagingPlatformInfo {
+  configured: boolean
+  description: string
+  docs_url: string
+  enabled: boolean
+  env_vars: MessagingEnvVarInfo[]
+  error_code?: null | string
+  error_message?: null | string
+  gateway_running: boolean
+  home_channel?: MessagingHomeChannel | null
+  id: string
+  name: string
+  state?: null | string
+  updated_at?: null | string
+}
+
+export interface MessagingPlatformsResponse {
+  platforms: MessagingPlatformInfo[]
+}
+
+/** A pending pairing request, or an already-approved user, for one platform. */
+export interface PairingUser {
+  age_minutes?: number
+  platform: string
+  /** Present on pending rows only — the id `approvePairing` grants on. */
+  request_id?: string
+  user_id: string
+  user_name?: string
+}
+
+export interface PairingResponse {
+  approved: PairingUser[]
+  pending: PairingUser[]
+}
+
+export interface MessagingPlatformUpdate {
+  clear_env?: string[]
+  enabled?: boolean
+  env?: Record<string, string>
+}
+
+export interface MessagingPlatformTestResponse {
+  message: string
+  ok: boolean
+  state?: null | string
+}
+
+// -- Webhooks (subscription CRUD) --------------------------------------------
+// Incoming HTTP event routes served by the webhook gateway platform. Backed by
+// the same JSON store the CLI/dashboard use; per-route HMAC secrets are
+// redacted on read and surfaced exactly once on create.
+
+export interface WebhookRoute {
+  created_at: null | string
+  deliver: string
+  deliver_only: boolean
+  description: string
+  enabled: boolean
+  events: string[]
+  name: string
+  prompt: string
+  secret_set: boolean
+  skills: string[]
+  url: string
+}
+
+export interface WebhooksResponse {
+  base_url: string
+  enabled: boolean
+  subscriptions: WebhookRoute[]
+}
+
+export interface WebhookCreatePayload {
+  deliver?: string
+  deliver_chat_id?: string
+  deliver_only?: boolean
+  description?: string
+  events?: string[]
+  name: string
+  prompt?: string
+  skills?: string[]
+}
+
+// Create echoes the route summary plus the one-time secret.
+export interface WebhookCreateResponse extends WebhookRoute {
+  secret: string
+}
+
+export interface WebhookEnableResponse {
+  enabled: true
+  needs_restart: boolean
+  ok: boolean
+  platform: 'webhook'
+  restart_action?: string
+  restart_error?: string
+  restart_pid?: null | number
+  restart_started?: boolean
+}
+
+export interface GatewayReadyPayload {
+  skin?: unknown
+}
+
+export interface HermesConfig {
+  agent?: {
+    reasoning_effort?: string
+    personalities?: Record<string, unknown>
+    service_tier?: string
+  }
+  display?: {
+    personality?: string
+    skin?: string
+    interim_assistant_messages?: boolean
+    timestamps?: boolean
+  }
+  desktop?: {
+    repo_scan_enabled?: boolean
+    repo_scan_roots?: string[]
+    repo_scan_exclude_paths?: string[]
+  }
+  terminal?: {
+    cwd?: string
+    font_family?: string
+  }
+  stt?: {
+    enabled?: boolean
+  }
+  voice?: {
+    max_recording_seconds?: number
+    auto_tts?: boolean
+    stop_phrases?: unknown
+    thinking_sound?: unknown
+  }
+}
+
+export type HermesConfigRecord = Record<string, unknown>
+
+export interface ModelInfoResponse {
+  auto_context_length?: number
+  capabilities?: Record<string, unknown>
+  config_context_length?: number
+  effective_context_length?: number
+  model: string
+  provider: string
+}
+
+export interface ModelPricing {
+  /** Formatted $/Mtok input price, e.g. "$3.00", or "free", or "" if unknown. */
+  input: string
+  /** Formatted $/Mtok output price. */
+  output: string
+  /** Formatted $/Mtok cached-input price, or null when the model has none. */
+  cache: string | null
+  /** True when the model costs nothing (free tier eligible). */
+  free: boolean
+  /** Sale: rounded percent off list when gateway sends pricing.original. */
+  discount_percent?: number
+  /** Sale: formatted pre-discount input $/Mtok ("was"). */
+  was_input?: string
+  /** Sale: formatted pre-discount output $/Mtok ("was"). */
+  was_output?: string
+}
+
+export interface ModelOptionProvider {
+  is_current?: boolean
+  models?: string[]
+  name: string
+  slug: string
+  total_models?: number
+  warning?: string
+  /** Curated shortlist (one flagship per lab) the picker shows by default for
+   *  aggregator providers that serve dozens of models across many labs. Empty
+   *  for providers with no manifest entry — the picker falls back to top-N.
+   *  The rest of `models` stays reachable via search / Edit Models. */
+  featured_models?: string[]
+  /** True when the provider has usable credentials. False for canonical
+   *  providers surfaced by `include_unconfigured` that the user hasn't set up
+   *  yet — render these with a setup affordance instead of hiding them. */
+  authenticated?: boolean
+  /** Auth flow for an unconfigured provider: "api_key" can be activated inline
+   *  by pasting `key_env`; anything else (oauth_*, external, aws_sdk, …) needs
+   *  the `hermes model` CLI / onboarding OAuth flow. */
+  auth_type?: string
+  /** Env var to paste an API key into, for unconfigured `api_key` providers. */
+  key_env?: string
+  /** True for providers defined via the user's `providers:` config block. */
+  is_user_defined?: boolean
+  /** User-defined providers only: every accepted identity for this endpoint
+   *  (bare config key, `custom:<key>`, normalized display name, …). A session's
+   *  `model.options` reports the canonical `custom:<key>` form, so "is this row
+   *  the current provider?" must check membership here, not slug equality. */
+  aliases?: string[]
+  /** OpenAI-compatible endpoint for a user-defined provider. The backend
+   *  exposes this as `api_url`; model assignments send it back as `base_url`
+   *  so switching providers does not discard the selected local endpoint. */
+  api_url?: string
+  /** Per-model pricing keyed by model id (present when the picker requested
+   *  pricing and the provider supports live pricing). */
+  pricing?: Record<string, ModelPricing>
+  /** Nous only: whether the current account is on the free tier. */
+  free_tier?: boolean
+  /** Nous only: paid models a free-tier user cannot select (shown disabled). */
+  unavailable_models?: string[]
+  /** Per-model option support, keyed by model id (present when the picker
+   *  requested capabilities). Lets the UI gate fast/reasoning controls. */
+  capabilities?: Record<string, ModelCapabilities>
+}
+
+export interface ModelCapabilities {
+  /** False when the route rejects a reasoning disable ("mandatory" in the
+   *  provider catalog), so the Thinking toggle must not be offered. Absent
+   *  when the catalog doesn't say. */
+  can_disable_reasoning?: boolean
+  fast: boolean
+  reasoning: boolean
+}
+
+export interface ModelOptionsResponse {
+  model?: string
+  provider?: string
+  providers?: ModelOptionProvider[]
+}
+
+export interface PaginatedSessions {
+  limit: number
+  offset: number
+  sessions: SessionInfo[]
+  total: number
+  /** Listable conversation count per profile (children excluded), keyed by
+   *  profile name. Lets the sidebar scope its "Load more" footer to the active
+   *  profile instead of the global total. Present only on
+   *  `/api/profiles/sessions`. */
+  profile_totals?: Record<string, number>
+  /** Per-profile read failures from the cross-profile aggregator (e.g. a locked
+   *  or corrupt state.db). Present only on `/api/profiles/sessions`. */
+  errors?: Array<{ profile: string; error: string }>
+}
+
+export interface RpcEvent<T = unknown> {
+  payload?: T
+  profile?: string
+  /** Registry connection whose socket delivered the event (renderer-side tag;
+   * absent for the local/legacy primary path). */
+  connectionId?: string
+  session_id?: string
+  type: string
+}
+
+export interface SessionCreateResponse {
+  info?: SessionRuntimeInfo
+  message_count?: number
+  messages?: SessionMessage[]
+  session_id: string
+  stored_session_id?: string
+}
+
+export interface SessionInfo {
+  archived?: boolean
+  cwd?: null | string
+  /** Git branch checked out in {@link cwd} when the session started/resumed.
+   *  The sidebar groups main-checkout sessions by this so feature-branch work
+   *  doesn't collapse under a single directory-named "main" row. Null for
+   *  non-git workspaces and sessions created before branch capture landed. */
+  git_branch?: null | string
+  /** Git repo root that owns {@link cwd} — the authoritative project key,
+   *  resolved server-side at cwd-set (and backfilled for history). The sidebar
+   *  groups by this instead of probing git in the GUI. Null for non-git
+   *  workspaces and not-yet-backfilled rows. */
+  git_repo_root?: null | string
+  ended_at: null | number
+  id: string
+  /** Original root id of a compression chain, when this entry is a projected
+   *  continuation tip. Stable across compressions — used as the durable id for
+   *  pins so a pinned conversation survives auto-compression. */
+  _lineage_root_id?: null | string
+  /** Every id on the compression chain (root, intermediates, tip) when this
+   *  entry is a projected continuation tip. Intermediates matter: a persisted
+   *  tile or route can hold a middle segment's id from when IT was the tip. */
+  _lineage_ids?: null | string[]
+  input_tokens: number
+  /** Spend for the session, straight off the `sessions` row. `actual` is set
+   *  when the provider reported a price; `estimated` is our own pricing-table
+   *  math. Both are 0 on subscription auth that never quotes a price, which is
+   *  why the sidebar only offers a cost sort when some session has spend. */
+  actual_cost_usd?: null | number
+  estimated_cost_usd?: null | number
+  is_active: boolean
+  last_active: number
+  message_count: number
+  model: null | string
+  output_tokens: number
+  /** Parent conversation when this row is a /branch fork. */
+  parent_session_id?: null | string
+  /** Durable server-side pin flag (`sessions.pinned`). The list endpoints
+   *  back-fill pinned conversations past their LIMIT, so a pinned row is
+   *  always present in a page — which makes this authoritative for the
+   *  sidebar's Pinned section and lets a second app adopt pins made
+   *  elsewhere. Undefined against a backend predating the flag; treat that as
+   *  "no opinion" and leave the local pin set alone. */
+  pinned?: boolean
+  /** Derived read state (backend watermark: `last_read_at` vs `last_active`,
+   *  see `SessionDB.session_unread`). True when the conversation was
+   *  explicitly marked unread or a response arrived after it was last read.
+   *  Undefined against a backend predating the flag; treat as read. */
+  unread?: boolean
+  preview: null | string
+  source: null | string
+  started_at: number
+  title: null | string
+  tool_call_count: number
+  /** Origin platform when this session was handed off from a messaging
+   *  platform (e.g. a Telegram thread continued in the desktop app). The live
+   *  {@link source} becomes local (tui/desktop) after a handoff, so the origin
+   *  is preserved here to surface the platform badge on the row. */
+  handoff_platform?: null | string
+  /** Handoff lifecycle: 'pending' | 'in_progress' | 'completed' | 'failed'. */
+  handoff_state?: null | string
+  handoff_error?: null | string
+  /** Owning profile name, set by the cross-profile aggregator
+   *  (`/api/profiles/sessions`). Absent on legacy single-profile responses,
+   *  which the UI treats as the default profile. */
+  profile?: string
+  /** True when {@link profile} is the default profile. */
+  is_default_profile?: boolean
+  /** Registry connection that owns this row when it came from a CONNECTED
+   *  non-primary gateway (Electron's unified-list splice, #88880). Absent for
+   *  rows served by the primary/local backend. Opens must route through the
+   *  connection-scoped gateway (`ensureGatewayAgent`) when present. */
+  connection_id?: string
+}
+
+export type TimelineDisplayMetadata =
+  | { model: string; provider?: string }
+  | {
+      delegation_id: string
+      task_count: number
+      completed_count?: number
+      failed_count?: number
+      duration_seconds?: number
+    }
+  | { reactions: MessageReaction[] }
+
+/** One emoji reaction on a message. One per author, iOS-Tapback style. */
+export interface MessageReaction {
+  emoji: string
+  author: 'agent' | 'user'
+  /** Epoch seconds. */
+  at: number
+}
+
+export interface SessionMessage {
+  /**
+   * Full tool arguments for a gateway-projected tool row (`role: 'tool'`).
+   * `context` is an 80-char display preview. The expanded tool row rebuilds
+   * the full call from this field. Absent on a backend older than this app.
+   */
+  args?: unknown
+  codex_reasoning_items?: unknown
+  /** Responses-API assistant message items; text parts here are the
+   *  user-visible reply when `content` persisted empty (#68321). */
+  codex_message_items?: unknown
+  content: unknown
+  /** Backend-projected user-visible content when a physical row also carries internal model scaffolding. */
+  display_content?: unknown
+  context?: unknown
+  name?: string
+  reasoning?: null | string
+  reasoning_content?: null | string
+  reasoning_details?: unknown
+  display_kind?:
+    'async_delegation_complete' | 'auto_continue' | 'hidden' | 'model_switch' | 'personality_switch' | string
+  /**
+   * A backend older than this app can still serve this as unparsed JSON text,
+   * so readers must narrow before indexing into it.
+   */
+  display_metadata?: string | TimelineDisplayMetadata
+  role: 'assistant' | 'system' | 'tool' | 'user'
+  /**
+   * Durable `messages.id` from the backend. The renderer's own message ids are
+   * ephemeral (derived from timestamp+index, and a different shape for live vs
+   * rehydrated vs optimistic rows), so anything addressing a specific persisted
+   * message — reactions — keys off this. Absent on a backend older than this app.
+   *
+   * The gateway resume path names it `row_id`; the REST transcript path
+   * (`SELECT *`) ships the same value as a numeric `id`. Read both.
+   */
+  row_id?: number
+  id?: number
+  text?: unknown
+  timestamp?: number
+  tool_call_id?: null | string
+  tool_calls?: unknown
+  tool_name?: string
+}
+
+export interface SessionMessagesResponse {
+  messages: SessionMessage[]
+  pagination?: {
+    limit: number
+    offset: number
+    order: 'latest' | 'oldest'
+    returned: number
+  }
+  session_id: string
+}
+
+export interface SessionResumeResponse {
+  /** Present when the backend found a fresh crash-interrupted turn and
+   *  scheduled its automatic continuation; the turn arrives as a normal
+   *  message.start stream right after this resume. */
+  auto_continue?: {
+    attempt: number
+    interrupted_at: number
+  }
+  hydrating?: boolean
+  inflight?: null | {
+    assistant?: string
+    /** Mid-turn redirect corrections, oldest first. The turn's original prompt
+     *  stays in `user`; these are the follow-ups typed while it ran. */
+    corrections?: string[]
+    /** Parallel to `corrections`: the length of `assistant` already streamed
+     *  when each correction was accepted. Lets a resume rebuild arrival order —
+     *  the correction bubble lands after the output the user had already seen
+     *  and before the output it redirected (#73793). Omitted by older
+     *  gateways. */
+    correction_offsets?: number[]
+    /** Retained failed turn: the error the terminal frame carried (the frame
+     *  itself may have been lost to a disconnect). */
+    error?: string
+    /** Structured {layer, code, retryable} descriptor for the retained failed
+     *  turn (see agent/error_surface.py). Omitted by older gateways. */
+    error_surface?: unknown
+    recoverable?: boolean
+    status?: string
+    streaming?: boolean
+    user?: string
+  }
+  queued?: null | {
+    user?: string
+  }
+  // The oldest gateway approval still waiting for a response. This is returned
+  // on resume so a reconnect can restore a prompt whose original event was
+  // emitted while the client transport was detached.
+  pending_approval?: {
+    allow_permanent?: boolean
+    choices?: string[]
+    command?: string
+    description?: string
+    request_id?: string
+    smart_denied?: boolean
+  }
+  // The clarify question still blocking this session, if any. Same replay
+  // class as pending_approval: emitted-while-detached prompts are restored
+  // from the resume snapshot instead of being lost until server-side timeout.
+  pending_clarify?: {
+    answers?: Record<string, unknown>
+    choices?: null | string[]
+    multi_select?: boolean
+    question?: string
+    questions?: unknown
+    request_id?: string
+  }
+  info?: SessionRuntimeInfo
+  message_count: number
+  messages: SessionMessage[]
+  messages_omitted?: boolean
+  resumed: string
+  running?: boolean
+  session_id: string
+  session_key?: string
+  started_at?: number
+  status?: string
+  /** Latest full task snapshot. Revisions let the renderer reject a response
+   * that raced with a newer live update. */
+  todo_state?: {
+    revision?: number
+    todos?: unknown
+  }
+  /** Epoch seconds the current turn started, or null when idle. */
+  turn_started_at?: number | null
+}
+
+export interface SessionRuntimeInfo {
+  approval_mode?: 'manual' | 'off' | 'smart'
+  branch?: string
+  config_warning?: string
+  credential_warning?: string
+  cwd?: string
+  desktop_contract?: number
+  fast?: boolean
+  install_warning?: string
+  model?: string
+  personality?: string
+  provider?: string
+  reasoning_effort?: string
+  running?: boolean
+  service_tier?: string
+  skills?: Record<string, string[]> | string[]
+  tools?: Record<string, string[]>
+  usage?: Partial<UsageStats>
+  version?: string
+  yolo?: boolean
+}
+
+export interface UsageStats {
+  /** Rolling tokens-per-second over the last ~10 API calls (tui_gateway `_get_usage`). */
+  avg_tps?: number
+  /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
+  cache_hit_pct?: number
+  calls: number
+  context_max?: number
+  context_percent?: number
+  context_estimated?: boolean
+  context_source?: string
+  context_used?: number
+  cost_usd?: number
+  input: number
+  output: number
+  total: number
+}
+
+/** One graph node in the star map (learned skill or memory chunk). */
+export interface StarmapNode {
+  id: string
+  label: string
+  kind: 'memory' | 'skill'
+  memorySource?: 'memory' | 'profile'
+  timestamp?: null | number
+  category: string
+  useCount: number
+  state: string
+  createdBy: null | string
+  pinned: boolean
+}
+
+/** A declared `related_skills` link; both endpoints are guaranteed to be nodes. */
+export interface StarmapEdge {
+  source: string
+  target: string
+}
+
+export interface StarmapCluster {
+  category: string
+  count: number
+}
+
+/** Freeform memory rendered as a card — never a graph node. */
+export interface StarmapMemoryCard {
+  source: 'memory' | 'profile'
+  timestamp?: null | number
+  title: string
+  body: string
+}
+
+export interface StarmapGraph {
+  nodes: StarmapNode[]
+  edges: StarmapEdge[]
+  clusters: StarmapCluster[]
+  memory: StarmapMemoryCard[]
+  stats: Record<string, unknown>
+}
+
+export interface ContextUsageCategory {
+  color: string
+  id: string
+  label: string
+  tokens: number
+}
+
+export interface ContextBreakdown {
+  categories: ContextUsageCategory[]
+  context_max: number
+  context_percent: number
+  context_estimated?: boolean
+  context_source?: string
+  context_used: number
+  estimated_total: number
+  model?: string
+}
+
+export interface AnalyticsDailyEntry {
+  actual_cost: number
+  api_calls: number
+  cache_read_tokens: number
+  day: string
+  estimated_cost: number
+  input_tokens: number
+  output_tokens: number
+  reasoning_tokens: number
+  sessions: number
+}
+
+export interface AnalyticsModelEntry {
+  api_calls: number
+  estimated_cost: number
+  input_tokens: number
+  model: string
+  output_tokens: number
+  sessions: number
+}
+
+export interface AnalyticsResponse {
+  by_model: AnalyticsModelEntry[]
+  daily: AnalyticsDailyEntry[]
+  period_days: number
+  skills: {
+    summary: AnalyticsSkillsSummary
+    top_skills: AnalyticsSkillEntry[]
+  }
+  /** Per-tool-name call counts. Absent on older backends. */
+  tools?: AnalyticsToolEntry[]
+  totals: AnalyticsTotals
+}
+
+export interface AnalyticsToolEntry {
+  count: number
+  percentage: number
+  tool: string
+}
+
+export interface AnalyticsSkillEntry {
+  last_used_at: null | number
+  manage_count: number
+  percentage: number
+  skill: string
+  total_count: number
+  view_count: number
+}
+
+export interface AnalyticsSkillsSummary {
+  distinct_skills_used: number
+  total_skill_actions: number
+  total_skill_edits: number
+  total_skill_loads: number
+}
+
+export interface AnalyticsTotals {
+  total_actual_cost: number
+  total_api_calls: null | number
+  total_cache_read: null | number
+  total_estimated_cost: number
+  total_input: null | number
+  total_output: null | number
+  total_reasoning: null | number
+  total_sessions: number
+}
+
+export interface CronJob {
+  deliver?: null | string
+  enabled: boolean
+  id: string
+  last_error?: null | string
+  last_run_at?: null | string
+  model?: null | string
+  name?: null | string
+  next_run_at?: null | string
+  no_agent?: boolean
+  prompt?: null | string
+  provider?: null | string
+  schedule?: CronJobSchedule
+  schedule_display?: null | string
+  script?: null | string
+  state?: null | string
+}
+
+export interface CronJobCreatePayload {
+  deliver?: string
+  model?: string
+  name?: string
+  prompt: string
+  provider?: string
+  schedule: string
+}
+
+export interface CronJobSchedule {
+  display?: string
+  expr?: string
+  kind?: string
+}
+
+export interface CronJobUpdates {
+  deliver?: string
+  enabled?: boolean
+  model?: null | string
+  name?: string
+  prompt?: string
+  provider?: null | string
+  schedule?: string
+}
+
+// A cron delivery target from GET /api/cron/delivery-targets — the single
+// source of truth (cron.scheduler.cron_delivery_targets) for where a cron job
+// can auto-deliver. Only 'local' plus configured gateway platforms appear; a
+// configured platform without a cron home channel comes back with
+// home_target_set=false so the UI can flag it.
+export interface CronDeliveryTarget {
+  home_env_var: null | string
+  home_target_set: boolean
+  id: string
+  name: string
+}
+
+// Automation Blueprints — parameterized cron templates with typed slots. The
+// backend (cron/blueprint_catalog.py) is the single source of truth; the
+// desktop renders each slot as a form field, then instantiates a real cron job
+// via the same create_job path as everything else. Shapes mirror the JSON from
+// GET /api/cron/blueprints (blueprint_catalog_entry).
+export interface AutomationBlueprintField {
+  name: string
+  type: 'enum' | 'text' | 'time' | 'weekdays'
+  label: string
+  default: null | string
+  options: string[]
+  optional: boolean
+  /** When false, options are suggestions — any value is accepted. */
+  strict?: boolean
+  help: string
+}
+
+export interface AutomationBlueprint {
+  key: string
+  title: string
+  description: string
+  category: string
+  tags: string[]
+  fields: AutomationBlueprintField[]
+  command: string
+  appUrl: string
+}
+
+export interface ProfileCreatePayload {
+  clone_all?: boolean
+  clone_from?: null | string
+  clone_from_default?: boolean
+  name: string
+  no_skills?: boolean
+}
+
+export interface ProfileInfo {
+  /** Presentation-only label override (profile.yaml display_name). */
+  display_name?: string
+  has_env: boolean
+  is_default: boolean
+  model: null | string
+  name: string
+  path: string
+  provider: null | string
+  skill_count: number
+}
+
+export interface ProfileSetupCommand {
+  command: string
+}
+
+// The desktop appearance/interface overlay bundled into a profile export as
+// `desktop.json`. Everything optional — an archive exported by an older (or
+// non-desktop) Hermes simply carries none of it. See store/profile-share.ts.
+export interface ProfileDesktopOverlay {
+  /** Overlay schema version (1). */
+  version?: number
+  /** Skin name (built-in or bundled user theme). */
+  skin?: string
+  /** Light/dark/system preference. */
+  mode?: string
+  /** Full user-theme definitions the skin may reference (DesktopTheme JSON). */
+  themes?: Record<string, unknown>
+  /** Rail color override for this profile. */
+  profileColor?: null | string
+  /** Layout tree (hermes.desktop.layoutTree.v2 shape). */
+  layoutTree?: unknown
+  /** Active layout preset id. */
+  layoutPreset?: string
+}
+
+// ── Projects ───────────────────────────────────────────────────────────────
+// A first-class, per-profile, human-named workspace spanning one or more
+// folders. Mirrors hermes_cli/projects_db.Project.to_dict().
+export interface ProjectFolder {
+  path: string
+  label: null | string
+  is_primary: boolean
+  added_at: number
+}
+
+export interface ProjectInfo {
+  id: string
+  slug: string
+  name: string
+  description: null | string
+  icon: null | string
+  color: null | string
+  board_slug: null | string
+  primary_path: null | string
+  archived: boolean
+  created_at: number
+  folders: ProjectFolder[]
+}
+
+export interface ProjectsPayload {
+  projects: ProjectInfo[]
+  active_id: null | string
+}
+
+export interface ProfileSoul {
+  content: string
+  exists: boolean
+}
+
+export interface ProfilesResponse {
+  profiles: ProfileInfo[]
+}
+
+export interface SkillInfo {
+  category: string
+  description: string
+  enabled: boolean
+  name: string
+  /** Total observed activity (use + view + patch). Absent on older backends. */
+  usage?: number
+  /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed. */
+  provenance?: 'agent' | 'bundled' | 'hub'
+}
+
+/** One entry of the built-in optional-skills catalog (optional-skills/ in the
+ *  repo) — official skills that ship with Hermes but install on demand. */
+export interface OfficialSkillInfo {
+  category: string
+  description: string
+  identifier: string
+  installed: boolean
+  name: string
+  tags: string[]
+}
+
+export interface ToolsetInfo {
+  configured: boolean
+  description: string
+  enabled: boolean
+  label: string
+  name: string
+  tools: string[]
+}
+
+export interface ToolEnvVar {
+  key: string
+  prompt: string
+  url: string | null
+  default: string | null
+  is_set: boolean
+}
+
+/** Server-computed readiness for a provider picker row. Absent on older
+ *  backends that predate the truthful-readiness endpoint. */
+export type ToolProviderStatus = 'ready' | 'needs_setup' | 'needs_auth' | 'needs_keys'
+
+export interface ToolProvider {
+  name: string
+  badge: string
+  tag: string
+  env_vars: ToolEnvVar[]
+  post_setup: string | null
+  requires_nous_auth: boolean
+  /** True when this is the provider currently written to config (mirrors the
+   *  CLI `hermes tools` active-provider detection). */
+  is_active: boolean
+  /** Honest readiness computed server-side (keys ∧ Nous entitlement ∧
+   *  post-setup install state). Optional for older backends. */
+  status?: ToolProviderStatus
+  /** Web toolset only: the backend key written to web.*backend config
+   *  (e.g. 'searxng'). Absent on other toolsets and older backends. */
+  web_backend?: string
+  /** TTS toolset only: the provider key written to tts.provider when this row
+   *  is selected (e.g. 'openai'). Doubles as the config section that holds the
+   *  provider's voice/model settings (tts.<key>.*). Absent on other toolsets
+   *  and older backends. */
+  tts_provider?: string
+  /** Web toolset only: capabilities this backend can serve. Search-only
+   *  providers (ddgs, brave-free) report ['search']. */
+  capabilities?: WebCapability[]
+}
+
+/** A web toolset capability — the runtime dispatches web_search and
+ *  web_extract to independently configurable backends. */
+export type WebCapability = 'search' | 'extract'
+
+export interface ToolsetConfig {
+  name: string
+  has_category: boolean
+  providers: ToolProvider[]
+  /** Name of the currently active provider, or null if none is configured. */
+  active_provider: string | null
+  /** Web toolset only: backend the web_search tool resolves to right now
+   *  (web.search_backend → web.backend → credential auto-detect). */
+  active_search_backend?: string | null
+  /** Web toolset only: backend the web_extract tool resolves to right now. */
+  active_extract_backend?: string | null
+}
+
+/** Health status of a terminal execution backend row.
+ *
+ *  `ready` — usable now; `needs_setup` — selectable but missing a dependency
+ *  or credential (detail says which); `unavailable` — the probe itself failed. */
+export type TerminalBackendStatus = 'ready' | 'needs_setup' | 'unavailable'
+
+/** One row from `GET /api/tools/terminal/backends`. */
+export interface TerminalBackendInfo {
+  name: string
+  label: string
+  description: string
+  /** True when this backend is the current `terminal.backend` config value. */
+  active: boolean
+  status: TerminalBackendStatus
+  /** Setup guidance / probe detail for non-ready rows (empty when ready). */
+  detail: string
+}
+
+/** Shape of `GET /api/tools/terminal/backends`. */
+export interface TerminalBackendsResponse {
+  active: string
+  backends: TerminalBackendInfo[]
+}
+
+/** One model row from a toolset backend's catalog (image/video gen). */
+export interface ToolsetModel {
+  id: string
+  display: string
+  speed: string
+  strengths: string
+  price: string
+}
+
+/** Shape of `GET /api/tools/toolsets/{name}/models`. */
+export interface ToolsetModelsResponse {
+  name: string
+  has_models: boolean
+  provider?: string | null
+  plugin?: string | null
+  models: ToolsetModel[]
+  current: string | null
+  default: string | null
+}
+
+/** Shape of `GET /api/tools/computer-use/status`.
+ *
+ *  cua-driver runs on macOS, Windows, and Linux. `ready` is the single OS-aware
+ *  readiness signal: on macOS both TCC grants (Accessibility + Screen
+ *  Recording, which attach to cua-driver's own `com.trycua.driver` identity,
+ *  not Hermes); elsewhere, driver health from `cua-driver doctor`. `null`
+ *  means unknown (binary missing / probe failed). */
+export interface ComputerUsePermissionSource {
+  attribution?: string
+  executable?: string
+  note?: string
+  pid?: number
+  responsible_ppid?: number
+}
+
+export interface ComputerUseCheck {
+  label: string
+  status: string
+  message: string
+}
+
+export interface ComputerUseStatus {
+  /** `sys.platform`: "darwin" | "win32" | "linux" | ... */
+  platform: string
+  /** cua-driver has a runtime backend for this platform. */
+  platform_supported: boolean
+  /** cua-driver binary resolved on PATH. */
+  installed: boolean
+  /** e.g. "cua-driver 0.5.1", or null when unknown. */
+  version: string | null
+  /** Unified readiness — both TCC grants (macOS) or driver health (else). */
+  ready: boolean | null
+  /** Whether a permission grant flow exists (macOS-only TCC). */
+  can_grant: boolean
+  /** Cross-platform `cua-driver doctor` probes. */
+  checks: ComputerUseCheck[]
+  /** macOS TCC detail — `null` off macOS or when unknown. */
+  accessibility: boolean | null
+  screen_recording: boolean | null
+  screen_recording_capturable: boolean | null
+  source: ComputerUsePermissionSource | null
+  /** Populated when the status probe itself failed. */
+  error: string | null
+}
+
+export interface SessionSearchResult {
+  /** Lineage root of the matched conversation. Stable across compression and
+   *  used as the durable pin id; falls back to session_id when absent. */
+  lineage_root?: string | null
+  model: string | null
+  role: string | null
+  /** Live compression tip of the matched conversation — resume by this id. */
+  session_id: string
+  session_started: number | null
+  snippet: string
+  source: string | null
+}
+
+export interface SessionSearchResponse {
+  results: SessionSearchResult[]
+}
+
+export interface LogsResponse {
+  file: string
+  lines: string[]
+}
+
+export interface PlatformStatus {
+  error_code?: string
+  error_message?: string
+  state: string
+  updated_at: string
+}
+
+export interface StatusResponse {
+  active_sessions: number
+  config_path: string
+  config_version: number
+  env_path: string
+  gateway_exit_reason: string | null
+  gateway_health_url: string | null
+  gateway_pid: number | null
+  gateway_platforms: Record<string, PlatformStatus>
+  gateway_running: boolean
+  gateway_state: string | null
+  gateway_updated_at: string | null
+  hermes_home: string
+  latest_config_version: number
+  release_date: string
+  version: string
+}
+
+// ── Managed local runtime (llama.cpp) ──────────────────────────
+
+export interface LocalModelPlacement {
+  window?: number
+  window_label?: string
+  spilled?: boolean
+  granted_window?: number
+  granted_window_label?: string
+}
+
+export interface LocalModelLoadProgress {
+  stage: string
+  value: number
+  percent: number
+}
+
+export interface LocalModelsStatus {
+  enabled: boolean
+  tag: string
+  configured_tag: string
+  update_available: boolean
+  runtime_installed: boolean
+  runtime_backend: string | null
+  server_running: boolean
+  server_base_url: string | null
+  active_model_id: string | null
+  loaded_models: Record<string, string>
+  /** Models loading into memory right now: real per-tensor load percent. */
+  loading?: Record<string, LocalModelLoadProgress>
+  placement?: Record<string, LocalModelPlacement>
+  models: { id: string; size_bytes: number; size_label: string }[]
+  models_dir: string
+}
+
+export interface LocalHardware {
+  uma: boolean
+  vram_total_bytes: number
+  vram_usable_bytes: number
+  ram_total_bytes: number
+  ram_available_bytes: number
+  vram_label: string
+  gpu_name: string | null
+  gpu_util_percent: number | null
+  vram_used_bytes: number | null
+}
+
+export interface LocalCatalogModel {
+  id: string
+  display_name: string
+  description: string
+  size_bytes: number
+  size_label: string
+  native_context: number
+  native_context_label: string
+  recommended: boolean
+  /** Why the resolver picked this entry (recommended rows only):
+   *  best-quality-resident | speed-gated-quality | fastest-resident |
+   *  least-painful-spilled. Renders as the Recommended badge's tooltip. */
+  recommended_reason?: string | null
+  downloaded: boolean
+  downloaded_model_id?: string | null
+  downloaded_quant?: string | null
+  mtp: boolean
+  vision?: boolean
+  fits: boolean
+  fit_summary: string
+  fit_detail?: string
+  model_id?: string
+  quant?: string
+  quant_reason?: string
+  quant_validated?: boolean
+  variant_count?: number
+  start_window?: number
+  start_window_label?: string
+  spilled?: boolean
+}
+
+export interface LocalRuntimeJob {
+  job_id: string
+  kind: 'model-activate' | 'model-download' | 'quickstart' | 'runtime-install'
+  target: string
+  model_id: string | null
+  status: 'running' | 'done' | 'error'
+  phase: string
+  detail: string
+  total_bytes: number | null
+  done_bytes: number
+  percent?: number
+  error: string | null
+}
+
+export interface ActionResponse {
+  name: string
+  ok: boolean
+  pid: number
+  action_id?: string
+  already_running?: boolean
+}
+
+export interface UpdateReceiptSummary {
+  outcome: 'running' | 'success' | 'partial' | 'failed' | 'refused' | string
+  started_at: string | null
+  finished_at: string | null
+  pre_sha: string | null
+  post_sha: string | null
+  post_version: string | null
+  fleet_states: string[]
+}
+
+export interface ActionStatusResponse {
+  exit_code: number | null
+  lines: string[]
+  name: string
+  pid: number | null
+  running: boolean
+  /** hermes-update only: durable completion identity recovered from update.log. */
+  action_id?: string
+  /** hermes-update only: summary of the durable update receipt (#91277 bullet 3) —
+   *  the authoritative outcome record, present even when the dashboard
+   *  restarted itself mid-action and lost its in-memory registries. */
+  receipt?: UpdateReceiptSummary
+}
+
+export interface BackendUpdateCommit {
+  sha: string
+  summary: string
+  author: string
+  at: number
+}
+
+/** Shape of `GET /api/hermes/update/check` — the backend's own update state.
+ *  Used by the desktop's remote update overlay so the backend version (not the
+ *  Electron client clone) drives "what's changed + Install" in remote mode. */
+export interface BackendUpdateCheckResponse {
+  install_method: string
+  current_version: string
+  behind: number | null
+  update_available: boolean
+  can_apply: boolean
+  update_command: string | null
+  message: string | null
+  commits?: BackendUpdateCommit[]
+}
+
+export interface AuxiliaryTaskAssignment {
+  base_url: string
+  model: string
+  provider: string
+  task: string
+}
+
+export interface AuxiliaryModelsResponse {
+  main: { model: string; provider: string }
+  tasks: AuxiliaryTaskAssignment[]
+}
+
+export interface MoaModelSlot {
+  provider: string
+  model: string
+  /** Optional per-slot reasoning effort — round-tripped, not edited here. */
+  reasoning_effort?: string
+  enabled?: boolean
+}
+
+export interface MoaConfigResponse {
+  default_preset: string
+  active_preset: string
+  presets: Record<
+    string,
+    {
+      aggregator: MoaModelSlot
+      aggregator_temperature: number
+      degraded_reference_policy: 'loud' | 'silent'
+      enabled: boolean
+
+      reference_models: MoaModelSlot[]
+      reference_temperature: number
+
+      /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
+      fanout?: string
+      reference_timeout: number | null
+    }
+  >
+  aggregator: MoaModelSlot
+  aggregator_temperature: number
+  degraded_reference_policy: 'loud' | 'silent'
+  enabled: boolean
+
+  reference_models: MoaModelSlot[]
+  reference_temperature: number
+  reference_timeout: number | null
+}
+
+export interface ModelAssignmentRequest {
+  /** Optional API key for a custom/local endpoint. Persisted to model.api_key
+   *  (where the runtime reads it) for self-hosted endpoints that require auth.
+   *  Only honored for custom/local providers on the main slot. */
+  api_key?: string
+  /** OpenAI-compatible endpoint URL. Only honored for custom/local providers
+   *  on the main slot — wires a self-hosted endpoint into runtime resolution. */
+  base_url?: string
+  /** Ack for selection-guard warnings (expensive / data-training tiers). */
+  confirm_expensive_model?: boolean
+  model: string
+  provider: string
+  scope: 'main' | 'auxiliary'
+  task?: string
+}
+
+/** An auxiliary task still pinned to a provider that differs from the
+ *  newly-selected main provider after a main-model switch. */
+export interface StaleAuxAssignment {
+  task: string
+  provider: string
+  model: string
+}
+
+export type CronModelDriftAxis = 'model' | 'provider'
+
+export interface CronModelImpactJob {
+  id: string
+  name: string
+  drifted_axes: CronModelDriftAxis[]
+}
+
+export interface CronModelImpact {
+  available: boolean
+  guard_enabled: boolean
+  affected_count: number
+  truncated: boolean
+  jobs: CronModelImpactJob[]
+}
+
+/** One skill-hub source (official index, GitHub, skills.sh, …) as reported by
+ *  `GET /api/skills/hub/sources`. */
+export interface SkillHubSource {
+  id: string
+  label: string
+  available?: boolean
+  rate_limited?: boolean
+  // False when the centralized index already covers this source, so the UI's
+  // per-source search fan-out skips it (avoids redundant external API calls).
+  searchable?: boolean
+}
+
+/** A searchable/installable hub skill from `GET /api/skills/hub/search`. */
+export interface SkillHubResult {
+  name: string
+  description: string
+  source: string
+  identifier: string
+  trust_level: string
+  repo: string | null
+  tags: string[]
+}
+
+export interface SkillHubInstalledEntry {
+  name: string | null
+  trust_level: string | null
+  scan_verdict: string | null
+}
+
+export interface SkillHubSourcesResponse {
+  sources: SkillHubSource[]
+  index_available: boolean
+  featured: SkillHubResult[]
+  installed: Record<string, SkillHubInstalledEntry>
+}
+
+export interface SkillHubSearchResponse {
+  results: SkillHubResult[]
+  source_counts: Record<string, number>
+  timed_out: string[]
+  installed: Record<string, SkillHubInstalledEntry>
+}
+
+/** `GET /api/skills/hub/preview` — SKILL.md + manifest without installing. */
+export interface SkillHubPreview {
+  name: string
+  description: string
+  source: string
+  identifier: string
+  trust_level: string
+  repo: string | null
+  tags: string[]
+  skill_md: string
+  files: string[]
+}
+
+export interface SkillHubScanFinding {
+  severity: string
+  category: string
+  file: string
+  line: number | null
+  description: string
+}
+
+/** `GET /api/skills/hub/scan` — install-time security scan verdict. */
+export interface SkillHubScanResult {
+  name: string
+  identifier: string
+  source: string
+  trust_level: string
+  verdict: string
+  summary: string
+  policy: 'allow' | 'ask' | 'block'
+  policy_reason: string | null
+  findings: SkillHubScanFinding[]
+  severity_counts: Record<string, number>
+}
+
+/** One configured MCP server row from `GET /api/mcp/servers`. */
+export interface McpServerSummary {
+  name: string
+  transport: string
+  command: string | null
+  args: string[]
+  url: string | null
+  enabled: boolean
+  tools: string[] | null
+}
+
+export interface McpServerTestResponse {
+  ok: boolean
+  error?: string
+  tools: { name: string; description: string }[]
+}
+
+/** One Nous-approved MCP catalog entry from `GET /api/mcp/catalog`. */
+export interface McpCatalogEntry {
+  name: string
+  description: string
+  source: string
+  transport: string
+  auth_type: string
+  required_env: { name: string; prompt: string; required: boolean }[]
+  command: string | null
+  args: string[]
+  url: string | null
+  install_url: string | null
+  install_ref: string | null
+  bootstrap: string[]
+  default_enabled: string[] | null
+  post_install: string
+  /** Composer-suggestion triggers (present when the manifest declares a
+   *  `suggest` block; null/absent on entries without one and on older
+   *  backends that predate the field). */
+  suggest?: { keywords: string[]; hosts: string[] } | null
+  needs_install: boolean
+  installed: boolean
+  enabled: boolean
+}
+
+export interface McpCatalogResponse {
+  entries: McpCatalogEntry[]
+  diagnostics: { name: string; kind: string; message: string }[]
+}
+
+/** `GET /api/memory` — active provider + built-in memory file sizes. */
+export interface MemoryStatusResponse {
+  active: string
+  providers: { name: string; description: string; configured: boolean }[]
+  builtin_files: { memory: number; user: number }
+}
+
+/** `GET /api/curator` — background skill-curator status. */
+export interface CuratorStatusResponse {
+  enabled: boolean
+  paused: boolean
+  interval_hours: number | null
+  last_run_at: string | null
+  min_idle_hours: number | null
+  stale_after_days: number | null
+  archive_after_days: number | null
+}
+
+/** `POST /api/ops/debug-share` — shareable diagnostics upload result. */
+export interface DebugShareResponse {
+  ok: boolean
+  urls: Record<string, string>
+  failures: Record<string, string>
+  redacted: boolean
+  auto_delete_seconds: number | null
+}
+
+export interface ModelAssignmentResponse {
+  /** Persisted endpoint URL for custom/local providers (echoed back). */
+  base_url?: string
+  /** Toolset keys auto-routed through the Nous Tool Gateway as a result of
+   *  switching the main provider to Nous. Empty unless provider === 'nous'
+   *  and the user is a paid subscriber with unconfigured tools. */
+  gateway_tools?: string[]
+  /** Additive profile-local cron impact returned after a persisted main assignment. */
+  cron_model_impact?: CronModelImpact
+  confirm_message?: string
+  confirm_required?: boolean
+  model?: string
+  ok: boolean
+  provider?: string
+  reset?: boolean
+  scope?: string
+  /** Auxiliary slots still pinned to a different provider than the new main.
+   *  Switching main never clears aux pins; this lets the UI warn the user
+   *  their helper tasks aren't following the switch. Only set on scope:'main'. */
+  stale_aux?: StaleAuxAssignment[]
+  tasks?: string[]
+}

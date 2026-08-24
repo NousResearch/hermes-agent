@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <link rel="icon" type="image/png" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="shortcut icon" href="/apple-touch-icon.png" />
+    <title>Hermes</title>
+    <script>
+      // Pre-paint the themed background before the app bundle loads. Without
+      // this, the first frame (which is what `ready-to-show` waits for) is the
+      // UA-default white page, and the real theme only lands once the whole
+      // module graph has executed — i.e. the "white flash" on every new
+      // window. applyTheme() in src/themes/context.tsx keeps these keys fresh.
+      try {
+        let bg = localStorage.getItem('hermes-boot-background')
+        let scheme = localStorage.getItem('hermes-boot-color-scheme')
+        if (!bg) {
+          const dark = window.matchMedia('(prefers-color-scheme: dark)').matches
+          bg = dark ? '#111111' : '#f7f7f7'
+          scheme = dark ? 'dark' : 'light'
+        }
+        document.documentElement.style.backgroundColor = bg
+        if (scheme === 'dark' || scheme === 'light') {
+          document.documentElement.style.colorScheme = scheme
+        }
+      } catch {
+        // localStorage unavailable — keep UA defaults.
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root" class="scrollbar-dt"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

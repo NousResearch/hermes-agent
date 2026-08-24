@@ -1,0 +1,420 @@
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
+
+import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
+import { $petState, type PetInfo, type PetState } from '@/store/pet'
+
+const DEFAULT_FRAME_W = 192
+const DEFAULT_FRAME_H = 208
+const DEFAULT_FRAMES = 6
+const DEFAULT_LOOP_MS = 1100
+// Mirrors agent.pet.constants.DEFAULT_SCALE — fallback only; the gateway sends
+// the configured scale.
+const DEFAULT_SCALE = 0.33
+
+function readDevicePixelRatio(): number {
+  const ratio = window.devicePixelRatio
+
+  return Number.isFinite(ratio) && ratio > 0 ? ratio : 1
+}
+
+/**
+ * Track the effective renderer pixel ratio. Electron page zoom and moving a
+ * window between displays can both change it without remounting the pet.
+ */
+function useDevicePixelRatio(): number {
+  const [ratio, setRatio] = useState(readDevicePixelRatio)
+
+  useEffect(() => {
+    let resolutionQuery: MediaQueryList | null = null
+
+    const update = () => {
+      resolutionQuery?.removeEventListener('change', update)
+
+      const next = readDevicePixelRatio()
+
+      setRatio(current => (current === next ? current : next))
+
+      resolutionQuery = typeof window.matchMedia === 'function' ? window.matchMedia(`(resolution: ${next}dppx)`) : null
+      resolutionQuery?.addEventListener('change', update)
+    }
+
+    window.addEventListener('resize', update)
+    window.visualViewport?.addEventListener('resize', update)
+    update()
+
+    return () => {
+      resolutionQuery?.removeEventListener('change', update)
+      window.removeEventListener('resize', update)
+      window.visualViewport?.removeEventListener('resize', update)
+    }
+  }, [])
+
+  return ratio
+}
+
+// Mirrors agent.pet.constants.CODEX_STATE_ROWS (Petdex current taxonomy).
+export const DEFAULT_STATE_ROWS = [
+  'idle',
+  'running-right',
+  'running-left',
+  'waving',
+  'jumping',
+  'failed',
+  'waiting',
+  'running',
+  'review'
+]
+
+const STATE_ALIASES: Record<PetState, string[]> = {
+  idle: ['idle'],
+  wave: ['wave', 'waving'],
+  jump: ['jump', 'jumping'],
+  run: ['run', 'running'],
+  failed: ['failed'],
+  review: ['review'],
+  waiting: ['waiting']
+}
+
+const ROW_TO_STATE: Record<string, PetState> = {
+  idle: 'idle',
+  wave: 'wave',
+  waving: 'wave',
+  jump: 'jump',
+  jumping: 'jump',
+  run: 'run',
+  running: 'run',
+  'running-right': 'run',
+  'running-left': 'run',
+  failed: 'failed',
+  review: 'review',
+  waiting: 'waiting'
+}
+
+/**
+ * Pick the running row + mirror for a horizontal travel direction.
+ *
+ * Codex sheets ship dedicated `running-left` / `running-right` locomotion rows
+ * (already facing their way → no flip). Pets without them fall back to the
+ * in-place `running`/`run` row, which faces left by convention, so rightward
+ * travel is mirrored. Returns no `row` in that fallback case so the caller lets
+ * `$petState` resolve it (and applies `mirror`).
+ */
+export function roamWalkRow(dir: -1 | 0 | 1, stateRows?: string[]): { row?: string; mirror: boolean } {
+  if (dir === 0) {
+    return { mirror: false }
+  }
+
+  const rows = stateRows ?? DEFAULT_STATE_ROWS
+  const hasLeft = rows.includes('running-left')
+  const hasRight = rows.includes('running-right')
+
+  if (dir > 0) {
+    if (hasRight) {
+      return { mirror: false, row: 'running-right' }
+    }
+
+    if (hasLeft) {
+      return { mirror: true, row: 'running-left' }
+    }
+
+    return { mirror: true }
+  }
+
+  if (hasLeft) {
+    return { mirror: false, row: 'running-left' }
+  }
+
+  if (hasRight) {
+    return { mirror: true, row: 'running-right' }
+  }
+
+  return { mirror: false }
+}
+
+interface PetSpriteProps {
+  info: PetInfo
+  /** Keep animating in a deliberately non-activating visible window, such as the pop-out pet overlay. */
+  pauseWhenUnfocused?: boolean
+  /** On-screen scale multiplier applied on top of the pet's native scale. */
+  zoom?: number
+  /**
+   * Force a specific animation state instead of reading the live `$petState`.
+   * Used by the generate-flow preview to showcase every row without driving (or
+   * being driven by) the real agent activity that moves the floating mascot.
+   */
+  stateOverride?: PetState
+  /** Force a concrete row name from `info.stateRows` (e.g. `running-right`). */
+  rowOverride?: string
+}
+
+/**
+ * Canvas renderer for a petdex spritesheet — the one piece that must be
+ * TypeScript (the engine's decode/encode is Python). Draws the row matching the
+ * live `$petState`, stepping `framesPerState` frames across a `loopMs` loop.
+ *
+ * State is read from `$petState` via a ref + subscription rather than a prop,
+ * so the frequent activity-driven state changes during an agent turn update the
+ * canvas (inside its RAF loop) WITHOUT triggering a React re-render. Combined
+ * with `memo`, this component effectively never re-renders after mount until
+ * the pet itself changes.
+ */
+function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUnfocused = true }: PetSpriteProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const stateRef = useRef<PetState>($petState.get())
+  const overrideRef = useRef<PetState | undefined>(stateOverride)
+  const rowOverrideRef = useRef<string | undefined>(rowOverride)
+  const kickAnimationRef = useRef<() => void>(() => undefined)
+
+  // Keep the override current without re-running the RAF setup effect.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    overrideRef.current = stateOverride
+    kickAnimationRef.current()
+  }, [stateOverride])
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    rowOverrideRef.current = rowOverride
+    kickAnimationRef.current()
+  }, [rowOverride])
+
+  const frameW = info.frameW ?? DEFAULT_FRAME_W
+  const frameH = info.frameH ?? DEFAULT_FRAME_H
+  const frames = info.framesPerState ?? DEFAULT_FRAMES
+  const framesByState = info.framesByState
+  const framesByRow = info.framesByRow
+  const loopMs = info.loopMs ?? DEFAULT_LOOP_MS
+  const scale = (info.scale ?? DEFAULT_SCALE) * zoom
+  const rows = info.stateRows ?? DEFAULT_STATE_ROWS
+  const pixelRatio = useDevicePixelRatio()
+
+  const drawW = Math.round(frameW * scale)
+  const drawH = Math.round(frameH * scale)
+  const backingW = Math.max(1, Math.round(drawW * pixelRatio))
+  const backingH = Math.max(1, Math.round(drawH * pixelRatio))
+
+  const image = useMemo(() => {
+    if (!info.spritesheetBase64) {
+      return null
+    }
+
+    const img = new Image()
+    img.src = `data:${info.mime ?? 'image/webp'};base64,${info.spritesheetBase64}`
+
+    return img
+  }, [info.spritesheetBase64, info.mime])
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    const canvas = canvasRef.current
+
+    if (!canvas || !image) {
+      return
+    }
+
+    // willReadFrequently: the pop-out overlay samples this canvas's alpha under
+    // the cursor (per-pixel click-through), so opt into the CPU-readback path.
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+
+    if (!ctx) {
+      return
+    }
+
+    // Track state via subscription, not a prop — no re-render on activity ticks.
+    stateRef.current = $petState.get()
+
+    let raf = 0
+    let wakeTimer = 0
+    let stopped = false
+    let frame = 0
+    let lastStep = performance.now()
+    let drawnFrame = -1
+    let drawnRow = -1
+    let activeRow = -1
+    let activeCount = -1
+    let pauseController: ReturnType<typeof createRendererLoopPauseController> | null = null
+
+    const rendererPaused = () => pauseController?.isPaused() ?? document.visibilityState === 'hidden'
+
+    const cancelWakeTimer = () => {
+      if (wakeTimer !== 0) {
+        window.clearTimeout(wakeTimer)
+        wakeTimer = 0
+      }
+    }
+
+    const cancelRaf = () => {
+      if (raf !== 0) {
+        window.cancelAnimationFrame(raf)
+        raf = 0
+      }
+    }
+
+    const clearScheduled = () => {
+      cancelWakeTimer()
+      cancelRaf()
+    }
+
+    const scheduleFrame = (delayMs = 0) => {
+      if (stopped || rendererPaused() || raf !== 0 || wakeTimer !== 0) {
+        return
+      }
+
+      if (delayMs > 16) {
+        wakeTimer = window.setTimeout(() => {
+          wakeTimer = 0
+          scheduleFrame()
+        }, delayMs)
+
+        return
+      }
+
+      raf = window.requestAnimationFrame(render)
+    }
+
+    const kickAnimation = () => {
+      if (stopped || rendererPaused()) {
+        return
+      }
+
+      cancelWakeTimer()
+      scheduleFrame()
+    }
+
+    const handleVisibilityChange = () => {
+      clearScheduled()
+
+      if (rendererPaused()) {
+        return
+      }
+
+      lastStep = performance.now()
+      drawnFrame = -1
+      kickAnimation()
+    }
+
+    const rowIndexForState = (s: PetState): number => {
+      for (const key of STATE_ALIASES[s] ?? [s]) {
+        const idx = rows.indexOf(key)
+
+        if (idx >= 0) {
+          return idx
+        }
+      }
+
+      return 0
+    }
+
+    // Resolve a state to the row it draws and its real frame count. A state
+    // with no real frames (ragged sheet, empty row) falls back to idle rather
+    // than flashing blank padding.
+    const resolve = (s: PetState): { row: number; count: number } => {
+      const real = framesByState?.[s] ?? frames
+
+      if (real > 0) {
+        return { row: rowIndexForState(s), count: real }
+      }
+
+      return { row: rowIndexForState('idle'), count: Math.max(1, framesByState?.idle ?? frames) }
+    }
+
+    const resolveRow = (rowName: string): { row: number; count: number } => {
+      const row = rows.indexOf(rowName)
+      const state = ROW_TO_STATE[rowName]
+
+      const count = Math.max(
+        1,
+        framesByRow?.[rowName] ?? framesByState?.[rowName] ?? (state ? framesByState?.[state] : 0) ?? frames
+      )
+
+      return { row: row >= 0 ? row : rowIndexForState(state ?? 'idle'), count }
+    }
+
+    const render = (now: number) => {
+      raf = 0
+
+      if (stopped || rendererPaused()) {
+        return
+      }
+
+      const forcedRow = rowOverrideRef.current
+      const { row, count } = forcedRow ? resolveRow(forcedRow) : resolve(overrideRef.current ?? stateRef.current)
+
+      if (row !== activeRow || count !== activeCount) {
+        activeRow = row
+        activeCount = count
+        frame = 0
+        lastStep = now
+        drawnFrame = -1
+      }
+
+      // Per-state step keeps every state's loop ~loopMs even when frame counts
+      // differ; counts vary per row so derive the cadence here, not once.
+      const stepMs = loopMs / count
+
+      if (now - lastStep >= stepMs) {
+        frame += 1
+        lastStep = now
+      }
+
+      frame %= count
+
+      if (!image.complete || image.naturalWidth <= 0) {
+        return
+      }
+
+      // Only touch the canvas when the visible cell actually changes. The RAF
+      // wakes when a sprite cell is due, so the idle path avoids a 60Hz loop.
+      if (frame !== drawnFrame || row !== drawnRow) {
+        const sx = frame * frameW
+        const sy = row * frameH
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        // Smooth (bicubic) upscale: petdex sheets are illustration art, not
+        // pixel art — nearest-neighbour makes zoomed frames look blocky.
+        ctx.imageSmoothingEnabled = true
+        ctx.imageSmoothingQuality = 'high'
+        ctx.drawImage(image, sx, sy, frameW, frameH, 0, 0, backingW, backingH)
+        drawnFrame = frame
+        drawnRow = row
+      }
+
+      scheduleFrame(Math.max(0, stepMs - (now - lastStep)))
+    }
+
+    kickAnimationRef.current = kickAnimation
+
+    const unsubState = $petState.listen(next => {
+      stateRef.current = next
+      kickAnimation()
+    })
+
+    image.addEventListener('load', kickAnimation)
+    pauseController = createRendererLoopPauseController(handleVisibilityChange, { pauseWhenUnfocused })
+    scheduleFrame()
+
+    return () => {
+      stopped = true
+      kickAnimationRef.current = () => undefined
+      clearScheduled()
+      image.removeEventListener('load', kickAnimation)
+      pauseController?.dispose()
+      unsubState()
+    }
+  }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, backingW, backingH, rows, pauseWhenUnfocused])
+
+  return (
+    <canvas
+      aria-label={info.displayName ? `${info.displayName} pet` : 'pet'}
+      height={backingH}
+      ref={canvasRef}
+      style={{ height: drawH, width: drawW }}
+      width={backingW}
+    />
+  )
+}
+
+/**
+ * Memoized so a parent re-render (e.g. a position commit on drag-end) doesn't
+ * re-run the canvas setup. Props change only when the pet itself changes.
+ */
+export const PetSprite = memo(PetSpriteImpl)

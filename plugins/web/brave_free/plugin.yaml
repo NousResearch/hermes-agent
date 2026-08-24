@@ -1,0 +1,7 @@
+name: web-brave-free
+version: 1.0.0
+description: "Brave Search (free tier) — web search via Brave's Data-for-Search API. Requires BRAVE_SEARCH_API_KEY (free signup at https://brave.com/search/api/, 2k queries/month)."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - brave-free

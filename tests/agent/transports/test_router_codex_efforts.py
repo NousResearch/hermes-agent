@@ -154,3 +154,81 @@ class TestTransportClamp:
         # The router catalog's () verdict for gpt-4.1-mini must not leak
         # into other providers' requests.
         assert kw["reasoning"]["effort"] == "medium"
+
+
+class TestHostResolvedProfile:
+    def test_named_custom_provider_at_router_host_gets_the_clamp(
+        self, transport, seeded_catalog
+    ):
+        # A providers.my-proxy entry pointed at api.router.com rides the same
+        # host mandate onto this transport; the vocabulary must follow the
+        # host, not the config-entry name.
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.router.com/v1",
+            session_id="sid",
+            provider="my-proxy",
+            reasoning_config={"effort": "max"},
+        )
+        assert kw["reasoning"]["effort"] == "xhigh"
+
+    def test_foreign_host_does_not_borrow_the_router_vocabulary(
+        self, transport, seeded_catalog
+    ):
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://generic.example.com/v1",
+            session_id="sid",
+            provider="my-proxy",
+            reasoning_config={"effort": "max"},
+        )
+        # Default codex vocabulary applies (legacy: no max -> xhigh).
+        assert kw["reasoning"]["effort"] == "xhigh"
+
+
+class TestCatalogIngestValidation:
+    def test_unrecognized_effort_levels_are_dropped_at_ingest(self):
+        _, mod = _router_plugin_module()
+        parsed = mod._parse_efforts([
+            {
+                "id": "future-model",
+                "router": {"capabilities": {"reasoning": {
+                    "supported": True,
+                    "efforts": [
+                        {"value": "low"},
+                        {"value": "hyperthink"},  # a new vendor tier
+                        {"value": "high"},
+                    ],
+                }}},
+            },
+            {
+                # every level unknown -> omitted entirely (unknown model), so
+                # the transport keeps its defaults instead of suppressing or
+                # passing garbage through.
+                "id": "alien-model",
+                "router": {"capabilities": {"reasoning": {
+                    "supported": True,
+                    "efforts": [{"value": "hyperthink"}, {"value": "galaxy"}],
+                }}},
+            },
+        ])
+        assert parsed == {"future-model": ["low", "high"]}
+
+    def test_fetch_models_dedupes_while_preserving_catalog_order(self, monkeypatch):
+        profile, mod = _router_plugin_module()
+        monkeypatch.setattr(mod, "_disk_path", lambda: None)
+        monkeypatch.setattr(
+            mod,
+            "_fetch_catalog_items",
+            lambda **_kwargs: [
+                {"id": "b"},
+                {"id": "a"},
+                {"id": "b"},
+                {"id": "c"},
+            ],
+        )
+        assert profile.fetch_models() == ["b", "a", "c"]

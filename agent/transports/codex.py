@@ -237,7 +237,7 @@ def _content_cache_key(
 
 
 def _profile_declared_efforts(
-    provider: Any, model: Optional[str]
+    provider: Any, model: Optional[str], base_url: Any = None
 ) -> Optional[tuple]:
     """Provider-profile-declared reasoning-effort vocabulary, or None.
 
@@ -246,17 +246,32 @@ def _profile_declared_efforts(
     for the tri-state contract). Lazy import: provider plugins import this
     transport during registry discovery, so a module-level import of
     ``providers`` would cycle.
+
+    Resolution is by provider name first, then by the endpoint's host: a
+    named custom provider pointed at a known provider's endpoint (e.g. a
+    ``providers.my-proxy`` entry with base_url ``https://api.router.com/v1``,
+    which the host mandate routes onto this transport) must get that
+    provider's declared vocabulary too — the host, not the config-entry
+    name, is what validates the request.
     """
-    name = str(provider or "").strip().lower()
-    if not name:
-        return None
     try:
         from providers import get_provider_profile
 
-        profile = get_provider_profile(name)
-        if profile is None:
-            return None
-        declared = profile.supported_reasoning_efforts(model)
+        name = str(provider or "").strip().lower()
+        profile = get_provider_profile(name) if name else None
+        declared = (
+            profile.supported_reasoning_efforts(model)
+            if profile is not None
+            else None
+        )
+        if declared is None and base_url:
+            from agent.model_metadata import _infer_provider_from_url
+
+            inferred = _infer_provider_from_url(str(base_url))
+            if inferred and inferred != name:
+                inferred_profile = get_provider_profile(inferred)
+                if inferred_profile is not None:
+                    declared = inferred_profile.supported_reasoning_efforts(model)
     except Exception:
         return None
     if declared is None:
@@ -548,7 +563,9 @@ class ResponsesApiTransport(ProviderTransport):
             # parameters" verdict — such backends 400 on any reasoning field
             # rather than ignoring it, so suppress reasoning entirely.
             _supported = None
-            _declared = _profile_declared_efforts(params.get("provider"), model)
+            _declared = _profile_declared_efforts(
+                params.get("provider"), model, params.get("base_url")
+            )
             if _declared is not None:
                 if not _declared:
                     reasoning_enabled = False

@@ -112,6 +112,12 @@ def _parse_efforts(items: Any) -> Optional[dict[str, list[str]]]:
     """
     if not isinstance(items, list):
         return None
+    try:
+        from agent.reasoning_effort import EFFORT_LADDER
+
+        known_levels = set(EFFORT_LADDER)
+    except Exception:
+        known_levels = None
     efforts_by_id: dict[str, list[str]] = {}
     for item in items:
         if not isinstance(item, dict):
@@ -136,10 +142,25 @@ def _parse_efforts(items: Any) -> Optional[dict[str, list[str]]]:
             for entry in reasoning.get("efforts") or []
             if isinstance(entry, dict) and str(entry.get("value") or "").strip()
         ]
+        if known_levels is not None:
+            # clamp_effort silently ignores ladder-unknown levels, and an
+            # all-unknown vocabulary would pass the requested effort through
+            # unclamped straight to a Router 400 — so a new vendor tier is
+            # dropped at ingest and fails loudly here instead.
+            unknown = [level for level in levels if level not in known_levels]
+            if unknown:
+                logger.info(
+                    "router: model %s publishes unrecognized reasoning effort "
+                    "level(s) %s; ignoring them (update agent/reasoning_effort "
+                    "EFFORT_LADDER to adopt new vendor tiers)",
+                    mid,
+                    unknown,
+                )
+                levels = [level for level in levels if level in known_levels]
         if levels:
             efforts_by_id[mid] = levels
-        # supported=True with no published vocabulary -> leave the model out
-        # (unknown), so the transport keeps its default clamp behavior.
+        # supported=True with no (recognized) vocabulary -> leave the model
+        # out (unknown), so the transport keeps its default clamp behavior.
     return efforts_by_id or None
 
 
@@ -298,11 +319,15 @@ class RouterProfile(ProviderProfile):
         if items is None:
             return None
         _seed_efforts(items)
-        ids = [
-            str(item["id"])
-            for item in items
-            if isinstance(item, dict) and item.get("id")
-        ]
+        # Deduped but not sorted: Router's listing order is deliberate
+        # presentation (featured/current models first), so the picker keeps it.
+        ids = list(
+            dict.fromkeys(
+                str(item["id"])
+                for item in items
+                if isinstance(item, dict) and item.get("id")
+            )
+        )
         return ids or None
 
     def supported_reasoning_efforts(

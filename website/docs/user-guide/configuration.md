@@ -1,10 +1,10 @@
 ---
 sidebar_position: 2
-title: "Configuration"
+title: "Hermes Agent Configuration"
 description: "Configure Hermes Agent — config.yaml, providers, models, API keys, and more"
 ---
 
-# Configuration
+# Hermes Agent Configuration
 
 All settings are stored in the `~/.hermes/` directory for easy access.
 

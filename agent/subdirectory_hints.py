@@ -46,7 +46,7 @@ _COMMAND_TOOLS = {"terminal"}
 
 # How many parent directories to walk up when looking for hints.
 # Prevents scanning all the way to / for deeply nested paths.
-_MAX_ANCESTOR_WALK = 5
+_MAX_ANCESTOR_WALK = 8
 
 # Shared with broad recursive search probes so context discovery and search do
 # not drift into different dependency/cache/build trees.

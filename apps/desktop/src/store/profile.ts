@@ -1,3 +1,4 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
@@ -647,7 +648,7 @@ export function selectProfile(name: string): void {
 function activateOnCurrentSource(target: string): Promise<void> {
   const connectionId = activeGatewayConnectionId()
 
-  return connectionId && connectionId !== 'local'
+  return connectionId && connectionId !== LOCAL_CONNECTION_ID
     ? ensureGatewayAgent(connectionId, target)
     : ensureGatewayProfile(target)
 }

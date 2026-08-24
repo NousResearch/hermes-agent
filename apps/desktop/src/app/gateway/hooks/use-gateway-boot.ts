@@ -61,7 +61,9 @@ import {
 import {
   $attentionSessionIds,
   $workingSessionIds,
+  $sessionTiles,
   liveSessionScopes,
+  openTileGatewayScopes,
   reconcileBusyStatesOnReconnect,
   recordSessionEventScope,
   resetTileRuntimeBindings
@@ -773,10 +775,13 @@ export function useGatewayBoot({
       touchSecondaryGateways()
     }, 60_000)
 
-    // Bound concurrency cost to live work: keep a background socket only while
-    // its profile has a running (working) or blocked (needs-input) session.
-    // Once that profile goes idle its socket is dropped and its backend is free
-    // to idle-reap. The active profile is always spared.
+    // Bound concurrency cost to consumers: keep a background socket while its
+    // profile has a running (working) or blocked (needs-input) session, OR an
+    // open owner-routed tile (Bot chats stay on a secondary while chrome stays
+    // on the launch profile). Once the last consumer leaves, the socket drops
+    // and its backend is free to idle-reap. The active profile is always spared.
+    // Do not key this off `entry.retained` — that flag only skips dispose-after-
+    // RPC; idle prune is what reclaims hover-warmed sockets after you leave.
     const recomputeKeptGateways = () => {
       const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
       // Registry-scoped (connectionId, profile) scopes with live work. Two
@@ -791,12 +796,17 @@ export function useGatewayBoot({
         }
       }
 
+      for (const scope of openTileGatewayScopes()) {
+        keep.add(scope)
+      }
+
       pruneSecondaryGateways(keep)
     }
 
     const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
+    const offTiles = $sessionTiles.subscribe(() => recomputeKeptGateways())
 
     const offWindowState = desktop.onWindowStateChanged?.(payload => {
       const current = $connection.get()
@@ -991,6 +1001,7 @@ export function useGatewayBoot({
       offWorking()
       offAttention()
       offActiveProfile()
+      offTiles()
       window.removeEventListener('online', onOnline)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onFocus)

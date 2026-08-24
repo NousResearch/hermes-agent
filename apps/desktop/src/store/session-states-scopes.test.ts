@@ -3,9 +3,11 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $sessionStates,
+  $sessionTiles,
   clearAllSessionStates,
   dropSessionState,
   liveSessionScopes,
+  openTileGatewayScopes,
   publishSessionState,
   recordSessionEventScope
 } from '@/store/session-states'
@@ -77,5 +79,61 @@ describe('liveSessionScopes', () => {
     publishSessionState('rt-1', state({ busy: true }))
 
     expect(liveSessionScopes()).toEqual(new Set())
+  })
+})
+
+describe('openTileGatewayScopes', () => {
+  beforeEach(() => {
+    $sessionTiles.set([])
+  })
+
+  afterEach(() => {
+    $sessionTiles.set([])
+  })
+
+  it('keeps a local bot tile on both the bare profile and the explicit local registry scope', () => {
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'local', mode: 'local', profile: 'berry' },
+        storedSessionId: 'bot-chat-berry'
+      }
+    ])
+
+    expect(openTileGatewayScopes()).toEqual(new Set(['berry', 'conn:local::berry']))
+  })
+
+  it('keeps a remote tile on its composite scope only', () => {
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'homelab', profile: 'default' },
+        storedSessionId: 'bot-chat-homelab'
+      }
+    ])
+
+    expect(openTileGatewayScopes()).toEqual(new Set(['conn:homelab::default']))
+    expect(openTileGatewayScopes().has('default')).toBe(false)
+  })
+
+  it('keys the keep-set on route.profile, not a remapped targetProfile', () => {
+    // openGatewayForAgent dials (connectionId, profile). targetProfile only
+    // rewrites RPC params — using it here would miss the live socket.
+    $sessionTiles.set([
+      {
+        ownerRoute: {
+          connectionId: 'barry',
+          profile: 'oxcoder',
+          targetProfile: 'backend-oxcoder'
+        },
+        storedSessionId: 'bot-chat-oxcoder'
+      }
+    ])
+
+    expect(openTileGatewayScopes()).toEqual(new Set(['conn:barry::oxcoder']))
+  })
+
+  it('ignores tiles without an owner route', () => {
+    $sessionTiles.set([{ storedSessionId: 'plain' }])
+
+    expect(openTileGatewayScopes()).toEqual(new Set())
   })
 })

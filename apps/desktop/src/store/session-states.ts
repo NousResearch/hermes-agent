@@ -16,7 +16,7 @@
  * itself here as the delegate so tile UI stays dependency-light.
  */
 
-import { registryBackendScopeKey } from '@hermes/shared'
+import { LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
@@ -740,6 +740,41 @@ export function patchSessionTile(storedSessionId: string, patch: Partial<Session
 
 export function sessionTileOwnerRoute(storedSessionId: string): SessionProfileRoute | undefined {
   return $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute
+}
+
+/**
+ * Gateway keep-set scopes for currently open tiles. Bot chats (and any other
+ * owner-routed tile) hold a secondary socket even while chrome stays on the
+ * launch profile; without these keys, idle prune closes that socket and the
+ * tile's resume/unbind loop spins forever. Local routes contribute both the
+ * bare profile (openGatewayForProfile) and the explicit `conn:local::…` key
+ * (openGatewayForAgent). Remote routes contribute only the composite key so
+ * a homelab tile cannot pin another source's same-named profile.
+ */
+export function openTileGatewayScopes(): Set<string> {
+  const scopes = new Set<string>()
+
+  for (const tile of $sessionTiles.get()) {
+    const route = tile.ownerRoute
+
+    if (!route) {
+      continue
+    }
+
+    const profile = normalizeProfileKey(route.profile)
+    const connectionId = String(route.connectionId ?? '').trim()
+    const localRoute = !connectionId || connectionId === LOCAL_CONNECTION_ID || route.mode === 'local'
+
+    if (localRoute) {
+      scopes.add(profile)
+    }
+
+    if (connectionId) {
+      scopes.add(registryBackendScopeKey(connectionId, profile))
+    }
+  }
+
+  return scopes
 }
 
 /**

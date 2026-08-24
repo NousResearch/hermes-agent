@@ -193,11 +193,19 @@ export function useSessionTileDelegate({
           throw new Error('resume returned no session id')
         }
 
+        const info = resumed?.info
+
         updateSessionState(
           runtimeId,
           state => ({
             ...state,
-            busy: Boolean(resumed?.info?.running),
+            busy: Boolean(info?.running),
+            // Persist the session's own model/provider from resume so the tile
+            // pill does not wait on a chrome-scoped catalog read (#93892).
+            ...(typeof info?.model === 'string' ? { model: info.model } : {}),
+            ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
+            ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
+            ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
             messages:
               state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
           }),

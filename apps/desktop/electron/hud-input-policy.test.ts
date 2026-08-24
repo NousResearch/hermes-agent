@@ -49,10 +49,7 @@ test('an auto hint follows the session', () => {
 
 test('asking for X11 on a Wayland session gets the solid HUD', () => {
   assert.equal(hudInputPolicy('linux', WAYLAND_SESSION, ['--ozone-platform=x11']), 'solid')
-  assert.equal(
-    hudInputPolicy('linux', { ...WAYLAND_SESSION, ELECTRON_OZONE_PLATFORM_HINT: 'x11' }, []),
-    'solid'
-  )
+  assert.equal(hudInputPolicy('linux', { ...WAYLAND_SESSION, ELECTRON_OZONE_PLATFORM_HINT: 'x11' }, []), 'solid')
 })
 
 test('the explicit switch beats the hint, and the last switch wins', () => {

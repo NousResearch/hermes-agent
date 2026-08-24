@@ -98,10 +98,7 @@ export function parseHudHyprlandClient(payload: string, title: string): HudHyprl
   return null
 }
 
-export function hudOverlayCommands(
-  address: string,
-  action: 'float' | 'pin'
-): { legacy: string; lua: string } {
+export function hudOverlayCommands(address: string, action: 'float' | 'pin'): { legacy: string; lua: string } {
   const selector = `address:${address}`
 
   if (action === 'float') {
@@ -122,8 +119,7 @@ async function dispatchWithFallback(
   socketPath: string,
   pair: { legacy: string; lua: string }
 ): Promise<HyprlandDispatchReply> {
-  const order: HyprlandDispatchSyntax[] =
-    cachedSyntax === 'lua' ? ['lua', 'legacy'] : ['legacy', 'lua']
+  const order: HyprlandDispatchSyntax[] = cachedSyntax === 'lua' ? ['lua', 'legacy'] : ['legacy', 'lua']
 
   for (const syntax of order) {
     const command = syntax === 'legacy' ? pair.legacy : pair.lua
@@ -140,6 +136,7 @@ async function dispatchWithFallback(
     }
 
     cachedSyntax = syntax
+
     return kind
   }
 

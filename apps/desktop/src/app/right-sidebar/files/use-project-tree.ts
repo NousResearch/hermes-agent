@@ -346,7 +346,9 @@ async function revalidateTree(
   const nextData = await reconcile(rootPath, state.data)
 
   setProjectTree(latest =>
-    latest.cwd === cwd && latest.loaded && desktopFsCacheKey() === connectionKey ? { ...latest, data: nextData } : latest
+    latest.cwd === cwd && latest.loaded && desktopFsCacheKey() === connectionKey
+      ? { ...latest, data: nextData }
+      : latest
   )
 }
 

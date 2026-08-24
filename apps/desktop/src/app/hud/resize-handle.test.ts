@@ -89,9 +89,7 @@ describe('useHudResizeHandle', () => {
         'nw'
       )
     )
-    act(() =>
-      void window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 4, screenX: 250, screenY: 275 }))
-    )
+    act(() => void window.dispatchEvent(new PointerEvent('pointermove', { pointerId: 4, screenX: 250, screenY: 275 })))
 
     expect(setBounds).toHaveBeenCalledWith({ x: 50, y: 175, width: 670, height: 345 })
   })

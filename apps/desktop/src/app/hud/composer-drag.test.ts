@@ -98,9 +98,7 @@ describe('useHudComposerDrag', () => {
   it('spans X11 workspaces only for an armed grab, then pins to the current desktop on release', () => {
     const target = pressTarget()
 
-    const { result } = renderHook(() =>
-      useHudComposerDrag(true, { controlDrag: true, workspaceTransfer: true })
-    )
+    const { result } = renderHook(() => useHudComposerDrag(true, { controlDrag: true, workspaceTransfer: true }))
 
     act(() =>
       result.current.onPointerDown({

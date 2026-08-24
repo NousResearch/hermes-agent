@@ -164,12 +164,10 @@ describe('hermes-ws-recovery-v1 silent blackhole', () => {
     await client.connect('ws://gateway.test/api/ws')
     await Promise.resolve()
 
-    const ambiguousSubmit = client
-      .request('prompt.submit', { session_id: 'runtime-1', text: 'one prompt' })
-      .then(
-        () => null,
-        error => error as Error
-      )
+    const ambiguousSubmit = client.request('prompt.submit', { session_id: 'runtime-1', text: 'one prompt' }).then(
+      () => null,
+      error => error as Error
+    )
 
     await vi.advanceTimersByTimeAsync(61)
     await vi.waitFor(() => expect(backend.sockets).toHaveLength(2))

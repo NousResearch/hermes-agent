@@ -294,7 +294,12 @@ describe('useProjectTree', () => {
         })
     )
     readDir.mockResolvedValueOnce(ok([{ name: 'from-b', path: '/shared/from-b', isDirectory: false }]))
-    $connection.set({ baseUrl: 'https://gateway.example', connectionId: 'connection-a', mode: 'local', profile: 'default' } as never)
+    $connection.set({
+      baseUrl: 'https://gateway.example',
+      connectionId: 'connection-a',
+      mode: 'local',
+      profile: 'default'
+    } as never)
 
     const { result } = renderHook(() => useProjectTree('/shared'))
 
@@ -332,7 +337,12 @@ describe('useProjectTree', () => {
         })
     )
     readDir.mockResolvedValueOnce(ok([{ name: 'src', path: '/shared/src', isDirectory: true }]))
-    $connection.set({ baseUrl: 'https://gateway.example', connectionId: 'connection-a', mode: 'local', profile: 'default' } as never)
+    $connection.set({
+      baseUrl: 'https://gateway.example',
+      connectionId: 'connection-a',
+      mode: 'local',
+      profile: 'default'
+    } as never)
 
     const { result } = renderHook(() => useProjectTree('/shared'))
 
@@ -369,7 +379,12 @@ describe('useProjectTree', () => {
         })
     )
     readDir.mockResolvedValueOnce(ok([{ name: 'from-b', path: '/shared/from-b', isDirectory: false }]))
-    $connection.set({ baseUrl: 'https://gateway.example', connectionId: 'connection-a', mode: 'local', profile: 'default' } as never)
+    $connection.set({
+      baseUrl: 'https://gateway.example',
+      connectionId: 'connection-a',
+      mode: 'local',
+      profile: 'default'
+    } as never)
 
     const { result } = renderHook(() => useProjectTree('/shared'))
 

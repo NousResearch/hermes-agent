@@ -405,6 +405,7 @@ export function useGatewayBoot({
 
       if (!gatewayOpen()) {
         await attemptReconnect()
+
         return
       }
 
@@ -500,6 +501,7 @@ export function useGatewayBoot({
         }
 
         publish(conn)
+
         // Bounded for the same reason as attemptReconnect() (#93454): a wedged
         // ticket mint would otherwise hang the gateway switch forever.
         const wsUrl = await withTimeout(
@@ -507,6 +509,7 @@ export function useGatewayBoot({
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out re-minting the gateway WebSocket URL'
         )
+
         await gateway.connect(wsUrl)
 
         if (cancelled) {
@@ -799,6 +802,7 @@ export function useGatewayBoot({
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out minting the gateway WebSocket URL'
         )
+
         await gateway.connect(wsUrl)
 
         if (cancelled) {

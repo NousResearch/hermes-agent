@@ -119,10 +119,6 @@ export function hudUsesNativeDrag(platform: string, env: NodeJS.ProcessEnv, argv
  * native titlebar drag. Native Wayland already delegates movement to the
  * compositor and must stay out of this path.
  */
-export function hudUsesWorkspaceTransfer(
-  platform: string,
-  env: NodeJS.ProcessEnv,
-  argv: readonly string[]
-): boolean {
+export function hudUsesWorkspaceTransfer(platform: string, env: NodeJS.ProcessEnv, argv: readonly string[]): boolean {
   return platform === 'linux' && hudInputPolicy(platform, env, argv) === 'solid'
 }

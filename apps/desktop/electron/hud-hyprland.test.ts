@@ -19,8 +19,9 @@ import {
 const TITLE = 'Hermes HUD'
 const ADDRESS = '0x55d1'
 const SOCKET_ENV = { HYPRLAND_INSTANCE_SIGNATURE: 'abc123', XDG_RUNTIME_DIR: '/run/user/1000' }
+
 const LUA_REJECT =
-  'error: [string "return hl.dispatch(setfloating address:0x55d1)"]:1: \')\' expected near \'address\'\n\n → Note: dispatch in lua is a shorthand for hl.dispatch(...), your syntax might need to be updated.'
+  "error: [string \"return hl.dispatch(setfloating address:0x55d1)\"]:1: ')' expected near 'address'\n\n → Note: dispatch in lua is a shorthand for hl.dispatch(...), your syntax might need to be updated."
 
 afterEach(() => {
   resetHyprlandDispatchSyntax()
@@ -40,10 +41,7 @@ test('classifies Hyprland dispatch replies the way 0.54 and 0.56 actually write 
   assert.equal(classifyHyprlandDispatchReply('Invalid dispatcher'), 'wrong-syntax')
   assert.equal(classifyHyprlandDispatchReply(LUA_REJECT), 'wrong-syntax')
   assert.equal(classifyHyprlandDispatchReply('No such window found'), 'failed')
-  assert.equal(
-    classifyHyprlandDispatchReply('warning: =[C]:-1: hl.focus: window not found'),
-    'failed'
-  )
+  assert.equal(classifyHyprlandDispatchReply('warning: =[C]:-1: hl.focus: window not found'), 'failed')
 })
 
 test('finds the HUD by exact title among other windows of the same pid', () => {
@@ -74,20 +72,14 @@ test('legacy float is setfloating (idempotent), not togglefloating', () => {
   const commands = hudOverlayCommands(ADDRESS, 'float')
 
   assert.equal(commands.legacy, 'dispatch setfloating address:0x55d1')
-  assert.equal(
-    commands.lua,
-    'dispatch hl.dsp.window.float({ action = "enable", window = "address:0x55d1" })'
-  )
+  assert.equal(commands.lua, 'dispatch hl.dsp.window.float({ action = "enable", window = "address:0x55d1" })')
 })
 
 test('lua pin uses enable so a second promote does not unpin', () => {
   const commands = hudOverlayCommands(ADDRESS, 'pin')
 
   assert.equal(commands.legacy, 'dispatch pin address:0x55d1')
-  assert.equal(
-    commands.lua,
-    'dispatch hl.dsp.window.pin({ action = "enable", window = "address:0x55d1" })'
-  )
+  assert.equal(commands.lua, 'dispatch hl.dsp.window.pin({ action = "enable", window = "address:0x55d1" })')
 })
 
 test('skips compositors that are not Hyprland', async () => {
@@ -99,6 +91,7 @@ test('skips compositors that are not Hyprland', async () => {
     uid: 1000,
     request: async (_socket, command) => {
       calls.push(command)
+
       return 'ok'
     }
   })
@@ -118,19 +111,17 @@ test('floats then pins a tiled HUD on a classic hyprlang session', async () => {
     delayMs: 0,
     request: async (_socket, command) => {
       calls.push(command)
+
       if (command === 'j/clients') {
         return JSON.stringify([hudClient()])
       }
+
       return 'ok'
     }
   })
 
   assert.equal(promoted, true)
-  assert.deepEqual(calls, [
-    'j/clients',
-    'dispatch setfloating address:0x55d1',
-    'dispatch pin address:0x55d1'
-  ])
+  assert.deepEqual(calls, ['j/clients', 'dispatch setfloating address:0x55d1', 'dispatch pin address:0x55d1'])
 })
 
 test('falls back to Lua dispatch when the classic session grammar is rejected', async () => {
@@ -144,12 +135,15 @@ test('falls back to Lua dispatch when the classic session grammar is rejected', 
     delayMs: 0,
     request: async (_socket, command) => {
       calls.push(command)
+
       if (command === 'j/clients') {
         return JSON.stringify([hudClient()])
       }
+
       if (command.startsWith('dispatch setfloating') || command.startsWith('dispatch pin ')) {
         return LUA_REJECT
       }
+
       return 'ok'
     }
   })
@@ -168,9 +162,11 @@ test('caches Lua syntax so the next promote does not probe classic first', async
     if (command === 'j/clients') {
       return JSON.stringify([hudClient()])
     }
+
     if (command.startsWith('dispatch setfloating') || command.startsWith('dispatch pin ')) {
       return LUA_REJECT
     }
+
     return 'ok'
   }
 
@@ -193,6 +189,7 @@ test('caches Lua syntax so the next promote does not probe classic first', async
     delayMs: 0,
     request: async (_socket, command) => {
       calls.push(command)
+
       return request(_socket, command)
     }
   })
@@ -215,9 +212,11 @@ test('does not pin a window that is already pinned, and does not float one that 
     delayMs: 0,
     request: async (_socket, command) => {
       calls.push(command)
+
       if (command === 'j/clients') {
         return JSON.stringify([hudClient({ floating: true, pinned: true })])
       }
+
       return 'ok'
     }
   })
@@ -239,11 +238,14 @@ test('retries until Hyprland lists the HUD', async () => {
     request: async (_socket, command) => {
       if (command === 'j/clients') {
         lookups += 1
+
         if (lookups < 3) {
           return JSON.stringify([{ address: '0x111', title: 'Hermes', floating: true }])
         }
+
         return JSON.stringify([hudClient({ floating: true, pinned: true })])
       }
+
       return 'ok'
     }
   })

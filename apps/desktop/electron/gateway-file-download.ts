@@ -45,6 +45,22 @@ export interface GatewayFileBackendRoute<T> {
   connectionId: null | string
   profile: null | string
 }
+export interface GatewayFileRequestPaths {
+  dataUrl: string
+  download: string
+}
+
+export function gatewayFileRequestPaths(
+  filePath: string,
+  scopePath: (requestPath: string) => string
+): GatewayFileRequestPaths {
+  const encodedPath = encodeURIComponent(filePath)
+
+  return {
+    dataUrl: scopePath(`/api/fs/read-data-url?path=${encodedPath}`),
+    download: scopePath(`/api/fs/download?path=${encodedPath}`)
+  }
+}
 
 /**
  * Resolve the backend that owns a renderer-requested gateway file. Registered

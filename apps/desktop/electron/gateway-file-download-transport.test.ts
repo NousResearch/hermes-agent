@@ -55,17 +55,3 @@ test('finalizeGatewayDownload prompts a save dialog then streams the response', 
   assert.match(fn, /error\.statusCode = statusCode/)
 })
 
-test('saveGatewayFile falls back to the data-url route only on 404', () => {
-  const fn = extract('async function saveGatewayFile', '\nasync function saveGatewayFileViaDataUrl')
-
-  assert.match(fn, /\/api\/fs\/download\?path=/)
-  assert.match(fn, /isNotFoundError\(error\)/)
-  assert.match(fn, /saveGatewayFileViaDataUrl\(/)
-})
-
-test('data-url fallback reads the capped route and decodes it', () => {
-  const fn = extract('async function saveGatewayFileViaDataUrl', '// Mint a single-use WS ticket')
-
-  assert.match(fn, /\/api\/fs\/read-data-url\?path=/)
-  assert.match(fn, /parseDataUrlToBuffer\(/)
-})

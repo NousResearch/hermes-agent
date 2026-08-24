@@ -164,6 +164,7 @@ import { registerFsIpc } from './fs-ipc'
 import {
   filenameFromContentDisposition,
   gatewayFilePath,
+  gatewayFileRequestPaths,
   isNotFoundError,
   parseDataUrlToBuffer,
   pumpStreamToFile,
@@ -7571,14 +7572,11 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}) {
   const fallbackName = path.basename(filePath) || suggested || 'download'
   const ctx = { suggested, fallbackName }
 
-  const requestPath = gatewayFileRequestPath(
-    connection,
-    connectionId,
-    profile,
-    `/api/fs/download?path=${encodeURIComponent(filePath)}`
+  const requestPaths = gatewayFileRequestPaths(filePath, requestPath =>
+    gatewayFileRequestPath(connection, connectionId, profile, requestPath)
   )
 
-  const url = `${connection.baseUrl}${requestPath}`
+  const url = `${connection.baseUrl}${requestPaths.download}`
 
   try {
     const auth = await gatedFileAuth(connection)
@@ -7597,7 +7595,7 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}) {
     // /api/fs/download 404s here; fall back (ONLY on 404) to the older capped
     // data-URL route so downloads keep working against older backends.
     if (isNotFoundError(error)) {
-      return await saveGatewayFileViaDataUrl(connection, connectionId, profile, filePath, ctx)
+      return await saveGatewayFileViaDataUrl(connection, requestPaths.dataUrl, ctx)
     }
 
     throw error
@@ -7610,18 +7608,9 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}) {
 // working until they gain the streaming route.
 async function saveGatewayFileViaDataUrl(
   connection: GatewayFileConnection,
-  connectionId: null | string,
-  profile: null | string,
-  filePath: string,
+  requestPath: string,
   ctx: GatewayFileSaveContext
 ) {
-  const requestPath = gatewayFileRequestPath(
-    connection,
-    connectionId,
-    profile,
-    `/api/fs/read-data-url?path=${encodeURIComponent(filePath)}`
-  )
-
   const url = `${connection.baseUrl}${requestPath}`
   const auth = await gatedFileAuth(connection)
   let json: unknown

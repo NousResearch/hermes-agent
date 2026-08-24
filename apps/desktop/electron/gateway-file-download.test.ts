@@ -3,9 +3,11 @@ import { EventEmitter } from 'node:events'
 
 import { test } from 'vitest'
 
+import { pathForRegistryBackendRequest } from './connection-config'
 import {
   filenameFromContentDisposition,
   gatewayFilePath,
+  gatewayFileRequestPaths,
   isNotFoundError,
   parseDataUrlToBuffer,
   pumpStreamToFile,
@@ -174,6 +176,17 @@ test('gatewayFilePath normalizes bare paths and file:// URLs', () => {
   assert.equal(gatewayFilePath('file:///Users/me/a%20b.md'), '/Users/me/a b.md')
   assert.equal(gatewayFilePath(''), '')
   assert.equal(gatewayFilePath(null), '')
+})
+
+test('gatewayFileRequestPaths keeps streaming and fallback requests on the same registered backend', () => {
+  const paths = gatewayFileRequestPaths('/srv/output/image one.png', requestPath =>
+    pathForRegistryBackendRequest(requestPath, 'research', { sharedRemote: true })
+  )
+
+  assert.deepEqual(paths, {
+    dataUrl: '/api/fs/read-data-url?path=%2Fsrv%2Foutput%2Fimage+one.png&profile=research',
+    download: '/api/fs/download?path=%2Fsrv%2Foutput%2Fimage+one.png&profile=research'
+  })
 })
 
 test('isNotFoundError matches only HTTP 404', () => {

@@ -3451,9 +3451,21 @@ def _get_approval_timeout() -> int:
     try:
         from agent.deadline import MAX_SAFE_TIMEOUT_S
 
-        return min(raw, int(MAX_SAFE_TIMEOUT_S))
+        safe_cap = int(MAX_SAFE_TIMEOUT_S)
     except Exception:
-        return raw
+        # Fail CLOSED: returning the raw value here would re-open the exact
+        # time_t overflow this clamp exists to prevent. ~1 year, matching
+        # agent.deadline.MAX_SAFE_TIMEOUT_S.
+        safe_cap = 365 * 24 * 3600
+    if raw > safe_cap:
+        logger.warning(
+            "approvals.timeout=%s exceeds the platform-safe maximum; "
+            "clamping to %ss",
+            raw,
+            safe_cap,
+        )
+        return safe_cap
+    return raw
 
 
 def _get_cron_approval_mode() -> str:

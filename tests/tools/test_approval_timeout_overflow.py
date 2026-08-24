@@ -41,6 +41,48 @@ class TestApprovalTimeoutOverflowClamp:
         with _with_configured_timeout("soon"):
             assert _get_approval_timeout() == 300
 
+    def test_oversized_float_value_clamped(self):
+        # YAML `1e18` arrives as a float, not an int — different int() path
+        # than the string/int forms; the clamp must cover it too.
+        from tools.approval import _get_approval_timeout
+
+        with _with_configured_timeout(1e18):
+            assert _get_approval_timeout() == int(MAX_SAFE_TIMEOUT_S)
+
+    def test_clamp_engagement_logs_warning(self, caplog):
+        # Capping silently changes behavior for every consumer; operators
+        # must see it happen.
+        import tools.approval as approval_mod
+
+        with _with_configured_timeout(10**18):
+            with caplog.at_level("WARNING", logger=approval_mod.__name__):
+                approval_mod._get_approval_timeout()
+        assert "exceeds the platform-safe maximum" in caplog.text
+
+    def test_deadline_import_failure_fails_closed(self, monkeypatch):
+        # If agent.deadline ever fails to import, the clamp must fail CLOSED
+        # (a finite safe cap) — returning the raw value would re-open the
+        # exact time_t overflow this fix exists to prevent.
+        import builtins
+
+        from tools.approval import _get_approval_timeout
+
+        real_import = builtins.__import__
+
+        def _blocked(name, *args, **kwargs):
+            if name == "agent.deadline" or name.startswith("agent.deadline."):
+                raise ImportError("simulated packaging failure")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _blocked)
+        with _with_configured_timeout(10**18):
+            value = _get_approval_timeout()
+        assert value == 365 * 24 * 3600
+        # Still platform-safe for the crashing primitive.
+        lock = threading.Lock()
+        assert lock.acquire(timeout=value)
+        lock.release()
+
     def test_clamped_value_safe_for_lock_acquire(self):
         # The exact primitive that crashed in #83220: Lock.acquire on macOS
         # converts the relative timeout to an absolute time_t timestamp.

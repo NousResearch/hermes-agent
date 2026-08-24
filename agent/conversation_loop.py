@@ -2986,6 +2986,14 @@ def run_conversation(
                         is_github_responses=agent._is_copilot_url(),
                         sanitize_harmony_tokens=agent._is_codex_backend(),
                     )
+                # OpenRouter response caching replays identical successful
+                # responses verbatim, including empty completions. An empty-
+                # response retry must reach the provider instead of replaying
+                # the response that triggered the retry.
+                if agent._empty_content_retries > 0 and agent._is_openrouter_url():
+                    _xh = dict(api_kwargs.get("extra_headers") or {})
+                    _xh["X-OpenRouter-Cache"] = "false"
+                    api_kwargs["extra_headers"] = _xh
                 # Copilot x-initiator: the first API call of a user turn is
                 # marked "user" so Copilot bills a premium request; tool-loop
                 # follow-ups keep the default "agent" header (#3040).

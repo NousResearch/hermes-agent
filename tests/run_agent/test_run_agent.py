@@ -3581,6 +3581,49 @@ class TestRunConversation:
         assert result["final_response"] == "Here is the actual answer."
         assert result["api_calls"] == 2  # 1 original + 1 nudge retry
 
+    def test_openrouter_empty_retry_bypasses_response_cache(self, agent, monkeypatch):
+        """An OpenRouter empty retry must not replay the cached empty response."""
+        self._setup_agent(agent)
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        content_resp = _mock_response(
+            content="Fresh provider response.",
+            finish_reason="stop",
+        )
+        responses = iter([empty_resp, content_resp])
+        request_kwargs = []
+
+        def _create(**kwargs):
+            request_kwargs.append(kwargs)
+            return next(responses)
+
+        original_build_api_kwargs = agent._build_api_kwargs
+
+        def _build_api_kwargs(*args, **kwargs):
+            built = original_build_api_kwargs(*args, **kwargs)
+            built["extra_headers"] = {"X-Custom-Header": "preserved"}
+            return built
+
+        agent.client.chat.completions.create.side_effect = _create
+        monkeypatch.setattr(agent, "_build_api_kwargs", _build_api_kwargs)
+        monkeypatch.setattr(
+            "agent.conversation_loop.jittered_backoff",
+            lambda *args, **kwargs: 0.0,
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert result["final_response"] == "Fresh provider response."
+        assert "X-OpenRouter-Cache" not in request_kwargs[0].get(
+            "extra_headers", {}
+        )
+        assert request_kwargs[1]["extra_headers"]["X-Custom-Header"] == "preserved"
+        assert request_kwargs[1]["extra_headers"]["X-OpenRouter-Cache"] == "false"
+
     def test_empty_response_triggers_fallback_provider(self, agent):
         """After 3 empty retries, fallback provider is activated and produces content."""
         self._setup_agent(agent)

@@ -5155,7 +5155,9 @@ function botConnectionRoute(bot) {
 const BOTS_HOME_OWNER_KEY = 'bots:home'
 
 function botWorkspaceOwnerKey(bot) {
-  const route = botConnectionRoute(bot)
+  // Render-reachable (sidebar sync, Bots home open, context menus): an
+  // orphaned row must yield a stable degraded key, never the dispatch throw.
+  const route = resolveBotConnectionRoute(bot).route
 
   return `bot:${route ? botRouteKey(route) : String(bot?.name || 'default')}`
 }
@@ -5165,7 +5167,9 @@ function groupWorkspaceOwnerKey(group) {
 }
 
 function setBotsWorkspaceOwner(ownerKey, bot = null, blockedMessage = 'Select a Bot or group first.') {
-  const route = bot ? botConnectionRoute(bot) : null
+  // Render-reachable (sidebar listener fires on visibility flips). An
+  // orphaned row degrades to the blocked target instead of throwing.
+  const route = bot ? resolveBotConnectionRoute(bot).route : null
   const target = route ? { kind: 'route', route } : { kind: 'blocked', message: blockedMessage }
 
   host.setWorkspaceScope?.('bots', ownerKey || BOTS_HOME_OWNER_KEY, target)
@@ -6234,7 +6238,11 @@ function groupChatMemberBots(group, roster, metaByName) {
  *  here is what keeps the same room intact across machines. */
 function durableGroupChatMembers(bots) {
   return (bots || []).map(bot => {
-    const route = botConnectionRoute(bot)
+    // Persistence pass over the whole seated roster: an orphaned member
+    // (connection deleted) keeps its identity and simply persists with no
+    // route — the same degraded shape the hydrate annotate produces. The
+    // strict throw here would lose the entire room update over one row.
+    const route = resolveBotConnectionRoute(bot).route
     // Keep the friendly identity on the stored descriptor: after a
     // connection switch the live roster row may be gone, and renamed-tag
     // mentions must still resolve against the persisted member.
@@ -6249,6 +6257,9 @@ function durableGroupChatMembers(bots) {
       connectionKind: bot.connectionKind,
       connectionLabel: bot.connectionLabel,
       ...(route ? { route, targetProfile: route.targetProfile } : {}),
+      // A swept/annotated member keeps its degraded mark across the rebuild —
+      // otherwise the next room send would silently un-mark an orphaned row.
+      ...(bot.sourceMissing ? { sourceMissing: true, sourceReachable: false } : {}),
       remoteSource: true,
       sourceScoped: Boolean(route)
     }
@@ -8388,7 +8399,11 @@ function BotRow({ bot, onDelete, onEdit, onGroup, showHandle }) {
 // ── model picker (provider/model dropdowns via model.options) ───────────────
 
 function useModelOptions(bot = null) {
-  const route = botConnectionRoute(bot)
+  // Hook body runs during render: an orphaned row must paint the picker
+  // disabled/erroring, not throw into the pane's error boundary.
+  const resolved = bot ? resolveBotConnectionRoute(bot) : null
+  const route = resolved?.status === 'resolved' ? resolved.route : null
+  const orphaned = resolved?.status === 'owner_removed'
 
   return useQuery({
     queryKey: [ID, 'model-options', route ? botRouteKey(route) : 'active'],
@@ -8397,6 +8412,7 @@ function useModelOptions(bot = null) {
       explicit_only: false,
       refresh: true
     }),
+    enabled: !orphaned,
     staleTime: 120000,
     retry: false
   })
@@ -8600,7 +8616,9 @@ function AdvancedProfileConfig({ bot, state, setState }) {
   const [loaded, setLoaded] = useState(false)
   const [unsupported, setUnsupported] = useState(false)
   const [skillFilter, setSkillFilter] = useState('')
-  const botRoute = botConnectionRoute(bot)
+  // Component body = render path: degrade an orphaned row to the bot's own
+  // name scope instead of throwing into the dialog's error boundary.
+  const botRoute = resolveBotConnectionRoute(bot).route
   const backendProfile = botRoute?.targetProfile || botRoute?.profile || bot.name
   const backendScope = botBackendProfileScope(botRoute, bot.name)
 

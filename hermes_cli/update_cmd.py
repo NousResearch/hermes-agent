@@ -8303,11 +8303,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print_fleet_version_matrix,
             )
 
-            # A brief settle window: freshly restarted gateways need a
-            # moment to rewrite gateway_state.json with their new identity.
+            # Cross-platform "we expected fleet rows" signal (#93406). The
+            # old (restarted_services or killed_pids) condition never fires
+            # on Windows: the pause/resume phase populates neither list, so
+            # a healthy resumed gateway yielded zero rows and exit 0.
+            _fleet_rows_expected = _m()._fleet_probe_expected_runtimes(
+                _pre_update_plan,
+                _pre_restart_gateway_pids,
+                _windows_gateway_resume,
+                restarted_services,
+                killed_pids,
+            )
+            # A brief settle window: freshly restarted/resumed gateways need
+            # a moment to rewrite gateway_state.json with their new identity.
             # Skipped when the restart phase touched nothing (no gateways
             # were running) — nothing to settle.
-            if restarted_services or killed_pids:
+            if _fleet_rows_expected:
                 _time.sleep(2.0)
             # Pass the pre-restart PID snapshot so a gateway the restart
             # phase stopped WITHOUT a verified replacement shows as a DOWN
@@ -8317,9 +8328,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             if print_fleet_version_matrix(_fleet_snapshot):
                 gateway_fleet_restart_incomplete = True
-            elif not _fleet_snapshot and (restarted_services or killed_pids):
-                # Fleet probe returned zero rows even though the restart
-                # phase touched live gateways.  Every failure path inside
+            elif not _fleet_snapshot and _fleet_rows_expected:
+                # Fleet probe returned zero rows even though at least one
+                # gateway runtime was (or may have been) live pre-update —
+                # POSIX restart bookkeeping, the pre-restart PID snapshot,
+                # the pre-update plan inventory, or the Windows pause/resume
+                # token all count as that signal.  Every failure path inside
                 # collect_fleet_versions() is swallowed via logger.debug(),
                 # so an empty list is indistinguishable from a healthy fleet
                 # in the current output.  Treat it as verification failure
@@ -8327,7 +8341,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # (#93406).
                 print(
                     "\n⚠ Fleet version check returned no rows even though"
-                    " gateways were restarted — verification incomplete."
+                    " gateway runtimes were expected — verification incomplete."
                 )
                 gateway_fleet_restart_incomplete = True
         except Exception as _fleet_exc:
@@ -8445,6 +8459,61 @@ def _restart_phase_failure_is_incomplete(surviving, pre_restart_pids) -> bool:
         return True
     # surviving == []: safe only if we know nothing was running beforehand.
     return pre_restart_pids is None or bool(pre_restart_pids)
+
+
+def _fleet_probe_expected_runtimes(
+    pre_update_plan,
+    pre_restart_pids,
+    windows_resume_token,
+    restarted_services,
+    killed_pids,
+) -> bool:
+    """Whether the post-update fleet probe should have produced rows.
+
+    The zero-rows fail-open (#93406): ``collect_fleet_versions()`` swallows
+    every probe failure via ``logger.debug()`` and ``print_fleet_version_matrix([])``
+    early-returns ``False``, so an empty snapshot reads as \"healthy fleet\" and
+    the update exits 0.  An empty snapshot is only proof-of-safety when NOTHING
+    says a gateway existed before the update.  Any of these signals means at
+    least one runtime was (or may have been) live pre-update, so zero rows is
+    verification failure, not health:
+
+    * ``restarted_services`` / ``killed_pids`` — the POSIX restart phase
+      touched live gateways.
+    * ``pre_restart_pids`` non-empty, or ``None`` (pre-state unreadable —
+      cannot prove nothing was running; same contract as
+      ``_restart_phase_failure_is_incomplete``, #78574).
+    * the pre-update plan inventoried ≥1 runtime.
+    * the Windows pause/resume token carries paused ``profiles`` or
+      ``unmapped`` entries — ``_pause_windows_gateways_for_update`` /
+      ``_resume_windows_gateways_after_update`` populate NEITHER
+      ``restarted_services`` NOR ``killed_pids``, which is exactly why the
+      original ``(restarted_services or killed_pids)`` guard never fires on
+      Windows.
+
+    The same condition gates the 2.0s settle sleep: a freshly resumed Windows
+    gateway needs the settle window to rewrite ``gateway_state.json`` just
+    like a systemd-restarted one.
+
+    Note this keys ONLY on zero-rows-despite-expected-runtimes.  A non-empty
+    snapshot — including rows in ``unknown`` state — is still judged solely by
+    ``print_fleet_version_matrix``.
+    """
+    if restarted_services or killed_pids:
+        return True
+    if pre_restart_pids is None or pre_restart_pids:
+        return True
+    try:
+        if pre_update_plan is not None and pre_update_plan.runtimes:
+            return True
+    except Exception:
+        pass
+    if isinstance(windows_resume_token, dict) and (
+        windows_resume_token.get("profiles")
+        or windows_resume_token.get("unmapped")
+    ):
+        return True
+    return False
 
 
 def _print_items(items, label, key, fallback_key=None):

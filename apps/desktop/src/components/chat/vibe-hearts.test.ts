@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { flashPetActivity, forwardPetReaction, burst } = vi.hoisted(() => ({
+const { flashPetActivity, forwardPetReaction, burst, overlay } = vi.hoisted(() => ({
   flashPetActivity: vi.fn(),
   forwardPetReaction: vi.fn(),
-  burst: vi.fn()
+  burst: vi.fn(),
+  overlay: { active: false }
 }))
 
 vi.mock('@/components/particles/particle-field', () => ({
@@ -17,7 +18,7 @@ vi.mock('@/store/pet', () => ({
 }))
 
 vi.mock('@/store/pet-overlay', () => ({
-  $petOverlayActive: { get: () => false },
+  $petOverlayActive: { get: () => overlay.active },
   forwardPetReaction
 }))
 
@@ -29,6 +30,7 @@ describe('burstVibeHearts', () => {
     flashPetActivity.mockClear()
     forwardPetReaction.mockClear()
     burst.mockClear()
+    overlay.active = false
     setVibeHeartsEnabled(true)
   })
 
@@ -53,5 +55,24 @@ describe('burstVibeHearts', () => {
     setVibeHeartsEnabled(true)
     burstVibeHearts()
     expect(burst).toHaveBeenCalledOnce()
+  })
+
+  it('forwards to the popped-out overlay when on', () => {
+    overlay.active = true
+    burstVibeHearts()
+    expect(forwardPetReaction).toHaveBeenCalledWith('vibe')
+    expect(flashPetActivity).toHaveBeenCalledOnce()
+    expect(burst).not.toHaveBeenCalled()
+  })
+
+  it('off also silences the popped-out overlay path (vibe reactions only originate here)', () => {
+    // The overlay window's playVibeHearts() only fires on a reaction forwarded
+    // by this router, so gating the forward IS the overlay's off switch.
+    overlay.active = true
+    setVibeHeartsEnabled(false)
+    burstVibeHearts()
+    expect(forwardPetReaction).not.toHaveBeenCalled()
+    expect(flashPetActivity).not.toHaveBeenCalled()
+    expect(burst).not.toHaveBeenCalled()
   })
 })

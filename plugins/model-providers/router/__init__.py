@@ -48,6 +48,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli import __version__ as _HERMES_VERSION
 from providers import register_provider
 from providers.base import ProviderProfile, _profile_user_agent
 
@@ -341,6 +342,10 @@ router = RouterProfile(
     env_vars=("RAMP_ROUTER_API_KEY", "ROUTER_API_KEY", "RAMP_ROUTER_BASE_URL"),
     base_url=_base_url(),
     auth_type="api_key",
+    # Identify Hermes traffic to the gateway (Router attributes coding-agent
+    # clients by User-Agent prefix, the way it already recognizes OpenCode's
+    # versioned UA) — and Router's WAF rejects blank/default client UAs.
+    default_headers={"User-Agent": f"Hermes-Agent/{_HERMES_VERSION}"},
     # Most of the catalog's frontier routes accept image input; capability is
     # still model-dependent and governed by the live catalog.
     supports_vision=True,

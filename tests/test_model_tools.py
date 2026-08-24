@@ -43,7 +43,7 @@ class TestHandleFunctionCall:
             patch("hermes_cli.plugins.has_hook", return_value=True),
             patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
-            handle_function_call("web_search", {"q": "test"}, task_id="t1")
+            handle_function_call("web_search", {"query": "test"}, task_id="t1")
 
         kwargs_by_hook = {
             c.args[0]: c.kwargs for c in mock_invoke_hook.call_args_list
@@ -90,7 +90,7 @@ class TestHandleFunctionCall:
             patch("hermes_cli.plugins.has_hook", return_value=False),
             patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
-            result = handle_function_call("web_search", {"q": "test"}, task_id="t1")
+            result = handle_function_call("web_search", {"query": "test"}, task_id="t1")
 
         assert result == '{"ok":true}'
         fired = {c.args[0] for c in mock_invoke_hook.call_args_list}
@@ -135,16 +135,16 @@ class TestHandleFunctionCall:
         result = json.loads(
             handle_function_call(
                 "web_search",
-                {"q": "test"},
+                {"query": "test"},
                 task_id="task-1",
                 tool_call_id="tool-1",
                 session_id="session-1",
             )
         )
 
-        assert seen["execution_args"] == {"q": "test", "rewritten": True}
-        assert seen["dispatch"][1] == {"q": "test", "rewritten": True, "wrapped": True}
-        assert result["args"] == {"q": "test", "rewritten": True, "wrapped": True}
+        assert seen["execution_args"] == {"query": "test", "rewritten": True}
+        assert seen["dispatch"][1] == {"query": "test", "rewritten": True, "wrapped": True}
+        assert result["args"] == {"query": "test", "rewritten": True, "wrapped": True}
         expected_trace = [{"source": "test-middleware", "reason": "rewrite"}]
         pre_call = next(call for call in hook_calls if call[0] == "pre_tool_call")
         post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
@@ -170,7 +170,7 @@ class TestHandleFunctionCall:
         result = json.loads(
             handle_function_call(
                 "web_search",
-                {"q": "test"},
+                {"query": "test"},
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="tool-1",

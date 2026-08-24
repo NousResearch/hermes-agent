@@ -126,6 +126,16 @@ class ToolCallGuardrailConfig:
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: "LoopCapConfig" = field(default_factory=lambda: LoopCapConfig())
+    pre_tool_validation: bool = True
+    conditional_required: Mapping[str, Any] = field(
+        default_factory=lambda: {
+            "skill_manage": [
+                {"condition": {"action": ["create", "edit"]}, "require": ["content"]},
+                {"condition": {"action": "patch"}, "require": ["old_string", "new_string"]},
+                {"condition": {"action": "write_file"}, "require": ["file_path", "file_content"]},
+            ],
+        }
+    )
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "ToolCallGuardrailConfig":
@@ -141,6 +151,12 @@ class ToolCallGuardrailConfig:
             hard_stop_after = {}
 
         defaults = cls()
+        raw_cond = data.get("conditional_required")
+        if isinstance(raw_cond, Mapping):
+            conditional_required = raw_cond
+        else:
+            conditional_required = defaults.conditional_required
+
         return cls(
             warnings_enabled=_as_bool(data.get("warnings_enabled"), defaults.warnings_enabled),
             hard_stop_enabled=_as_bool(data.get("hard_stop_enabled"), defaults.hard_stop_enabled),
@@ -169,6 +185,8 @@ class ToolCallGuardrailConfig:
                 defaults.no_progress_block_after,
             ),
             loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")),
+            pre_tool_validation=_as_bool(data.get("pre_tool_validation"), defaults.pre_tool_validation),
+            conditional_required=conditional_required,
         )
 
 

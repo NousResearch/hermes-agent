@@ -1189,6 +1189,137 @@ def _emit_post_tool_call_hook(
         logger.debug("post_tool_call hook error: %s", _hook_err)
 
 
+def _match_tool_arg_condition(condition: Any, args: Dict[str, Any]) -> bool:
+    """Evaluate whether an argument condition matches the supplied tool call arguments."""
+    if not condition or not isinstance(condition, dict):
+        return True
+    for key, expected in condition.items():
+        if key.endswith("!="):
+            actual_key = key[:-2].strip()
+            val = args.get(actual_key)
+            if isinstance(expected, (list, tuple, set)):
+                if val in expected:
+                    return False
+            else:
+                if val == expected:
+                    return False
+        else:
+            val = args.get(key)
+            if isinstance(expected, (list, tuple, set)):
+                if val not in expected:
+                    return False
+            else:
+                if val != expected:
+                    return False
+    return True
+
+
+def validate_required_tool_args(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    *,
+    session_id: str = "",
+    turn_id: str = "",
+) -> Optional[str]:
+    """Return a block message if the tool call is missing required arguments, else None.
+
+    1) Schema required: Checks parameters.required from ToolRegistry.get_schema(tool_name).
+       Missing keys or None values are reported as missing.
+    2) Conditional required: Reads tool_loop_guardrails.conditional_required from config,
+       matches conditions against args, and checks require/require_any lists.
+    3) Message assembly: Produces an actionable guidance string for the model:
+       "Tool {tool_name} is missing required argument(s): {missing}. {arg: description}"
+    """
+    if not tool_name:
+        return None
+    args_dict = args if isinstance(args, dict) else {}
+
+    missing: List[str] = []
+    custom_hints: Dict[str, str] = {}
+    properties: Dict[str, Any] = {}
+
+    # 1) Universal: inspect registered tool schema from registry
+    try:
+        schema = registry.get_schema(tool_name)
+    except Exception:
+        schema = None
+
+    if isinstance(schema, dict):
+        fn_schema = schema.get("function") if isinstance(schema.get("function"), dict) else schema
+        params = fn_schema.get("parameters")
+        if not isinstance(params, dict):
+            params = fn_schema
+        if isinstance(params.get("properties"), dict):
+            properties = params["properties"]
+        if isinstance(params.get("required"), list):
+            for req in params["required"]:
+                if args_dict.get(req) is None and req not in missing:
+                    missing.append(req)
+
+    # 2) Conditional rules: read tool_loop_guardrails.conditional_required from config
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+    except Exception:
+        cfg = {}
+
+    tlg_cfg = cfg.get("tool_loop_guardrails")
+    if not isinstance(tlg_cfg, dict):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        tlg_cfg = DEFAULT_CONFIG.get("tool_loop_guardrails") or {}
+
+    cond_map = tlg_cfg.get("conditional_required")
+    if not isinstance(cond_map, dict):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        cond_map = (
+            (DEFAULT_CONFIG.get("tool_loop_guardrails") or {}).get("conditional_required") or {}
+        )
+
+    rules = cond_map.get(tool_name) if isinstance(cond_map, dict) else None
+    if rules:
+        rule_list = rules if isinstance(rules, list) else [rules]
+        for rule in rule_list:
+            if isinstance(rule, dict) and _match_tool_arg_condition(rule.get("condition"), args_dict):
+                for req in rule.get("require", []):
+                    if args_dict.get(req) is None and req not in missing:
+                        missing.append(req)
+                        if rule.get("hint") and req not in custom_hints:
+                            custom_hints[req] = rule["hint"]
+                require_any = rule.get("require_any", [])
+                if require_any and isinstance(require_any, list):
+                    if all(args_dict.get(req) is None for req in require_any):
+                        any_desc = " or ".join(require_any)
+                        if any_desc not in missing:
+                            missing.append(any_desc)
+                            if rule.get("hint") and any_desc not in custom_hints:
+                                custom_hints[any_desc] = rule["hint"]
+
+    if not missing:
+        return None
+
+    # 3) Assemble actionable message
+    hints: List[str] = []
+    for req in missing:
+        prop_desc = None
+        if req in properties and isinstance(properties[req], dict):
+            prop_desc = properties[req].get("description")
+        if prop_desc:
+            hints.append(f"{req}: {str(prop_desc).strip()}")
+        elif req in custom_hints:
+            hints.append(f"{req}: {str(custom_hints[req]).strip()}")
+        else:
+            hints.append(f"Please provide '{req}'.")
+
+    missing_str = ", ".join(missing)
+    msg = f"Tool {tool_name} is missing required argument(s): {missing_str}."
+    if hints:
+        msg += " " + " ".join(hints)
+    return msg
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
@@ -1417,6 +1548,42 @@ def handle_function_call(
                     middleware_trace=list(_tool_middleware_trace),
                 )
                 return result
+
+        # Pre-tool-call required-argument validation (tool_loop_guardrails.pre_tool_validation).
+        # Runs after plugin hooks so plugins keep priority to modify/supply args;
+        # blocks before execution so broken calls never enter failure-loop accounting.
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            _agent_cfg = load_config_readonly() or {}
+            _tlg_cfg = _agent_cfg.get("tool_loop_guardrails") or {}
+            _req_validation_enabled = _tlg_cfg.get("pre_tool_validation", True)
+            if _req_validation_enabled:
+                _req_msg = validate_required_tool_args(
+                    function_name,
+                    function_args,
+                    session_id=session_id or "",
+                    turn_id=turn_id or "",
+                )
+                if _req_msg is not None:
+                    _req_result = tool_error(_req_msg)
+                    _emit_post_tool_call_hook(
+                        function_name=function_name,
+                        function_args=function_args,
+                        result=_req_result,
+                        task_id=task_id,
+                        session_id=session_id,
+                        tool_call_id=tool_call_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        status="blocked",
+                        error_type="missing_required_args",
+                        error_message=_req_msg,
+                        middleware_trace=list(_tool_middleware_trace),
+                    )
+                    return _req_result
+        except Exception as _req_err:
+            logger.debug("required-arg validation error: %s", _req_err)
 
         # ACP/Zed edit approval runs before any file mutation.  The requester
         # is bound via ContextVar only for ACP sessions, so CLI/gateway paths

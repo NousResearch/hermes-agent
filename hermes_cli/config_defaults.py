@@ -738,6 +738,14 @@ DEFAULT_CONFIG = {
             "max_web_searches": 50,   # max web_search calls per turn (0 = unlimited)
             "max_subagents": 50,      # max subagents spawned per turn (0 = unlimited)
         },
+        "pre_tool_validation": True,
+        "conditional_required": {
+            "skill_manage": [
+                {"condition": {"action": ["create", "edit"]}, "require": ["content"]},
+                {"condition": {"action": "patch"}, "require": ["old_string", "new_string"]},
+                {"condition": {"action": "write_file"}, "require": ["file_path", "file_content"]},
+            ],
+        },
     },
 
     "compression": {

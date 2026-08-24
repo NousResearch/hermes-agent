@@ -1537,9 +1537,11 @@ class WeixinAdapter(BasePlatformAdapter):
             await self.handle_message(event)
 
     def _open_dm_opted_in(self) -> bool:
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+        # Scoped reads (#93522): the default profile's allow-all flag must
+        # not leak into a multiplexed secondary profile's admission gate.
+        if (_wx_secret("GATEWAY_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}:
             return True
-        return os.getenv("WEIXIN_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        return (_wx_secret("WEIXIN_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         if self._dm_policy == "disabled":

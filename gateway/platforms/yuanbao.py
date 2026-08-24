@@ -97,7 +97,6 @@ from gateway.platforms.yuanbao_proto import (
     next_seq_no,
 )
 from gateway.session import build_session_key
-from gateway.authz_mixin import _platform_gate_env
 
 logger = logging.getLogger(__name__)
 
@@ -1262,6 +1261,27 @@ class ChatRoutingMiddleware(InboundMiddleware):
         await next_fn()
 
 
+def _yb_secret(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Resolve a per-profile ``YUANBAO_*`` / gateway setting honoring the
+    active secret scope (#93522).
+
+    Under ``gateway.multiplex_profiles`` every secondary profile is
+    constructed inside ``_profile_runtime_scope`` (``gateway/run.py``) and
+    its ``.env`` lives in that scope — raw ``os.getenv`` misses it and
+    leaks the default profile's values instead. The primary/active profile
+    is constructed without a scope and legitimately owns ``os.environ``,
+    so fall back to it there (same canonical shape as QQ's
+    ``_resolve_qq_secret``).
+    """
+    from agent.secret_scope import UnscopedSecretError, get_secret
+
+    try:
+        val = get_secret(name, default)
+    except UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
 class AccessPolicy:
     """Platform-level DM / Group access control policy.
 
@@ -1283,9 +1303,9 @@ class AccessPolicy:
         self._group_allow_from = group_allow_from
 
     def _open_dm_opted_in(self) -> bool:
-        if _platform_gate_env("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+        if (_yb_secret("GATEWAY_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}:
             return True
-        return _platform_gate_env("YUANBAO_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        return (_yb_secret("YUANBAO_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}
 
     def is_dm_allowed(self, sender_id: str) -> bool:
         """Strict DM authorization — pairing does not imply access."""
@@ -4943,27 +4963,29 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
         # Reply-to dedup: inbound_msg_id -> expire_ts
         # ------------------------------------------------------------------
-        # Access control policy (DM / Group)
+        # Access control policy (DM / Group) — scoped reads (#93522)
         # ------------------------------------------------------------------
         dm_policy: str = (
             _extra.get("dm_policy")
-            or _platform_gate_env("YUANBAO_DM_POLICY", "pairing")
+            or _yb_secret("YUANBAO_DM_POLICY")
+            or "pairing"
         ).strip().lower()
 
         _dm_allow_from_raw: str = (
             _extra.get("dm_allow_from")
-            or _platform_gate_env("YUANBAO_DM_ALLOW_FROM", "")
+            or _yb_secret("YUANBAO_DM_ALLOW_FROM", "")
         )
         dm_allow_from: list[str] = [x.strip() for x in _dm_allow_from_raw.split(",") if x.strip()]
 
         group_policy: str = (
             _extra.get("group_policy")
-            or _platform_gate_env("YUANBAO_GROUP_POLICY", "pairing")
+            or _yb_secret("YUANBAO_GROUP_POLICY")
+            or "pairing"
         ).strip().lower()
 
         _group_allow_from_raw: str = (
             _extra.get("group_allow_from")
-            or _platform_gate_env("YUANBAO_GROUP_ALLOW_FROM", "")
+            or _yb_secret("YUANBAO_GROUP_ALLOW_FROM", "")
         )
         group_allow_from: list[str] = [x.strip() for x in _group_allow_from_raw.split(",") if x.strip()]
 

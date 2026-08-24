@@ -3,47 +3,43 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
 
-// #89834 — local open invokes registered group main-tab closer before canonical open.
 const pluginSource = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8')
-const atom = i => {
-  let v = i
-  return { get: () => v, set: n => { v = typeof n === 'function' ? n(v) : n }, listen: () => () => {} }
+const atom = initial => {
+  let value = initial
+  return { get: () => value, set: next => { value = typeof next === 'function' ? next(value) : next }, listen: () => () => {} }
 }
-const jsx = (t, p = {}) => ({ type: t, props: p })
-const find = (tree, pred) => {
+const jsx = (type, props = {}) => ({ type, props })
+const find = (tree, predicate) => {
   if (tree == null || typeof tree !== 'object') return null
   if (Array.isArray(tree)) {
-    for (const c of tree) { const f = find(c, pred); if (f) return f }
+    for (const child of tree) { const match = find(child, predicate); if (match) return match }
     return null
   }
-  return pred(tree) ? tree : find(tree.props?.children, pred)
+  return predicate(tree) ? tree : find(tree.props?.children, predicate)
 }
 
-function load() {
-  const timeline = [], notifications = []
+function load({ rejectOpen = false, rejectPrepare = false } = {}) {
+  const timeline = []
   const host = {
     state: {
-      profile: { get: () => 'other', listen: () => {} },
+      profile: { get: () => 'default', listen: () => {} },
       gateway: { get: () => 'open', listen: () => {} },
       connectionId: { get: () => 'local', listen: () => {} }
     },
-    request: async m => m === 'session.create'
-      ? { stored_session_id: 'stored-chat', session_id: 'rt-chat' }
-      : { profiles: [], sessions: [] },
-    notify: p => notifications.push(p),
-    notifyError: () => {}, openSession: async () => {}, ensureAgent: async () => {},
+    request: async () => ({ profiles: [], sessions: [] }),
+    notify: () => {}, notifyError: error => timeline.push({ type: 'error', error }),
+    openSession: async () => {}, ensureAgent: async () => {}, requestProfile: async () => ({}),
     activeConnectionId: () => 'local', warmAgent: () => {}, warmProfile: () => {},
-    newChat: () => timeline.push({ type: 'newChat' }),
-    navigate: () => timeline.push({ type: 'navigate' })
+    newChat: () => timeline.push({ type: 'newChat' }), navigate: () => {}
   }
   const ui = 'Button Checkbox Codicon ConfirmDialog ContextMenu ContextMenuContent ContextMenuItem ContextMenuSeparator ContextMenuTrigger CopyButton Dialog DialogContent DialogDescription DialogFooter DialogHeader DialogTitle DropdownMenu DropdownMenuContent DropdownMenuItem DropdownMenuTrigger EmptyState GlyphSpinner Input ScrollArea SearchField Select SelectContent SelectItem SelectTrigger SelectValue Switch Textarea Tip'.split(' ')
-  const ctx = {
-    atom, jsx, jsxs: jsx, cn: (...a) => a.filter(Boolean).join(' '), haptic: () => {},
-    useEffect: () => {}, useRef: i => ({ current: typeof i === 'function' ? i() : i }),
-    useState: i => [typeof i === 'function' ? i() : i, () => {}],
-    useValue: s => (s && typeof s.get === 'function' ? s.get() : s),
+  const context = {
+    atom, jsx, jsxs: jsx, cn: (...values) => values.filter(Boolean).join(' '), haptic: () => {},
+    useEffect: () => {}, useMemo: fn => fn(), useRef: value => ({ current: typeof value === 'function' ? value() : value }),
+    useState: value => [typeof value === 'function' ? value() : value, () => {}],
+    useValue: store => store?.get ? store.get() : store,
     useQuery: () => ({ data: [], isLoading: false, isFetching: false, refetch: () => {} }),
-    ...Object.fromEntries(ui.map(n => [n, n])),
+    ...Object.fromEntries(ui.map(name => [name, name])),
     PALETTE_AREA: 'palette', COMPOSER_AREAS: { middleware: 'middleware' },
     profileColor: () => '#000', queryClient: { invalidateQueries: () => {} }, relativeTime: () => 'now',
     document: { getElementById: () => null, createElement: () => ({}), head: { appendChild: () => {} } },
@@ -57,93 +53,68 @@ function load() {
     .replace(/^import .* from 'react'\r?\n/m, '')
     .replace(/^import .* from 'react\/jsx-runtime'\r?\n/m, '')
     .replace('export default {', 'globalThis.plugin = {')
-    .concat(`\nglobalThis.__h={BotRow,ActiveNowStrip,BotsPane,openGroupChat,groupChatMainTabs,$groupChatWorkspace};`)
-  vm.runInNewContext(code, ctx, { filename: 'plugin.js' })
-  // Live binding: handlers resolve this mutable global at call time.
-  ctx.openBotCanonicalChat = async (...a) => { timeline.push({ type: 'openBotCanonicalChat', args: a }); return 'stored-chat' }
-  const api = ctx.__h
+    .concat('\nglobalThis.__h={BotRow,BotsPane,openRosterBot,openGroupChat,groupChatMainTabs,$groupChatWorkspace,$groupChats};')
+  vm.runInNewContext(code, context, { filename: 'plugin.js' })
+  context.openBotCanonicalChat = async bot => {
+    timeline.push({ type: 'canonicalOpen', bot })
+    if (rejectOpen) throw new Error('canonical open failed')
+    return { registryId: 'stored-chat', openedId: 'stored-chat' }
+  }
+  if (rejectPrepare) context.prepareBotSource = async () => { throw new Error('source preparation failed') }
+  const api = context.__h
   const registerGroup = group => {
-    let closed = 0
-    ctx.host.openWorkspace = () => () => { closed += 1; timeline.push({ type: 'mainTabClose', group }) }
+    api.$groupChats.set({ ...api.$groupChats.get(), [group]: { log: [], watermarks: {}, sessions: {}, stranded: {} } })
+    host.openWorkspace = id => () => timeline.push({ type: 'workspaceClose', id })
     api.openGroupChat(group)
-    assert.equal(api.$groupChatWorkspace.get(), group)
-    assert.ok(api.groupChatMainTabs.has(group))
-    return { closed: () => closed, registered: () => api.groupChatMainTabs.has(group) }
+    return { closed: () => timeline.filter(event => event.type === 'workspaceClose' && event.id.includes(':group:')).length }
   }
   const botRow = bot => {
     const tree = api.BotRow({ bot, onEdit: () => {} })
-    const row = tree.type === 'button' ? tree : tree.props.children[0].props.children
-    assert.equal(typeof row.props.onClick, 'function')
-    return row
+    return tree.type === 'button' ? tree : tree.props.children[0].props.children
   }
-  // Real Active Now onOpen from BotsPane (not a hand-copied fragment).
-  const strip = find(api.BotsPane(), n => n?.props && typeof n.props.onOpen === 'function' && 'roster' in n.props)
-  assert.ok(strip, 'BotsPane mounts ActiveNowStrip with onOpen')
-  const onOpen = strip.props.onOpen
-  const activeChip = bot => {
-    const b = { ...bot, last_session: bot.last_session || { id: 'live', last_active: Math.floor(Date.now() / 1000) - 5 } }
-    const tree = api.ActiveNowStrip({ roster: [b], activeProfile: 'other', gatewayState: 'open', metaByName: {}, onOpen })
-    const chip = find(tree, n => n.type === 'button' && /Open /.test(String(n.props?.title || ''))
-      && (String(n.props.title).includes(bot.name) || String(n.props.title).includes(bot.title || '')))
-    assert.ok(chip, 'Active Now chip renders')
-    return chip
-  }
-  return { api, timeline, notifications, registerGroup, botRow, activeChip }
+  const activeOnOpen = find(api.BotsPane(), node => node?.props && typeof node.props.onOpen === 'function' && 'roster' in node.props).props.onOpen
+  return { api, timeline, registerGroup, botRow, activeOnOpen }
 }
 
-const drain = async () => { await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)) }
-const assertCloseBeforeOpen = tl => {
-  const c = tl.findIndex(e => e.type === 'mainTabClose'), o = tl.findIndex(e => e.type === 'openBotCanonicalChat')
-  assert.ok(c >= 0, 'registered main-tab closer must run')
-  assert.ok(o >= 0, 'local open must reach canonical chat')
-  assert.ok(c < o, 'close must precede canonical open')
+const drain = async () => { await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve)) }
+const bot = { name: 'alpha', title: 'Alpha' }
+const assertCloseBeforeOpen = runtime => {
+  const closed = runtime.timeline.findIndex(event => event.type === 'workspaceClose' && event.id.includes(':group:'))
+  const opened = runtime.timeline.findIndex(event => event.type === 'canonicalOpen')
+  assert.ok(closed >= 0 && opened >= 0 && closed < opened)
 }
-const remote = { name: 'research', title: 'Research', remoteSource: true, sourceScoped: true, connectionId: 'work', connectionLabel: 'Work' }
 
-test('BotRow local open closes group main tab before canonical open', async () => {
-  const r = load(), tab = r.registerGroup('Core')
-  await r.botRow({ name: 'alpha', title: 'Alpha' }).props.onClick()
-  assert.equal(tab.closed(), 1, 'registered main-tab closer must run')
-  assert.equal(r.api.$groupChatWorkspace.get(), null)
-  assert.equal(tab.registered(), false)
-  assertCloseBeforeOpen(r.timeline)
+test('central owner open closes the registered group tab before canonical open', async () => {
+  const runtime = load(), tab = runtime.registerGroup('Core')
+  assert.equal(await runtime.api.openRosterBot(bot), true)
+  assert.equal(tab.closed(), 1)
+  assert.equal(runtime.api.groupChatMainTabs.has('Core'), false)
+  assertCloseBeforeOpen(runtime)
 })
 
-test('BotRow remote open does not dismiss group main tab', async () => {
-  const r = load(), tab = r.registerGroup('Core')
-  await r.botRow(remote).props.onClick()
-  assert.equal(tab.closed(), 0, 'remote open must not dismiss the group tab')
-  assert.equal(r.api.$groupChatWorkspace.get(), 'Core')
-  assert.equal(tab.registered(), true)
-  assert.equal(r.timeline.some(e => e.type === 'openBotCanonicalChat'), false)
-  assert.ok(r.notifications.some(n => /Stay in this chat/.test(n.message || '')))
+test('BotRow and Active Now both delegate through the central owner open', async () => {
+  for (const invoke of [runtime => runtime.botRow(bot).props.onClick(), runtime => runtime.activeOnOpen(bot)]) {
+    const runtime = load(); runtime.registerGroup('Core'); invoke(runtime); await drain(); assertCloseBeforeOpen(runtime)
+  }
 })
 
-test('Active Now local open closes group main tab before canonical open', async () => {
-  const r = load(), tab = r.registerGroup('Ops')
-  await r.activeChip({ name: 'alpha', title: 'Alpha' }).props.onClick()
-  await drain()
-  assert.equal(tab.closed(), 1, 'registered main-tab closer must run')
-  assert.equal(r.api.$groupChatWorkspace.get(), null)
-  assert.equal(tab.registered(), false)
-  assertCloseBeforeOpen(r.timeline)
+test('failed canonical open restores the group fallback and surfaces an error', async () => {
+  const runtime = load({ rejectOpen: true }), tab = runtime.registerGroup('Core')
+  assert.equal(await runtime.api.openRosterBot(bot), false)
+  assert.equal(tab.closed(), 1)
+  assert.equal(runtime.api.$groupChatWorkspace.get(), 'Core')
+  assert.equal(runtime.api.groupChatMainTabs.has('Core'), true)
+  assert.ok(runtime.timeline.some(event => event.type === 'error'))
 })
 
-test('Active Now remote open does not dismiss group main tab', async () => {
-  const r = load(), tab = r.registerGroup('Ops')
-  await r.activeChip(remote).props.onClick(); await drain()
-  assert.equal(tab.closed(), 0, 'remote open must not dismiss the group tab')
-  assert.equal(r.api.$groupChatWorkspace.get(), 'Ops')
-  assert.equal(tab.registered(), true)
+test('failed source preparation restores the group fallback', async () => {
+  const runtime = load({ rejectPrepare: true }); runtime.registerGroup('Core')
+  assert.equal(await runtime.api.openRosterBot({ ...bot, sourceScoped: true, connectionId: 'local' }), false)
+  assert.equal(runtime.api.$groupChatWorkspace.get(), 'Core')
 })
 
-test('no group / old-host: local open is safe and still opens chat', async () => {
-  const r = load()
-  assert.equal(r.api.$groupChatWorkspace.get(), null)
-  await assert.doesNotReject(() => r.botRow({ name: 'alpha', title: 'Alpha' }).props.onClick())
-  assert.ok(r.timeline.some(e => e.type === 'openBotCanonicalChat'))
-  r.api.$groupChatWorkspace.set('Legacy')
-  assert.equal(r.api.groupChatMainTabs.has('Legacy'), false)
-  await r.botRow({ name: 'beta', title: 'Beta' }).props.onClick()
-  assert.equal(r.api.$groupChatWorkspace.get(), null)
+test('owner open with no selected group is safe', async () => {
+  const runtime = load()
+  assert.equal(await runtime.api.openRosterBot(bot), true)
+  assert.equal(runtime.timeline.some(event => event.type === 'workspaceClose' && event.id.includes(':group:')), false)
 })

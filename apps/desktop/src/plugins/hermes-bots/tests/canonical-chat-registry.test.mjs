@@ -125,10 +125,11 @@ test('the open path never reads or writes a stored pointer', () => {
   assert.doesNotMatch(section, /preferred_session_ids/, 'no id-verification RPC on the canonical path')
 })
 
-test('openBotCanonicalChat takes only the bot owner — identity needs nothing else', () => {
+test('openBotCanonicalChat takes owner identity plus only an optional navigation-freshness guard', () => {
   // The owner is the bot's name (local) or its roster row carrying the
-  // immutable connection route (remote). Still no pins, no session ids.
-  assert.match(source, /async function openBotCanonicalChat\(owner\) \{/)
+  // immutable connection route (remote). The optional callback controls only
+  // whether an async result may still navigate; it carries no identity.
+  assert.match(source, /async function openBotCanonicalChat\(owner, openingStillCurrent = null\) \{/)
 })
 
 // ── 2. no registry row → create ─────────────────────────────────────────────

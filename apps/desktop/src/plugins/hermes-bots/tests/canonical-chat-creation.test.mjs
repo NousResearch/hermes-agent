@@ -14,6 +14,7 @@ function loadCanonicalCreation({ openSession, request }) {
     botOwner: name => (typeof name === 'string'
       ? { bot: { name }, key: name, name, route: null }
       : { bot: name, key: name?.name, name: name?.name, route: name?.route || null }),
+    botWorkspaceOwnerKey: bot => `bot:local::${bot.name}`,
     requestForBot: (_bot, method, params) => context.host.request(method, params),
     window: { setTimeout: callback => callback() }
   }
@@ -114,4 +115,54 @@ test('regression: a failed intro still returns the created registry row', async 
   // The chat exists under the canonical title — the next click finds it by
   // NAME (the registry), so a failed kickoff can never orphan or fork it.
   assert.equal(await runtime.createCanonicalChat('newbie', { kickoff: true }), 'new-bot-chat')
+})
+
+test('a superseded roster open may create the canonical row but never navigate it', async () => {
+  const opens = []
+  let current = true
+  const runtime = loadCanonicalCreation({
+    openSession: async (id, options) => opens.push({ id, options }),
+    request: async method => {
+      if (method === 'session.create') {
+        current = false
+        return { stored_session_id: 'new-stored', session_id: 'new-runtime' }
+      }
+      return {}
+    }
+  })
+
+  assert.equal(await runtime.createCanonicalChat('ops', () => current), 'new-stored')
+  assert.deepEqual(opens, [])
+})
+
+test('a newer same-bot open replaces the in-flight creation navigation guard', async () => {
+  const opens = []
+  let releaseCreate
+  let markCreateStarted
+  let firstCurrent = true
+  const createStarted = new Promise(resolve => {
+    markCreateStarted = resolve
+  })
+  const runtime = loadCanonicalCreation({
+    openSession: async (id, options) => opens.push({ id, options }),
+    request: async method => {
+      if (method === 'session.create') {
+        markCreateStarted()
+        return new Promise(resolve => {
+          releaseCreate = () => resolve({ stored_session_id: 'shared-stored', session_id: 'shared-runtime' })
+        })
+      }
+      return {}
+    }
+  })
+
+  const first = runtime.createCanonicalChat('ops', () => firstCurrent)
+  await createStarted
+  firstCurrent = false
+  const second = runtime.createCanonicalChat('ops', () => true)
+  releaseCreate()
+
+  assert.equal(await first, 'shared-stored')
+  assert.equal(await second, 'shared-stored')
+  assert.equal(opens.length, 1, 'the newer current click owns the shared creation navigation')
 })

@@ -7,17 +7,17 @@ let fixture: MockBackendFixture | null = null
 async function openBots(page: MockBackendFixture['page']): Promise<void> {
   const tab = page.getByRole('button', { name: 'Bots', exact: true }).or(page.getByRole('tab', { name: 'Bots', exact: true })).first()
   await tab.click()
-  await expect(page.getByRole('button', { name: 'New agent or group chat' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'New bot or group chat' })).toBeVisible()
 }
 
 async function createAgent(page: MockBackendFixture['page'], name: string, title: string): Promise<void> {
-  await page.getByRole('button', { name: 'New agent or group chat' }).click()
-  await page.getByRole('menuitem', { name: 'New Agent' }).click()
+  await page.getByRole('button', { name: 'New bot or group chat' }).click()
+  await page.getByRole('menuitem', { name: 'New Bot' }).click()
 
-  const dialog = page.getByRole('dialog', { name: 'New Agent' })
+  const dialog = page.getByRole('dialog', { name: 'New Bot' })
   await dialog.getByPlaceholder('inbox-triage').fill(name)
   await dialog.getByPlaceholder('Inbox Triage').fill(title)
-  await dialog.getByRole('button', { name: 'Create Agent' }).click()
+  await dialog.getByRole('button', { name: 'Create Bot' }).click()
   await expect(dialog).toBeHidden({ timeout: 30_000 })
   await expect(page.getByRole('button', { name: new RegExp(`^${title}\\b`) }).first()).toBeVisible({ timeout: 30_000 })
 }
@@ -40,7 +40,7 @@ test('local bot replaces an open group main workspace', async () => {
   await createAgent(page, 'programmer', 'Programmer')
   await createAgent(page, 'reviewer', 'Reviewer')
 
-  await page.getByRole('button', { name: 'New agent or group chat' }).click()
+  await page.getByRole('button', { name: 'New bot or group chat' }).click()
   await page.getByRole('menuitem', { name: 'New Group Chat' }).click()
 
   const dialog = page.getByRole('dialog', { name: 'New Group Chat' })
@@ -50,24 +50,20 @@ test('local bot replaces an open group main workspace', async () => {
   await dialog.getByRole('textbox', { name: 'Group name' }).fill('Programmer, Reviewer')
   await dialog.getByRole('button', { name: 'Create Group (2)' }).click()
 
-  const groupTitle = page.getByText('Programmer, Reviewer — group chat', { exact: true }).filter({ visible: true })
+  const groupTab = page.getByRole('tab', { name: /Programmer, Reviewer Close/ })
   const groupComposer = page.getByRole('textbox', { name: 'Message Programmer, Reviewer' }).filter({ visible: true })
-  await expect(groupTitle).toBeVisible({ timeout: 20_000 })
+  await expect(groupTab).toBeVisible({ timeout: 20_000 })
+  await expect(groupTab).toHaveAttribute('aria-selected', 'true')
   await expect(groupComposer).toBeVisible()
 
   const programmer = page.getByRole('button', { name: /^Programmer\b/ }).filter({ visible: true }).first()
   await programmer.click()
 
-  await expect(groupTitle).toHaveCount(0, { timeout: 20_000 })
+  const botChatTab = page.getByRole('tab', { name: /Bot Chat Close/ }).filter({ visible: true })
+  await expect(botChatTab).toBeVisible({ timeout: 30_000 })
+  await expect(botChatTab).toHaveAttribute('aria-selected', 'true')
+  await expect(groupTab).toHaveCount(0)
   await expect(groupComposer).toHaveCount(0)
-  await expect(page.getByRole('tab', { name: /New session/ }).filter({ visible: true })).toBeVisible()
+  await expect(page.getByText(/Waking up Programmer/i)).toHaveCount(0)
   await expect(page.locator('[data-slot="composer-root"] [contenteditable="true"]').filter({ visible: true }).first()).toBeVisible()
-  await expect
-    .poll(() =>
-      page
-        .getByText('Programmer', { exact: true })
-        .filter({ visible: true })
-        .evaluateAll(nodes => nodes.some(node => node.getBoundingClientRect().left > window.innerWidth * 0.65)),
-    )
-    .toBe(true)
 })

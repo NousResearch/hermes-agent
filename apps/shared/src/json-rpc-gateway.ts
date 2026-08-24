@@ -89,6 +89,9 @@ export interface GatewayClientOptions {
 
 const ANY = '*'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
+// Replay fetch after reconnect: bounded so a wedged backend can't hold the
+// guard open; generous enough for a 512-frame ring to drain.
+const REPLAY_REQUEST_TIMEOUT_MS = 10_000
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000
 const DEFAULT_HEARTBEAT_DEADLINE_MS = 45_000
 // A reconnect after sleep/wake must not hang forever in 'connecting' (which
@@ -104,6 +107,10 @@ export class JsonRpcGatewayClient {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private heartbeatSequence = 0
   private lastInboundAt = 0
+  /** Last observed event seq per session_id — drives lossless reconnect replay. */
+  private lastSeenSeq = new Map<string, number>()
+  /** Set while a post-reconnect replay fetch is in flight (dedup guard). */
+  private replayInFlight = false
   private readonly eventHandlers = new Map<string, Set<(event: GatewayEvent) => void>>()
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<Omit<GatewayClientOptions, 'socketFactory'>> &
@@ -210,6 +217,10 @@ export class JsonRpcGatewayClient {
         cleanup()
         this.setState('open')
         resolve()
+        // Lossless resume: drain events emitted while we were disconnected.
+        // Fire-and-forget so connect() latency is unaffected; only runs when
+        // we actually observed seq'd events before the drop.
+        void this.fetchReplay()
       }
 
       const onError = () => {
@@ -443,7 +454,80 @@ export class JsonRpcGatewayClient {
         }
       }
 
+      this.recordSeq(frame.params)
       this.dispatchEvent(frame.params)
+    }
+  }
+
+  /**
+   * Track each session's last observed event seq. Events without a seq
+   * (legacy backend, session-less globals) leave the map untouched.
+   */
+  private recordSeq(event: GatewayEvent): void {
+    const sid = event.session_id
+    const seq = (event as { seq?: unknown }).seq
+
+    if (!sid || typeof seq !== 'number' || !Number.isFinite(seq)) {
+      return
+    }
+
+    const prev = this.lastSeenSeq.get(sid) ?? 0
+
+    if (seq > prev) {
+      this.lastSeenSeq.set(sid, seq)
+    }
+  }
+
+  /** Test/telemetry hook: current last-seen seq map snapshot. */
+  getSeqWatermarks(): Record<string, number> {
+    return Object.fromEntries(this.lastSeenSeq)
+  }
+
+  /**
+   * After a reconnect, ask the gateway to replay every event newer than our
+   * per-session watermarks. Replayed frames go through the SAME dispatchEvent
+   * path as live frames — dedupe happens naturally because recordSeq ignores
+   * non-increasing seqs and downstream stores key on event identity.
+   * Best-effort: failures are swallowed (the next reconnect retries).
+   */
+  private async fetchReplay(): Promise<void> {
+    if (this.replayInFlight || this.lastSeenSeq.size === 0) {
+      return
+    }
+
+    this.replayInFlight = true
+
+    try {
+      const entries = Object.entries(this.getSeqWatermarks())
+      // One RPC per known session keeps params flat; sessions are few (<20).
+      const results = await Promise.allSettled(
+        entries.map(([sid, lastSeen]) =>
+          this.request<{ events?: Array<{ type: string; session_id?: string; seq?: number; payload?: unknown }> }>(
+            'session.events.since',
+            { session_id: sid, last_seen: lastSeen },
+            REPLAY_REQUEST_TIMEOUT_MS
+          )
+        )
+      )
+
+      for (const result of results) {
+        if (result.status !== 'fulfilled' || !Array.isArray(result.value?.events)) {
+          continue
+        }
+
+        for (const event of result.value.events) {
+          if (!event?.type) {
+            continue
+          }
+
+          this.recordSeq(event as GatewayEvent)
+          this.dispatchEvent(event as GatewayEvent)
+        }
+      }
+    } catch {
+      // Replay is an optimization over lossy-reconnect; never surface errors.
+    } finally {
+      this.replayInFlight = false
     }
   }
 

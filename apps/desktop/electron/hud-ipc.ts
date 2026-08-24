@@ -4,6 +4,7 @@
 // latch when handing the session back to the app window.
 import { type BrowserWindow, ipcMain } from 'electron'
 
+import { hudInputPolicy } from './hud-input-policy'
 import { hudFrostFor, type TranslucencyState } from './translucency'
 
 export interface HudIpcDeps {
@@ -13,6 +14,7 @@ export interface HudIpcDeps {
   getHudWindow: () => BrowserWindow | null
   openHudWindow: (sessionId: null | string, profile: null | string) => void
   closeHudWindow: () => void
+  resetHudLayout: () => boolean
   setHudSessionId: (sessionId: null | string) => void
 }
 
@@ -22,6 +24,7 @@ export function registerHudIpc({
   getHudWindow,
   openHudWindow,
   closeHudWindow,
+  resetHudLayout,
   setHudSessionId
 }: HudIpcDeps) {
   // Whether the band currently covers the window below the bar. The renderer
@@ -111,9 +114,19 @@ export function registerHudIpc({
   ipcMain.on('hermes:hud:ignore-mouse', (_event, ignore) => {
     const hudWindow = getHudWindow()
 
-    if (hudWindow && !hudWindow.isDestroyed()) {
-      hudWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
+    if (!hudWindow || hudWindow.isDestroyed()) {
+      return
     }
+
+    // On X11 ignore-mouse is a one-way door: setIgnoreMouseEvents(false)
+    // cannot restore the input region afterwards. Veto the request there so
+    // the HUD stays a normal solid window. Native Wayland and macOS/Windows
+    // keep the per-element path.
+    if (Boolean(ignore) && hudInputPolicy(process.platform, process.env, process.argv) === 'solid') {
+      return
+    }
+
+    hudWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
   })
 
   ipcMain.on('hermes:hud:move-by', (event, delta) => {
@@ -173,6 +186,16 @@ export function registerHudIpc({
     if (resizing) {
       win.setResizable(false)
     }
+  })
+
+  ipcMain.handle('hermes:hud:reset-layout', event => {
+    const hudWindow = getHudWindow()
+
+    if (!hudWindow || hudWindow.isDestroyed() || event.sender !== hudWindow.webContents) {
+      return { ok: false }
+    }
+
+    return { ok: resetHudLayout() }
   })
 
   // The HUD renderer reporting which session it is on, so the close broadcast

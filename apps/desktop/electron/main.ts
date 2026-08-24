@@ -194,6 +194,8 @@ import {
 } from './hardening'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
+import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
+import { hudInputPolicy } from './hud-input-policy'
 import { registerHudIpc } from './hud-ipc'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
@@ -6604,6 +6606,19 @@ function restorePersistedZoomLevel(window) {
   const saved = readZoomState()
 
   if (saved != null) {
+    // Drift-guard: skip when this window already shows the persisted level.
+    // Blindly re-applying on every resize/move would race the compositor's
+    // surface reconfigure during a Wayland resize storm (Cosmic tiled mode
+    // fires one whenever a new session window opens — #84818) and keep the
+    // renderer notification stream churning for no gain. The settle-verify
+    // chain in installZoomReassertOnWindowEvents re-applies only when the
+    // window actually drifted from the persisted level.
+    const current = window.webContents?.getZoomLevel?.()
+
+    if (current != null && Math.abs(current - saved) < 1e-9) {
+      return
+    }
+
     applyZoomLevel(window.webContents, saved)
 
     return
@@ -11610,9 +11625,6 @@ let hudProfile = null
 // of a game chat frame, and where one belongs. Defaults only: once the user
 // moves or resizes the HUD, hud-state.json wins (same pattern as the main
 // window's window-state.json).
-const HUD_WIDTH = 620
-const HUD_HEIGHT = 320
-const HUD_BOTTOM_MARGIN = 72
 const HUD_STATE_PATH = path.join(app.getPath('userData'), 'hud-state.json')
 
 function readHudState() {
@@ -11647,6 +11659,26 @@ function persistHudState() {
   }
 }
 
+function resetHudWindowLayout(): boolean {
+  if (!hudWindow || hudWindow.isDestroyed()) {
+    return false
+  }
+
+  const win = hudWindow
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const bounds = defaultHudBounds(display?.workArea)
+
+  if (!applyHudResetBounds(win, bounds)) {
+    rememberLog('[hud-state] reset layout failed while applying native bounds')
+
+    return false
+  }
+
+  persistHudState()
+
+  return true
+}
+
 const schedulePersistHudState = debounce(persistHudState, 250)
 
 // How often Linux gets told where the cursor is. Fast enough that the bar is
@@ -11679,6 +11711,8 @@ function applyHudSnapToPointer() {
 
   // setBounds — NOT setPosition alone: on Windows, a transparent frameless
   // window silently grows ~1px per setPosition call (see move-by handler).
+  // On native Wayland the compositor ignores the position half; the snap
+  // shortcut is therefore a documented no-op there.
   hudWindow.setBounds({
     x: origin.x,
     y: origin.y,
@@ -11712,6 +11746,21 @@ function registerHudSnapShortcut() {
  */
 function startHudCursorFeed(win: BrowserWindow) {
   if (process.platform !== 'linux') {
+    return
+  }
+
+  // On an X11 window `setIgnoreMouseEvents(false)` does not restore the input
+  // region once the window has ignored the mouse. Ignore is a one-way door
+  // there, so the HUD is held solid for its whole life (the companion veto
+  // is in the hermes:hud:ignore-mouse handler). Native Wayland keeps the
+  // poll — that is what re-arms click-through when the pointer returns.
+  if (hudInputPolicy(process.platform, process.env, process.argv) === 'solid') {
+    try {
+      win.setIgnoreMouseEvents(false)
+    } catch {
+      // best effort
+    }
+
     return
   }
 
@@ -11805,19 +11854,7 @@ function hudBounds() {
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
   const area = display?.workArea
 
-  if (!area) {
-    return { width: HUD_WIDTH, height: HUD_HEIGHT, x: undefined, y: undefined }
-  }
-
-  const width = Math.min(HUD_WIDTH, area.width)
-  const height = Math.min(HUD_HEIGHT, area.height)
-
-  return {
-    width,
-    height,
-    x: Math.round(area.x + (area.width - width) / 2),
-    y: Math.round(Math.max(area.y, area.y + area.height - height - HUD_BOTTOM_MARGIN))
-  }
+  return defaultHudBounds(area)
 }
 
 function hudUrl(sessionId, profile) {
@@ -12664,6 +12701,7 @@ const hudIpc = registerHudIpc({
   getHudWindow: () => hudWindow,
   openHudWindow,
   closeHudWindow,
+  resetHudLayout: resetHudWindowLayout,
   setHudSessionId: value => {
     hudSessionId = value
   }

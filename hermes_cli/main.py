@@ -7768,26 +7768,29 @@ def _detect_linux_password_store() -> str | None:
     return None
 
 
-def _desktop_launch_options() -> tuple[list[str], str, str]:
+def _desktop_launch_options() -> tuple[list[str], str, str, str]:
     """Read `desktop.*` launch options from config.yaml.
 
-    Returns ``(electron_flags, disable_gpu, password_store)`` where
+    Returns ``(electron_flags, disable_gpu, password_store, ozone_hint)`` where
     ``electron_flags`` is a list of extra Electron CLI flags, ``disable_gpu``
     is one of "auto"/"1"/"0" (normalized for the HERMES_DESKTOP_DISABLE_GPU
-    env var the Electron app reads), and ``password_store`` is "auto" or one
+    env var the Electron app reads), ``password_store`` is "auto" or one
     of the Chromium password-store backends (unknown values normalize to
-    "auto"). Best-effort: any config error yields the safe defaults
-    ``([], "auto", "auto")`` so a malformed config never blocks the launch.
+    "auto"), and ``ozone_hint`` is one of "auto"/"x11"/"wayland" (normalized
+    for ``ELECTRON_OZONE_PLATFORM_HINT``). Best-effort: any config error
+    yields the safe defaults ``([], "auto", "auto", "auto")`` so a malformed
+    config never blocks the launch.
     """
     flags: list[str] = []
     disable_gpu = "auto"
     password_store = "auto"
+    ozone_hint = "auto"
     try:
         from hermes_cli.config import load_config
 
         desktop_cfg = (load_config() or {}).get("desktop") or {}
     except Exception:
-        return flags, disable_gpu, password_store
+        return flags, disable_gpu, password_store, ozone_hint
 
     raw_flags = desktop_cfg.get("electron_flags")
     if isinstance(raw_flags, str):
@@ -7812,7 +7815,13 @@ def _desktop_launch_options() -> tuple[list[str], str, str]:
         low_store = raw_store.strip().lower()
         if low_store in _LINUX_PASSWORD_STORES:
             password_store = low_store
-    return flags, disable_gpu, password_store
+
+    raw_ozone = desktop_cfg.get("ozone_platform_hint", "auto")
+    if isinstance(raw_ozone, str):
+        low_ozone = raw_ozone.strip().lower()
+        if low_ozone in ("auto", "x11", "wayland"):
+            ozone_hint = low_ozone
+    return flags, disable_gpu, password_store, ozone_hint
 
 
 def _register_linux_desktop_entry() -> None:
@@ -7863,12 +7872,18 @@ def cmd_gui(args: argparse.Namespace):
         env["HERMES_DESKTOP_CWD"] = os.getcwd()
 
     # Desktop launch options from config.yaml (`desktop.electron_flags`,
-    # `desktop.disable_gpu`). The GPU policy is bridged to the env var the
-    # Electron app already reads; an explicit env var still wins over config so
-    # `HERMES_DESKTOP_DISABLE_GPU=... hermes desktop` keeps working.
-    config_electron_flags, config_disable_gpu, config_password_store = _desktop_launch_options()
+    # `desktop.disable_gpu`, `desktop.ozone_platform_hint`). The GPU policy
+    # and ozone hint are bridged to env vars the Electron/Chromium process
+    # already reads; an explicit env var still wins over config so
+    # `HERMES_DESKTOP_DISABLE_GPU=... hermes desktop` and
+    # `ELECTRON_OZONE_PLATFORM_HINT=... hermes desktop` keep working.
+    config_electron_flags, config_disable_gpu, config_password_store, config_ozone_hint = (
+        _desktop_launch_options()
+    )
     if config_disable_gpu != "auto" and "HERMES_DESKTOP_DISABLE_GPU" not in os.environ:
         env["HERMES_DESKTOP_DISABLE_GPU"] = config_disable_gpu
+    if config_ozone_hint != "auto" and "ELECTRON_OZONE_PLATFORM_HINT" not in os.environ:
+        env["ELECTRON_OZONE_PLATFORM_HINT"] = config_ozone_hint
 
     # Linux keychain backend for safeStorage (`desktop.password_store`).
     # Chromium needs the --password-store switch to pick the right keychain;

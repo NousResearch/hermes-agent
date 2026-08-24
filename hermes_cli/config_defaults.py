@@ -3695,6 +3695,15 @@ DEFAULT_CONFIG = {
         # explicit ozone backend, or GPU workaround flags. A list of strings;
         # a single string is also accepted and shell-split.
         "electron_flags": [],
+        # Linux Ozone backend hint, bridged to ELECTRON_OZONE_PLATFORM_HINT
+        # at launch (an explicit env var still wins). "auto" is Chromium's
+        # default — Wayland on a Wayland session, X11 otherwise.
+        # Set "x11" to run under XWayland when a compositor ignores
+        # always-on-top for native Wayland clients (COSMIC, issue #84011).
+        # That also lands the HUD on the solid-window input path, because
+        # setIgnoreMouseEvents is a one-way door on X11.
+        # "wayland" forces a native Wayland surface.
+        "ozone_platform_hint": "auto",
         # GPU hardware acceleration policy for the desktop app:
         #   "auto"  - let the app detect remote displays (SSH/VNC/RDP) and
         #             disable GPU only then (default; current behavior).

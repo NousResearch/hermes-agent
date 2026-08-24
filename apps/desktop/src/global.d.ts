@@ -96,6 +96,7 @@ declare global {
         setIgnoreMouse: (ignore: boolean) => void
         moveBy: (delta: { x: number; y: number; width: number; height: number }) => void
         setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void
+        resetLayout: () => Promise<{ ok: boolean }>
         setFrost: (showing: boolean) => Promise<{ ok: boolean }>
         setSession: (sessionId: null | string) => void
         onGoto: (callback: (sessionId: string) => void) => () => void

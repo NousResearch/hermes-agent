@@ -35,6 +35,7 @@ The important abstraction is `api_mode`.
 
 - Most providers use `chat_completions`.
 - Codex and Meta Model API (`api.meta.ai` — Muse Spark) use `codex_responses` (auto-sends `prompt_cache_retention: 24h` for prompt caching; `api.meta.ai` achieves 93–99% cache hits only on `/v1/responses`).
+- Ramp Router (`api.router.com`) also uses `codex_responses` — the host is Responses-only (`/v1/chat/completions` 404s) and validates `reasoning.effort` per model, which the router profile handles by declaring each model's vocabulary from the live catalog (`ProviderProfile.supported_reasoning_efforts`).
 - Anthropic uses `anthropic_messages`.
 - A new non-OpenAI protocol usually means adding a new adapter and a new `api_mode` branch.
 
@@ -65,7 +66,7 @@ Use this when the provider does not behave like OpenAI chat completions.
 
 Examples in-tree today:
 
-- `codex_responses` (OpenAI Codex, xAI Grok, and Meta Muse Spark via `api.meta.ai` — the latter auto-sends `prompt_cache_retention: 24h`)
+- `codex_responses` (OpenAI Codex, xAI Grok, Meta Muse Spark via `api.meta.ai` — the latter auto-sends `prompt_cache_retention: 24h` — and Ramp Router via `api.router.com`)
 - `anthropic_messages`
 
 This path includes everything from Path A plus:

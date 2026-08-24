@@ -887,6 +887,10 @@ export const ar = defineLocale({
           label: 'توليد العناوين',
           hint: 'عناوين الجلسات'
         },
+        review: {
+          label: 'المراجعة',
+          hint: 'وكيل المراجعة الفرعي /review'
+        },
         curator: {
           label: 'المنسّق',
           hint: 'مراجعة استخدام المهارات'

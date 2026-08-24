@@ -1272,6 +1272,7 @@ export const zh: Translations = {
         approval: { label: '审批', hint: '智能自动批准' },
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '标题生成', hint: '会话标题' },
+        review: { label: '评审', hint: '/review 评审子智能体' },
         curator: { label: '维护器', hint: '技能使用审查' }
       }
     },

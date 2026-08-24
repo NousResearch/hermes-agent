@@ -191,6 +191,7 @@ Hermes 为附属任务使用独立的轻量级模型。每个任务都有自己�
 | MCP | MCP 辅助操作 | `auxiliary.mcp` |
 | 审批 | 智能命令审批分类 | `auxiliary.approval` |
 | 标题生成 | 会话标题摘要 | `auxiliary.title_generation` |
+| 评审 | `/review` 评审子智能体（完整智能体，而非单次 LLM 调用） | `auxiliary.review` |
 | Triage Specifier | `hermes kanban specify` / 看板（kanban）✨ 按钮——将单行 triage 任务扩展为完整规格 | `auxiliary.triage_specifier` |
 
 ### 自动检测链

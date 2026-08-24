@@ -167,7 +167,6 @@ function useHudHeld(gameUnder: boolean): boolean {
   // hold through it and the answer blinked out the instant it finished.
   const [grace, setGrace] = useState(false)
 
-   
   useEffect(() => {
     if (busy) {
       setGrace(true)

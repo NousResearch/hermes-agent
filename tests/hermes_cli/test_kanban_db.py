@@ -225,6 +225,47 @@ def test_create_task_accepts_profile_skill_and_preserves_none_empty_semantics(
         assert kb.get_task(conn, empty_task).skills == []
 
 
+def test_create_task_accepts_profile_skill_by_directory_alias(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "skills" / "test-dir" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: declared-name\ndescription: Directory alias test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="directory alias skill",
+            assignee="coder",
+            skills=["test-dir"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["test-dir"]
+
+
+def test_create_task_accepts_environment_scoped_profile_skill(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "skills" / "environment-skill" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: environment-skill\ndescription: Environment-gated test skill.\n"
+        "environments: [docker]\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="environment skill",
+            assignee="coder",
+            skills=["environment-skill"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["environment-skill"]
+
+
 def test_create_task_accepts_categorized_profile_skill(kanban_home):
     profile_home = kanban_home / "profiles" / "coder"
     skill_md = profile_home / "skills" / "category" / "sample" / "SKILL.md"

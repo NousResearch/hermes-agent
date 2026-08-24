@@ -1115,7 +1115,6 @@ def _profile_skill_names(
         iter_project_skill_files,
         iter_skill_index_files,
         parse_frontmatter,
-        skill_matches_environment,
         skill_matches_platform,
     )
     from hermes_cli.profiles import get_profile_dir
@@ -1167,17 +1166,28 @@ def _profile_skill_names(
                         continue
                     if not skill_matches_platform(frontmatter):
                         continue
-                    if not skill_matches_environment(frontmatter):
-                        continue
                     name = str(frontmatter.get("name") or skill_md.parent.name).strip()
+                    try:
+                        candidate_path = skill_md.resolve()
+                    except Exception:
+                        candidate_path = skill_md
+
+                    # Runtime lookup accepts both the declared frontmatter
+                    # name and the SKILL.md parent directory name.  Keep the
+                    # disabled check tied to the raw identifier being
+                    # registered, so disabling one alias does not hide the
+                    # other runtime-resolvable alias.
+                    aliases = {name, skill_md.parent.name}
+                    for alias in aliases:
+                        if alias and alias not in disabled:
+                            bare_candidates.setdefault(alias, []).append(
+                                (root in project_dirs, candidate_path)
+                            )
                     if name and name not in disabled:
                         try:
                             candidate_path = skill_md.resolve()
                         except Exception:
                             candidate_path = skill_md
-                        bare_candidates.setdefault(name, []).append(
-                            (root in project_dirs, candidate_path)
-                        )
                         # ``skill_view`` also accepts the qualified local form
                         # ``category:name`` for the direct
                         # ``<root>/<category>/<name>/SKILL.md`` layout. Keep
@@ -1218,8 +1228,6 @@ def _profile_skill_names(
                     if not isinstance(frontmatter, dict):
                         frontmatter = {}
                     if not skill_matches_platform(frontmatter):
-                        continue
-                    if not skill_matches_environment(frontmatter):
                         continue
                     if qualified_name in disabled:
                         continue

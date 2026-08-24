@@ -10378,6 +10378,10 @@ def cmd_update(args):
         _finalize_update_output(_update_io_state)
         sys.exit(UPDATE_EXIT_CONCURRENT)
 
+    # Exit code for the Windows hand-off child's hard exit (see finally).
+    # None = not a SystemExit-shaped outcome; real exceptions keep the
+    # normal raise path so their traceback still prints.
+    _update_handoff_exit_code: int | None = None
     try:
         _self()._cmd_update_impl(args, gateway_mode=gateway_mode)
     except SystemExit as _update_exit:
@@ -10394,6 +10398,9 @@ def cmd_update(args):
             finalize_pending_update_receipt(_code, f"sys.exit({_code})")
         except Exception:
             pass
+        _update_handoff_exit_code = (
+            _update_exit.code if isinstance(_update_exit.code, int) else 0
+        )
         raise
     except BaseException as _update_exc:
         try:
@@ -10412,9 +10419,29 @@ def cmd_update(args):
             finalize_pending_update_receipt(0, "completed at command boundary")
         except Exception:
             pass
+        _update_handoff_exit_code = 0
     finally:
         _update_lock.release()
         _finalize_update_output(_update_io_state)
+        # Windows hand-off child (#93581): the re-exec'd venv child cannot
+        # rely on graceful interpreter shutdown — a leftover non-daemon
+        # thread from the update tail keeps the console busy long after
+        # the receipt is durable (success, exit 0, "completed at command
+        # boundary"), freezing the PowerShell window for minutes. By this
+        # point every durable step is done (receipt finalized above, lock
+        # released, stdio restored), so on the hand-off path only, flush
+        # and exit hard instead of waiting for the interpreter to unwind
+        # — the same treatment #79040's cron workaround applies. No-op on
+        # every non-hand-off invocation: the marker env is set solely by
+        # _reexec_dependency_sync_off_windows_shim when it spawns the child.
+        if _update_handoff_exit_code is not None and os.environ.get(_UPDATE_REEXEC_ENV) == "1":
+            logger.debug(
+                "Update hand-off child %s exiting via os._exit(%s)",
+                os.getpid(), _update_handoff_exit_code,
+            )
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(_update_handoff_exit_code)
 
 
 def _coalesce_session_name_args(argv: list) -> list:

@@ -552,6 +552,31 @@ _MCP_LOG_LEVEL_MAP = {
 # ---------------------------------------------------------------------------
 
 _DEFAULT_TOOL_TIMEOUT = 300      # seconds for tool calls
+
+
+def _resolve_tool_timeout(config: dict) -> float:
+    """Per-server tool-call timeout with unified-layer resolution (#85125 2g).
+
+    Precedence: per-server ``mcp_servers.<name>.timeout`` (most specific,
+    always wins) > ``timeouts.mcp.tool_call`` in config.yaml > the historical
+    default. Values are platform-clamped by ``resolve_timeout`` either way.
+    Defaults are unchanged: with neither key set this returns 300, exactly
+    as before.
+    """
+    per_server = config.get("timeout")
+    if per_server is not None:
+        return per_server
+    try:
+        from agent.deadline import resolve_timeout
+
+        resolved = resolve_timeout("mcp.tool_call", default=_DEFAULT_TOOL_TIMEOUT)
+        if resolved is not None:
+            return resolved
+    except Exception:
+        logger.debug("mcp.tool_call timeout resolution failed", exc_info=True)
+    return _DEFAULT_TOOL_TIMEOUT
+
+
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
@@ -3725,7 +3750,7 @@ class MCPServerTask:
         connection drops unexpectedly (unless shutdown was requested).
         """
         self._config = config
-        self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+        self.tool_timeout = _resolve_tool_timeout(config)
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
         self._max_lifetime_seconds = _get_lifecycle_seconds(config, "max_lifetime_seconds")
@@ -7038,7 +7063,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"
     fingerprint = config_fingerprint(config)
-    tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+    tool_timeout = _resolve_tool_timeout(config)
     tools_filter = config.get("tools") or {}
     include_set = _normalize_name_filter(
         tools_filter.get("include"), f"mcp_servers.{name}.tools.include"

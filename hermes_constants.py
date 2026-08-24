@@ -350,6 +350,11 @@ _HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22")
 _managed_node_heal_attempted = False
 _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
 
+# Install tree root (this file lives at <install_root>/hermes_constants.py).
+# Used by secure_parent_dir() to skip chmod on the install dir — chmodding it
+# 0700 breaks hermes-user traversal in Docker (UID 10000). See #25821, #93050.
+_INSTALL_ROOT = Path(__file__).resolve().parent
+
 
 def node_tool_runnable(path: str | None) -> bool:
     """Return True only when *path* is a Node/npm/npx binary that actually runs.
@@ -1023,14 +1028,10 @@ def secure_parent_dir(path: Path) -> None:
     # Refuse root and its direct children (/usr, /home, /var, /tmp, …).
     if parent == Path("/") or len(parent.parts) < 3:
         return
-    # Refuse /opt/hermes. The install dir lives on the image layer;
-    # chmodding it to 0700 breaks hermes-user traversal and produces
-    # spurious "Permission denied" on every new exec until manual
-    # `chmod 0755 /opt/hermes`. Reproducer: any auth write to a file
-    # directly under /opt/hermes (e.g. /opt/hermes/auth.json when
-    # HERMES_HOME resolves there) triggers the 0700 chmod and locks
-    # out UID 10000. See issue #25821 follow-up.
-    if str(parent) == "/opt/hermes":
+    # Refuse the install tree root. chmodding it 0700 breaks hermes-user
+    # traversal in Docker (UID 10000) and any other install where the
+    # runtime user doesn't own the install dir. See #25821, #93050.
+    if parent == _INSTALL_ROOT or _INSTALL_ROOT in parent.parents:
         return
     try:
         os.chmod(parent, 0o700)

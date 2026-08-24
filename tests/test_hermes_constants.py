@@ -560,8 +560,29 @@ class TestSecureParentDir:
         secure_parent_dir(Path("/foo"))
         assert called_with == []
 
+    def test_install_tree_skipped(self, monkeypatch):
+        """Parent dir equal to (or inside) the install tree must NOT be chmod'd.
 
+        Regression test for #93050: secure_parent_dir() chmod'd /opt/hermes to
+        0700 because it has 3 path parts and passed the ``< 3`` guard, locking
+        out UID 10000 (hermes user) from traversing the install dir.
+        """
+        install_root = Path(hermes_constants.__file__).resolve().parent
 
+        # Directly under the install root (e.g. /opt/hermes/auth.json)
+        target = install_root / "auth.json"
+        called_with = []
+        monkeypatch.setattr(os, "chmod", lambda p, m: called_with.append((str(p), m)))
+        secure_parent_dir(target)
+        assert called_with == [], "must not chmod the install root"
+
+        # Inside a subdirectory of the install root
+        sub = install_root / "subdir"
+        target2 = sub / "auth.json"
+        called_with2 = []
+        monkeypatch.setattr(os, "chmod", lambda p, m: called_with2.append((str(p), m)))
+        secure_parent_dir(target2)
+        assert called_with2 == [], "must not chmod dirs inside the install tree"
 
     @pytest.mark.require_symlinks
     def test_symlink_resolved(self, tmp_path, monkeypatch):

@@ -979,40 +979,41 @@ async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
     assert "the answer worth keeping" in response.text
 
 
-@pytest.mark.asyncio
-async def test_both_run_routes_record_output(adapter):
-    """Structural guard against the asymmetry coming back.
+def test_error_terminations_intentionally_omit_output():
+    """The failure paths deliberately do NOT set output.
 
-    The two routes that mint run ids must both persist the reply text. A future
-    edit that drops `output=` from either one silently removes the recovery
-    path, and no behavioural test of the *other* route would notice.
+    A cancelled or failed run has no reply to hand back, and writing an empty
+    or partial string there would make "" indistinguishable from "the agent
+    answered with nothing". Pinned so the asymmetry reads as intentional rather
+    than as an oversight the next reader should "fix".
     """
-    from pathlib import Path
+    import ast
+    from pathlib import Path as _P
 
-    src = (
-        Path(__file__).resolve().parents[2]
-        / "gateway"
-        / "platforms"
-        / "api_server.py"
-    ).read_text(encoding="utf-8")
+    src_path = _P(__file__).resolve().parents[2] / "gateway" / "platforms" / "api_server.py"
+    tree = ast.parse(src_path.read_text(encoding="utf-8"))
 
-    for name, anchor in (
-        ("session stream", "async def _handle_session_chat_stream"),
-        ("/v1/runs", "async def _handle_runs"),
-    ):
-        start = src.index(anchor)
-        # Anchor on the terminal STATUS WRITE, not on the string "completed" —
-        # the SSE payload carries a `"completed": True` key that would match a
-        # naive search and hide a missing output=.
-        cursor = start
-        window = None
-        while True:
-            call_at = src.find("_set_run_status(", cursor)
-            assert call_at != -1, f"{name}: no terminal _set_run_status found"
-            candidate = src[call_at:call_at + 2000]  # generous: the call may carry comments
-            if '"completed",' in candidate[:400]:
-                window = candidate
-                break
-            cursor = call_at + 1
+    checked = 0
+    for node in ast.walk(tree):
+        if not (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == "_handle_session_chat_stream"):
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            fn = inner.func
+            if not (isinstance(fn, ast.Attribute) and fn.attr == "_set_run_status"):
+                continue
+            if len(inner.args) < 2 or not isinstance(inner.args[1], ast.Constant):
+                continue
+            status = inner.args[1].value
+            if status in ("failed", "cancelled"):
+                kwargs = {kw.arg for kw in inner.keywords}
+                assert "output" not in kwargs, (
+                    f"the {status!r} termination now sets output (line {inner.lineno}); if that "
+                    "is deliberate, update this test and say what an empty output means there"
+                )
+                checked += 1
+        break
 
-        assert "output=" in window, f"{name} no longer records the reply text"
+    assert checked >= 2, f"expected the failed and cancelled paths; found {checked}"

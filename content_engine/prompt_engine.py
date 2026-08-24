@@ -54,12 +54,6 @@ BRAND_STYLE_MAP = {
         "model":  "seedream45",
         "ref":    "dev-tool launch, system architecture, performance metrics, command-line announcements, build-in-public",
     },
-    "sahilblog": {
-        "scene":  "editorial-poster",   # comparison + screen-print poster feel
-        "data":   "science-paper",      # infographic + scientific style
-        "model":  "seedream45",
-        "ref":    "builder's desk evidence, printed circuit traces and prose fragments, off-white paper, one deep teal accent",
-    },
     "sahil_linkedin": {
         "scene":  "business-compare",   # comparison + elegant
         "data":   "ink-notes-framework",# framework + ink-notes + mono-ink
@@ -67,7 +61,7 @@ BRAND_STYLE_MAP = {
         "ref":    "HBR-style restrained editorial, monochrome with one indigo accent",
     },
 }
-_DEFAULT = BRAND_STYLE_MAP.get("sahilblog", BRAND_STYLE_MAP["sahil_twitter"])
+_DEFAULT = BRAND_STYLE_MAP["sahil_twitter"]
 _DATA_TYPES = {"infographic", "comparison", "framework", "flowchart", "timeline"}
 _TEXTLESS_TYPES = {"scene", "hero"}
 _ASPECT = {"instagram": "portrait_4_5", "tiktok": "portrait_9_16", "linkedin": "landscape"}

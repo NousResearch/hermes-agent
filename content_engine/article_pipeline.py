@@ -183,7 +183,15 @@ def _run_for_brand(plan: dict, brand: str, out_root: Path,
     # 3. Illustrate. Uses the redacted body so no secret leaks into prompts.
     gate_res = ag.check(draft)
     redacted_body = gate_res.redacted_body
-    work_draft = {**draft, "body_md": redacted_body}
+    # Thread the actual requested brand and platform into the illustration
+    # draft so prompt_engine picks the brand's own BRAND_STYLE_MAP spec
+    # (twitter -> dark-hud, linkedin -> business-compare/ink-notes-framework).
+    # The previous funnel-machine fix had article_illustrator fall back to
+    # "sahilblog" whenever the draft lacked a brand, which silently
+    # rebranded every X article (sahil_twitter and sahil_linkedin alike)
+    # onto SahilBlog's editorial-poster / science-paper presets.
+    work_draft = {**draft, "body_md": redacted_body,
+                  "brand": brand, "platform": platform}
     work_dir = out_root / "_work"
     work_dir.mkdir(parents=True, exist_ok=True)
     illustrated_body = illustrate(work_draft, work_dir, density="per-section",

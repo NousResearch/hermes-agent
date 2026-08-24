@@ -81,7 +81,7 @@ def handler() -> ModuleType | None:
     return mod
 
 
-def claims(mod: ModuleType | None, predicate: str, value: str) -> bool:
+def claims(mod: ModuleType | None, predicate: str, value: object) -> bool:
     """Whether the handler claims ``value``, failing OPEN if it cannot say.
 
     Claiming is part of loading the optional capability, so a predicate that
@@ -98,6 +98,41 @@ def claims(mod: ModuleType | None, predicate: str, value: str) -> bool:
     except Exception:
         logger.exception("GW Cards %s failed; leaving update to the native chain", predicate)
         return False
+
+
+def enable_message_forwarding(mod: ModuleType | None) -> bool:
+    """Enable card replies only when the generated handler is complete.
+
+    This is a capability handshake, not a feature flag. The callback side may
+    issue a free-text prompt only when the same installed module can identify
+    candidate replies and forward them. Older generated handlers therefore
+    keep their visible refusal instead of stranding a prompt the gateway
+    cannot complete.
+    """
+    if mod is None:
+        return False
+    required = (
+        "is_gw_card_message",
+        "handle_gw_card_message",
+        "enable_gw_card_message_forwarding",
+    )
+    try:
+        resolved = [getattr(mod, name, None) for name in required]
+    except Exception:
+        logger.exception(
+            "GW Cards reply capability could not be inspected; keeping replies disabled"
+        )
+        return False
+    if not all(callable(fn) for fn in resolved):
+        return False
+    try:
+        mod.enable_gw_card_message_forwarding()
+    except Exception:
+        logger.exception(
+            "GW Cards reply capability could not be enabled; keeping replies disabled"
+        )
+        return False
+    return True
 
 
 def command_menu_entries() -> list[tuple[str, str]]:

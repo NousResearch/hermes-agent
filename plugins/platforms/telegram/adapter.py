@@ -261,7 +261,11 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
-from gateway.gw_cards import claims as gw_cards_claims, handler as gw_cards_handler
+from gateway.gw_cards import (
+    claims as gw_cards_claims,
+    enable_message_forwarding as gw_cards_enable_message_forwarding,
+    handler as gw_cards_handler,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -6474,6 +6478,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # regular gateway never loses a callback to a stale installation.
         cards = gw_cards_handler()
         if gw_cards_claims(cards, "is_gw_card", data):
+            gw_cards_enable_message_forwarding(cards)
             try:
                 await cards.handle_gw_card_callback(query, data, self.name)
             except Exception:
@@ -8913,6 +8918,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
+
+        # A complete generated Cards handler can consume force-reply answers
+        # before mention filtering and text batching. Its cheap predicate
+        # admits only Telegram replies; persisted GW state remains the final
+        # ownership check, and False falls through untouched to native chat.
+        cards = gw_cards_handler()
+        if (
+            gw_cards_enable_message_forwarding(cards)
+            and gw_cards_claims(cards, "is_gw_card_message", msg)
+        ):
+            try:
+                if await cards.handle_gw_card_message(msg, self.name):
+                    return
+            except Exception:
+                logger.exception("[%s] GW Cards message failed", self.name)
+
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)

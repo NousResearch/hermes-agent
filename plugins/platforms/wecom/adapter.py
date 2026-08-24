@@ -185,7 +185,7 @@ class WeComAdapter(BasePlatformAdapter):
             or os.getenv("WECOM_WEBSOCKET_URL", DEFAULT_WS_URL)
         ).strip() or DEFAULT_WS_URL
 
-        self._dm_policy = str(extra.get("dm_policy") or os.getenv("WECOM_DM_POLICY", "pairing")).strip().lower()
+        self._dm_policy = str(extra.get("dm_policy") or _get_scoped_secret("WECOM_DM_POLICY", "pairing")).strip().lower()
         # dm_policy already honors WECOM_DM_POLICY, so the allowlist must honor
         # WECOM_ALLOWED_USERS too. Without the env fallback an env-only setup
         # (dm_policy=allowlist via env, no config extra) runs with an empty
@@ -193,10 +193,10 @@ class WeComAdapter(BasePlatformAdapter):
         self._allow_from = _coerce_list(
             extra.get("allow_from")
             or extra.get("allowFrom")
-            or os.getenv("WECOM_ALLOWED_USERS", "")
+            or _get_scoped_secret("WECOM_ALLOWED_USERS", "")
         )
 
-        self._group_policy = str(extra.get("group_policy") or os.getenv("WECOM_GROUP_POLICY", "pairing")).strip().lower()
+        self._group_policy = str(extra.get("group_policy") or _get_scoped_secret("WECOM_GROUP_POLICY", "pairing")).strip().lower()
         self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
         self._groups = extra.get("groups") if isinstance(extra.get("groups"), dict) else {}
 

@@ -30,6 +30,53 @@ class TestWeComAdapterInit:
         assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
 
 
+class TestWeComAdapterAuthzScope:
+    """dm_policy/allowlist reads must honor the profile secret scope under
+    multiplexing (#93522): a secondary profile's own scope is authoritative
+    and must not inherit the default profile's process-env authorization."""
+
+    @pytest.fixture()
+    def multiplex_on(self):
+        from agent import secret_scope
+
+        previous = secret_scope.is_multiplex_active()
+        secret_scope.set_multiplex_active(True)
+        try:
+            yield
+        finally:
+            secret_scope.set_multiplex_active(previous)
+
+    def test_scoped_construction_reads_authz_from_scope_not_environ(self, multiplex_on, monkeypatch):
+        from agent import secret_scope
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        monkeypatch.setenv("WECOM_DM_POLICY", "pairing")
+        monkeypatch.setenv("WECOM_ALLOWED_USERS", "default-user")
+        token = secret_scope.set_secret_scope(
+            {"WECOM_DM_POLICY": "allowlist", "WECOM_ALLOWED_USERS": "scoped-user"}
+        )
+        try:
+            adapter = WeComAdapter(PlatformConfig(enabled=True))
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert adapter._dm_policy == "allowlist"
+        assert adapter._allow_from == ["scoped-user"]
+
+    def test_scoped_miss_does_not_admit_default_profiles_allowlist(self, multiplex_on, monkeypatch):
+        from agent import secret_scope
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        monkeypatch.setenv("WECOM_DM_POLICY", "allowlist")
+        monkeypatch.setenv("WECOM_ALLOWED_USERS", "default-user")
+        token = secret_scope.set_secret_scope({"SOMETHING_ELSE": "x"})
+        try:
+            adapter = WeComAdapter(PlatformConfig(enabled=True))
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert adapter._dm_policy == "pairing"
+        assert adapter._allow_from == []
+
+
 class TestWeComConnect:
 
     @pytest.mark.asyncio

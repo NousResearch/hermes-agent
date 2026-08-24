@@ -109,6 +109,7 @@ import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE }
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
+
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import {
   appendLiveSessionProjection,

@@ -1066,6 +1066,73 @@ function persistGroupChatRooms(all = $groupChats.get()) {
   }
 }
 
+// ── deleted-connection roster hygiene (#93492 root cause) ───────────────────
+// Deleting a cloud/remote connection used to leave every persisted group-chat
+// member descriptor that referenced it behind untouched. Those orphaned rows
+// (remoteSource: true, connection gone) are exactly the shape that made
+// render-path route lookups throw "Bot X has no connection owner" on every
+// group open, permanently — the poisoned row lives in plugin storage. The
+// sweep below runs on the registry's 'removed' push (and its annotate helper
+// again at hydrate for rows orphaned before this build). It never hard-deletes
+// user data: the member row is kept and marked, so panes render the existing
+// degraded 'Gateway removed' botSourceStatus state instead of crashing.
+
+/** Keep the member's identity; mark it so botSourceStatus reads
+ *  'Gateway removed' and no render-path route lookup can throw on it. */
+function markOrphanedGroupMemberDescriptor(member) {
+  return {
+    ...member,
+    sourceMissing: true,
+    sourceReachable: false
+  }
+}
+
+function groupMemberReferencesConnection(member, connectionId) {
+  const id = String(connectionId || '').trim()
+
+  if (!id) {
+    return false
+  }
+
+  return (
+    String(member?.connectionId || '').trim() === id ||
+    String(member?.route?.connectionId || '').trim() === id
+  )
+}
+
+/** Register-removed sweep: annotate (not delete) every persisted group-chat
+ *  member owned by the deleted connection, in the atom AND plugin storage.
+ *  Writes ride updateGroupChat so the durable record keeps its full shape
+ *  (sessionOwners, holds — durableGroupChatRooms would drop them).
+ *  Returns whether anything changed. */
+function sweepGroupChatMembersForRemovedConnection(connectionId) {
+  const id = String(connectionId || '').trim()
+
+  if (!id) {
+    return false
+  }
+
+  let changed = false
+
+  for (const [name, room] of Object.entries($groupChats.get())) {
+    const members = Array.isArray(room?.members) ? room.members : []
+
+    if (!members.some(member => groupMemberReferencesConnection(member, id) && !member?.sourceMissing)) {
+      continue
+    }
+
+    changed = true
+    updateGroupChat(name, current => ({
+      ...current,
+      members: (Array.isArray(current.members) ? current.members : []).map(member =>
+        groupMemberReferencesConnection(member, id) ? markOrphanedGroupMemberDescriptor(member) : member
+      )
+    }))
+  }
+
+  return changed
+}
+
 function groupChatSyncConnectionId() {
   return String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || '')
 }
@@ -14692,6 +14759,28 @@ export default {
     const unbindProfileListener = bindProfileSync($focusedBotOwner)
     const unbindGatewayListener = host.state.gateway.listen(handleSessionsGatewayTransition)
 
+    // #93492 root fix: the registry pushes a lifecycle event when a
+    // connection is removed. The gateway store already disposes the dead
+    // sockets; the persisted group-chat rosters referencing that connection
+    // were never touched, which is what left panes throwing "Bot X has no
+    // connection owner" forever. Annotate (never silently delete) those
+    // member rows the moment the connection goes away. Feature-detected:
+    // older Electron mains don't emit it, and bare vm test harnesses have
+    // no window global.
+    let unbindConnectionsChanged = null
+    try {
+      if (typeof window !== 'undefined') {
+        unbindConnectionsChanged =
+          window.hermesDesktop?.connections?.onChanged?.(payload => {
+            if (payload?.reason === 'removed') {
+              sweepGroupChatMembersForRemovedConnection(payload.connectionId)
+            }
+          }) || null
+      }
+    } catch {
+      /* registry lifecycle push unavailable — hydrate-time annotate still covers it */
+    }
+
     if (typeof ctx.onDispose === 'function') {
       ctx.onDispose(() => {
         stopGroupChatServerSync()
@@ -14700,6 +14789,9 @@ export default {
         }
         if (typeof unbindGatewayListener === 'function') {
           unbindGatewayListener()
+        }
+        if (typeof unbindConnectionsChanged === 'function') {
+          unbindConnectionsChanged()
         }
       })
     }

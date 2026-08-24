@@ -425,13 +425,14 @@ class TestUserInstalledProviderDiscovery:
     directory, ignoring user-installed plugins.
     """
 
-    def _make_user_memory_plugin(self, tmp_path, name="myprovider"):
+    def _make_user_memory_plugin(self, tmp_path, name="myprovider", falsey_method=""):
         """Create a minimal user memory provider plugin."""
         plugin_dir = tmp_path / "plugins" / name
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "__init__.py").write_text(
             "from agent.memory_provider import MemoryProvider\n"
             "class MyProvider(MemoryProvider):\n"
+            f"{falsey_method}"
             f"    @property\n"
             f"    def name(self): return {name!r}\n"
             "    def is_available(self): return True\n"
@@ -458,6 +459,32 @@ class TestUserInstalledProviderDiscovery:
         assert p is not None
         assert p.name == "myexternal"
         assert p.is_available()
+
+    @pytest.mark.parametrize(
+        "falsey_method",
+        [
+            "    def __bool__(self): return False\n",
+            "    def __len__(self): return 0\n",
+        ],
+        ids=["bool", "len"],
+    )
+    def test_directory_loader_preserves_falsey_provider(
+        self, tmp_path, monkeypatch, falsey_method
+    ):
+        """Directory registration retains a provider even when it is falsey."""
+        from plugins.memory import discover_memory_providers, load_memory_provider
+
+        self._make_user_memory_plugin(tmp_path, "falseydir", falsey_method)
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+
+        provider = load_memory_provider("falseydir")
+
+        assert provider is not None
+        assert provider.name == "falseydir"
+        assert ("falseydir", "Test user provider", True) in discover_memory_providers()
 
     def test_bundled_takes_precedence(self, tmp_path, monkeypatch):
         """Bundled provider wins when user plugin has the same name."""
@@ -591,6 +618,7 @@ class TestEntryPointMemoryProviderDiscovery:
         module_name="ep_memory_provider",
         exposure="register",
         include_skill=False,
+        falsey_method="",
     ):
         module_file = tmp_path / f"{module_name}.py"
         register_skill = ""
@@ -611,6 +639,7 @@ class TestEntryPointMemoryProviderDiscovery:
             "from pathlib import Path\n"
             "from agent.memory_provider import MemoryProvider\n"
             "class Provider(MemoryProvider):\n"
+            f"{falsey_method}"
             "    @property\n"
             "    def name(self): return 'entrymem'\n"
             "    def is_available(self): return True\n"
@@ -666,6 +695,41 @@ class TestEntryPointMemoryProviderDiscovery:
         assert provider is not None
         assert provider.name == "entrymem"
         assert provider.is_available()
+
+    @pytest.mark.parametrize(
+        "falsey_method, module_name",
+        [
+            ("    def __bool__(self): return False\n", "ep_falsey_bool"),
+            ("    def __len__(self): return 0\n", "ep_falsey_len"),
+        ],
+    )
+    def test_entry_point_loader_preserves_falsey_provider(
+        self, tmp_path, monkeypatch, falsey_method, module_name
+    ):
+        """Entry-point registration retains a provider even when it is falsey."""
+        from plugins.memory import discover_memory_providers, load_memory_provider
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(
+            tmp_path,
+            module_name=module_name,
+            falsey_method=falsey_method,
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("falseyentry", module_name, exposure)
+            ]),
+        )
+
+        provider = load_memory_provider("falseyentry")
+
+        assert provider is not None
+        assert provider.name == "entrymem"
+        assert ("falseyentry", "", True) in discover_memory_providers()
 
     def test_active_entry_point_provider_registers_skill(self, tmp_path, monkeypatch):
         from tools.skills_tool import skill_view

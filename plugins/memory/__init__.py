@@ -239,7 +239,7 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
     if hasattr(loaded, "register"):
         collector = _ProviderCollector(entry_point.name, register_skills=register_skills)
         collector.collect(loaded.register, source=getattr(loaded, "__file__", None))
-        if collector.provider:
+        if collector.provider is not None:
             return collector.provider
     if callable(loaded):
         try:
@@ -286,7 +286,7 @@ def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True)
                     "using the registered provider; later registrations were skipped",
                     name, e,
                 )
-        if collector.provider:
+        if collector.provider is not None:
             return collector.provider
 
     return _instantiate_subclass(mod)

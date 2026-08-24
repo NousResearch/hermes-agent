@@ -62,8 +62,10 @@ DEFAULT_CONFIG = {
         # Maximum time an alias routing key waits for the active turn holding
         # the same resolved session lease. On expiry the inbound message is
         # rejected with a resend notice rather than run without serialization.
-        # Non-positive values fall back to 1800 seconds.
-        "gateway_turn_lease_timeout": 1800,
+        # Keep this short: Telegram dispatches updates sequentially, so an
+        # inline lease waiter also delays unrelated topics. Non-positive values
+        # fall back to the five-second safety default.
+        "gateway_turn_lease_timeout": 5,
         # Per-session AIAgent cache in the gateway. Each cached agent keeps a
         # warm prompt prefix AND the session's full transcript, so the cache
         # trades memory for cost: too small and every turn re-pays an uncached

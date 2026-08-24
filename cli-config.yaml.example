@@ -1041,8 +1041,8 @@ agent:
   # Maximum time an alias routing key waits for an active turn holding the same
   # resolved session lease. On expiry Hermes rejects this inbound message and
   # asks the user to resend rather than running it without serialization.
-  # Non-positive values fall back to the 1800-second default.
-  # gateway_turn_lease_timeout: 1800
+  # Non-positive values fall back to the 5-second default.
+  # gateway_turn_lease_timeout: 5
 
   # Staged warning: send a warning before escalating to full timeout.
   # Fires once per run when inactivity reaches this threshold (seconds).

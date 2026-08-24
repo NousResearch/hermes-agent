@@ -18552,26 +18552,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # immediately evict them, racing with the setup path.
             _stale_idle = float("inf")  # assume idle if we can't check
             _stale_detail = ""
+            _activity_summary_valid = False
             if _stale_agent and hasattr(_stale_agent, "get_activity_summary"):
                 try:
                     _sa = _stale_agent.get_activity_summary()
-                    _stale_idle = _sa.get("seconds_since_activity", float("inf"))
+                    from gateway.session_stall import (
+                        resolve_session_idle_seconds_from_activity,
+                    )
+
+                    _resolved_idle = resolve_session_idle_seconds_from_activity(
+                        _sa if isinstance(_sa, dict) else None,
+                        now=time.time(),
+                    )
+                    if _resolved_idle is not None:
+                        _stale_idle = _resolved_idle
+                        _activity_summary_valid = True
                     _stale_detail = (
-                        f" | last_activity={_sa.get('last_activity_desc', 'unknown')} "
+                        f" | last_activity={_sa.get('last_activity_desc', 'unknown') if isinstance(_sa, dict) else 'unknown'} "
                         f"({_stale_idle:.0f}s ago) "
-                        f"| iteration={_sa.get('api_call_count', 0)}/{_sa.get('max_iterations', 0)}"
+                        f"| iteration={_sa.get('api_call_count', 0) if isinstance(_sa, dict) else 0}/{_sa.get('max_iterations', 0) if isinstance(_sa, dict) else 0}"
                     )
                 except Exception:
                     pass
-            # Evict if: agent is idle beyond timeout, OR wall-clock age is
-            # extreme (10x timeout or 2h, whichever is larger — catches
-            # cases where the agent object was garbage-collected).
+            # A valid activity clock is authoritative: total age alone never
+            # makes an actively progressing turn stale. The emergency wall TTL
+            # is only a fallback when the agent cannot report usable activity.
             _wall_ttl = max(_raw_stale_timeout * 10, 7200) if _raw_stale_timeout > 0 else float("inf")
             _should_evict = (
                 _stale_agent is not _AGENT_PENDING_SENTINEL
                 and (
-                    (_raw_stale_timeout > 0 and _stale_idle >= _raw_stale_timeout)
-                    or _stale_age > _wall_ttl
+                    (
+                        _activity_summary_valid
+                        and _raw_stale_timeout > 0
+                        and _stale_idle >= _raw_stale_timeout
+                    )
+                    or (
+                        not _activity_summary_valid
+                        and _stale_age > _wall_ttl
+                    )
                 )
             )
             if _should_evict:

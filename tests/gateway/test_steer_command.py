@@ -13,6 +13,7 @@ interrupting. The gateway runner must:
 from __future__ import annotations
 
 from datetime import datetime
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -114,6 +115,31 @@ async def test_steer_calls_agent_steer_and_does_not_interrupt():
     # _pending_messages (that would be turn-boundary /queue semantics).
     assert runner._pending_messages == {}
     assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("elapsed", [float("nan"), True, "not-a-number"])
+async def test_steer_reaches_ancient_turn_via_fresh_timestamp_fallback(
+    monkeypatch, elapsed
+):
+    runner, _adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    running_agent.get_activity_summary.return_value = {
+        "seconds_since_activity": elapsed,
+        "last_activity_at": time.time() - 3,
+        "last_activity_desc": "receiving stream response",
+    }
+    runner._running_agents[sk] = running_agent
+    runner._running_agents_ts[sk] = time.time() - 31_471
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "1800")
+
+    result = await runner._handle_message(_make_event("/steer pause safely"))
+
+    running_agent.steer.assert_called_once_with("pause safely")
+    assert runner._running_agents[sk] is running_agent
+    assert result is not None
 
 
 @pytest.mark.asyncio

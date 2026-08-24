@@ -981,14 +981,14 @@ lease wait independently of the ordinary agent inactivity timeout:
 
 ```yaml
 agent:
-  gateway_turn_lease_timeout: 1800
+  gateway_turn_lease_timeout: 5
 ```
 
 If another turn still holds the session lease when this budget expires, Hermes
 fails closed: it does not load the transcript or run the model for the waiting
 message. The user receives a rejection notice and must resend. Hermes does not
 automatically requeue the message because doing so without durable ordering and
-idempotency could process it twice. Non-positive values use the 1800-second
+idempotency could process it twice. Non-positive values use the 5-second
 default.
 
 ## Session Stall Watchdog
